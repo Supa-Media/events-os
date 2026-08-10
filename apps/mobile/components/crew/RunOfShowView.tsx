@@ -1,11 +1,16 @@
 import { View, Text } from "react-native";
 import {
   buildRunOfShowSegments,
+  eventTimeZone,
   isRunOfShowLive,
   runOfShowNowIndex,
 } from "@events-os/shared";
 import { Card } from "../ui";
-import { canFormatEastern, formatTimeEastern } from "../../lib/format";
+import {
+  canFormatZone,
+  formatTimeInZone,
+  zoneAbbreviation,
+} from "../../lib/format";
 import { useNow } from "../../lib/useNow";
 
 /** One sanitized run-of-show row off the crew briefing payload. */
@@ -18,11 +23,13 @@ export type CrewRunOfShowRow = {
 
 /**
  * The volunteer-facing run of show: a mobile-first timeline of what's
- * happening and when, with every time pinned to Eastern (the org's home
- * timezone) so a phone in any timezone reads the same schedule. While the
- * event is live, the segment we should currently be on is highlighted
- * ("NOW" — or "UP NEXT" just before doors), driven by the same shared
- * segment-window math as the Day-of view. Read-only by design.
+ * happening and when, with every time pinned to the EVENT's timezone (via the
+ * shared `eventTimeZone` seam, the same one Day-of asks) so a phone in any
+ * timezone reads the same schedule — and so the volunteer's copy and the
+ * leader's Day-of copy can't drift apart. While the event is live, the segment
+ * we should currently be on is highlighted ("NOW" — or "UP NEXT" just before
+ * doors), driven by the same shared segment-window math and the same liveness
+ * rule as Day-of. Read-only by design.
  */
 export function RunOfShowView({
   eventDate,
@@ -34,6 +41,12 @@ export function RunOfShowView({
   const now = useNow();
   if (runOfShow.length === 0) return null;
 
+  // The briefing payload is sanitized down to times and titles, so the event
+  // doc isn't here to read a per-event zone off — `eventTimeZone` answers with
+  // the org's home zone either way today. The day a zone column lands, this
+  // call site threads the event through; the formatting below doesn't change.
+  const timeZone = eventTimeZone();
+  const zoneName = zoneAbbreviation(now, timeZone);
   const segments = buildRunOfShowSegments(eventDate, runOfShow);
   // Highlight only when the event is live-ish. Days ahead of the event a public
   // page shouldn't shout "UP NEXT" — the plain timeline is the answer. The rule
@@ -46,11 +59,13 @@ export function RunOfShowView({
       <View className="gap-0.5">
         <Text className="font-display text-xl text-ink">Run of show</Text>
         <Text className="text-sm text-faint">
-          {/* Only claim the Eastern pin when the runtime can actually honor
-              it — on the rare runtime without timezone data the formatters
-              fall back to device-local, and the label must say so. */}
-          {canFormatEastern()
-            ? "What's happening and when · all times Eastern (ET)."
+          {/* Only claim the pin when the runtime can actually honor it — on the
+              rare runtime without timezone data the formatters fall back to
+              device-local, and the label must say so. The zone NAME comes from
+              the same resolver as the times, so the sentence can't outlive a
+              change of zone the way the hard-coded "Eastern (ET)" did. */}
+          {canFormatZone(timeZone) && zoneName
+            ? `What's happening and when · all times ${zoneName}.`
             : "What's happening and when · times shown in your local time."}
         </Text>
       </View>
@@ -61,9 +76,9 @@ export function RunOfShowView({
             const upcoming = isNow && now < seg.start;
             // Once a segment's window has closed (event live), let it recede.
             const past = liveish && !isNow && now >= seg.end;
-            const startLabel = formatTimeEastern(seg.start);
+            const startLabel = formatTimeInZone(seg.start, timeZone);
             const timeLabel = seg.showEnd
-              ? `${startLabel} – ${formatTimeEastern(seg.end)}`
+              ? `${startLabel} – ${formatTimeInZone(seg.end, timeZone)}`
               : startLabel;
             return (
               <View
@@ -84,7 +99,7 @@ export function RunOfShowView({
                   </Text>
                   {seg.showEnd ? (
                     <Text className="mt-0.5 text-xs font-semibold text-muted">
-                      – {formatTimeEastern(seg.end)}
+                      – {formatTimeInZone(seg.end, timeZone)}
                     </Text>
                   ) : null}
                 </View>
@@ -92,7 +107,7 @@ export function RunOfShowView({
                   {isNow ? (
                     <View
                       className="mb-1 self-start rounded-pill bg-accent px-2 py-0.5"
-                      accessibilityLabel={`${upcoming ? "Up next" : "Happening now"}: ${seg.row.title} at ${timeLabel} Eastern`}
+                      accessibilityLabel={`${upcoming ? "Up next" : "Happening now"}: ${seg.row.title} at ${timeLabel} ${zoneName}`}
                     >
                       <Text className="text-2xs font-bold tracking-widest text-white">
                         {upcoming ? "UP NEXT" : "NOW"}

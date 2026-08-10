@@ -15,12 +15,17 @@ import {
 import { ToastView } from "../../../../components/ui/Toast";
 import { DateTimePanel } from "../../../../components/ui/DateTimeField";
 import { colors, radius, spacing } from "../../../../lib/theme";
-import { formatTime } from "../../../../lib/format";
+import {
+  formatTime,
+  formatTimeInZone,
+  zoneAbbreviation,
+} from "../../../../lib/format";
 import { useActionRunner } from "../../../../lib/useActionToast";
 import {
   TASK_STATUS_OPTIONS,
   buildRunOfShowSegments,
-  isLocalMidnight,
+  eventTimeZone,
+  isMidnightInZone,
   isRunOfShowLive,
   runOfShowNowIndex,
 } from "@events-os/shared";
@@ -102,6 +107,13 @@ function StartTimePrompt({
       <Popover visible={visible} anchor={anchor} width={388} onClose={close}>
         <DateTimePanel value={draft} onChange={setDraft} />
         <View style={styles.promptCommit}>
+          {/* Device-local ON PURPOSE, and the one clock on this screen that is:
+              it echoes the time the user just dialled in `DateTimePanel`, which
+              reads and writes device-local wall clock end to end. Formatting the
+              echo in the event's zone would show them a different number than
+              the one they picked. The picker itself is the thing to fix — see
+              the PR: it is shared with the event header's reschedule popover, so
+              converting it is its own change, not a rider on this one. */}
           <Text style={styles.promptDraft}>{formatTime(draft)}</Text>
           <Button
             title="Set"
@@ -192,6 +204,15 @@ export default function DayOfScreen() {
   const { event, eventTypeName, runOfShow, roles, tasks } = data;
   const permitsNeedingFallback = data.permitsNeedingFallback ?? [];
 
+  // Every clock below reads in the EVENT's timezone, never the device's. A run
+  // sheet is a fact about where the event happens: two people in the same room
+  // — or a leader who has travelled — must see the same 5:00 PM load-in their
+  // crew sees. `eventTimeZone` is the single seam that answers "whose clock?";
+  // it returns the org's home zone today (no per-event column exists yet), so
+  // nothing here mentions Eastern and nothing has to change when one does.
+  const timeZone = eventTimeZone(event);
+  const zoneLabel = zoneAbbreviation(now, timeZone);
+
   // Each segment resolved to its wall-clock START and END, and the "now/next"
   // highlight index — both via the shared helpers so this view, the public
   // briefing, and the segment math in `@events-os/shared` can never disagree.
@@ -213,9 +234,11 @@ export default function DayOfScreen() {
   const liveish = isRunOfShowLive(segments, now);
   const nowIndex = liveish ? runOfShowNowIndex(segments, now) : -1;
 
-  // Old events created before start-times existed sit at local midnight, so
-  // every segment renders at 12:xx AM. Prompt (non-blocking) to set a real one.
-  const needsStartTime = isLocalMidnight(event.eventDate);
+  // Old events created before start-times existed sit at midnight, so every
+  // segment renders at 12:xx AM. Prompt (non-blocking) to set a real one —
+  // asked in the event's zone, so which events get the nudge doesn't depend on
+  // where the person looking at them happens to be standing.
+  const needsStartTime = isMidnightInZone(event.eventDate, timeZone);
 
   return (
     <>
@@ -227,13 +250,22 @@ export default function DayOfScreen() {
             <Text style={styles.eventName}>{event.name}</Text>
             <Text style={styles.eventMeta}>{eventTypeName}</Text>
           </View>
-          {/* Live clock — anchors the now/next highlight below. */}
+          {/* Live clock — anchors the now/next highlight below, so it reads in
+              the SAME zone as the rows or the highlight looks wrong. The zone
+              name under it ("EDT") is how a leader who has travelled can tell
+              at a glance that this is the event's clock and not their phone's. */}
           <View
             style={styles.clock}
-            accessibilityLabel={`Current time ${formatTime(now)}`}
+            accessibilityLabel={`Current time ${formatTimeInZone(now, timeZone)}${
+              zoneLabel ? ` ${zoneLabel}` : ""
+            }`}
           >
-            <Text style={styles.clockTime}>{formatTime(now)}</Text>
-            <Text style={styles.clockLabel}>now</Text>
+            <Text style={styles.clockTime}>
+              {formatTimeInZone(now, timeZone)}
+            </Text>
+            <Text style={styles.clockLabel}>
+              {zoneLabel ? `now · ${zoneLabel}` : "now"}
+            </Text>
           </View>
         </View>
 
@@ -262,9 +294,9 @@ export default function DayOfScreen() {
               const r = seg.row;
               const isNow = i === nowIndex;
               const upcoming = isNow && now < seg.start;
-              const startLabel = formatTime(seg.start);
+              const startLabel = formatTimeInZone(seg.start, timeZone);
               const timeLabel = seg.showEnd
-                ? `${startLabel} – ${formatTime(seg.end)}`
+                ? `${startLabel} – ${formatTimeInZone(seg.end, timeZone)}`
                 : startLabel;
               return (
                 <Card
@@ -274,7 +306,9 @@ export default function DayOfScreen() {
                   {isNow ? (
                     <View
                       style={styles.nowBadge}
-                      accessibilityLabel={`${upcoming ? "Up next" : "Happening now"}: ${r.title} at ${timeLabel}`}
+                      accessibilityLabel={`${upcoming ? "Up next" : "Happening now"}: ${r.title} at ${timeLabel}${
+                        zoneLabel ? ` ${zoneLabel}` : ""
+                      }`}
                     >
                       <Text style={styles.nowBadgeText}>
                         {upcoming ? "UP NEXT" : "NOW"}
@@ -286,7 +320,7 @@ export default function DayOfScreen() {
                       <Text style={styles.rosTime}>{startLabel}</Text>
                       {seg.showEnd ? (
                         <Text style={styles.rosEnd}>
-                          –{formatTime(seg.end)}
+                          –{formatTimeInZone(seg.end, timeZone)}
                         </Text>
                       ) : null}
                     </View>

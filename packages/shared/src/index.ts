@@ -942,15 +942,35 @@ export function computeRunTime(eventStart: number, offsetMinutes: number): numbe
 }
 
 /**
- * True when a timestamp's LOCAL time-of-day is exactly midnight (00:00). Used to
- * flag events whose `eventDate` never got a real start time (the old new-event
- * form defaulted to local midnight) so the Day-of view can prompt to set one —
- * a migration can't infer the true start, but this reaches those events without
- * guessing. Uses local hours/minutes to match how every event time is derived.
+ * True when a timestamp's time-of-day is exactly midnight (00:00) **in
+ * `timeZone`**. Used to flag events whose `eventDate` never got a real start
+ * time (the old new-event form defaulted to midnight) so the Day-of view can
+ * prompt to set one — a migration can't infer the true start, but this reaches
+ * those events without guessing.
+ *
+ * The zone is a required argument rather than the device's, for the same reason
+ * the labels are ({@link eventTimeZone}): "is this event anchored at midnight?"
+ * is a question about the event's own clock. Asked device-locally it answered
+ * differently on every phone — a Pacific viewer got the prompt on a 3 AM ET
+ * event and missed it on a real midnight one. Falls back to device-local on a
+ * runtime with no timezone data, matching the formatters.
  */
-export function isLocalMidnight(ts: number): boolean {
-  const d = new Date(ts);
-  return d.getHours() === 0 && d.getMinutes() === 0;
+export function isMidnightInZone(ts: number, timeZone: string): boolean {
+  try {
+    const [h, m] = new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    })
+      .format(ts)
+      .split(":")
+      .map(Number);
+    return h % 24 === 0 && m === 0;
+  } catch {
+    const d = new Date(ts);
+    return d.getHours() === 0 && d.getMinutes() === 0;
+  }
 }
 
 /**
@@ -985,6 +1005,38 @@ export function runOfShowSegmentEnd(
  *  clock labels, the homepage's "is this event still on?" cutoff) pin to it so
  *  a viewer or server in any timezone reads the same schedule. */
 export const EASTERN_TIME_ZONE = "America/New_York";
+
+/**
+ * The IANA timezone an event's schedule must be read in — the ONE answer every
+ * clock on an event surface asks for.
+ *
+ * An event happens somewhere. Its run of show, its call times and its doors are
+ * facts about that place, not about the phone looking at them: a leader who
+ * flies to a conference must still see the same 5:00 PM load-in her crew sees.
+ * Formatting an event time with the device's zone (`new Date(ts).getHours()`)
+ * makes the same run sheet read differently on two screens in the same room —
+ * which is exactly what Day-of did before this existed.
+ *
+ * Today the answer is the org's home zone for every event: neither `events` nor
+ * `chapters` carries a timezone column, because every chapter operates in
+ * Eastern (the same "single-valued for now" note `PLANNING_TIME_ZONE` in
+ * `./ai.ts` carries). It is a FUNCTION anyway, and every event clock calls it,
+ * so the day a chapter outside ET launches the change is confined to this body —
+ * add the column, read it here, done. Hard-coding `EASTERN_TIME_ZONE` in the
+ * screens instead would fix today's symptom and rebuild this exact bug for the
+ * first event outside ET.
+ *
+ * The `eventDate` in the parameter type is not decoration: it makes the argument
+ * an *event*, so a caller can hand over the whole event doc and TypeScript will
+ * start reading a `timeZone` column the moment one exists.
+ */
+export function eventTimeZone(
+  event?: { eventDate: number; timeZone?: string | null } | null,
+): string {
+  const own = event?.timeZone;
+  if (typeof own === "string" && own.length > 0) return own;
+  return EASTERN_TIME_ZONE;
+}
 
 const HOUR_MS = 60 * MINUTE_MS;
 
