@@ -1941,6 +1941,19 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
           }[];
         }
       | undefined;
+    // A split is only ever measured for a total measured in the SAME pass. If
+    // `/balance` came back without an `available_balance`, `pendingCents` keeps
+    // whatever it had, and a freshly-measured booked figure beside a carried-over
+    // total is exactly the drift this whole shape exists to make impossible — so
+    // don't measure one. The clear below then reads as "unmeasured", which
+    // `addableBankPendingCents` handles by adding the total back whole.
+    if (pendingCents === undefined) {
+      await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
+        accountRowId: account.accountRowId,
+        balanceCents,
+      });
+      continue;
+    }
     try {
       const rows: { category: string; amountCents: number; transferId: string | null }[] =
         [];
