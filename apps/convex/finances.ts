@@ -132,6 +132,7 @@ import {
   countsTowardFacet,
   matchesReconcileFilters,
   reconcileFilterGroupOf,
+  RECONCILE_ATTENTION_KEYS,
   reconcileSearchTerms,
   matchesReconcileSearch,
   RECEIPT_EXCEPTION_REASON_LABELS,
@@ -493,6 +494,11 @@ const reconcileFilterValidator = v.union(
   v.literal("personal_unpaid"),
   v.literal("transfers"),
   v.literal("payouts"),
+  // The header roll-ups (`RECONCILE_HEADER_CHIPS`). Complements over the OPEN
+  // set, so `needs_attention + ready_to_close === toClearCount` by
+  // construction — see `flagsFor`.
+  v.literal("needs_attention"),
+  v.literal("ready_to_close"),
 );
 
 // Per-filter counts returned alongside the rows so each pill shows its number.
@@ -509,6 +515,8 @@ const reconcileCounts = v.object({
   personal_unpaid: v.number(),
   transfers: v.number(),
   payouts: v.number(),
+  needs_attention: v.number(),
+  ready_to_close: v.number(),
 });
 
 // Per-fund SPEND for the dashboard period (period reads are naturally bounded;
@@ -8142,10 +8150,18 @@ export const listReconcile = query({
     matchedCount: v.number(),
     // Whether `matchedCount` exceeds what `rows` carries.
     hasMore: v.boolean(),
-    // True when a non-empty `search` caused the State group to be dropped for
-    // this request. The grid shows this; a filter that silently stops applying
-    // is the defect this whole change exists to remove.
+    // True when a non-empty `search` caused the State/roll-up groups to be
+    // dropped for this request. The grid shows this; a filter that silently
+    // stops applying is the defect this whole change exists to remove.
     searchIgnoredState: v.boolean(),
+    // Whether the transaction-coding policy has STARTED
+    // (`codingRequiredSinceMs <= now`). The grid hides the "Needs coding" and
+    // "Coding review" options until it has: before that date `requiresCoding`
+    // is false for every transaction that can exist, so both options are zero
+    // by calendar rather than by adoption, and an option that cannot return a
+    // row teaches people the whole list is broken. Resolved here because the
+    // policy already gets read once per query for `isUncoded`.
+    codingArmed: v.boolean(),
     // Rows in scope still awaiting a treasurer — the header's backlog figure.
     // Separate from `counts` because those are facet counts now (see the
     // handler); this one deliberately ignores the active selection.
@@ -8201,6 +8217,8 @@ export const listReconcile = query({
       personal_unpaid: 0,
       transfers: 0,
       payouts: 0,
+      needs_attention: 0,
+      ready_to_close: 0,
     };
     // The search terms, parsed once. `[]` means "not searching" — every rule
     // below is a no-op in that case, so an unsearched request behaves exactly
@@ -8209,7 +8227,7 @@ export const listReconcile = query({
     const searching = searchTerms.length > 0;
     // A search DROPS the State group (see the `search` arg's doc). Kind is kept.
     const selectionFilters = searching
-      ? activeFilters.filter((k) => reconcileFilterGroupOf(k) !== "state")
+      ? activeFilters.filter((k) => reconcileFilterGroupOf(k) === "kind")
       : activeFilters;
     const searchIgnoredState = searching && selectionFilters.length !== activeFilters.length;
     const pageSize = Math.max(
@@ -8227,6 +8245,7 @@ export const listReconcile = query({
         matchedCount: 0,
         hasMore: false,
         searchIgnoredState: false,
+        codingArmed: false,
         toClearCount: 0,
         chaseCount: 0,
         viewerPersonId: null,
@@ -8356,7 +8375,22 @@ export const listReconcile = query({
     // The coding policy's start date — read once per query, consulted per row
     // by `isUncoded` (pre-policy history must never light the facet up).
     const { sinceMs: codingSinceMs } = await codingPolicy(ctx);
-    const flagsFor = (tr: Doc<"transactions">): Record<ReconcileFilterKey, boolean> => ({
+    /**
+     * EVERY FACET CHANGE IN THIS FUNCTION IS A QUEUE-POPULATION CHANGE, NOT A
+     * PREDICATE CHANGE. `needsBudget`, `needsDocumentation` and `isUndocumented`
+     * are untouched and stay untouched: they feed the dashboards' dollar tiles,
+     * the receipt chase and the publishing gate, and they encode a founder rule
+     * (a marked internal transfer and a marked processor payout still owe a
+     * receipt, so marking a row can never be a way to stop being chased) that is
+     * pinned by `markTransferPayout.test.ts` and `receiptChase.test.ts`.
+     *
+     * The gates live HERE, next to the other facet logic, precisely so the drift
+     * risk is visible in one place rather than hidden behind a second predicate
+     * that looks like the first one.
+     */
+    const flagsFor = (tr: Doc<"transactions">): Record<ReconcileFilterKey, boolean> => {
+      const open = tr.status !== "reconciled";
+      const base = {
       spend: isSpend(tr),
       // EVERY internal transfer leg, not just the MARKED ones. This used to be
       // `isMarkedTransfer`, which left the app-created legs (a
@@ -8371,7 +8405,13 @@ export const listReconcile = query({
       transfers: tr.flow === "transfer",
       payouts: isProcessorPayout(tr),
       to_review: tr.status === "unreviewed",
-      needs_budget: needsBudget(tr),
+      // OPEN rows only. `needsBudget` is deliberately status-blind — the
+      // dashboards' unbudgeted-spend tiles want every status, because
+      // unattributed money is unattributed whether someone closed the row or
+      // not — but a closed row is not queue work, and 4 of the 14 rows this
+      // facet showed in production were already `reconciled`. Matches what
+      // `needsDocumentation` has always done. THE PREDICATE IS UNCHANGED.
+      needs_budget: needsBudget(tr) && open,
       missing_receipt: needsDocumentation(tr),
       // The substantiation chase (`docs/plans/transaction-coding.md`):
       // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
@@ -8382,11 +8422,41 @@ export const listReconcile = query({
       coding_review: tr.codingState === "submitted",
       personal_unpaid: isPersonalUnpaid(tr),
       reconciled: tr.status === "reconciled",
-      // The PUBLISHING backlog. Unlike `missing_receipt` this ignores status
-      // entirely, so a row a treasurer closed document-less still counts —
-      // see `isUndocumented` + `docs/plans/receipt-exceptions.md`.
-      undocumented: isUndocumented(tr),
-    });
+      // "Closed without documentation" — the DIFFERENCE, not the superset.
+      //
+      // `isUndocumented` ignores status entirely, which made this facet a
+      // strict superset of `missing_receipt`: in production, overlap 42,
+      // only-undocumented 3, only-missing-receipt 0. Two options with
+      // near-identical labels and near-identical numbers, where picking the
+      // bigger one showed you the rows you had just looked at plus three you
+      // hadn't. Restricting the facet to the CLOSED tail leaves two disjoint
+      // options whose labels are both literally true; the publishing backlog is
+      // their OR, which — same group — is what multi-select already gives you.
+      //
+      // THE PREDICATE IS UNCHANGED: `isUndocumented` is still the publishing
+      // gate and still mirrors `documentationState(...)` for the ledger.
+      undocumented: isUndocumented(tr) && !open,
+      };
+      // THE HEADER ROLL-UPS, defined as complements over the OPEN set so
+      // `needs_attention + ready_to_close === toClearCount` holds by
+      // construction and the header cannot drift from the grid. Derived from
+      // `RECONCILE_ATTENTION_KEYS` rather than a re-typed list, for the same
+      // reason.
+      //
+      // They answer the question `toClearCount` alone could not: of 127 open
+      // rows, 51 had something genuinely outstanding and 76 were categorised,
+      // budgeted, documented and simply never closed. That second pile is the
+      // single biggest actionable bucket in the book and there was no filter
+      // that found it — you could only reach it by scrolling 346 rows and
+      // eyeballing each one.
+      const needsAttention =
+        open && RECONCILE_ATTENTION_KEYS.some((k) => base[k]);
+      return {
+        ...base,
+        needs_attention: needsAttention,
+        ready_to_close: open && !needsAttention,
+      };
+    };
 
     // FACET COUNTS, not global ones. With one mutually-exclusive filter, a
     // count could safely be "rows matching this predicate". With a SET of
@@ -8640,6 +8710,7 @@ export const listReconcile = query({
       matchedCount,
       hasMore,
       searchIgnoredState,
+      codingArmed: codingSinceMs <= Date.now(),
       toClearCount,
       chaseCount,
       viewerPersonId: viewer?._id ?? null,
