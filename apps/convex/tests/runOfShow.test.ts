@@ -3,10 +3,12 @@ import {
   DEFAULT_COLUMNS,
   MINUTE_MS,
   RUN_OF_SHOW_FINAL_WINDOW_MS,
+  RUN_OF_SHOW_LEAD_IN_MS,
   buildRunOfShowSegments,
   computeDueDate,
   computeRunTime,
   isLocalMidnight,
+  isRunOfShowLive,
   runOfShowNowIndex,
   runOfShowSegmentEnd,
 } from "@events-os/shared";
@@ -91,6 +93,73 @@ describe("run of show helpers (shared)", () => {
     // After the last window closes, nothing is highlighted.
     expect(runOfShowNowIndex(segs, eventStart + 61 * MINUTE_MS)).toBe(-1);
     expect(runOfShowNowIndex([], eventStart)).toBe(-1);
+  });
+
+  /**
+   * The liveness gate — the thing that stops "UP NEXT" being a permanent
+   * decoration on an event that is weeks away. Every clock below is a fixed
+   * literal: no `Date.now()`, so this suite reads the same in July as in
+   * December and a failure is always a real regression.
+   */
+  describe("isRunOfShowLive — the gate the UP NEXT / NOW badge hangs on", () => {
+    const eventStart = new Date(2026, 6, 27, 18, 0).getTime();
+    const segs = buildRunOfShowSegments(eventStart, [
+      { offsetMinutes: 0, durationMinutes: 30 },
+      { offsetMinutes: 30, durationMinutes: 30 },
+    ]);
+    const lastEnd = segs[segs.length - 1].end;
+
+    test("an event three weeks out is not live — nothing may be badged", () => {
+      const threeWeeksOut = eventStart - 21 * 24 * 60 * MINUTE_MS;
+      expect(isRunOfShowLive(segs, threeWeeksOut)).toBe(false);
+      // And this is exactly why the gate has to exist: the raw index still
+      // points at row 0, which is the bug Day-of shipped for months.
+      expect(runOfShowNowIndex(segs, threeWeeksOut)).toBe(0);
+    });
+
+    test("the morning of the event is still not live", () => {
+      expect(isRunOfShowLive(segs, new Date(2026, 6, 27, 9, 0).getTime())).toBe(
+        false,
+      );
+    });
+
+    test("the lead-in opens exactly RUN_OF_SHOW_LEAD_IN_MS before the first row", () => {
+      expect(isRunOfShowLive(segs, eventStart - RUN_OF_SHOW_LEAD_IN_MS - 1)).toBe(
+        false,
+      );
+      expect(isRunOfShowLive(segs, eventStart - RUN_OF_SHOW_LEAD_IN_MS)).toBe(
+        true,
+      );
+    });
+
+    test("inside the lead-in the first row is genuinely UP NEXT", () => {
+      const soon = eventStart - 30 * MINUTE_MS;
+      expect(isRunOfShowLive(segs, soon)).toBe(true);
+      const i = runOfShowNowIndex(segs, soon);
+      expect(i).toBe(0);
+      // The badge reads "UP NEXT" while `now < start` and "NOW" once inside it —
+      // the same expression both surfaces use to pick the word.
+      expect(soon < segs[i].start).toBe(true);
+      expect(eventStart + 10 * MINUTE_MS < segs[0].start).toBe(false);
+    });
+
+    test("live right through the show, dark once the last window closes", () => {
+      expect(isRunOfShowLive(segs, eventStart + 10 * MINUTE_MS)).toBe(true);
+      expect(isRunOfShowLive(segs, lastEnd - 1)).toBe(true);
+      expect(isRunOfShowLive(segs, lastEnd)).toBe(false);
+      expect(isRunOfShowLive(segs, lastEnd + 60 * MINUTE_MS)).toBe(false);
+    });
+
+    test("an empty run of show is never live", () => {
+      expect(isRunOfShowLive([], eventStart)).toBe(false);
+    });
+
+    test("the lead-in is its own constant, not the final-window cap", () => {
+      // Same value today, different jobs — retuning one must not silently move
+      // the other. This asserts they are separately named, not that they differ.
+      expect(RUN_OF_SHOW_LEAD_IN_MS).toBe(2 * 60 * 60 * 1000);
+      expect(RUN_OF_SHOW_FINAL_WINDOW_MS).toBe(2 * 60 * 60 * 1000);
+    });
   });
 });
 

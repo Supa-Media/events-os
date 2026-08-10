@@ -21,6 +21,7 @@ import {
   TASK_STATUS_OPTIONS,
   buildRunOfShowSegments,
   isLocalMidnight,
+  isRunOfShowLive,
   runOfShowNowIndex,
 } from "@events-os/shared";
 import { useNow } from "../../../../lib/useNow";
@@ -203,7 +204,14 @@ export default function DayOfScreen() {
         typeof r.fields?.duration === "number" ? r.fields.duration : null,
     })),
   );
-  const nowIndex = runOfShowNowIndex(segments, now);
+  // `runOfShowNowIndex` answers WHICH row, not WHETHER to highlight one: before
+  // the show it returns row 0 for any `now`, however distant. Used raw, this
+  // screen badged "UP NEXT" on an event weeks away — meaningless exactly where
+  // the badge is supposed to earn its keep. Gate it on the shared liveness rule,
+  // the SAME one the volunteer briefing uses, so a leader on Day-of and a
+  // volunteer on the briefing never disagree about whether the show has started.
+  const liveish = isRunOfShowLive(segments, now);
+  const nowIndex = liveish ? runOfShowNowIndex(segments, now) : -1;
 
   // Old events created before start-times existed sit at local midnight, so
   // every segment renders at 12:xx AM. Prompt (non-blocking) to set a real one.
