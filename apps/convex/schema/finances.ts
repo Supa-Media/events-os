@@ -1945,6 +1945,30 @@ export const receiptExceptions = defineTable({
   // of flowers proves the flowers existed — it doesn't prove what was paid,
   // which is exactly the difference a published ledger should keep visible.
   evidenceStorageIds: v.optional(v.array(v.id("_storage"))),
+  // WHAT THEY SAID THEY TRIED, question by question. The staged checks that
+  // stand between somebody and "the receipt is lost" (`LOST_RECEIPT_CHECKS`),
+  // and the two that classify "no receipt was issued" (`NOT_ISSUED_CHECKS`).
+  //
+  // This is the friction's actual product. Nobody verified any of it — a
+  // person can answer yes three times and be wrong — so it is stored as an
+  // ATTESTATION, and every surface that renders it says "attested", never
+  // "confirmed". What it buys is that an approver can read the row and
+  // understand the situation without asking anyone (owner, 2026-08-09), and
+  // that the two paths people genuinely forget — the spam folder and the
+  // vendor's order history — got asked about at the moment it mattered.
+  //
+  // The PROMPT is stored beside the answer deliberately: a bare key would stop
+  // being legible the day the wording changes, and this record has to be
+  // readable years later by somebody who never saw the form.
+  attestations: v.optional(
+    v.array(
+      v.object({
+        key: v.string(),
+        prompt: v.string(),
+        answer: v.boolean(),
+      }),
+    ),
+  ),
   status: v.union(...RECEIPT_EXCEPTION_STATUSES.map((s) => v.literal(s))),
   // Who put their name on it, and when.
   attestedByPersonId: v.optional(v.id("people")),

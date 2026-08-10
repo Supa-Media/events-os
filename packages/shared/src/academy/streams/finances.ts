@@ -513,7 +513,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "approved",
         caption:
-          "Only the last state counts as documentation. While it's pending you're still on the clock: the reminders keep coming and the 7-day card lock still applies — asking to be let off isn't being let off. Filing it does unblock one thing, though: you can submit the charge's coding on a pending exception, because filing is your half and deciding is somebody else's.",
+          "Saying a receipt is LOST now costs something, on purpose: you'll be asked, one at a time, whether you checked the vendor's website or order history, whether you contacted the merchant to reproduce it, and whether you searched every inbox INCLUDING SPAM. A no to any of them stops you there \u2014 go do that thing first, because the receipt is usually still findable, and spam and order history are where it usually is. Nobody verifies your answers; they're recorded as YOUR attestation, and the approver reads them. Saying no receipt was ISSUED doesn't face that gauntlet \u2014 a subway turnstile issues nothing and chasing it is pointless \u2014 but it does ask two questions: does this merchant do receipts, and did you ask? If you simply forgot to ask, that's not none-was-issued, that's a lost one, and it'll move you there.\n\nOnly the last state counts as documentation. While it's pending you're still on the clock: the reminders keep coming and the 7-day card lock still applies — asking to be let off isn't being let off. Filing it does unblock one thing, though: you can submit the charge's coding on a pending exception, because filing is your half and deciding is somebody else's.",
       },
       {
         kind: "rule",

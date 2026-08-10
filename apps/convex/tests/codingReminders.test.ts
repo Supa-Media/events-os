@@ -5,6 +5,17 @@ import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.h
 import { api, internal } from "../_generated/api";
 import { chargeOutstanding, outstandingLabel } from "../lib/codingReminders";
 import type { Id } from "../_generated/dataModel";
+import { LOST_RECEIPT_CHECKS } from "@events-os/shared";
+/** Every lost-receipt check answered yes — since 2026-08-09 the interactive
+ *  `receiptExceptions.attest` refuses a `lost` exception without them (the
+ *  staged "did you actually look?" gauntlet). Bulk/backfill paths are
+ *  deliberately exempt, so only fixtures that go through `attest` need this. */
+const LOST_CHECKS = LOST_RECEIPT_CHECKS.map((c) => ({
+  key: c.key,
+  prompt: c.prompt,
+  answer: true,
+}));
+
 
 /**
  * Phase 2 of `docs/plans/transaction-coding.md`: the cardholder chase rekeyed
@@ -1034,6 +1045,7 @@ describe("receiptExceptions — the lodging rule", () => {
       s.as.mutation(api.receiptExceptions.attest, {
         transactionId: txnId,
         reason: "lost",
+        attestations: LOST_CHECKS,
         note: EXCEPTION_NOTE,
       }),
     ).resolves.toBeDefined();

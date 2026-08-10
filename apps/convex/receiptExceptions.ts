@@ -26,6 +26,7 @@ import {
   DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS,
   exceptionNeedsSecondApprover,
   formatCents,
+  lostReceiptBlocker,
   type ReceiptExceptionReason,
 } from "@events-os/shared";
 import { requireUserId, getChapterIdOrNull } from "./lib/context";
@@ -42,6 +43,11 @@ import {
   exceptionsForTransaction,
 } from "./lib/receiptExceptions";
 
+/** One recorded yes/no, with the question it answered — see the schema's
+ *  `attestations` doc for why the prompt is stored rather than just the key. */
+const attestationValidator = v.array(
+  v.object({ key: v.string(), prompt: v.string(), answer: v.boolean() }),
+);
 const reasonValidator = v.union(
   ...RECEIPT_EXCEPTION_REASONS.map((r) => v.literal(r)),
 );
@@ -85,6 +91,13 @@ const exceptionRow = v.object({
       contentType: v.union(v.string(), v.null()),
     }),
   ),
+  /** What the filer said they tried, question by question — the thing that
+   *  lets an approver understand the situation without asking anyone. Always
+   *  an array (empty for rows filed before this existed), and always rendered
+   *  as ATTESTED: nobody verified any of it. */
+  attestations: v.array(
+    v.object({ key: v.string(), prompt: v.string(), answer: v.boolean() }),
+  ),
   attestedByName: v.union(v.string(), v.null()),
   attestedAt: v.number(),
   decidedByName: v.union(v.string(), v.null()),
@@ -121,6 +134,10 @@ async function projectException(
         }),
       )
     ).filter((e): e is { url: string; contentType: string | null } => e != null),
+    // `[]` for the 36 exceptions decided before this existed — they're
+    // historical rows, not incomplete ones, and an empty list renders as
+    // "nothing recorded" rather than as three unanswered questions.
+    attestations: row.attestations ?? [],
     attestedByName: await name(row.attestedByPersonId),
     attestedAt: row.attestedAt,
     decidedByName: await name(row.decidedByPersonId),
@@ -173,6 +190,10 @@ export const attest = mutation({
     reason: reasonValidator,
     note: v.string(),
     evidenceStorageIds: v.optional(v.array(v.id("_storage"))),
+    // What they said they tried, question by question — required in practice
+    // for `lost` (the server refuses one without all three), recorded for
+    // every reason. See `LOST_RECEIPT_CHECKS` / `NOT_ISSUED_CHECKS`.
+    attestations: v.optional(attestationValidator),
   },
   returns: v.id("receiptExceptions"),
   handler: async (ctx, args) => {
@@ -180,6 +201,33 @@ export const attest = mutation({
       ctx,
       args.transactionId,
     );
+    // THE GAUNTLET, and only for `lost` — the reason branches first (owner,
+    // 2026-08-09: "this should only be if they say the receipt was lost; if
+    // they say no receipt issued, then it's just no receipt issued"), because
+    // chasing a receipt that cannot exist is pure friction with no yield.
+    //
+    // Enforced server-side and not only in the form: the block is meant to be
+    // real, and a check that lives only in the client is one anybody can skip.
+    // Uniform at every amount — the $75 line governs who APPROVES and is not a
+    // friction dial.
+    //
+    // DELIBERATELY HERE rather than in the shared `attestException` writer.
+    // This is the ONE interactive path — a person filing one exception about
+    // their own charge, which is exactly the act the owner is describing. The
+    // writer is also used by `attestBulk` (a bookkeeper acknowledging historical
+    // rows) and by `genesisCleanup` (a backfill of imported history), and
+    // asking either of those "did you email the merchant?" would be asking
+    // about a purchase nobody present was there for. Putting it in the writer
+    // broke exactly those two paths, which is how this boundary got found.
+    if (args.reason === "lost") {
+      const blocker = lostReceiptBlocker(args.attestations);
+      if (blocker) {
+        throw new ConvexError({
+          code: "LOST_RECEIPT_CHECKS_REQUIRED",
+          message: `Before a receipt counts as lost: ${blocker.prompt} ${blocker.blockedHint}`,
+        });
+      }
+    }
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const exceptionId = await attestException(ctx, {
       txn,
@@ -189,6 +237,7 @@ export const attest = mutation({
       ...(args.evidenceStorageIds?.length
         ? { evidenceStorageIds: args.evidenceStorageIds }
         : {}),
+      ...(args.attestations?.length ? { attestations: args.attestations } : {}),
       attestedByPersonId: actorPersonId,
       attestedByUserId: userId,
     });

@@ -42,7 +42,10 @@ import {
 } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import type { ReceiptExceptionReason } from "@events-os/shared";
+import type {
+  ExceptionAttestation,
+  ReceiptExceptionReason,
+} from "@events-os/shared";
 import { Button, FileThumbnail, FileViewer, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { ReceiptCell } from "../reconcile/ReconcileList";
@@ -241,10 +244,12 @@ export function CodingDocumentation({
             reason,
             note,
             evidenceStorageIds,
+            attestations,
           }: {
             reason: ReceiptExceptionReason;
             note: string;
             evidenceStorageIds: Id<"_storage">[];
+            attestations: ExceptionAttestation[];
           }) =>
             void (async () => {
               await runAction(async () => {
@@ -253,6 +258,10 @@ export function CodingDocumentation({
                   reason,
                   note,
                   ...(evidenceStorageIds.length ? { evidenceStorageIds } : {}),
+                  // MUST be forwarded — the server refuses a `lost` exception
+                  // without all three staged answers, so dropping these here
+                  // would make "receipt lost" permanently unfilable.
+                  ...(attestations.length ? { attestations } : {}),
                 });
                 setFiling(false);
               }, "Couldn't file that exception");

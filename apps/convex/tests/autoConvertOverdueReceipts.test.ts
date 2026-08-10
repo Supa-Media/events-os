@@ -9,6 +9,17 @@ import {
 } from "./setup.helpers";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { LOST_RECEIPT_CHECKS } from "@events-os/shared";
+/** Every lost-receipt check answered yes — since 2026-08-09 the interactive
+ *  `receiptExceptions.attest` refuses a `lost` exception without them (the
+ *  staged "did you actually look?" gauntlet). Bulk/backfill paths are
+ *  deliberately exempt, so only fixtures that go through `attest` need this. */
+const LOST_CHECKS = LOST_RECEIPT_CHECKS.map((c) => ({
+  key: c.key,
+  prompt: c.prompt,
+  answer: true,
+}));
+
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 // Mirrors `cards.ts`'s REMINDER_BATCH_LIMIT (per-run conversion cap).
@@ -250,6 +261,7 @@ describe("cards.autoConvertOverdueReceipts", () => {
         chapterId: s.chapterId,
         amountCents: 400,
         reason: "lost",
+        attestations: LOST_CHECKS,
         note: "I think I threw the receipt away at the venue",
         status: "pending",
         attestedByUserId: s.userId,
