@@ -1815,7 +1815,7 @@ describe("bulk writes do not blast the inbox", () => {
     }
   });
 
-  test("the imported gifts are DEMOTED, not silenced — the digest still counts every one", async () => {
+  test("an import of last year's giving is not today's giving — the digest says nothing about it", async () => {
     const s = await devDirectorSetup();
     await atClock(s.t, SETUP_AT, async () => {
       await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
@@ -1840,12 +1840,20 @@ describe("bulk writes do not blast the inbox", () => {
       await atClock(s.t, MON_8AM_ET, async () => {
         await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
       });
-      expect(cap.sent).toHaveLength(1);
-      // One correctly-totalled email instead of four — and nothing lost.
-      expect(cap.sent[0].subject).toBe(
-        "$400.00 from 4 gifts this day — All books",
+      // NOT ONE EMAIL. Every one of those gifts arrived over a year ago; today
+      // took nothing, and an empty daily is not sent. This test used to assert
+      // `$400.00 from 4 gifts this day`, which is the production bug in
+      // miniature — the same shape that reported $9,224.03 for a $261.00 week.
+      // Historical giving is read in the ledger, not mailed as this morning's.
+      expect(cap.sent).toHaveLength(0);
+      // …and the day's window is genuinely empty, so nothing was reported and
+      // the watermark stays put.
+      const row = await run(s.t, (ctx) =>
+        ctx.db
+          .query("givingNotificationRules")
+          .first(),
       );
-      expect(cap.sent[0].html).toContain("Historical Donor 0");
+      expect(row?.lastSentAt).toBeUndefined();
     } finally {
       cap.restore();
     }
@@ -1899,7 +1907,20 @@ describe("bulk writes do not blast the inbox", () => {
 async function seedRawGifts(
   s: ChapterSetup,
   donorId: Id<"donors">,
-  specs: Array<{ createdAt: number; amountCents?: number; scope?: unknown }>,
+  specs: Array<{
+    /** When the money ARRIVED — the field every window ranges on. */
+    receivedAt: number;
+    /**
+     * When the row was WRITTEN. Defaults to `receivedAt` (a gift recorded as it
+     * lands, which is most of them). Set it apart to write a BACKDATED row: an
+     * import of last year's giving, or a cheque keyed a week after it arrived.
+     * Nothing a digest reports may depend on it.
+     */
+    createdAt?: number;
+    amountCents?: number;
+    scope?: unknown;
+    method?: Doc<"gifts">["method"];
+  }>,
 ): Promise<void> {
   await run(s.t, async (ctx) => {
     for (const spec of specs) {
@@ -1908,9 +1929,9 @@ async function seedRawGifts(
         scope: (spec.scope ?? "central") as "central",
         amountCents: spec.amountCents ?? 1_000,
         currency: "usd",
-        receivedAt: spec.createdAt,
-        method: "stripe",
-        createdAt: spec.createdAt,
+        receivedAt: spec.receivedAt,
+        method: spec.method ?? "stripe",
+        createdAt: spec.createdAt ?? spec.receivedAt,
       });
     }
   });
@@ -1933,6 +1954,19 @@ async function seedDonor(s: ChapterSetup, name = "Bulk Donor"): Promise<Id<"dono
 /** The rule shape `collectWindowGifts` actually reads. */
 const ALL_SCOPE_RULE = { isActive: true, scope: "all" as const };
 
+/**
+ * `createdAt` for a row whose `receivedAt` is `t` — deliberately DESCENDING and
+ * far outside every window under test.
+ *
+ * The window ranges on `receivedAt`, and these tests are the ones that would
+ * still pass under the old `createdAt` read if the two fields agreed. Pulling
+ * them apart makes that impossible: on a `createdAt` range these rows are not in
+ * the window at all, and on a `createdAt` ORDER they come back backwards.
+ */
+function writtenLater(receivedAt: number): number {
+  return 900_000 - receivedAt;
+}
+
 describe("collectWindowGifts — the cap, the drain, and where the window closes", () => {
   test("stops at the match cap and closes the window on the last gift it read", async () => {
     const s = await devDirectorSetup();
@@ -1941,7 +1975,10 @@ describe("collectWindowGifts — the cap, the drain, and where the window closes
     await seedRawGifts(
       s,
       donorId,
-      Array.from({ length: 10 }, (_, i) => ({ createdAt: 1_000 + i })),
+      Array.from({ length: 10 }, (_, i) => ({
+        receivedAt: 1_000 + i,
+        createdAt: writtenLater(1_000 + i),
+      })),
     );
 
     const out = await run(s.t, (ctx) =>
@@ -1952,25 +1989,29 @@ describe("collectWindowGifts — the cap, the drain, and where the window closes
     );
     expect(out.gifts).toHaveLength(3);
     expect(out.truncated).toBe(true);
-    // The window closes ON the third gift (createdAt 1002), never past it —
+    // The window closes ON the third gift (received 1002), never past it —
     // the next window opens strictly after, so nothing between is skipped.
     expect(out.until).toBe(1_002);
+    // …and it is the three OLDEST-RECEIVED, not the three most recently keyed.
+    expect(out.gifts.map((g) => g.receivedAt)).toEqual([1_000, 1_001, 1_002]);
   });
 
   test("drains the whole millisecond it stopped in, stragglers included", async () => {
     const s = await devDirectorSetup();
     const donorId = await seedDonor(s);
-    // Three gifts share ms 1002 — an import writes many per millisecond. The
-    // cap falls on the FIRST of them; the other two must still come back, or
-    // the next window (which opens strictly after 1002) would skip them.
+    // Three gifts share ms 1002 — a batch imported under one date, a payout
+    // minute. The cap falls on the FIRST of them; the other two must still come
+    // back, or the next window (which opens strictly after 1002) would skip
+    // them. Their `createdAt`s are all different, so only a tie on `receivedAt`
+    // can produce this.
     await seedRawGifts(s, donorId, [
-      { createdAt: 1_000 },
-      { createdAt: 1_001 },
-      { createdAt: 1_002, amountCents: 111 },
-      { createdAt: 1_002, amountCents: 222 },
-      { createdAt: 1_002, amountCents: 333 },
-      { createdAt: 1_003 },
-      { createdAt: 1_004 },
+      { receivedAt: 1_000, createdAt: writtenLater(1_000) },
+      { receivedAt: 1_001, createdAt: writtenLater(1_001) },
+      { receivedAt: 1_002, createdAt: 500_001, amountCents: 111 },
+      { receivedAt: 1_002, createdAt: 500_002, amountCents: 222 },
+      { receivedAt: 1_002, createdAt: 500_003, amountCents: 333 },
+      { receivedAt: 1_003, createdAt: writtenLater(1_003) },
+      { receivedAt: 1_004, createdAt: writtenLater(1_004) },
     ]);
 
     const out = await run(s.t, (ctx) =>
@@ -1983,16 +2024,16 @@ describe("collectWindowGifts — the cap, the drain, and where the window closes
     expect(out.truncated).toBe(true);
     // 5 = the two before the boundary + all three sharing it. Not 3.
     expect(out.gifts).toHaveLength(5);
-    expect(out.gifts.filter((g) => g.createdAt === 1_002)).toHaveLength(3);
+    expect(out.gifts.filter((g) => g.receivedAt === 1_002)).toHaveLength(3);
   });
 
   test("hitting the cap on the very LAST row is not a truncation", async () => {
     const s = await devDirectorSetup();
     const donorId = await seedDonor(s);
     await seedRawGifts(s, donorId, [
-      { createdAt: 1_000 },
-      { createdAt: 1_001 },
-      { createdAt: 1_002 },
+      { receivedAt: 1_000, createdAt: writtenLater(1_000) },
+      { receivedAt: 1_001, createdAt: writtenLater(1_001) },
+      { receivedAt: 1_002, createdAt: writtenLater(1_002) },
     ]);
 
     // The cap is exactly the number of rows in the range: the read finished.
@@ -2014,7 +2055,11 @@ describe("collectWindowGifts — the cap, the drain, and where the window closes
     await seedRawGifts(
       s,
       donorId,
-      Array.from({ length: 20 }, (_, i) => ({ createdAt: 1_000 + i, amountCents: 100 })),
+      Array.from({ length: 20 }, (_, i) => ({
+        receivedAt: 1_000 + i,
+        createdAt: writtenLater(1_000 + i),
+        amountCents: 100,
+      })),
     );
 
     // A $500 floor nothing meets — the read still has to stop.
@@ -2041,11 +2086,14 @@ describe("collectWindowGifts — the cap, the drain, and where the window closes
     await seedRawGifts(
       s,
       donorId,
-      Array.from({ length: 30 }, (_, i) => ({ createdAt: 1_000 + i })),
+      Array.from({ length: 30 }, (_, i) => ({
+        receivedAt: 1_000 + i,
+        createdAt: writtenLater(1_000 + i),
+      })),
     );
     await seedRawGifts(s, donorId, [
-      { createdAt: 1_100, scope: s.chapterId },
-      { createdAt: 1_101, scope: s.chapterId },
+      { receivedAt: 1_100, createdAt: writtenLater(1_100), scope: s.chapterId },
+      { receivedAt: 1_101, createdAt: writtenLater(1_101), scope: s.chapterId },
     ]);
 
     const out = await run(s.t, (ctx) =>
@@ -2071,14 +2119,18 @@ describe("a real over-cap window, end to end", () => {
     });
     const donorId = await seedDonor(s, "Imported Donor");
 
-    // Genuinely past the production cap — no injected limits here.
+    // Genuinely past the production cap — no injected limits here. A busy day:
+    // 790 gifts a millisecond apart, every one of them WRITTEN in reverse order
+    // of arrival, so the drain can only come out right if it is ordered by when
+    // the money arrived.
     const total = MAX_DIGEST_MATCHES + 40;
     const base = MON_8AM_ET - 6 * 60 * 60 * 1000;
     await seedRawGifts(
       s,
       donorId,
       Array.from({ length: total }, (_, i) => ({
-        createdAt: base + i,
+        receivedAt: base + i,
+        createdAt: base + total - i,
         amountCents: 1_000,
       })),
     );
@@ -2106,8 +2158,9 @@ describe("a real over-cap window, end to end", () => {
       );
 
       const afterFirst = await run(s.t, (ctx) => ctx.db.get(ruleId));
-      // Closed ON the last gift read, not at `now` — the remainder is still
-      // ahead of the watermark rather than behind it.
+      // Closed ON the last gift read — the 750th by ARRIVAL — not at `now` and
+      // not on a `createdAt`. The remainder is still ahead of the watermark
+      // rather than behind it.
       expect(afterFirst?.lastSentAt).toBe(base + MAX_DIGEST_MATCHES - 1);
       // …and the run mark is CLEARED, so the drain continues within the day
       // instead of waiting until tomorrow.
@@ -3180,6 +3233,294 @@ describe("a digest breaks its total down, and every cut sums back to it", () => 
 
       // The donor deep links survived the redesign.
       expect(html).toContain("https://publicworship.life/os/giving/donor/");
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// "This week" is the money that arrived this week
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * THE PRODUCTION BUG, reproduced to the cent.
+ *
+ * On 2026-08-07 a Givebutter historical import wrote 35 gifts received between
+ * Nov 2025 and Mar 2026 — $8,963.03, including a $5,000.00 and a $2,000.00 wire
+ * from March — into a week in which $261.00 actually arrived. The digest window
+ * ranged on `createdAt`, so the owner's development team was mailed
+ * `$9,224.03 from 44 gifts this week`, itemized under dates like `Nov 4, 2025`.
+ * He asked whether this was months of giving history. It was.
+ *
+ * These are the real numbers. A guard against a 35× error has to be a figure
+ * somebody can check against the ledger.
+ */
+const NOV_4_2025 = Date.parse("2025-11-04T17:00:00Z"); // noon ET
+const DEC_31_2025 = Date.parse("2025-12-31T17:00:00Z");
+const MAR_26_2026 = Date.parse("2026-03-26T16:00:00Z"); // noon EDT
+
+/**
+ * The 9 gifts that genuinely came in during the week: $261.00, spread across
+ * the seven days and across three rails and both books — so every breakdown has
+ * something to partition and "each cut sums to the headline" is a real claim
+ * rather than one row restating the total.
+ */
+function realWeekGifts(
+  chapterId: Id<"chapters">,
+): Array<{
+  receivedAt: number;
+  amountCents: number;
+  method: Doc<"gifts">["method"];
+  scope: Id<"chapters"> | "central";
+}> {
+  const day = (n: number, hours = 10) =>
+    MON_8AM_ET - n * DAY_MS + (hours - 8) * 60 * 60 * 1000;
+  return [
+    { receivedAt: day(6), amountCents: 2_500, method: "stripe", scope: "central" },
+    { receivedAt: day(5), amountCents: 2_500, method: "stripe", scope: chapterId },
+    { receivedAt: day(5, 15), amountCents: 2_500, method: "cash", scope: chapterId },
+    { receivedAt: day(4), amountCents: 2_500, method: "stripe", scope: "central" },
+    { receivedAt: day(3), amountCents: 6_100, method: "check", scope: "central" },
+    { receivedAt: day(2), amountCents: 2_500, method: "stripe", scope: chapterId },
+    { receivedAt: day(1), amountCents: 2_500, method: "stripe", scope: "central" },
+    { receivedAt: day(1, 16), amountCents: 2_500, method: "cash", scope: chapterId },
+    { receivedAt: day(0, 7), amountCents: 2_500, method: "stripe", scope: "central" },
+  ];
+}
+
+/**
+ * The 35 rows the import wrote on the Friday: $8,963.03 of old money, all of it
+ * received months before the week and all of it keyed inside it.
+ */
+function importedGifts(): Array<{
+  receivedAt: number;
+  createdAt: number;
+  amountCents: number;
+}> {
+  const friday = MON_8AM_ET - 3 * DAY_MS;
+  const rows = [
+    { receivedAt: NOV_4_2025, createdAt: friday, amountCents: 7_503 },
+    { receivedAt: MAR_26_2026, createdAt: friday + 1, amountCents: 500_000 },
+    { receivedAt: MAR_26_2026, createdAt: friday + 2, amountCents: 200_000 },
+  ];
+  for (let i = 0; i < 32; i++) {
+    rows.push({
+      receivedAt: DEC_31_2025,
+      createdAt: friday + 3 + i,
+      amountCents: 5_900,
+    });
+  }
+  return rows;
+}
+
+describe("a digest reports the money that arrived, not the rows that were written", () => {
+  test("44 gifts recorded this week, 35 of them received months ago: the headline is $261.00", async () => {
+    const s = await devDirectorSetup();
+    await atClock(s.t, MON_8AM_ET - 30 * DAY_MS, async () => {
+      await saveRule(s.as, {
+        name: "Weekly roundup",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const donorId = await seedDonor(s, "Givebutter Import");
+    await seedRawGifts(s, donorId, [...realWeekGifts(s.chapterId), ...importedGifts()]);
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      const { subject, html } = cap.sent[0];
+
+      // THE HEADLINE: the week that was, not the week the ledger was typed in.
+      expect(subject).toBe("$261.00 from 9 gifts this week — All books");
+      // The number that went out to a development team, and must never again.
+      expect(subject).not.toContain("$9,224.03");
+      expect(html).not.toContain("$9,224.03");
+      expect(html).not.toContain("44 gifts");
+
+      // EVERY FIGURE agrees. Four `Total:` lines at $261.00 — the summary panel
+      // plus one per breakdown — and the count is 9, not 44.
+      expect(
+        html.match(/Total:<\/span>\s*<span[^>]*>\$261\.00/g) ?? [],
+      ).toHaveLength(4);
+      expect(html).toMatch(/Gifts:<\/span>\s*<span[^>]*>9</);
+      expect(html.match(/\(44\)/g) ?? []).toHaveLength(0);
+      // The largest gift is the largest of THIS WEEK's — not the March wire.
+      expect(html).toContain("$61.00");
+
+      // THE 35 APPEAR NOWHERE. Not in a total, not in a breakdown, not in the
+      // list, not in a footnote. Their amounts and their dates are simply not
+      // in this email — history is read in the giving ledger.
+      expect(html).not.toContain("$5,000.00");
+      expect(html).not.toContain("$2,000.00");
+      expect(html).not.toContain("$75.03");
+      expect(html).not.toContain("$59.00");
+      expect(html).not.toContain("Nov 4, 2025");
+      expect(html).not.toContain("Dec 31, 2025");
+      expect(html).not.toContain("Mar 26, 2026");
+      expect(html).not.toContain("35");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a cheque that arrived Saturday and was keyed this morning IS this week's giving", async () => {
+    // THE WHOLE REASON `receivedAt` IS THE RIGHT FIELD. The money came in on
+    // Saturday; the row was written five minutes ago. A window on when rows are
+    // WRITTEN would date it today, and a window on when money ARRIVED puts it
+    // where it belongs — in the week it belongs to, at its own date.
+    const s = await devDirectorSetup();
+    await atClock(s.t, MON_8AM_ET - 30 * DAY_MS, async () => {
+      await saveRule(s.as, {
+        name: "Weekly roundup",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const donorId = await seedDonor(s, "Late Desk Entry");
+    await seedRawGifts(s, donorId, [
+      {
+        receivedAt: MON_8AM_ET - 2 * DAY_MS, // the money came on Saturday
+        createdAt: MON_8AM_ET - 5 * 60 * 1000, // keyed five minutes ago
+        amountCents: 11_500,
+      },
+      // A gift that arrived on Sunday and was recorded on Sunday — LATER money
+      // than the cheque, EARLIER paperwork.
+      {
+        receivedAt: MON_8AM_ET - DAY_MS,
+        amountCents: 2_000,
+      },
+    ]);
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toBe(
+        "$135.00 from 2 gifts this week — All books",
+      );
+      const html = cap.sent[0].html;
+      // Dated the day it arrived, not the morning it was typed.
+      expect(html).toContain("Aug 8, 2026");
+      // …and the list is ordered by ARRIVAL, newest first. Ordered by when the
+      // rows were written, the Saturday cheque would lead — it was keyed last.
+      // Sliced from the list's own heading, because the summary panel above it
+      // names the largest gift and would confound a whole-document search.
+      const list = html.slice(html.indexOf("Every gift"));
+      expect(list.indexOf("$20.00")).toBeLessThan(list.indexOf("$115.00"));
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("Send now previews exactly what the scheduled run reported", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, MON_8AM_ET - 30 * DAY_MS, async () => {
+      ruleId = await saveRule(s.as, {
+        name: "Weekly roundup",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const donorId = await seedDonor(s, "Givebutter Import");
+    await seedRawGifts(s, donorId, [...realWeekGifts(s.chapterId), ...importedGifts()]);
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+        // Pressed at the same instant, so the two windows are the same window:
+        // any difference in what they say is a difference in how they DECIDE,
+        // which is the drift this asserts against.
+        expect(await sendNow(s.as, ruleId)).toEqual({
+          status: "sent",
+          emailsSent: 1,
+        });
+      });
+      expect(cap.sent).toHaveLength(2);
+      const [scheduled, manual] = cap.sent;
+      expect(manual.subject).toBe("$261.00 from 9 gifts this week — All books");
+      expect(manual.subject).toBe(scheduled.subject);
+      // Byte for byte. A preview that disagreed with the mail it previews is
+      // worse than no preview.
+      expect(manual.html).toBe(scheduled.html);
+      expect(manual.html).not.toContain("$5,000.00");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a gift backdated behind the watermark is in NO digest — the accepted cost, asserted", async () => {
+    /**
+     * THE PRICE OF WINDOWING ON A BACKDATABLE FIELD, pinned so it can never
+     * change by accident.
+     *
+     * Under the old `createdAt` window a row could only ever appear AHEAD of the
+     * watermark, so nothing was ever missed. `receivedAt` is backdatable, so a
+     * gift keyed for a period already reported lands behind the watermark and no
+     * later window reaches back for it.
+     *
+     * That is a decision, not a defect: the digest answers "what came in this
+     * week" and the giving ledger holds the history. This test exists so that
+     * anyone who thinks a digest should never miss a gift finds the trade
+     * written down and asserted, rather than discovering it in production.
+     */
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const donorId = await seedDonor(s, "Sunday Cash");
+
+    const cap = captureEmails();
+    try {
+      // Monday's digest reports Monday's giving and stamps a watermark.
+      await seedRawGifts(s, donorId, [
+        { receivedAt: MON_8AM_ET - 2 * 60 * 60 * 1000, amountCents: 5_000 },
+      ]);
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toBe(
+        "$50.00 from 1 gift this day — All books",
+      );
+      const watermark = (await run(s.t, (ctx) => ctx.db.get(ruleId)))?.lastSentAt;
+      expect(watermark).toBe(MON_8AM_ET - 60_000);
+      cap.sent.length = 0;
+
+      // Sunday's cash, counted and keyed on Tuesday morning: received BEFORE
+      // Monday's watermark, written after it.
+      await seedRawGifts(s, donorId, [
+        {
+          receivedAt: MON_8AM_ET - DAY_MS,
+          createdAt: TUE_8AM_ET - 60 * 60 * 1000,
+          amountCents: 90_000,
+        },
+      ]);
+
+      await atClock(s.t, TUE_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      // Tuesday's window opens strictly after Monday's watermark, so the
+      // backdated $900 is not in it — and an empty daily sends nothing.
+      expect(cap.sent).toHaveLength(0);
+      // It is not reported LATER either: the watermark has moved past its date
+      // for good. The immediate rules and the ledger are where it shows up.
+      await atClock(s.t, TUE_8AM_ET + 25 * 60 * 60 * 1000, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent.some((m) => m.html.includes("$900.00"))).toBe(false);
     } finally {
       cap.restore();
     }
