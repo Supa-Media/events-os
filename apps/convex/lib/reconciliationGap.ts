@@ -124,22 +124,37 @@
  * behind an adjustment would be the one thing worse than not answering the
  * question at all.
  *
- * PROCESSOR FEES need no term here — for STRIPE. Revenue is gross, payouts are
- * net, and the difference is booked as a real monthly expense row by
+ * PROCESSOR FEES need no term here, on EITHER rail. Revenue is gross, payouts
+ * are net, and the difference is booked as a real monthly expense row by
  * `processorFees.ts`, so it is already inside "what the ledger says went out".
  *
- * GIVEBUTTER'S FEES ARE NOT BOOKED, and that is left visible on purpose.
- * `processorFees.ts` covers Stripe only (it says so, and why). Meanwhile the
- * Givebutter term below counts what Givebutter will actually REMIT (its `payout`
- * field, net of fee) rather than the gross the giver paid — because the pile of
- * money we can point at is the pile they will send, not the pile before their
- * cut. So on a transaction whose fee the giver did NOT cover, book value holds
- * the gross and this term holds the net, and the unbooked fee lands in the gap.
- * That is a REAL finding — an expense the org incurred and never recorded — and
- * the fix is to book Givebutter fees, not to quietly count the gross here and
- * make the gap look clean while the expense stays missing. (It happens to be
- * invisible today: every outstanding Givebutter transaction on 2026-08-08 had
- * its fee covered by the giver, so `payout` equalled `amount` to the cent.)
+ * GIVEBUTTER'S FEES ARE BOOKED TOO, since 2026-08-10. This paragraph used to say
+ * the opposite — that `processorFees.ts` covered Stripe only, that the resulting
+ * unbooked Givebutter fee landed in the gap, and that this was "left visible on
+ * purpose" because the fix was to book it rather than to quietly count the gross
+ * here. That was the right call and the fix has now been made:
+ * `processorFees.ts` sweeps Givebutter as well, reading each transaction's own
+ * `amount` less its own `payout`.
+ *
+ * The mechanics below are UNCHANGED and still deliberate: the Givebutter term
+ * counts what Givebutter will actually REMIT (its `payout` field, net of fee)
+ * rather than the gross the giver paid, because the pile of money we can point
+ * at is the pile they will send. What changed is the other side. On a
+ * transaction whose fee the giver did NOT cover, book value holds the gross AND
+ * now also holds the fee as an expense, so the two net out and the gap no longer
+ * carries it.
+ *
+ * THE SIGN OF THAT FIX IS A TRAP WORTH NAMING. Booking an expense LOWERS book
+ * value, and `differenceCents = located − books`, so booking Givebutter's fee
+ * moves the headline UP by the fee. That is correct: the unbooked fee had been
+ * MASKING part of the gap, making the books look closer to the cash than they
+ * were. A gap that grows by exactly the fee on the day the fee is first booked
+ * is the expected result, not a regression.
+ *
+ * Small today, on this deployment: $29.30, all of it one $1,000.00 gift remitted
+ * as $970.70. Every other giver covered the fee, so `payout` equals `amount` to
+ * the cent and contributes nothing — which is why this was invisible on
+ * 2026-08-08, when every OUTSTANDING transaction happened to be fee-covered.
  *
  * ── THE SIGN CONVENTION ──────────────────────────────────────────────────────
  * `differenceCents = located − books`, and the SIGN is the diagnosis, so it is
@@ -147,8 +162,11 @@
  *
  *   · positive → more cash exists than the books explain. Money came in that
  *     was never recorded as revenue, or an expense was recorded that never
- *     actually left. (This deployment's Givebutter deposits are the standing
- *     example — see `processorFees.ts`.)
+ *     actually left. (This deployment's Givebutter deposits were the standing
+ *     example, and are now the standing example of the gap DOING ITS JOB: it
+ *     read $4,550.70, then $150.00 as the Cash App and Venmo work landed, and
+ *     the 2026-08-10 pass named the last of it as three unrecorded student
+ *     registrations. See `processorFees.ts`.)
  *   · negative → the books claim money that is nowhere. Revenue counted twice
  *     (a gift AND the bank credit that delivered it), an in-kind gift without
  *     its expense, or spend that was never actually made.

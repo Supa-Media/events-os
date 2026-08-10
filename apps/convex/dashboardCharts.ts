@@ -937,7 +937,9 @@ const feeRateMonthRow = v.object({
  * month somebody "fixed" the fees.
  *
  * ── READ, NEVER DERIVED ─────────────────────────────────────────────────────
- * Both figures come off `processorFeeEntries`, which is Stripe's own
+ * Both figures come off `processorFeeEntries`, scoped to `processor: "stripe"`
+ * — the table holds Givebutter's entries too since 2026-08-10, so the scope is
+ * load-bearing rather than decorative — which is Stripe's own
  * balance-transaction ledger stored row by row. Nothing here consults
  * `DEFAULT_FEE_SCHEDULE` or any other published rate: the schedule PREDICTS
  * what a payment should cost, and predicting the numerator of a monitor whose
