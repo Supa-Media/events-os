@@ -1,16 +1,19 @@
 import { describe, expect, test } from "vitest";
 import {
   DEFAULT_COLUMNS,
+  EASTERN_TIME_ZONE,
   MINUTE_MS,
   RUN_OF_SHOW_FINAL_WINDOW_MS,
   RUN_OF_SHOW_LEAD_IN_MS,
   buildRunOfShowSegments,
   computeDueDate,
   computeRunTime,
-  isLocalMidnight,
+  eventTimeZone,
+  isMidnightInZone,
   isRunOfShowLive,
   runOfShowNowIndex,
   runOfShowSegmentEnd,
+  zonedTimeToUtc,
 } from "@events-os/shared";
 import { api } from "../_generated/api";
 import { newT, run, setupChapter } from "./setup.helpers";
@@ -20,7 +23,8 @@ import type { Id } from "../_generated/dataModel";
 /**
  * Run of Show v1 — the start-time anchor + segment ranges.
  *
- * Covers the pure shared helpers (`isLocalMidnight`, `runOfShowSegmentEnd`), the
+ * Covers the pure shared helpers (`isMidnightInZone`, `runOfShowSegmentEnd`,
+ * `isRunOfShowLive`, `eventTimeZone`), the
  * new `duration` default column, the reschedule re-anchoring (the path the
  * new-event start time and the Day-of "set start time" affordance both feed),
  * and the `0019` backfill migration.
@@ -28,12 +32,38 @@ import type { Id } from "../_generated/dataModel";
 
 // ── Pure helpers ─────────────────────────────────────────────────────────────
 describe("run of show helpers (shared)", () => {
-  test("isLocalMidnight flags exactly 00:00 local, nothing else", () => {
-    expect(isLocalMidnight(new Date(2026, 6, 27, 0, 0).getTime())).toBe(true);
+  test("isMidnightInZone flags exactly 00:00 IN THE ZONE, nothing else", () => {
+    // Built in the zone, so the assertion means the same thing on a UTC CI box
+    // and on a laptop in Los Angeles — the whole point of the helper.
+    const etMidnight = zonedTimeToUtc(
+      { year: 2026, month: 7, day: 27, hour: 0, minute: 0 },
+      EASTERN_TIME_ZONE,
+    );
+    expect(isMidnightInZone(etMidnight, EASTERN_TIME_ZONE)).toBe(true);
     // One minute past midnight is NOT flagged.
-    expect(isLocalMidnight(new Date(2026, 6, 27, 0, 1).getTime())).toBe(false);
+    expect(isMidnightInZone(etMidnight + MINUTE_MS, EASTERN_TIME_ZONE)).toBe(
+      false,
+    );
     // A real evening start is not flagged.
-    expect(isLocalMidnight(new Date(2026, 6, 27, 18, 30).getTime())).toBe(false);
+    expect(
+      isMidnightInZone(
+        zonedTimeToUtc(
+          { year: 2026, month: 7, day: 27, hour: 18, minute: 30 },
+          EASTERN_TIME_ZONE,
+        ),
+        EASTERN_TIME_ZONE,
+      ),
+    ).toBe(false);
+    // The device's clock is irrelevant: ET midnight is 9 PM the previous day in
+    // Los Angeles, and asking in LA's zone must say so.
+    expect(isMidnightInZone(etMidnight, "America/Los_Angeles")).toBe(false);
+    // …and the instant that IS midnight in Los Angeles is not midnight in ET.
+    const laMidnight = zonedTimeToUtc(
+      { year: 2026, month: 7, day: 27, hour: 0, minute: 0 },
+      "America/Los_Angeles",
+    );
+    expect(isMidnightInZone(laMidnight, "America/Los_Angeles")).toBe(true);
+    expect(isMidnightInZone(laMidnight, EASTERN_TIME_ZONE)).toBe(false);
   });
 
   test("runOfShowSegmentEnd: positive duration wins over the next start", () => {
@@ -154,11 +184,98 @@ describe("run of show helpers (shared)", () => {
       expect(isRunOfShowLive([], eventStart)).toBe(false);
     });
 
+    test("liveness is an INSTANT question, so the device's zone can't change it", () => {
+      // `isRunOfShowLive` compares epoch instants, never wall-clock parts. This
+      // asserts that on purpose: the moment a "what time is it here?" reading
+      // sneaks into the gate, Day-of and the briefing start disagreeing for a
+      // travelling leader — the same class of bug as the labels.
+      const eventStart = zonedTimeToUtc(
+        { year: 2026, month: 7, day: 27, hour: 18, minute: 0 },
+        EASTERN_TIME_ZONE,
+      );
+      const zoned = buildRunOfShowSegments(eventStart, [
+        { offsetMinutes: 0, durationMinutes: 30 },
+      ]);
+      // One instant, described two ways — the answer must be identical.
+      const thirtyMinutesBefore = eventStart - 30 * MINUTE_MS;
+      expect(isRunOfShowLive(zoned, thirtyMinutesBefore)).toBe(true);
+      expect(
+        isRunOfShowLive(
+          zoned,
+          zonedTimeToUtc(
+            { year: 2026, month: 7, day: 27, hour: 14, minute: 30 },
+            "America/Los_Angeles",
+          ),
+        ),
+      ).toBe(true);
+    });
+
     test("the lead-in is its own constant, not the final-window cap", () => {
       // Same value today, different jobs — retuning one must not silently move
       // the other. This asserts they are separately named, not that they differ.
       expect(RUN_OF_SHOW_LEAD_IN_MS).toBe(2 * 60 * 60 * 1000);
       expect(RUN_OF_SHOW_FINAL_WINDOW_MS).toBe(2 * 60 * 60 * 1000);
+    });
+  });
+
+  /**
+   * The zone every event clock resolves against. These tests use fixed
+   * timestamps and explicit zones so they assert the same thing wherever they
+   * run — including a UTC CI box, where a device-local formatter would have
+   * quietly agreed with Eastern only by accident half the year.
+   */
+  describe("eventTimeZone — whose clock an event is read in", () => {
+    const evening = zonedTimeToUtc(
+      { year: 2026, month: 7, day: 27, hour: 18, minute: 0 },
+      EASTERN_TIME_ZONE,
+    );
+
+    test("falls back to the org's home zone while no event carries one", () => {
+      expect(eventTimeZone()).toBe(EASTERN_TIME_ZONE);
+      expect(eventTimeZone(null)).toBe(EASTERN_TIME_ZONE);
+      expect(eventTimeZone({ eventDate: evening })).toBe(EASTERN_TIME_ZONE);
+    });
+
+    test("an event's own zone wins the day one exists — the whole point", () => {
+      // Nothing WRITES `timeZone` yet; this proves the seam is real, so adding
+      // the column is a schema change and not a hunt through every screen.
+      expect(
+        eventTimeZone({ eventDate: evening, timeZone: "America/Los_Angeles" }),
+      ).toBe("America/Los_Angeles");
+      // An empty/absent value is not a zone — fall back rather than format
+      // against "".
+      expect(eventTimeZone({ eventDate: evening, timeZone: "" })).toBe(
+        EASTERN_TIME_ZONE,
+      );
+      expect(eventTimeZone({ eventDate: evening, timeZone: null })).toBe(
+        EASTERN_TIME_ZONE,
+      );
+    });
+
+    test("the resolved zone survives DST — same wall clock either side", () => {
+      // 7 PM local on both sides of the US spring-forward. If anything in this
+      // chain hard-coded an offset instead of a zone, one of these would slip
+      // an hour.
+      const beforeDst = zonedTimeToUtc(
+        { year: 2026, month: 3, day: 7, hour: 19, minute: 0 },
+        EASTERN_TIME_ZONE,
+      );
+      const afterDst = zonedTimeToUtc(
+        { year: 2026, month: 3, day: 9, hour: 19, minute: 0 },
+        EASTERN_TIME_ZONE,
+      );
+      const zone = eventTimeZone({ eventDate: beforeDst });
+      const hourIn = (ts: number, tz: string) =>
+        new Intl.DateTimeFormat("en-US", {
+          timeZone: tz,
+          hour: "numeric",
+          hour12: false,
+        }).format(ts);
+      expect(hourIn(beforeDst, zone)).toBe("19");
+      expect(hourIn(afterDst, zone)).toBe("19");
+      // …and the underlying UTC offset really did move, so the test isn't
+      // passing because nothing happened.
+      expect(hourIn(beforeDst, "UTC")).not.toBe(hourIn(afterDst, "UTC"));
     });
   });
 });
@@ -217,7 +334,9 @@ describe("event start time / reschedule", () => {
 
     const event = await run(t, (ctx) => ctx.db.get(eventId));
     expect(event?.eventDate).toBe(evening);
-    expect(isLocalMidnight(event!.eventDate)).toBe(false);
+    expect(isMidnightInZone(event!.eventDate, eventTimeZone(event))).toBe(
+      false,
+    );
   });
 
   test("reschedule re-anchors: day offsets re-derive, minute segments self-correct", async () => {
@@ -226,14 +345,18 @@ describe("event start time / reschedule", () => {
     const eventTypeId = (await as.mutation(api.eventTypes.create, {
       name: "Night",
     })) as Id<"eventTypes">;
-    // Simulate an OLD event created before start-times: anchored at midnight.
-    const midnight = new Date(2026, 7, 1, 0, 0).getTime();
+    // Simulate an OLD event created before start-times: anchored at midnight in
+    // the event's own zone (which is what the Day-of nudge asks about).
+    const midnight = zonedTimeToUtc(
+      { year: 2026, month: 8, day: 1, hour: 0, minute: 0 },
+      EASTERN_TIME_ZONE,
+    );
     const eventId = (await as.mutation(api.events.createFromTemplate, {
       eventTypeId,
       name: "N",
       eventDate: midnight,
     })) as Id<"events">;
-    expect(isLocalMidnight(midnight)).toBe(true);
+    expect(isMidnightInZone(midnight, EASTERN_TIME_ZONE)).toBe(true);
 
     const { rosId, taskId } = await run(t, async (ctx) => {
       const rosId = await ctx.db.insert("eventItems", {
@@ -268,7 +391,9 @@ describe("event start time / reschedule", () => {
 
     // Anchor moved and now carries a real time-of-day.
     expect(event?.eventDate).toBe(evening);
-    expect(isLocalMidnight(event!.eventDate)).toBe(false);
+    expect(isMidnightInZone(event!.eventDate, eventTimeZone(event))).toBe(
+      false,
+    );
     // A minute segment stores NO wall-clock — its offset is untouched and it
     // self-corrects off the new anchor.
     expect(ros?.offsetMinutes).toBe(15);
