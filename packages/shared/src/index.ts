@@ -2273,3 +2273,6 @@ export * from "./processorFees";
 
 // ── Receipt files: the ONE "is this an image / a PDF / a document?" rule ────
 export * from "./receiptFile";
+
+// ── Project registrations: what "collected" means, said once for both apps ──
+export * from "./registrations";

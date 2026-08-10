@@ -629,6 +629,11 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "Money coming IN doesn't raise what you can spend",
+        text: "Some projects take money in — a class or cohort with a registration fee. Those registrations show on the project's money page under the budget, with what was collected and who came on a scholarship, and a **Net cost** line underneath: what you spent, minus what came in. The budget bar does NOT move. A budget is permission to spend a specific amount, and someone approved that amount; collecting $150 doesn't mean $150 more was approved. Read the bar for \"how much of my approval is left\" and Net cost for \"what did this actually cost us\" — two questions, two numbers.",
+      },
+      {
+        kind: "rule",
         title: "Raising the cap sends it back to Draft — but nobody's told",
         text: "Bump an APPROVED budget's amount and it drops straight back to Draft the moment you save — not Awaiting approval, and not auto-submitted. The OLD approved figure keeps working as the real spending cap the whole time, so nothing silently expands. But the increase itself is invisible to every approver until YOU deliberately hit Send for review again. Skip that tap and the raise is never reviewed.",
       },

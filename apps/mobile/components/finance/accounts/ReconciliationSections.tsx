@@ -71,8 +71,9 @@ export function BalancesSection() {
     <>
       <SectionHeader title="Account balances" />
       <Text className="mb-3 text-sm text-muted">
-        Book value = the money a book has earned (donations, ticket sales and
-        in-person sales, gross of processor fees) minus what its ledger says
+        Book value = the money a book has earned (donations, ticket sales,
+        in-person sales and course registrations, gross of processor fees)
+        minus what its ledger says
         went out, with cross-book card spend settled by the morning engine. Bank
         is the cash physically sitting in the scope&apos;s Increase account.{" "}
         <Text className="text-ink">

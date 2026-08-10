@@ -1169,7 +1169,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "A payout is NOT a transfer — it's your revenue arriving",
-        text: "When Givebutter or Stripe pays out, that deposit is donation and ticket money you've ALREADY earned — the gifts live in the donor records, and that's where the org counts its revenue (the Accounts page's book value = donations + ticket sales earned, minus spend). So \"Mark as payout\" tells the books this bank credit is the arrival of already-counted revenue: it keeps the deposit honest and stops the same dollars being counted twice. Never mark a payout as a transfer — a transfer is money between two of OUR accounts, and this money came from outside.",
+        text: "When Givebutter or Stripe pays out, that deposit is donation and ticket money you've ALREADY earned — the gifts live in the donor records, and that's where the org counts its revenue (the Accounts page's book value = everything earned — donations, ticket sales, in-person sales and course registrations — minus spend). So \"Mark as payout\" tells the books this bank credit is the arrival of already-counted revenue: it keeps the deposit honest and stops the same dollars being counted twice. Never mark a payout as a transfer — a transfer is money between two of OUR accounts, and this money came from outside.",
       },
       {
         kind: "rule",
@@ -1236,7 +1236,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The org counts its revenue from the donor records — donations and ticket sales — and the payout deposit is that money physically arriving. \"Mark as payout\" tells the books exactly that, so the deposit stays honest and nothing is counted twice. Marking it a transfer would claim it moved between our own accounts; excluding it would hide the settlement record.",
+          "The org counts its revenue where it was earned — donations, ticket sales, in-person sales and course registrations — and the payout deposit is that money physically arriving. \"Mark as payout\" tells the books exactly that, so the deposit stays honest and nothing is counted twice. Marking it a transfer would claim it moved between our own accounts; excluding it would hide the settlement record.",
       },
       {
         prompt: "Why does the app refuse to mark a transfer from just one row?",
