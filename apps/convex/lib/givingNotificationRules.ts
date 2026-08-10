@@ -320,57 +320,93 @@ export function cadencePeriodMs(cadence: string): number {
 /**
  * The exclusive lower bound of the gifts this digest covers, on `createdAt`.
  *
- * ── `min(now − period, watermark)` — never less than the period, never past
- *    the un-reported tail ─────────────────────────────────────────────────
- * Two promises, and the `min` is what keeps both:
+ * Three cases, because `lastSentAt` does not mean the same thing in all three.
+ * The whole difficulty here is that one timestamp is used both as a REPORT
+ * ("gifts up to here have been mailed") and as a BOUNDARY ("don't look further
+ * back than here"), and those want opposite treatment. `watermarkFromRun` is
+ * what tells them apart.
  *
- *  • AT LEAST THE TRAILING PERIOD. "Weekly digest" means the last seven days
- *    to the person reading it, on the first run as much as the fiftieth. The
- *    old `max(createdAt, now − period)` clamp meant a rule created this morning
- *    mailed `Aug 10 – Aug 10 · No gifts came in` — technically true about a
- *    window nobody asked for, and flatly wrong about the week, which had
- *    giving in it. A digest whose first outing is a confident falsehood is one
- *    nobody trusts afterwards.
- *  • NEVER LESS THAN THE WATERMARK REACHES BACK. If a run was missed, or the
- *    cron dropped ticks for a fortnight, the watermark is older than
- *    `now − period` and it wins — so nothing that has not been reported is
- *    silently skipped.
+ * ── 1. NEVER REPORTED → exactly the trailing period ────────────────────────
+ * `now − period`, full stop.
  *
- * The cost is an OVERLAP, deliberately: on a rule younger than its own period,
- * or one resumed inside the last period, the window re-reads gifts an earlier
- * digest already showed. That is the point — a weekly digest that covers four
- * days because that is all that is new is not a weekly digest.
+ * NOT clamped to the rule's `createdAt`, and that clamp is worth naming because
+ * it is the bug this replaced: a weekly rule created on the morning of Aug 10
+ * mailed `Aug 10, 2026 – Aug 10, 2026 · No gifts came in` over a week that had
+ * a $115 gift and a $20 gift in it. "Weekly digest" means the trailing seven
+ * days to whoever opens it, on the first run as much as the fiftieth.
  *
- * ── AND THE THREE-MONTH REPLAY STILL CAN'T HAPPEN ──────────────────────────
- * Reaching back further than the period requires a watermark older than
- * `now − period`, and a dormant rule never has one: `setRuleActive` stamps
- * `lastSentAt = now` on resume, and `saveRule` does the same on a cadence
- * change (the other door into dormancy). So a rule paused for three months
- * comes back with a watermark of "now", and `min(now − 7d, now)` is `now − 7d`
- * — the trailing week, which is what a reader expects, and not one day more.
- * Only genuinely un-reported time extends the window.
+ * And NOT `min(now − period, createdAt)` either, which was the first attempt at
+ * that fix and is worse than the bug it fixed: before the first send the only
+ * lower bound available is `createdAt`, which can be arbitrarily old, so the
+ * `min` reaches back to whenever the rule was made. Three ordinary ways a rule
+ * sits watermark-less for months and then fires — an empty daily deliberately
+ * never stamps `lastSentAt` (see `shouldSendDigest`), so a quiet chapter's rule
+ * or one with a $1,000 floor never gets a watermark; a sweep that finds no
+ * mailer configured claims nothing at all; and `saveRule` deliberately doesn't
+ * reset the marks on a scope or threshold change. Widen such a rule's scope
+ * after six months and `min` gives you a DAILY digest headlined
+ * `Feb 10 – Aug 10` carrying the org's entire ledger, truncated at 750 and
+ * draining hourly for days. `now − period` is the only bound that holds.
  *
- * ── EXCEPT MID-DRAIN, WHERE THE WATERMARK IS A BOOKMARK, NOT A BOUNDARY ────
- * A cut window (`lastWindowTruncated`) stops the read part-way and parks the
- * watermark on the last gift it managed to read. That mark is INSIDE a period,
- * not at the edge of one, and applying the floor to it would re-read the
- * gifts that caused the cut, cut at exactly the same place, and mail the same
- * 750 gifts again — every hour, until the import aged past the period. So a
- * drain resumes from precisely where it stopped, and the floor comes back the
- * moment a window completes.
+ * The cost, stated plainly: gifts older than one period on a rule that has
+ * never reported anything are NOT picked up. Deliberate — a rule that has never
+ * sent has no claim on history.
+ *
+ * ── 2. A DIGEST RUN SET IT → exactly the watermark ─────────────────────────
+ * It is a REPORT, so starting before it re-reports gifts that have already been
+ * mailed and inflates the new period's total. No floor, ever — including when
+ * that leaves the window SHORTER than the nominal period, which is not a defect
+ * but the absence of a duplicate. Two ordinary ways that happens:
+ *
+ *   • RUN-HOUR JITTER. The hour test is `>=`, so a dropped 08:00 tick catches
+ *     up at 14:00; next week's `now − period` then sits six hours BEFORE last
+ *     week's watermark. This is the NORMAL case, not an edge one.
+ *   • DST. A rule at 08:00 local moves an hour in UTC across a boundary, so
+ *     `now − 7d` lands an hour before the previous watermark. Twice a year,
+ *     forever.
+ *
+ * This case also covers the MID-DRAIN bookmark. A cut window parks the
+ * watermark on the last gift it managed to read — inside a period, not at the
+ * edge of one — and a floor there would re-read the gifts that caused the cut,
+ * cut at the same instant, and re-mail the same 750 gifts on every hourly tick
+ * until the import aged out of the period. Cut or complete, a run's mark is a
+ * run's mark and the next window resumes from it exactly.
+ *
+ * ── 3. A SYNTHETIC BOUNDARY → `min(now − period, watermark)` ───────────────
+ * `setRuleActive` (resume) and `saveRule` (cadence change, or an `isActive`
+ * flip) stamp `lastSentAt = now` and CLEAR the flag. Nothing was reported at
+ * that instant; the stamp exists only to stop a dormant rule replaying its
+ * backlog. So the floor applies and the first digest back covers its trailing
+ * period — the point of resuming — while the `min` still picks the stamp up
+ * once the rule has been back longer than a period, so the un-reported stretch
+ * since it resumed is never skipped.
+ *
+ * ── THE THREE PROPERTIES ───────────────────────────────────────────────────
+ *  A. AT LEAST THE TRAILING PERIOD — except in case 2, where an earlier digest
+ *     already reported the difference and a shorter window is the correct
+ *     answer rather than a lost one.
+ *  B. NOTHING REPORTED-UP-TO IS SKIPPED. Cases 2 and 3 never start after the
+ *     watermark. Case 1 has no watermark to honour and is bounded on purpose.
+ *  C. NO DORMANT REPLAY. Reaching back further than one period needs a
+ *     watermark older than one period AND the flag clear; every path into
+ *     dormancy stamps `now` and clears it, and case 1 is capped at one period
+ *     regardless. Three months off comes back reporting a week.
+ *
+ * A rule written before `watermarkFromRun` existed reads as case 3 once, which
+ * costs at most one window's overlap; its next run stamps the flag and it is
+ * exact from then on.
  */
 export function digestWindowStart(
   rule: Pick<
     Doc<"givingNotificationRules">,
-    "cadence" | "lastSentAt" | "createdAt" | "lastWindowTruncated"
+    "cadence" | "lastSentAt" | "watermarkFromRun"
   >,
   now: number,
 ): number {
-  // Before the first send the rule's own birth is the watermark — it is the
-  // earliest instant anything could have been reported from.
-  const watermark = rule.lastSentAt ?? rule.createdAt;
-  if (rule.lastWindowTruncated) return watermark;
-  return Math.min(now - cadencePeriodMs(rule.cadence), watermark);
+  const floor = now - cadencePeriodMs(rule.cadence);
+  if (rule.lastSentAt === undefined) return floor;
+  if (rule.watermarkFromRun) return rule.lastSentAt;
+  return Math.min(floor, rule.lastSentAt);
 }
 
 /**

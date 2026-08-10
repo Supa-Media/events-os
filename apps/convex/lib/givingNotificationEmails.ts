@@ -37,7 +37,23 @@ import {
 } from "./emailShell";
 import { escapeHtml } from "./html";
 import { giftMethodLabel } from "./giftLabels";
-import { ORG_TIME_ZONE, clampSubjectName } from "./givingNotificationRules";
+import {
+  ORG_TIME_ZONE,
+  cadencePeriodMs,
+  clampSubjectName,
+} from "./givingNotificationRules";
+
+/**
+ * How much longer than its nominal period a window may run before the email
+ * stops calling it "this week".
+ *
+ * Not 1.0: run-hour jitter and DST routinely make a window a few hours longer
+ * or shorter than the nominal period, and a subject that flipped its wording
+ * over an hour's drift would be noise. 1.5 is past anything the clock does on
+ * its own and inside anything a missed run produces (the shortest overrun a
+ * dropped weekly tick can cause is a full extra week).
+ */
+export const LONG_WINDOW_FACTOR = 1.5;
 
 // ── Payload shapes (what the context builder must produce) ──────────────────
 
@@ -299,6 +315,27 @@ function breakdownHtml(title: string, rows: DigestBreakdownRow[]): string {
   );
 }
 
+/**
+ * One line saying the window ran long, when it did.
+ *
+ * A digest covering three weeks is not a mistake — a rule that missed runs
+ * reports everything it missed, which is the guarantee that nothing goes
+ * un-reported — but a reader comparing "this week" to last week's figure will
+ * draw the wrong conclusion from it unless the email says so. The header dates
+ * are already honest; this makes them impossible to skim past.
+ */
+function overrunNote(
+  overrun: boolean,
+  payload: DigestEmailPayload,
+  period: string,
+): string {
+  if (!overrun) return "";
+  return emailParagraph(
+    `This digest covers a longer stretch than one ${period} — the dates above are the window it actually read. That happens when a run was missed or the rule was paused: rather than skip the gap, the next digest reports all of it. Don't compare this total to a normal ${period} without allowing for that.`,
+    { size: 12, margin: "0 0 16px" },
+  );
+}
+
 function giftRowHtml(gift: NotificationGift): string {
   const t = EMAIL_THEME;
   const meta = [
@@ -340,14 +377,24 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
   html: string;
 } {
   const period = payload.cadence === "weekly" ? "week" : "day";
+  // "THIS WEEK" HAS TO BE TRUE. A window can legitimately run long — a rule
+  // that missed a fortnight of runs reports the fortnight, so nothing
+  // un-reported is skipped — and a subject reading "this week" over 21 days is
+  // a lie in the one line most recipients read. Past the tolerance the subject
+  // names the window's start instead, which is never wrong at any length.
+  const span = payload.periodEnd - payload.periodStart;
+  const overrun = span > LONG_WINDOW_FACTOR * cadencePeriodMs(payload.cadence);
+  const when = overrun
+    ? `since ${DATE_FMT.format(new Date(payload.periodStart))}`
+    : `this ${period}`;
   const subject =
     payload.giftCount === 0
       ? payload.countTruncated
         ? `Giving digest cut short — ${payload.scopeLabel}`
-        : `No giving this ${period} — ${payload.scopeLabel}`
+        : `No giving ${when} — ${payload.scopeLabel}`
       : `${formatCents(payload.totalCents)} from ${payload.giftCount} ${
           payload.giftCount === 1 ? "gift" : "gifts"
-        } this ${period} — ${payload.scopeLabel}`;
+        } ${when} — ${payload.scopeLabel}`;
 
   const header = [
     emailEyebrow(esc(`${payload.cadence} giving digest`)),
@@ -371,9 +418,10 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
       emailParagraph(
         payload.countTruncated
           ? `Nothing matched this rule in the stretch of the ledger this digest was able to read — but the read stopped short of the whole ${period}, so this is not the same as "no giving". The next digest carries on from where this one stopped.`
-          : `Nothing was recorded in the giving ledger for this ${period}. That's the whole report — if you expected gifts here, that's worth a look.`,
+          : `Nothing was recorded in the giving ledger ${when}. That's the whole report — if you expected gifts here, that's worth a look.`,
         { margin: "0 0 16px" },
       ),
+      overrunNote(overrun, payload, period),
       emailRule(),
       emailParagraph(`Sent by the giving rule “${esc(payload.ruleName)}”.`, {
         size: 12,
@@ -386,6 +434,7 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
   const largest = payload.largest;
   const inner = [
     header,
+    overrunNote(overrun, payload, period),
     emailPanel(
       [
         detailRow("Gifts", String(payload.giftCount)),

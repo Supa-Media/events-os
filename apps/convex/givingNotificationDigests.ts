@@ -48,12 +48,13 @@
  * floor.
  *
  * ── A WEEKLY DIGEST COVERS A WEEK ──────────────────────────────────────────
- * The window opens at `min(now − period, watermark)`, so it is never shorter
- * than the cadence promises and never shorter than the un-reported tail. The
- * first digest off a rule created this morning still reports the trailing seven
- * days; a rule that missed a fortnight of runs reports the fortnight. The one
- * exception is a drain in progress — full reasoning on `digestWindowStart` and
- * on `lastWindowTruncated` in the schema.
+ * A rule that has never reported anything opens its window at `now − period`
+ * exactly, so the first digest off a rule created this morning still covers the
+ * trailing seven days — and a rule that has sat watermark-less for six months
+ * (an empty daily never stamps one) still covers seven days and not six months.
+ * A rule that HAS reported resumes from its watermark exactly, so nothing is
+ * mailed twice. `watermarkFromRun` is what distinguishes the two — full
+ * reasoning on `digestWindowStart` and in the schema.
  *
  * ── THE ASYMMETRY ──────────────────────────────────────────────────────────
  * An empty DAILY digest is skipped and leaves the WATERMARK alone (it still
@@ -281,6 +282,14 @@ export const claimDigest = internalMutation({
     const window = await collectWindowGifts(ctx, rule, since, requestedUntil);
 
     if (!shouldSendDigest(rule.cadence, window.gifts.length, window.truncated)) {
+      // THE FOURTH MARK-WRITER, and the one that deliberately writes least.
+      // An empty daily moves ONLY the scheduling mark: no watermark, because
+      // nothing was reported, so the window carries forward; and no
+      // `watermarkFromRun`, because a mark's provenance can't change while the
+      // mark itself doesn't. Both omissions are load-bearing rather than
+      // oversights — a rule can sit here for months (a quiet chapter, a high
+      // amount floor), which is exactly why `digestWindowStart` bounds the
+      // never-reported case at one period instead of trusting `createdAt`.
       await ctx.db.patch(rule._id, { lastRunDayKey: dayKey });
       return null;
     }
@@ -340,14 +349,14 @@ export const claimDigest = internalMutation({
     // day, and the drain stops on its own the moment a run completes the window
     // (which stamps the mark normally).
     //
-    // `lastWindowTruncated` rides along because the NEXT window's start depends
-    // on which kind of mark this is: a completed window's watermark gets the
-    // trailing-period floor, a cut one's must not (it would re-read the gifts
-    // that cut it and cut again in the same place, hourly). See the schema doc.
+    // `watermarkFromRun` rides along, and is set on BOTH branches: cut or
+    // complete, this watermark is a REPORT of gifts that have now been mailed,
+    // so the next window must resume from it exactly rather than reaching a
+    // period back and re-reporting them. See the schema doc.
     await ctx.db.patch(rule._id, {
       lastSentAt: window.until,
       lastRunDayKey: window.truncated ? undefined : dayKey,
-      lastWindowTruncated: window.truncated ? true : undefined,
+      watermarkFromRun: true,
       updatedAt: now,
     });
 
@@ -357,7 +366,7 @@ export const claimDigest = internalMutation({
       previousMarks: {
         lastSentAt: rule.lastSentAt,
         lastRunDayKey: rule.lastRunDayKey,
-        lastWindowTruncated: rule.lastWindowTruncated,
+        watermarkFromRun: rule.watermarkFromRun,
       },
       claimedUntil: window.until,
       recipients: rule.recipients,
@@ -401,7 +410,7 @@ export const releaseDigest = internalMutation({
     claimedUntil: v.number(),
     previousLastSentAt: v.optional(v.number()),
     previousLastRunDayKey: v.optional(v.string()),
-    previousLastWindowTruncated: v.optional(v.boolean()),
+    previousWatermarkFromRun: v.optional(v.boolean()),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -411,11 +420,11 @@ export const releaseDigest = internalMutation({
     await ctx.db.patch(args.ruleId, {
       lastSentAt: args.previousLastSentAt,
       lastRunDayKey: args.previousLastRunDayKey,
-      // ALL THREE marks, or none. Restoring the watermark while leaving a cut
-      // run's `true` behind would strip the re-read of its trailing-period
-      // floor; leaving a `true` off a restored mid-drain mark would re-wedge
-      // the drain. They only mean anything together.
-      lastWindowTruncated: args.previousLastWindowTruncated,
+      // ALL THREE marks, or none — a watermark and the claim about where it
+      // came from only mean anything together. Putting a synthetic boundary
+      // back while leaving `watermarkFromRun` true would cost that rule its
+      // trailing-period floor for good.
+      watermarkFromRun: args.previousWatermarkFromRun,
     });
     return true;
   },
@@ -522,8 +531,7 @@ export const sendGivingDigests = internalAction({
               claimedUntil: built.claimedUntil,
               previousLastSentAt: built.previousMarks.lastSentAt,
               previousLastRunDayKey: built.previousMarks.lastRunDayKey,
-              previousLastWindowTruncated:
-                built.previousMarks.lastWindowTruncated,
+              previousWatermarkFromRun: built.previousMarks.watermarkFromRun,
             },
           );
           continue;

@@ -54,8 +54,15 @@ const WINTER_MON_8AM_ET = Date.parse("2026-01-12T13:00:00Z"); // Monday 08:00 ES
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-/** Well before any digest window — rules are created here so a rule's own
- *  `createdAt` can never clamp the first window under test. */
+/**
+ * Well before any digest window under test.
+ *
+ * `createdAt` is NOT a window bound — `digestWindowStart` gives a rule that has
+ * never reported exactly one trailing period regardless of when it was written
+ * (see the pure tests). What this distance buys is the SCHEDULING half: a rule
+ * created three days before its run is past `firstRunDayKey`'s same-day
+ * suppression, so it is genuinely due on the day the test fires it.
+ */
 const SETUP_AT = MON_8AM_ET - 3 * DAY_MS;
 
 // ── Fixtures for the pure tests ─────────────────────────────────────────────
@@ -467,15 +474,18 @@ describe("the digest clock", () => {
     expect(isDigestDue(weekly, SUN_8AM_ET)).toBe(true);
   });
 
-  test("a rule running on schedule opens at its watermark", () => {
-    // Steady state: the watermark IS a period back, so the `min` picks it and
-    // the window is exactly the day since the last digest.
-    const r = rule({ cadence: "daily", lastSentAt: MON_8AM_ET, createdAt: 0 });
+  test("a rule running on schedule opens exactly at its watermark", () => {
+    const r = rule({
+      cadence: "daily",
+      lastSentAt: MON_8AM_ET,
+      watermarkFromRun: true,
+      createdAt: 0,
+    });
     expect(digestWindowStart(r, TUE_8AM_ET)).toBe(MON_8AM_ET);
   });
 
   test("a WEEKLY digest covers seven days on its very first run", () => {
-    // The bug the owner saw: a rule created this morning mailed
+    // The bug the owner saw: a rule created that morning mailed
     // `Aug 10 – Aug 10 · No gifts came in` while there had been giving all
     // week. "Weekly digest" means the trailing seven days to a reader, on the
     // first outing as much as the fiftieth.
@@ -491,55 +501,141 @@ describe("the digest clock", () => {
     expect(digestWindowStart(daily, MON_8AM_ET)).toBe(MON_8AM_ET - DAY_MS);
   });
 
+  test("a rule that has NEVER reported gets one period — never its whole life", () => {
+    // THE GUARD THAT WAS DELETED AND SHOULD NOT HAVE BEEN. `createdAt` is not
+    // a floor in either direction: not `max` (that produced Aug 10 – Aug 10),
+    // and emphatically not `min`, which reaches back to whenever the rule was
+    // made. Before the first send there is nothing else to clamp to, so a rule
+    // born at the epoch would report from the epoch.
+    const ancient = rule({ cadence: "weekly", createdAt: 0 });
+    expect(digestWindowStart(ancient, MON_8AM_ET)).toBe(MON_8AM_ET - 7 * DAY_MS);
+
+    // And it is REACHABLE, not theoretical: an empty daily deliberately never
+    // stamps `lastSentAt`, so a quiet chapter's rule — or one with a $1,000
+    // floor — sits watermark-less for months. Widen its scope and this is the
+    // difference between a one-day digest and the org's entire ledger.
+    const sixMonthsQuiet = rule({
+      cadence: "daily",
+      createdAt: MON_8AM_ET - 180 * DAY_MS,
+      lastRunDayKey: localParts(MON_8AM_ET - DAY_MS).dayKey,
+    });
+    expect(digestWindowStart(sixMonthsQuiet, MON_8AM_ET)).toBe(
+      MON_8AM_ET - DAY_MS,
+    );
+  });
+
   test("a missed run EXTENDS the window back, so nothing is silently skipped", () => {
     // Cron dropped ticks for a fortnight. The watermark is older than a period,
-    // so it wins — the un-reported tail is reported, not lost.
+    // so the un-reported tail is reported rather than lost — whichever kind of
+    // mark it is.
     const stalled = rule({
       cadence: "weekly",
       lastSentAt: MON_8AM_ET - 21 * DAY_MS,
+      watermarkFromRun: true,
       createdAt: 0,
     });
     expect(digestWindowStart(stalled, MON_8AM_ET)).toBe(
       MON_8AM_ET - 21 * DAY_MS,
     );
+    expect(
+      digestWindowStart({ ...stalled, watermarkFromRun: undefined }, MON_8AM_ET),
+    ).toBe(MON_8AM_ET - 21 * DAY_MS);
   });
 
   test("a rule dormant for three months comes back reporting a WEEK, not a quarter", () => {
-    // The floor never reaches past the watermark's own reasoning: resuming
-    // stamps `lastSentAt = now` (`setRuleActive`), so the furthest back a
-    // resumed weekly rule can look is one period. Both properties at once —
-    // it covers the trailing week, and it covers no more than that.
+    // Resuming stamps `lastSentAt = now` AND clears the flag, and it takes both
+    // to get this right. The stamp bounds how far back it may look; the cleared
+    // flag is what lets it look a full period back at all. Both properties in
+    // one fixture — it covers the trailing week, and no more than that.
     const resumedYesterday = rule({
       cadence: "weekly",
       lastSentAt: MON_8AM_ET - DAY_MS, // stamped on resume, after 90 dark days
+      watermarkFromRun: undefined, // …and cleared, because nothing was reported
       createdAt: MON_8AM_ET - 200 * DAY_MS,
     });
     expect(digestWindowStart(resumedYesterday, MON_8AM_ET)).toBe(
       MON_8AM_ET - 7 * DAY_MS,
     );
-    // Nowhere near the dormant stretch.
     expect(digestWindowStart(resumedYesterday, MON_8AM_ET)).toBeGreaterThan(
       MON_8AM_ET - 90 * DAY_MS,
     );
   });
 
-  test("a CUT window resumes from its bookmark, without the trailing-period floor", () => {
-    // Mid-drain the watermark sits inside a period, not at the edge of one.
-    // Applying the floor would re-read the gifts that cut it, cut at the same
-    // instant, and re-mail the same 750 gifts on every hourly tick for a week.
+  test("a rule back longer than a period reports from where it resumed", () => {
+    // The `min` still picks the stamp up once it is the older of the two, so
+    // the stretch since resuming is never skipped.
+    const resumedTenDaysAgo = rule({
+      cadence: "weekly",
+      lastSentAt: MON_8AM_ET - 10 * DAY_MS,
+      createdAt: 0,
+    });
+    expect(digestWindowStart(resumedTenDaysAgo, MON_8AM_ET)).toBe(
+      MON_8AM_ET - 10 * DAY_MS,
+    );
+  });
+
+  test("RUN-HOUR JITTER does not re-report last week's gifts", () => {
+    // The normal case, not an edge one: the hour test is `>=`, so a dropped
+    // 08:00 tick catches up at 14:00 and parks the watermark six hours late.
+    // A trailing-period floor on a RUN's mark would then reach back over six
+    // hours of gifts that were already mailed and inflate this week's total.
+    const ranLate = rule({
+      cadence: "weekly",
+      lastSentAt: MON_8AM_ET - 7 * DAY_MS + 6 * 60 * 60 * 1000,
+      watermarkFromRun: true,
+      createdAt: 0,
+    });
+    const start = digestWindowStart(ranLate, MON_8AM_ET);
+    expect(start).toBe(MON_8AM_ET - 7 * DAY_MS + 6 * 60 * 60 * 1000);
+    // Shorter than seven days, and that is the CORRECT answer — the missing
+    // six hours are last digest's, not this one's.
+    expect(MON_8AM_ET - start).toBeLessThan(7 * DAY_MS);
+  });
+
+  test("DST does not re-report an hour, twice a year", () => {
+    // A rule at 08:00 local shifts an hour in UTC across a boundary, so
+    // `now − 7d` lands an hour BEFORE the previous watermark.
+    const springForwardMonday = Date.parse("2026-03-09T12:00:00Z"); // 08:00 EDT
+    const weekBefore = Date.parse("2026-03-02T13:00:00Z"); // 08:00 EST
+    const r = rule({
+      cadence: "weekly",
+      lastSentAt: weekBefore,
+      watermarkFromRun: true,
+      createdAt: 0,
+    });
+    expect(springForwardMonday - 7 * DAY_MS).toBeLessThan(weekBefore);
+    expect(digestWindowStart(r, springForwardMonday)).toBe(weekBefore);
+  });
+
+  test("a CUT window resumes from its bookmark — a run's mark is a run's mark", () => {
+    // Mid-drain the watermark sits inside a period. A floor there would re-read
+    // the gifts that cut it, cut at the same instant, and re-mail the same 750
+    // gifts on every hourly tick for a week. Cut or complete makes no
+    // difference: both were reported, so both resume exactly.
     const midDrain = rule({
       cadence: "daily",
       lastSentAt: MON_8AM_ET - 6 * 60 * 60 * 1000,
-      lastWindowTruncated: true,
+      watermarkFromRun: true,
       createdAt: 0,
     });
     expect(digestWindowStart(midDrain, MON_8AM_ET)).toBe(
       MON_8AM_ET - 6 * 60 * 60 * 1000,
     );
-    // …and the floor is back the moment a window completes.
+  });
+
+  test("a rule written before the flag existed self-heals after one run", () => {
+    // Pre-existing prod rows have a run's watermark and no flag, so they read
+    // as case 3 once. Bounded — at most one window's overlap — and the next
+    // claim stamps the flag.
+    const legacy = rule({
+      cadence: "weekly",
+      lastSentAt: MON_8AM_ET - 7 * DAY_MS + 6 * 60 * 60 * 1000,
+      createdAt: 0,
+    });
+    expect(digestWindowStart(legacy, MON_8AM_ET)).toBe(MON_8AM_ET - 7 * DAY_MS);
     expect(
-      digestWindowStart({ ...midDrain, lastWindowTruncated: undefined }, MON_8AM_ET),
-    ).toBe(MON_8AM_ET - DAY_MS);
+      digestWindowStart({ ...legacy, watermarkFromRun: true }, MON_8AM_ET),
+    ).toBe(MON_8AM_ET - 7 * DAY_MS + 6 * 60 * 60 * 1000);
   });
 });
 
@@ -583,19 +679,28 @@ describe("what KIND of giving a gift is", () => {
     ).toBe("sponsorship");
   });
 
-  test("every gift lands in exactly ONE bucket — that's what makes the cut sum", () => {
-    // Whatever combination of links a row carries, it is counted once.
-    const combos: Parameters<typeof giftType>[0][] = [
-      {},
-      { pledgeId: ids.pledgeId },
-      { sponsorshipId: ids.sponsorshipId },
-      { eventId: ids.eventId },
-      { donationId: ids.donationId },
-      { pledgeId: ids.pledgeId, eventId: ids.eventId, donationId: ids.donationId },
-      { ...ids },
+  test("every combination of links resolves to ONE named bucket", () => {
+    // Was `toBeTypeOf("string")`, which a total function passes for every
+    // input — a test that named a property it could not fail on. Each case now
+    // asserts the bucket it must land in, so a precedence change has to come
+    // here and be argued for.
+    const cases: Array<[Parameters<typeof giftType>[0], string]> = [
+      [{}, "One-time"],
+      [{ pledgeId: ids.pledgeId }, "Recurring"],
+      [{ sponsorshipId: ids.sponsorshipId }, "Sponsorships"],
+      [{ eventId: ids.eventId }, "Events"],
+      [{ donationId: ids.donationId }, "Events"],
+      [{ eventId: ids.eventId, donationId: ids.donationId }, "Events"],
+      [{ sponsorshipId: ids.sponsorshipId, donationId: ids.donationId }, "Sponsorships"],
+      [
+        { pledgeId: ids.pledgeId, eventId: ids.eventId, donationId: ids.donationId },
+        "Recurring",
+      ],
+      // All four markers at once — the top of the order wins.
+      [{ ...ids }, "Recurring"],
     ];
-    for (const combo of combos) {
-      expect(GIFT_TYPE_LABELS[giftType(combo)]).toBeTypeOf("string");
+    for (const [gift, label] of cases) {
+      expect(GIFT_TYPE_LABELS[giftType(gift)]).toBe(label);
     }
   });
 });
@@ -863,6 +968,74 @@ describe("the digest email", () => {
     expect(html).toContain("https://publicworship.life/os/giving/donor/d1");
     expect(html).toContain("https://publicworship.life/os/giving/donor/d2");
     expect(html).toContain("and 3 more");
+  });
+
+  test("a window that ran long stops calling itself 'this week'", () => {
+    // A missed fortnight of runs is reported rather than skipped, so a weekly
+    // window can genuinely be 21 days. "$X this week" over 21 days is a lie in
+    // the one line most recipients read, and it invites a false comparison with
+    // last week's figure.
+    const long = renderDigestEmail({
+      ruleName: "Weekly roundup",
+      cadence: "weekly",
+      scopeLabel: "All books",
+      periodStart: MON_8AM_ET - 21 * DAY_MS,
+      periodEnd: MON_8AM_ET,
+      totalCents: 33_000,
+      giftCount: 1,
+      largest: sampleGift({ amountCents: 33_000 }),
+      byScope: [{ label: "Central", cents: 33_000, count: 1 }],
+      byMethod: [{ label: "Chapter OS", cents: 33_000, count: 1 }],
+      byType: [{ label: "One-time", cents: 33_000, count: 1 }],
+      gifts: [sampleGift({ amountCents: 33_000 })],
+      omittedCount: 0,
+      countTruncated: false,
+    });
+    expect(long.subject).toBe("$330.00 from 1 gift since Jul 20, 2026 — All books");
+    expect(long.subject).not.toContain("this week");
+    expect(long.html).toContain("covers a longer stretch than one week");
+
+    // An empty one says it too, rather than "no giving this week".
+    const emptyLong = renderDigestEmail({
+      ruleName: "Weekly roundup",
+      cadence: "weekly",
+      scopeLabel: "All books",
+      periodStart: MON_8AM_ET - 21 * DAY_MS,
+      periodEnd: MON_8AM_ET,
+      totalCents: 0,
+      giftCount: 0,
+      largest: null,
+      byScope: [],
+      byMethod: [],
+      byType: [],
+      gifts: [],
+      omittedCount: 0,
+      countTruncated: false,
+    });
+    expect(emptyLong.subject).toBe("No giving since Jul 20, 2026 — All books");
+  });
+
+  test("ordinary jitter does NOT trip the long-window wording", () => {
+    // Run-hour drift and DST move a window by hours in both directions. A
+    // subject that flipped its wording over an hour's drift would be noise, so
+    // the tolerance sits past anything the clock does on its own.
+    const { subject } = renderDigestEmail({
+      ruleName: "Weekly roundup",
+      cadence: "weekly",
+      scopeLabel: "All books",
+      periodStart: MON_8AM_ET - 7 * DAY_MS - 6 * 60 * 60 * 1000,
+      periodEnd: MON_8AM_ET,
+      totalCents: 1_000,
+      giftCount: 1,
+      largest: sampleGift({ amountCents: 1_000 }),
+      byScope: [{ label: "Central", cents: 1_000, count: 1 }],
+      byMethod: [{ label: "Cash", cents: 1_000, count: 1 }],
+      byType: [{ label: "One-time", cents: 1_000, count: 1 }],
+      gifts: [sampleGift({ amountCents: 1_000 })],
+      omittedCount: 0,
+      countTruncated: false,
+    });
+    expect(subject).toContain("this week");
   });
 
   test("every breakdown prints a total, and all three equal the headline", () => {
@@ -1918,11 +2091,11 @@ describe("a real over-cap window, end to end", () => {
       // …and the run mark is CLEARED, so the drain continues within the day
       // instead of waiting until tomorrow.
       expect(afterFirst?.lastRunDayKey).toBeUndefined();
-      // The mark is flagged as a mid-drain BOOKMARK. Without this the next
-      // window's trailing-period floor would reach back past the cut, re-read
-      // the gifts that caused it, cut at the same instant, and re-mail the same
-      // 750 gifts every hour until the import aged out of the period.
-      expect(afterFirst?.lastWindowTruncated).toBe(true);
+      // The mark is flagged as a RUN's. Without it the next window's
+      // trailing-period floor would reach back past the cut, re-read the gifts
+      // that caused it, cut at the same instant, and re-mail the same 750 gifts
+      // every hour until the import aged out of the period.
+      expect(afterFirst?.watermarkFromRun).toBe(true);
       cap.sent.length = 0;
 
       // An hour later the sweep picks up exactly the 40 it left behind.
@@ -1934,10 +2107,11 @@ describe("a real over-cap window, end to end", () => {
       expect(cap.sent[0].html).not.toContain("FLOOR");
 
       const afterSecond = await run(s.t, (ctx) => ctx.db.get(ruleId));
-      // Caught up: the window is complete, so the rule marks itself done today
-      // and the bookmark flag comes off — the trailing-period floor is back.
+      // Caught up: the window is complete, so the rule marks itself done today.
+      // The flag STAYS — cut or complete, this watermark is still a report, and
+      // the next window must not reach back over it.
       expect(afterSecond?.lastRunDayKey).toBe(localParts(MON_8AM_ET).dayKey);
-      expect(afterSecond?.lastWindowTruncated).toBeUndefined();
+      expect(afterSecond?.watermarkFromRun).toBe(true);
     } finally {
       cap.restore();
     }
@@ -2521,6 +2695,145 @@ describe("the window a digest reports", () => {
       expect(cap.sent[0].html).toContain("Monday Giver");
       // And the header names the window it actually queried — a week, not a day.
       expect(cap.sent[0].html).toContain("Aug 3, 2026 – Aug 10, 2026");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a rule watermark-less for six months reports a DAY, not six months", async () => {
+    // The empty-daily branch deliberately never stamps `lastSentAt`, so a quiet
+    // chapter's rule can sit without a watermark indefinitely. Clamping the
+    // first window to `createdAt` — in either direction — is therefore not a
+    // first-run nicety but the ONLY lower bound such a rule has, and `min`
+    // against it would mail the org's entire ledger as a "daily" digest.
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, MON_8AM_ET - 180 * DAY_MS, async () => {
+      ruleId = await saveRule(s.as, {
+        name: "Quiet daily",
+        cadence: "daily",
+        sendHourLocal: 8,
+      });
+    });
+
+    const cap = captureEmails();
+    try {
+      // A run with nothing in the window: skipped, and NO watermark forms.
+      await atClock(s.t, MON_8AM_ET - 179 * DAY_MS, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      const quiet = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(quiet?.lastSentAt).toBeUndefined();
+      expect(quiet?.watermarkFromRun).toBeUndefined();
+
+      // Months of giving it was never told about, plus one gift today.
+      await atClock(s.t, MON_8AM_ET - 90 * DAY_MS, async () => {
+        await addGift(s.as, { amountCents: 900_000, name: "Ancient History" });
+      });
+      await atClock(s.t, MON_8AM_ET - 2 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, {
+          amountCents: 6_000,
+          name: "Today Only",
+          email: "today@example.com",
+        });
+      });
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Today Only");
+      expect(cap.sent[0].html).not.toContain("Ancient History");
+      expect(cap.sent[0].subject).toBe("$60.00 from 1 gift this day — All books");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("resuming through saveRule closes the same door setRuleActive does", async () => {
+    // `isActive` is settable on the edit mutation too, and the mark reset there
+    // was gated on a cadence change only — so a rule switched off for months and
+    // switched back on by an EDIT reached the dormant replay past the guard
+    // written for the other two doors. Not reachable from the desk UI, but this
+    // is a public mutation and the UI is not the contract.
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, MON_8AM_ET - 120 * DAY_MS, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET - 100 * DAY_MS, async () => {
+        await s.as.mutation(api.givingNotifications.setRuleActive, {
+          ruleId,
+          isActive: false,
+        });
+      });
+      await atClock(s.t, MON_8AM_ET - 60 * DAY_MS, async () => {
+        await addGift(s.as, { amountCents: 900_000, name: "Dormant Era" });
+      });
+      // Back on via an EDIT, cadence untouched.
+      await atClock(s.t, MON_8AM_ET - 2 * DAY_MS, async () => {
+        await saveRule(s.as, {
+          ruleId,
+          cadence: "daily",
+          sendHourLocal: 8,
+          isActive: true,
+        });
+      });
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastSentAt).toBe(MON_8AM_ET - 2 * DAY_MS);
+      // Synthetic boundary, so the first window back still gets its full
+      // trailing period — it just can't reach past the resume.
+      expect(row?.watermarkFromRun).toBeUndefined();
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      // Nothing since it came back, and the dormant stretch is NOT replayed.
+      expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a run that caught up late does not re-report its gifts next time", async () => {
+    // Run-hour jitter, end to end. The `>=` hour test means a dropped 08:00
+    // tick catches up later the same day and parks the watermark hours late;
+    // a trailing-period floor on a run's mark would then reach back over
+    // everything that late run already mailed.
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET + 3 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, { amountCents: 8_800, name: "Late Run Gift" });
+      });
+      cap.sent.length = 0;
+
+      // Monday's 08:00 tick was dropped; the sweep catches up at 14:00 and
+      // mails that gift.
+      await atClock(s.t, MON_8AM_ET + 6 * 60 * 60 * 1000, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Late Run Gift");
+      cap.sent.length = 0;
+
+      // Tuesday, on time. `now − 1 day` sits six hours BEFORE Monday's late
+      // watermark — so a floor here would mail "Late Run Gift" a second time.
+      await atClock(s.t, TUE_8AM_ET, async () => {
+        const out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+        expect(out).toMatchObject({ digestsSent: 0, emailsSent: 0 });
+      });
+      expect(cap.sent).toHaveLength(0);
     } finally {
       cap.restore();
     }
