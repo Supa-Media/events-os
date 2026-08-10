@@ -322,13 +322,40 @@ digest to Monday 12:00 ET and nothing arrived: the 09:00 run had already stamped
 `lastRunDayKey`, so the noon tick correctly skipped, and there was no way to ask
 for the email. `sendDigestNow({ ruleId })` is that ask.
 
-It goes through the **existing** window / render / send path
-(`buildDigestPayload`, shared with `claimDigest`), gated on the same
-`canManageRuleScope` that lets a caller edit or pause the rule, and it bypasses
-**only** the due check. The scope filter, the amount floor, the `DIGEST_LAG_MS`
-window close, the cut/truncation machinery, the breakdowns and the empty-daily
-asymmetry all still apply. A paused rule and an `immediate` rule are both
-refused outright rather than mailing an empty digest.
+It goes through the **existing** render / send path (`buildDigestPayload`,
+shared with `claimDigest`), gated on the same `canManageRuleScope` that lets a
+caller edit or pause the rule. The scope filter, the amount floor, the
+`DIGEST_LAG_MS` window close, the cut/truncation machinery, the breakdowns and
+the empty-daily asymmetry all still apply. A paused rule and an `immediate` rule
+are both refused outright rather than mailing an empty digest.
+
+Exactly **two** things differ from a scheduled run.
+
+**1. The due check is bypassed.** That is the point of the button.
+
+**2. The window is the trailing NOMINAL PERIOD** — a straight 7 days for
+weekly, 24 hours for daily — ignoring `lastSentAt` and its provenance entirely
+(`sendNowWindowStart`). The two windows answer two different questions. A
+scheduled run asks *"what has arrived since the last one?"* and must resume
+from the watermark exactly, or it skips a gift or reports one twice; that is
+what `digestWindowStart`'s three cases are for, and the cron path is unchanged.
+A manual send asks *"what does a weekly digest look like?"* Nobody presses the
+button wanting a three-hour slice.
+
+Which is exactly what the watermark window would have given the owner in the
+case the button was built for: his rule ran at 09:00, leaving a
+report-provenance watermark, and a press at noon would have returned a
+confident, empty three-hour report. That is worse than having no button —
+it looks like the feature is broken while it works as specified.
+
+Reaching past a watermark would be a serious bug in any path that then *moved*
+it — it is the dormant replay `digestWindowStart` case 1 is bounded to prevent.
+It is safe here for exactly one reason, and the two decisions hold each other
+up: **a preview neither reads the scheduling state nor writes it, so it cannot
+desync it.** Change either one and check the other still stands. The accepted
+cost is that a manual send re-reports gifts the last scheduled digest already
+mailed — that is the point. It is a preview of the *period*, not a claim about
+what is new.
 
 **It does not consume the window.** `lastSentAt`, `watermarkFromRun` and
 `lastRunDayKey` are left exactly as found, so the scheduled run afterwards
@@ -343,11 +370,6 @@ reports precisely what it would have reported. Three reasons:
 - The cost of not consuming is that the same gifts are reported twice — once
   now, once on schedule. That is visible, harmless, and was asked for by
   whoever pressed the button. A silently skipped period is none of those.
-
-The corollary, stated plainly because it will surprise someone: because the
-window is the *current* one, pressing Send now shortly after a scheduled run
-shows what has arrived **since** that run, which may be nothing. That is the
-honest preview of the next digest, not a bug.
 
 `lastDeliveredAt` **is** stamped, once somebody was actually reached. It is not
 a window mark and nothing schedules off it; it means "an email from this rule

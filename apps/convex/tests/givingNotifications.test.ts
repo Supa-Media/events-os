@@ -3779,11 +3779,13 @@ async function sendNow(
 }
 
 describe("send now", () => {
-  test("a rule that is NOT due sends anyway, and the scheduled run still reports the window afterwards", async () => {
-    // THE BUG THIS EXISTS FOR: the 09:00 run stamped the day, so the noon tick
-    // correctly skipped — and there was no way to see the digest before next
-    // week. Here the 08:00 sweep has already run, so the rule is emphatically
-    // not due, and Send now mails it regardless.
+  test("the owner's Monday: a rule that already ran at 08:00 previews the WHOLE week, gifts it already reported included", async () => {
+    // THE BUG THIS EXISTS FOR, end to end. The 08:00 run went out and stamped a
+    // report-provenance watermark, so the rule is emphatically not due and
+    // "everything since the last digest" is barely an hour. Pressing Send now
+    // has to answer the question actually being asked — "what does my weekly
+    // digest look like?" — which means the trailing SEVEN DAYS, including the
+    // gifts the 08:00 run already mailed.
     const s = await devDirectorSetup();
     let ruleId!: Id<"givingNotificationRules">;
     await atClock(s.t, SETUP_AT, async () => {
@@ -3796,7 +3798,8 @@ describe("send now", () => {
     });
     const cap = captureEmails();
     try {
-      await atClock(s.t, MON_8AM_ET - 6 * 60 * 60 * 1000, async () => {
+      // Two days before the run — inside the trailing week, and reported by it.
+      await atClock(s.t, MON_8AM_ET - 2 * DAY_MS, async () => {
         await addGift(s.as, { amountCents: 11_500, name: "Ada Donor" });
       });
       cap.sent.length = 0;
@@ -3808,8 +3811,7 @@ describe("send now", () => {
       expect(cap.sent[0].html).toContain("Ada Donor");
       cap.sent.length = 0;
 
-      // A gift lands AFTER that run's watermark — it belongs to next Monday's
-      // digest, and it is what the manual send should show.
+      // A gift lands after that run's watermark.
       await atClock(s.t, MON_8AM_ET + 30 * 60 * 1000, async () => {
         await addGift(s.as, {
           amountCents: 4_000,
@@ -3820,8 +3822,11 @@ describe("send now", () => {
       cap.sent.length = 0;
 
       const before = await marksOf(s, ruleId);
-      // The rule is stamped for the day, so the scheduled sweep does nothing at
-      // 09:00 — which is the whole premise.
+      // The premise: the rule carries a REPORT-provenance watermark and is
+      // stamped for the day, so the scheduled sweep does nothing at 09:00.
+      expect(before.watermarkFromRun).toBe(true);
+      expect(before.lastSentAt).toBe(MON_8AM_ET - 60_000);
+      expect(before.lastRunDayKey).toBe(localParts(MON_8AM_ET).dayKey);
       await atClock(s.t, MON_9AM_ET, async () => {
         const out = await s.t.action(
           internal.givingNotificationDigests.sendGivingDigests,
@@ -3838,24 +3843,24 @@ describe("send now", () => {
         });
       });
 
-      // It went out, to the rule's own recipients, carrying the CURRENT window
-      // — everything since the last run reported, which is what a preview of
-      // the next digest means.
       expect(cap.sent).toHaveLength(1);
       expect(cap.sent[0].to).toBe("dev@publicworship.life");
+      // THE PROPERTY: the trailing week, both gifts, totalled — not the
+      // one-hour sliver left of the watermark's window. Ada was already mailed
+      // by the 08:00 run and appears again, on purpose: this is a preview of
+      // the PERIOD, not a claim about what is new.
+      expect(cap.sent[0].subject).toBe("$155.00 from 2 gifts this week — All books");
+      expect(cap.sent[0].html).toContain("Ada Donor");
       expect(cap.sent[0].html).toContain("Bea Donor");
-      // …and not a gift the 08:00 run already reported.
-      expect(cap.sent[0].html).not.toContain("Ada Donor");
 
-      // NOT ONE MARK MOVED — asserted as actual field values, before and after.
+      // NOT ONE MARK MOVED — actual field values, before and after. This is
+      // what makes reaching past the watermark safe: the preview neither reads
+      // the scheduling state nor writes it, so it cannot desync it.
       expect(await marksOf(s, ruleId)).toEqual(before);
-      expect(before.lastSentAt).toBe(MON_8AM_ET - 60_000);
-      expect(before.watermarkFromRun).toBe(true);
-      expect(before.lastRunDayKey).toBe(localParts(MON_8AM_ET).dayKey);
 
-      // THE PROPERTY THE WHOLE DESIGN RESTS ON, stated as behaviour rather than
-      // as field values: next Monday's scheduled digest still reports Bea's
-      // gift. The preview showed it; it did not consume it.
+      // And the cron keeps its own semantics exactly. Next Monday resumes from
+      // the watermark: Bea, who has not been scheduled-reported, and NOT Ada,
+      // who has.
       cap.sent.length = 0;
       await atClock(s.t, MON_8AM_ET + 7 * DAY_MS, async () => {
         const out = await s.t.action(
@@ -3866,6 +3871,47 @@ describe("send now", () => {
       });
       expect(cap.sent).toHaveLength(1);
       expect(cap.sent[0].html).toContain("Bea Donor");
+      expect(cap.sent[0].html).not.toContain("Ada Donor");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("the trailing period is the CADENCE's, so a daily previews a day and not a week", async () => {
+    // Pins that `sendNowWindowStart` consults the cadence rather than hardcoding
+    // one period. A weekly preview would have swept both of these up.
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const cap = captureEmails();
+    try {
+      // 30 hours before the press: inside a week, OUTSIDE a day.
+      await atClock(s.t, MON_9AM_ET - 30 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, { amountCents: 90_000, name: "Old Donor" });
+      });
+      // 12 hours before: inside the trailing day, and already reported by the
+      // 08:00 run below.
+      await atClock(s.t, MON_9AM_ET - 12 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, {
+          amountCents: 6_000,
+          name: "Recent Donor",
+          email: "recent@example.com",
+        });
+      });
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_9AM_ET, async () => {
+        expect((await sendNow(s.as, ruleId)).status).toBe("sent");
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Recent Donor");
+      expect(cap.sent[0].html).not.toContain("Old Donor");
+      expect(cap.sent[0].subject).toBe("$60.00 from 1 gift this day — All books");
     } finally {
       cap.restore();
     }
@@ -3984,7 +4030,7 @@ describe("send now", () => {
     }
   });
 
-  test("an empty DAILY window sends nothing — and unlike the sweep, doesn't stamp the day", async () => {
+  test("an empty DAILY period sends nothing — and unlike the sweep, doesn't stamp the day", async () => {
     const s = await devDirectorSetup();
     let ruleId!: Id<"givingNotificationRules">;
     await atClock(s.t, SETUP_AT, async () => {
@@ -3993,6 +4039,9 @@ describe("send now", () => {
     const cap = captureEmails();
     try {
       const before = await marksOf(s, ruleId);
+      // Nothing in the whole trailing DAY, not merely nothing since the last
+      // run — the manual window is the nominal period, so this message is the
+      // rare and meaningful one it sounds like.
       await atClock(s.t, MON_9AM_ET, async () => {
         expect(await sendNow(s.as, ruleId)).toEqual({
           status: "empty_window",

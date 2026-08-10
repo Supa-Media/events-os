@@ -237,7 +237,10 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
       // Names the actual addresses. This puts real mail in real inboxes on a
       // press, and "who is about to get this" is the one thing worth being
       // sure of before pressing it.
-      message: `${rule.recipients.join(", ")} will get this rule's digest right away, covering everything since its last one. It doesn't change the schedule — the next ${cadenceLabel(rule.cadence).toLowerCase()} still goes out as normal.`,
+      // Says what the digest will COVER, because it is the trailing period and
+      // not "everything new" — some of it will have been mailed before, and a
+      // reader surprised by that is a reader who thinks it double-sent.
+      message: `${rule.recipients.join(", ")} will get this rule's digest right away, covering the ${rule.cadence === "weekly" ? "last 7 days" : "last 24 hours"} — including anything already reported. It doesn't change the schedule: the next ${cadenceLabel(rule.cadence).toLowerCase()} still goes out as normal, covering what it would have anyway.`,
       confirmLabel: "Send now",
       onConfirm: () => void send(),
     });

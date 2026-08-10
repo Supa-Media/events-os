@@ -554,8 +554,9 @@ describe("sendNowResultMessage", () => {
     );
   });
 
-  test("an empty window says why, and that the schedule is untouched", () => {
+  test("an empty window blames the whole period, not the gap since the last run", () => {
     const message = sendNowResultMessage("empty_window", 0);
+    expect(message).toContain("in the last period");
     expect(message).toContain("nothing to send");
     expect(message).toContain("schedule is unchanged");
   });

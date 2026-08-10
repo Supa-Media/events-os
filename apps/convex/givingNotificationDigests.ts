@@ -78,6 +78,7 @@ import {
   DIGEST_LAG_MS,
   MAX_DIGEST_GIFT_ROWS,
   MAX_RULES,
+  cadencePeriodMs,
   digestWindowStart,
   isDigestDue,
   ruleMatchesGift,
@@ -262,17 +263,67 @@ type BuiltDigest = {
 };
 
 /**
+ * The exclusive lower bound of the window a MANUAL send covers: exactly the
+ * trailing period, ignoring `lastSentAt` and its provenance entirely.
+ *
+ * ── WHY "SEND NOW" DOESN'T ASK `digestWindowStart` ─────────────────────────
+ * The two windows answer two different questions, and only one of them is
+ * about a watermark.
+ *
+ * A SCHEDULED run asks "what has arrived since the last one?" — it is one link
+ * in a chain that must not skip a gift or report one twice, so it resumes from
+ * the watermark exactly (see `digestWindowStart`, whose three cases exist for
+ * precisely that). A MANUAL send asks a different question: "what does a
+ * weekly digest look like?" Nobody presses this button wanting a three-hour
+ * slice.
+ *
+ * Which is exactly what the watermark window would give them, in the case the
+ * button was built for. The owner's rule ran at 09:00, leaving a
+ * report-provenance watermark; he pressed Send now at noon to see his weekly
+ * digest and — on the watermark window — would have got a confident, empty
+ * three-hour report. That is worse than having no button at all, because it
+ * looks like the feature is broken while it is working as specified.
+ *
+ * ── THIS IS ONLY SAFE BECAUSE THE PREVIEW CONSUMES NOTHING ────────────────
+ * Reaching past a watermark would be a serious bug in any path that then moved
+ * it — it is the "dormant replay" `digestWindowStart` case 1 is bounded to
+ * prevent. It is harmless here for one reason and it is worth naming: a
+ * preview neither reads the scheduling state nor writes it, so it cannot
+ * desync it. `prepareDigestNow` leaves all three marks exactly as found, and
+ * the scheduled run afterwards resumes from its watermark as though this never
+ * happened. The two decisions hold each other up — change either one and check
+ * the other still stands.
+ *
+ * The accepted cost, stated plainly: a manual send re-reports gifts the last
+ * scheduled digest already mailed. That is the point. It is a preview of the
+ * PERIOD, not a claim about what is new.
+ */
+export function sendNowWindowStart(
+  rule: Pick<Doc<"givingNotificationRules">, "cadence">,
+  now: number,
+): number {
+  return now - cadencePeriodMs(rule.cadence);
+}
+
+/**
  * Read one rule's window and build its email payload. NO WRITES — every mark
  * belongs to the caller, which is the whole reason this is a function rather
  * than part of `claimDigest`.
  *
  * TWO CALLERS, ONE PATH. `claimDigest` (the hourly sweep) moves the marks
  * afterwards; `prepareDigestNow` (the desk's "Send now") deliberately doesn't.
- * Everything that decides WHAT a digest says — the window arithmetic, the
- * scope filter, the amount floor, the cut/truncation machinery, the
- * breakdowns, the `MAX_DIGEST_GIFT_ROWS` list cap — happens here exactly once,
- * so the manual send can never drift from the scheduled one it exists to
- * preview.
+ * Everything that decides WHAT a digest says — the scope filter, the amount
+ * floor, the minute-early close, the cut/truncation machinery, the breakdowns,
+ * the `MAX_DIGEST_GIFT_ROWS` list cap, the empty-daily asymmetry — happens
+ * here exactly once, so the manual send can never drift from the scheduled one
+ * it exists to preview.
+ *
+ * `since` IS THE ONE THING THE TWO CALLERS DISAGREE ABOUT, which is why it is
+ * a parameter rather than computed here: the sweep passes
+ * `digestWindowStart` (resume from the watermark — a chain that must not skip
+ * or duplicate), the manual send passes `sendNowWindowStart` (the trailing
+ * period — the honest answer to "what does a weekly digest look like?"). Both
+ * are documented at their own definitions.
  *
  * Returns `null` when this window shouldn't send (today: an empty daily).
  */
@@ -280,13 +331,13 @@ async function buildDigestPayload(
   ctx: MutationCtx,
   rule: Doc<"givingNotificationRules">,
   now: number,
+  since: number,
 ): Promise<BuiltDigest | null> {
   // An `immediate` rule has no window and no digest template. Both callers
   // already refuse one before they get here; this is the narrowing that makes
   // that a type-level fact rather than a convention.
   if (rule.cadence !== "daily" && rule.cadence !== "weekly") return null;
 
-  const since = digestWindowStart(rule, now);
   // The window closes a minute behind `now`, so a gift whose transaction
   // started before this run but commits after it lands in the NEXT window
   // rather than behind the watermark. See `DIGEST_LAG_MS`.
@@ -391,7 +442,15 @@ export const claimDigest = internalMutation({
     // the window on every remaining hour of the day.
     const dayKey = runDayKey(now);
 
-    const built = await buildDigestPayload(ctx, rule, now);
+    // The SCHEDULED window: resume from the watermark, exactly. See
+    // `digestWindowStart` — unchanged, and deliberately untouched by the
+    // manual path below.
+    const built = await buildDigestPayload(
+      ctx,
+      rule,
+      now,
+      digestWindowStart(rule, now),
+    );
     if (!built) {
       // THE FOURTH MARK-WRITER, and the one that deliberately writes least.
       // An empty daily moves ONLY the scheduling mark: no watermark, because
@@ -695,11 +754,20 @@ const sendNowStatus = v.union(
  * shows as "last sent". Suppressing it would make the button's own success
  * invisible on the row that offers it.
  *
- * EVERYTHING ELSE STILL APPLIES. Only the DUE check (`isDigestDue` /
- * `lastRunDayKey`) is bypassed. The scope filter, the amount floor, the
- * `DIGEST_LAG_MS` window close, the cut/truncation machinery, the breakdowns
- * and the empty-daily/empty-weekly asymmetry all run through
- * `buildDigestPayload`, unchanged and unforked.
+ * ── TWO THINGS DIFFER FROM A SCHEDULED RUN, AND ONLY TWO ──────────────────
+ *  1. The DUE check (`isDigestDue` / `lastRunDayKey`) is bypassed. That is the
+ *     point of the button.
+ *  2. The window is the TRAILING PERIOD rather than the watermark window — see
+ *     `sendNowWindowStart`. Not an oversight and not a shortcut: a manual send
+ *     asks "what does a weekly digest look like?", and on the watermark window
+ *     a press an hour after the scheduled run answers that with an empty
+ *     three-hour report. This is safe ONLY because of the marks decision
+ *     above; the two hold each other up.
+ *
+ * EVERYTHING ELSE STILL APPLIES, through `buildDigestPayload`, unchanged and
+ * unforked: the scope filter, the amount floor, the `DIGEST_LAG_MS` window
+ * close, the cut/truncation machinery, the breakdowns, the
+ * `MAX_DIGEST_GIFT_ROWS` list cap and the empty-daily/empty-weekly asymmetry.
  */
 export const prepareDigestNow = internalMutation({
   args: {
@@ -756,7 +824,16 @@ export const prepareDigestNow = internalMutation({
     }
     await ctx.db.insert("givingDigestSendNowAttempts", { key, createdAt: now });
 
-    const built = await buildDigestPayload(ctx, rule, now);
+    // THE TRAILING PERIOD, not the watermark window — see
+    // `sendNowWindowStart` for why the manual send asks a different question
+    // from the cron, and why ignoring the watermark is safe only because
+    // nothing below touches it.
+    const built = await buildDigestPayload(
+      ctx,
+      rule,
+      now,
+      sendNowWindowStart(rule, now),
+    );
     if (!built) return null;
     return { recipients: built.recipients, payload: built.payload };
   },
@@ -766,10 +843,11 @@ export const prepareDigestNow = internalMutation({
  * Send ONE rule's digest right now — the desk's "Send now" button.
  *
  * A digest rule otherwise cannot be tested without waiting for its next slot,
- * which is a week for a weekly rule. This is the whole of the fix: same window,
- * same render, same send, same recipients, no marks moved. See
- * `prepareDigestNow` for the authorization, the rate limit, and the reasoning
- * behind leaving the marks alone.
+ * which is a week for a weekly rule. This is the whole of the fix: the trailing
+ * period, the same render, the same send, the same recipients, no marks moved.
+ * See `prepareDigestNow` for the authorization, the rate limit and the marks,
+ * and `sendNowWindowStart` for why the window is the period rather than
+ * whatever is left of the watermark's.
  *
  * Every refusal throws a `ConvexError` the screen can read out; every
  * NON-refusal comes back as a status, because "it sent nothing" has four
@@ -796,10 +874,13 @@ export const sendDigestNow = action({
       internal.givingNotificationDigests.prepareDigestNow,
       { ruleId },
     );
-    // An empty DAILY window: `shouldSendDigest` says a "nothing came in today"
-    // email is one people learn to delete, and the manual path has no business
-    // disagreeing with the scheduled one about that. (An empty WEEKLY does
-    // send — that absence is the signal.)
+    // An empty DAILY window — and because the manual window is the trailing
+    // PERIOD, this now means "no gifts at all in the last 24 hours", which is
+    // a real and rare answer rather than "nothing since the 08:00 run".
+    // `shouldSendDigest` says a "nothing came in today" email is one people
+    // learn to delete, and the manual path has no business disagreeing with
+    // the scheduled one about that. (An empty WEEKLY does send — that absence
+    // is the signal.)
     if (!built) return { status: "empty_window", emailsSent: 0 };
 
     // Explicitly, so "no Resend key on this deployment" reads as itself rather

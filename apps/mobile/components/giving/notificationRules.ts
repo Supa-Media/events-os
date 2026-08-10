@@ -451,10 +451,12 @@ export function sendNowResultMessage(
         ? "Sent — 1 email is on its way."
         : `Sent — ${emailsSent} emails are on their way.`;
     case "empty_window":
-      // Deliberately explains WHY rather than saying "nothing happened": a
-      // daily digest with nothing in it is skipped on purpose, and the next
-      // scheduled run is unaffected by this press.
-      return "Nothing has come in since the last digest, so there was nothing to send. This rule's schedule is unchanged.";
+      // A manual send covers the whole trailing period, not the sliver since
+      // the last scheduled run, so this genuinely means "no gifts matched this
+      // rule all period" — rare, and worth saying plainly. It also says the
+      // schedule is untouched, because a preview that appeared to do nothing
+      // is exactly when someone worries it broke something.
+      return "No gifts have matched this rule in the last period, so there was nothing to send. This rule's schedule is unchanged.";
     case "nobody_reached":
       return "Nobody could be reached — check the addresses on this rule.";
     case "no_mailer":
