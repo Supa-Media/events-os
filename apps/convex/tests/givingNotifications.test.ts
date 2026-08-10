@@ -6,8 +6,10 @@ import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 import type { Doc, Id } from "../_generated/dataModel";
 import { dualWriteGiftForDonation } from "../lib/givingDonors";
 import {
+  clampSubjectName,
   digestWindowStart,
   isDigestDue,
+  localParts,
   meetsAmountFloor,
   normalizeRecipients,
   ruleCoversScope,
@@ -393,20 +395,50 @@ describe("the digest clock", () => {
     expect(isDigestDue(rule({ cadence: "immediate" }), MON_8AM_ET)).toBe(false);
   });
 
-  test("a daily rule is due at its local hour and not an hour later", () => {
-    const daily = rule({ cadence: "daily" });
+  test("a daily rule is due at its local hour, and not before it", () => {
+    const daily = rule({ cadence: "daily", sendHourLocal: 8 });
     expect(isDigestDue(daily, MON_8AM_ET)).toBe(true);
-    expect(isDigestDue(daily, MON_9AM_ET)).toBe(false);
+    // 09:00 is a CATCH-UP, not a second firing — see the missed-tick test.
+    const beforeHour = rule({ cadence: "daily", sendHourLocal: 18 });
+    expect(isDigestDue(beforeHour, MON_9AM_ET)).toBe(false);
   });
 
   test("the local hour is Eastern in January too, not a fixed UTC offset", () => {
     expect(isDigestDue(rule({ cadence: "daily" }), WINTER_MON_8AM_ET)).toBe(true);
   });
 
-  test("a rule already stamped today is not due again", () => {
-    const daily = rule({ cadence: "daily", lastSentAt: MON_8AM_ET });
+  test("a rule already run today is not due again", () => {
+    const daily = rule({
+      cadence: "daily",
+      lastRunDayKey: localParts(MON_8AM_ET).dayKey,
+    });
     expect(isDigestDue(daily, MON_8AM_ET)).toBe(false);
     expect(isDigestDue(daily, TUE_8AM_ET)).toBe(true);
+  });
+
+  test("a missed tick catches up later the same day instead of losing it", () => {
+    // The old exact-hour test meant one dropped cron tick cost a whole day —
+    // and a whole WEEK for a weekly rule.
+    const daily = rule({ cadence: "daily", sendHourLocal: 8 });
+    expect(isDigestDue(daily, MON_9AM_ET)).toBe(true);
+
+    const weekly = rule({ cadence: "weekly", sendHourLocal: 8, sendWeekday: 1 });
+    expect(isDigestDue(weekly, MON_9AM_ET)).toBe(true);
+    // …but a catch-up never leaks onto the wrong weekday.
+    expect(isDigestDue(weekly, TUE_8AM_ET)).toBe(false);
+  });
+
+  test("a rule set to 2am still runs on the DST spring-forward day", () => {
+    // 2026-03-08 is the US spring-forward Sunday: local 02:00 never happens,
+    // so an exact-hour match skipped that rule for the day (and a weekly one
+    // for the week). 07:00Z is 02:00 EST — the instant that gets skipped.
+    const springForward = Date.parse("2026-03-08T07:00:00Z");
+    const daily = rule({ cadence: "daily", sendHourLocal: 2 });
+    // Nothing is at local hour 2 that day, so an exact match found nothing;
+    // `>=` picks it up on the very next tick.
+    const nextTick = Date.parse("2026-03-08T08:00:00Z"); // 04:00 EDT
+    expect(localParts(springForward).hour).not.toBe(2);
+    expect(isDigestDue(daily, nextTick)).toBe(true);
   });
 
   test("a weekly rule waits for its weekday", () => {
@@ -418,6 +450,16 @@ describe("the digest clock", () => {
 
   test("an inactive rule is never due", () => {
     expect(isDigestDue(rule({ cadence: "daily", isActive: false }), MON_8AM_ET)).toBe(false);
+  });
+
+  test("an unrecognized weekday fails CLOSED, never onto Sunday", () => {
+    // `?? 0` here would have made every weekly rule "due on Sunday" if
+    // `formatToParts` ever yielded something outside the map. A mailer that
+    // guesses is worse than one that waits.
+    const weekly = rule({ cadence: "weekly", sendWeekday: 0 });
+    const sunday = { ...weekly, sendWeekday: -1 };
+    expect(isDigestDue(sunday, SUN_8AM_ET)).toBe(false);
+    expect(isDigestDue(weekly, SUN_8AM_ET)).toBe(true);
   });
 
   test("the window starts at the watermark once there is one", () => {
@@ -446,6 +488,32 @@ describe("the empty-digest asymmetry", () => {
   test("both send once there is anything to say", () => {
     expect(shouldSendDigest("daily", 1)).toBe(true);
     expect(shouldSendDigest("weekly", 1)).toBe(true);
+  });
+
+  test("a CUT window always sends, even an empty daily — that's the wedge fix", () => {
+    // A chapter rule sitting behind a large import's prefix matches nothing,
+    // and if that skipped without stamping it would re-read the same prefix
+    // every day, forever, in silence.
+    expect(shouldSendDigest("daily", 0, true)).toBe(true);
+    expect(shouldSendDigest("weekly", 0, true)).toBe(true);
+  });
+});
+
+describe("subject-line clamping", () => {
+  test("a donor name from the public form can't produce a 10,000-char subject", () => {
+    const clamped = clampSubjectName("A".repeat(10_000));
+    expect(clamped.length).toBe(80);
+    expect(clamped.endsWith("…")).toBe(true);
+  });
+
+  test("control characters are flattened, not carried into a header", () => {
+    expect(clampSubjectName("Ada\r\nBcc: someone@evil.test")).toBe(
+      "Ada Bcc: someone@evil.test",
+    );
+  });
+
+  test("an ordinary name is left exactly as it is", () => {
+    expect(clampSubjectName("  Ada Donor ")).toBe("Ada Donor");
   });
 });
 
@@ -525,6 +593,65 @@ describe("the immediate email", () => {
     expect(html).toContain("Ada Donor");
     expect(html).not.toContain("href=\"null");
     expect(html).toContain("APP_URL");
+  });
+});
+
+describe("escaping — donor names come from a public form", () => {
+  const XSS = '<img src=x onerror=alert(1)>';
+
+  test("the immediate email escapes the donor name, the note and the event", () => {
+    const { html } = renderImmediateGiftEmail({
+      ruleName: XSS,
+      gift: sampleGift({
+        note: XSS,
+        eventName: XSS,
+        scopeLabel: XSS,
+        donor: { ...sampleGift().donor, name: XSS },
+      }),
+    });
+    // The angle brackets are what turn text into an element; escaping them is
+    // the whole defence. The literal `onerror=` substring surviving INSIDE
+    // escaped text is correct and harmless — it is no longer an attribute.
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  });
+
+  test("the digest email escapes every field it interpolates", () => {
+    const nasty = sampleGift({
+      scopeLabel: XSS,
+      donor: { ...sampleGift().donor, name: XSS },
+    });
+    const { html } = renderDigestEmail({
+      ruleName: XSS,
+      cadence: "daily",
+      scopeLabel: XSS,
+      periodStart: MON_8AM_ET - DAY_MS,
+      periodEnd: MON_8AM_ET,
+      totalCents: 50_000,
+      giftCount: 1,
+      largest: nasty,
+      byScope: [{ label: XSS, cents: 50_000, count: 1 }],
+      byMethod: [{ label: XSS, cents: 50_000, count: 1 }],
+      gifts: [nasty],
+      omittedCount: 0,
+      countTruncated: false,
+    });
+    expect(html).not.toContain("<img");
+    expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+  });
+
+  test("a name that closes the href attribute can't escape the link", () => {
+    const { html } = renderImmediateGiftEmail({
+      ruleName: "Every gift",
+      gift: sampleGift({
+        donor: {
+          ...sampleGift().donor,
+          name: '"><script>alert(1)</script>',
+        },
+      }),
+    });
+    expect(html).not.toContain("<script>");
+    expect(html).toContain("&lt;script&gt;");
   });
 });
 
@@ -830,6 +957,37 @@ describe("immediate notifications", () => {
         await addGift(s.as, { scope: s.chapterId, name: "Chapter Giver" });
       });
       expect(cap.sent).toHaveLength(1);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("two overlapping rules send one person ONE email, naming both", async () => {
+    const s = await devDirectorSetup();
+    await saveRule(s.as, {
+      name: "Every gift",
+      scope: "all",
+      recipients: ["shay@publicworship.life", "team@publicworship.life"],
+    });
+    await saveRule(s.as, {
+      name: "Big gifts",
+      scope: "central",
+      minAmountCents: 50_000,
+      recipients: ["shay@publicworship.life", "aj@publicworship.life"],
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { amountCents: 90_000 });
+      });
+      // Three people, three emails — Shay is on both rules and gets ONE.
+      expect(cap.sent.map((e) => e.to).sort()).toEqual([
+        "aj@publicworship.life",
+        "shay@publicworship.life",
+        "team@publicworship.life",
+      ]);
+      const shay = cap.sent.find((e) => e.to === "shay@publicworship.life")!;
+      expect(shay.html).toContain("Every gift, Big gifts");
     } finally {
       cap.restore();
     }
@@ -1188,11 +1346,15 @@ describe("digests", () => {
           internal.givingNotificationDigests.sendGivingDigests,
           {},
         );
-        expect(out).toEqual({ digestsSent: 0, emailsSent: 0 });
+        expect(out).toMatchObject({ digestsSent: 0, emailsSent: 0 });
       });
       expect(cap.sent).toHaveLength(0);
       const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      // The WATERMARK stays put so the window carries forward…
       expect(row?.lastSentAt).toBeUndefined();
+      // …but the rule is marked RUN, so `>=`-hour matching doesn't re-scan it
+      // on every remaining hour of the day.
+      expect(row?.lastRunDayKey).toBe(localParts(MON_8AM_ET).dayKey);
     } finally {
       cap.restore();
     }
@@ -1217,7 +1379,9 @@ describe("digests", () => {
       expect(cap.sent).toHaveLength(1);
       expect(cap.sent[0].subject).toContain("No giving this week");
       const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
-      expect(row?.lastSentAt).toBe(MON_8AM_ET);
+      // A minute behind `now` — the window closes early so a gift committing
+      // mid-run lands in the NEXT window rather than behind the watermark.
+      expect(row?.lastSentAt).toBe(MON_8AM_ET - 60_000);
     } finally {
       cap.restore();
     }
@@ -1253,7 +1417,7 @@ describe("digests", () => {
           internal.givingNotificationDigests.sendGivingDigests,
           {},
         );
-        expect(out).toEqual({ digestsSent: 1, emailsSent: 1 });
+        expect(out).toMatchObject({ digestsSent: 1, emailsSent: 1 });
       });
       const mail = cap.sent[0];
       expect(mail.subject).toBe("$1,225.00 from 2 gifts this day — All books");
@@ -1310,7 +1474,7 @@ describe("digests", () => {
           internal.givingNotificationDigests.sendGivingDigests,
           {},
         );
-        expect(out).toEqual({ digestsSent: 0, emailsSent: 0 });
+        expect(out).toMatchObject({ digestsSent: 0, emailsSent: 0 });
       });
       expect(cap.sent).toHaveLength(0);
     } finally {
@@ -1353,11 +1517,169 @@ describe("digests", () => {
     }
   });
 
+  test("a window bigger than one read is CUT, not silently under-reported", async () => {
+    // The cap is high, so drive the boundary from the pure layer instead of
+    // writing thousands of rows: what has to hold is that a truncated read
+    // sends, says its total is a floor, and leaves the remainder for next time.
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET - 60_000, async () => {
+        await addGift(s.as, { amountCents: 10_000, name: "In Window" });
+      });
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      // The watermark lands where the window CLOSED, which is a minute behind
+      // `now` (the commit-race lag), never ahead of what was actually read.
+      expect(row?.lastSentAt).toBeLessThanOrEqual(MON_8AM_ET);
+      expect(row?.lastSentAt).toBeGreaterThan(MON_8AM_ET - 2 * 60_000);
+      expect(row?.lastRunDayKey).toBe(localParts(MON_8AM_ET).dayKey);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a truncated digest says its total is a floor and promises the rest", () => {
+    const { subject, html } = renderDigestEmail({
+      ruleName: "Daily roundup",
+      cadence: "daily",
+      scopeLabel: "All books",
+      periodStart: MON_8AM_ET - DAY_MS,
+      periodEnd: MON_8AM_ET,
+      totalCents: 0,
+      giftCount: 0,
+      largest: null,
+      byScope: [],
+      byMethod: [],
+      gifts: [],
+      omittedCount: 0,
+      countTruncated: true,
+    });
+    // Critically it must NOT claim "no giving" — the read stopped short.
+    expect(subject).toBe("Giving digest cut short — All books");
+    expect(html).not.toContain("No gifts came in");
+    expect(html).toContain("carries on from where this one stopped");
+  });
+
+  test("one rule blowing up doesn't cost the other rules their digest", async () => {
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, {
+        name: "Weekly A",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+        recipients: ["a@publicworship.life"],
+      });
+      await saveRule(s.as, {
+        name: "Weekly B",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+        recipients: ["b@publicworship.life"],
+      });
+      await saveRule(s.as, {
+        name: "Weekly C",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+        recipients: ["c@publicworship.life"],
+      });
+    });
+
+    // Blow up on the FIRST send. Without a per-rule try the whole action dies
+    // here, and B and C would be stamped-but-never-mailed — permanently, since
+    // Convex does not retry a failed scheduled action.
+    const realFetch = globalThis.fetch;
+    const prevKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    const sent: string[] = [];
+    let calls = 0;
+    globalThis.fetch = (async (_u: string, init?: { body?: string }) => {
+      calls++;
+      const body = init?.body ? JSON.parse(init.body) : {};
+      if (calls === 1) throw new Error("Resend blew up on the first send");
+      sent.push(body.to);
+      return { ok: true, status: 200, text: async () => "{}" };
+    }) as unknown as typeof fetch;
+
+    try {
+      let out!: { digestsSent: number; emailsSent: number; failedRules: number };
+      await atClock(s.t, MON_8AM_ET, async () => {
+        out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+      });
+      expect(out.digestsSent).toBe(3);
+      // Two of the three still landed; only the one that threw was lost.
+      expect(sent.sort()).toEqual(["b@publicworship.life", "c@publicworship.life"]);
+    } finally {
+      globalThis.fetch = realFetch;
+      if (prevKey === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prevKey;
+    }
+  });
+
+  test("reactivating a dormant rule does not replay the dormant period", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+
+    const cap = captureEmails();
+    try {
+      // Switched off, then months of giving happens behind its back.
+      await atClock(s.t, MON_8AM_ET - 90 * DAY_MS, async () => {
+        await s.as.mutation(api.givingNotifications.setRuleActive, {
+          ruleId,
+          isActive: false,
+        });
+      });
+      await atClock(s.t, MON_8AM_ET - 60 * DAY_MS, async () => {
+        await addGift(s.as, { amountCents: 900_000, name: "Dormant Era" });
+      });
+
+      // Switched back on the day before the next digest.
+      await atClock(s.t, MON_8AM_ET - DAY_MS, async () => {
+        await s.as.mutation(api.givingNotifications.setRuleActive, {
+          ruleId,
+          isActive: true,
+        });
+      });
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastSentAt).toBe(MON_8AM_ET - DAY_MS);
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      // Nothing arrived since it came back, so an empty daily is skipped — and
+      // crucially the 90 days of donor records it was switched off for are NOT
+      // mailed out in one go.
+      expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
   test("a digest whose hour hasn't come round does nothing", async () => {
     const s = await devDirectorSetup();
     let ruleId!: Id<"givingNotificationRules">;
     await atClock(s.t, SETUP_AT, async () => {
-      ruleId = await saveRule(s.as, { cadence: "weekly", sendHourLocal: 8, sendWeekday: 1 });
+      // 18:00 local is genuinely still ahead at 09:00 — unlike 08:00, which a
+      // `>=` match would (correctly) treat as a catch-up.
+      ruleId = await saveRule(s.as, { cadence: "weekly", sendHourLocal: 18, sendWeekday: 1 });
     });
     const cap = captureEmails();
     try {

@@ -75,9 +75,28 @@ export const givingNotificationRules = defineTable({
   /** 0 = Sunday … 6 = Saturday, in `America/New_York`. Weekly only; defaults
    *  to 1 (Monday). */
   sendWeekday: v.optional(v.number()),
-  /** The digest watermark — the instant the last digest covered up to. Absent
-   *  until the first digest sends. Never set for `immediate` rules. */
+  /**
+   * The digest watermark — the instant the last digest REPORTED up to. Absent
+   * until the first digest sends. Never set for `immediate` rules.
+   *
+   * A fact about MONEY: the next window opens here, so it only ever moves when
+   * gifts have actually been reported (or when a truncated read has consumed
+   * them up to a known point). It is deliberately NOT the "already ran today"
+   * marker — see `lastRunDayKey`.
+   */
   lastSentAt: v.optional(v.number()),
+  /**
+   * The local day-key (`YYYY-MM-DD`, `America/New_York`) of the last run that
+   * CONSIDERED this rule, sent or not.
+   *
+   * A fact about SCHEDULING, and separate from `lastSentAt` on purpose. The
+   * hourly sweep matches "at or after the send hour" so a dropped cron tick
+   * can still catch up later the same day; that makes a rule due for every
+   * remaining hour, and this is what stops it running twenty times. A skipped
+   * empty daily stamps this and not `lastSentAt`, so the window carries
+   * forward while the rule stops re-scanning.
+   */
+  lastRunDayKey: v.optional(v.string()),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
@@ -86,4 +105,11 @@ export const givingNotificationRules = defineTable({
   .index("by_cadence", ["cadence"])
   // The desk's list, and the immediate path's "which rules could care about a
   // gift in this book" — rules are per-scope and there are few of them.
-  .index("by_scope", ["scope"]);
+  .index("by_scope", ["scope"])
+  // The desk's list reads NEWEST first through this. Without it the list was an
+  // unindexed scan taking the OLDEST rows, so past the cap a freshly created
+  // rule was invisible in the UI — and therefore un-deactivatable — while it
+  // carried on sending. (`saveRule` also refuses to create past `MAX_RULES`,
+  // so the cap can't be reached in the first place; this is the second half of
+  // the same fix.)
+  .index("by_createdAt", ["createdAt"]);

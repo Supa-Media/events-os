@@ -37,7 +37,7 @@ import {
 } from "./emailShell";
 import { escapeHtml } from "./html";
 import { giftMethodLabel } from "./giftLabels";
-import { ORG_TIME_ZONE } from "./givingNotificationRules";
+import { ORG_TIME_ZONE, clampSubjectName } from "./givingNotificationRules";
 
 // ── Payload shapes (what the context builder must produce) ──────────────────
 
@@ -109,8 +109,9 @@ export type DigestEmailPayload = {
   gifts: NotificationGift[];
   /** How many gifts the totals counted but the list omitted. */
   omittedCount: number;
-  /** The window held more gifts than one digest run will read, so the totals
-   *  above are a FLOOR. Only reachable behind a bulk import; said out loud
+  /** The window was CUT SHORT — it held more than one digest run reads, so the
+   *  totals above are a FLOOR. The remainder is not lost: the watermark stopped
+   *  where the read stopped, so the next digest picks it up. Said out loud
    *  rather than quietly under-reporting money. */
   countTruncated: boolean;
 };
@@ -177,11 +178,16 @@ export function renderImmediateGiftEmail(payload: ImmediateEmailPayload): {
   const { gift } = payload;
   const donor = gift.donor;
   const amount = formatCents(gift.amountCents);
+  // CLAMPED. A donor name arrives from the public `/give` form and nothing else
+  // bounds it, so an unclamped subject was a ten-thousand-character subject
+  // waiting to happen. (The BODY is escaped, which is a different defence for a
+  // different problem — a subject is not HTML.)
+  const who = clampSubjectName(donor.name);
   // The subject is where a busy recipient triages, so the backdated case has to
   // be legible there and not only in the body.
   const subject = gift.isBackdated
-    ? `Backdated gift recorded: ${amount} from ${donor.name} — ${gift.scopeLabel}`
-    : `${amount} from ${donor.name} — ${gift.scopeLabel}`;
+    ? `Backdated gift recorded: ${amount} from ${who} — ${gift.scopeLabel}`
+    : `${amount} from ${who} — ${gift.scopeLabel}`;
 
   const donorFacts: string[] = [
     donor.isFirstGift
@@ -303,7 +309,9 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
   const period = payload.cadence === "weekly" ? "week" : "day";
   const subject =
     payload.giftCount === 0
-      ? `No giving this ${period} — ${payload.scopeLabel}`
+      ? payload.countTruncated
+        ? `Giving digest cut short — ${payload.scopeLabel}`
+        : `No giving this ${period} — ${payload.scopeLabel}`
       : `${formatCents(payload.totalCents)} from ${payload.giftCount} ${
           payload.giftCount === 1 ? "gift" : "gifts"
         } this ${period} — ${payload.scopeLabel}`;
@@ -312,7 +320,9 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
     emailEyebrow(esc(`${payload.cadence} giving digest`)),
     emailHeading(
       payload.giftCount === 0
-        ? "No gifts came in"
+        ? payload.countTruncated
+          ? "This digest was cut short"
+          : "No gifts came in"
         : esc(formatCents(payload.totalCents)),
       { size: payload.giftCount === 0 ? 26 : 34, margin: "0 0 4px" },
     ),
@@ -326,7 +336,9 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
     const inner = [
       header,
       emailParagraph(
-        `Nothing was recorded in the giving ledger for this ${period}. That's the whole report — if you expected gifts here, that's worth a look.`,
+        payload.countTruncated
+          ? `Nothing matched this rule in the stretch of the ledger this digest was able to read — but the read stopped short of the whole ${period}, so this is not the same as "no giving". The next digest carries on from where this one stopped.`
+          : `Nothing was recorded in the giving ledger for this ${period}. That's the whole report — if you expected gifts here, that's worth a look.`,
         { margin: "0 0 16px" },
       ),
       emailRule(),
@@ -368,7 +380,7 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
       : "",
     payload.countTruncated
       ? emailParagraph(
-          "More gifts landed in this period than one digest reads, so the total above is a FLOOR, not the figure. Open the gifts ledger for the real number.",
+          "This period held more giving than one digest reads at a time, so the total above is a FLOOR, not the figure — open the gifts ledger for the real number. The rest has not been lost: the next digest carries on from exactly where this one stopped.",
           { size: 12, margin: "12px 0 0", strong: true },
         )
       : "",

@@ -17,12 +17,17 @@
  * being broken. The weekly email is therefore also the heartbeat that proves
  * the pipeline is alive.
  *
- * The watermark follows the same logic. A skipped empty daily does NOT stamp
- * `lastSentAt`, so the window simply carries forward — the next digest covers
- * everything since the last mail that was actually sent, and no gift can fall
- * between two runs. (Stamping on a skip would be harmless today, because
- * "nothing" is what carried forward, but it would quietly become wrong the
- * moment the skip rule grows any other reason to skip.)
+ * ── TWO MARKS, BECAUSE THEY ANSWER TWO QUESTIONS ───────────────────────────
+ * `lastSentAt` means "the window has been REPORTED up to here" — a fact about
+ * money. `lastRunDayKey` means "this rule has already been LOOKED AT today" —
+ * a fact about scheduling. A skipped empty daily stamps the second and not the
+ * first: the window carries forward so no gift can fall between two runs, and
+ * the rule still doesn't re-scan on every remaining hour of the day.
+ *
+ * One field could not do both once the hour test became `>=` (a catch-up
+ * match, so a rule is "due" for the rest of the day), and conflating them is
+ * how a window that has to move for correctness starts silencing a rule that
+ * has to keep firing.
  *
  * ── WHY THE WINDOW IS ON `createdAt`, NOT `receivedAt` ─────────────────────
  * `gifts.receivedAt` is when the money changed hands and is freely
@@ -203,7 +208,10 @@ export function localParts(ts: number): {
   const hour = Number(get("hour")) % 24;
   return {
     hour,
-    weekday: WEEKDAY_INDEX[get("weekday")] ?? 0,
+    // FAILS CLOSED. `?? 0` here meant an unrecognized weekday string turned
+    // every weekly rule into "due on Sunday" — a mailer guessing is worse than
+    // a mailer waiting, so an unknown weekday matches nothing.
+    weekday: WEEKDAY_INDEX[get("weekday")] ?? -1,
     dayKey: `${get("year")}-${get("month")}-${get("day")}`,
   };
 }
@@ -236,7 +244,11 @@ export function ruleSendWeekday(
 export function isDigestDue(
   rule: Pick<
     Doc<"givingNotificationRules">,
-    "cadence" | "isActive" | "sendHourLocal" | "sendWeekday" | "lastSentAt"
+    | "cadence"
+    | "isActive"
+    | "sendHourLocal"
+    | "sendWeekday"
+    | "lastRunDayKey"
   >,
   now: number,
 ): boolean {
@@ -244,14 +256,25 @@ export function isDigestDue(
   if (rule.cadence !== "daily" && rule.cadence !== "weekly") return false;
 
   const nowParts = localParts(now);
-  if (nowParts.hour !== ruleSendHour(rule)) return false;
+  // AT OR AFTER the hour, not exactly on it. An exact match meant one dropped
+  // cron tick cost a whole day — and a whole WEEK for a weekly rule — and a
+  // rule set to hour 2 was skipped entirely on the DST spring-forward Sunday,
+  // when local 2am does not exist. `lastRunDayKey` already enforces
+  // once-per-day, so "at or after 8am, once today" is strictly better.
+  if (nowParts.hour < ruleSendHour(rule)) return false;
   if (rule.cadence === "weekly" && nowParts.weekday !== ruleSendWeekday(rule)) {
     return false;
   }
-  if (rule.lastSentAt !== undefined) {
-    if (localParts(rule.lastSentAt).dayKey === nowParts.dayKey) return false;
-  }
-  return true;
+  // Once per local day. Keyed on `lastRunDayKey`, NOT on `lastSentAt`: the two
+  // answer different questions and only one of them is about money. See the
+  // schema doc.
+  return rule.lastRunDayKey !== nowParts.dayKey;
+}
+
+/** The local day-key a run at `now` belongs to — what a claim stamps on
+ *  `lastRunDayKey`, whether or not it ends up sending. */
+export function runDayKey(now: number): string {
+  return localParts(now).dayKey;
 }
 
 /** The nominal length of a cadence's period — the fallback window when a rule
@@ -280,10 +303,47 @@ export function digestWindowStart(
 }
 
 /**
+ * How far behind `now` a digest window closes.
+ *
+ * `gifts.createdAt` is the WRITE TRANSACTION'S START time, not its commit
+ * time, so a gift whose mutation began before a digest ran but committed after
+ * it would land behind the watermark and never be reported. Convex's OCC makes
+ * that nearly unreachable (the digest's range read overlaps the gift write and
+ * forces a retry), but "nearly" is doing real work in a sentence about money.
+ * Closing the window a minute early costs a daily digest nothing and removes
+ * the race outright: any transaction in flight for under a minute is inside
+ * the NEXT window rather than lost between two.
+ */
+export const DIGEST_LAG_MS = 60 * 1000;
+
+/**
+ * Clamp a donor's name for use in a SUBJECT line. Donor names arrive from the
+ * public `/give` form, and nothing else bounds them — a ten-thousand-character
+ * name produced a ten-thousand-character subject. Control characters go too:
+ * a newline in a subject is header-injection shaped, and while Resend's JSON
+ * API encodes it safely, a mailer should not be the thing relying on that.
+ */
+export function clampSubjectName(name: string, max = 80): string {
+  // eslint-disable-next-line no-control-regex
+  const flat = name.replace(/[\u0000-\u001f\u007f]+/g, " ").trim();
+  return flat.length <= max ? flat : `${flat.slice(0, max - 1)}…`;
+}
+
+/**
  * Does a digest with this many gifts get sent at all? The asymmetry lives
  * here and nowhere else — see the module doc for why.
  */
-export function shouldSendDigest(cadence: string, giftCount: number): boolean {
+export function shouldSendDigest(
+  cadence: string,
+  giftCount: number,
+  windowTruncated = false,
+): boolean {
+  // A CUT WINDOW ALWAYS SENDS, whatever it matched. "Nothing matched" is not a
+  // trustworthy answer when the read stopped early — and a daily rule that
+  // skips also declines to stamp, so a chapter rule sitting behind a large
+  // import's prefix would re-read the same prefix every day and never send
+  // again. Sending breaks that wedge and tells the humans the total is a floor.
+  if (windowTruncated) return true;
   if (giftCount > 0) return true;
   return cadence === "weekly";
 }

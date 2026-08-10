@@ -34,7 +34,8 @@ frequency*.
 | `isActive` | Soft on/off. There is no delete |
 | `sendHourLocal?` | 0–23 in `America/New_York`. Daily/weekly, default 8 |
 | `sendWeekday?` | 0 = Sunday … 6 = Saturday. Weekly, default 1 (Monday) |
-| `lastSentAt?` | Digest watermark **and** idempotency key |
+| `lastSentAt?` | Digest watermark — "reported up to here". A fact about money |
+| `lastRunDayKey?` | "Already looked at today" (`YYYY-MM-DD` ET). A fact about scheduling |
 | `createdBy` / `createdAt` / `updatedAt` | Provenance |
 
 ### Why `scope` is a three-way string union
@@ -174,10 +175,76 @@ Each tick:
    effort.
 
 **Claim-before-send**, the posture `cards.ts#advanceCodingReviewReminders`
-established: the stamp lands in the same transaction as the selection, so a
+established: the marks move in the same transaction that reads the window, so a
 crash between claiming and sending costs at most one digest rather than
 repeating it every hour. Running the sweep twice inside the same local hour is
-safe — the second pass finds today's watermark and claims nothing.
+safe — the second pass finds today's mark and claims nothing.
+
+### One transaction per rule, one `try` per rule
+
+Both are load-bearing, and both were wrong in the first cut.
+
+Claiming every due rule in **one** mutation put every rule's window read in one
+transaction. The default send hour is 8, so that is *every* daily and weekly
+rule at once, and Convex caps a transaction at 16,384 documents read — nine
+rules against a full window and the mutation throws, taking down every digest
+for an hour that won't come round again until tomorrow.
+
+Isolating only the `sendEmailReporting` call was the same mistake one level
+down: a throw in the claim or the render aborted the whole action, and rules
+already claimed had moved their watermark and were never mailed — permanently,
+because Convex does not retry a failed scheduled action. Each rule now gets its
+own `try`, and a failure is logged **with the rule id**.
+
+### The window is filtered before it is capped
+
+`collectWindowGifts` streams the `by_created` range and applies
+`ruleMatchesGift` as it goes, so the cap bounds *matched* gifts, not scanned
+rows. Capping first was a money bug and a wedge at once: a 5,000-row import made
+a digest mail a total 60% short, stamp the watermark, and lose the remainder
+forever — and a chapter-scoped rule whose prefix was all other books' gifts
+matched zero, skipped, declined to stamp, and re-read that same prefix every day
+thereafter, silently, forever.
+
+A cut window is now handled honestly rather than hidden:
+
+- the watermark advances only to the **last gift actually read**, so the
+  remainder is the next window rather than nobody's;
+- the cut lands on a whole-millisecond boundary, so no gift sharing that instant
+  is skipped or double-counted (imports write many gifts per millisecond);
+- the digest **sends regardless of what it matched**, which is what breaks the
+  wedge;
+- the email says its total is a floor and that the next digest carries on from
+  where this one stopped. An empty-but-cut digest does not claim "no giving".
+
+### Two marks, because they answer two questions
+
+`lastSentAt` means *the window has been reported up to here* — a fact about
+money, so it only moves when gifts have actually been reported (or consumed up
+to a known point). `lastRunDayKey` means *this rule has already been looked at
+today* — a fact about scheduling.
+
+One field could not do both once the hour test became `>=`. A skipped empty
+daily stamps the second and not the first: the window carries forward so no gift
+falls between two runs, and the rule still stops re-scanning on every remaining
+hour of the day.
+
+### At or after the hour, not exactly on it
+
+An exact-hour match meant one dropped cron tick cost a whole day — and a whole
+*week* for a weekly rule — and a rule set to hour 2 was skipped entirely on the
+DST spring-forward Sunday, when local 02:00 does not exist. `>=` plus
+`lastRunDayKey` gives "at or after 8am, once today", which closes both.
+
+### The window closes a minute early
+
+`gifts.createdAt` is the write transaction's **start** time, not its commit
+time, so a gift whose mutation began before a digest ran but committed after it
+would land behind the watermark. Convex's OCC makes that nearly unreachable, but
+"nearly" is doing real work in a sentence about money. `DIGEST_LAG_MS` (60s)
+closes the window a minute behind `now`: anything in flight for under a minute
+is in the *next* window rather than lost between two. A daily digest cannot tell
+the difference.
 
 ### The window is on `createdAt`, not `receivedAt`
 
@@ -249,7 +316,29 @@ even take the `"central"` sentinel).
   as well as the one it is joining.
 - `listRules` filters by `canViewGivingScope` — the same predicate the gate
   uses, exported so a list and a gate can never disagree — and returns a
-  `canManage` flag per row.
+  `canManage` flag per row. It reads **newest-first through `by_createdAt`**;
+  an unindexed read returning the oldest rows meant a rule past the cap was
+  invisible in the UI (and so un-deactivatable) while it carried on sending.
+  `saveRule` also refuses to create past `MAX_RULES` (`TOO_MANY_RULES`), so the
+  cap can't be reached in the first place.
+
+### Reactivation does not replay the dormant period
+
+`setRuleActive` stamps `lastSentAt = now` when a rule goes off → on. Otherwise a
+daily rule switched off for three months would come back and mail one digest
+covering three months of donor records. Turning something back on means "tell me
+what happens from here", not "catch me up on everything I chose not to be told".
+*Clearing* the field is the wrong fix — with no watermark the one-nominal-period
+fallback applies, which for a rule reactivated the day after a large import is
+exactly the replay this prevents.
+
+### One email per person, not one per rule
+
+The two patterns the owner described — "every gift, to the dev team" and "gifts
+over $500, to Shay and AJ" — overlap on purpose, and anyone on both would have
+received the same gift twice. The immediate send is keyed on the **recipient**;
+the footer names every rule that reached them. "We're getting double emails" is
+the complaint that gets a notification feature switched off.
 
 **Worth knowing:** no seat on the *chapter* chart carries `giving.manage` today
 (donor-CRM write is central's, per the giving PRD). `chapter_director` holds

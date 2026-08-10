@@ -88,11 +88,20 @@ export const listRules = query({
   args: {},
   handler: async (ctx) => {
     const access = await resolveGivingAccess(ctx);
-    const rows = await ctx.db.query("givingNotificationRules").take(MAX_RULES);
+    // NEWEST first, through the index. An unindexed `.take()` returned the
+    // OLDEST rows and sorted them afterwards, so past the cap a freshly
+    // created rule was invisible in the UI — and therefore impossible to
+    // deactivate — while it carried on sending. Invisible-but-active is the
+    // worst combination a mailer has. `saveRule` also refuses to create past
+    // `MAX_RULES`, so the cap can't be reached at all.
+    const rows = await ctx.db
+      .query("givingNotificationRules")
+      .withIndex("by_createdAt")
+      .order("desc")
+      .take(MAX_RULES);
     const visible = rows.filter((r) =>
       canViewGivingScope(access, ruleGateScope(r.scope)),
     );
-    visible.sort((a, b) => b.createdAt - a.createdAt);
     return await Promise.all(
       visible.map(async (r) => ({
         _id: r._id,
@@ -243,6 +252,19 @@ export const saveRule = mutation({
       return args.ruleId;
     }
 
+    // Every read of this table is bounded at `MAX_RULES`, so a rule written
+    // past the cap would be one nothing lists, nothing matches, and nobody can
+    // turn off. Refuse at the door instead.
+    const existingCount = (
+      await ctx.db.query("givingNotificationRules").take(MAX_RULES)
+    ).length;
+    if (existingCount >= MAX_RULES) {
+      throw new ConvexError({
+        code: "TOO_MANY_RULES",
+        message: `There are already ${MAX_RULES} notification rules. Deactivate or reuse one instead of adding another.`,
+      });
+    }
+
     return await ctx.db.insert("givingNotificationRules", {
       ...fields,
       isActive: args.isActive ?? true,
@@ -252,8 +274,22 @@ export const saveRule = mutation({
   },
 });
 
-/** Turn a rule on or off. The only "delete" this table has — see the module
- *  doc. Idempotent. */
+/**
+ * Turn a rule on or off. The only "delete" this table has — see the module
+ * doc. Idempotent.
+ *
+ * REACTIVATION MOVES THE WATERMARK TO NOW. A digest rule turned off for three
+ * months would otherwise come back and mail one digest covering three months
+ * of donor records in a single email, because `lastSentAt` still pointed at
+ * the last send before it was switched off. Turning something back on means
+ * "tell me what happens from here", not "catch me up on everything I chose
+ * not to be told".
+ *
+ * Clearing the field instead of stamping it is the wrong fix: with no
+ * watermark, `digestWindowStart` falls back to one nominal period, which for a
+ * rule reactivated the day after a large import is exactly the replay this is
+ * trying to prevent.
+ */
 export const setRuleActive = mutation({
   args: {
     ruleId: v.id("givingNotificationRules"),
@@ -269,7 +305,13 @@ export const setRuleActive = mutation({
       });
     }
     await requireGivingManage(ctx, ruleGateScope(rule.scope));
-    await ctx.db.patch(ruleId, { isActive, updatedAt: Date.now() });
+    const now = Date.now();
+    const reactivating = isActive && !rule.isActive;
+    await ctx.db.patch(ruleId, {
+      isActive,
+      updatedAt: now,
+      ...(reactivating ? { lastSentAt: now, lastRunDayKey: undefined } : {}),
+    });
     return null;
   },
 });
@@ -294,9 +336,27 @@ export const immediateTargets = internalQuery({
     const payload = await buildNotificationGift(ctx, gift);
     if (!payload) return null;
 
+    // ONE EMAIL PER PERSON, not one per rule. The two patterns the owner
+    // described — "every gift, to the dev team" and "gifts over $500, to Shay
+    // and AJ" — overlap on purpose, and anyone on both would have got the same
+    // gift twice. "We're getting double emails" is the complaint that gets a
+    // notification feature switched off, so the send is keyed on the RECIPIENT
+    // and the footer names every rule that reached them.
+    const byRecipient = new Map<string, string[]>();
+    for (const rule of matched) {
+      for (const to of rule.recipients) {
+        const names = byRecipient.get(to) ?? [];
+        if (!names.includes(rule.name)) names.push(rule.name);
+        byRecipient.set(to, names);
+      }
+    }
+
     return {
       gift: payload,
-      rules: matched.map((r) => ({ name: r.name, recipients: r.recipients })),
+      sends: [...byRecipient.entries()].map(([to, ruleNames]) => ({
+        to,
+        ruleNames,
+      })),
     };
   },
 });
@@ -320,25 +380,26 @@ export const notifyGiftRecorded = internalAction({
     if (!targets) return { emailsSent: 0 };
 
     let emailsSent = 0;
-    for (const rule of targets.rules) {
-      const { subject, html } = renderImmediateGiftEmail({
-        ruleName: rule.name,
-        gift: targets.gift,
-      });
-      for (const to of rule.recipients) {
-        try {
-          // `sendEmailReporting`, not `sendEmail`: the count has to mean
-          // DELIVERED, so a deployment with no Resend key reports 0 rather
-          // than looking like it mailed everyone.
-          if (await sendEmailReporting(ctx, { to, subject, html })) {
-            emailsSent++;
-          }
-        } catch (err) {
-          console.error(
-            `[givingNotifications] immediate send failed for ${to}`,
-            err,
-          );
+    for (const send of targets.sends) {
+      // The RENDER is inside the try too. It used to sit outside, one level up
+      // in a per-rule loop, so a throw while building recipient #1's email
+      // cost every later recipient their notification entirely.
+      try {
+        const { subject, html } = renderImmediateGiftEmail({
+          ruleName: send.ruleNames.join(", "),
+          gift: targets.gift,
+        });
+        // `sendEmailReporting`, not `sendEmail`: the count has to mean
+        // DELIVERED, so a deployment with no Resend key reports 0 rather
+        // than looking like it mailed everyone.
+        if (await sendEmailReporting(ctx, { to: send.to, subject, html })) {
+          emailsSent++;
         }
+      } catch (err) {
+        console.error(
+          `[givingNotifications] immediate send failed for ${send.to}`,
+          err,
+        );
       }
     }
     return { emailsSent };
