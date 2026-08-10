@@ -136,6 +136,7 @@ import type * as lib_givePageStyles from "../lib/givePageStyles.js";
 import type * as lib_givingAccess from "../lib/givingAccess.js";
 import type * as lib_givingAudit from "../lib/givingAudit.js";
 import type * as lib_givingDonors from "../lib/givingDonors.js";
+import type * as lib_givingNotificationAudit from "../lib/givingNotificationAudit.js";
 import type * as lib_givingNotificationContext from "../lib/givingNotificationContext.js";
 import type * as lib_givingNotificationEmails from "../lib/givingNotificationEmails.js";
 import type * as lib_givingNotificationRules from "../lib/givingNotificationRules.js";
@@ -518,6 +519,7 @@ declare const fullApi: ApiFromModules<{
   "lib/givingAccess": typeof lib_givingAccess;
   "lib/givingAudit": typeof lib_givingAudit;
   "lib/givingDonors": typeof lib_givingDonors;
+  "lib/givingNotificationAudit": typeof lib_givingNotificationAudit;
   "lib/givingNotificationContext": typeof lib_givingNotificationContext;
   "lib/givingNotificationEmails": typeof lib_givingNotificationEmails;
   "lib/givingNotificationRules": typeof lib_givingNotificationRules;
