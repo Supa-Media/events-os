@@ -21,6 +21,10 @@ import {
   renderImmediateGiftEmail,
   type NotificationGift,
 } from "../lib/givingNotificationEmails";
+import {
+  MAX_DIGEST_MATCHES,
+  collectWindowGifts,
+} from "../givingNotificationDigests";
 
 /**
  * Giving notification rules — "tell me when money comes in."
@@ -1329,6 +1333,249 @@ describe("bulk writes do not blast the inbox", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// The cut-window machinery
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * Raw `gifts` inserts, on purpose. Everywhere else these tests go through
+ * `recordGiftForDonor` because the rollups matter; here they don't — the window
+ * reader touches `gifts` and (for the display list) `donors`, and nothing else.
+ * Going through the real helper for a thousand rows would test the rollup
+ * machinery at length and the thing under test not at all.
+ */
+async function seedRawGifts(
+  s: ChapterSetup,
+  donorId: Id<"donors">,
+  specs: Array<{ createdAt: number; amountCents?: number; scope?: unknown }>,
+): Promise<void> {
+  await run(s.t, async (ctx) => {
+    for (const spec of specs) {
+      await ctx.db.insert("gifts", {
+        donorId,
+        scope: (spec.scope ?? "central") as "central",
+        amountCents: spec.amountCents ?? 1_000,
+        currency: "usd",
+        receivedAt: spec.createdAt,
+        method: "stripe",
+        createdAt: spec.createdAt,
+      });
+    }
+  });
+}
+
+async function seedDonor(s: ChapterSetup, name = "Bulk Donor"): Promise<Id<"donors">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("donors", {
+      scope: "central",
+      kind: "individual",
+      name,
+      status: "prospect",
+      lifetimeCents: 0,
+      giftCount: 0,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** The rule shape `collectWindowGifts` actually reads. */
+const ALL_SCOPE_RULE = { isActive: true, scope: "all" as const };
+
+describe("collectWindowGifts — the cap, the drain, and where the window closes", () => {
+  test("stops at the match cap and closes the window on the last gift it read", async () => {
+    const s = await devDirectorSetup();
+    const donorId = await seedDonor(s);
+    // Ten gifts, one per millisecond, so there is no tie to drain.
+    await seedRawGifts(
+      s,
+      donorId,
+      Array.from({ length: 10 }, (_, i) => ({ createdAt: 1_000 + i })),
+    );
+
+    const out = await run(s.t, (ctx) =>
+      collectWindowGifts(ctx, ALL_SCOPE_RULE, 0, 2_000, {
+        maxMatches: 3,
+        maxScan: 999,
+      }),
+    );
+    expect(out.gifts).toHaveLength(3);
+    expect(out.truncated).toBe(true);
+    // The window closes ON the third gift (createdAt 1002), never past it —
+    // the next window opens strictly after, so nothing between is skipped.
+    expect(out.until).toBe(1_002);
+  });
+
+  test("drains the whole millisecond it stopped in, stragglers included", async () => {
+    const s = await devDirectorSetup();
+    const donorId = await seedDonor(s);
+    // Three gifts share ms 1002 — an import writes many per millisecond. The
+    // cap falls on the FIRST of them; the other two must still come back, or
+    // the next window (which opens strictly after 1002) would skip them.
+    await seedRawGifts(s, donorId, [
+      { createdAt: 1_000 },
+      { createdAt: 1_001 },
+      { createdAt: 1_002, amountCents: 111 },
+      { createdAt: 1_002, amountCents: 222 },
+      { createdAt: 1_002, amountCents: 333 },
+      { createdAt: 1_003 },
+      { createdAt: 1_004 },
+    ]);
+
+    const out = await run(s.t, (ctx) =>
+      collectWindowGifts(ctx, ALL_SCOPE_RULE, 0, 2_000, {
+        maxMatches: 3,
+        maxScan: 999,
+      }),
+    );
+    expect(out.until).toBe(1_002);
+    expect(out.truncated).toBe(true);
+    // 5 = the two before the boundary + all three sharing it. Not 3.
+    expect(out.gifts).toHaveLength(5);
+    expect(out.gifts.filter((g) => g.createdAt === 1_002)).toHaveLength(3);
+  });
+
+  test("hitting the cap on the very LAST row is not a truncation", async () => {
+    const s = await devDirectorSetup();
+    const donorId = await seedDonor(s);
+    await seedRawGifts(s, donorId, [
+      { createdAt: 1_000 },
+      { createdAt: 1_001 },
+      { createdAt: 1_002 },
+    ]);
+
+    // The cap is exactly the number of rows in the range: the read finished.
+    const out = await run(s.t, (ctx) =>
+      collectWindowGifts(ctx, ALL_SCOPE_RULE, 0, 2_000, {
+        maxMatches: 3,
+        maxScan: 999,
+      }),
+    );
+    expect(out.gifts).toHaveLength(3);
+    expect(out.truncated).toBe(false);
+    // …and the window closes where it was ASKED to, not on the last row.
+    expect(out.until).toBe(2_000);
+  });
+
+  test("the scan cap bounds a rule that matches almost nothing", async () => {
+    const s = await devDirectorSetup();
+    const donorId = await seedDonor(s);
+    await seedRawGifts(
+      s,
+      donorId,
+      Array.from({ length: 20 }, (_, i) => ({ createdAt: 1_000 + i, amountCents: 100 })),
+    );
+
+    // A $500 floor nothing meets — the read still has to stop.
+    const out = await run(s.t, (ctx) =>
+      collectWindowGifts(
+        ctx,
+        { isActive: true, scope: "all", minAmountCents: 50_000 },
+        0,
+        2_000,
+        { maxMatches: 999, maxScan: 5 },
+      ),
+    );
+    expect(out.gifts).toHaveLength(0);
+    expect(out.truncated).toBe(true);
+    expect(out.until).toBe(1_004); // the 5th row
+  });
+
+  test("a scoped rule reads its OWN book, so another book's volume can't cut it short", async () => {
+    const s = await devDirectorSetup();
+    const donorId = await seedDonor(s);
+    // 30 central gifts, then 2 for the chapter. On the global index a
+    // chapter rule with a small scan cap would stop inside the central prefix
+    // and cry "cut short" about a book that had two quiet gifts.
+    await seedRawGifts(
+      s,
+      donorId,
+      Array.from({ length: 30 }, (_, i) => ({ createdAt: 1_000 + i })),
+    );
+    await seedRawGifts(s, donorId, [
+      { createdAt: 1_100, scope: s.chapterId },
+      { createdAt: 1_101, scope: s.chapterId },
+    ]);
+
+    const out = await run(s.t, (ctx) =>
+      collectWindowGifts(
+        ctx,
+        { isActive: true, scope: s.chapterId },
+        0,
+        2_000,
+        { maxMatches: 999, maxScan: 5 },
+      ),
+    );
+    expect(out.gifts).toHaveLength(2);
+    expect(out.truncated).toBe(false);
+  });
+});
+
+describe("a real over-cap window, end to end", () => {
+  test("cuts short, says so, and the NEXT run resumes exactly where it stopped", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const donorId = await seedDonor(s, "Imported Donor");
+
+    // Genuinely past the production cap — no injected limits here.
+    const total = MAX_DIGEST_MATCHES + 40;
+    const base = MON_8AM_ET - 6 * 60 * 60 * 1000;
+    await seedRawGifts(
+      s,
+      donorId,
+      Array.from({ length: total }, (_, i) => ({
+        createdAt: base + i,
+        amountCents: 1_000,
+      })),
+    );
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        const out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+        expect(out).toMatchObject({ digestsSent: 1, emailsSent: 1 });
+      });
+      expect(cap.sent).toHaveLength(1);
+      // The first pass reports exactly the cap, and says the total is a floor.
+      expect(cap.sent[0].subject).toContain(
+        `from ${MAX_DIGEST_MATCHES} gifts this day`,
+      );
+      expect(cap.sent[0].html).toContain("FLOOR");
+      expect(cap.sent[0].html).toContain(
+        "carries on from exactly where this one stopped",
+      );
+
+      const afterFirst = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      // Closed ON the last gift read, not at `now` — the remainder is still
+      // ahead of the watermark rather than behind it.
+      expect(afterFirst?.lastSentAt).toBe(base + MAX_DIGEST_MATCHES - 1);
+      // …and the run mark is CLEARED, so the drain continues within the day
+      // instead of waiting until tomorrow.
+      expect(afterFirst?.lastRunDayKey).toBeUndefined();
+      cap.sent.length = 0;
+
+      // An hour later the sweep picks up exactly the 40 it left behind.
+      await atClock(s.t, MON_8AM_ET + 60 * 60 * 1000, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toContain("from 40 gifts this day");
+      expect(cap.sent[0].html).not.toContain("FLOOR");
+
+      const afterSecond = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      // Caught up: the window is complete, so the rule marks itself done today.
+      expect(afterSecond?.lastRunDayKey).toBe(localParts(MON_8AM_ET).dayKey);
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // Digests
 // ═══════════════════════════════════════════════════════════════════════════
 
@@ -1517,10 +1764,7 @@ describe("digests", () => {
     }
   });
 
-  test("a window bigger than one read is CUT, not silently under-reported", async () => {
-    // The cap is high, so drive the boundary from the pure layer instead of
-    // writing thousands of rows: what has to hold is that a truncated read
-    // sends, says its total is a floor, and leaves the remainder for next time.
+  test("a complete window is never reported as cut, and stamps normally", async () => {
     const s = await devDirectorSetup();
     let ruleId!: Id<"givingNotificationRules">;
     await atClock(s.t, SETUP_AT, async () => {
@@ -1537,6 +1781,7 @@ describe("digests", () => {
         await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
       });
       expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).not.toContain("cut short");
       const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
       // The watermark lands where the window CLOSED, which is a minute behind
       // `now` (the commit-race lag), never ahead of what was actually read.
@@ -1613,16 +1858,33 @@ describe("digests", () => {
     }) as unknown as typeof fetch;
 
     try {
-      let out!: { digestsSent: number; emailsSent: number; failedRules: number };
+      let out!: {
+        digestsSent: number;
+        emailsSent: number;
+        failedRules: number;
+      };
       await atClock(s.t, MON_8AM_ET, async () => {
         out = await s.t.action(
           internal.givingNotificationDigests.sendGivingDigests,
           {},
         );
       });
-      expect(out.digestsSent).toBe(3);
-      // Two of the three still landed; only the one that threw was lost.
+      // Two of the three landed; only the one that threw was affected.
+      expect(out.digestsSent).toBe(2);
+      expect(out.failedRules).toBe(1);
       expect(sent.sort()).toEqual(["b@publicworship.life", "c@publicworship.life"]);
+
+      // And the one that reached NOBODY gave its window back — an outage must
+      // not consume a period that was never actually reported.
+      const rules = await run(s.t, (ctx) =>
+        ctx.db.query("givingNotificationRules").collect(),
+      );
+      const failed = rules.find((r) => r.recipients[0] === "a@publicworship.life");
+      expect(failed?.lastSentAt).toBeUndefined();
+      expect(failed?.lastRunDayKey).toBeUndefined();
+      // …while the two that did land kept theirs.
+      const landed = rules.find((r) => r.recipients[0] === "b@publicworship.life");
+      expect(landed?.lastSentAt).toBe(MON_8AM_ET - 60_000);
     } finally {
       globalThis.fetch = realFetch;
       if (prevKey === undefined) delete process.env.RESEND_API_KEY;
@@ -1667,6 +1929,138 @@ describe("digests", () => {
       // Nothing arrived since it came back, so an empty daily is skipped — and
       // crucially the 90 days of donor records it was switched off for are NOT
       // mailed out in one go.
+      expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("with no Resend key the sweep claims NOTHING — the backlog survives", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    // A gift lands, then the sweep runs on a deployment nobody configured.
+    await atClock(s.t, MON_8AM_ET - 60_000, async () => {
+      await addGift(s.as, { amountCents: 70_000, name: "Unmailed Era" });
+    });
+
+    const prev = process.env.RESEND_API_KEY;
+    delete process.env.RESEND_API_KEY;
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        const out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+        expect(out).toMatchObject({
+          digestsSent: 0,
+          emailsSent: 0,
+          skippedNoMailer: true,
+        });
+      });
+      // NOTHING moved. `sendEmailReporting` returns false rather than throwing
+      // when no key resolves, so advancing here would have quietly consumed
+      // every window daily — and the day a key was finally configured, every
+      // gift behind those watermarks would have been un-digested forever.
+      // (`lastRunDayKey` still holds the rule's CREATE-day suppression mark,
+      // which the sweep must not have touched either.)
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastSentAt).toBeUndefined();
+      expect(row?.lastRunDayKey).toBe(localParts(SETUP_AT).dayKey);
+    } finally {
+      if (prev === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prev;
+    }
+
+    // Configure the key and the backlog is still there to send.
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET + 60 * 60 * 1000, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Unmailed Era");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a weekly rule created after its send hour doesn't open with a false 'no giving'", async () => {
+    const s = await devDirectorSetup();
+    const cap = captureEmails();
+    try {
+      // Written at 9am Monday, wanting Mondays at 8am — its send moment has
+      // already gone, and its window could only ever open at its own birth.
+      await atClock(s.t, MON_9AM_ET, async () => {
+        await saveRule(s.as, {
+          name: "Weekly roundup",
+          cadence: "weekly",
+          sendHourLocal: 8,
+          sendWeekday: 1,
+        });
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      // Silence, not a confident report about a week nobody was watching.
+      expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a daily rule created BEFORE its send hour still fires that day", async () => {
+    const s = await devDirectorSetup();
+    const cap = captureEmails();
+    try {
+      const sixAm = MON_8AM_ET - 2 * 60 * 60 * 1000;
+      await atClock(s.t, sixAm, async () => {
+        await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+      });
+      // …and a gift arrives after it, which is the only way round: the window
+      // opens strictly AFTER the rule's own birth instant.
+      await atClock(s.t, sixAm + 30 * 60 * 1000, async () => {
+        await addGift(s.as, { amountCents: 25_000, name: "Early Bird" });
+      });
+      cap.sent.length = 0;
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      // That window is genuine, so suppression must NOT have applied.
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Early Bird");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a cadence round-trip doesn't replay the dormant stretch", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const cap = captureEmails();
+    try {
+      // daily → immediate → daily, with months of giving in between. Without
+      // resetting the marks on a cadence change this reached the same replay
+      // `setRuleActive` was fixed for, by another door.
+      await atClock(s.t, MON_8AM_ET - 90 * DAY_MS, async () => {
+        await saveRule(s.as, { ruleId, cadence: "immediate" });
+      });
+      await atClock(s.t, MON_8AM_ET - 60 * DAY_MS, async () => {
+        await addGift(s.as, { amountCents: 900_000, name: "Dormant Era" });
+      });
+      await atClock(s.t, MON_8AM_ET - DAY_MS, async () => {
+        await saveRule(s.as, { ruleId, cadence: "daily", sendHourLocal: 8 });
+      });
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastSentAt).toBe(MON_8AM_ET - DAY_MS);
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
       expect(cap.sent).toHaveLength(0);
     } finally {
       cap.restore();

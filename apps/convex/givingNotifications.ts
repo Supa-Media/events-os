@@ -51,6 +51,7 @@ import { givingNotificationScope } from "./schema/givingNotifications";
 import {
   MAX_RULE_RECIPIENTS,
   MAX_RULES,
+  firstRunDayKey,
   normalizeRecipients,
   ruleMatchesGift,
   type RuleScope,
@@ -245,9 +246,22 @@ export const saveRule = mutation({
       if (existing.scope !== args.scope) {
         await requireGivingManage(ctx, ruleGateScope(existing.scope));
       }
+      // A CADENCE CHANGE RESETS THE MARKS, for the same reason reactivation
+      // does. `daily → immediate → daily` otherwise reached the dormant replay
+      // by another door: the watermark sat where the last daily digest left it,
+      // however many weeks of `immediate` ago that was, and the first digest
+      // back mailed the lot. Scope and threshold changes deliberately do NOT
+      // reset — they narrow the same stream, and the window is still honest.
+      const cadenceChanged = existing.cadence !== args.cadence;
       await ctx.db.patch(args.ruleId, {
         ...fields,
         isActive: args.isActive ?? existing.isActive,
+        ...(cadenceChanged
+          ? {
+              lastSentAt: now,
+              lastRunDayKey: firstRunDayKey(fields, now),
+            }
+          : {}),
       });
       return args.ruleId;
     }
@@ -268,6 +282,11 @@ export const saveRule = mutation({
     return await ctx.db.insert("givingNotificationRules", {
       ...fields,
       isActive: args.isActive ?? true,
+      // A rule written AFTER its send moment today would otherwise be due
+      // immediately, against a window that opens at its own birth — an empty
+      // one. On a weekly rule that reads as a confident "No giving this week"
+      // about a week nobody was watching. See `firstRunDayKey`.
+      lastRunDayKey: firstRunDayKey(fields, now),
       createdBy: userId,
       createdAt: now,
     });
@@ -310,7 +329,18 @@ export const setRuleActive = mutation({
     await ctx.db.patch(ruleId, {
       isActive,
       updatedAt: now,
-      ...(reactivating ? { lastSentAt: now, lastRunDayKey: undefined } : {}),
+      ...(reactivating
+        ? {
+            lastSentAt: now,
+            // NOT cleared. Moving the watermark to `now` and clearing the run
+            // mark meant a rule reactivated after its send hour was due at
+            // once, against a window that opens at that same instant — so its
+            // one possible outcome was a false "No giving this week". Which is
+            // reachable straight from the practice of switching rules off
+            // around an import.
+            lastRunDayKey: firstRunDayKey(rule, now),
+          }
+        : {}),
     });
     return null;
   },

@@ -402,6 +402,13 @@ export const gifts = defineTable({
   // an "all books" rule would have to fan out per chapter, and it ranges on the
   // wrong field.
   .index("by_created", ["createdAt"])
+  // The same window read, narrowed to ONE book — what a chapter- or
+  // central-scoped notification rule needs. Without it a quiet chapter's rule
+  // walked the GLOBAL range and periodically tripped its read cap on other
+  // books' gifts, mailing a "this digest was cut short" that was true about the
+  // scan and false about that chapter's giving. A rule that cries wolf teaches
+  // people to ignore it. Only an `"all"`-scope rule uses `by_created` now.
+  .index("by_scope_and_created", ["scope", "createdAt"])
   // Gifts manually attached to an event (the fundraiser attribution feature) —
   // powers the per-event gift list + `externalGiftsCents` recompute. Only
   // attached gifts have `eventId`; unattached rows are never in this index.

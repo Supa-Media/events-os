@@ -232,12 +232,14 @@ crons.cron(
 // from deploy time and would drift off the hour boundary the local-hour match
 // depends on.
 //
-// Idempotent: `claimDueDigests` stamps `lastSentAt` in the same transaction it
-// selects in, so a second pass inside the same local hour claims nothing. An
-// empty DAILY digest is skipped (and leaves the watermark alone); an empty
-// WEEKLY digest is sent on purpose — see `lib/givingNotificationRules.ts`.
-// No-ops when RESEND_API_KEY is unset (local/dev), and costs one bounded
-// indexed read per cadence per tick when no rule is due.
+// Idempotent: `claimDigest` moves a rule's marks in the same transaction it
+// reads its window in, so a second pass inside the same local hour claims
+// nothing. An empty DAILY digest is skipped (and leaves the watermark alone);
+// an empty WEEKLY digest is sent on purpose — see
+// `lib/givingNotificationRules.ts`. Returns before claiming ANYTHING when no
+// Resend key resolves (local/dev), so an unmailable sweep can never eat a
+// window; otherwise it costs one bounded indexed read per cadence per tick when
+// no rule is due.
 crons.cron(
   "giving notification digests",
   "0 * * * *",

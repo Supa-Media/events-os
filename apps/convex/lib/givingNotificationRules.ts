@@ -277,6 +277,37 @@ export function runDayKey(now: number): string {
   return localParts(now).dayKey;
 }
 
+/**
+ * The `lastRunDayKey` a rule should be BORN with (or come back from dormancy
+ * with), so its first digest isn't an empty one about a period it didn't exist
+ * for.
+ *
+ * The problem this closes: a rule whose send moment has ALREADY PASSED today is
+ * due the instant it is written, and its window opens at that same instant — so
+ * it can only ever be empty. For a weekly rule that lands as a confident "No
+ * giving this week" about a week nobody was watching, which is worse than
+ * saying nothing. Stamping today's key makes it wait for its next real
+ * occurrence, with a real window behind it.
+ *
+ * Deliberately NOT unconditional: a daily rule created at 6am for an 8am send
+ * still fires at 8am today, because that window is genuine. The test is
+ * literally "would this be due right now?", reusing `isDigestDue` so the two
+ * can never drift apart.
+ */
+export function firstRunDayKey(
+  rule: Pick<
+    Doc<"givingNotificationRules">,
+    "cadence" | "sendHourLocal" | "sendWeekday"
+  >,
+  now: number,
+): string | undefined {
+  const wouldFireNow = isDigestDue(
+    { ...rule, isActive: true, lastRunDayKey: undefined },
+    now,
+  );
+  return wouldFireNow ? runDayKey(now) : undefined;
+}
+
 /** The nominal length of a cadence's period — the fallback window when a rule
  *  has never sent. */
 export function cadencePeriodMs(cadence: string): number {

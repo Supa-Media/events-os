@@ -164,13 +164,15 @@ recipients want.
 
 Each tick:
 
-1. **`claimDueDigests` (mutation)** — for each daily/weekly rule, is its local
-   hour now, and has it not already gone out today? If so, compute the window,
-   count what's in it, decide whether to send, **stamp `lastSentAt`**, and
-   return the claim.
-2. **`digestPayload` (query)** — totals, largest gift, breakdown by book and by
-   source, and the itemized gift list (capped at 100 rows; totals still count
-   every gift and the email says how many were omitted).
+1. **`dueDigestRuleIds` (query)** — whose moment has arrived. Reads the rules
+   table only; touches no gifts.
+1b. **`claimDigest` (mutation, ONE PER RULE)** — reads that rule's window,
+   decides whether it sends, moves its marks, and returns the finished payload.
+2. The payload comes back from that same transaction — totals, largest gift,
+   breakdown by book and by source, and the itemized gift list (capped at 100
+   rows; totals still count every matched gift and the email says how many were
+   omitted). Built in the claim rather than re-read afterwards, so what is
+   mailed is exactly what was claimed.
 3. **`sendGivingDigests` (action)** — render and mail, per-recipient best
    effort.
 
@@ -210,6 +212,13 @@ A cut window is now handled honestly rather than hidden:
 
 - the watermark advances only to the **last gift actually read**, so the
   remainder is the next window rather than nobody's;
+- truncation means "we stopped early", not "we hit the cap" — hitting the cap on
+  the very last row of a range means the window was read in full, and calling
+  that truncated mailed a false "cut short";
+- a **scoped** rule reads its own book through `by_scope_and_created`. On the
+  global index a quiet chapter's rule walked every other book's gifts and
+  tripped its scan cap on them, crying wolf about a chapter that had two quiet
+  gifts;
 - the cut lands on a whole-millisecond boundary, so no gift sharing that instant
   is skipped or double-counted (imports write many gifts per millisecond);
 - the digest **sends regardless of what it matched**, which is what breaks the
@@ -235,6 +244,35 @@ An exact-hour match meant one dropped cron tick cost a whole day — and a whole
 *week* for a weekly rule — and a rule set to hour 2 was skipped entirely on the
 DST spring-forward Sunday, when local 02:00 does not exist. `>=` plus
 `lastRunDayKey` gives "at or after 8am, once today", which closes both.
+
+### A window is only consumed by a digest that actually got out
+
+Two ways the sweep used to eat a window and deliver nothing, both silent:
+
+- **No Resend key.** `sendEmailReporting` returns `false` rather than throwing
+  when no key resolves, so a deployment that had never configured one advanced
+  every watermark daily and mailed nothing — and the day someone configured the
+  key, every gift behind those watermarks was permanently un-digested. The
+  sweep now resolves the mailer **before claiming anything** and returns
+  (`skippedNoMailer: true`). Nothing has been consumed, so the backlog is simply
+  still there when a key appears. No duplicate-email trade-off, because no
+  window was ever claimed.
+- **A Resend outage.** Every recipient throws, each is caught per-recipient, and
+  the window was consumed anyway. A claim that reached **not one** recipient is
+  now handed back via `releaseDigest` and counted in `failedRules`, so the next
+  tick re-reads the same window. Partial delivery keeps the watermark — one bad
+  address must not make a whole team's digest repeat.
+
+`releaseDigest` only restores while `lastSentAt` is still exactly what the
+claim set, so a later run or a human edit is never rolled backwards.
+
+### A cut window drains hourly, not daily
+
+A truncated run **clears** `lastRunDayKey` instead of stamping it, so the drain
+continues on the next hourly tick. Otherwise a 5,000-gift import took a week of
+cut-short digests to report, with every later gift queued behind it. The drain
+stops on its own the moment a run completes its window, which stamps the mark
+normally.
 
 ### The window closes a minute early
 
@@ -322,15 +360,27 @@ even take the `"central"` sentinel).
   `saveRule` also refuses to create past `MAX_RULES` (`TOO_MANY_RULES`), so the
   cap can't be reached in the first place.
 
-### Reactivation does not replay the dormant period
+### A rule never opens with an empty digest about a period it wasn't watching
 
-`setRuleActive` stamps `lastSentAt = now` when a rule goes off → on. Otherwise a
-daily rule switched off for three months would come back and mail one digest
-covering three months of donor records. Turning something back on means "tell me
-what happens from here", not "catch me up on everything I chose not to be told".
-*Clearing* the field is the wrong fix — with no watermark the one-nominal-period
-fallback applies, which for a rule reactivated the day after a large import is
-exactly the replay this prevents.
+Three moments move a rule's marks, for the same reason:
+
+- **Reactivation.** `setRuleActive` stamps `lastSentAt = now` on off → on.
+  Otherwise a daily rule switched off for three months comes back and mails one
+  digest covering three months of donor records. *Clearing* the field is the
+  wrong fix — with no watermark the one-nominal-period fallback applies, which
+  the day after a large import is exactly the replay this prevents.
+- **Creation**, and **a cadence change**. `daily → immediate → daily` reached
+  that same dormant replay by another door, so a cadence change resets the marks
+  too. Scope and threshold changes deliberately do *not* — they narrow the same
+  stream, and the window stays honest.
+
+All three also set `lastRunDayKey` via **`firstRunDayKey`**, which asks "would
+this be due right now?" (reusing `isDigestDue`, so the two can't drift). A rule
+whose send moment has already passed today is due the instant it is written,
+against a window that opens at that same instant — so it can only be empty, and
+on a weekly rule that lands as a confident "No giving this week" about a week
+nobody was watching. Deliberately conditional: a daily rule created at 6am for
+an 8am send still fires at 8am, because that window is genuine.
 
 ### One email per person, not one per rule
 

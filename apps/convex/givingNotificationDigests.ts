@@ -85,6 +85,7 @@ import {
   type NotificationGift,
 } from "./lib/givingNotificationEmails";
 import { sendEmailReporting } from "./ticketingEmails";
+import { resolveResendSettings } from "./lib/resend";
 
 /**
  * How many MATCHING gifts one digest window will collect before it cuts the
@@ -92,11 +93,20 @@ import { sendEmailReporting } from "./ticketingEmails";
  * hundreds) and far below Convex's 16,384-document transaction read limit even
  * with a scan that matches nothing.
  */
-const MAX_DIGEST_MATCHES = 750;
+export const MAX_DIGEST_MATCHES = 750;
 
 /** Hard bound on rows READ per window, so a rule that matches almost nothing
  *  still can't walk an unbounded range inside one transaction. */
-const MAX_DIGEST_SCAN = 4000;
+export const MAX_DIGEST_SCAN = 4000;
+
+/** Injectable bounds, so the cut-window machinery — the most intricate code
+ *  here — can be tested at its real boundaries without writing thousands of
+ *  fixture rows. Production always uses the defaults. */
+export type WindowCaps = { maxMatches: number; maxScan: number };
+const DEFAULT_CAPS: WindowCaps = {
+  maxMatches: MAX_DIGEST_MATCHES,
+  maxScan: MAX_DIGEST_SCAN,
+};
 
 /** How many rules one hourly sweep will claim. A second sweep an hour later
  *  picks up any remainder — no rule is dropped, the work is just spread. */
@@ -129,35 +139,67 @@ type WindowResult = {
  * watermark were nudged back). Draining the instant is the only cut that does
  * neither.
  */
-async function collectWindowGifts(
+export async function collectWindowGifts(
   ctx: Pick<MutationCtx, "db">,
-  rule: Doc<"givingNotificationRules">,
+  rule: Pick<Doc<"givingNotificationRules">, "isActive" | "scope" | "minAmountCents">,
   since: number,
   until: number,
+  caps: WindowCaps = DEFAULT_CAPS,
 ): Promise<WindowResult> {
+  // A SCOPED rule reads only its own book. On the global index a quiet
+  // chapter's rule walked every other book's gifts and tripped its scan cap on
+  // them, mailing a "cut short" that was true about the read and false about
+  // that chapter's giving.
+  const stream =
+    rule.scope === "all"
+      ? ctx.db
+          .query("gifts")
+          .withIndex("by_created", (q) =>
+            q.gt("createdAt", since).lte("createdAt", until),
+          )
+      : ctx.db
+          .query("gifts")
+          .withIndex("by_scope_and_created", (q) =>
+            q
+              .eq("scope", rule.scope as Doc<"gifts">["scope"])
+              .gt("createdAt", since)
+              .lte("createdAt", until),
+          );
+
   const gifts: Doc<"gifts">[] = [];
   let scanned = 0;
   let capped = false;
   let boundaryTs = until;
+  // TRUNCATION IS "WE STOPPED EARLY", NOT "WE HIT THE CAP". Hitting the cap on
+  // the very last row of the range means the window was read in full — calling
+  // that truncated mailed a false "cut short" and needlessly held the watermark
+  // back.
+  let stoppedEarly = false;
 
-  for await (const gift of ctx.db
-    .query("gifts")
-    .withIndex("by_created", (q) =>
-      q.gt("createdAt", since).lte("createdAt", until),
-    )) {
+  for await (const gift of stream) {
     // Past a cap: keep taking rows that share the boundary instant, then stop.
-    if (capped && gift.createdAt !== boundaryTs) break;
+    // Several gifts can share a `createdAt` during an import, and the next
+    // window opens strictly AFTER the watermark — cutting mid-instant would
+    // skip them, and nudging the watermark back would re-report them.
+    if (capped && gift.createdAt !== boundaryTs) {
+      stoppedEarly = true;
+      break;
+    }
 
     scanned++;
     if (ruleMatchesGift(rule, gift)) gifts.push(gift);
 
-    if (!capped && (gifts.length >= MAX_DIGEST_MATCHES || scanned >= MAX_DIGEST_SCAN)) {
+    if (!capped && (gifts.length >= caps.maxMatches || scanned >= caps.maxScan)) {
       capped = true;
       boundaryTs = gift.createdAt;
     }
   }
 
-  return { gifts, truncated: capped, until: capped ? boundaryTs : until };
+  return {
+    gifts,
+    truncated: stoppedEarly,
+    until: stoppedEarly ? boundaryTs : until,
+  };
 }
 
 /** Which rules' moment has arrived. Rules only — no gift reads, so this can
@@ -277,13 +319,27 @@ export const claimDigest = internalMutation({
     // The watermark moves to where the window ACTUALLY closed. On a cut window
     // that is the last gift read, so the remainder is the next window's
     // problem rather than nobody's.
+    //
+    // A CUT WINDOW CLEARS the run mark instead of stamping it, so the drain
+    // continues on the next hourly tick rather than waiting for tomorrow. A
+    // 5,000-gift import otherwise took a week of cut-short digests to report,
+    // with every later gift queued behind it. Hourly ticks catch up the same
+    // day, and the drain stops on its own the moment a run completes the window
+    // (which stamps the mark normally).
     await ctx.db.patch(rule._id, {
       lastSentAt: window.until,
-      lastRunDayKey: dayKey,
+      lastRunDayKey: window.truncated ? undefined : dayKey,
       updatedAt: now,
     });
 
     return {
+      // What this claim CHANGED, so the action can put it back if not one
+      // recipient could be reached — see `releaseDigest`.
+      previousMarks: {
+        lastSentAt: rule.lastSentAt,
+        lastRunDayKey: rule.lastRunDayKey,
+      },
+      claimedUntil: window.until,
       recipients: rule.recipients,
       payload: {
         ruleName: rule.name,
@@ -305,13 +361,59 @@ export const claimDigest = internalMutation({
 });
 
 /**
+ * Put a claim's marks back, because not one recipient could be reached.
+ *
+ * A WINDOW MAY ONLY BE CONSUMED BY A DIGEST THAT ACTUALLY GOT OUT. Delivery
+ * failure is caught per recipient so one bad address can't cost a team their
+ * digest — but when EVERY recipient fails, the whole point of moving the
+ * watermark has gone, and leaving it moved means those gifts are never reported
+ * by any digest, ever. Convex does not retry a failed scheduled action, so
+ * there is no second chance to lean on.
+ *
+ * Guarded against clobbering: it only restores while `lastSentAt` is still
+ * exactly what this claim set, so a later run (or a human edit) that has
+ * already moved on is never rolled backwards.
+ */
+export const releaseDigest = internalMutation({
+  args: {
+    ruleId: v.id("givingNotificationRules"),
+    claimedUntil: v.number(),
+    previousLastSentAt: v.optional(v.number()),
+    previousLastRunDayKey: v.optional(v.string()),
+  },
+  returns: v.boolean(),
+  handler: async (ctx, args) => {
+    const rule = await ctx.db.get(args.ruleId);
+    if (!rule) return false;
+    if (rule.lastSentAt !== args.claimedUntil) return false;
+    await ctx.db.patch(args.ruleId, {
+      lastSentAt: args.previousLastSentAt,
+      lastRunDayKey: args.previousLastRunDayKey,
+    });
+    return true;
+  },
+});
+
+/**
  * The hourly sweep. Claims, renders, sends — with a `try` around EACH rule, so
  * a rule that throws while being claimed or rendered costs itself and nothing
  * else, and a `try` around each recipient inside that, so one bad address
  * can't cost the rest of a fundraising team their digest.
  *
- * A deployment with no Resend key degrades to a logged no-op inside
- * `sendEmailReporting`.
+ * ── NOTHING IS CLAIMED THAT CANNOT BE MAILED ───────────────────────────────
+ * Two ways the sweep used to eat a window and deliver nothing, both silent:
+ *
+ *  1. NO RESEND KEY. `sendEmailReporting` returns `false` rather than throwing
+ *     when no key resolves, so a deployment that had never configured one
+ *     advanced every watermark daily and mailed nothing — and the day someone
+ *     configured the key, every gift behind those watermarks was permanently
+ *     un-digested. Resolved up front now, and the sweep returns BEFORE claiming
+ *     anything. Nothing has been consumed, so the backlog is simply still there
+ *     when a key appears.
+ *  2. A RESEND OUTAGE. Every recipient throws, each is caught per-recipient,
+ *     and the window was consumed anyway. Now a claim where NOT ONE recipient
+ *     was reached is released (`releaseDigest`) and counted in `failedRules`,
+ *     so the next tick re-reads the same window.
  */
 export const sendGivingDigests = internalAction({
   args: {},
@@ -319,6 +421,7 @@ export const sendGivingDigests = internalAction({
     digestsSent: v.number(),
     emailsSent: v.number(),
     failedRules: v.number(),
+    skippedNoMailer: v.boolean(),
   }),
   handler: async (
     ctx,
@@ -326,7 +429,26 @@ export const sendGivingDigests = internalAction({
     digestsSent: number;
     emailsSent: number;
     failedRules: number;
+    skippedNoMailer: boolean;
   }> => {
+    // BEFORE anything is claimed. See the module doc — this ordering is the
+    // whole fix, and it has no duplicate-email trade-off because no window has
+    // been consumed yet.
+    const mailer = await resolveResendSettings(ctx);
+    if (!mailer) {
+      console.log(
+        "[givingNotifications] digest sweep skipped: no Resend key configured. " +
+          "No watermark advanced, so nothing is lost — the backlog will be sent " +
+          "once a key is set.",
+      );
+      return {
+        digestsSent: 0,
+        emailsSent: 0,
+        failedRules: 0,
+        skippedNoMailer: true,
+      };
+    }
+
     const ruleIds = await ctx.runQuery(
       internal.givingNotificationDigests.dueDigestRuleIds,
       {},
@@ -343,12 +465,13 @@ export const sendGivingDigests = internalAction({
         );
         if (!built) continue;
         const { subject, html } = renderDigestEmail(built.payload);
-        digestsSent++;
+
+        let delivered = 0;
         for (const to of built.recipients) {
           try {
             // Counts DELIVERIES, not attempts — see `notifyGiftRecorded`.
             if (await sendEmailReporting(ctx, { to, subject, html })) {
-              emailsSent++;
+              delivered++;
             }
           } catch (err) {
             console.error(
@@ -357,6 +480,28 @@ export const sendGivingDigests = internalAction({
             );
           }
         }
+
+        if (delivered === 0) {
+          // Not one recipient reached — give the window back.
+          failedRules++;
+          console.error(
+            `[givingNotifications] digest for rule ${ruleId} reached nobody; ` +
+              "releasing its window so the next run re-reads it",
+          );
+          await ctx.runMutation(
+            internal.givingNotificationDigests.releaseDigest,
+            {
+              ruleId,
+              claimedUntil: built.claimedUntil,
+              previousLastSentAt: built.previousMarks.lastSentAt,
+              previousLastRunDayKey: built.previousMarks.lastRunDayKey,
+            },
+          );
+          continue;
+        }
+
+        digestsSent++;
+        emailsSent += delivered;
       } catch (err) {
         // LOUD, and names the rule — a lost digest that nothing in the logs
         // ties back to a rule is the failure mode this catch exists to avoid.
@@ -367,6 +512,6 @@ export const sendGivingDigests = internalAction({
         );
       }
     }
-    return { digestsSent, emailsSent, failedRules };
+    return { digestsSent, emailsSent, failedRules, skippedNoMailer: false };
   },
 });
