@@ -40,10 +40,10 @@
 import {
   BOOK_VALUE_ZERO_REASON_LABELS,
   TRANSACTION_STATUS_LABELS,
-  AUTO_TRANSFER_ORIGIN_LABELS,
+  bookValueLineTitle,
+  bookValueRailLabel,
+  bookValueTitleUsedNote,
   formatCents,
-  transactionSourceLabel,
-  type AutoTransferOrigin,
   type BookValueZeroReason,
   type TransactionStatus,
 } from "@events-os/shared";
@@ -69,48 +69,21 @@ export interface BookValueLineIdentity {
 }
 
 /**
- * WHAT THIS ROW IS, in the order a reader would accept an answer.
- *
- * The bookkeeper's rename first, then the provider's own strings (the same
- * chain `displayMerchantName` resolves — the rename never overwrites
- * provenance), then the bookkeeper's note, and only then a generic that at
- * least names the rail. "(no description)" was none of those: it described the
- * app's own gap and told the reader nothing about the money.
+ * WHAT THIS ROW IS — re-exported from `@events-os/shared` rather than
+ * implemented here, because the SERVER names rows too: `bookValueLines`
+ * labels the members of each "same amount, same day" group. Two
+ * implementations meant one settlement reading "Auto settlement" on one tab
+ * and "Recorded transfer" on the next, and an unlabeled row rendering as a
+ * bare `ledger: ` in the group list while the ledger tab named its rail.
  */
-export function lineTitle(row: BookValueLineIdentity): string {
-  const provided =
-    trimmed(row.merchantNameOverride) ??
-    trimmed(row.merchantName) ??
-    trimmed(row.description) ??
-    trimmed(row.note);
-  if (provided) return provided;
-  return `Unlabeled ${railLabel(row).toLowerCase()} row`;
-}
+export const lineTitle = bookValueLineTitle;
 
 /** True when `lineTitle` fell back to the note, so the detail line doesn't
  *  print the same sentence twice. */
-export function titleUsedNote(row: BookValueLineIdentity): boolean {
-  return (
-    trimmed(row.merchantNameOverride) == null &&
-    trimmed(row.merchantName) == null &&
-    trimmed(row.description) == null &&
-    trimmed(row.note) != null
-  );
-}
+export const titleUsedNote = bookValueTitleUsedNote;
 
-/**
- * WHICH RAIL CARRIED IT. An engine-written transfer names the engine step it
- * came from ("Auto settlement") rather than its `source`, which for every one
- * of them is the generic `"transfer"` and would tell a reader nothing about
- * why the row exists.
- */
-export function railLabel(row: BookValueLineIdentity): string {
-  const origin = row.transferOrigin;
-  if (origin && origin in AUTO_TRANSFER_ORIGIN_LABELS) {
-    return AUTO_TRANSFER_ORIGIN_LABELS[origin as AutoTransferOrigin];
-  }
-  return transactionSourceLabel(row.source);
-}
+/** WHICH RAIL CARRIED IT — origin-aware, so an engine leg names its step. */
+export const railLabel = bookValueRailLabel;
 
 /** The rail, then the review state — the two facts that say where to go look.
  *  Replaces `category · source · status`; the coding moved to its own line
@@ -214,12 +187,18 @@ export function transferNote(row: {
         "migration 0044 — this row predates that.",
     };
   }
+  // NOT "…only transfers between our own accounts count as nothing": a
+  // central↔chapter transfer IS between our own accounts, so that clause
+  // contradicted itself on the very rows it rendered on. The discriminator is
+  // `preMarkFlow` — whether a HUMAN declared two ingested bank rows to be one
+  // movement — not who owns the accounts.
   return {
     badge,
     sentence:
       `A recorded transfer ${paid ? "to" : "from"} ${other}, with a direction on it. ` +
       `A directed transfer between the books moves value from the side that gave to the side ` +
-      `that received; only transfers between accounts we already own count as nothing.`,
+      `that received. The transfers counted as nothing are the ones a bookkeeper MARKED as two ` +
+      `legs of one movement — this one was recorded as a transfer between the books instead.`,
   };
 }
 
@@ -240,9 +219,4 @@ export function zeroReasonLabel(reason: BookValueZeroReason): string {
  *  a column of debits reads as one at a glance. */
 export function signedAmount(cents: number): string {
   return cents > 0 ? `+${formatCents(cents)}` : formatCents(cents);
-}
-
-function trimmed(value: string | null | undefined): string | null {
-  const t = value?.trim();
-  return t ? t : null;
 }

@@ -99,8 +99,7 @@ import {
   STRIPE_PAYOUT_PROCESS_STATES,
   RECONCILIATION_FLAG_KINDS,
   BOOK_VALUE_ZERO_REASONS,
-  displayMerchantName,
-  transactionSourceLabel,
+  bookValueLineTitle,
   type BookValueZeroReason,
   type PayoutItemKind,
 } from "@events-os/shared";
@@ -4234,9 +4233,23 @@ export const bookValueBreakdown = query({
  * string-concatenated at four sites, and the vocabulary it draws on is
  * `lib/bookBalance.ts`'s — the UI does not get a second theory of what counts.
  *
+ * ── A READ CEILING THIS QUERY IS ALREADY PAST, AT ITS CAPS ──────────────────
  * Bounded by `ROLLUP_SCAN_LIMIT` per collection, and `truncated` says so rather
  * than quietly returning a short list — a partial audit that looks complete is
  * worse than one that admits its edge.
+ *
+ * But note what those bounds ADD UP TO. Six `take(ROLLUP_SCAN_LIMIT)` scans
+ * (gifts, sales, ticket orders, registrations, transactions, budget
+ * categories) is ~30,000 documents at the cap, against Convex's 16,384-document
+ * read ceiling — so a book big enough to hit these limits fails the query
+ * outright rather than returning a truncated answer. That is PRE-EXISTING and
+ * not what this comment is asking anyone to fix today; on this deployment the
+ * largest book is three orders of magnitude short of it. It is written down
+ * because the identity projection added per-row reads (person, budget, coding,
+ * transfer counterparty — all batched, all gated) and someone measuring the
+ * cost of the next addition should know the headroom is already negative in
+ * the theoretical worst case, and that the real fix is pagination, not a
+ * smaller projection.
  */
 export const bookValueLines = query({
   args: { scope: financeScopeValidator },
@@ -4278,10 +4291,11 @@ export const bookValueLines = query({
          *  explicable. `budgetName` is the explicit attribution
          *  (`transactions.budgetId`), never a derived match. */
         budgetName: v.union(v.string(), v.null()),
-        /** The substantiation sentence off `transactionCodings`, resolved the
-         *  way the published ledger resolves it (`publicPurpose ?? business
-         *  Purpose`). Structured attendee/traveler names are NOT returned —
-         *  this is a totals audit, not the coding review screen. */
+        /** The AUTHOR'S substantiation sentence off `transactionCodings` —
+         *  `businessPurpose`, deliberately not the approver's public
+         *  redaction; see the handler. Structured attendee/traveler names are
+         *  NOT returned: this is a totals audit, not the coding review
+         *  screen. */
         codedPurpose: v.union(v.string(), v.null()),
         /** Documentation exists — a receipt file or an approved exception.
          *  Says where to go look, without shipping the file. */
@@ -4535,17 +4549,33 @@ export const bookValueLines = query({
 
     // Only rows that HAVE a coding are looked up — `codingState` is the
     // denormalized mirror of the coding row's status, so the gate costs no
-    // read at all and the lookups are bounded by the codings that exist.
+    // read at all — and the surviving lookups go out together, like the
+    // person and budget reads above. A sequential `await` per row inside the
+    // loop was the one un-batched read of the three.
+    //
+    // THE AUTHOR'S OWN WORDS, NOT THE PUBLICATION REDACTION. `publishedPurpose`
+    // is deliberately NOT called here, and this is not a DRY miss: that helper
+    // answers "what does the PUBLIC ledger print", preferring an approver's
+    // redacted rewrite. This screen is the opposite surface — gated on
+    // `requireReconciliationAudit` (Executive Director / Financial Manager),
+    // and its entire job is explaining a charge. Printing the redaction would
+    // hide detail from the two roles entitled to see everything, on the one
+    // page that exists to show it, which is how `transactionCodings`'
+    // `projectCoding` already treats internal readers: it sends BOTH.
+    //
+    // The structured attendee/traveler names are still NOT returned — those
+    // are protected by `canSeeNames`, this is a totals audit, and one sentence
+    // is what a line needs.
+    const codedRows = kept.filter(({ tr }) => tr.codingState != null);
+    const codings = await Promise.all(
+      codedRows.map(({ tr }) => codingForTransaction(ctx, tr._id)),
+    );
     const codedPurpose = new Map<string, string>();
-    for (const { tr } of kept) {
-      if (tr.codingState == null) continue;
-      const coding = await codingForTransaction(ctx, tr._id);
-      if (!coding) continue;
-      // `publicPurpose ?? businessPurpose` — the published ledger's own rule.
-      // A totals audit needs the sentence, not the attendee list, so no names
-      // are resolved here and none are returned.
-      codedPurpose.set(tr._id as string, coding.publicPurpose ?? coding.businessPurpose);
-    }
+    codings.forEach((coding, i) => {
+      if (coding) {
+        codedPurpose.set(codedRows[i].tr._id as string, coding.businessPurpose);
+      }
+    });
 
     // The other book a transfer pair crosses to. Only pair legs are looked up
     // (a `transferGroupId` is what makes a row one), and each group once.
@@ -4612,12 +4642,14 @@ export const bookValueLines = query({
       else buckets.set(key, [label]);
     };
     for (const e of earned) add(e.amountCents, e.at, `${e.kind}: ${e.label}`);
+    // THE SAME NAME THE LEDGER TAB GIVES THE ROW. `displayMerchantName` is
+    // wrong here and was: it chains on `??`, and `description` is normalized
+    // to `""` above, so an unlabeled row resolved to the empty string and the
+    // fallback was unreachable — this list printed a bare `ledger: ` where it
+    // used to print `ledger: (no description)`. Worse than what it replaced,
+    // inside the change that exists to fix exactly that.
     for (const l of ledger) {
-      add(
-        l.amountCents,
-        l.at,
-        `ledger: ${displayMerchantName(l, `unlabeled ${transactionSourceLabel(l.source)} row`)}`,
-      );
+      add(l.amountCents, l.at, `ledger: ${bookValueLineTitle(l)}`);
     }
     const sameAmountSameDay = [...buckets.entries()]
       .filter(([, members]) => members.length > 1)

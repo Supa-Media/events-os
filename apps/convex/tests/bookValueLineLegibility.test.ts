@@ -9,6 +9,7 @@ import {
 } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { signedBookCents } from "../lib/bookBalance";
 
 /**
  * WHAT A LINE OF BOOK VALUE SAYS ABOUT ITSELF.
@@ -135,6 +136,41 @@ describe("a row says which charge it was, even with no description", () => {
     expect(row.personName).toBe("Caller");
   });
 
+  test("the coding shows the AUTHOR's words, not the approver's public redaction", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await asCentralEd(s);
+    const transactionId = await insertTxn(s, "central", {
+      source: "increase_card",
+      merchantName: "AMTRAK",
+      codingState: "approved",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactionCodings", {
+        transactionId,
+        chapterId: "central",
+        expenseType: "travel",
+        businessPurpose:
+          "Travel with Michael Reid from all team meeting in Manhattan",
+        publicPurpose: "Travel from the all-team meeting in Manhattan",
+        status: "approved",
+        codedByPersonId: personId,
+        codedByUserId: s.userId,
+        submittedAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    // `publishedPurpose` is the PUBLIC ledger's rule and is deliberately not
+    // used here: this page is gated on `requireReconciliationAudit` (ED / FM),
+    // and its whole job is explaining a charge. Handing those two roles the
+    // redaction would hide detail from the only people entitled to all of it.
+    const row = (await lines(s)).ledger[0];
+    expect(row.codedPurpose).toBe(
+      "Travel with Michael Reid from all team meeting in Manhattan",
+    );
+  });
+
   test("a row counted as ZERO is just as identifiable as one that counted", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -231,16 +267,94 @@ describe("each zero is given its OWN reason", () => {
       transferOrigin: "balance_settlement",
       amountCents: 461_690,
     });
+    await insertTxn(s, "central", {
+      source: "transfer",
+      flow: "transfer",
+      amountCents: 25_000,
+    });
+    await insertTxn(s, "central", {
+      source: "increase_ach",
+      flow: "inflow",
+      amountCents: 3_000,
+    });
 
     const result = await lines(s);
-    // Every zero row stayed a zero row: only the $80.85 of real spend counts.
-    expect(result.ledgerNetCents).toBe(-8085);
+
+    // NOT A HARDCODED PIN. The expected total is derived from the AUTHORITY,
+    // over the same documents, in the test — so this fails if the query's
+    // reclassification ever changes which rows reach the sum, and it cannot
+    // be made to pass by editing a number to match a new answer.
+    const authority = await run(s.t, async (ctx) => {
+      const all = await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", "central" as const))
+        .collect();
+      return all.reduce((sum, tr) => sum + signedBookCents(tr), 0);
+    });
+    expect(result.ledgerNetCents).toBe(authority);
+
+    // And the published total is exactly the rows the page shows, so a row
+    // moving between the two tabs can never silently change the figure.
     expect(result.ledgerNetCents).toBe(
       result.ledger.reduce((sum, l) => sum + l.amountCents, 0),
     );
     expect(result.bookBalanceCents).toBe(
       result.revenueCents + result.ledgerNetCents,
     );
+
+    // The grouped rung re-derives the same arithmetic on its own code path;
+    // the two must never quietly disagree.
+    const breakdown = await s.as.query(api.reconciliation.bookValueBreakdown, {
+      scope: "central",
+    });
+    expect(breakdown.ledgerNetCents).toBe(result.ledgerNetCents);
+    expect(breakdown.bookBalanceCents).toBe(result.bookBalanceCents);
+  });
+});
+
+describe("the 'same amount, same day' members are named too", () => {
+  test("an unlabeled row names its rail there as well — not a bare 'ledger:'", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const at = Date.now();
+    // Two unlabeled Relay rows, same amount, same day — the shape the wide net
+    // exists to surface, and the shape that has no merchant string to print.
+    await insertTxn(s, "central", { source: "stripe_fc", amountCents: 5541, postedAt: at });
+    await insertTxn(s, "central", { source: "stripe_fc", amountCents: 5541, postedAt: at });
+
+    const group = (await lines(s)).sameAmountSameDay[0];
+    expect(group.members).toHaveLength(2);
+    // `displayMerchantName` chains on `??` and the projection normalizes
+    // `description` to `""`, so it resolved to the empty string and printed
+    // "ledger: " — the original complaint, one tab over.
+    for (const member of group.members) {
+      expect(member).toBe("ledger: Unlabeled relay bank feed row");
+    }
+  });
+
+  test("an engine leg is named the same way here as on the ledger tab", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const at = Date.now();
+    const fields = {
+      source: "transfer",
+      flow: "transfer",
+      transferOrigin: "auto_settlement",
+      transferDirection: "chapter_to_central",
+      amountCents: 4_000,
+      postedAt: at,
+    };
+    await insertTxn(s, "central", { ...fields, transferGroupId: "g1" });
+    await insertTxn(s, "central", { ...fields, transferGroupId: "g2" });
+
+    const group = (await lines(s)).sameAmountSameDay[0];
+    // "Auto settlement", not the generic "Recorded transfer" its `source`
+    // reads — the same rail name `railLabel` gives it on the ledger tab.
+    for (const member of group.members) {
+      expect(member).toBe("ledger: Unlabeled auto settlement row");
+    }
   });
 });
 

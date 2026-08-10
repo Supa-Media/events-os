@@ -25,6 +25,9 @@ import {
   transactionSourceLabel,
   BOOK_VALUE_ZERO_REASONS,
   BOOK_VALUE_ZERO_REASON_LABELS,
+  bookValueLineTitle,
+  bookValueRailLabel,
+  bookValueTitleUsedNote,
 } from "./finance";
 
 /**
@@ -301,6 +304,70 @@ describe("transaction source labels", () => {
 
   test("a source this map has never seen renders as words", () => {
     expect(transactionSourceLabel("some_future_rail")).toBe("some future rail");
+  });
+});
+
+describe("naming a book-value row", () => {
+  const bare = {
+    description: "",
+    merchantName: null,
+    merchantNameOverride: null,
+    note: null,
+    source: "stripe_fc",
+    transferOrigin: null,
+  };
+
+  test("an EMPTY description is not an answer — the trap `displayMerchantName` fell into", () => {
+    // Both book-value queries normalize `description` to `""` so the field can
+    // be a plain `v.string()`. `displayMerchantName(row, fallback)` chains on
+    // `??`, so `""` counts as a value, the fallback is unreachable, and the
+    // row renders as nothing at all.
+    expect(displayMerchantName(bare, "fallback")).toBe("");
+    expect(bookValueLineTitle(bare)).toBe("Unlabeled relay bank feed row");
+  });
+
+  test("whitespace is not an answer either", () => {
+    expect(
+      bookValueLineTitle({ ...bare, merchantName: "  ", description: "\n" }),
+    ).toBe("Unlabeled relay bank feed row");
+  });
+
+  test("the chain runs rename → merchant → description → note", () => {
+    expect(
+      bookValueLineTitle({ ...bare, merchantNameOverride: "Costco", merchantName: "IC* COSTCO" }),
+    ).toBe("Costco");
+    expect(bookValueLineTitle({ ...bare, merchantName: "IC* COSTCO" })).toBe(
+      "IC* COSTCO",
+    );
+    expect(bookValueLineTitle({ ...bare, description: "Givebutter fees" })).toBe(
+      "Givebutter fees",
+    );
+    expect(bookValueLineTitle({ ...bare, note: "Van hire" })).toBe("Van hire");
+    expect(bookValueTitleUsedNote({ ...bare, note: "Van hire" })).toBe(true);
+    expect(
+      bookValueTitleUsedNote({ ...bare, merchantName: "Uber", note: "airport" }),
+    ).toBe(false);
+  });
+
+  test("an engine leg names its step, not the generic source every one of them carries", () => {
+    expect(
+      bookValueRailLabel({ ...bare, source: "transfer", transferOrigin: "auto_settlement" }),
+    ).toBe("Auto settlement");
+    expect(bookValueRailLabel({ ...bare, source: "transfer" })).toBe(
+      "Recorded transfer",
+    );
+    // An origin this map hasn't been taught falls back rather than blanking.
+    expect(
+      bookValueRailLabel({ ...bare, source: "transfer", transferOrigin: "future" }),
+    ).toBe("Recorded transfer");
+  });
+
+  test("the unlabeled fallback uses the SAME rail name the row is badged with", () => {
+    const row = { ...bare, source: "transfer", transferOrigin: "auto_settlement" };
+    expect(bookValueLineTitle(row)).toBe("Unlabeled auto settlement row");
+    expect(bookValueLineTitle(row)).toContain(
+      bookValueRailLabel(row).toLowerCase(),
+    );
   });
 });
 

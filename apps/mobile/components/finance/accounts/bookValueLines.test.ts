@@ -262,6 +262,22 @@ describe("transferNote", () => {
     ).toContain("0044");
   });
 
+  test("the generic sentence does not contradict itself on the rows it renders on", () => {
+    const sentence = transferNote({
+      flow: "transfer",
+      source: "transfer",
+      transferOrigin: null,
+      amountCents: -287321,
+      counterpartyName: "New York",
+    })!.sentence;
+    // A central↔chapter transfer IS between accounts we already own, so
+    // "only transfers between accounts we already own count as nothing" was
+    // false on exactly the rows carrying it. The discriminator is whether a
+    // human MARKED the pair (`preMarkFlow`), not who owns the accounts.
+    expect(sentence).not.toContain("accounts we already own");
+    expect(sentence).toContain("MARKED");
+  });
+
   test("a hand-recorded directed pair names which way it went", () => {
     expect(
       transferNote({

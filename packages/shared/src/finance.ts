@@ -237,9 +237,14 @@ export function transactionSourceLabel(source: string): string {
  * nothing to do with a missing direction, and telling a treasurer to go
  * "categorise" them sends him after work that isn't there.
  *
- * `linked_gift` is the one code with no branch in `signedBookCents`: the query
- * skips those rows before it ever asks, because the gift layer already counted
- * that money.
+ * Two of the eight have no branch in `signedBookCents` at all, for opposite
+ * reasons. `linked_gift` is decided BEFORE it is asked — the query skips those
+ * rows because the gift layer already counted that money. `zero_amount` is
+ * decided AFTER: a $0.00 row goes down an ordinary inflow/outflow branch and
+ * signs to zero arithmetically, so it is not a rule at all, just a row with
+ * nothing in it. Naming it separately keeps it out of
+ * `unknown_transfer_shape`, which is the only code that means "go fix
+ * something".
  */
 export const BOOK_VALUE_ZERO_REASONS = [
   "linked_gift",
@@ -1468,6 +1473,73 @@ export function providerMerchantName(
   fallback = "Unlabeled charge",
 ): string {
   return row.merchantName ?? row.description ?? fallback;
+}
+
+// ── Naming a book-value row ─────────────────────────────────────────────────
+/** Everything the title chain and the rail name are resolved from. */
+export interface BookValueRowLabelSource extends MerchantNameSource {
+  /** The bookkeeper's freeform "who was this for and why". */
+  note?: string | null;
+  /** `transactions.source` — the rail. */
+  source: string;
+  /** `transactions.transferOrigin`, when the engine wrote the row. */
+  transferOrigin?: string | null;
+}
+
+/**
+ * WHICH RAIL CARRIED THE ROW, for a row that may be an engine transfer.
+ *
+ * An engine-written leg names the engine STEP it came from ("Auto
+ * settlement"), because its `source` is the generic `"transfer"` every one of
+ * them carries and that says nothing about why the row exists.
+ *
+ * Here rather than in the mobile screen because the SERVER names rows too —
+ * the "same amount, same day" members are labelled in the query — and the two
+ * paths disagreeing means one settlement row reads "Auto settlement" on one
+ * tab and "Recorded transfer" on the next.
+ */
+export function bookValueRailLabel(row: BookValueRowLabelSource): string {
+  const origin = row.transferOrigin;
+  if (origin && origin in AUTO_TRANSFER_ORIGIN_LABELS) {
+    return AUTO_TRANSFER_ORIGIN_LABELS[origin as AutoTransferOrigin];
+  }
+  return transactionSourceLabel(row.source);
+}
+
+/**
+ * WHAT THIS ROW IS, in the order a reader would accept an answer: the
+ * bookkeeper's rename, then the provider's own strings, then the bookkeeper's
+ * note, and only then a generic that at least names the rail.
+ *
+ * NOT `displayMerchantName` with a fallback. That chains on `??`, and a
+ * projection that normalizes `description` to `""` (both book-value queries
+ * do, so the field can be a plain `v.string()`) makes the empty string a
+ * "value" — the fallback becomes unreachable and an unlabeled row renders as
+ * nothing at all. That is exactly the bug this whole area exists to fix, so
+ * every candidate here is TRIMMED and an empty one is not an answer.
+ */
+export function bookValueLineTitle(row: BookValueRowLabelSource): string {
+  return (
+    firstNonBlank(row.merchantNameOverride, row.merchantName, row.description, row.note) ??
+    `Unlabeled ${bookValueRailLabel(row).toLowerCase()} row`
+  );
+}
+
+/** True when `bookValueLineTitle` fell back to the note, so a caller doesn't
+ *  print the same sentence twice. */
+export function bookValueTitleUsedNote(row: BookValueRowLabelSource): boolean {
+  return (
+    firstNonBlank(row.merchantNameOverride, row.merchantName, row.description) == null &&
+    firstNonBlank(row.note) != null
+  );
+}
+
+function firstNonBlank(...values: (string | null | undefined)[]): string | null {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
 }
 
 // ── Card requests (WP-C.1: request-a-card) ──────────────────────────────────
