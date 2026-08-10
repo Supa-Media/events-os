@@ -394,9 +394,13 @@ export function TransactionCodingSection({
           }
           submitting={submitting}
           onCancel={() => setEditing(false)}
-          onConfirm={(value: CodingFormValue) =>
+          onConfirm={({ budgetId, ...value }: CodingFormValue) =>
             void run(async () => {
-              await submit({ transactionId, ...value });
+              await submit({
+                transactionId,
+                ...value,
+                ...(budgetId ? { budgetId: budgetId as Id<"budgets"> } : {}),
+              });
               setEditing(false);
             })
           }
