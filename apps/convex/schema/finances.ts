@@ -2050,6 +2050,15 @@ export const transactionCodings = defineTable({
   // The reviewer's latest send-back note ("receipt must show exact amount") —
   // required on `changes_requested`, cleared on approval.
   reviewNote: v.optional(v.string()),
+  // When the REVIEWERS were last told this coding is waiting on them. The
+  // sibling of `transactions.lastReminderSentAt` on the cardholder side, and
+  // the same job: without it the daily sweep would re-mail the same queue
+  // every morning. Set by `cards.ts#advanceCodingReviewReminders`, which is
+  // also the only reader — a coding is re-nudged no sooner than
+  // `CODING_REVIEW_RENUDGE_DAYS` after this, and a coding that predates the
+  // notification entirely is stamped SILENTLY on first touch so arming the
+  // feature can't mail anybody about months of history.
+  reviewerRemindedAt: v.optional(v.number()),
 })
   // At most one row per transaction (enforced by `lib/transactionCoding.ts`).
   .index("by_transaction", ["transactionId"])

@@ -90,6 +90,7 @@ import {
   CARD_REQUEST_STATUSES,
   REPAYMENT_METHODS,
   REPAYMENT_STATUSES,
+  CENTRAL,
   RECEIPT_GRACE_DAYS,
   RECEIPT_ESCALATE_DAYS,
   EXTERNAL_ACCOUNT_FUNDINGS,
@@ -124,6 +125,7 @@ import {
   requireCentralFinanceRole,
   getFinanceRole,
   getChapterAccountForMode,
+  type FinanceScope,
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
 import {
@@ -148,6 +150,8 @@ import {
   isDocumented,
   isUncodedCharge,
 } from "./lib/codingReminders";
+import { listCodingReviewerPersonIds } from "./lib/transactionCodingAccess";
+import { listActiveChapters } from "./lib/chapters";
 import { codingForTransaction, codingPolicy } from "./lib/transactionCoding";
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
@@ -4453,6 +4457,286 @@ export const sendReceiptReminders = internalAction({
       }
     }
     return { flaggedCount: flagged.length, escalatedCount: escalated.length };
+  },
+});
+
+// ── The OTHER half of the loop: telling a REVIEWER something is waiting ──────
+//
+// Everything above chases the cardholder. Nothing, until now, chased the
+// reviewer: `notifyCodingSentBack` emails the author when a coding comes back,
+// and that was the entire notification surface. A submitted coding sat in a
+// queue nobody was told about, which is exactly what happened — six of them,
+// submitted and never once looked at, with zero approvals in `financeAuditLog`
+// since the feature shipped.
+//
+// Built to the same shape as the receipt digest above (advance-and-mark →
+// group by recipient → one email each), and to the same safety rules, because
+// the failure mode here is worse: the receipt digest mails ONE cardholder
+// about their own charges, while this one mails a small group about everybody
+// else's. Three guards, all of them load-bearing:
+//
+//   1. BATCHED. One email per reviewer per run listing every coding waiting on
+//      them — never one per submission.
+//   2. CAPPED at `REMINDER_BATCH_LIMIT` codings per run, oldest-submitted
+//      first, exactly like `advanceReceiptReminders`.
+//   3. SEED-ONLY on first touch. A coding that has been waiting longer than
+//      `REMINDER_SEED_ONLY_DAYS` when this feature first sees it gets its
+//      `reviewerRemindedAt` stamped SILENTLY — arming this must not mail
+//      anybody about months of history. After that first touch it behaves
+//      normally, so a genuinely stale queue is still chased; what's suppressed
+//      is the one-time backlog, not the follow-up.
+
+/** Wait this long after submission before the first nudge. A coding submitted
+ *  an hour ago isn't late, and a reviewer who gets mail the moment anyone
+ *  submits learns to ignore the mail. Mirrors the receipt sweep's day-1
+ *  `flagCutoff`. */
+const CODING_REVIEW_GRACE_DAYS = 1;
+/** And no more often than this once nudged. A queue somebody is deliberately
+ *  leaving alone shouldn't generate a daily email. */
+const CODING_REVIEW_RENUDGE_DAYS = 7;
+
+/**
+ * Select the codings whose reviewers should be nudged this pass and stamp
+ * them, returning only what was actually stamped-and-mailable.
+ *
+ * The stamp happens in the same transaction as the selection, so a crash
+ * between here and the send costs at most one nudge rather than repeating it
+ * every morning — the `receiptReplyBatches` claim-before-send posture, applied
+ * to a field instead of a table.
+ */
+export const advanceCodingReviewReminders = internalMutation({
+  args: {},
+  returns: v.array(v.id("transactionCodings")),
+  handler: async (ctx): Promise<Id<"transactionCodings">[]> => {
+    const now = Date.now();
+    const graceCutoff = now - CODING_REVIEW_GRACE_DAYS * DAY_MS;
+    const renudgeCutoff = now - CODING_REVIEW_RENUDGE_DAYS * DAY_MS;
+    const seedOnlyCutoff = now - REMINDER_SEED_ONLY_DAYS * DAY_MS;
+
+    const books: FinanceScope[] = [
+      CENTRAL,
+      ...(await listActiveChapters(ctx, AUTOLOCK_LIMIT)).map((c) => c._id),
+    ];
+    const candidates: Doc<"transactionCodings">[] = [];
+    for (const book of books) {
+      const rows = await ctx.db
+        .query("transactionCodings")
+        .withIndex("by_chapter_and_status", (q) =>
+          q.eq("chapterId", book).eq("status", "submitted"),
+        )
+        .take(AUTOLOCK_LIMIT);
+      for (const row of rows) {
+        if (row.submittedAt > graceCutoff) continue;
+        if (row.reviewerRemindedAt != null && row.reviewerRemindedAt > renudgeCutoff) {
+          continue;
+        }
+        candidates.push(row);
+      }
+    }
+
+    // Oldest submission first — the ones the accountable-plan clock has been
+    // running longest against are the ones worth a reviewer's attention.
+    candidates.sort((a, b) => a.submittedAt - b.submittedAt);
+    const batch = candidates.slice(0, REMINDER_BATCH_LIMIT);
+
+    const mailable: Id<"transactionCodings">[] = [];
+    for (const row of batch) {
+      // FIRST TOUCH on a coding older than the horizon: stamp it so it joins
+      // the normal cadence from here, but don't mail about it. This is what
+      // makes arming the feature safe on a backlog.
+      const seedOnly =
+        row.reviewerRemindedAt == null && row.submittedAt < seedOnlyCutoff;
+      await ctx.db.patch(row._id, { reviewerRemindedAt: now });
+      if (!seedOnly) mailable.push(row._id);
+    }
+    return mailable;
+  },
+});
+
+const reviewDigestItemValidator = v.object({
+  amountCents: v.number(),
+  merchantName: v.union(v.string(), v.null()),
+  bookName: v.string(),
+  purpose: v.string(),
+  codedByName: v.union(v.string(), v.null()),
+  daysWaiting: v.number(),
+});
+
+/**
+ * Group the nudged codings by REVIEWER — one digest per person, listing every
+ * coding waiting on them.
+ *
+ * Two rules the grouping enforces that a naive fan-out wouldn't:
+ *
+ *  - RECIPIENTS COME FROM THE APPROVAL SEATS, not from the manager ladder.
+ *    `listCodingReviewerPersonIds` mirrors `requireReviewCoding`'s own arms,
+ *    so the ED and the Chapter Director — who carry `finance.approve` and not
+ *    `finance.manager` — are actually told. Mailing the manager set would skip
+ *    exactly the people who were just given the power.
+ *  - SEPARATION OF DUTIES. A reviewer is never told about a coding they wrote,
+ *    because they cannot decide it; if that's the only one in their book they
+ *    get no email at all rather than one they can do nothing about.
+ */
+export const getCodingReviewDigests = internalQuery({
+  args: { codingIds: v.array(v.id("transactionCodings")) },
+  returns: v.array(
+    v.object({
+      email: v.string(),
+      reviewerName: v.string(),
+      items: v.array(reviewDigestItemValidator),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const now = Date.now();
+    const byPerson = new Map<
+      string,
+      {
+        email: string;
+        reviewerName: string;
+        items: Array<Infer<typeof reviewDigestItemValidator>>;
+      }
+    >();
+    // One reviewer-set read per BOOK, not per coding — a chapter's queue
+    // resolves the same recipients every time.
+    const reviewersByBook = new Map<string, Set<Id<"people">>>();
+
+    for (const codingId of args.codingIds) {
+      const coding = await ctx.db.get(codingId);
+      // Decided between the sweep and this read → nothing left to nudge.
+      if (!coding || coding.status !== "submitted") continue;
+      const txn = await ctx.db.get(coding.transactionId);
+      if (!txn) continue;
+
+      const bookKey = String(coding.chapterId);
+      let reviewers = reviewersByBook.get(bookKey);
+      if (!reviewers) {
+        reviewers = await listCodingReviewerPersonIds(ctx, coding.chapterId);
+        reviewersByBook.set(bookKey, reviewers);
+      }
+      const bookName =
+        coding.chapterId === CENTRAL
+          ? "Central"
+          : ((await ctx.db.get(coding.chapterId as Id<"chapters">))?.name ??
+            "Chapter");
+      const author = coding.codedByPersonId
+        ? await ctx.db.get(coding.codedByPersonId)
+        : null;
+
+      for (const reviewerId of reviewers) {
+        // SoD: never tell somebody about their own coding.
+        if (coding.codedByPersonId && reviewerId === coding.codedByPersonId) {
+          continue;
+        }
+        const person = await ctx.db.get(reviewerId);
+        if (!person || person.isPlaceholder === true) continue;
+        const email = person.pwEmail ?? person.email;
+        if (!email) continue;
+        const key = String(reviewerId);
+        const entry =
+          byPerson.get(key) ??
+          { email, reviewerName: person.name, items: [] };
+        entry.items.push({
+          amountCents: txn.amountCents,
+          merchantName: txn.merchantName ?? null,
+          bookName,
+          purpose: coding.businessPurpose,
+          codedByName: author?.name ?? null,
+          daysWaiting: Math.max(
+            0,
+            Math.floor((now - coding.submittedAt) / DAY_MS),
+          ),
+        });
+        byPerson.set(key, entry);
+      }
+    }
+    return [...byPerson.values()].filter((e) => e.items.length > 0);
+  },
+});
+
+/** One reviewer's digest email. Best-effort like every other send here. */
+async function notifyCodingReviewDigest(
+  ctx: Pick<ActionCtx, "runQuery">,
+  digest: {
+    email: string;
+    reviewerName: string;
+    items: Infer<typeof reviewDigestItemValidator>[];
+  },
+): Promise<void> {
+  const count = digest.items.length;
+  const oldest = Math.max(...digest.items.map((i) => i.daysWaiting));
+  const subject =
+    count === 1
+      ? "1 coding is waiting on your review"
+      : `${count} codings are waiting on your review`;
+  // The purpose IS the thing being reviewed, so it rides in the list — a
+  // reviewer can tell from the email alone which ones will be quick.
+  const list = emailList(
+    digest.items.map(
+      (i) =>
+        `<b>${escapeHtml(`$${(Math.abs(i.amountCents) / 100).toFixed(2)}`)}</b> ${escapeHtml(
+          i.merchantName ?? "a charge",
+        )}${i.bookName ? ` · ${escapeHtml(i.bookName)}` : ""}${
+          i.codedByName ? ` · ${escapeHtml(i.codedByName)}` : ""
+        } — “${escapeHtml(i.purpose)}”${
+          i.daysWaiting > 0
+            ? ` (waiting ${i.daysWaiting} day${i.daysWaiting === 1 ? "" : "s"})`
+            : ""
+        }`,
+    ),
+  );
+  const link = appUrl("/finances/coding");
+  await sendEmail(ctx, {
+    to: digest.email,
+    subject,
+    html: emailShell(`
+      ${emailHeading(count === 1 ? "A coding needs your review" : "Codings need your review")}
+      ${emailParagraph(
+        `Hi ${escapeHtml(digest.reviewerName)} — ${count === 1 ? "one coding is" : `${count} codings are`} waiting on somebody to approve ${count === 1 ? "it" : "them"} or send ${count === 1 ? "it" : "them"} back with a note.`,
+      )}
+      ${list}
+      ${emailParagraph(
+        `Approve one only when it would satisfy a stranger reading Public Worship's public ledger; otherwise send it back saying exactly what would make it approvable. Until a coding is approved its charge can't be reconciled, and the spender is still on the 60-day accountable-plan clock${oldest > 0 ? ` — the oldest of these has been waiting ${oldest} day${oldest === 1 ? "" : "s"}` : ""}.`,
+      )}
+      ${link ? emailButtonRow(link, count === 1 ? "Review it →" : "Review them →") : ""}`),
+  });
+}
+
+/**
+ * The daily reviewer sweep: stamp the codings due a nudge, group them by
+ * reviewer, send one digest each. Best-effort per email — one bad address
+ * can't drop the rest, same as `sendReceiptReminders`.
+ */
+export const sendCodingReviewReminders = internalAction({
+  args: {},
+  returns: v.object({ nudgedCodings: v.number(), reviewersEmailed: v.number() }),
+  handler: async (
+    ctx,
+  ): Promise<{ nudgedCodings: number; reviewersEmailed: number }> => {
+    const codingIds = await ctx.runMutation(
+      internal.cards.advanceCodingReviewReminders,
+      {},
+    );
+    if (codingIds.length === 0) {
+      return { nudgedCodings: 0, reviewersEmailed: 0 };
+    }
+    const digests = await ctx.runQuery(internal.cards.getCodingReviewDigests, {
+      codingIds,
+    });
+    for (const digest of digests) {
+      try {
+        await notifyCodingReviewDigest(ctx, digest);
+      } catch (err) {
+        console.error(
+          "sendCodingReviewReminders: digest email failed",
+          digest.email,
+          err,
+        );
+      }
+    }
+    return {
+      nudgedCodings: codingIds.length,
+      reviewersEmailed: digests.length,
+    };
   },
 });
 

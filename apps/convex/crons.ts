@@ -94,6 +94,26 @@ crons.cron(
   {},
 );
 
+// Daily 12:00 UTC = 8:00am EDT: the OTHER half of the coding loop. Everything
+// above chases the person who spent the money; this one tells the people who
+// can APPROVE what they spent it on that a queue is waiting. Nothing did
+// before — `notifyCodingSentBack` mails the author when a coding comes back,
+// and that was the whole notification surface, which is how six submitted
+// codings sat unreviewed with zero approvals ever recorded.
+//
+// Deliberately AFTER the cardholder sweep at 11:30: if a charge gets coded
+// this morning, the reviewer hears about it tomorrow rather than being nudged
+// about a queue that is still being filled. Batched (one email per reviewer,
+// never one per submission), capped at REMINDER_BATCH_LIMIT codings per run,
+// and seed-only on first touch past REMINDER_SEED_ONLY_DAYS so arming it can
+// never mail anyone about months of history.
+crons.cron(
+  "coding review reminder sweep",
+  "0 12 * * *",
+  internal.cards.sendCodingReviewReminders,
+  {},
+);
+
 // Daily 08:00 UTC: backstop pull of Increase transactions — card charges AND
 // all other account activity (inbound/outbound ACH, wires, fees, interest) —
 // for every provisioned account (chapters + central), in case a
