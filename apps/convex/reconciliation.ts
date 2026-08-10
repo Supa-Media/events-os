@@ -98,6 +98,10 @@ import {
   PAYOUT_ITEM_KINDS,
   STRIPE_PAYOUT_PROCESS_STATES,
   RECONCILIATION_FLAG_KINDS,
+  BOOK_VALUE_ZERO_REASONS,
+  displayMerchantName,
+  transactionSourceLabel,
+  type BookValueZeroReason,
   type PayoutItemKind,
 } from "@events-os/shared";
 import {
@@ -132,7 +136,12 @@ import {
   increaseGet,
   increasePost,
 } from "./lib/increaseApi";
-import { ROLLUP_SCAN_LIMIT, txnMatchesMode } from "./finances";
+import {
+  ROLLUP_SCAN_LIMIT,
+  budgetDisplayName,
+  txnMatchesMode,
+} from "./finances";
+import { codingForTransaction } from "./lib/transactionCoding";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -3759,6 +3768,57 @@ export const stripeBalance = query({
 });
 
 /**
+ * WHAT A ROW IS, when `description` is empty — which on this deployment is
+ * most of them.
+ *
+ * Every `stripe_fc` (Relay bank feed) and `increase_card` row lands with
+ * `description` unset and the merchant string in `merchantName`
+ * (`"Purchase from AMAZON.COM*569YQ | Address: SEATTLE, WA, US | **8728"`).
+ * Both book-value drill-downs returned `description` alone and so printed "(no
+ * description)" next to money the owner was trying to account for — on the
+ * every-line page, 7 of central's 13 ledger rows. The identifier was on the
+ * document the whole time.
+ *
+ * So this ships the whole fallback chain `displayMerchantName` already
+ * resolves — the bookkeeper's rename first, then the provider's own strings —
+ * plus the two other things that say WHICH charge this was when none of those
+ * are set: the card's last four and the bookkeeper's note. `source` and
+ * `transferOrigin` name the RAIL in the same projection, because "where do I
+ * go look" is answered by the rail, not by the amount, and because `stripe_fc`
+ * on a screen tells a treasurer nothing (it is his own Relay account, read
+ * through Stripe Financial Connections).
+ *
+ * Every field is already on the transaction, so carrying them costs no read.
+ */
+const docIdentityFields = {
+  merchantName: v.union(v.string(), v.null()),
+  merchantNameOverride: v.union(v.string(), v.null()),
+  note: v.union(v.string(), v.null()),
+  cardLast4: v.union(v.string(), v.null()),
+  source: v.string(),
+  transferOrigin: v.union(v.string(), v.null()),
+};
+
+/** What a `bookValueLines` row carries: the above, plus the cardholder — that
+ *  list is the audit rung, and it resolves the person names to prove it. */
+const identityFields = {
+  ...docIdentityFields,
+  personName: v.union(v.string(), v.null()),
+};
+
+/** The identity fields off a transaction document, with no reads. */
+function docIdentity(tr: Doc<"transactions">) {
+  return {
+    merchantName: tr.merchantName ?? null,
+    merchantNameOverride: tr.merchantNameOverride ?? null,
+    note: tr.note ?? null,
+    cardLast4: tr.cardLast4 ?? null,
+    source: tr.source ?? "",
+    transferOrigin: tr.transferOrigin ?? null,
+  };
+}
+
+/**
  * ONE BOOK'S BOOK VALUE, ITEMISED — the drill-down behind an Account Balances row.
  *
  * `accountBalances` gives two numbers per book and no way to interrogate them.
@@ -3829,8 +3889,8 @@ export const bookValueBreakdown = query({
         postedAt: v.number(),
         amountCents: v.number(),
         description: v.string(),
-        source: v.string(),
         status: v.string(),
+        ...docIdentityFields,
       }),
     ),
     zeroContributors: v.object({
@@ -3849,6 +3909,7 @@ export const bookValueBreakdown = query({
         giftId: v.id("gifts"),
         giftMethod: v.string(),
         giftExternalRef: v.union(v.string(), v.null()),
+        ...docIdentityFields,
       }),
     ),
     /**
@@ -4000,14 +4061,13 @@ export const bookValueBreakdown = query({
     const categoryName = new Map(categories.map((c) => [c._id as string, c.name]));
 
     const outByCategory = new Map<string, { amountCents: number; count: number }>();
-    const inflows: {
+    const inflows: (ReturnType<typeof docIdentity> & {
       transactionId: Id<"transactions">;
       postedAt: number;
       amountCents: number;
       description: string;
-      source: string;
       status: string;
-    }[] = [];
+    })[] = [];
     const zero = {
       payoutDeposits: 0,
       allocationLegs: 0,
@@ -4055,8 +4115,8 @@ export const bookValueBreakdown = query({
           postedAt: tr.postedAt,
           amountCents: signed,
           description: tr.description ?? "",
-          source: tr.source ?? "",
           status: tr.status,
+          ...docIdentity(tr),
         });
       }
     }
@@ -4069,7 +4129,7 @@ export const bookValueBreakdown = query({
     const WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
     const unlinkedGifts = gifts.filter((g) => g.transactionId == null);
     const claimed = new Set<string>();
-    const suspectedDoubleCounts: {
+    const suspectedDoubleCounts: (ReturnType<typeof docIdentity> & {
       transactionId: Id<"transactions">;
       postedAt: number;
       amountCents: number;
@@ -4077,7 +4137,7 @@ export const bookValueBreakdown = query({
       giftId: Id<"gifts">;
       giftMethod: string;
       giftExternalRef: string | null;
-    }[] = [];
+    })[] = [];
     for (const tr of countedInflowRows) {
       const twin = unlinkedGifts.find(
         (g) =>
@@ -4095,6 +4155,7 @@ export const bookValueBreakdown = query({
         giftId: twin._id,
         giftMethod: twin.method,
         giftExternalRef: twin.externalRef ?? null,
+        ...docIdentity(tr),
       });
     }
 
@@ -4162,6 +4223,17 @@ export const bookValueBreakdown = query({
  * by a human who knew what the money was. A filter tight enough to have
  * excluded the noise would have excluded them too.
  *
+ * ── WHAT A ROW SAYS ABOUT ITSELF ────────────────────────────────────────────
+ * The lists carry the identity fields (see `identityFields` above), what the
+ * row was coded to, and — on a transfer — which book sits on the other side.
+ * They carry no sentences: `ignored.reason` is a CODE from
+ * `BOOK_VALUE_ZERO_REASONS`, and the ledger's transfer explanation is composed
+ * by the screen from `flow` + `transferOrigin` + the sign of `amountCents`.
+ * The English lives in one tested module
+ * (`components/finance/accounts/bookValueLines.ts`) instead of being
+ * string-concatenated at four sites, and the vocabulary it draws on is
+ * `lib/bookBalance.ts`'s — the UI does not get a second theory of what counts.
+ *
  * Bounded by `ROLLUP_SCAN_LIMIT` per collection, and `truncated` says so rather
  * than quietly returning a short list — a partial audit that looks complete is
  * worse than one that admits its edge.
@@ -4200,8 +4272,25 @@ export const bookValueLines = query({
         amountCents: v.number(),
         description: v.string(),
         category: v.string(),
-        source: v.string(),
         status: v.string(),
+        ...identityFields,
+        /** What the row was CODED TO — the thing that makes a line
+         *  explicable. `budgetName` is the explicit attribution
+         *  (`transactions.budgetId`), never a derived match. */
+        budgetName: v.union(v.string(), v.null()),
+        /** The substantiation sentence off `transactionCodings`, resolved the
+         *  way the published ledger resolves it (`publicPurpose ?? business
+         *  Purpose`). Structured attendee/traveler names are NOT returned —
+         *  this is a totals audit, not the coding review screen. */
+        codedPurpose: v.union(v.string(), v.null()),
+        /** Documentation exists — a receipt file or an approved exception.
+         *  Says where to go look, without shipping the file. */
+        hasDocumentation: v.boolean(),
+        /** Kept so the UI can tell a transfer leg from ordinary spend without
+         *  re-deriving anything: a `flow:"transfer"` row in THIS list is one
+         *  of the few transfer shapes `signedBookCents` deliberately signs. */
+        flow: v.string(),
+        counterpartyName: v.union(v.string(), v.null()),
       }),
     ),
     ignored: v.array(
@@ -4210,7 +4299,13 @@ export const bookValueLines = query({
         at: v.number(),
         amountCents: v.number(),
         description: v.string(),
-        reason: v.string(),
+        /** A CODE, not a sentence — `BOOK_VALUE_ZERO_REASON_LABELS` spells it.
+         *  The page used to render one sentence for every zero, which was
+         *  wrong for most of them. */
+        reason: v.union(
+          ...BOOK_VALUE_ZERO_REASONS.map((r) => v.literal(r)),
+        ),
+        ...identityFields,
       }),
     ),
     sameAmountSameDay: v.array(
@@ -4226,10 +4321,13 @@ export const bookValueLines = query({
     await requireReconciliationAudit(ctx);
     const sandboxMode = await readSandbox(ctx);
 
-    let scopeName = "Central";
+    // NOT named `scopeName`: this handler now also needs the module-level
+    // `scopeName(ctx, cache, scope)` helper, to name the book on the far side
+    // of a transfer pair, and a local of the same name shadows it.
+    let bookName = "Central";
     if (scope !== CENTRAL) {
       const chapter = await ctx.db.get(scope as Id<"chapters">);
-      scopeName = chapter?.name ?? "Unknown book";
+      bookName = chapter?.name ?? "Unknown book";
     }
     let truncated = false;
     const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
@@ -4360,72 +4458,150 @@ export const bookValueLines = query({
     const categories = await ctx.db.query("budgetCategories").take(ROLLUP_SCAN_LIMIT);
     const categoryName = new Map(categories.map((c) => [c._id as string, c.name]));
 
-    const ledger: {
-      id: Id<"transactions">;
-      at: number;
-      amountCents: number;
-      description: string;
-      category: string;
-      source: string;
-      status: string;
-    }[] = [];
-    const ignored: {
-      id: Id<"transactions">;
-      at: number;
-      amountCents: number;
-      description: string;
-      reason: string;
-    }[] = [];
+    // Classify first, project second. The projection needs person, budget,
+    // coding and counterparty names, and resolving those per row inside the
+    // classification loop would be four db reads on every transaction the
+    // book has ever held. Split, the reads are batched over the rows that
+    // survived — and the classification stays a plain read of
+    // `signedBookCents` with nothing else in it.
+    const kept: { tr: Doc<"transactions">; signed: number }[] = [];
+    const skipped: { tr: Doc<"transactions">; reason: BookValueZeroReason }[] = [];
     let ledgerNetCents = 0;
 
     for (const tr of txns) {
       if (!txnMatchesMode(tr, sandboxMode)) continue;
-      const push = (reason: string) =>
-        ignored.push({
-          id: tr._id,
-          at: tr.postedAt,
-          amountCents: tr.amountCents,
-          description: tr.description ?? "",
-          reason,
-        });
+      const push = (reason: BookValueZeroReason) => skipped.push({ tr, reason });
       if (linkedGiftTxnIds.has(tr._id)) {
-        push("Already counted as the gift it belongs to");
+        push("linked_gift");
         continue;
       }
       if (tr.status === "excluded") {
-        push("Excluded by hand");
+        push("excluded");
         continue;
       }
       if (tr.payoutProcessor != null || tr.stripePayoutId != null) {
-        push(
-          `Processor payout — the revenue is already counted at the gift, ticket, sale or registration`,
-        );
+        push("payout_deposit");
         continue;
       }
       if (tr.transferOrigin === "payout_allocation") {
-        push("Allocation leg — moves money already counted");
+        push("payout_allocation");
         continue;
       }
       const signed = signedBookCents(tr);
       if (signed === 0) {
-        push("Transfer with no recorded direction — contributes nothing rather than guess");
+        // WHICH branch of `signedBookCents` returned the zero, tested in that
+        // function's own order (balance settlement before the marked-transfer
+        // check, exactly as `lib/bookBalance.ts` tests them) so the answer
+        // can't disagree with the arithmetic. This decides NOTHING about the
+        // total — `signed` is already final; it only names what happened.
+        //
+        // Before this, every zero got one sentence: "Transfer with no recorded
+        // direction — contributes nothing rather than guess." True of the last
+        // case only. A marked bank transfer and a balance settlement are zero
+        // deliberately and completely correctly, and telling the treasurer
+        // they need categorising sent him after work that doesn't exist.
+        push(
+          tr.transferOrigin === "balance_settlement"
+            ? "balance_settlement"
+            : tr.preMarkFlow != null
+              ? "marked_transfer"
+              : tr.amountCents === 0
+                ? "zero_amount"
+                : "unknown_transfer_shape",
+        );
         continue;
       }
       ledgerNetCents += signed;
-      ledger.push({
-        id: tr._id,
-        at: tr.postedAt,
-        amountCents: signed,
-        description: tr.description ?? "",
-        category: tr.categoryId
-          ? (categoryName.get(tr.categoryId) ?? "Unknown category")
-          : tr.flow === "transfer"
-            ? "Internal transfer"
-            : "Uncategorised",
-        source: tr.source ?? "",
-        status: tr.status,
-      });
+      kept.push({ tr, signed });
     }
+
+    // ── The names the rows are identified BY ────────────────────────────────
+    const everyRow = [...kept.map((k) => k.tr), ...skipped.map((s) => s.tr)];
+    const personIds = [
+      ...new Set(everyRow.map((tr) => tr.personId).filter((id) => id != null)),
+    ];
+    const people = await Promise.all(personIds.map((id) => ctx.db.get(id)));
+    const personName = new Map<string, string>();
+    for (const p of people) if (p) personName.set(p._id as string, p.name);
+
+    const budgetIds = [
+      ...new Set(kept.map((k) => k.tr.budgetId).filter((id) => id != null)),
+    ];
+    const budgetRows = await Promise.all(budgetIds.map((id) => ctx.db.get(id)));
+    const budgetName = new Map<string, string>();
+    for (const b of budgetRows) {
+      if (b) budgetName.set(b._id as string, budgetDisplayName(b));
+    }
+
+    // Only rows that HAVE a coding are looked up — `codingState` is the
+    // denormalized mirror of the coding row's status, so the gate costs no
+    // read at all and the lookups are bounded by the codings that exist.
+    const codedPurpose = new Map<string, string>();
+    for (const { tr } of kept) {
+      if (tr.codingState == null) continue;
+      const coding = await codingForTransaction(ctx, tr._id);
+      if (!coding) continue;
+      // `publicPurpose ?? businessPurpose` — the published ledger's own rule.
+      // A totals audit needs the sentence, not the attendee list, so no names
+      // are resolved here and none are returned.
+      codedPurpose.set(tr._id as string, coding.publicPurpose ?? coding.businessPurpose);
+    }
+
+    // The other book a transfer pair crosses to. Only pair legs are looked up
+    // (a `transferGroupId` is what makes a row one), and each group once.
+    const nameCache = new Map<string, string>();
+    const counterparty = new Map<string, string>();
+    const seenGroups = new Map<string, string | null>();
+    for (const { tr } of kept) {
+      const groupId = tr.transferGroupId;
+      if (groupId == null) continue;
+      if (!seenGroups.has(groupId)) {
+        const pair = await ctx.db
+          .query("transactions")
+          .withIndex("by_transfer_group", (q) => q.eq("transferGroupId", groupId))
+          .collect();
+        const other = pair.find((p) => p.chapterId !== tr.chapterId) ?? null;
+        seenGroups.set(
+          groupId,
+          other ? await scopeName(ctx, nameCache, other.chapterId) : null,
+        );
+      }
+      const name = seenGroups.get(groupId) ?? null;
+      if (name) counterparty.set(tr._id as string, name);
+    }
+
+    const identity = (tr: Doc<"transactions">) => ({
+      ...docIdentity(tr),
+      personName: tr.personId ? (personName.get(tr.personId) ?? null) : null,
+    });
+
+    const ledger = kept.map(({ tr, signed }) => ({
+      id: tr._id,
+      at: tr.postedAt,
+      amountCents: signed,
+      description: tr.description ?? "",
+      category: tr.categoryId
+        ? (categoryName.get(tr.categoryId) ?? "Unknown category")
+        : tr.flow === "transfer"
+          ? "Internal transfer"
+          : "Uncategorised",
+      status: tr.status,
+      ...identity(tr),
+      budgetName: tr.budgetId ? (budgetName.get(tr.budgetId) ?? null) : null,
+      codedPurpose: codedPurpose.get(tr._id as string) ?? null,
+      hasDocumentation:
+        tr.receiptStorageId != null || tr.approvedReceiptExceptionId != null,
+      flow: tr.flow,
+      counterpartyName: counterparty.get(tr._id as string) ?? null,
+    }));
+    const ignored = skipped.map(({ tr, reason }) => ({
+      id: tr._id,
+      at: tr.postedAt,
+      amountCents: tr.amountCents,
+      description: tr.description ?? "",
+      reason,
+      ...identity(tr),
+    }));
 
     // ── The wide net ────────────────────────────────────────────────────────
     const buckets = new Map<string, string[]>();
@@ -4437,7 +4613,11 @@ export const bookValueLines = query({
     };
     for (const e of earned) add(e.amountCents, e.at, `${e.kind}: ${e.label}`);
     for (const l of ledger) {
-      add(l.amountCents, l.at, `ledger: ${l.description || "(no description)"}`);
+      add(
+        l.amountCents,
+        l.at,
+        `ledger: ${displayMerchantName(l, `unlabeled ${transactionSourceLabel(l.source)} row`)}`,
+      );
     }
     const sameAmountSameDay = [...buckets.entries()]
       .filter(([, members]) => members.length > 1)
@@ -4449,7 +4629,7 @@ export const bookValueLines = query({
 
     return {
       scope,
-      scopeName,
+      scopeName: bookName,
       revenueCents,
       ledgerNetCents,
       bookBalanceCents: revenueCents + ledgerNetCents,
