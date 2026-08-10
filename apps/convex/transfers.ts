@@ -517,23 +517,43 @@ export function chapterInterScopeRows(
       // note reads "central's spend on New York's cards $0.00 (0 rows) less
       // $2,003.95 already settled." An `auto_settlement` leg is SIGNED
       // (`lib/bookBalance.ts`), so that moved $2,003.95 of book value from
-      // central to New York for spending that does not exist, and — being
-      // itself a live settling leg on the opposite side — would have ping-ponged
-      // the same $2,003.95 back every morning after. It nets to zero org-wide,
-      // which is exactly why the reconciliation panel kept saying "it adds up".
+      // central to New York for spending that does not exist. It nets to zero
+      // org-wide, which is exactly why the reconciliation panel kept saying "it
+      // adds up".
+      //
+      // IT DID NOT OSCILLATE, and it matters that you know why. Round two
+      // (excluded) and round three cancel on the settled side, so the net
+      // returned to 0 and the engine stopped: production sat at a WRONG but
+      // STABLE fixed point, $2,003.95 on the wrong book, booking nothing new.
+      // Adding this predicate REMOVES round two from the settled side, which
+      // takes the net to −$2,003.95 and would book round four on the very next
+      // cron. So the filter alone does not restore the books — it is correct,
+      // and it needs the offending pair voided to land anywhere stable. That is
+      // what `reverseExcludedSettlementLoop.ts` is for, and why that module
+      // refuses to run unless voiding leaves this net at exactly 0.
       //
       // `"excluded"` is the ONLY status that means "out of all totals" —
       // `unreviewed`/`categorized`/`reconciled` are all live rows at different
       // stages of review, and a leg that has settled real debt settles it
-      // whether or not a bookkeeper has got to it yet. This is deliberately the
-      // same single test `signedBookCents` opens with, so a row that moves book
-      // value and a row that counts as settled are never two different sets.
+      // whether or not a bookkeeper has got to it yet. It is deliberately the
+      // same test `signedBookCents` opens with, so the two sides agree ON
+      // STATUS. They are NOT otherwise the same predicate, and no one should
+      // read this as an invariant: `signedBookCents` also zeroes
+      // `payoutProcessor`/`stripePayoutId` rows and anything with
+      // `preMarkFlow`, none of which this filter mentions. What keeps a MARKED
+      // bank transfer off this side is only that `markAsTransfer` never
+      // rewrites a marked leg's ingest `source` — so it fails the
+      // `source === "transfer" | "settlement"` test above. That is one field
+      // away from being another instance of this same bug; if marking ever
+      // starts normalising `source`, this filter needs `preMarkFlow == null`
+      // the same day.
       //
       // The rest of `isSpend` stays off this side on purpose: `isPersonal` is
       // NOT excluded because `signedBookCents` keeps personal charges too ("the
       // money really left"), and `refundedByTransactionId` cannot appear here at
-      // all — `finances.markAsRefund` refuses any row carrying a
-      // `transferGroupId`, which every settling leg has.
+      // all — a settling leg is `flow:"transfer"`, and `finances.markAsRefund`
+      // takes only an `outflow`/`inflow` pair (`NOT_A_PAIR`), with a further
+      // `IS_TRANSFER` guard behind it for any row carrying a `transferGroupId`.
       tr.status !== "excluded" &&
       matchesMode(tr.externalId ?? null, sandboxMode),
   );

@@ -615,6 +615,102 @@ describe("auto settlement + the settling-leg exclusion", () => {
     expect(await legsFor(s, `autosettle-${s.chapterId}-2026-08-10`)).toHaveLength(0);
   });
 
+  test("the production shape: an excluded leg BESIDE a live one — the filter alone leaves the net unsettled", async () => {
+    // THE CASE THE OTHER TWO TESTS MISS, and the one that matters operationally.
+    // Production is not "an excluded leg on its own" — it is a THREE-ROUND pile:
+    // real spend, the engine's honest settlement of it, the bogus excluded round
+    // two, and the bogus live round three. Rounds two and three CANCEL on the
+    // settled side, which is why the loop stopped rather than oscillating:
+    //
+    //   without the status filter: (22453 − 222848) − (0 − 200395) =      $0.00
+    //   with it, nothing voided:   (22453 − 222848) − (0 −      0) = −$2,003.95
+    //   with it, round three void: (22453 −  22453) − (0 −      0) =      $0.00
+    //
+    // So production sits at a WRONG but STABLE fixed point, and adding the
+    // filter takes the net NEGATIVE and books a fourth round on the next cron.
+    // The filter is correct and it is not sufficient: it has to ship with the
+    // cleanup that voids round three. Anyone tempted to land one without the
+    // other should read the middle line above.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedCrossBookSpend(s, 22_453); // the 4 real rows, as one
+
+    // Round one: the engine's honest settlement of that spend.
+    await seedSettlingPair(s, {
+      amountCents: 22_453,
+      direction: "central_to_chapter",
+      status: "reconciled",
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-07`,
+    });
+    // Round two: bogus, neutralised by a human with `excluded`.
+    await seedSettlingPair(s, {
+      amountCents: 200_395,
+      direction: "chapter_to_central",
+      status: "excluded",
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-09`,
+    });
+    // Round three: booked BECAUSE round two was excluded, and still live.
+    await seedSettlingPair(s, {
+      amountCents: 200_395,
+      direction: "central_to_chapter",
+      status: "reconciled",
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-10`,
+    });
+
+    const balances = await s.as.query(api.transfers.interScopeBalances, {});
+    expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(
+      -200_395,
+    );
+
+    // …and the engine acts on it: round four, in the opposite direction.
+    const four = await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: "2026-08-11",
+    });
+    expect(four.settlementsBooked).toBe(1);
+    const fourLegs = await legsFor(s, `autosettle-${s.chapterId}-2026-08-11`);
+    expect(fourLegs).toHaveLength(2);
+    expect(fourLegs[0]?.transferDirection).toBe("chapter_to_central");
+    expect(fourLegs[0]?.amountCents).toBe(200_395);
+  });
+
+  test("voiding round three is what actually settles it", async () => {
+    // The other half of the pair above: with round three excluded — which is
+    // what `reverseExcludedSettlementLoop.voidLoopedAutoSettlement` does — the
+    // net is 0 and the engine has nothing left to book. This is the end state
+    // the cleanup is aiming at, pinned so a future edit to either the filter or
+    // the runner has to keep hitting it.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedCrossBookSpend(s, 22_453);
+    await seedSettlingPair(s, {
+      amountCents: 22_453,
+      direction: "central_to_chapter",
+      status: "reconciled",
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-07`,
+    });
+    await seedSettlingPair(s, {
+      amountCents: 200_395,
+      direction: "chapter_to_central",
+      status: "excluded",
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-09`,
+    });
+    await seedSettlingPair(s, {
+      amountCents: 200_395,
+      direction: "central_to_chapter",
+      status: "excluded", // ← voided by the cleanup
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-10`,
+    });
+
+    const balances = await s.as.query(api.transfers.interScopeBalances, {});
+    expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(0);
+    const out = await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: "2026-08-11",
+    });
+    expect(out.settlementsBooked).toBe(0);
+  });
+
   test("a LIVE settling leg still settles — the status test is not a blanket drop", async () => {
     // The guard above must not be satisfiable by ignoring settling legs
     // wholesale: an identical pair left `reconciled` has to keep paying its
@@ -1315,6 +1411,47 @@ describe("real cash movement — eligibility, stamping, toggle", () => {
     expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(
       -5_000,
     );
+  });
+
+  test("a VOIDED pair is never wired to Increase — retracting a booking retracts the cash too", async () => {
+    // The landmine this closes. `status:"excluded"` is how the app retracts a
+    // booking that should never have happened (`reverseExcludedSettlementLoop`,
+    // and the same `excluded` marker the settling-leg filter in
+    // `transfers.ts#chapterInterScopeRows` was blind to). This list was blind to
+    // it as well, and the only reason that has never cost money is that real
+    // movement has never been switched on — the two engine pairs voided in
+    // production so far would have been handed to Increase the next time it was
+    // drained. Moving REAL money for a row the ledger says didn't happen is the
+    // worst version of the bug this PR is about.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await s.as.mutation(api.reconciliation.setRealMovementEnabled, {
+      enabled: true,
+    });
+
+    await seedCrossBookSpendFor(s, 10_000);
+    await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: "2026-08-08",
+    });
+    const groupId = `autosettle-${s.chapterId}-2026-08-08`;
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(1);
+
+    // Void it, the way the cleanup runners do.
+    await run(s.t, async (ctx) => {
+      for (const leg of await ctx.db
+        .query("transactions")
+        .withIndex("by_transfer_group", (q) => q.eq("transferGroupId", groupId))
+        .collect()) {
+        await ctx.db.patch(leg._id, { status: "excluded" });
+      }
+    });
+
+    expect(
+      await t.query(internal.reconciliation.listUnexecutedEnginePairs, {}),
+    ).toHaveLength(0);
   });
 
   test("a payout pair moves cash only when its deposit really landed at Increase", async () => {
