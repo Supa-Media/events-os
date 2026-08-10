@@ -210,11 +210,16 @@ function ReconcileGrid() {
   //
   // NOTHING IS SELECTED ON ARRIVAL. This used to seed `["needs_budget"]`, which
   // opened the money app on 14 of 346 rows — and of those 14, two were work: 8
-  // were machine-generated processor-fee rows blocked on one budget approval
-  // (see the banner below), 4 were already `reconciled`, and the largest dollar
-  // figure in the view was a transfer that shouldn't have counted as spend at
-  // all. Meanwhile the header announced 127, and the relationship between the
-  // two numbers was stated nowhere.
+  // were machine-generated processor-fee rows blocked on one budget approval, 4
+  // were already `reconciled`, and the largest dollar figure in the view was a
+  // transfer that shouldn't have counted as spend at all. Meanwhile the header
+  // announced 127, and the relationship between the two numbers was stated
+  // nowhere.
+  //
+  // Those 8 fee rows are gone from the facet altogether now — `needsBudget`
+  // exempts non-discretionary fees, because a budget is a control on CHOICE and
+  // a fee is charged rather than chosen. The remaining two faults are what this
+  // change fixes.
   //
   // The person opening this page is doing one of two things: "what happened
   // since I last looked" (newest-first, no filter) or "where is that
