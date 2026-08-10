@@ -62,6 +62,29 @@ async function asManager(s: ChapterSetup): Promise<Id<"people">> {
 }
 
 /**
+ * Point a coding's authorship at SOMEBODY ELSE, so the caller can decide on
+ * it. Both decisions — approve and send-back — enforce separation of duties,
+ * so any fixture where one identity authors and then decides is testing SoD
+ * rather than whatever it meant to test. (The alternative, standing up a
+ * second authenticated member per test, buys nothing here: these tests are
+ * about the decision's effect, not about who made it.)
+ */
+async function reattributeAuthor(
+  s: ChapterSetup,
+  transactionId: Id<"transactions">,
+): Promise<void> {
+  const other = await seedOtherPerson(s, "Someone Else");
+  const coding = await run(s.t, async (ctx) =>
+    (await ctx.db.query("transactionCodings").collect()).find(
+      (c) => c.transactionId === transactionId,
+    )!,
+  );
+  await run(s.t, (ctx) =>
+    ctx.db.patch(coding._id, { codedByPersonId: other }),
+  );
+}
+
+/**
  * A charge to code. RECEIPTED BY DEFAULT, because since the receipt-at-coding
  * change a coding can't be submitted on a charge that can't prove itself
  * (`submitCoding`'s `DOCUMENTATION_REQUIRED` gate) — an undocumented fixture
@@ -449,6 +472,11 @@ describe("review loop", () => {
       expenseType: "general",
       businessPurpose: GOOD_PURPOSE,
     });
+    // Reattribute authorship before deciding — send-back is a DECISION and
+    // now carries the same separation-of-duties rule as approve, so a
+    // fixture where one identity does both would fail on SoD instead of on
+    // the empty note this test is actually about.
+    await reattributeAuthor(s, txnId);
     await expect(
       s.as.mutation(api.transactionCodings.requestChanges, {
         transactionId: txnId,
@@ -530,6 +558,7 @@ describe("the CODING_REQUIRED gate and the Reconcile facets", () => {
       expenseType: "general",
       businessPurpose: GOOD_PURPOSE,
     });
+    await reattributeAuthor(s, txnId);
     await s.as.mutation(api.transactionCodings.requestChanges, {
       transactionId: txnId,
       reviewNote: "Say which event this served",

@@ -198,13 +198,67 @@ Per the house rule, gated from day one via `lib/transactionCodingAccess.ts`:
 - `requireCodingSubmit` — the transaction's cardholder/owner, or
   bookkeeper+. (A bookkeeper can code on someone's behalf — reality demands
   it — but the audit log shows who actually typed it.)
-- `requireCodingReview` — manager rank, graduating to a
-  `finance.coding.review` capability string in `SEAT_CAPABILITIES` when
-  seats need to carry it separately.
+- `requireCodingReview` — **the four approval seats** (amended 2026-08-09;
+  see below), graduating to a `finance.coding.review` capability string in
+  `SEAT_CAPABILITIES` when seats need to carry it separately.
+- `requireViewCoding` — READ the record: whoever may author it, or whoever
+  may decide it. The second half exists because review reaches across books
+  and authoring doesn't; without it a central reviewer could approve a
+  chapter's coding from the queue and be refused sight of the row.
 - **Separation of duties:** reviewer ≠ coder, enforced in the mutation like
-  `receiptExceptions.approve`. When the financial manager codes their *own*
-  charge, review falls to another manager-rank holder (ED/treasurer) — same
-  second-approver shape as `exceptionNeedsSecondApprover`.
+  `receiptExceptions.approve`, on **both** decisions — approve and send-back
+  alike (amended 2026-08-09; see below). When the financial manager codes
+  their *own* charge, review falls to another approval-seat holder (ED,
+  treasurer, chapter director) — same second-approver shape as
+  `exceptionNeedsSecondApprover`.
+
+#### Who may approve a coding (owner, 2026-08-09)
+
+Four seats, never their own coding:
+
+| seat | chapter codings | central codings |
+| --- | --- | --- |
+| `executive_director` | ANY chapter | yes |
+| `financial_manager` | ANY chapter | yes |
+| `chapter_director` | THEIR OWN only | no |
+| `treasurer` | THEIR OWN only | no |
+
+Three of the four could approve **nothing** as shipped, for two unrelated
+reasons — and both had to be fixed:
+
+1. **No graded role.** `executive_director` and `chapter_director` carry
+   `finance.approve` but deliberately not `finance.manager`, so the seat
+   derives no rank and a `financeRoleAtLeast(role, "manager")` test could
+   never pass for them. Closed the way #209 and WP-wave4 closed the identical
+   gap for BUDGET approval — read the capability directly at the gate
+   (`holdsApprovalSeatAt`), additively, rather than folding an approve-side
+   power into the manager/bookkeeper/viewer ladder.
+2. **No cross-book reach.** The gate derived its scope from the caller's
+   ACTIVE chapter and refused every other book outright, so "any chapter" was
+   not sayable for the Financial Manager even though their seat carries
+   `finance.central`. (A `financial_manager` seat derives its manager rank at
+   the `"central"` scope key, not at the holder's home chapter — so the arm
+   reads the central chart directly instead of trusting a bridged stored
+   grant to exist.)
+
+**The containment is now deliberate, and that is the load-bearing part.** The
+blanket `txn.chapterId !== homeChapterId → NOT_FOUND` was the only thing
+keeping a Treasurer inside their own chapter; it contained the Treasurer by
+accident while containing the FM by mistake. Removing it to free the FM
+without stating the Treasurer's limit would have silently handed every
+Treasurer the whole org. The chapter-local arm now says `target ===
+homeChapterId` itself, and is unreachable for a central target.
+`tests/codingApprovalRoles.test.ts` pins every cell, refusals included.
+
+**Send-back is a decision too.** `requestChanges` now asserts separation of
+duties, which it did not before. `canReview` had always reported `false` to
+an author, so the client already hid both buttons — the server was the laxer
+of the two, which is the direction that matters. It also left a real hole:
+`requestChanges` reopens an APPROVED coding, so an author who was also a
+manager could single-handedly undo someone else's decision about their own
+testimony. Deciding on your own coding is deciding on your own coding
+whichever way the decision goes. (Authors lose nothing: resubmitting is
+`submit`, not a decision.)
 
 ## Flows
 

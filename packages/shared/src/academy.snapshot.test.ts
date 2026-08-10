@@ -1022,7 +1022,9 @@ const EXPECTED_SECTIONS: {
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
     minutes: 4,
-    quizLength: 5,
+    // 6 since 2026-08-09: the four approval seats and their reach became a
+    // rule a reviewer can get wrong, so the lesson tests it.
+    quizLength: 6,
     optional: false,
     capstoneKind: null,
   },
