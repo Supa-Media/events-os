@@ -2935,8 +2935,8 @@ export const reconciliationOverview = query({
  * have, and then use transactions from reconcile to determine money going
  * out."
  *
- *   bookBalance = revenue (gifts + paid ticket orders, per scope, GROSS of
- *                 processor fees)
+ *   bookBalance = revenue (gifts + paid ticket orders + sales + paid project
+ *                 registrations, per scope, GROSS of processor fees)
  *               + ledger net (Σ `signedBookCents` — spend, corrections,
  *                 settlements; payout deposits and payout-allocation pairs
  *                 contribute ZERO there so revenue is never counted twice —
@@ -3006,7 +3006,8 @@ async function computeBookBalances(
     };
 
     // ── Phase 1 — money in, all scopes in parallel: EVERY gift to the book
-    // (all channels dual-write into `gifts`) + the book's paid ticket orders.
+    // (all channels dual-write into `gifts`) + the book's paid ticket orders,
+    // in-person sales, and paid project registrations.
     //
     // IN-KIND GIFTS ARE INCLUDED (founder decision, 2026-08-07). They used to be
     // excluded on the reasoning that no cash arrives — but the expense they paid
@@ -3079,6 +3080,30 @@ async function computeBookBalances(
             // add-on donation settles as a `donations` row → gift, already
             // counted above.
             if (order.status === "paid") revenueCents += order.totalCents;
+          }
+          // REGISTRATIONS — paid places on a project (a class or cohort with a
+          // fee). The fourth stream, added 2026-08-10 when the last $150.00 of
+          // the org-wide gap turned out to be three Worship Beyond The Walls
+          // student registrations the schema had nowhere to put — a project is
+          // not an event, so `ticketOrders` (which REQUIRES an `eventId`)
+          // couldn't hold them. See `schema/registrations.ts`.
+          //
+          // Only `paid` earns. A `refunded` row gave the money back and a
+          // `comped` row never took any; both stay on the project so the
+          // scholarship is visible, and neither is revenue. Same rule, same
+          // shape, as the `status === "paid"` filter on ticket orders above.
+          // Chapter-scoped like tickets and sales — central runs no classes.
+          const registrationRows = await ctx.db
+            .query("registrations")
+            .withIndex("by_chapter", (q) =>
+              q.eq("chapterId", scope as Id<"chapters">),
+            )
+            .take(ROLLUP_SCAN_LIMIT);
+          if (registrationRows.length === ROLLUP_SCAN_LIMIT) {
+            warnTruncated(scope, "registrations");
+          }
+          for (const reg of registrationRows) {
+            if (reg.status === "paid") revenueCents += reg.amountCents;
           }
         }
         revenueByScope.set(scope, sandboxMode ? 0 : revenueCents);
@@ -3248,7 +3273,7 @@ export const reconciliationSummary = query({
     unattributedBankCents: v.number(),
     /** Payouts Stripe says are paid whose bank deposit we never found. Each is
      *  a candidate double count: the deposit lands in the ledger as a plain
-     *  credit while the revenue is already counted at the gift/ticket. */
+     *  credit while the revenue is already counted at the gift/ticket/sale/registration. */
     unmatchedPayoutCount: v.number(),
     unmatchedPayoutCents: v.number(),
     /** A book's scan hit the read limit, so its figure is approximate and the
@@ -3454,7 +3479,7 @@ export const stripeBalance = query({
  * It re-derives the SAME arithmetic `accountBalances` uses — deliberately, so
  * the two can never quietly disagree — and returns the components instead of
  * the total:
- *   - REVENUE, split by gift method plus tickets and sales;
+ *   - REVENUE, split by gift method plus tickets, sales and registrations;
  *   - LEDGER OUT, grouped by budget category;
  *   - LEDGER IN, listed individually, because a book's inflows are few and each
  *     one is a judgement call worth eyeballing;
@@ -3498,6 +3523,11 @@ export const bookValueBreakdown = query({
       ticketCount: v.number(),
       saleCents: v.number(),
       saleCount: v.number(),
+      // Paid project registrations only — the refunded/comped rows earn
+      // nothing, so putting them in a REVENUE breakdown would make the
+      // components stop summing to `revenueCents`.
+      registrationCents: v.number(),
+      registrationCount: v.number(),
     }),
     outflowsByCategory: v.array(
       v.object({ category: v.string(), amountCents: v.number(), count: v.number() }),
@@ -3597,6 +3627,8 @@ export const bookValueBreakdown = query({
     let ticketCount = 0;
     let saleCents = 0;
     let saleCount = 0;
+    let registrationCents = 0;
+    let registrationCount = 0;
     if (scope !== CENTRAL) {
       const salesRows = await ctx.db
         .query("sales")
@@ -3617,8 +3649,33 @@ export const bookValueBreakdown = query({
         ticketCents += order.totalCents;
         ticketCount += 1;
       }
-      revenueCents += ticketCents + saleCents;
+      const registrationRows = await ctx.db
+        .query("registrations")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", scope as Id<"chapters">))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (registrationRows.length === ROLLUP_SCAN_LIMIT) truncated = true;
+      for (const reg of registrationRows) {
+        if (reg.status !== "paid") continue;
+        registrationCents += reg.amountCents;
+        registrationCount += 1;
+      }
+      revenueCents += ticketCents + saleCents + registrationCents;
     }
+    // SANDBOX: the TOTAL is zeroed while the component figures above
+    // (`ticketCents`, `saleCents`, `registrationCents`, the gift methods) keep
+    // their real values — so in sandbox mode the components deliberately do NOT
+    // sum to `revenueCents`.
+    //
+    // Registrations INHERIT this rather than fix it, deliberately. It is
+    // pre-existing behaviour shared by all four streams (`computeBookBalances`
+    // does the same zeroing at its own phase 1), and a demo deployment reads
+    // book value as pure sandbox-ledger numbers by design. Making registrations
+    // alone behave differently would be the worst of both worlds: the drift
+    // would remain, and it would no longer be uniform enough to reason about.
+    // Fixing it properly means zeroing the components too, which is a change to
+    // three existing streams and belongs in its own PR — not smuggled in behind
+    // a fourth. The breakdown-sums-to-total test asserts the REAL-money path,
+    // which is the one every production reader is on.
     if (sandboxMode) revenueCents = 0;
 
     // ── Ledger, mirroring accountBalances phase 2 ────────────────────────────
@@ -3744,6 +3801,8 @@ export const bookValueBreakdown = query({
         ticketCount,
         saleCents,
         saleCount,
+        registrationCents,
+        registrationCount,
       },
       outflowsByCategory: [...outByCategory.entries()]
         .map(([category, v2]) => ({ category, ...v2 }))
@@ -3804,7 +3863,12 @@ export const bookValueLines = query({
     bookBalanceCents: v.number(),
     earned: v.array(
       v.object({
-        kind: v.union(v.literal("gift"), v.literal("ticket"), v.literal("sale")),
+        kind: v.union(
+          v.literal("gift"),
+          v.literal("ticket"),
+          v.literal("sale"),
+          v.literal("registration"),
+        ),
         id: v.string(),
         at: v.number(),
         amountCents: v.number(),
@@ -3858,7 +3922,7 @@ export const bookValueLines = query({
     const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
 
     const earned: {
-      kind: "gift" | "ticket" | "sale";
+      kind: "gift" | "ticket" | "sale" | "registration";
       id: string;
       at: number;
       amountCents: number;
@@ -3937,6 +4001,35 @@ export const bookValueLines = query({
           linkedToBankRow: false,
         });
       }
+      // Paid project registrations. Refunded/comped rows are deliberately
+      // absent: this list is EVERY LINE BEHIND A BOOK'S VALUE, and a
+      // scholarship contributed none of it. Those rows live on the project's
+      // own money page, where they explain something.
+      const registrationRows = await ctx.db
+        .query("registrations")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", scope as Id<"chapters">))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (registrationRows.length === ROLLUP_SCAN_LIMIT) truncated = true;
+      // One read for the project names rather than one per registration.
+      const projectIds = [...new Set(registrationRows.map((r) => r.projectId))];
+      const projectRows = await Promise.all(projectIds.map((id) => ctx.db.get(id)));
+      const projectName = new Map<string, string>();
+      for (const p of projectRows) if (p) projectName.set(p._id as string, p.name);
+      for (const reg of registrationRows) {
+        if (reg.status !== "paid") continue;
+        revenueCents += reg.amountCents;
+        earned.push({
+          kind: "registration",
+          id: reg._id,
+          at: reg.registeredAt,
+          amountCents: reg.amountCents,
+          label: reg.name,
+          detail: [projectName.get(reg.projectId as string), reg.externalRef]
+            .filter(Boolean)
+            .join(" · "),
+          linkedToBankRow: false,
+        });
+      }
     }
     if (sandboxMode) revenueCents = 0;
 
@@ -3986,7 +4079,7 @@ export const bookValueLines = query({
       }
       if (tr.payoutProcessor != null || tr.stripePayoutId != null) {
         push(
-          `Processor payout — the revenue is already counted at the gift, ticket or sale`,
+          `Processor payout — the revenue is already counted at the gift, ticket, sale or registration`,
         );
         continue;
       }

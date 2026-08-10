@@ -147,7 +147,7 @@ export function BookValueBreakdownModal({
                 <Line
                   label="Earned"
                   value={formatCents(data.revenueCents)}
-                  hint="Donations, ticket sales and in-person sales, gross of processor fees"
+                  hint="Donations, ticket sales, in-person sales and course registrations, gross of processor fees"
                 />
                 <Line
                   label="Ledger"
@@ -347,6 +347,19 @@ export function BookValueBreakdownModal({
                     value={formatCents(data.revenue.saleCents)}
                   />
                 ) : null}
+                {/* Paid places on a project — a class or cohort with a fee.
+                    PAID only: a refunded or comped registration earns nothing
+                    and would make these components stop summing to the total
+                    below. Those rows live on the project's own money page. */}
+                {data.revenue.registrationCount > 0 ? (
+                  <Line
+                    label="Registrations"
+                    hint={`${data.revenue.registrationCount} paid ${
+                      data.revenue.registrationCount === 1 ? "place" : "places"
+                    }`}
+                    value={formatCents(data.revenue.registrationCents)}
+                  />
+                ) : null}
                 <View className="mt-1 border-t border-border-strong pt-1">
                   <Line label="Total earned" value={formatCents(data.revenueCents)} strong />
                 </View>
@@ -371,7 +384,7 @@ export function BookValueBreakdownModal({
                 {data.inflows.length === 0 ? (
                   <Text className="text-sm text-muted">
                     No ledger inflows — everything earned came through gifts,
-                    tickets or sales.
+                    tickets, sales or registrations.
                   </Text>
                 ) : (
                   <>
@@ -410,7 +423,7 @@ export function BookValueBreakdownModal({
                 </Text>
                 <Line
                   label="Processor payout deposits"
-                  hint="Stripe and Givebutter deposits — the revenue is already counted at the gift, ticket or sale"
+                  hint="Stripe and Givebutter deposits — the revenue is already counted at the gift, ticket, sale or registration"
                   value={String(data.zeroContributors.payoutDeposits)}
                   tone="muted"
                 />

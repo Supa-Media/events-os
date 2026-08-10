@@ -3,7 +3,8 @@
  * surface per event/project (`moneyViews.refMoney` assembles the same shape
  * for either `refKind`): budget header (approval-aware cap + approval chip),
  * planned-vs-actual by category, the unplanned-spend bucket, a money-IN
- * summary (tickets + donations), and a recent linked-transactions list.
+ * summary (an EVENT's tickets + donations; a PROJECT's registrations, which
+ * carry their own net-cost line), and a recent linked-transactions list.
  *
  * PR4 ("the plan IS the database"): the plan is no longer edited through a
  * separate "Edit plan" modal onto `BudgetLineItemsEditor` — for an EVENT ref,
@@ -29,6 +30,7 @@ import { Badge, Button, Card, EmptyState, Icon, SectionHeader, Select } from "..
 import { Money, BudgetBar, txnStatusTone } from "../finance/dashboard/parts";
 import { BudgetApprovalChip } from "../finance/dashboard/BudgetApprovalActions";
 import { PlanGrid } from "./PlanGrid";
+import { RegistrationsSection } from "./RegistrationsSection";
 import { TransactionDocumentationModal } from "../finance/modals/TransactionDocumentationModal";
 import { ReceiptCell } from "../finance/reconcile/ReconcileList";
 import { colors } from "../../lib/theme";
@@ -261,6 +263,18 @@ export function MoneyView({
             </View>
           </View>
         </Card>
+      ) : null}
+
+      {/* ── Registrations (project refs) — paid places on a class/cohort, and
+            the net cost once they're set against the spend. A PROJECT's money
+            IN, the way `eventPages` revenue is an EVENT's: a project has no
+            ticket page to sell from, so its income arrives as `registrations`.
+            Renders nothing when there are none. NOTE: this deliberately does
+            NOT feed the budget bar above — income is a second axis, not a
+            larger authorisation to spend. See
+            `packages/shared/src/registrations.ts#netCostCents`. ─────────────── */}
+      {refKind === "project" ? (
+        <RegistrationsSection projectId={refId} spentCents={totalActualCents} />
       ) : null}
 
       {/* ── Plan: THE plan, an always-visible inline database (PR4, extended

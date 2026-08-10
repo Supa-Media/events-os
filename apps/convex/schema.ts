@@ -26,6 +26,7 @@ import {
   projectUpdates,
   projectEmailTokens,
 } from "./schema/projects";
+import { registrations } from "./schema/registrations";
 import { responsibilities, checkIns } from "./schema/responsibilities";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
 import {
@@ -231,6 +232,11 @@ const schema = defineSchema({
   projectComments,
   projectUpdates,
   projectEmailTokens,
+
+  // Paid places on a project — the class/cohort registration fee. The FOURTH
+  // revenue stream (gifts, ticket orders, sales, registrations); see
+  // `schema/registrations.ts` for why it can't be a `ticketOrders` row.
+  registrations,
 
   // Responsibilities (recurring duties, fanned out by role) + 1:1 check-ins.
   responsibilities,

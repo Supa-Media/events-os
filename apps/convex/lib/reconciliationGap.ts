@@ -166,7 +166,11 @@
  *     example, and are now the standing example of the gap DOING ITS JOB: it
  *     read $4,550.70, then $150.00 as the Cash App and Venmo work landed, and
  *     the 2026-08-10 pass named the last of it as three unrecorded student
- *     registrations. See `processorFees.ts`.)
+ *     registrations. See `processorFees.ts`. Those three now have somewhere to
+ *     live — `schema/registrations.ts`, the fourth revenue stream — and
+ *     recording them moves this figure DOWN by $150.00, which is the direction
+ *     the trap above warns about in reverse: revenue RAISES books, and books
+ *     are subtracted here.)
  *   · negative → the books claim money that is nowhere. Revenue counted twice
  *     (a gift AND the bank credit that delivered it), an in-kind gift without
  *     its expense, or spend that was never actually made.

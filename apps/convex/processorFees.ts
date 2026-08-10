@@ -69,7 +69,10 @@
  * note was written, by $150.00 once the Cash App and Venmo work landed — so a fee
  * inferred from the gap really would have been measuring unrecorded sales. The 2026-08-10
  * reconciliation named the last of it: three Worship Beyond The Walls student
- * registrations that succeeded and were never recorded. With that resolved, Givebutter
+ * registrations that succeeded and were never recorded — they had nowhere to go, since
+ * the class was a `projects` row and `ticketOrders` requires an `eventId`. The
+ * `registrations` table (`schema/registrations.ts`) is where they live now. With that
+ * resolved, Givebutter
  * ties exactly — AS OF 2026-08-10, Σ`amount` $13,044.75 − $29.30 of fee = $13,015.45,
  * which is the $12,940.45 paid out plus the $75.00 still held.
  *
