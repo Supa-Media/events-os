@@ -13,6 +13,7 @@ import {
   deliveryLabel,
   hourLabel,
   isLikelyEmail,
+  lastEditedLabel,
   parseDollarsToCents,
   removeRecipient,
   ruleScopeChoices,
@@ -419,6 +420,22 @@ describe("deliveryLabel", () => {
     expect(deliveryLabel({ lastDeliveredAt: 1800, lastSentAt: 1700 }, fmt)).toBe(
       "Last sent #1800",
     );
+  });
+});
+
+describe("lastEditedLabel", () => {
+  const at = (ts: number) => `day ${ts}`;
+
+  test("names the last editor, not the author", () => {
+    expect(
+      lastEditedLabel({ updatedByName: "Shay", updatedAt: 7 }, at),
+    ).toBe("Edited by Shay · day 7");
+  });
+
+  test("a rule from before the field existed shows no line at all", () => {
+    // Deliberately null rather than falling back to the creator — claiming the
+    // author was the last toucher is the exact misattribution this closes.
+    expect(lastEditedLabel({ updatedByName: null, updatedAt: 7 }, at)).toBeNull();
   });
 });
 

@@ -70,6 +70,11 @@ import {
   buildNotificationGift,
   ruleScopeLabel,
 } from "./lib/givingNotificationContext";
+import {
+  diffRule,
+  writeRuleAudit,
+  type RuleSnapshot,
+} from "./lib/givingNotificationAudit";
 import { renderImmediateGiftEmail } from "./lib/givingNotificationEmails";
 import { sendEmailReporting } from "./ticketingEmails";
 
@@ -102,6 +107,23 @@ export function ruleGateScope(scope: RuleScope): GivingScope {
  * If you have arrived here to put `canManageGivingScope` back: please don't.
  * This is the decision, not an oversight it survived.
  *
+ * ── WHO THIS ACTUALLY ENFRANCHISED ─────────────────────────────────────────
+ * `chapter_director` is the seat the argument above is told through, but it is
+ * not the biggest part of the population and reading only that story would
+ * understate this. `canViewGivingScope` SHORT-CIRCUITS on central view, so a
+ * central `giving.view` holder reaches every book — including `"all"`. Three
+ * central seats hold `giving.view` without `giving.manage`
+ * (`packages/shared/src/seats.ts`):
+ *   - `partnership_associate` — multi-holder
+ *   - `fundraising_associate`  — multi-holder
+ *   - `expansion_director`     — single, and its `giving.view` is itself
+ *     toggleable at runtime by the ED (`seats.ts#setSeatGivingPower`)
+ * Each of them can now author a `scope: "all"`, `cadence: "immediate"` rule to
+ * ANY address, including an external one. That is in-reach by design and it is
+ * what the owner asked for — a rule can only forward gift summaries its author
+ * could already read — but it is the honest size of the change, and the two
+ * multi-holder seats mean it is not a fixed number of people.
+ *
  * What makes the loosening safe is that it widened WHICH CAPABILITY opens a
  * book, never WHICH BOOKS a capability opens. Containment is untouched:
  *  - `ruleGateScope` still routes `"all"` through `"central"`, so org-wide
@@ -129,13 +151,53 @@ export function canManageRuleScope(
   return canViewGivingScope(access, ruleGateScope(scope));
 }
 
-/** Assert the caller may create/edit/pause a rule at `scope`, else throw. The
- *  `require` twin of `canManageRuleScope` — same question, one shape throws. */
+/**
+ * Assert the caller may create/edit/pause a rule at `scope`, else throw. The
+ * `require` twin of `canManageRuleScope` — same question, one shape throws.
+ *
+ * ── WHY THIS PAIR ISN'T IN `lib/givingAccess.ts` ───────────────────────────
+ * CLAUDE.md's convention is that a domain's `has`/`require` pair lives in
+ * `lib/<domain>Access.ts`, and giving's does: `canViewGivingScope` /
+ * `requireGivingView` over `GivingScope`. This pair is NOT a second opinion
+ * about giving — it is a thin composition of that one, translating a
+ * NOTIFICATION concept (`RuleScope`, the three-way union with `"all"`) into the
+ * domain's two-way scope and asking the domain resolver. Moving it into
+ * `givingAccess.ts` would put the notification scope union inside the donor-CRM
+ * gate, which is the direction the dependency should not run — the giving desk
+ * has no business knowing that a mailer exists. The rule that actually matters
+ * is upheld: there is exactly one `require` form, every call site uses it, and
+ * nothing here checks a seat inline.
+ */
 async function requireRuleManage(
   ctx: QueryCtx,
   scope: RuleScope,
 ): Promise<GivingAccess> {
   return await requireGivingView(ctx, ruleGateScope(scope));
+}
+
+/** A rule's auditable state with its book resolved to a label, ready for
+ *  `diffRule`. The one `ctx` touch the diff itself deliberately doesn't make. */
+async function snapshotRule(
+  ctx: QueryCtx,
+  rule: {
+    name: string;
+    recipients: readonly string[];
+    cadence: string;
+    minAmountCents?: number;
+    scope: RuleScope;
+    sendHourLocal?: number;
+    sendWeekday?: number;
+  },
+): Promise<RuleSnapshot> {
+  return {
+    name: rule.name,
+    recipients: rule.recipients,
+    cadence: rule.cadence,
+    minAmountCents: rule.minAmountCents,
+    scopeLabel: await ruleScopeLabel(ctx, rule.scope),
+    sendHourLocal: rule.sendHourLocal,
+    sendWeekday: rule.sendWeekday,
+  };
 }
 
 const cadenceValidator = v.union(
@@ -147,9 +209,41 @@ const cadenceValidator = v.union(
 // ── Reads ────────────────────────────────────────────────────────────────────
 
 /**
+ * Resolve a user id to something a human recognises — profile name, else the
+ * account email, else "Someone". The same fallback chain
+ * `givingPlatform.giftDetail` uses for its audit actors, and memoized across
+ * the list so ten rules touched by one person cost one pair of reads.
+ */
+async function actorName(
+  ctx: QueryCtx,
+  cache: Map<string, string>,
+  userId: Id<"users">,
+): Promise<string> {
+  const hit = cache.get(userId);
+  if (hit !== undefined) return hit;
+  const profile = await ctx.db
+    .query("userProfiles")
+    .withIndex("by_userId", (q) => q.eq("userId", userId))
+    .unique();
+  let name = profile?.name;
+  if (!name) {
+    const user = await ctx.db.get(userId);
+    name = user?.email ?? "Someone";
+  }
+  cache.set(userId, name);
+  return name;
+}
+
+/**
  * Every rule the caller can see, newest first, each with its book's display
  * name. Includes INACTIVE rules — the desk has to be able to see and
  * reactivate what it turned off.
+ *
+ * Each row also names WHO LAST TOUCHED IT. That is not decoration: a rule
+ * quietly re-pointed at somebody's personal inbox goes on mailing donor names
+ * and gift amounts under the original author's name until somebody notices, and
+ * "who set this up" was the only question the desk could answer before. The
+ * immutable trail is `givingNotificationRuleAudit`; this is the glance.
  */
 export const listRules = query({
   args: {},
@@ -167,6 +261,7 @@ export const listRules = query({
       .order("desc")
       .take(MAX_RULES);
     const visible = rows.filter((r) => canManageRuleScope(access, r.scope));
+    const names = new Map<string, string>();
     return await Promise.all(
       visible.map(async (r) => ({
         _id: r._id,
@@ -187,6 +282,11 @@ export const listRules = query({
         lastDeliveredAt: r.lastDeliveredAt,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
+        // Who last CHANGED it, not who created it. `null` only for a rule
+        // written before the field existed — every write path sets it now.
+        updatedByName: r.updatedBy
+          ? await actorName(ctx, names, r.updatedBy)
+          : null,
         // True for every row here, because the filter above asks the same
         // question — see `canManageRuleScope` for why the field stays anyway.
         canManage: canManageRuleScope(access, r.scope),
@@ -327,6 +427,10 @@ export const saveRule = mutation({
       const cadenceChanged = existing.cadence !== args.cadence;
       await ctx.db.patch(args.ruleId, {
         ...fields,
+        // WHO TOUCHED IT LAST. `createdBy` is not that, and saying so was a
+        // misattribution the moment anyone but the author could edit — a rule
+        // re-pointed at a personal inbox still named the development director.
+        updatedBy: userId,
         isActive: args.isActive ?? existing.isActive,
         ...(cadenceChanged
           ? {
@@ -334,6 +438,20 @@ export const saveRule = mutation({
               lastRunDayKey: firstRunDayKey(fields, now),
             }
           : {}),
+      });
+      // The breadcrumb, stamped with the scope it was LEAVING, so a move reads
+      // "this was New York's, and here it is becoming central's". Same
+      // transaction as the patch, so a row exists iff the edit committed.
+      await writeRuleAudit(ctx, {
+        ruleId: args.ruleId,
+        scope: existing.scope,
+        actorUserId: userId,
+        action: "edited",
+        changes: diffRule(
+          await snapshotRule(ctx, existing),
+          await snapshotRule(ctx, { ...existing, ...fields }),
+        ),
+        at: now,
       });
       return args.ruleId;
     }
@@ -351,7 +469,7 @@ export const saveRule = mutation({
       });
     }
 
-    return await ctx.db.insert("givingNotificationRules", {
+    const ruleId = await ctx.db.insert("givingNotificationRules", {
       ...fields,
       isActive: args.isActive ?? true,
       // A rule written AFTER its send moment today would otherwise be due
@@ -360,8 +478,20 @@ export const saveRule = mutation({
       // about a week nobody was watching. See `firstRunDayKey`.
       lastRunDayKey: firstRunDayKey(fields, now),
       createdBy: userId,
+      // Equal to `createdBy` at birth, and set anyway so the field is never
+      // absent on a rule this deployment wrote — an absent `updatedBy` then
+      // means exactly one thing: "written before the field existed".
+      updatedBy: userId,
       createdAt: now,
     });
+    await writeRuleAudit(ctx, {
+      ruleId,
+      scope: args.scope,
+      actorUserId: userId,
+      action: "created",
+      at: now,
+    });
+    return ruleId;
   },
 });
 
@@ -396,10 +526,15 @@ export const setRuleActive = mutation({
       });
     }
     await requireRuleManage(ctx, rule.scope);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
     const now = Date.now();
     const reactivating = isActive && !rule.isActive;
+    const flipped = rule.isActive !== isActive;
     await ctx.db.patch(ruleId, {
       isActive,
+      // Pausing and resuming a mailer is a change to who hears about money, so
+      // it names its actor like every other edit does.
+      updatedBy: userId,
       updatedAt: now,
       ...(reactivating
         ? {
@@ -414,6 +549,18 @@ export const setRuleActive = mutation({
           }
         : {}),
     });
+    // Only a real flip earns a breadcrumb. This mutation is idempotent by
+    // design (the switch fires on every render of a row), and a trail padded
+    // with no-op rows is a trail nobody reads.
+    if (flipped) {
+      await writeRuleAudit(ctx, {
+        ruleId,
+        scope: rule.scope,
+        actorUserId: userId,
+        action: isActive ? "activated" : "deactivated",
+        at: now,
+      });
+    }
     return null;
   },
 });

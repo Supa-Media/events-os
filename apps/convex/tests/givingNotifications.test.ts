@@ -1117,6 +1117,38 @@ describe("immediate notifications", () => {
     }
   });
 
+  test("a rule authored by a VIEW-only chapter seat still can't reach central's gifts", async () => {
+    // Every other send-path containment test here was written when only central
+    // could author a rule. Now that a chapter `giving.view` seat can, the
+    // property has to be re-proved from THAT seat: the send path bounds gifts by
+    // the RULE's scope, so authorship buys no extra reach at send time either.
+    // Belt and braces with the mutation gate — that stops the rule being
+    // written; this stops it mattering if one ever were.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    await saveRule(viewer, {
+      name: "New York, mine",
+      scope: s.chapterId,
+      recipients: ["chapdir@publicworship.life"],
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { scope: "central", name: "Central Giver" });
+      });
+      // A central donor's name and amount never reach a chapter seat's inbox.
+      expect(cap.sent).toHaveLength(0);
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { scope: s.chapterId, name: "Chapter Giver" });
+      });
+      expect(cap.sent.map((e) => e.to)).toEqual(["chapdir@publicworship.life"]);
+      expect(cap.sent[0].html).toContain("Chapter Giver");
+    } finally {
+      cap.restore();
+    }
+  });
+
   test("two overlapping rules send one person ONE email, naming both", async () => {
     const s = await devDirectorSetup();
     await saveRule(s.as, {
@@ -2452,6 +2484,190 @@ describe("a rule only claims to have sent when it has", () => {
     } finally {
       cap.restore();
     }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Who aimed this mailer, and where
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * A rule keeps mailing donor names and gift amounts after its author's seat is
+ * revoked — the send paths bound each email by the RULE's scope and never
+ * re-check a caller, because a cron has no caller. So the only defence is the
+ * record made at write time, and widening the gate to `giving.view` widened who
+ * can write.
+ */
+describe("a rule names who last touched it, and keeps the trail", () => {
+  async function auditFor(
+    s: ChapterSetup,
+    ruleId: Id<"givingNotificationRules">,
+  ) {
+    return await run(s.t, (ctx) =>
+      ctx.db
+        .query("givingNotificationRuleAudit")
+        .withIndex("by_rule", (q) => q.eq("ruleId", ruleId))
+        .collect(),
+    );
+  }
+
+  test("creating writes updatedBy and a `created` breadcrumb", async () => {
+    const s = await devDirectorSetup();
+    const ruleId = await saveRule(s.as, { scope: s.chapterId });
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(row?.updatedBy).toBe(row?.createdBy);
+
+    const trail = await auditFor(s, ruleId);
+    expect(trail.map((a) => a.action)).toEqual(["created"]);
+    // A bare create carries no diff — there is nothing it changed FROM.
+    expect(trail[0].changes).toBeUndefined();
+  });
+
+  test("an edit by someone else re-points updatedBy — createdBy does NOT move", async () => {
+    // THE MISATTRIBUTION this closes: central authors a rule, a chapter viewer
+    // re-points it at their own inbox, and the row went on naming central.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, {
+      name: "New York gifts",
+      scope: s.chapterId,
+      recipients: ["dev@publicworship.life"],
+    });
+    const before = await run(s.t, (ctx) => ctx.db.get(ruleId));
+
+    await saveRule(viewer, {
+      ruleId,
+      name: "New York gifts",
+      scope: s.chapterId,
+      recipients: ["me@personal.example"],
+    });
+
+    const after = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(after?.createdBy).toBe(before?.createdBy);
+    expect(after?.updatedBy).not.toBe(before?.createdBy);
+
+    // And the desk SHOWS it — the flag is worthless if the list still reads
+    // like nothing happened.
+    const listed = await viewer.query(api.givingNotifications.listRules, {});
+    const shown = listed.find((r) => r._id === ruleId);
+    expect(shown?.updatedByName).toBe("chapdir@publicworship.life");
+  });
+
+  test("the retarget is recorded with the addresses it moved between", async () => {
+    // "Who did this start mailing" is the whole question, so recipients are
+    // diffed in full rather than summarized.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, {
+      name: "New York gifts",
+      scope: s.chapterId,
+      recipients: ["dev@publicworship.life"],
+    });
+    await saveRule(viewer, {
+      ruleId,
+      name: "New York gifts",
+      scope: s.chapterId,
+      recipients: ["me@personal.example"],
+    });
+
+    const trail = await auditFor(s, ruleId);
+    expect(trail.map((a) => a.action)).toEqual(["created", "edited"]);
+    const recipients = trail[1].changes?.find((c) => c.field === "Recipients");
+    expect(recipients?.from).toBe("dev@publicworship.life");
+    expect(recipients?.to).toBe("me@personal.example");
+  });
+
+  test("a scope move is stamped with the book it LEFT, and names both", async () => {
+    const s = await devDirectorSetup();
+    const ruleId = await saveRule(s.as, {
+      name: "Moving",
+      scope: s.chapterId,
+    });
+    await saveRule(s.as, { ruleId, name: "Moving", scope: "central" });
+
+    const trail = await auditFor(s, ruleId);
+    const move = trail[1];
+    // The row is filed under the book it could reach at the time.
+    expect(move.scope).toBe(s.chapterId);
+    const book = move.changes?.find((c) => c.field === "Book");
+    expect(book?.from).toBe("New York");
+    expect(book?.to).toBe("Central");
+  });
+
+  test("pausing and resuming are recorded, and a no-op is not", async () => {
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, { scope: s.chapterId });
+
+    await viewer.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: false,
+    });
+    // Idempotent — the switch fires on every render, and a trail padded with
+    // no-op rows is a trail nobody reads.
+    await viewer.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: false,
+    });
+    await viewer.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: true,
+    });
+
+    const trail = await auditFor(s, ruleId);
+    expect(trail.map((a) => a.action)).toEqual([
+      "created",
+      "deactivated",
+      "activated",
+    ]);
+    // And the switch names its actor too — turning a mailer off and on is a
+    // change to who hears about money.
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(row?.updatedBy).not.toBe(row?.createdBy);
+  });
+
+  test("the trail is immutable — later edits append, never rewrite", async () => {
+    // The reason a bare `updatedBy` wasn't enough: the next editor overwrites
+    // it, and the next editor is exactly who you'd want to catch.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, {
+      name: "Rule",
+      scope: s.chapterId,
+      recipients: ["dev@publicworship.life"],
+    });
+    await saveRule(viewer, {
+      ruleId,
+      name: "Rule",
+      scope: s.chapterId,
+      recipients: ["me@personal.example"],
+    });
+    await saveRule(s.as, {
+      ruleId,
+      name: "Rule",
+      scope: s.chapterId,
+      recipients: ["dev@publicworship.life"],
+    });
+
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    // The row now names central again — it has forgotten the detour.
+    expect(row?.updatedBy).toBe(row?.createdBy);
+    // The trail has not.
+    const trail = await auditFor(s, ruleId);
+    expect(trail).toHaveLength(3);
+    expect(trail[1].changes?.find((c) => c.field === "Recipients")?.to).toBe(
+      "me@personal.example",
+    );
+  });
+
+  test("a rule written before the field existed reports no editor", async () => {
+    // Backfill-free: `updatedBy` is optional, and the desk omits the line
+    // rather than guessing the author was the last toucher.
+    const s = await devDirectorSetup();
+    const ruleId = await saveRule(s.as, { scope: s.chapterId });
+    await run(s.t, (ctx) => ctx.db.patch(ruleId, { updatedBy: undefined }));
+    const listed = await s.as.query(api.givingNotifications.listRules, {});
+    expect(listed.find((r) => r._id === ruleId)?.updatedByName).toBeNull();
   });
 });
 

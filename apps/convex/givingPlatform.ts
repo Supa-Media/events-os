@@ -909,6 +909,18 @@ export const getGift = query({
  * every active chapter (all manageable when they hold central manage); a
  * chapter holder gets only their own chapter(s). Quiet — never throws — so the
  * client can render an add-gift/move affordance conditionally.
+ *
+ * ── TWO CONSUMERS, AND THEY READ DIFFERENT PARTS OF IT ─────────────────────
+ * The Gifts/Donors pickers read `canManage` — "may record or move a gift in
+ * this book". The Notifications rule picker reads the OPTIONS THEMSELVES and
+ * `canSeeAllScopes`, and deliberately ignores `canManage`: a notification rule
+ * is gated on giving VIEW (`givingNotifications.ts#canManageRuleScope`, owner's
+ * call 2026-08-10), and every option here is by construction a book the caller
+ * can view. So if you ever change WHICH options this returns — say by listing a
+ * book on some basis other than view reach — you are changing which books a
+ * mailer can be aimed at, not just which buttons render. The mobile derivation
+ * is `components/giving/notificationRules.ts#ruleScopeChoices` and the invariant
+ * is asserted across the wire in `tests/givingNotifications.test.ts`.
  */
 export const givingScopeOptions = query({
   args: {},

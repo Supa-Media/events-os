@@ -20,9 +20,10 @@ builds against the API surface below.
 
 ## The model
 
-One table, `givingNotificationRules` (`schema/givingNotifications.ts`). A row is
-a standing instruction: *these people* hear about *these gifts* at *this
-frequency*.
+Two tables (`schema/givingNotifications.ts`). `givingNotificationRules` is the
+standing instruction — *these people* hear about *these gifts* at *this
+frequency*. `givingNotificationRuleAudit` is the immutable trail of who changed
+one and to what; see "A rule outlives the person who aimed it" below.
 
 | Field | Meaning |
 | --- | --- |
@@ -37,6 +38,7 @@ frequency*.
 | `lastSentAt?` | Digest watermark — "reported up to here". A fact about money |
 | `lastRunDayKey?` | "Already looked at today" (`YYYY-MM-DD` ET). A fact about scheduling |
 | `createdBy` / `createdAt` / `updatedAt` | Provenance |
+| `updatedBy?` | Who last CHANGED it — **not** the author. Absent only on rules older than the field |
 
 ### Why `scope` is a three-way string union
 
@@ -434,6 +436,48 @@ you had no reach into.
 The gate is still written against the capability rather than a seat list, so the
 day a chapter seat is granted `giving.manage` nothing here needs to change. The
 tests still mint such a seat to keep that branch pinned down.
+
+**Who this actually enfranchised — it is not only chapter directors.**
+`canViewGivingScope` short-circuits on central view, so a central `giving.view`
+holder reaches every book, `"all"` included. Three central seats hold
+`giving.view` without `giving.manage` (`packages/shared/src/seats.ts`):
+
+| Seat | Holders |
+| --- | --- |
+| `partnership_associate` | multi-holder |
+| `fundraising_associate` | multi-holder |
+| `expansion_director` | single — and its `giving.view` is itself toggleable at runtime by the ED (`seats.ts#setSeatGivingPower`) |
+
+Each can author a `scope: "all"`, `cadence: "immediate"` rule to any address,
+including an external one. In-reach by design, and what the owner asked for — a
+rule only forwards gift summaries its author could already read — but two of
+those seats are multi-holder, so the population is not a fixed number of people.
+Anyone reasoning about this gate from the `chapter_director` story alone is
+underestimating it.
+
+### A rule outlives the person who aimed it
+
+The send paths bound each email by the RULE's scope and never re-check any
+caller's access, correctly — a cron has no caller. So a rule quietly re-pointed
+at a personal address keeps mailing donor names and gift amounts after that
+person's seat is revoked. Two records answer for it, both written at write time:
+
+- **`givingNotificationRules.updatedBy`** — who last CHANGED the rule, set by
+  `saveRule` (create and edit) and by `setRuleActive` in both directions.
+  `createdBy` on its own was a misattribution once anyone but the author could
+  edit: a rule authored by the development director and re-pointed by someone
+  else still named the director. `listRules` surfaces it as `updatedByName` and
+  the desk renders "Edited by … · date" on each row. Optional only because rules
+  predate the field; an absent value means exactly "written before this shipped".
+- **`givingNotificationRuleAudit`** — the immutable trail (`giftAudit`'s shape),
+  one row per human change: `created`, `edited`, `activated`, `deactivated`.
+  `updatedBy` alone was not enough, because the next editor overwrites it and
+  the next editor is precisely who you would want to catch. `changes` is a
+  display-ready diff and **recipients are diffed in full** — "who did this start
+  mailing" is the whole question, and a count would hide a swap. An `edited` row
+  is stamped with the scope the rule was LEAVING, so a move reads "this was New
+  York's, and here it is becoming central's". A no-op `setRuleActive` writes
+  nothing (the switch fires on every render).
 
 ## Two axes, kept apart on purpose
 

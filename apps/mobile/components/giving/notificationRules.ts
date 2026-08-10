@@ -329,6 +329,23 @@ export function deliveryLabel(
   return "Hasn't sent yet";
 }
 
+/**
+ * "Edited by Shay · 3 Aug 2026" — who last CHANGED this rule, not who created
+ * it.
+ *
+ * It earns its line because a rule keeps mailing donor names and gift amounts
+ * after the person who last pointed it somewhere is gone, and until this the
+ * desk could only ever name the author. `null` means the rule predates the
+ * field, and the line is omitted rather than guessing at the author.
+ */
+export function lastEditedLabel(
+  rule: { updatedByName: string | null; updatedAt: number },
+  formatTs: (ts: number) => string,
+): string | null {
+  if (!rule.updatedByName) return null;
+  return `Edited by ${rule.updatedByName} · ${formatTs(rule.updatedAt)}`;
+}
+
 // ── The whole form ───────────────────────────────────────────────────────────
 
 /** What the form holds, all as the strings the inputs actually carry. */

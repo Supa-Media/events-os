@@ -59,6 +59,7 @@ import {
   cadenceLabel,
   centsToDollarsInput,
   deliveryLabel,
+  lastEditedLabel,
   removeRecipient,
   ruleScopeChoices,
   scheduleSummary,
@@ -203,6 +204,10 @@ function NotificationsBody() {
 
 function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
   const setRuleActive = useMutation(api.givingNotifications.setRuleActive);
+  // WHO LAST POINTED THIS SOMEWHERE. A rule outlives its author's seat and goes
+  // on mailing donor names either way, so the desk names the last editor rather
+  // than the creator — see `lastEditedLabel`.
+  const lastEdited = lastEditedLabel(rule, formatSentAt);
 
   async function toggle(next: boolean) {
     try {
@@ -238,6 +243,9 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
           <Text className="mt-0.5 text-xs text-faint">
             {deliveryLabel(rule, formatSentAt)}
           </Text>
+          {lastEdited ? (
+            <Text className="mt-0.5 text-xs text-faint">{lastEdited}</Text>
+          ) : null}
         </View>
         {rule.canManage ? (
           <Button title="Edit" variant="ghost" size="sm" onPress={onEdit} />
