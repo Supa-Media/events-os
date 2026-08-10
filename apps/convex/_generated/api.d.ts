@@ -306,6 +306,7 @@ import type * as reimbursementBackfill from "../reimbursementBackfill.js";
 import type * as reimbursements from "../reimbursements.js";
 import type * as reminders from "../reminders.js";
 import type * as responsibilities from "../responsibilities.js";
+import type * as reverseExcludedSettlementLoop from "../reverseExcludedSettlementLoop.js";
 import type * as roleAssignments from "../roleAssignments.js";
 import type * as roles from "../roles.js";
 import type * as sales from "../sales.js";
@@ -687,6 +688,7 @@ declare const fullApi: ApiFromModules<{
   reimbursements: typeof reimbursements;
   reminders: typeof reminders;
   responsibilities: typeof responsibilities;
+  reverseExcludedSettlementLoop: typeof reverseExcludedSettlementLoop;
   roleAssignments: typeof roleAssignments;
   roles: typeof roles;
   sales: typeof sales;

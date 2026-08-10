@@ -1128,6 +1128,18 @@ export const listUnexecutedEnginePairs = internalQuery({
       if (out.length >= REAL_MOVES_PER_RUN) break;
       if (leg.transferOrigin == null) continue; // manual pairs never execute
       if (leg.externalId != null) continue; // cash already moved
+      // A VOIDED PAIR MUST NOT MOVE CASH. `status:"excluded"` is how this
+      // codebase retracts a booking that should never have happened — see
+      // `reverseExcludedSettlementLoop.ts` and the settling-leg filter in
+      // `transfers.ts#chapterInterScopeRows`, which was blind to exactly this
+      // field and shifted $2,003.95 of book value for it. This function was
+      // blind to it too, and the only reason that never cost anything is that
+      // real movement has never been switched on: the two engine pairs voided
+      // in production so far were same-day retractions that would have been
+      // handed to Increase the next time this list was drained. Retracting a
+      // booking and then wiring it anyway is the worst version of this bug —
+      // it moves REAL money for a row the ledger says didn't happen.
+      if (leg.status === "excluded") continue;
       if (leg.transferGroupId == null || leg.transferDirection == null) continue;
       if (leg.createdAt < enabledSinceMs) continue; // pre-enable backlog
 
