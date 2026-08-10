@@ -153,7 +153,16 @@ const DEFAULT_COLS = {
   // AND the "attach existing" search-icon affordance next to it — too tight
   // to comfortably click either. The table already scrolls horizontally, so
   // there's no shared budget to steal from another column for this.
-  receipt: 140,
+  //
+  // 140 was still short once the cell grew its third affordance ("No receipt")
+  // and its longest label ("Day 3 overdue"): measured in the browser, that
+  // combination renders 197px wide, so it spilled 57px into the Status column.
+  // It LOOKED fine only because nothing clipped — the overflow painted over
+  // the neighbour instead of being cut off. Now that `Cell` clips (see its
+  // comment), an under-wide column would silently swallow the "No receipt"
+  // control rather than merely look untidy, so the default has to actually fit
+  // the widest state the cell can render.
+  receipt: 208,
   status: 148,
   // Wide enough for the note icon PLUS the "Personal" badge (its widest
   // combination — the note icon + the manager-only flag icon is narrower).
@@ -1033,10 +1042,30 @@ function MerchantCell({ row, readOnly }: { row: TxnRow; readOnly: boolean }) {
   );
 }
 
+/**
+ * One fixed-width grid cell.
+ *
+ * `overflow: "hidden"` is load-bearing, not tidiness. A `View` does not clip by
+ * default, and RN-Web gives a sibling `View` `flexShrink: 0` — so a cell whose
+ * content is naturally wider than its column (a long "For" chip, the
+ * Documentation cell's icon + label + "No receipt") did not truncate, it
+ * PAINTED PAST its right edge into the next column. Later siblings paint on
+ * top, so the reader saw the Documentation column's text sitting on top of the
+ * For column's budget name — reported by the owner as "Day 3 overdue" over
+ * "Worship With Strangers · Feb 7, 2026" and "Attached" over "Love Thy
+ * Neighbor 2025 · Sep 20, 2025". A column with a fixed width has to keep its
+ * content inside that width; anything else is two cells claiming one box.
+ *
+ * Clipping is the floor, not the whole answer — a hard clip cuts a glyph in
+ * half. Content that can outgrow its column truncates gracefully on its own
+ * (`OptionTag` caps at `max-w-full` so its `numberOfLines={1}` can ellipsize;
+ * `DEFAULT_COLS.receipt` is wide enough for the Documentation cell's longest
+ * combination). This is what stops the damage from reaching a neighbour.
+ */
 function Cell({ width, children }: { width: number; children: React.ReactNode }) {
   return (
     <View
-      style={{ width }}
+      style={{ width, overflow: "hidden" }}
       className="flex-row items-center border-r border-border/60"
     >
       {children}

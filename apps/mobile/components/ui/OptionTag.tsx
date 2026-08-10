@@ -25,8 +25,15 @@ export function OptionTag({ label, color, onPress, onRemove, selected, size = "s
   const c = optionColor(color);
   const isMd = size === "md";
   const inner = (
+    // `max-w-full` pairs with `self-start`: the chip still hugs its label
+    // (that's what `self-start` buys), but it can never grow WIDER than the box
+    // it was given. Without the cap, a long label in a fixed-width grid cell
+    // sized the chip past the column and `numberOfLines={1}` never fired —
+    // ellipsis only happens once the box is actually constrained — so the chip
+    // rendered at full width, on top of the next column. See `Cell`'s comment
+    // in `finance/reconcile/ReconcileList.tsx`.
     <View
-      className={`flex-row items-center gap-1 self-start rounded-sm ${
+      className={`max-w-full flex-row items-center gap-1 self-start rounded-sm ${
         isMd ? "px-3 py-1.5" : "px-2 py-0.5"
       }`}
       style={{
@@ -35,7 +42,10 @@ export function OptionTag({ label, color, onPress, onRemove, selected, size = "s
       }}
     >
       <Text
-        className={isMd ? "text-sm font-semibold" : "text-xs font-semibold"}
+        // `shrink` so the capped chip above can actually squeeze this label
+        // down to where `numberOfLines={1}` ellipsizes it, instead of the label
+        // holding the chip open at its natural width.
+        className={`shrink ${isMd ? "text-sm font-semibold" : "text-xs font-semibold"}`}
         style={{ color: c.text }}
         numberOfLines={1}
       >
