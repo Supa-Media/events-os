@@ -95,6 +95,7 @@ import {
   donors,
   donorIdentities,
   gifts,
+  pendingGifts,
   giftAudit,
   giftReversals,
   donorAudit,
@@ -385,6 +386,14 @@ const schema = defineSchema({
   // lib/donorIdentity.ts.
   donorIdentities,
   gifts,
+  // ACH giving that is authorised but has NOT cleared the bank yet — the queue
+  // between "the donor pressed give" and "the money arrived". Deliberately NOT
+  // a `gifts` row: book value sums `gifts`, and pending ACH is not money yet.
+  // Written by the `checkout.session.completed`-unsettled webhook branch and
+  // DELETED the moment the debit clears or the bank refuses it, so a row here
+  // always means "still in flight". See schema/givingPlatform.ts for why none
+  // of `donations` / `ticketOrders` / `givingActivity` could hold this.
+  pendingGifts,
   // Gifts ledger: the human-edit audit breadcrumb trail (per-gift, newest-first
   // via by_gift). Written by the desk mutations, never affects a money rollup.
   giftAudit,

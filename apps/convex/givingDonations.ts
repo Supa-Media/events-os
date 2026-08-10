@@ -43,6 +43,7 @@ import {
   assertPositiveGiftCents,
   matchOrCreateDonor,
   recordGiftForDonor,
+  splitIntendedGift,
 } from "./lib/givingDonors";
 import type { GivingScope } from "./lib/givingAccess";
 // The gross-up arithmetic lives in ONE place (#583) and is never re-derived
@@ -357,25 +358,15 @@ export const recordGiveDonationPaid = internalMutation({
 
     // ── One payment, two meanings ────────────────────────────────────────────
     // The GIFT is what the donor meant to give; the coverage is the extra they
-    // added so the processor's cut wouldn't come out of it. Splitting here
-    // rather than booking the whole charge as the gift is what keeps total
-    // giving comparable across the launch of this feature: the same donors
-    // giving the same amounts report the same numbers, and only the org's NET
-    // moves. See `gifts.feeCoverageCents`.
-    //
-    // Every guard is against the split being wrong rather than merely absent.
-    // A metadata value that isn't a sane integer strictly inside the charge is
-    // IGNORED — falling back to "the whole charge was the gift", which is the
-    // pre-feature behaviour and can only ever understate the org's net. It can
-    // never invent a gift larger than what was actually paid.
+    // added so the processor's cut wouldn't come out of it. The arithmetic and
+    // all of its guards live in `splitIntendedGift` — SHARED with
+    // `givingPending.recordPendingGift`, so the figure a digest reports as
+    // "still clearing" is exactly the figure booked here when it lands.
     const intended = args.intendedCents;
-    const splitIsSane =
-      intended !== undefined &&
-      Number.isInteger(intended) &&
-      intended > 0 &&
-      intended <= args.amountTotalCents;
-    const giftCents = splitIsSane ? intended : args.amountTotalCents;
-    const coverageCents = args.amountTotalCents - giftCents;
+    const { giftCents, coverageCents, splitIsSane } = splitIntendedGift(
+      args.amountTotalCents,
+      intended,
+    );
     if (intended !== undefined && !splitIsSane) {
       console.error(
         `[give] session ${args.sessionId}: intendedCents ${intended} is not a ` +

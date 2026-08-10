@@ -425,6 +425,116 @@ export const gifts = defineTable({
   .index("by_transaction", ["transactionId"]);
 
 /**
+ * A gift the donor has authorised and the bank has not yet moved — an ACH debit
+ * in flight.
+ *
+ * ── WHY THIS TABLE EXISTS AT ALL ───────────────────────────────────────────
+ * A `gifts` row means "this money has arrived", full stop. That is the property
+ * the whole finance layer leans on: `reconciliation.ts#computeBookBalances`
+ * sums `gifts.amountCents` straight into book value, and the org's book-vs-bank
+ * gap closed to exactly $0.00 on that basis. So an ACH debit that will not
+ * clear for three to five business days CANNOT be a gift row, and nothing here
+ * changes that.
+ *
+ * But before this table there was no row of ANY kind. Stripe enabled ACH on
+ * 2026-08-09; `http.ts` takes `checkout.session.completed` with an unsettled
+ * `payment_status`, logs a line, mails the donor "it's on its way", and writes
+ * nothing. The donor comms path (`givingComms.ts`) works only because it
+ * re-reads the Checkout Session from Stripe over REST — which a Convex query
+ * inside a digest transaction cannot do. The giving digest therefore could not
+ * see in-flight money at all, and the owner asked for it:
+ *
+ *   "We should add ACH giving into the mix, just with a caveat of how much of
+ *    the total is ach and it will take some days to clear/process"
+ *
+ * ── WHY NOT EXTEND SOMETHING ───────────────────────────────────────────────
+ * Three existing tables were considered and all three are the wrong shape:
+ *
+ *  • `donations` (schema/ticketing.ts) has a real `pending` status, but it
+ *    REQUIRES `eventId` + `chapterId`, so it cannot hold a `/give` gift (which
+ *    may be scoped `central` and has no event) — and its pending rows are
+ *    written at CHECKOUT-START, so most of them are abandoned card checkouts
+ *    Stripe has not expired yet, not money in flight. Counting them would
+ *    report giving that nobody ever authorised.
+ *  • `ticketOrders` has the same checkout-start problem, and its giving is one
+ *    optional `donationCents` field on a row that is mostly ticket revenue.
+ *  • `givingActivity` has a genuine `pending`/`settledAt` lifecycle, but it is
+ *    the OPT-IN PUBLIC WALL: no row is written unless the giver ticked "show me"
+ *    AND typed a name or message, its `scope` cannot be `central`, and it is
+ *    deliberately PII-free. It is an echo of giving, not a record of it.
+ *
+ * ── WRITTEN AT THE ONE INSTANT WE KNOW THE MONEY IS REAL-BUT-NOT-HERE ──────
+ * Exactly one writer: `givingPending.recordPendingGift`, from the
+ * `checkout.session.completed`-but-unsettled branch of the Stripe webhook.
+ * That instant is the whole point — it is later than checkout-start (so an
+ * abandoned checkout never appears) and earlier than settlement (so there is
+ * still something to report). Resolved — DELETED — by
+ * `givingPending.resolvePendingGift` from both `settleCheckoutSession` and
+ * `cancelCheckoutSession`, so a debit that clears and a debit the bank refuses
+ * both leave nothing behind. A row here always means "still in flight".
+ *
+ * DELETED RATHER THAN STATUS-FLIPPED, deliberately. A `status: "settled"` row
+ * would be a second, weaker copy of a `gifts` row — a thing to keep in sync, to
+ * accidentally sum, and to explain forever. The gift IS the settled record.
+ * The cost is that this table carries no history, which is correct: it is a
+ * queue, and the ledger is the history.
+ *
+ * ── THE LINK FIELDS ARE NOT DECORATION ─────────────────────────────────────
+ * `eventId` / `donationId` / `pledgeId` / `sponsorshipId` mirror `gifts`
+ * exactly so `lib/giftLabels.ts#giftType` classifies a pending gift by the SAME
+ * precedence a settled one gets. That is what lets the digest's "By giving
+ * type" cut include pending money and still sum to its own headline.
+ *
+ * Money is integer cents and `amountCents` is the INTENDED gift — the fee
+ * coverage a donor added on top is not giving, matching `gifts.amountCents` /
+ * `gifts.feeCoverageCents`.
+ */
+export const pendingGifts = defineTable({
+  /** Stripe Checkout Session id — the idempotency key. Stripe delivers at
+   *  least once, so both the writer and the resolver key on this. */
+  sessionId: v.string(),
+  scope: givingScope,
+  /** What the donor MEANT to give, fee coverage excluded — `gifts.amountCents`'
+   *  definition, so a pending figure and the gift it becomes are comparable. */
+  amountCents: v.number(), // int > 0
+  currency: v.string(), // "usd"
+  /**
+   * When the donor AUTHORISED the debit — the instant Stripe told us the
+   * session completed unsettled.
+   *
+   * This is the pending row's answer to `gifts.receivedAt`, and the digest
+   * windows on it. There is no arrival date to use: by definition the money has
+   * not arrived. Submission is the only date that exists, it is the date the
+   * donor thinks of as "when I gave" (it is the timestamp on the "your gift is
+   * on its way" email they already have), and — unlike `receivedAt` — it can
+   * never be backdated, so a pending row cannot land behind a digest watermark.
+   */
+  submittedAt: v.number(),
+  /** The giver's name as the checkout captured it. Denormalized because a
+   *  `/give` donor row can be renamed or merged and a pending row is read once,
+   *  days later, in an email. PUBLIC-FORM INPUT — every reader must escape it. */
+  donorName: v.string(),
+  /** The `/give` donor this will be booked against on settle. Absent for an
+   *  event-page donation, which creates its donor only when the money lands. */
+  donorId: v.optional(v.id("donors")),
+  // ── Classification, mirroring `gifts` so `giftType` agrees ────────────────
+  eventId: v.optional(v.id("events")),
+  donationId: v.optional(v.id("donations")),
+  pledgeId: v.optional(v.id("pledges")),
+  sponsorshipId: v.optional(v.id("sponsorships")),
+  createdAt: v.number(),
+})
+  // The webhook's idempotent write + its resolve. At most one row per session.
+  .index("by_session", ["sessionId"])
+  // "Everything authorised between these two instants", across every book — an
+  // `"all"`-scope digest's pending window. Mirrors `gifts.by_received`.
+  .index("by_submitted", ["submittedAt"])
+  // The scoped form, for a chapter-scoped rule. Mirrors
+  // `gifts.by_scope_and_received`, and for the same reason: without it a quiet
+  // chapter's rule would walk every other book's in-flight money.
+  .index("by_scope_and_submitted", ["scope", "submittedAt"]);
+
+/**
  * One audit breadcrumb for a HUMAN gift change (owner request #4b — "a
  * breadcrumb trail of me showing I updated this"). Written by the giving-desk
  * mutations (`addGift`, `editGift`, `reassignGiftDonor`, `moveGiftScope`) after

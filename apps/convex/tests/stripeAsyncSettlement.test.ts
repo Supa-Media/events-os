@@ -1,7 +1,13 @@
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { createHmac } from "node:crypto";
 import { internal } from "../_generated/api";
-import { newT, run, setupChapter, type TestConvex } from "./setup.helpers";
+import {
+  newT,
+  run,
+  setupChapter,
+  type ChapterSetup,
+  type TestConvex,
+} from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -72,6 +78,36 @@ async function centralGifts(t: TestConvex) {
       .withIndex("by_scope", (q) => q.eq("scope", "central"))
       .collect(),
   );
+}
+
+/** The minimum event an in-flight `donations` / `ticketOrders` row can hang off. */
+async function seedEventPage(
+  s: ChapterSetup,
+): Promise<{ eventId: Id<"events"> }> {
+  const now = Date.now();
+  return run(s.t, async (ctx) => {
+    const eventTypeId = await ctx.db.insert("eventTypes", {
+      chapterId: s.chapterId,
+      name: "Gala",
+      slug: "gala",
+      version: 1,
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const eventId = await ctx.db.insert("events", {
+      chapterId: s.chapterId,
+      eventTypeId,
+      templateVersion: 1,
+      name: "Summer Gala",
+      eventDate: now,
+      status: "planning",
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { eventId };
+  });
 }
 
 async function seedDonor(t: TestConvex): Promise<Id<"donors">> {
@@ -236,6 +272,249 @@ describe("the async settlement events", () => {
     const gifts = await centralGifts(t);
     expect(gifts).toHaveLength(1);
     expect(gifts[0].amountCents).toBe(25_000);
+  });
+});
+
+/**
+ * THE ONE ROW AN IN-FLIGHT DEBIT LEAVES BEHIND.
+ *
+ * Everything above asserts that an unsettled ACH session records NO MONEY, and
+ * that stays true — `pendingGifts` is not the ledger, not revenue, and not
+ * visible to book value (`tests/givingNotifications.test.ts` holds that one
+ * down against `accountBalances` directly). What it is, is the only queryable
+ * evidence that a bank transfer is on its way, so the weekly giving digest can
+ * say how much of its total hasn't landed.
+ *
+ * The lifecycle these assert is small and total: written on submission, GONE
+ * on settlement, GONE on failure, GONE on abandonment. A row that outlived any
+ * of those three would be a phantom — money reported as coming that isn't.
+ */
+describe("an in-flight bank debit leaves exactly one trace", () => {
+  async function pendingRows(t: TestConvex) {
+    return run(t, (ctx) => ctx.db.query("pendingGifts").collect());
+  }
+
+  test("a submitted ACH gift is recorded as pending — with the amount, not the charge", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", {
+      // The donor gave $100 and covered $3.30 of fees, so Stripe charges
+      // $103.30. The PENDING figure has to be the gift, or it would shrink by
+      // the coverage the day it settles and look like money went missing.
+      id: "cs_ach_pending",
+      amount_total: 10_330,
+      payment_status: "unpaid",
+      metadata: {
+        giveDonation: "1",
+        giveDonorId: String(donorId),
+        giveScope: "central",
+        giveIntendedCents: "10000",
+      },
+    });
+
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountCents).toBe(10_000);
+    expect(rows[0].scope).toBe("central");
+    expect(rows[0].donorName).toBe("Bank Giver");
+    expect(rows[0].sessionId).toBe("cs_ach_pending");
+    // Still no money anywhere.
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("a CARD session records nothing pending — it was never in flight", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_card", donorId, "paid"));
+
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  test("REDELIVERY of the submission doesn't double the pending figure", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const session = giveSession("cs_dupe", donorId, "unpaid");
+
+    // Stripe delivers at least once, and the dedup ledger gates only the
+    // EMAIL — the money paths, this one included, are reached twice on purpose.
+    await postEvent(t, "checkout.session.completed", session, "evt_1");
+    await postEvent(t, "checkout.session.completed", session, "evt_2");
+
+    expect(await pendingRows(t)).toHaveLength(1);
+  });
+
+  test("the debit clears: the pending row is gone and the gift is real", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ok", donorId, "unpaid"));
+    expect(await pendingRows(t)).toHaveLength(1);
+
+    await postEvent(
+      t,
+      "checkout.session.async_payment_succeeded",
+      giveSession("cs_ok", donorId, "paid"),
+    );
+
+    // NOT BOTH. The single most important assertion here: for the four days it
+    // was in flight the digest counted this money once, as pending; from now on
+    // it counts once, as a gift. A surviving pending row would have it in both
+    // halves of the same total.
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  test("the bank refuses it: the pending row is gone and no gift was ever made", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_bad", donorId, "unpaid"));
+    expect(await pendingRows(t)).toHaveLength(1);
+
+    await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_bad" });
+
+    // The amount is out of every future digest. A digest already sent that
+    // announced it is deliberately not corrected — see `resolvePendingGift`.
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("an abandoned checkout drops it too — expiry is not a special case", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_gone", donorId, "unpaid"));
+    await postEvent(t, "checkout.session.expired", { id: "cs_gone" });
+
+    expect(await pendingRows(t)).toHaveLength(0);
+  });
+
+  test("an event-page donation in flight is recorded against its event and chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEventPage(s);
+    const donationId = await run(t, (ctx) =>
+      ctx.db.insert("donations", {
+        chapterId: s.chapterId,
+        eventId,
+        name: "Gala Guest",
+        email: "guest@example.com",
+        amountCents: 7_500,
+        currency: "usd",
+        method: "card",
+        status: "pending",
+        stripeCheckoutSessionId: "cs_event",
+        createdAt: Date.now(),
+      }),
+    );
+
+    await postEvent(t, "checkout.session.completed", {
+      id: "cs_event",
+      amount_total: 7_500,
+      payment_status: "unpaid",
+    });
+
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountCents).toBe(7_500);
+    expect(rows[0].scope).toBe(s.chapterId);
+    // The classification links, so the digest's "By giving type" cut puts this
+    // in Events — the same bucket the gift lands in when it settles.
+    expect(rows[0].eventId).toBe(eventId);
+    expect(rows[0].donationId).toBe(donationId);
+  });
+
+  test("a ticket order in flight contributes its ADD-ON GIFT and not its tickets", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEventPage(s);
+    await run(t, (ctx) =>
+      ctx.db.insert("ticketOrders", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Ticket Buyer",
+        email: "buyer@example.com",
+        items: [],
+        // $200 of tickets is REVENUE, never a gift, and has no business in a
+        // giving digest at any stage of its life.
+        totalCents: 20_000,
+        donationCents: 2_500,
+        currency: "usd",
+        status: "pending",
+        stripeCheckoutSessionId: "cs_order",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    await postEvent(t, "checkout.session.completed", {
+      id: "cs_order",
+      amount_total: 22_500,
+      payment_status: "unpaid",
+    });
+
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountCents).toBe(2_500);
+  });
+
+  test("a tickets-only order in flight contributes nothing — no gift is coming", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEventPage(s);
+    await run(t, (ctx) =>
+      ctx.db.insert("ticketOrders", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Ticket Buyer",
+        email: "buyer@example.com",
+        items: [],
+        totalCents: 20_000,
+        currency: "usd",
+        status: "pending",
+        stripeCheckoutSessionId: "cs_tickets",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    await postEvent(t, "checkout.session.completed", {
+      id: "cs_tickets",
+      amount_total: 20_000,
+      payment_status: "unpaid",
+    });
+
+    expect(await pendingRows(t)).toHaveLength(0);
+  });
+
+  test("a BACKER signup in flight contributes nothing — its session prices no gift", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const pledgeId = await run(t, (ctx) =>
+      ctx.db.insert("pledges", {
+        donorId,
+        scope: "central",
+        amountCents: 5_000,
+        status: "incomplete",
+        origin: "stripe",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A subscription session's `amount_total` is $0 or a proration; the money
+    // that becomes a gift arrives later as its own `invoice.paid`. Guessing
+    // here would put a figure in a digest that no gift ever matches.
+    await postEvent(t, "checkout.session.completed", {
+      id: "cs_backer",
+      amount_total: 0,
+      payment_status: "unpaid",
+      metadata: { pledgeId: String(pledgeId) },
+    });
+
+    expect(await pendingRows(t)).toHaveLength(0);
   });
 });
 

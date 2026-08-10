@@ -68,6 +68,7 @@ import type * as givingImport from "../givingImport.js";
 import type * as givingInterest from "../givingInterest.js";
 import type * as givingNotificationDigests from "../givingNotificationDigests.js";
 import type * as givingNotifications from "../givingNotifications.js";
+import type * as givingPending from "../givingPending.js";
 import type * as givingPlatform from "../givingPlatform.js";
 import type * as givingPledges from "../givingPledges.js";
 import type * as givingReversals from "../givingReversals.js";
@@ -451,6 +452,7 @@ declare const fullApi: ApiFromModules<{
   givingInterest: typeof givingInterest;
   givingNotificationDigests: typeof givingNotificationDigests;
   givingNotifications: typeof givingNotifications;
+  givingPending: typeof givingPending;
   givingPlatform: typeof givingPlatform;
   givingPledges: typeof givingPledges;
   givingReversals: typeof givingReversals;
