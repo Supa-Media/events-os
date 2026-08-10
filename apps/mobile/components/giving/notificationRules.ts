@@ -39,6 +39,10 @@ export const DEFAULT_SEND_WEEKDAY = 1;
 
 // ── The book picker ──────────────────────────────────────────────────────────
 
+/** The rule scope that reaches every book. Typed as a `RuleScope` so the
+ *  picker's value and the mutation's argument can't drift apart. */
+const ALL_BOOKS: RuleScope = "all";
+
 /** One entry in a `Select`. */
 export interface ScopeChoice {
   value: string;
@@ -81,7 +85,7 @@ export function ruleScopeChoices(
 ): ScopeChoice[] {
   if (!opts) return [];
   return [
-    ...(opts.canSeeAllScopes ? [{ value: "all", label: "All books" }] : []),
+    ...(opts.canSeeAllScopes ? [{ value: ALL_BOOKS, label: "All books" }] : []),
     ...opts.options.map((o) => ({ value: o.scope, label: o.label })),
   ];
 }
