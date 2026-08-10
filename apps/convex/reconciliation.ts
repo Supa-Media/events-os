@@ -1265,8 +1265,12 @@ export const listAccountsForSnapshot = internalQuery({
  * That is also why `pendingCents` is cleared when `available_balance` was
  * missing and `balanceCents` fell back to `current_balance`: `current` ALREADY
  * INCLUDES the pending it holds, so carrying the previous `pendingCents`
- * alongside it would put that money on the cash side twice. Cleared, the sum
- * reads `current` alone — available-plus-held, which is the right answer.
+ * alongside it would put that money on the cash side twice. Cleared, the cash
+ * side reads `current` alone. That is not exact — the panel's model is
+ * `available + (pending − alreadyBooked)` and `current` is `available +
+ * pending`, so it overstates by `alreadyBookedCents` — but it is the SAME
+ * answer the unmeasured default gives, wrong only in the direction that
+ * overstates. The caller decides which figure was missing; see `snapshotBalances`.
  */
 export const saveAccountBalance = internalMutation({
   args: {
@@ -1904,17 +1908,21 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
     if (!incKey) continue;
     let balanceCents: number | null = null;
     let pendingCents: number | undefined;
+    // Hoisted because WHICH of the two is missing decides what is safe to do
+    // with the cached pending — see the branches below the catch.
+    let available: number | null = null;
+    let current: number | null = null;
     try {
       const balance = await increaseGet(
         incKey,
         base,
         `/accounts/${encodeURIComponent(account.increaseAccountId)}/balance`,
       );
-      const available =
+      available =
         typeof balance.available_balance === "number"
           ? balance.available_balance
           : null;
-      const current =
+      current =
         typeof balance.current_balance === "number"
           ? balance.current_balance
           : null;
@@ -1949,12 +1957,43 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
     // is the best-effort contract: a stale balance is visibly stale, not wrong.
     if (balanceCents == null) continue;
 
+    // ── A HALF-ANSWERED BALANCE: WHICH FIGURE IS MISSING DECIDES WHAT IS SAFE ─
+    // `pendingCents` needs both figures, so it is `undefined` in two completely
+    // different situations and they call for opposite handling. Increase
+    // declares both fields required, so reaching either needs a 200 whose body
+    // violates the provider's own schema — but "unreachable" is not a reason to
+    // be wrong in the direction this panel is forbidden to be wrong in.
+    //
+    // `available` MISSING, `current` present → `balanceCents` fell back to
+    // `current`, which ALREADY CONTAINS the pending (Increase computes
+    // `available` as `current` minus the negative pendings, so the money behind
+    // a hold is fenced off inside `current`, not deducted from it). Carrying the
+    // cached `pendingCents` beside it would count that money twice, so clear all
+    // four. The result overstates cash by `alreadyBookedCents` — the same
+    // overstatement the unmeasured default accepts, and in the same safe
+    // direction.
+    if (available == null && current != null) {
+      await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
+        accountRowId: account.accountRowId,
+        balanceCents,
+      });
+      continue;
+    }
+    // `current` MISSING, `available` present → `balanceCents` is `available`,
+    // which EXCLUDES the pending. Clearing here would drop the add-back
+    // entirely and understate that account by its whole pending total —
+    // fabricating a `books_exceed_cash` shortfall, which
+    // `lib/reconciliationGap.ts` says outright the panel must never do. So leave
+    // the row wholly alone: an untouched row is at least internally consistent,
+    // where a fresh balance beside a cleared pending is confidently wrong.
+    if (pendingCents === undefined) continue;
+
     // What the pending total is MADE OF, and how much of it the ledger has
     // ALREADY BOOKED. A separate, separately-failing call — the total above is
     // the one the reconciliation arithmetic depends on and must not be lost
     // because the itemisation endpoint had a bad minute — but the result is
-    // written in the SAME mutation as the total, so the two halves of the cash
-    // side's subtraction can never describe different reads of the account.
+    // written in the SAME mutation as the total, so a row's two halves always
+    // come from one pass.
     let pending:
       | {
           alreadyBookedCents: number;
@@ -1966,20 +2005,6 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
           }[];
         }
       | undefined;
-    // A split is only ever measured for a total measured in the SAME pass. If
-    // `/balance` came back without an `available_balance` there is no total to
-    // split, and `balanceCents` has fallen back to `current_balance` — which
-    // already INCLUDES the pending it holds. So write the balance alone and let
-    // the mutation clear all four pending fields: the cash side then reads
-    // `current` on its own, which is available-plus-held and therefore right,
-    // instead of `current` plus a carried-over pending counted a second time.
-    if (pendingCents === undefined) {
-      await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
-        accountRowId: account.accountRowId,
-        balanceCents,
-      });
-      continue;
-    }
     try {
       const rows: { category: string; amountCents: number; transferId: string | null }[] =
         [];
@@ -2017,17 +2042,19 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
            *
            *  The detail object is keyed BY the category (`source.category ===
            *  "ach_transfer_instruction"` ⇒ the details are on
-           *  `source.ach_transfer_instruction`), and every outbound kind carries
-           *  the originating transfer's id there — verified against Increase's
-           *  own SDK types: `account_transfer_instruction`,
-           *  `ach_transfer_instruction`, `card_push_transfer_instruction`,
-           *  `check_transfer_instruction`, `fednow_transfer_instruction`,
-           *  `real_time_payments_transfer_instruction`,
-           *  `swift_transfer_instruction` and `wire_transfer_instruction` all
-           *  have `transfer_id`. The kinds that DON'T are exactly the ones that
-           *  are nobody's outgoing transfer — a card authorization, an
-           *  inbound-funds hold, a check deposit — so a missing id is itself the
-           *  right answer: not ours to have booked. */
+           *  `source.ach_transfer_instruction`), and Increase's rule is that an
+           *  OUTBOUND INSTRUCTION object carries the originating transfer's
+           *  `transfer_id`. Read generically rather than against a list of
+           *  categories: the list is already 16 and grows, and the generic read
+           *  picks a new outbound kind up for free.
+           *
+           *  A category we can't read an id from degrades to "not ours to have
+           *  booked", so its whole amount stays on the cash side — overstating,
+           *  the safe direction. That is the right answer for the no-id kinds
+           *  (a card authorization, an inbound-funds hold, a check deposit are
+           *  nobody's outgoing transfer; `inbound_wire_transfer_reversal` keys
+           *  its id as `inbound_wire_transfer_id`), and a safe answer for
+           *  anything Increase adds tomorrow. */
           source?: Record<string, unknown> & { category?: string };
         }>;
         for (const row of pageRows) {
@@ -2118,10 +2145,14 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
       );
     }
 
+    // `pendingCents` plainly, never conditionally — the guard above guarantees
+    // it is defined here, and the conditional-spread shape is the exact pattern
+    // the mutation's doc outlaws. Written this way, restructuring that guard
+    // can't quietly bring the drift back.
     await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
       accountRowId: account.accountRowId,
       balanceCents,
-      ...(pendingCents !== undefined ? { pendingCents } : {}),
+      pendingCents,
       ...(pending ? { pending } : {}),
     });
   }
@@ -3166,10 +3197,12 @@ export type BookBalanceRow = {
    *  `pendingAlreadyBookedCents`. See `lib/reconciliationGap.ts`.
    *
    *  The column SUMS to the panel only when every live account belongs to a live
-   *  book — the normal case, but not a guarantee: the panel walks every account
-   *  and reports cash held by a deactivated chapter as `unattributedBankCents`,
-   *  where this table has no row to put it in. Same per-account figure,
-   *  deliberately different populations. */
+   *  book — the normal case, but not a guarantee. The panel walks every account;
+   *  this table has rows only for live books. A deactivated chapter's account
+   *  therefore reaches the panel and not this table, its available half named as
+   *  `unattributedBankCents` and its addable pending folded into
+   *  `bankPendingCents` unnamed. Same per-account figure, deliberately different
+   *  populations. */
   pendingCents: number | null;
   /** The part excluded from the line above because the ledger already booked
    *  it. Null when no snapshot has measured the split. */

@@ -1061,6 +1061,46 @@ describe("snapshotBalances — resolving pending against the ledger", () => {
     return run(t, (ctx) => ctx.db.get(id));
   }
 
+  /** A settled reimbursement payout — the one thing `bookedTransferIds` matches
+   *  on, so the only way to make a pending row count as already booked. */
+  async function seedPaidPayout(
+    s: ChapterSetup,
+    transferId: string,
+    amountCents: number,
+    name = "Payee",
+  ): Promise<void> {
+    await run(s.t, async (ctx) => {
+      const personId = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name,
+        createdAt: Date.now(),
+      });
+      const reimbursementId = await ctx.db.insert("reimbursementRequests", {
+        chapterId: s.chapterId,
+        token: crypto.randomUUID(),
+        status: "paid",
+        payeeName: name,
+        personId,
+        totalCents: amountCents,
+        approvedCents: amountCents,
+        submittedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("payouts", {
+        chapterId: s.chapterId,
+        reimbursementId,
+        payeePersonId: personId,
+        amountCents,
+        provider: "increase",
+        status: "paid",
+        increaseTransferId: transferId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+  }
+
   /**
    * Run the snapshot AND DRAIN WHAT IT SCHEDULES. `refreshBalancesNow` kicks off
    * the legacy (Relay) feed refresh with `ctx.scheduler.runAfter(0, …)`; left
@@ -1083,36 +1123,7 @@ describe("snapshotBalances — resolving pending against the ledger", () => {
     const s = await setupChapter(t);
     await asCentralEd(s);
     const accountId = await seedAccount(s, { chapterId: s.chapterId });
-    await run(s.t, async (ctx) => {
-      const personId = await ctx.db.insert("people", {
-        chapterId: s.chapterId,
-        name: "Sayo Olujide",
-        createdAt: Date.now(),
-      });
-      const reimbursementId = await ctx.db.insert("reimbursementRequests", {
-        chapterId: s.chapterId,
-        token: crypto.randomUUID(),
-        status: "paid",
-        payeeName: "Sayo Olujide",
-        personId,
-        totalCents: 4499,
-        approvedCents: 4499,
-        submittedAt: Date.now(),
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-      await ctx.db.insert("payouts", {
-        chapterId: s.chapterId,
-        reimbursementId,
-        payeePersonId: personId,
-        amountCents: 4499,
-        provider: "increase",
-        status: "paid",
-        increaseTransferId: "ach_transfer_sayo",
-        createdAt: Date.now(),
-        updatedAt: Date.now(),
-      });
-    });
+    await seedPaidPayout(s, "ach_transfer_sayo", 4499, "Sayo Olujide");
 
     process.env.INCREASE_API_KEY = "test_key";
     mockIncrease({ current: 722466, available: 704112 }, [
@@ -1167,48 +1178,50 @@ describe("snapshotBalances — resolving pending against the ledger", () => {
   });
 
   test("a POSITIVE pending row never subtracts from the cash side", async () => {
-    // FINDING 2. `pendingCents` is `current - available`, which by Increase's
-    // definition counts only the rows that REDUCE available — a positive row
-    // (an unsettled card refund, or the inbound leg of an ACH debit we pulled)
-    // is not in the total, so it must never come out of it. Even when the
-    // positive row's transfer IS one the ledger booked.
+    // FINDING 2, and the test has to be able to FAIL on it. `pendingCents` is
+    // `current - available`, which by Increase's definition counts only the rows
+    // that REDUCE available — a positive row (an unsettled card refund, or the
+    // inbound leg of an ACH debit we pulled) is not in the total, so it must
+    // never come out of it.
+    //
+    // BOTH transfers below are matched by `bookedTransferIds`, so matching is
+    // not what separates them — only the sign is. The `Math.max(0, -amount)`
+    // clamp is therefore the single line under test: swap it for `Math.abs` and
+    // `alreadyBookedCents` becomes 6499, which the assertion refuses. An earlier
+    // cut of this test booked the credit through `transactions.externalId`, a
+    // lane that no longer exists, so nothing matched, the clamp never ran, and
+    // deleting it outright left the test green.
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
     const accountId = await seedAccount(s, { chapterId: s.chapterId });
-    await run(s.t, (ctx) =>
-      ctx.db.insert("transactions", {
-        chapterId: s.chapterId,
-        source: "transfer",
-        flow: "transfer",
-        amountCents: 2000,
-        currency: "usd",
-        postedAt: Date.now(),
-        status: "reconciled",
-        externalId: "inbound_pull",
-        createdAt: Date.now(),
-      }),
-    );
+    await seedPaidPayout(s, "ach_transfer_out", 4499);
+    await seedPaidPayout(s, "ach_debit_pull_in", 2000);
 
     process.env.INCREASE_API_KEY = "test_key";
     // current - available = 18354: the two debits. The +$20 raises neither.
     mockIncrease({ current: 722466, available: 704112 }, [
       { amount: -13855, category: "card_authorization" },
-      { amount: -4499, category: "ach_transfer_instruction" },
+      {
+        amount: -4499,
+        category: "ach_transfer_instruction",
+        transferId: "ach_transfer_out",
+      },
       {
         amount: 2000,
         category: "ach_transfer_instruction",
-        transferId: "inbound_pull",
+        transferId: "ach_debit_pull_in",
       },
     ]);
     await snapshot(s);
 
     const row = await accountRow(t, accountId);
     expect(row?.pendingCents).toBe(18354);
-    expect(row?.pendingAlreadyBookedCents).toBe(0);
+    // The outbound $44.99 counts; the inbound $20 contributes exactly nothing.
+    expect(row?.pendingAlreadyBookedCents).toBe(4499);
     expect(addableBankPendingCents(row!)).toEqual({
-      addableCents: 18354,
-      alreadyBookedCents: 0,
+      addableCents: 13855,
+      alreadyBookedCents: 4499,
     });
   });
 
@@ -1285,7 +1298,11 @@ describe("snapshotBalances — resolving pending against the ledger", () => {
         },
       ],
     });
-    const before = await accountRow(t, accountId);
+    // An hour in the past, so the freshness assertion below has teeth: the
+    // snapshot runs under frozen fake timers, and comparing against a stamp
+    // `seedAccount` wrote at that same frozen instant would pass either way.
+    const stale = Date.now() - 60 * 60 * 1000;
+    await run(s.t, (ctx) => ctx.db.patch(accountId, { balanceAsOf: stale }));
 
     process.env.INCREASE_API_KEY = "test_key";
     globalThis.fetch = (async (input: RequestInfo | URL) => {
@@ -1315,8 +1332,59 @@ describe("snapshotBalances — resolving pending against the ledger", () => {
       addableCents: 0,
       alreadyBookedCents: 0,
     });
-    // The freshness stamp is honest, because every figure beside it is fresh.
-    expect(row!.balanceAsOf!).toBeGreaterThanOrEqual(before!.balanceAsOf!);
+    // The stamp was actually rewritten, and is honest: every figure beside it
+    // came from this pass.
+    expect(row!.balanceAsOf!).toBeGreaterThan(stale);
+  });
+
+  test("no current_balance leaves the row wholly alone rather than inventing a shortfall", async () => {
+    // THE OTHER HALF of the same missing-figure branch, and the opposite answer.
+    // Here `balanceCents` falls back to `available`, which EXCLUDES the pending.
+    // Clearing the add-back would drop the whole pending off the cash side and
+    // report money missing — the one direction `addableBankPendingCents` says
+    // outright the panel must never go. So nothing is written at all: a row
+    // untouched is at least internally consistent.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const stale = Date.now() - 60 * 60 * 1000;
+    const accountId = await seedAccount(s, {
+      chapterId: s.chapterId,
+      balanceCents: 704112,
+      pendingCents: 18354,
+      pendingAlreadyBookedCents: 4499,
+    });
+    await run(s.t, (ctx) => ctx.db.patch(accountId, { balanceAsOf: stale }));
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/balance")) {
+        // No `current_balance` at all.
+        return new Response(JSON.stringify({ available_balance: 700000 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path.includes("/pending_transactions")) {
+        throw new Error("must not be asked — there is no total to split");
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+    await snapshot(s);
+
+    const row = await accountRow(t, accountId);
+    // Nothing written — not even the fresh available balance, because a fresh
+    // balance beside a pending we could not re-measure is the drift itself.
+    expect(row?.balanceCents).toBe(704112);
+    expect(row?.balanceAsOf).toBe(stale);
+    expect(row?.pendingCents).toBe(18354);
+    expect(row?.pendingAlreadyBookedCents).toBe(4499);
+    // Still adds back, still never accuses anyone of a shortfall.
+    expect(addableBankPendingCents(row!)).toEqual({
+      addableCents: 13855,
+      alreadyBookedCents: 4499,
+    });
   });
 });
 

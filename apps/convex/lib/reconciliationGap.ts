@@ -201,13 +201,16 @@
  * on the cash side and the part the books have already spent.
  *
  * ── WHY THIS IS A LOOKUP AND NOT A CALCULATION ──────────────────────────────
- * There is nothing to decide here. Both numbers are measured together during the
- * snapshot (`reconciliation.ts#snapshotBalances`) and written by ONE mutation,
- * so they always describe the same read of the same account and cannot drift
- * apart. This function only has to spend them safely.
+ * There is nothing to decide here. Both numbers are measured during one pass of
+ * the snapshot (`reconciliation.ts#snapshotBalances`) and written by ONE
+ * mutation, and a pass that can't measure both writes neither. They still come
+ * from two separate HTTP calls, so this is not a transactional read of the bank;
+ * the guarantee is narrower and sufficient — whatever a row holds came from one
+ * pass, seconds apart, never a survivor of an older one. This function only has
+ * to spend them safely.
  *
  * The measurement matches each pending item's `source.<category>.transfer_id`
- * against `payouts.increaseTransferId` (payout `paid`) or `transactions.externalId`.
+ * against `payouts.increaseTransferId` where the payout has reached `paid`.
  * THE CATEGORY IS NOT THE ANSWER: an earlier cut of this excluded four outbound
  * categories outright, on the theory that an outbound transfer is booked when
  * it is sent. Three of the four are never booked at send time — the app has no
@@ -220,9 +223,17 @@
  * ── WHY ABSENT ADDS THE WHOLE TOTAL BACK ────────────────────────────────────
  * `pendingAlreadyBookedCents` is absent when no snapshot has ever measured it,
  * or when the one that wrote this `pendingCents` could not reach
- * `/pending_transactions` (it is cleared, never left stale). Absent therefore
- * means "unknown", and the two available answers are both wrong in some case —
- * so pick the one that fails safely.
+ * `/pending_transactions` (it is cleared, never left stale).
+ *
+ * That is not a narrow window — it is this field's entire observed history. The
+ * itemisation call sent `status.in[]` instead of `status.in` from the day it
+ * shipped, which Increase 400s, so every pass for months came back with no
+ * split at all (see the note on the query string in `snapshotBalances`). The
+ * default has to be the one that is safe to live on for months, because it
+ * already has been.
+ *
+ * Absent means "unknown", and the two available answers are both wrong in some
+ * case — so pick the one that fails safely.
  *
  * Adding it all back overstates cash by any in-flight booked transfer, which
  * shows up as `cash_exceeds_books`: an unexplained surplus that invites someone
