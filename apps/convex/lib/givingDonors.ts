@@ -18,6 +18,7 @@ import { territoryForChapter } from "../territories";
 import { chapterRoster } from "./org";
 import { syncDonorIdentity } from "./donorIdentity";
 import { recordPersonEmail } from "./personEmails";
+import { MAX_RULES, ruleMatchesGift } from "./givingNotificationRules";
 
 /** The 90-day lapse window (the AJ donor system's rule, PRD §1). */
 export const LAPSE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -585,11 +586,27 @@ export async function recordGiftForDonor(
   // never slow down or roll back the gift. And if this transaction rolls back
   // for its own reasons, the job rolls back with it, so nobody is ever told
   // about a gift that doesn't exist.
-  await ctx.scheduler.runAfter(
-    0,
-    internal.givingNotifications.notifyGiftRecorded,
-    { giftId },
+  //
+  // PRE-FILTERED, so a gift nobody asked about schedules NOTHING. The action
+  // re-reads and re-matches anyway (it must — it runs after the commit), but
+  // scheduling a job whose only possible outcome is "no rules matched" costs a
+  // `_scheduled_functions` write on every gift a deployment ever records, and
+  // leaves an in-flight job behind every gift written in a test. Same pure
+  // predicate both sides, so the pre-filter can never disagree with the send.
+  const immediateRules = await ctx.db
+    .query("givingNotificationRules")
+    .withIndex("by_cadence", (q) => q.eq("cadence", "immediate"))
+    .take(MAX_RULES);
+  const anyMatch = immediateRules.some((rule) =>
+    ruleMatchesGift(rule, { scope: donor.scope, amountCents: args.amountCents }),
   );
+  if (anyMatch) {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.givingNotifications.notifyGiftRecorded,
+      { giftId },
+    );
+  }
   return giftId;
 }
 
