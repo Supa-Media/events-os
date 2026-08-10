@@ -1,7 +1,7 @@
 import { View, Text } from "react-native";
 import {
-  RUN_OF_SHOW_FINAL_WINDOW_MS,
   buildRunOfShowSegments,
+  isRunOfShowLive,
   runOfShowNowIndex,
 } from "@events-os/shared";
 import { Card } from "../ui";
@@ -35,12 +35,10 @@ export function RunOfShowView({
   if (runOfShow.length === 0) return null;
 
   const segments = buildRunOfShowSegments(eventDate, runOfShow);
-  // Highlight only when the event is live-ish (from 2h before the first
-  // segment until the last window closes). Days ahead of the event a public
-  // page shouldn't shout "UP NEXT" — the plain timeline is the answer.
-  const liveish =
-    now >= segments[0].start - RUN_OF_SHOW_FINAL_WINDOW_MS &&
-    now < segments[segments.length - 1].end;
+  // Highlight only when the event is live-ish. Days ahead of the event a public
+  // page shouldn't shout "UP NEXT" — the plain timeline is the answer. The rule
+  // itself now lives in `@events-os/shared` so Day-of can't disagree with it.
+  const liveish = isRunOfShowLive(segments, now);
   const nowIndex = liveish ? runOfShowNowIndex(segments, now) : -1;
 
   return (

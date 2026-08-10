@@ -1077,10 +1077,55 @@ export function buildRunOfShowSegments<T extends RunOfShowRowInput>(
 }
 
 /**
+ * How long BEFORE the first segment the run-of-show highlight wakes up.
+ *
+ * "UP NEXT" is only a useful word when the thing it points at is the next thing
+ * you will actually do. Weeks out from an event the first row is "up next" only
+ * in the trivial sense that nothing has happened yet — badging it then trains
+ * people to ignore the badge on the one day it matters. So the highlight stays
+ * dark until the show is close enough for a lead-in to be real: two hours, which
+ * is when crew call times land and people stop planning the run sheet and start
+ * reading it.
+ *
+ * Deliberately a SEPARATE constant from {@link RUN_OF_SHOW_FINAL_WINDOW_MS},
+ * even though the value matches today — that one caps how long the LAST segment
+ * keeps reading "NOW", an unrelated question. Sharing the literal would mean
+ * retuning the lead-in silently moved when the show stops.
+ */
+export const RUN_OF_SHOW_LEAD_IN_MS = 2 * 60 * 60 * 1000;
+
+/**
+ * Is the run of show live enough to highlight a segment at all? True from
+ * {@link RUN_OF_SHOW_LEAD_IN_MS} before the first segment starts until the last
+ * segment's window closes; false at every other time — including arbitrarily far
+ * in advance, which is the state the Day-of screen used to badge "UP NEXT" in.
+ *
+ * BOTH the Day-of screen and the public volunteer briefing gate on this, and
+ * that is the point: two surfaces disagreeing about whether the show has started
+ * would be worse than either being wrong on its own, because a leader reading
+ * Day-of and a volunteer reading the shared briefing are looking at the same
+ * event in the same room.
+ */
+export function isRunOfShowLive(
+  segments: { start: number; end: number }[],
+  now: number,
+): boolean {
+  if (segments.length === 0) return false;
+  return (
+    now >= segments[0].start - RUN_OF_SHOW_LEAD_IN_MS &&
+    now < segments[segments.length - 1].end
+  );
+}
+
+/**
  * Which segment the "now / up-next" highlight sits on: the segment whose
  * [start, end) window contains `now`, or — before the show starts — the first
  * row (it reads "up next"). -1 when nothing should be highlighted (between
  * segments with no live window, or after the last window closes).
+ *
+ * NOTE: this answers "WHICH row", not "should anything be highlighted at all" —
+ * it returns 0 for ANY `now` before the first start, however distant. Gate it
+ * with {@link isRunOfShowLive} before drawing a badge from the result.
  */
 export function runOfShowNowIndex(
   segments: { start: number; end: number }[],
