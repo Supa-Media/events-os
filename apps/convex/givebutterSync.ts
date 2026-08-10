@@ -1248,6 +1248,15 @@ export async function fetchGivebutterUndepositedCents(
     for (const txn of body.data ?? []) {
       if ((txn.status ?? "").toLowerCase() !== "succeeded") continue;
       if (txn.payout_id !== null && txn.payout_id !== undefined) continue;
+      // `?? 0` is tolerable HERE and is NOT in the fee sweep below, which is
+      // worth stating because the two lines look identical. This figure is a
+      // DISPLAY total of money not yet remitted, and `payout` is the ADDEND: an
+      // unreadable one makes the number too SMALL, understating a pile of cash,
+      // which pushes the reconciliation gap toward "there is money we cannot
+      // account for" — the safe direction, and one an operator actually sees.
+      // In `normalizeGivebutterFee` the same idiom makes `payout` a zero
+      // SUBTRAHEND and books the entire gift as an expense, so there an
+      // unreadable value is skipped instead. Same idiom, opposite blast radius.
       const raw = txn.payout ?? 0;
       const amount = typeof raw === "number" ? raw : Number(raw);
       if (Number.isFinite(amount)) dollars += amount;
@@ -1288,32 +1297,98 @@ export type GivebutterFeeEntry = {
 };
 
 /**
+ * What one fee sweep saw: the fee-bearing entries, and how many transactions it
+ * actually READ to find them.
+ *
+ * `scanned` is carried out separately because on this rail the two numbers are
+ * 263 and 1, and a caller reporting only the second cannot distinguish "read the
+ * whole account, one gift's fee wasn't covered" from "the feed returned one row
+ * and we booked from it". Reporting only fee-bearing entries would destroy the
+ * one signal that tells a broken read from a normal quiet one — which is the
+ * same argument the truncation refusal below rests on.
+ */
+export type GivebutterFeeSweep = {
+  entries: GivebutterFeeEntry[];
+  scanned: number;
+};
+
+/**
  * One raw transaction → its fee entry, or null when it carries no fee we bear.
  *
  * The pure core of the sweep below, exported so the arithmetic can be tested
  * against real payload shapes without a network. Null means "nothing to book",
- * and covers every legitimate reason: not succeeded, no id, the giver covered
- * the fee (the overwhelmingly common case), or no readable date.
+ * and covers every legitimate reason: not succeeded, refunded, no id, the giver
+ * covered the fee (the overwhelmingly common case), a money field we cannot
+ * read, or no readable date.
+ *
+ * ── AN UNREADABLE FIELD IS NOT A ZERO ────────────────────────────────────────
+ * `payout` is the SUBTRAHEND, so coercing a missing one to `0` does not lose a
+ * little precision at the edges — it books the ENTIRE gift as a fee. A null
+ * `payout` on the $1,000.00 gift below would write a $1,000.00 "Givebutter
+ * processing fees" expense row, `feeOrigin`-stamped so `finances.ts#needsBudget`
+ * never surfaces it and nobody is ever asked to confirm it, and move the
+ * reconciliation gap by the same $1,000.00.
+ *
+ * And null is a shape this endpoint genuinely produces: `payout` is populated
+ * WHEN GIVEBUTTER SETTLES the transaction (see `GivebutterTransactionRaw`), so
+ * anything unsettled legitimately has none. "We do not know what they will
+ * remit" and "they will remit nothing" are opposite facts, and only one of them
+ * is an expense. So an absent, empty or unparseable `amount` or `payout` is
+ * SKIPPED and warned about — exactly the way an unreadable date is a few lines
+ * below — and never coerced.
  */
 export function normalizeGivebutterFee(
   txn: GivebutterTransactionRaw,
 ): GivebutterFeeEntry | null {
+  // BOTH conditions, not either — see this function's callers and the header of
+  // `fetchGivebutterFeeEntries` for why neither test is sufficient alone.
   if ((txn.status ?? "").toLowerCase() !== "succeeded") return null;
+  if (isRefundedTransaction(txn)) return null;
   if (txn.id === undefined || txn.id === null || txn.id === "") return null;
 
-  const num = (value: number | string | null | undefined) => {
-    const n = typeof value === "number" ? value : Number(value ?? 0);
-    return Number.isFinite(n) ? n : 0;
+  /** Decimal dollars, or null when the field is absent, empty or unparseable. */
+  const dollars = (value: number | string | null | undefined): number | null => {
+    if (value === null || value === undefined || value === "") return null;
+    const n = typeof value === "number" ? value : Number(value);
+    return Number.isFinite(n) ? n : null;
   };
+  const grossDollars = dollars(txn.amount);
+  const payoutDollars = dollars(txn.payout);
+  if (grossDollars === null || payoutDollars === null) {
+    console.warn(
+      `[givebutter] transaction ${txn.id} has an unreadable amount ` +
+        `(${JSON.stringify(txn.amount)}) or payout (${JSON.stringify(txn.payout)}); ` +
+        `skipped rather than read as zero`,
+    );
+    return null;
+  }
+
   // Rounded to cents BEFORE subtracting. Both fields arrive as decimal dollars,
   // and differencing them as floats first leaves a stray fraction on values that
   // are exact in cents: 1000 - 970.7 is 29.299999999999955, which rounds to the
   // right answer here but would not on every pair, and `Math.round` of a
   // near-miss is precisely how a ledger acquires a one-cent error nobody can
   // trace. Rounding each side first makes the subtraction integer arithmetic.
-  const grossCents = Math.round(num(txn.amount) * 100);
-  const feeCents = grossCents - Math.round(num(txn.payout) * 100);
+  const grossCents = Math.round(grossDollars * 100);
+  const feeCents = grossCents - Math.round(payoutDollars * 100);
   if (feeCents <= 0) return null;
+  // A "fee" that consumes the ENTIRE gift is not a fee.
+  //
+  // Equivalently: `payout` must be positive. A settled transaction remitting
+  // nothing at all is not a Givebutter fee schedule, it is a reversal or a
+  // broken read — and it is also exactly what the old `?? 0` coercion produced,
+  // so refusing it keeps the worst outcome unreachable by a SECOND route rather
+  // than trusting one guard. Deliberately stated as "the fee cannot be the whole
+  // gift" rather than as a percentage ceiling: there is no evidence for any
+  // particular threshold, and inventing one is its own wrong number.
+  if (feeCents >= grossCents) {
+    console.warn(
+      `[givebutter] transaction ${txn.id} implies a ${feeCents}¢ fee on a ` +
+        `${grossCents}¢ gift — the whole of it. Skipped rather than booked; ` +
+        `payout was ${JSON.stringify(txn.payout)}.`,
+    );
+    return null;
+  }
 
   const occurredAt =
     parseTimestamp(txn.transacted_at) ?? parseTimestamp(txn.created_at);
@@ -1356,30 +1431,97 @@ export function normalizeGivebutterFee(
  * — which is exactly the failure the rule exists to prevent. The forbidden
  * derivation compares THEIR deposits to OUR revenue; this compares two of theirs.
  *
- * Evidence it is the right pair: on the 2026-08-07 export of all 263 succeeded
- * transactions, Σ`amount` = $12,994.75 and Σ`payout` = $12,965.45, and that
- * $29.30 difference is one transaction — a $1,000.00 gift remitted as $970.70 in
- * payout `RX3CUU` on 2025-06-05. Every other giver covered the fee, so their
- * `payout` equals their `amount` to the cent and contributes nothing here.
+ * ── EVIDENCE IT IS THE RIGHT PAIR, WITH ITS AS-OF DATE ───────────────────────
+ * Two different totals for this account appear in this codebase and they are
+ * $50.00 apart. Both are correct; they are AS OF DIFFERENT DATES, and neither
+ * is usable without one.
+ *
+ *   AS OF 2026-08-07 (the export this sweep's arithmetic was checked against,
+ *   263 succeeded transactions):
+ *     Σ`amount` $12,994.75 − Σ`payout` $12,965.45 = $29.30 of fee
+ *
+ *   AS OF 2026-08-10 (live, after two $25.00 ticket sales landed):
+ *     Σ`amount` $13,044.75 − Σ`payout` $13,015.45 = $29.30 of fee
+ *     and Σ`payout` $13,015.45 = $12,940.45 paid out + $75.00 still held
+ *
+ * The $50.00 between them is those two tickets, whose givers covered the fee —
+ * so they move `amount` and `payout` by the same $50.00 and the fee is $29.30
+ * in both readings. `processorFees.ts`'s header quotes the 2026-08-10 pair; this
+ * one quotes the export it was verified against. They tie, and now say so.
+ *
+ * That $29.30 is one transaction: a $1,000.00 gift remitted as $970.70 in payout
+ * `RX3CUU` on 2025-06-05. Every other giver covered the fee, so their `payout`
+ * equals their `amount` to the cent and contributes nothing here.
  *
  * ── WHY MOST ROWS PRODUCE NOTHING ────────────────────────────────────────────
  * Givebutter asks the giver to cover the fee and they almost always do, so
  * `payout === amount` and there is no expense to book. A zero is therefore the
  * NORMAL case, not a missing read, and zero-fee rows are dropped rather than
- * stored as $0.00 evidence nobody needs.
+ * stored as $0.00 evidence nobody needs. This is also why the sweep reports how
+ * many transactions it SCANNED and not just how many carried a fee: on this
+ * account those numbers are 263 and 1, and an operator has to be able to tell a
+ * quiet month from a broken read.
  *
- * ── STATUS FILTER ────────────────────────────────────────────────────────────
- * `succeeded` only, matching `fetchGivebutterUndepositedCents` exactly. A
- * pending charge has not been settled and a refunded one had its fee returned,
- * so neither is a cost the org has borne.
+ * ── THE SCOPE IS THE WHOLE ACCOUNT, DELIBERATELY ─────────────────────────────
+ * `sweepCampaignTransactions` filters transactions to ONE `campaign_id`; this
+ * does not, and the asymmetry is intentional rather than an oversight.
+ *
+ * That campaign filter exists because the ticket sweep has to attach what it
+ * finds to a specific `eventPages` row — it is a JOIN KEY, not a claim that
+ * off-campaign money isn't ours. The cash side of the reconciliation is
+ * account-wide in every other respect: `fetchGivebutterUndepositedCents` sums
+ * `payout` across the whole account, and Givebutter remits to one bank account
+ * per account, not per campaign. Scoping the FEE to a campaign while the cash
+ * it is measured against stays account-wide would put an off-campaign uncovered
+ * fee straight back into the reconciliation gap as an unexplained discrepancy —
+ * the exact thing booking these fees was meant to remove.
+ *
+ * The condition under which this becomes wrong is a Givebutter account SHARED
+ * between orgs or chapters, because `processorFees.ts#upsertFeeRows` books every
+ * fee row to the NY chapter. If that ever happens, the fee sweep and the
+ * undeposited-balance derivation must be scoped TOGETHER — scoping the fee alone
+ * would be strictly worse than today.
+ *
+ * ── STATUS FILTER, AND WHY A REFUND IS SKIPPED RATHER THAN NETTED ────────────
+ * `succeeded` AND not refunded — both tests, because neither is sufficient.
+ * Status alone is not: this file documents (see `GivebutterTransactionRaw`) that
+ * live payloads carry the refund flag on NESTED sub-transactions while the
+ * top-level `status` stays `succeeded`, which is why `isRefundedTransaction`
+ * exists and why `sweepCampaignTransactions` uses it. `isRefundedTransaction`
+ * alone is not either — it would let a pending charge through, which is
+ * `fetchGivebutterUndepositedCents`'s stated reason for matching on status.
+ *
+ * WHETHER GIVEBUTTER RETURNS ITS FEE ON A REFUND, WE DO NOT KNOW. An earlier
+ * version of this comment asserted that it does. That was never checked, and
+ * Stripe's precedent is the opposite — Stripe keeps its cut on a refund, which
+ * is exactly why `processorFees.ts#feeTypeLabel` carries `payment_refund`. So
+ * it is recorded here as OPEN, with the consequence of each way of being wrong:
+ *
+ *   · if Givebutter DOES return the fee, skipping is simply correct;
+ *   · if Givebutter KEEPS it, skipping UNDER-books a real cost by that fee.
+ *
+ * Skipping is still the right default, because those two errors are not
+ * symmetric. An under-booked fee stays VISIBLE: it lands in the reconciliation
+ * gap, which is the instrument built to surface precisely this class of missing
+ * expense (see `lib/reconciliationGap.ts`). An over-booked one does not — fee
+ * rows are `feeOrigin`-stamped, so `needsBudget` never asks anyone about them
+ * and a fabricated expense would sit in the ledger unreviewed forever. A
+ * refunded transaction's `payout` is unknown territory besides: a zeroed one
+ * would book the entire gross as a fee, so excluding refunds is a guard as much
+ * as a judgement.
+ *
+ * Nothing turns on it on this deployment today — no refunded transaction here
+ * carries an uncovered fee. Close it by refunding a fee-uncovered test gift and
+ * reading `payout` back before that stops being true.
  */
 export async function fetchGivebutterFeeEntries(
   ctx: ActionCtx,
-): Promise<GivebutterFeeEntry[] | null> {
+): Promise<GivebutterFeeSweep | null> {
   const key = await resolveGivebutterApiKey(ctx);
   if (!key) return null;
 
   const entries: GivebutterFeeEntry[] = [];
+  let scanned = 0;
   let url: string | null = `${GIVEBUTTER_API_BASE}/transactions`;
   let page = 0;
   for (; page < GIVEBUTTER_MAX_PAGES && url; page++) {
@@ -1391,6 +1533,9 @@ export async function fetchGivebutterFeeEntries(
     }
     const body = (await res.json()) as GivebutterTransactionsPage;
     for (const txn of body.data ?? []) {
+      // Counted BEFORE the filter, so this is "how many transactions did we
+      // read", not "how many carried a fee". The second number is `entries`.
+      scanned++;
       const entry = normalizeGivebutterFee(txn);
       if (entry) entries.push(entry);
     }
@@ -1404,10 +1549,25 @@ export async function fetchGivebutterFeeEntries(
       `Givebutter returned more than ${GIVEBUTTER_MAX_PAGES} pages of transactions; refusing to book a partial fee total`,
     );
   }
-  return entries;
+  console.log(
+    `[givebutter] fee sweep read ${scanned} transactions across ${page} page(s); ` +
+      `${entries.length} carried a fee we bore`,
+  );
+  return { entries, scanned };
 }
 
-/** Parse a Givebutter ISO timestamp to ms, or null when absent/unparseable. */
+/** Parse a Givebutter ISO timestamp to ms, or null when absent/unparseable.
+ *
+ *  THE RUNTIME'S TIMEZONE IS LOAD-BEARING for the fee sweep, because a fee
+ *  row's month IS its accounting period. Givebutter's timestamps normally carry
+ *  a `Z`, which is unambiguous; a NAIVE one ("2026-06-30 20:15:00") is read by
+ *  `Date.parse` in LOCAL time, so under `TZ=America/New_York` that transaction
+ *  buckets into 2026-07 rather than 2026-06. Convex actions run UTC, so
+ *  production is correct today and the months we book match Givebutter's own
+ *  UTC-based export. It is still worth knowing that a month-boundary
+ *  transaction is the one figure here that a treasurer could legitimately see
+ *  differently in Givebutter's dashboard if that dashboard is showing them a
+ *  local-time day. */
 function parseTimestamp(value: string | null | undefined): number | null {
   if (!value) return null;
   const ms = Date.parse(value);

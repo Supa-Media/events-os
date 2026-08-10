@@ -2315,13 +2315,19 @@ async function runEngine(
         const gbFees: {
           created: number;
           updated: number;
+          zeroed: number;
           totalFeeCents: number;
         } = await ctx.runAction(internal.processorFees.syncGivebutterFeesOps, {
           execute: true,
         });
-        if (gbFees.created > 0 || gbFees.updated > 0) {
+        if (gbFees.created > 0 || gbFees.updated > 0 || gbFees.zeroed > 0) {
           notes.push(
-            `Refreshed Givebutter processor fees (${gbFees.created} new, ${gbFees.updated} updated monthly row(s)).`,
+            `Refreshed Givebutter processor fees (${gbFees.created} new, ` +
+              `${gbFees.updated} updated` +
+              // A reversal is the one outcome here that REMOVES booked expense,
+              // so it is named rather than folded into "updated".
+              (gbFees.zeroed > 0 ? `, ${gbFees.zeroed} reversed to $0.00` : "") +
+              ` monthly row(s)).`,
           );
         }
       } catch (err) {

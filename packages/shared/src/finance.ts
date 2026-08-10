@@ -1138,14 +1138,11 @@ export const NON_DISCRETIONARY_FEE_ORIGINS = [
 export type NonDiscretionaryFeeOrigin =
   (typeof NON_DISCRETIONARY_FEE_ORIGINS)[number];
 
-export const NON_DISCRETIONARY_FEE_ORIGIN_LABELS: Record<
-  NonDiscretionaryFeeOrigin,
-  string
-> = {
-  stripe_processing: "Stripe processing fees",
-  cash_app_processing: "Cash App processing fees",
-  givebutter_processing: "Givebutter processing fees",
-};
+// There was a NON_DISCRETIONARY_FEE_ORIGIN_LABELS map here. It had no readers
+// anywhere in the repo, and the strings it held were a second copy of
+// `processorFees.ts#FEE_RAIL`'s `description` — which is what actually names a
+// fee row. Two places to spell "Givebutter processing fees" is one too many on
+// a money path, so the one nothing read is gone rather than grown a third entry.
 
 export const AUTO_TRANSFER_ORIGIN_LABELS: Record<AutoTransferOrigin, string> = {
   payout_allocation: "Payout allocation",
