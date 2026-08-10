@@ -2,6 +2,7 @@
  * Date/time formatting helpers. All date display in the app routes through here
  * so formatting stays consistent. Timestamps are epoch milliseconds.
  */
+import { zonedParts, zonedTimeToUtc } from "@events-os/shared";
 
 const MONTHS = [
   "Jan",
@@ -135,15 +136,21 @@ export function parseDateInput(str: string): number | null {
 
 /**
  * Combine a `YYYY-MM-DD` date string with a `HH:mm` (24-hour) time string into a
- * single LOCAL epoch-ms timestamp, or null if either part is malformed. Unlike
- * {@link parseDateInput} (which lands on local midnight), this carries the chosen
- * time-of-day — the event start anchor the whole run-of-show timeline derives
- * from. Both parts are required by callers so a start never silently defaults to
- * midnight again.
+ * single epoch-ms timestamp, reading those parts as wall clock **in
+ * `timeZone`** — or null if either part is malformed.
+ *
+ * `timeZone` is REQUIRED, and that is the whole point. This builds the event
+ * start anchor every run-of-show time is derived from; when it used
+ * `new Date(y, mo, da, h, mi)` a leader on a Pacific phone typing "7:00 PM"
+ * created an event at 10:00 PM Eastern — the event silently moved, and nobody
+ * in the org's own timezone could see it happen. A required argument means a
+ * new call site cannot forget: it is a compile error, not a wrong timestamp.
+ * Callers get the zone from `eventTimeZone(event)` in `@events-os/shared`.
  */
 export function parseDateTimeInput(
   dateStr: string,
   timeStr: string,
+  timeZone: string,
 ): number | null {
   const d = dateStr.trim();
   const t = timeStr.trim();
@@ -152,8 +159,56 @@ export function parseDateTimeInput(
   const [y, mo, da] = d.split("-").map(Number);
   const [h, mi] = t.split(":").map(Number);
   if (h > 23 || mi > 59) return null;
-  const date = new Date(y, mo - 1, da, h, mi);
-  return Number.isNaN(date.getTime()) ? null : date.getTime();
+  if (mo < 1 || mo > 12 || da < 1 || da > 31) return null;
+  const ts = zonedTimeToUtc({ year: y, month: mo, day: da, hour: h, minute: mi }, timeZone);
+  return Number.isNaN(ts) ? null : ts;
+}
+
+/* ── The Calendar bridge ─────────────────────────────────────────────────────
+ * `Calendar` speaks one coordinate system: a day is the DEVICE-local midnight
+ * of that day. That is right for it — it is a month grid, not a clock, and the
+ * DUE-date cell and other callers rely on it. Rather than teach a presentation
+ * component about timezones, event pickers translate at the boundary with the
+ * two functions below, which are exact inverses of each other.
+ */
+
+/** The device-local midnight `Calendar` uses to mean "the calendar day `ts`
+ *  falls on **in `timeZone`**". Without this an 11 PM ET event highlights the
+ *  NEXT day on a Tokyo phone. */
+export function zonedDayToCalendarMs(ts: number, timeZone: string): number {
+  const p = zonedParts(ts, timeZone);
+  return new Date(p.year, p.month - 1, p.day).getTime();
+}
+
+/** The inverse: a day `Calendar` emitted plus a wall-clock time, read as an
+ *  instant in `timeZone`. */
+export function calendarMsToZonedTs(
+  dayMs: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): number {
+  const d = new Date(dayMs);
+  return zonedTimeToUtc(
+    { year: d.getFullYear(), month: d.getMonth() + 1, day: d.getDate(), hour, minute },
+    timeZone,
+  );
+}
+
+/** Replace the time-of-day of `ts` with `hour:minute` **in `timeZone`**,
+ *  keeping the event-zone calendar day. The zoned sibling of
+ *  `d.setHours(h, m)`. */
+export function withZonedTime(
+  ts: number,
+  hour: number,
+  minute: number,
+  timeZone: string,
+): number {
+  const p = zonedParts(ts, timeZone);
+  return zonedTimeToUtc(
+    { year: p.year, month: p.month, day: p.day, hour, minute },
+    timeZone,
+  );
 }
 
 /** Render an epoch-ms timestamp as a YYYY-MM-DD string for date inputs. */

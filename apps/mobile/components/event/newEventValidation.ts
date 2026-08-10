@@ -24,6 +24,9 @@ export type CreateFormState = {
   date: string;
   /** Canonical `HH:mm` (24h), or `""` if unset. */
   time: string;
+  /** The zone the typed date+time is read in — the same one `handleCreate`
+   *  passes, so "is this valid?" and "what will be stored?" can't diverge. */
+  timeZone: string;
 };
 
 /**
@@ -43,7 +46,7 @@ export function getCreateBlockReason(state: CreateFormState): string | null {
   if (!state.time.trim()) {
     return "Set a start time — the run of show is timed from it.";
   }
-  if (parseDateTimeInput(state.date, state.time) === null) {
+  if (parseDateTimeInput(state.date, state.time, state.timeZone) === null) {
     return "That start time isn't valid — check the hour and minute.";
   }
   return null;

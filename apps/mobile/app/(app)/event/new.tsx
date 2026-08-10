@@ -23,8 +23,13 @@ import {
 } from "../../../components/ui";
 import { ScopeToggle, type ScopeChoice } from "../../../components/team/ScopeToggle";
 import { colors, radius, spacing } from "../../../lib/theme";
-import { parseDateTimeInput, formatDateTime } from "../../../lib/format";
+import {
+  parseDateTimeInput,
+  formatDateTimeInZone,
+  zoneAbbreviation,
+} from "../../../lib/format";
 import { MeridiemButton } from "../../../components/ui/DateTimeField";
+import { eventTimeZone } from "@events-os/shared";
 import { errorMessage } from "../../../lib/errors";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { getCreateBlockReason } from "../../../components/event/newEventValidation";
@@ -155,20 +160,26 @@ function toHHMM(h12: number, min: number, pm: boolean): string {
  * cell). Both paths emit a canonical `HH:mm` (24h) string — combined with the
  * date, this is the event start anchor. REQUIRED: emits "" until fully entered
  * so the form can block submit (the old form defaulted to midnight — the bug).
+ *
+ * `zoneLabel` names the clock being set. The typed time is read as wall clock
+ * in the EVENT's zone, not the device's, and a bare "7:00 PM" gives a traveller
+ * no way to tell which — so the hint says it out loud.
  */
 function TimePickerField({
   value,
   onChange,
+  zoneLabel,
 }: {
   value: string;
   onChange: (next: string) => void;
+  zoneLabel: string;
 }) {
+  const hint = zoneLabel
+    ? `In ${zoneLabel} — the event's time, not your device's. Every run-of-show time is derived from this start.`
+    : "Every run-of-show time is derived from this start.";
   if (Platform.OS === "web") {
     return (
-      <Field
-        label="Start time"
-        hint="Every run-of-show time is derived from this start."
-      >
+      <Field label="Start time" hint={hint}>
         {createElement("input", {
           type: "time",
           value,
@@ -188,16 +199,18 @@ function TimePickerField({
       </Field>
     );
   }
-  return <NativeTimeField value={value} onChange={onChange} />;
+  return <NativeTimeField value={value} onChange={onChange} hint={hint} />;
 }
 
 /** Native hour : minute + AM·PM entry. Local draft state, seeded once. */
 function NativeTimeField({
   value,
   onChange,
+  hint,
 }: {
   value: string;
   onChange: (next: string) => void;
+  hint: string;
 }) {
   const seed = parseHHMM(value);
   const [hourText, setHourText] = useState(seed ? pad2(seed.h12) : "");
@@ -217,10 +230,7 @@ function NativeTimeField({
   };
 
   return (
-    <Field
-      label="Start time"
-      hint="Every run-of-show time is derived from this start."
-    >
+    <Field label="Start time" hint={hint}>
       <View style={styles.timeParts}>
         <TextInput
           style={styles.datePart}
@@ -334,13 +344,20 @@ export default function NewEventScreen() {
   // Default the name to the template name until the user types their own —
   // Blank has no template to borrow a name from, so it starts empty.
   const effectiveName = touchedName ? name : selected?.name ?? "";
+  // A new event has no row yet, so there is no doc to resolve a zone from —
+  // `eventTimeZone()` with no argument is exactly the "what zone would this
+  // event be in?" question, and it is the same seam every event clock asks.
+  // Typed date+time is read as wall clock THERE: picking 7:00 PM on a Pacific
+  // phone must create a 7:00 PM Eastern event, not a 10:00 PM one.
+  const eventZone = eventTimeZone();
   const parsedDateTime =
-    date && time ? parseDateTimeInput(date, time) : null;
+    date && time ? parseDateTimeInput(date, time, eventZone) : null;
   const blockReason = getCreateBlockReason({
     selectedId,
     effectiveName,
     date,
     time,
+    timeZone: eventZone,
   });
 
   function pickTemplate(t: TemplateRow) {
@@ -360,7 +377,7 @@ export default function NewEventScreen() {
       return;
     }
     const finalName = effectiveName.trim();
-    const ts = parseDateTimeInput(date, time)!;
+    const ts = parseDateTimeInput(date, time, eventZone)!;
     setCreating(true);
     try {
       const id = await create({
@@ -461,10 +478,17 @@ export default function NewEventScreen() {
             }}
           />
           <DatePickerField value={date} onChange={setDate} />
-          <TimePickerField value={time} onChange={setTime} />
+          <TimePickerField
+            value={time}
+            onChange={setTime}
+            zoneLabel={zoneAbbreviation(parsedDateTime ?? Date.now(), eventZone)}
+          />
           {parsedDateTime !== null ? (
             <Text style={styles.dateConfirm}>
-              {formatDateTime(parsedDateTime)}
+              {formatDateTimeInZone(parsedDateTime, eventZone)}
+              {zoneAbbreviation(parsedDateTime, eventZone)
+                ? ` ${zoneAbbreviation(parsedDateTime, eventZone)}`
+                : ""}
             </Text>
           ) : null}
           <LocationAutocomplete

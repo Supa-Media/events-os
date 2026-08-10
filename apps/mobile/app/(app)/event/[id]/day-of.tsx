@@ -17,7 +17,6 @@ import { DateTimePanel } from "../../../../components/ui/DateTimeField";
 import { spaceToggleProps } from "../../../../components/ui/spaceToggle";
 import { colors, radius, spacing } from "../../../../lib/theme";
 import {
-  formatTime,
   formatTimeInZone,
   zoneAbbreviation,
 } from "../../../../lib/format";
@@ -88,9 +87,11 @@ function ariaChecked(status: string | undefined): boolean | "mixed" {
  */
 function StartTimePrompt({
   eventDate,
+  timeZone,
   onReschedule,
 }: {
   eventDate: number;
+  timeZone: string;
   onReschedule: (ts: number) => void;
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
@@ -134,16 +135,16 @@ function StartTimePrompt({
         />
       </View>
       <Popover visible={visible} anchor={anchor} width={388} onClose={close}>
-        <DateTimePanel value={draft} onChange={setDraft} />
+        <DateTimePanel value={draft} timeZone={timeZone} onChange={setDraft} />
         <View style={styles.promptCommit}>
-          {/* Device-local ON PURPOSE, and the one clock on this screen that is:
-              it echoes the time the user just dialled in `DateTimePanel`, which
-              reads and writes device-local wall clock end to end. Formatting the
-              echo in the event's zone would show them a different number than
-              the one they picked. The picker itself is the thing to fix — see
-              the PR: it is shared with the event header's reschedule popover, so
-              converting it is its own change, not a rider on this one. */}
-          <Text style={styles.promptDraft}>{formatTime(draft)}</Text>
+          {/* Now in the event's zone — and so is the panel above it, which both
+              reads and WRITES wall clock there. The echo has to be formatted the
+              same way the picker interprets it, or it shows a different number
+              than the one just dialled; that pairing is the invariant, not the
+              choice of zone. */}
+          <Text style={styles.promptDraft}>
+            {formatTimeInZone(draft, timeZone)}
+          </Text>
           <Button
             title="Set"
             icon="check"
@@ -302,6 +303,7 @@ export default function DayOfScreen() {
         {needsStartTime ? (
           <StartTimePrompt
             eventDate={event.eventDate}
+            timeZone={timeZone}
             onReschedule={(ts) =>
               run(() => reschedule({ eventId, eventDate: ts }), {
                 errorTitle: "Couldn't set start time",

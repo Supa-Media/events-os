@@ -389,11 +389,45 @@ export function daysBetweenInTz(
 }
 
 /**
+ * `timeZone`'s UTC offset at an instant, in ms (negative west of Greenwich):
+ * how far the wall clock there runs ahead of UTC. Probed from `Intl` so DST is
+ * never hard-coded.
+ */
+export function zoneOffsetMs(ts: number, timeZone: string = PLANNING_TIME_ZONE): number {
+  const p = zonedParts(ts, timeZone);
+  return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) - minuteFloor(ts);
+}
+
+/** `ts` truncated to the minute — `zonedParts` has minute resolution, so the
+ *  offset probe must compare like with like or a stray 30s shows up as drift. */
+function minuteFloor(ts: number): number {
+  return Math.floor(ts / 60000) * 60000;
+}
+
+/**
  * The UTC timestamp of a wall-clock date+time in `timeZone` (the inverse of
- * {@link zonedParts}). Uses the Intl offset-probe technique: start from the
- * parts read as UTC, then correct by however far the rendered wall clock is
- * off — two iterations converge across DST transitions. For a nonexistent
- * local time (spring-forward gap) this lands on the closest valid instant.
+ * {@link zonedParts}).
+ *
+ * A wall clock is not a bijection with instants — twice a year a zone breaks
+ * it, and BOTH breaks matter to a picker where someone types a time and we
+ * store an instant:
+ *
+ * - **Fall back** (1:30 AM ET happens twice on the first Sunday in November):
+ *   ambiguous. We take the FIRST occurrence — the one still on the old, larger
+ *   offset. That is what `Temporal`'s "compatible" disambiguation does and what
+ *   every mainstream date library defaults to, and it keeps a schedule's rows
+ *   monotonic across the repeat.
+ * - **Spring forward** (2:30 AM ET does not exist on the second Sunday in
+ *   March): nonexistent. We shift FORWARD by the gap, so 2:30 AM becomes
+ *   3:30 AM EDT — the same instant `new Date(y, m, d, 2, 30)` would give in
+ *   that zone, and never an hour EARLIER than what was typed. The previous
+ *   two-pass implementation silently landed on 1:30 AM here, i.e. a picker
+ *   would have moved the event backwards.
+ *
+ * Method: probe the offset, apply it, re-probe. When the two probes agree the
+ * time is unambiguous and we are done. When they disagree we hold two candidate
+ * instants and ask each whether it actually renders back to the requested wall
+ * clock — both do ⇒ ambiguous ⇒ earlier wins; neither does ⇒ gap ⇒ later wins.
  */
 export function zonedTimeToUtc(
   parts: { year: number; month: number; day: number; hour?: number; minute?: number },
@@ -401,13 +435,21 @@ export function zonedTimeToUtc(
 ): number {
   const { year, month, day, hour = 0, minute = 0 } = parts;
   const asUtc = Date.UTC(year, month - 1, day, hour, minute);
-  let ts = asUtc;
-  for (let i = 0; i < 2; i++) {
+
+  const first = asUtc - zoneOffsetMs(asUtc, timeZone);
+  const second = asUtc - zoneOffsetMs(first, timeZone);
+  if (first === second) return first;
+
+  const rendersBack = (ts: number) => {
     const p = zonedParts(ts, timeZone);
-    const rendered = Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute);
-    ts += asUtc - rendered;
-  }
-  return ts;
+    return Date.UTC(p.year, p.month - 1, p.day, p.hour, p.minute) === asUtc;
+  };
+  const a = rendersBack(first);
+  const b = rendersBack(second);
+  if (a && b) return Math.min(first, second); // ambiguous — take the earlier
+  if (a) return first;
+  if (b) return second;
+  return Math.max(first, second); // nonexistent — shift forward over the gap
 }
 
 export interface AiUsageTokens {
