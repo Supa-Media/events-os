@@ -268,6 +268,113 @@ describe("submitting", () => {
   });
 });
 
+// The UI used to gate Approve / Send back on a bookkeeper-or-better flag while
+// the server required MANAGER plus separation of duties, so two kinds of caller
+// were shown a working button that threw FORBIDDEN on every press. These pin
+// the flag the client now reads, against the same conditions the mutation
+// enforces — if `canReview` and `approve` ever disagree, that button comes back.
+describe("canReview — the client is told what the server would allow", () => {
+  test("false for the AUTHOR, even when they're a manager (SoD)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s);
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: txnId,
+    });
+    expect(data.canReview).toBe(false);
+    // …and the mutation agrees, which is the whole contract.
+    await expect(
+      s.as.mutation(api.transactionCodings.approve, { transactionId: txnId }),
+    ).rejects.toMatchObject({ data: { code: "SOD_VIOLATION" } });
+  });
+
+  test("true for a manager who did NOT write it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const other = await seedOtherPerson(s, "Cardholder Cass");
+    const txnId = await seedTxn(s);
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    // Re-author to someone else so the manager is a genuine second name.
+    await run(s.t, async (ctx) => {
+      const row = await ctx.db
+        .query("transactionCodings")
+        .withIndex("by_transaction", (q) => q.eq("transactionId", txnId))
+        .first();
+      await ctx.db.patch(row!._id, { codedByPersonId: other });
+    });
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: txnId,
+    });
+    expect(data.canReview).toBe(true);
+  });
+
+  test("false for a BOOKKEEPER — reviewing is a manager power", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedSelfPerson(s, "Book Keeper");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId: me,
+        role: "bookkeeper",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    const other = await seedOtherPerson(s, "Cardholder Cass");
+    const txnId = await seedTxn(s);
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    await run(s.t, async (ctx) => {
+      const row = await ctx.db
+        .query("transactionCodings")
+        .withIndex("by_transaction", (q) => q.eq("transactionId", txnId))
+        .first();
+      await ctx.db.patch(row!._id, { codedByPersonId: other });
+    });
+
+    // A bookkeeper may read and author here — that's why they get a payload at
+    // all — but deciding is a rank above them.
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: txnId,
+    });
+    expect(data.coding).not.toBeNull();
+    expect(data.canReview).toBe(false);
+    await expect(
+      s.as.mutation(api.transactionCodings.approve, { transactionId: txnId }),
+    ).rejects.toMatchObject({ data: { code: "FORBIDDEN" } });
+  });
+
+  test("false when there is no coding to decide on", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s);
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: txnId,
+    });
+    expect(data.coding).toBeNull();
+    expect(data.canReview).toBe(false);
+  });
+});
+
 describe("review loop", () => {
   test("separation of duties: the author can never approve their own coding", async () => {
     const t = newT();

@@ -28,7 +28,10 @@
  * never a separate event/project link, and the old "summon a $0 budget on
  * pick" flow is retired.
  *
- * Actions (R1): a note icon (filled when set, tap → `TransactionNoteModal`)
+ * Actions (R1): a comment icon (tap → `TransactionDocumentationModal`, which
+ * holds BOTH the freeform note and the structured coding — purpose, route,
+ * attendees — plus a reviewer's Approve / Send back; the icon itself says
+ * whether anything is behind it, see `docState`)
  * and, for a finance MANAGER or the charge's own PAYER, a "Mark personal"
  * flag — `cards.flagPersonalCharge` (#147), confirmed first
  * (`MarkPersonalModal`, mirrors `ExcludeReasonModal`'s confirm-before-commit
@@ -103,7 +106,7 @@ import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
 import { ReceiptExceptionModal } from "../modals/ReceiptExceptionModal";
 import { ReceiptExceptionDecideModal } from "../modals/ReceiptExceptionDecideModal";
-import { TransactionNoteModal } from "../modals/TransactionNoteModal";
+import { TransactionDocumentationModal } from "../modals/TransactionDocumentationModal";
 import { CorrectTransactionModal } from "../modals/CorrectTransactionModal";
 import { MerchantHistoryModal } from "../modals/MerchantHistoryModal";
 import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
@@ -446,6 +449,32 @@ function ReconcileRow({
   const isOwnCharge =
     viewerPersonId != null && row.cardholder?.personId === viewerPersonId;
 
+  /**
+   * What the row's speech-bubble is standing on, in one word — so the icon can
+   * say it before anyone clicks.
+   *
+   *  "written" — there is something to read: a comment, or a coding in any
+   *              state. The whole point of the change; a filled record used to
+   *              be indistinguishable from an empty one.
+   *  "missing" — this charge OWES an account of itself (the policy requires a
+   *              coding and none is submitted) and nobody has written one.
+   *  "empty"   — nothing written and nothing owed. Ordinary; stays quiet.
+   *
+   * Read off `codingState` — already on every reconcile row as a denorm, and
+   * until now rendered nowhere — so this costs no extra read. `requiresCoding`
+   * is deliberately NOT recomputed here: the row payload doesn't carry the
+   * policy date, and a client that guessed it would disagree with the server
+   * the day central finance moves it. `needsBudget`-style precision isn't
+   * needed — this is an icon, and "spend that nobody has written anything
+   * about" is the honest, policy-independent version of the warning.
+   */
+  const docState: "written" | "missing" | "empty" =
+    row.note || row.codingState != null
+      ? "written"
+      : row.flow === "outflow" && row.status !== "excluded" && !row.isPersonal
+        ? "missing"
+        : "empty";
+
   const [noteModalOpen, setNoteModalOpen] = useState(false);
   const [correctOpen, setCorrectOpen] = useState(false);
   const [correcting, setCorrecting] = useState(false);
@@ -753,17 +782,40 @@ function ReconcileRow({
           fires off a stray tap. */}
       <Cell width={widths.actions}>
         <View className="flex-1 flex-row items-center justify-center gap-2 px-1">
+          {/* THE WAY IN TO EVERYTHING WRITTEN DOWN about this charge — the
+              comment AND the coding (purpose, route, who was there), plus a
+              reviewer's Approve / Send back. Owner ask, 2026-08-09: the coding
+              should surface where he is already looking, not in a second table.
+
+              The icon says what is behind it before you click, because it used
+              to look identical whether anything was there or not — which is how
+              six properly written codings sat unread. Three states, and the
+              order matters: an unanswered ASK outranks a filled record, because
+              the only one of the three that needs somebody to do something is
+              the empty one on a charge that owes an account of itself. */}
           <Pressable
             onPress={() => setNoteModalOpen(true)}
             hitSlop={6}
             accessibilityRole="button"
-            accessibilityLabel={row.note ? "Edit note" : "Add note"}
+            accessibilityLabel={
+              docState === "missing"
+                ? "Needs coding — say what this was for"
+                : docState === "written"
+                  ? "Read what this was for"
+                  : "Say what this was for"
+            }
             className="rounded p-1 active:opacity-70 web:hover:opacity-90"
           >
             <Icon
-              name="message-square"
+              name={docState === "written" ? "message-square" : "message-circle"}
               size={15}
-              color={row.note ? colors.accent : colors.faint}
+              color={
+                docState === "written"
+                  ? colors.accent
+                  : docState === "missing"
+                    ? colors.warn
+                    : colors.faint
+              }
             />
           </Pressable>
           {/* Correct a manually-entered row's amount / date / merchant. Shown
@@ -900,9 +952,12 @@ function ReconcileRow({
       ) : null}
 
       {noteModalOpen ? (
-        <TransactionNoteModal
+        <TransactionDocumentationModal
           transactionId={id}
           currentNote={row.note}
+          merchantLine={`${displayMerchantName(row, "—")} · ${shortDate(row.postedAt)}`}
+          amountCents={row.amountCents}
+          readOnly={readOnly}
           onClose={() => setNoteModalOpen(false)}
         />
       ) : null}

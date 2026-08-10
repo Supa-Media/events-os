@@ -42,6 +42,7 @@ import { assertSeparationOfDuties } from "./lib/finance";
 import { logFinanceAudit } from "./lib/financeAuditLog";
 import {
   hasCodingNamesView,
+  hasReviewCoding,
   requireReviewCoding,
   requireSubmitCoding,
 } from "./lib/transactionCodingAccess";
@@ -160,11 +161,29 @@ export const getForTransaction = query({
      *  coding is refused without it, so the form has to be able to say so
      *  BEFORE someone types three fields they can't submit. */
     hasDocumentation: v.boolean(),
+    /** True iff THIS caller could actually approve or send back THIS coding —
+     *  finance MANAGER rank in scope (`requireReviewCoding`) and not the person
+     *  who wrote it (`approve`'s separation-of-duties rule).
+     *
+     *  It exists because the UI was gating those two buttons on `readOnly`,
+     *  which is a bookkeeper-or-better flag. A bookkeeper, or a manager
+     *  reviewing their OWN coding, was shown a working Approve button that
+     *  threw `FORBIDDEN` every time. The server has always been the authority;
+     *  this just lets the client ask it instead of guessing a weaker rule.
+     *
+     *  Deliberately includes the SoD half rather than leaving that to the
+     *  client: "who wrote this" is a fact the row has and the caller shouldn't
+     *  have to reconstruct, and splitting the check across two places is how
+     *  the two drift. False when there's no coding to decide on. */
+    canReview: v.boolean(),
     namesMaxHeadcount: v.number(),
     minPurposeLength: v.number(),
   }),
   handler: async (ctx, args) => {
-    const { txn } = await requireSubmitCoding(ctx, args.transactionId);
+    const { txn, actorPersonId } = await requireSubmitCoding(
+      ctx,
+      args.transactionId,
+    );
     const { sinceMs, namesMaxHeadcount } = await codingPolicy(ctx);
     const row = await codingForTransaction(ctx, args.transactionId);
     const exceptions = await ctx.db
@@ -187,10 +206,18 @@ export const getForTransaction = query({
       txn.flow === "outflow" &&
       txn.status !== "excluded" &&
       txn.isPersonal !== true;
+    // The same two conditions `approve` enforces, asked in the same order.
+    // A superuser with no roster row (`actorPersonId == null`) skips the SoD
+    // half exactly as the mutation does — see `approve`'s own comment.
+    const canReview =
+      row != null &&
+      (await hasReviewCoding(ctx, args.transactionId)) &&
+      (actorPersonId == null || actorPersonId !== row.codedByPersonId);
     return {
       coding: row ? await projectCoding(ctx, row, canSeeNames) : null,
       requiresCoding,
       hasDocumentation,
+      canReview,
       namesMaxHeadcount,
       minPurposeLength: MIN_PURPOSE_LENGTH,
     };

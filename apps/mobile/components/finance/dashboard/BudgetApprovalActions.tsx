@@ -153,7 +153,7 @@ export function BudgetApprovalActions({
 }
 
 /** A small reason prompt for "Request changes" — mirrors
- *  `TransactionNoteModal`'s pattern (the app has no cross-platform
+ *  `TransactionDocumentationModal`'s pattern (the app has no cross-platform
  *  `Alert.prompt`, so a lightweight modal + `TextField` stands in). */
 function RequestChangesModal({
   onCancel,

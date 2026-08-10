@@ -29,7 +29,7 @@ import { Badge, Button, Card, EmptyState, Icon, SectionHeader, Select } from "..
 import { Money, BudgetBar, txnStatusTone } from "../finance/dashboard/parts";
 import { BudgetApprovalChip } from "../finance/dashboard/BudgetApprovalActions";
 import { PlanGrid } from "./PlanGrid";
-import { TransactionNoteModal } from "../finance/modals/TransactionNoteModal";
+import { TransactionDocumentationModal } from "../finance/modals/TransactionDocumentationModal";
 import { ReceiptCell } from "../finance/reconcile/ReconcileList";
 import { colors } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
@@ -552,9 +552,11 @@ function TxnEditModal({ tr, onClose }: { tr: TxnRowData; onClose: () => void }) 
       </Pressable>
 
       {noteModalOpen ? (
-        <TransactionNoteModal
+        <TransactionDocumentationModal
           transactionId={tr.id}
           currentNote={tr.note}
+          merchantLine={`${tr.merchantName ?? tr.description ?? "Transaction"} · ${formatDate(tr.postedAt)}`}
+          amountCents={tr.amountCents}
           onClose={() => setNoteModalOpen(false)}
         />
       ) : null}
