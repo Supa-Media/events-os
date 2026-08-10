@@ -15,10 +15,15 @@
  *
  * ── EDIT AFFORDANCES COME OFF EACH ROW, NOT OFF THE CALLER ──────────────────
  * `listRules` returns rules from every book the caller can SEE, each carrying
- * its own `canManage`. A chapter treasurer who can view a central rule must not
- * get an Edit button on it — so nothing here is gated on a single screen-level
- * flag; every row asks itself. The same goes for the book picker in the form,
- * which only offers books the caller can actually manage.
+ * its own `canManage`. Nothing here is gated on a single screen-level flag;
+ * every row asks itself. Since the gate became giving VIEW (2026-08-10 — see
+ * `givingNotifications.ts#canManageRuleScope`) a caller who can see a rule can
+ * also work it, so `canManage` is true on every row today; the row still asks,
+ * because that is what keeps re-narrowing the gate a one-function change.
+ *
+ * The book picker asks the SAME question, via `ruleScopeChoices` — the list and
+ * the picker disagreeing is how this screen once offered Edit on a row while
+ * refusing to offer any book to create one in.
  *
  * Deactivation, never deletion: a rule that mailed a team for six months is a
  * record of who was told what. Inactive rules stay listed, and reactivatable.
@@ -55,10 +60,12 @@ import {
   centsToDollarsInput,
   deliveryLabel,
   removeRecipient,
+  ruleScopeChoices,
   scheduleSummary,
   thresholdLabel,
   type RuleCadence,
   type RuleScope,
+  type ScopeChoice,
 } from "../../../components/giving/notificationRules";
 import { alertError, errorMessage } from "../../../lib/errors";
 import { formatDateTimeInZone } from "../../../lib/format";
@@ -68,11 +75,6 @@ import { useGivingScope } from "../../../lib/useGivingScope";
 type Rule = FunctionReturnType<
   typeof api.givingNotifications.listRules
 >[number];
-type ScopeOption = { value: string; label: string };
-
-/** The rule scope that reaches every book — gated centrally, see
- *  `givingNotifications.ts#ruleGateScope`. */
-const ALL_BOOKS: RuleScope = "all";
 
 function formatSentAt(ts: number): string {
   return formatDateTimeInZone(ts, EASTERN_TIME_ZONE);
@@ -103,23 +105,15 @@ export default function GivingNotificationsScreen() {
 function NotificationsBody() {
   const rules = useQuery(api.givingNotifications.listRules, {});
   // The books the caller may point a rule at. Same source the Gifts and Donors
-  // book pickers use, filtered to MANAGE — a book you can only read is not a
-  // book you can aim a mailer at.
+  // book pickers use — every option in it is a book the caller can VIEW, which
+  // is exactly what a rule needs. `ruleScopeChoices` holds the reasoning and
+  // the tests.
   const scopeOpts = useQuery(api.givingPlatform.givingScopeOptions, {});
   const [showNew, setShowNew] = useState(false);
   const [editingId, setEditingId] = useState<Rule["_id"] | null>(null);
 
-  const manageableScopes: ScopeOption[] = [
-    // "All books" is a central-reach power, so it only appears for a caller who
-    // could manage the central book — mirroring `ruleGateScope`.
-    ...(scopeOpts?.canManageCentral
-      ? [{ value: ALL_BOOKS, label: "All books" }]
-      : []),
-    ...(scopeOpts?.options ?? [])
-      .filter((o) => o.canManage)
-      .map((o) => ({ value: o.scope as string, label: o.label })),
-  ];
-  const canCreate = manageableScopes.length > 0;
+  const ruleScopes: ScopeChoice[] = ruleScopeChoices(scopeOpts);
+  const canCreate = ruleScopes.length > 0;
 
   // BOTH queries, deliberately. Rendering on `rules` alone meant the "New rule"
   // button was absent for the first frame and then appeared — and worse, a
@@ -155,7 +149,7 @@ function NotificationsBody() {
             {showNew ? (
               <View className="mt-3">
                 <RuleForm
-                  scopeOptions={manageableScopes}
+                  scopeOptions={ruleScopes}
                   onDone={() => setShowNew(false)}
                 />
               </View>
@@ -186,7 +180,7 @@ function NotificationsBody() {
                 <RuleForm
                   key={rule._id}
                   existing={rule}
-                  scopeOptions={manageableScopes}
+                  scopeOptions={ruleScopes}
                   onDone={() => setEditingId(null)}
                 />
               ) : (
@@ -273,7 +267,7 @@ function RuleForm({
   onDone,
 }: {
   existing?: Rule;
-  scopeOptions: ScopeOption[];
+  scopeOptions: ScopeChoice[];
   onDone: () => void;
 }) {
   const saveRule = useMutation(api.givingNotifications.saveRule);

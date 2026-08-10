@@ -37,6 +37,55 @@ export const DEFAULT_SEND_HOUR_LOCAL = 8;
 /** Mirrors `DEFAULT_SEND_WEEKDAY` — Monday. */
 export const DEFAULT_SEND_WEEKDAY = 1;
 
+// ── The book picker ──────────────────────────────────────────────────────────
+
+/** One entry in a `Select`. */
+export interface ScopeChoice {
+  value: string;
+  label: string;
+}
+
+/** What the picker reads out of `givingPlatform.givingScopeOptions` — a
+ *  structural subset, so the query is free to carry more. */
+export interface GivingScopeOptions {
+  /** The caller has giving VIEW at central, which is org-wide reach. */
+  canSeeAllScopes: boolean;
+  options: readonly { scope: string; label: string }[];
+}
+
+/**
+ * The books this caller may point a notification rule at.
+ *
+ * ── WHY THIS DOESN'T FILTER ON `option.canManage` ──────────────────────────
+ * Since 2026-08-10 a rule is gated on giving VIEW of its book, not giving
+ * manage (`givingNotifications.ts#canManageRuleScope` — the owner's call, and
+ * the reasoning is all there). `givingScopeOptions.options` is built FROM the
+ * caller's view reach: a central viewer gets Central plus every active chapter,
+ * anyone else gets exactly the chapters they hold. So every option it returns
+ * is already a book a rule may watch, and the picker offers all of them.
+ *
+ * `option.canManage` still means "may record or move a GIFT in this book" —
+ * the Gifts screen's question, a strictly narrower power, and deliberately not
+ * consulted here. Filtering on it is what used to hide "New rule" from a
+ * chapter director whose rows showed Edit.
+ *
+ * "All books" hangs off `canSeeAllScopes` because the backend routes `"all"`
+ * through `"central"` (`ruleGateScope`), and `canSeeAllScopes` is precisely
+ * "this caller can view central".
+ *
+ * The server is still the authority — `saveRule` re-asks the same question and
+ * throws. This only decides what to OFFER.
+ */
+export function ruleScopeChoices(
+  opts: GivingScopeOptions | undefined,
+): ScopeChoice[] {
+  if (!opts) return [];
+  return [
+    ...(opts.canSeeAllScopes ? [{ value: "all", label: "All books" }] : []),
+    ...opts.options.map((o) => ({ value: o.scope, label: o.label })),
+  ];
+}
+
 // ── Recipients ───────────────────────────────────────────────────────────────
 
 /**

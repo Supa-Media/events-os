@@ -29,6 +29,14 @@
  * A rule that mailed a team for six months is a record of who was told what.
  * `setRuleActive` turns it off. There is no delete mutation, matching the rest
  * of the giving desk (`sponsorPackages.active`).
+ *
+ * ── A RULE IS GATED ON GIVING *VIEW*, NOT GIVING MANAGE ────────────────────
+ * Reads and writes alike — `listRules`, `saveRule`, `setRuleActive` — ask
+ * `canManageRuleScope`, which is `giving.view` of the rule's own book. See that
+ * function for the whole argument; the short version is that it was
+ * `giving.manage`, no chapter seat carries `giving.manage`, and the effect was
+ * that a chapter director watched their own book's mailer misfire with no way
+ * to switch it off. The owner's call, 2026-08-10.
  */
 import { ConvexError, v } from "convex/values";
 import {
@@ -37,15 +45,16 @@ import {
   internalQuery,
   mutation,
   query,
+  type QueryCtx,
 } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import { requireUserId } from "./lib/context";
 import {
-  canManageGivingScope,
   canViewGivingScope,
-  requireGivingManage,
+  requireGivingView,
   resolveGivingAccess,
+  type GivingAccess,
   type GivingScope,
 } from "./lib/givingAccess";
 import { givingNotificationScope } from "./schema/givingNotifications";
@@ -65,12 +74,68 @@ import { renderImmediateGiftEmail } from "./lib/givingNotificationEmails";
 import { sendEmailReporting } from "./ticketingEmails";
 
 /**
- * The scope a rule is GATED on. `"all"` reaches every book, so managing one
- * needs the same central reach `"central"` does — a chapter treasurer must not
- * be able to point an org-wide firehose at their own inbox.
+ * The giving scope a rule is GATED on. `"all"` reaches every book, so touching
+ * one needs the same central reach `"central"` does — a chapter treasurer must
+ * not be able to point an org-wide firehose at their own inbox.
  */
 export function ruleGateScope(scope: RuleScope): GivingScope {
   return scope === "all" ? "central" : scope;
+}
+
+/**
+ * Whether `access` may SEE, CREATE, EDIT or PAUSE a rule scoped to `scope`.
+ * The one predicate every rule surface asks — the list, the three mutations,
+ * and (transitively) the screen's book picker.
+ *
+ * ── IT IS THE *VIEW* GATE, DELIBERATELY. OWNER'S CALL, 2026-08-10 ──────────
+ * The writes used to ask `requireGivingManage` — the same gate that guards
+ * writing a gift or a donor. That reads well on paper and was wrong in
+ * practice: NO seat on the chapter chart carries `giving.manage` (chapter
+ * director is `giving.view` + `nav.giving` and nothing more), so against the
+ * shipped seat chart the manage gate resolved to "central and superusers,
+ * nobody else". A chapter director could watch their own book's rules sit in a
+ * read-only list and could not touch one of them — including turning off a
+ * mailer that was reaching the wrong people. The owner settled it plainly:
+ * "You should allow anybody with access to giving to do the notifications.
+ * That's fine."
+ *
+ * If you have arrived here to put `canManageGivingScope` back: please don't.
+ * This is the decision, not an oversight it survived.
+ *
+ * What makes the loosening safe is that it widened WHICH CAPABILITY opens a
+ * book, never WHICH BOOKS a capability opens. Containment is untouched:
+ *  - `ruleGateScope` still routes `"all"` through `"central"`, so org-wide
+ *    reach still needs central reach.
+ *  - `canViewGivingScope` still refuses `"central"` to a chapter holder, and
+ *    still admits only the chapters they actually hold.
+ *  - a scope CHANGE is still checked against the book it LEAVES as well as the
+ *    one it joins (`saveRule`), so a rule can't be walked between books a step
+ *    at a time.
+ * And note the ceiling on what a rule can do, which is why view is the right
+ * level: it emails a summary of gifts you can already read, to addresses you
+ * name. It moves no money, edits no gift, and discloses no book you had no
+ * reach into.
+ *
+ * One consequence worth stating out loud: because visibility and manageability
+ * now ask the identical question, every row `listRules` returns comes back with
+ * `canManage: true`. The field stays — it is what keeps the affordance a
+ * property of the ROW rather than of the screen, so re-narrowing this gate one
+ * day is a change to this function and nothing else.
+ */
+export function canManageRuleScope(
+  access: GivingAccess,
+  scope: RuleScope,
+): boolean {
+  return canViewGivingScope(access, ruleGateScope(scope));
+}
+
+/** Assert the caller may create/edit/pause a rule at `scope`, else throw. The
+ *  `require` twin of `canManageRuleScope` — same question, one shape throws. */
+async function requireRuleManage(
+  ctx: QueryCtx,
+  scope: RuleScope,
+): Promise<GivingAccess> {
+  return await requireGivingView(ctx, ruleGateScope(scope));
 }
 
 const cadenceValidator = v.union(
@@ -101,9 +166,7 @@ export const listRules = query({
       .withIndex("by_createdAt")
       .order("desc")
       .take(MAX_RULES);
-    const visible = rows.filter((r) =>
-      canViewGivingScope(access, ruleGateScope(r.scope)),
-    );
+    const visible = rows.filter((r) => canManageRuleScope(access, r.scope));
     return await Promise.all(
       visible.map(async (r) => ({
         _id: r._id,
@@ -124,7 +187,9 @@ export const listRules = query({
         lastDeliveredAt: r.lastDeliveredAt,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
-        canManage: canManageGivingScope(access, ruleGateScope(r.scope)),
+        // True for every row here, because the filter above asks the same
+        // question — see `canManageRuleScope` for why the field stays anyway.
+        canManage: canManageRuleScope(access, r.scope),
       })),
     );
   },
@@ -164,9 +229,10 @@ function assertFloor(minAmountCents: number | undefined): void {
 
 /**
  * Create or edit a rule — the `savePackage` shape: an OPTIONAL id, absent for
- * a create. Gated on the rule's OWN scope, and on a scope CHANGE the caller
- * needs manage rights on both the old and the new one, or moving a chapter
- * rule to `"all"` would be a privilege escalation with extra steps.
+ * a create. Gated on the rule's OWN scope (`canManageRuleScope` — giving VIEW
+ * of that book), and on a scope CHANGE the caller needs rights on both the old
+ * and the new one, or moving a chapter rule to `"all"` would be a privilege
+ * escalation with extra steps.
  */
 export const saveRule = mutation({
   args: {
@@ -182,7 +248,7 @@ export const saveRule = mutation({
   },
   returns: v.id("givingNotificationRules"),
   handler: async (ctx, args): Promise<Id<"givingNotificationRules">> => {
-    await requireGivingManage(ctx, ruleGateScope(args.scope));
+    await requireRuleManage(ctx, args.scope);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
     const name = args.name.trim();
@@ -248,9 +314,9 @@ export const saveRule = mutation({
         });
       }
       // A move needs rights on where it's LEAVING too — otherwise a chapter
-      // manager could re-point someone else's central rule at their own book.
+      // holder could re-point someone else's central rule at their own book.
       if (existing.scope !== args.scope) {
-        await requireGivingManage(ctx, ruleGateScope(existing.scope));
+        await requireRuleManage(ctx, existing.scope);
       }
       // A CADENCE CHANGE RESETS THE MARKS, for the same reason reactivation
       // does. `daily → immediate → daily` otherwise reached the dormant replay
@@ -329,7 +395,7 @@ export const setRuleActive = mutation({
         message: "That rule doesn't exist.",
       });
     }
-    await requireGivingManage(ctx, ruleGateScope(rule.scope));
+    await requireRuleManage(ctx, rule.scope);
     const now = Date.now();
     const reactivating = isActive && !rule.isActive;
     await ctx.db.patch(ruleId, {
