@@ -13,7 +13,15 @@ import {
   type DoorAttendee,
   type TeamStanding,
 } from "./attendeeList";
-import { formatDateTime } from "../../lib/format";
+import { formatDateTimeInZone } from "../../lib/format";
+import { eventTimeZone } from "@events-os/shared";
+
+/*
+ * Check-in stamps read in the EVENT's zone — see the note in
+ * `event/ticketing/CheckInResultBanner.tsx` for why, and for why the resolver
+ * is called with no argument here (`listCheckInAttendees` returns per-ticket
+ * rows and no event doc; only an `eventId` reaches this file).
+ */
 
 /**
  * The event's guest list for the door — VIEW-ONLY. Shows who's expected and
@@ -268,7 +276,9 @@ function AttendeeRow({
         <View className="flex-row items-center gap-1.5">
           <Icon name="check-circle" size={14} color={colors.success} />
           <Text className="text-xs text-muted">
-            {attendee.checkedInAt ? formatDateTime(attendee.checkedInAt) : "Checked in"}
+            {attendee.checkedInAt
+              ? formatDateTimeInZone(attendee.checkedInAt, eventTimeZone())
+              : "Checked in"}
           </Text>
         </View>
       ) : attendee.status === "void" ? (

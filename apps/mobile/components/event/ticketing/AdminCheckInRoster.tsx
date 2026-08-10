@@ -21,7 +21,15 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { teamColor } from "@events-os/shared";
 import { Card, Icon, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
-import { formatDateTime } from "../../../lib/format";
+import { formatDateTimeInZone } from "../../../lib/format";
+import { eventTimeZone } from "@events-os/shared";
+
+/*
+ * Check-in stamps read in the EVENT's zone — see the note in
+ * `CheckInResultBanner.tsx` for why, and for why the resolver is called with no
+ * argument here (`listCheckInAttendeesAdmin` returns per-ticket rows and no
+ * event doc; only an `eventId` reaches this file).
+ */
 
 type AdminAttendee = {
   _id: string;
@@ -130,7 +138,9 @@ export function AdminCheckInRoster({
                 <View className="flex-row items-center gap-1.5">
                   <Icon name="check-circle" size={14} color={colors.success} />
                   <Text className="text-xs text-muted">
-                    {a.checkedInAt ? formatDateTime(a.checkedInAt) : "In"}
+                    {a.checkedInAt
+                      ? formatDateTimeInZone(a.checkedInAt, eventTimeZone())
+                      : "In"}
                   </Text>
                 </View>
               ) : a.status === "void" ? (

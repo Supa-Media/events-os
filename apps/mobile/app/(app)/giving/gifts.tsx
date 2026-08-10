@@ -48,7 +48,8 @@ import { useMutation, useQuery } from "convex/react";
 import * as ImagePicker from "expo-image-picker";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { formatCents } from "@events-os/shared";
+import { eventTimeZone, formatCents } from "@events-os/shared";
+import { formatDateInZone } from "../../../lib/format";
 import {
   Badge,
   Button,
@@ -1516,7 +1517,7 @@ function AttachEventForm({
                     {e.name}
                   </Text>
                   <Text className="text-xs text-muted" numberOfLines={1}>
-                    {new Date(e.eventDate).toLocaleDateString()}
+                    {formatDateInZone(e.eventDate, eventTimeZone(e))}
                   </Text>
                 </View>
                 <Icon

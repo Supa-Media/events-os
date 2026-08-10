@@ -24,6 +24,7 @@ import {
   isPastEvent,
   type EventStatus,
   type ModuleKey,
+  eventTimeZone,
 } from "@events-os/shared";
 import {
   Screen,
@@ -45,7 +46,7 @@ import { CheckInModal } from "./CheckInModal";
 import { AddResponsibilityModal } from "./AddResponsibilityModal";
 import { DutyRows } from "../work/DutyRows";
 import { colors, spacing } from "../../lib/theme";
-import { formatDate } from "../../lib/format";
+import { formatDate, formatDateInZone } from "../../lib/format";
 import { alertError } from "../../lib/errors";
 import { confirmAction } from "../event/ticketing/helpers";
 
@@ -1146,7 +1147,7 @@ function EventsAndRoles({ member }: { member: Member }) {
           <Text className="flex-1 text-sm font-medium text-ink" numberOfLines={1}>
             {e.name}
           </Text>
-          <Text className="text-xs text-muted">{formatDate(e.eventDate)}</Text>
+          <Text className="text-xs text-muted">{formatDateInZone(e.eventDate, eventTimeZone(e))}</Text>
           {overdueTasks.length > 0 ? (
             <Badge
               label={`${overdueTasks.length} overdue`}
@@ -1176,7 +1177,7 @@ function EventsAndRoles({ member }: { member: Member }) {
             <Text className="font-medium">{r.roleLabel}</Text>
             <Text className="text-muted"> · {r.eventName}</Text>
           </Text>
-          <Text className="text-xs text-muted">{formatDate(r.eventDate)}</Text>
+          <Text className="text-xs text-muted">{formatDateInZone(r.eventDate, eventTimeZone(r))}</Text>
           {overdueTasks.length > 0 ? (
             <Badge
               label={`${overdueTasks.length} overdue`}

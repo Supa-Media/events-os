@@ -16,6 +16,8 @@ import { loadCameraScanning } from "../../lib/cameraScanning";
 import { AttendeeCheckInList } from "./AttendeeCheckInList";
 import { useActionRunner, type ActionRunner } from "../../lib/useActionToast";
 import { colors } from "../../lib/theme";
+import { formatWeekdayDateInZone } from "../../lib/format";
+import { eventTimeZone } from "@events-os/shared";
 
 /**
  * DOOR MODE — the entire app surface for a door-only guest: an outside
@@ -155,11 +157,10 @@ function DoorEventList({
                 {e.name}
               </Text>
               <Text className="mt-0.5 text-xs text-muted" numberOfLines={1}>
-                {new Date(e.eventDate).toLocaleDateString(undefined, {
-                  weekday: "short",
-                  month: "short",
-                  day: "numeric",
-                })}
+                {/* Door mode is used AT the venue, where "tonight" means the
+                    event's night — a device still on another zone's clock must
+                    not offer yesterday's or tomorrow's event as today's. */}
+                {formatWeekdayDateInZone(e.eventDate, eventTimeZone(e))}
                 {e.chapterName ? ` · ${e.chapterName}` : ""}
               </Text>
             </View>

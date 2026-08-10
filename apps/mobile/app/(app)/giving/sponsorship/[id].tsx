@@ -11,7 +11,8 @@ import { useMutation, useQuery } from "convex/react";
 import { useLocalSearchParams } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { formatCents } from "@events-os/shared";
+import { eventTimeZone, formatCents } from "@events-os/shared";
+import { formatDateInZone } from "../../../../lib/format";
 import {
   Badge,
   Button,
@@ -147,7 +148,7 @@ export default function SponsorshipDetailScreen() {
               <View key={e._id} className="rounded-lg border border-border bg-raised p-3">
                 <Text className="text-sm font-semibold text-ink">{e.name}</Text>
                 <Text className="text-xs text-muted">
-                  {new Date(e.eventDate).toLocaleDateString()}
+                  {formatDateInZone(e.eventDate, eventTimeZone(e))}
                 </Text>
               </View>
             ))}

@@ -22,7 +22,8 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Avatar, Icon, Badge } from "../ui";
 import { colors } from "../../lib/theme";
-import { formatDate } from "../../lib/format";
+import { formatDateInZone } from "../../lib/format";
+import { eventTimeZone } from "@events-os/shared";
 
 function ContactLink({
   icon,
@@ -130,7 +131,7 @@ function PersonPreviewModalBody({
                     />
                   </View>
                   <Text className="text-xs text-muted">
-                    {formatDate(h.eventDate)}
+                    {formatDateInZone(h.eventDate, eventTimeZone(h))}
                     {h.service ? ` · ${h.service}` : ""}
                     {h.type === "paid"
                       ? ` · $${h.amountUsd}${h.paymentStatus ? ` (${h.paymentStatus})` : ""}`
