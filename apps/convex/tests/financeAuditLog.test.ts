@@ -630,6 +630,11 @@ describe("financeAuditTrail — authz-gated (bookkeeper+) and scope-correct", ()
     const personId = await seedSelfPerson(s);
     await grantRole(s, personId, "manager", "central");
 
+    // This one builds its transaction directly rather than through `seedTxn`,
+    // so it needs the same disarm `seedTxn` does — the suite is about the audit
+    // trail's scope gate, not about coding, and it reconciles a `Date.now()`
+    // row (now post-policy, since coding is required from 2026-08-08).
+    await disarmCodingPolicy(s.t);
     const centralTxnId = await s.as.mutation(api.finances.createManualTransaction, {
       flow: "outflow",
       amountCents: 5000,

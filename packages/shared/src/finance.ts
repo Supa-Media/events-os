@@ -600,13 +600,49 @@ export const MAX_CODING_PLACE_LENGTH = 200;
 export const DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT = 15;
 
 /** Policy start (owner decision, 2026-08-08): coding is REQUIRED — the
- *  reconcile gate refuses `reconciled` on an uncoded row — only for spend
- *  posted at/after September 1, 2026 UTC. The tooling itself ships before the
- *  date, so August is the voluntary on-ramp; history stays a deliberate,
- *  separate cleanup (`historicalImportBatch`). Stored as
- *  `financeSettings.codingRequiredSinceMs`; this is the fallback, so the
- *  policy arms itself on the date with no runtime config step. */
-export const DEFAULT_CODING_REQUIRED_SINCE_MS = Date.UTC(2026, 8, 1);
+ *  reconcile gate refuses `reconciled` on an uncoded row, the `uncoded` facet
+ *  counts it, the digest asks for it — for spend posted at/after the day the
+ *  policy was ratified, **August 8, 2026 UTC**.
+ *
+ *  THE REQUIREMENT AND THE CONSEQUENCE ARE TWO DATES, NOT ONE (owner
+ *  clarification, 2026-08-09: *"make it live now, but only implement the
+ *  non-coded results in personal payments after Sept 1st"*). This constant is
+ *  only the requirement. The punitive half — an uncoded charge being billed
+ *  back to the cardholder as a personal repayment — has its own later date,
+ *  `DEFAULT_CODING_CONVERSION_SINCE_MS`, and both must be satisfied before a
+ *  charge can convert. They shipped as ONE constant, which meant "live now"
+ *  could not be expressed without also arming the consequence a month early;
+ *  splitting them is what lets the ask be honoured exactly.
+ *
+ *  Grandfathering is unchanged and is the reason this is the ratification date
+ *  rather than "everything": spend posted BEFORE it never lights up, so years
+ *  of history don't become an overnight backlog. Cleaning up history stays a
+ *  deliberate, separate effort (`historicalImportBatch`).
+ *
+ *  Stored as `financeSettings.codingRequiredSinceMs`; this is the fallback, so
+ *  the policy arms itself with no runtime config step. Moving it is a
+ *  deliberate central-finance act, not an "off" switch. */
+export const DEFAULT_CODING_REQUIRED_SINCE_MS = Date.UTC(2026, 7, 8);
+
+/** The date the CONSEQUENCE arms: **September 1, 2026 UTC** (owner decision,
+ *  2026-08-08, preserved verbatim when the requirement moved earlier).
+ *
+ *  A charge only auto-converts to a personal repayment — real money the
+ *  cardholder owes back — when BOTH are true: it owes a coding under
+ *  `codingRequiredSinceMs` above, AND it posted at/after this date. Two
+ *  independent conditions on purpose. The requirement is a request for an
+ *  account of the money and can be live immediately; billing someone is a
+ *  consequence, and a consequence applied to spending that happened before
+ *  anyone was asked to explain it is a bill nobody could have avoided.
+ *
+ *  Note the 60-day clock (`DEFAULT_CODING_OVERDUE_DAYS`) runs ON TOP of this,
+ *  so the earliest any charge can actually convert is 60 days after the
+ *  earliest eligible posting: **October 31, 2026**.
+ *
+ *  Stored as `financeSettings.codingConversionSinceMs`; this is the fallback,
+ *  and — like every date in this family — it is a fallback, not an "off"
+ *  switch. Moving it is a deliberate central-finance act. */
+export const DEFAULT_CODING_CONVERSION_SINCE_MS = Date.UTC(2026, 8, 1);
 
 /** The accountable-plan substantiation deadline, in days after the charge
  *  posts. 60 days is the IRS safe harbor for substantiating an expense

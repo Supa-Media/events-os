@@ -3,7 +3,7 @@ import { describe, expect, test, vi } from "vitest";
 import { DAY_MS } from "@events-os/shared";
 import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
-import { outstandingLabel } from "../lib/codingReminders";
+import { chargeOutstanding, outstandingLabel } from "../lib/codingReminders";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -19,15 +19,33 @@ import type { Id } from "../_generated/dataModel";
  * NOT about coding do the opposite via `disarmCodingPolicy`.)
  */
 
-/** Arm the coding policy as of `sinceDaysAgo` days back, optionally with a
- *  custom substantiation deadline. Mirrors what central finance sets on
- *  `financeSettings`. */
+/**
+ * Arm the coding policy for this test database.
+ *
+ * BOTH dates, because there are two (see
+ * `DEFAULT_CODING_CONVERSION_SINCE_MS`): `codingRequiredSinceMs` says a charge
+ * owes a coding, `codingConversionSinceMs` says it can be billed back for not
+ * having one. `conversionSinceDaysAgo` defaults to `sinceDaysAgo` so "armed"
+ * means fully armed, which is what every pre-existing caller here meant —
+ * leaving the conversion date on its real-world default (2026-09-01, still in
+ * the future) would silently stop these fixtures converting and read as a
+ * regression in the sweep rather than an unset setting. Tests that care about
+ * the GAP between the two dates pass them separately.
+ */
 async function armCodingPolicy(
   s: ChapterSetup,
-  opts: { sinceDaysAgo?: number; overdueDays?: number; noReceiptDays?: number } = {},
+  opts: {
+    sinceDaysAgo?: number;
+    conversionSinceDaysAgo?: number;
+    overdueDays?: number;
+    noReceiptDays?: number;
+  } = {},
 ): Promise<void> {
+  const sinceDaysAgo = opts.sinceDaysAgo ?? 365;
   const patch = {
-    codingRequiredSinceMs: Date.now() - (opts.sinceDaysAgo ?? 365) * DAY_MS,
+    codingRequiredSinceMs: Date.now() - sinceDaysAgo * DAY_MS,
+    codingConversionSinceMs:
+      Date.now() - (opts.conversionSinceDaysAgo ?? sinceDaysAgo) * DAY_MS,
     codingOverdueDays: opts.overdueDays,
     noReceiptAutoConvertDays: opts.noReceiptDays,
     updatedAt: Date.now(),
@@ -473,6 +491,108 @@ describe("autoConvertOverdueReceipts — the coding clock", () => {
     const r = await s.t.mutation(internal.cards.autoConvertOverdueReceipts, {});
     expect(r.convertedCount).toBe(0);
     expect((await repaymentsFor(s, txnId)).length).toBe(0);
+  });
+
+  // ── The two dates are two gates ────────────────────────────────────────────
+  // The owner asked for the requirement to be live NOW while the consequence
+  // waits for September 1 ("only implement the non-coded results in personal
+  // payments after Sept 1st"). Both shipped on one constant, so "live now"
+  // would have billed people a month early. These pin the gap.
+
+  test("a charge that OWES a coding is still not billed back before the conversion date", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Requirement armed a year ago; the consequence only 90 days ago. The
+    // charge sits in between: chased, but not billable.
+    await armCodingPolicy(s, { sinceDaysAgo: 365, conversionSinceDaysAgo: 90 });
+    const holder = await seedPerson(s, "Holder");
+    const cardId = await seedCard(s, holder);
+    const txnId = await seedCharge(s, {
+      cardId,
+      ageDays: 200,
+      receiptStorageId: await storeBlob(s.t),
+    });
+
+    // It genuinely owes a coding — this is not a charge that fell out of scope.
+    const txnBefore = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txnBefore?.codingState).toBeUndefined();
+
+    const r = await s.t.mutation(internal.cards.autoConvertOverdueReceipts, {});
+    expect(r.convertedCount).toBe(0);
+    expect((await repaymentsFor(s, txnId)).length).toBe(0);
+    // And it is NOT quietly marked personal either — nothing was taken.
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.isPersonal).not.toBe(true);
+  });
+
+  test("the same charge DOES convert once it posts after the conversion date", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await armCodingPolicy(s, { sinceDaysAgo: 365, conversionSinceDaysAgo: 90 });
+      const holder = await seedPerson(s, "Holder");
+      const cardId = await seedCard(s, holder);
+      // Past the 60-day substantiation clock AND after the conversion date.
+      const txnId = await seedCharge(s, {
+        cardId,
+        ageDays: 70,
+        receiptStorageId: await storeBlob(s.t),
+      });
+
+      const r = await s.t.mutation(internal.cards.autoConvertOverdueReceipts, {});
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(r.convertedCount).toBe(1);
+      expect((await repaymentsFor(s, txnId)).length).toBe(1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the conversion date alone can't bill a charge the policy never required a coding for", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The mirror image: the consequence is armed further back than the
+    // requirement. A charge older than the requirement date owes nothing, so
+    // being inside the conversion window must not be enough on its own.
+    await armCodingPolicy(s, { sinceDaysAgo: 90, conversionSinceDaysAgo: 365 });
+    const holder = await seedPerson(s, "Holder");
+    const cardId = await seedCard(s, holder);
+    const txnId = await seedCharge(s, {
+      cardId,
+      ageDays: 200,
+      receiptStorageId: await storeBlob(s.t),
+    });
+
+    const r = await s.t.mutation(internal.cards.autoConvertOverdueReceipts, {});
+    expect(r.convertedCount).toBe(0);
+    expect((await repaymentsFor(s, txnId)).length).toBe(0);
+  });
+
+  test("a charge below the conversion date is still CHASED — it just isn't billed", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await armCodingPolicy(s, { sinceDaysAgo: 365, conversionSinceDaysAgo: 1 });
+    const holder = await seedPerson(s, "Holder");
+    const cardId = await seedCard(s, holder);
+    const txnId = await seedCharge(s, {
+      cardId,
+      ageDays: 200,
+      receiptStorageId: await storeBlob(s.t),
+    });
+
+    // Not convertible…
+    const r = await s.t.mutation(internal.cards.autoConvertOverdueReceipts, {});
+    expect(r.convertedCount).toBe(0);
+    // …but the chase still names what it owes. This is the whole point of
+    // splitting the dates: the ask stays live while the bill waits.
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    const settings = await run(s.t, (ctx) =>
+      ctx.db.query("financeSettings").first(),
+    );
+    expect(
+      chargeOutstanding(txn!, settings!.codingRequiredSinceMs!),
+    ).toBe("needs coding");
   });
 
   test("the escalation email explains the accountable-plan rule in plain words", async () => {

@@ -2244,13 +2244,35 @@ export const financeSettings = defineTable({
   receiptExceptionApprovalThresholdCents: v.optional(v.number()),
   // Org-wide coding policy start: spend posted at/after this instant REQUIRES
   // an approved coding before it can be reconciled (`CODING_REQUIRED` gate in
-  // `finances.setTransactionStatus`). `undefined` falls back to
-  // `DEFAULT_CODING_REQUIRED_SINCE_MS` (2026-09-01, the owner-decided policy
-  // date) — a fallback, not "off": the policy arms itself on the date with no
-  // config step, and moving it is a deliberate central-finance act. Pre-date
-  // history never lights up (`docs/plans/transaction-coding.md`,
-  // "grandfathering").
+  // `finances.setTransactionStatus`), counts toward the `uncoded` facet, and
+  // is chased by the cardholder digest. `undefined` falls back to
+  // `DEFAULT_CODING_REQUIRED_SINCE_MS` (2026-08-08, the day the policy was
+  // ratified) — a fallback, not "off": the policy arms itself with no config
+  // step, and moving it is a deliberate central-finance act. Pre-date history
+  // never lights up (`docs/plans/transaction-coding.md`, "grandfathering").
+  //
+  // This is the REQUIREMENT only. The CONSEQUENCE (auto-conversion to a
+  // personal repayment) is gated separately by `codingConversionSinceMs`
+  // below, and a charge must clear BOTH to convert — see that field.
   codingRequiredSinceMs: v.optional(v.number()),
+  // Org-wide start for the coding CONSEQUENCE: a charge that owes a coding may
+  // only be auto-converted into a personal repayment — money the cardholder is
+  // billed back — if it also posted at/after this instant. `undefined` falls
+  // back to `DEFAULT_CODING_CONVERSION_SINCE_MS` (2026-09-01). Same posture as
+  // every date in this family: a fallback, not an "off" switch, and moving it
+  // is a deliberate central-finance act.
+  //
+  // WHY IT IS A SECOND FIELD AND NOT THE SAME ONE (owner, 2026-08-09: "make it
+  // live now, but only implement the non-coded results in personal payments
+  // after Sept 1st"). Asking someone to account for money they spent can be
+  // true today. Billing them for it cannot be true retroactively — a
+  // consequence applied to spending that happened before anyone was asked to
+  // explain it is a bill nobody could have avoided. One shared constant could
+  // not express that, so arming the requirement necessarily armed the billing
+  // with it. `cards.autoConvertOverdueReceipts` now tests the two
+  // independently. The 60-day `codingOverdueDays` clock runs on top, so the
+  // earliest possible conversion under the defaults is 2026-10-31.
+  codingConversionSinceMs: v.optional(v.number()),
   // Org-wide meal-names threshold: at/below this headcount a meal coding must
   // name every attendee (with affiliation); above it, headcount + group
   // description. `undefined` falls back to

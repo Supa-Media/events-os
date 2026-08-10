@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   ATTENDEE_AFFILIATIONS,
   ATTENDEE_AFFILIATION_LABELS,
+  DEFAULT_CODING_CONVERSION_SINCE_MS,
   DEFAULT_CODING_REQUIRED_SINCE_MS,
   DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,
   EXPENSE_TYPES,
@@ -40,9 +41,24 @@ describe("enum integrity", () => {
     }
   });
 
-  test("the policy date is September 1, 2026 UTC (owner decision, 2026-08-08)", () => {
+  // The two dates are pinned SEPARATELY and asserted to be different, because
+  // the bug this replaced was them being the same number: "coding is required"
+  // could not be turned on without also turning on "and we'll bill you for it".
+  test("coding is REQUIRED from August 8, 2026 UTC (owner: make it live now)", () => {
     expect(new Date(DEFAULT_CODING_REQUIRED_SINCE_MS).toISOString()).toBe(
+      "2026-08-08T00:00:00.000Z",
+    );
+  });
+
+  test("billing back an uncoded charge only starts September 1, 2026 UTC", () => {
+    expect(new Date(DEFAULT_CODING_CONVERSION_SINCE_MS).toISOString()).toBe(
       "2026-09-01T00:00:00.000Z",
+    );
+  });
+
+  test("the consequence never arms before the requirement", () => {
+    expect(DEFAULT_CODING_CONVERSION_SINCE_MS).toBeGreaterThan(
+      DEFAULT_CODING_REQUIRED_SINCE_MS,
     );
   });
 
