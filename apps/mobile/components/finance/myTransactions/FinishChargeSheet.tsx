@@ -541,6 +541,29 @@ export function FinishChargeSheet({
           reviewNote={
             coding?.status === "changes_requested" ? coding.reviewNote : null
           }
+          // THE PERSONAL-CHARGE FLAG, WHERE THE SENTENCE GETS WRITTEN.
+          // Same `submitOwnCharge({ flagPersonal: true })` the checkbox in
+          // "Anything else (optional)" below has always called — not a second
+          // mechanism. It's passed in here because that checkbox is on the
+          // sheet this modal is covering, so the moment somebody realises a
+          // charge was personal is the moment they can't see it, and what
+          // they do instead is write it into the business purpose. One
+          // production charge is sitting in Operating Expenses right now
+          // saying "Charged in error, ride from home to work".
+          personalCharge={{
+            alreadyFlagged: txn.isPersonal === true,
+            onFlag: () =>
+              guard(async () => {
+                await submitOwnCharge({
+                  transactionId,
+                  categoryId: null,
+                  note: null,
+                  flagPersonal: true,
+                });
+                setEditing(false);
+                onClose();
+              }, "Couldn't flag this as a personal charge"),
+          }}
           submitLabel={
             coding?.status === "changes_requested"
               ? "Resubmit for review"

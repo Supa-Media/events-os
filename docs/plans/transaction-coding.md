@@ -1,12 +1,15 @@
 # Transaction coding — IRS-grade substantiation, self-serve
 
 **Status:** ratified 2026-08-08 (decisions below); amended 2026-08-09
-(decision 8 — the requirement and the consequence are two dates). Phases 1–3
-are largely implemented; **the reviewer's route into a coding shipped
-2026-08-09** (the Reconcile row's comment icon). Still missing: a Coding tab
-that gathers a cardholder's charges-to-code and a manager's review queue in
-one place, per-chapter scoping and roll-up for central oversight, and any
-notification telling a reviewer that codings are waiting.
+(decision 8 — the requirement and the consequence are two dates; decision 9 —
+the four approval seats). Phases 1–3 are largely implemented. Shipped
+2026-08-09: the reviewer's route into a coding (the Reconcile row's comment
+icon), **the four approval seats actually being able to approve** (three of
+the four could approve nothing), **the Coding tab** with per-chapter scoping
+and roll-up, **the reviewer digest** (there was no manager-side notification
+of any kind), and the personal-charge escape hatch beside the purpose field.
+Still open: phase 4 (publishability report, monthly-close gate, redaction
+policy) and the ledger page itself, which is a separate plan.
 Decisions 6 and 7 (a coding carries its own documentation; receipts are
 captured but no longer auto-matched) were ratified the same day, after phase 2
 had been specced — the doc below is written to them, not amended around them.
@@ -388,12 +391,53 @@ make a rejectable submission hard to produce:
 - **Attendee picker, not a text box**: people-table typeahead with
   affiliation chips; free-text only for genuine guests. Headcount and the
   names list cross-check (headcount auto-derives when names are listed).
+- **The personal-charge escape hatch, next to the purpose field** (2026-08-09).
+  The checkbox "This was a personal charge — I'll pay it back" always existed,
+  under *Anything else (optional)* on the Finish sheet — which the coding
+  modal COVERS while the purpose is being typed. So the moment somebody
+  realises a charge wasn't the org's is the one moment they can't see it, and
+  what they do instead is write the realisation into the business purpose: a
+  production charge reads *"Charged in error, ride from home to work"* and is
+  still sitting in Operating Expenses as org spend with no `isPersonal` flag
+  and no `personalRepayments` row. The same flag (`submitOwnCharge({
+  flagPersonal: true })` — **not** a second mechanism) is now offered directly
+  under the purpose field, two-step because flagging is one-way, and the
+  confirm says plainly that explaining a personal charge in the purpose
+  publishes it and still counts it as ours. Nothing infers it: per decision 5
+  there is no heuristic reading anybody's prose and guessing. A human declares
+  it.
 - **Plain-words education inline**, not in a help doc: one line under each
   requirement saying why ("the IRS requires who attended and their
   relationship to the org"), teaching the rule at the moment it applies —
   the Academy lesson's job is depth, the form's job is the reminder.
 
 ### B. Review
+
+**The Coding tab** (`/finances/coding`, shipped 2026-08-09) is where the work
+gathers: the cardholder's own charges-to-code first, then everything awaiting
+review, with the substantiation on the row so a reviewer decides without
+opening each one. Scoping is Reconcile's, verbatim (`scope: "central" | "all"`
++ a `chapterId` drill-down, All books / Central / \<chapter\> pills), plus a
+by-chapter roll-up for central seats — framed as workload, not a scoreboard.
+Tab visibility reads the same `workload` query the screen does, so nobody gets
+a dead tab. `/finances/my-transactions` **redirects** here; it survives only
+because reminder emails already sent point at it.
+
+**Telling the reviewer** (shipped 2026-08-09). Until then there was no
+manager-side notification of any kind — `notifyCodingSentBack` mails the
+author, and that was the whole surface, which is how submitted codings sat
+with **zero** `coding_decide` rows ever recorded. `cards.ts#
+sendCodingReviewReminders` (cron, daily 12:00 UTC, deliberately after the
+11:30 cardholder sweep) follows the receipt digest's shape and its safety
+rules: one email per reviewer listing everything waiting on them, capped at
+`REMINDER_BATCH_LIMIT` codings per run oldest-first, a one-day grace before
+the first nudge and a seven-day re-nudge window, and **seed-only on first
+touch** past `REMINDER_SEED_ONLY_DAYS` so arming it can never mail anybody
+about months of history. Recipients come from
+`listCodingReviewerPersonIds`, which mirrors `requireReviewCoding`'s arms —
+the manager-set enumeration would have skipped the ED and Chapter Director,
+who carry `finance.approve` and not `finance.manager`. Nobody is told about a
+coding they wrote.
 
 Reconcile grid gains the `coding_review` facet. Reviewer opens the row, sees
 coding + receipt/exception side by side — **shipped 2026-08-09** as the row's

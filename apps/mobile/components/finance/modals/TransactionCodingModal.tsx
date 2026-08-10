@@ -77,6 +77,94 @@ const DOCUMENTATION_PROBLEM = {
     "Attach the receipt for this charge — or, if there is no receipt, say why right here. A coding can't be submitted without one; proving it and explaining it are the same act.",
 };
 
+/**
+ * "This wasn't Public Worship's" — offered beneath the business purpose,
+ * because that is where people say it when they have nowhere else to.
+ *
+ * Two-step on purpose. Flagging is ONE-WAY (it creates the repayment record
+ * and emails the payee), so it asks once before doing it — the same care the
+ * sheet's own checkbox takes by only ever flagging ON. And it says what
+ * happens next, because "I'll pay it back" is a commitment, not a checkbox.
+ */
+function PersonalChargeEscape({
+  alreadyFlagged,
+  onFlag,
+}: {
+  alreadyFlagged: boolean;
+  onFlag: () => Promise<unknown>;
+}) {
+  const [confirming, setConfirming] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  if (alreadyFlagged) {
+    return (
+      <View className="mt-2 flex-row items-center gap-2">
+        <Icon name="check-circle" size={13} color={colors.accent} />
+        <Text className="flex-1 text-2xs text-muted">
+          Flagged as a personal charge — it needs no coding. Pay it back from
+          the Cards tab.
+        </Text>
+      </View>
+    );
+  }
+
+  if (!confirming) {
+    return (
+      <View className="mt-2 flex-row flex-wrap items-baseline gap-x-1.5">
+        <Text className="text-2xs text-muted">
+          Wasn&apos;t this Public Worship&apos;s money?
+        </Text>
+        <Pressable
+          onPress={() => setConfirming(true)}
+          accessibilityRole="button"
+          accessibilityLabel="This was a personal charge — I'll pay it back"
+          className="active:opacity-70"
+        >
+          <Text className="text-2xs font-semibold text-accent underline">
+            It was personal — I&apos;ll pay it back
+          </Text>
+        </Pressable>
+      </View>
+    );
+  }
+
+  return (
+    <View className="mt-2 gap-2 rounded-md border border-border bg-sunken px-3 py-2.5">
+      <Text className="text-2xs text-ink">
+        <Text className="font-semibold">Flag this as a personal charge?</Text>{" "}
+        It stops owing a coding, it stops counting as Public Worship&apos;s
+        spending, and it moves to what you owe back — payable from the Cards
+        tab. Don&apos;t explain a personal charge in the business purpose
+        instead: that sentence publishes, and the charge would still be
+        counted as ours.
+      </Text>
+      <View className="flex-row gap-2">
+        <Button
+          title="Yes, it was personal"
+          size="sm"
+          loading={busy}
+          onPress={() => {
+            setBusy(true);
+            void (async () => {
+              try {
+                await onFlag();
+              } finally {
+                setBusy(false);
+              }
+            })();
+          }}
+        />
+        <Button
+          title="No, keep coding it"
+          size="sm"
+          variant="secondary"
+          onPress={() => setConfirming(false)}
+        />
+      </View>
+    </View>
+  );
+}
+
 export function TransactionCodingModal({
   merchantLine,
   amountCents,
@@ -86,6 +174,7 @@ export function TransactionCodingModal({
   documentationSlot,
   initial,
   reviewNote,
+  personalCharge,
   submitLabel = "Submit for review",
   submitting,
   onConfirm,
@@ -111,6 +200,33 @@ export function TransactionCodingModal({
    *  editor: "what would make this approvable" is useless one screen away from
    *  the fields it's about. */
   reviewNote?: string | null;
+  /**
+   * THE ESCAPE HATCH, next to the field people were escaping into.
+   *
+   * The personal-charge checkbox has always existed — under "Anything else
+   * (optional)" on the sheet BEHIND this modal, which this modal covers while
+   * the purpose is being typed. So the one moment a person realises "this
+   * wasn't Public Worship's money" is the one moment they cannot see it, and
+   * what they do instead is type the realisation into the business purpose:
+   * *"Charged in error, ride from home to work"* — a personal charge that
+   * publishes as org spend with no `isPersonal` flag and no repayment row.
+   *
+   * This is not a second flag. It calls the same `submitOwnCharge({
+   * flagPersonal: true })` the checkbox always did; the only thing that
+   * changes is that it is reachable from where the sentence is being written.
+   * Nothing infers it — the spec forbids inference here, and rightly: a human
+   * declares a charge personal, no heuristic reads their prose and guesses.
+   *
+   * Omitted by the reviewer-side host: a reviewer can't declare somebody
+   * else's charge personal from the coding editor (that's the grid's
+   * manager-gated "mark personal" action, which names who owes it).
+   */
+  personalCharge?: {
+    /** Already flagged — show it settled rather than offering it twice. */
+    alreadyFlagged: boolean;
+    /** Flag it and leave; one-way, so the host confirms and closes. */
+    onFlag: () => Promise<unknown>;
+  };
   /** "Resubmit for review" when revising — a button that says the same thing
    *  on the first pass and the fourth hides which one you're on. */
   submitLabel?: string;
@@ -324,6 +440,16 @@ export function TransactionCodingModal({
                       {minPurposeLength} characters.
                     </Text>
                   </View>
+
+                  {/* THE ESCAPE HATCH, directly under the field it exists to
+                      catch. Somebody about to type "charged in error" into a
+                      business purpose is telling us this wasn't org spending;
+                      this is the same personal-charge flag that has always
+                      lived on the sheet behind this modal, put where that
+                      sentence gets written. See the `personalCharge` prop. */}
+                  {personalCharge ? (
+                    <PersonalChargeEscape {...personalCharge} />
+                  ) : null}
                 </>
               ) : null}
 

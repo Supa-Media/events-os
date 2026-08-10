@@ -319,6 +319,74 @@ export async function codingReviewReach(
   return { ...base, orgWide: false, ownChapter };
 }
 
+/** Bound on the reviewer-enumeration scans below. Mirrors
+ *  `lib/finance.ts#FINANCE_ROLE_SCAN_LIMIT`'s reasoning: a book's approval
+ *  seats number in the single digits, never near this. */
+const REVIEWER_SCAN_LIMIT = 5000;
+
+/**
+ * Everyone who may DECIDE codings in `book` — the recipient set for "codings
+ * are waiting on you".
+ *
+ * The other reverse lookup (`codingReviewReach` answers it for ONE caller;
+ * this answers it for a book), and it exists because
+ * `lib/finance.ts#listChapterFinanceManagerPersonIds` is the wrong set now.
+ * That function enumerates `finance.manager` holders, which was the whole
+ * reviewer population when reviewing meant manager rank. Two of the four
+ * approval seats — `executive_director` and `chapter_director` — carry
+ * `finance.approve` and NOT `finance.manager`, so mailing that set would
+ * quietly skip the very people this change just gave the power to.
+ *
+ * The arms mirror `requireReviewCoding`'s, in the same order:
+ *  - stored `financeRoles` manager grants at the book, or at `"central"`
+ *  - seats carrying `finance.manager` at the book, or at `"central"`
+ *  - seats carrying `finance.approve` at `"central"` (the ED — org-wide)
+ *  - seats carrying `finance.approve` at the BOOK, when the book is a real
+ *    chapter (the Chapter Director — their own book only, which is why this
+ *    arm is skipped for central)
+ */
+export async function listCodingReviewerPersonIds(
+  ctx: QueryCtx,
+  book: FinanceScope,
+): Promise<Set<Id<"people">>> {
+  const personIds = new Set<Id<"people">>();
+
+  for (const scope of [book, CENTRAL] as FinanceScope[]) {
+    const grants = await ctx.db
+      .query("financeRoles")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
+      .take(REVIEWER_SCAN_LIMIT);
+    for (const g of grants) {
+      // A chapter-scoped manager grant only reviews its own book; a central
+      // one reviews everywhere. Both are satisfied by scoping the read.
+      if (g.role === "manager") personIds.add(g.personId);
+    }
+
+    const assignments = await ctx.db
+      .query("seatAssignments")
+      .withIndex("by_scope", (q) => q.eq("scope", scope))
+      .take(REVIEWER_SCAN_LIMIT);
+    for (const a of assignments) {
+      const def = await ctx.db.get(a.seatDefId);
+      // Rolled-up/computed seats are never real occupancy — the same
+      // belt-and-braces skip `holdsApprovalSeatAt` makes.
+      if (!def || def.derived) continue;
+      if (def.capabilities.includes("finance.manager")) {
+        personIds.add(a.personId);
+        continue;
+      }
+      if (!def.capabilities.includes("finance.approve")) continue;
+      // `finance.approve` at CENTRAL reaches every book (the ED). At a real
+      // chapter it reaches only that chapter (the CD) — and since `scope` is
+      // either `book` or `"central"` here, that's already true by
+      // construction. Stated rather than implied, because getting it wrong
+      // would mail one chapter's director about another chapter's queue.
+      if (scope === CENTRAL || scope === book) personIds.add(a.personId);
+    }
+  }
+  return personIds;
+}
+
 /**
  * Assert the caller may READ this transaction's coding — either because they
  * may author it, or because they may decide it.
