@@ -18,30 +18,39 @@
  * cash arrived months ago, so booking the revenue moves the signed gap DOWN by
  * exactly $150.00 — from `cash_exceeds_books +$150.00` to balanced.
  *
- * ── ⚠ THIS MOVES REAL CASH THE NEXT MORNING ─────────────────────────────────
- * READ THIS BEFORE PASSING `execute: true`.
+ * ── THIS BOOKS TO CENTRAL, AND THEREFORE MOVES NO CASH ──────────────────────
+ * READ THIS BEFORE PASSING `execute: true` — an earlier version of this header
+ * said the opposite, and the difference is a bank transfer.
  *
- * Recording $150.00 of revenue raises New York's BOOK VALUE by $150.00. The
- * morning reconciliation engine settles chapter books against the cash central
- * is holding for them — `settleChapterBalances` runs the SAME
- * `computeBookBalances` this backfill feeds — so on the next run central will
- * transfer New York **$150.00 more** than it otherwise would have, as a real
- * `balance_settlement` pair.
+ * The six rows book to the `"central"` sentinel (`WBTW_BOOK_SCOPE`), because
+ * the owner corrected the attribution before this ever ran: "Worship Beyond the
+ * Walls was not a New York thing, it was a central thing" (2026-08-10).
  *
- * That is CORRECT: New York earned the money, its payout landed in central's
- * account, and the settlement is how it gets delivered. But it is not obvious
- * from "record six registrations", and it is the difference between a
- * bookkeeping entry and a bank transfer. Two consequences worth knowing:
+ * That is what makes it inert. The morning engine (`settleChapterBalances`)
+ * settles each CHAPTER's book against the cash central holds for it, running
+ * the SAME `computeBookBalances` this backfill feeds. It iterates
+ * `balances.filter((b) => b.scope !== CENTRAL)` — central is the payer, never a
+ * settlement target. So raising CENTRAL's book by $150.00 gives the engine
+ * nothing to react to, and no chapter's `owed` changes by a cent.
  *
- *   - the movement clears `MIN_SETTLEMENT_CENTS` ($5.00), so it WILL be booked
- *     rather than rounded away;
- *   - it is a `balance_settlement`, which contributes ZERO to book value
- *     (`lib/bookBalance.ts`), so it moves cash without moving the number that
- *     produced it. The engine converges; it does not chase itself.
+ * Had these stayed New-York-scoped, New York's book would have risen $150.00
+ * and central would have wired it $150.00 on the next run — clearing
+ * `MIN_SETTLEMENT_CENTS` ($5.00) comfortably, so it would have been booked
+ * rather than rounded away. Correct attribution and stationary cash are the
+ * same decision here, which is a happy accident worth naming rather than
+ * relying on.
  *
- * If that transfer should not happen on the following morning, run this
- * immediately AFTER a settlement run rather than before, or coordinate with
- * whoever watches the engine. Don't discover it from a bank alert.
+ * The org-wide gap still closes by the FULL $150.00: `reconciliationSummary`
+ * sums book value across every scope, central included, so which book takes the
+ * revenue is invisible to that figure.
+ *
+ * ⚠ THE ONE THING THAT DOES MOVE CASH IS NOT THIS MUTATION. Moving the
+ * project's $1,300 BUDGET (and the four transactions attached to it, $671.72 of
+ * New York outflow) to central is a separate act — `transferProjectScope`, from
+ * the project page's "Belongs to" toggle. THAT raises New York's book by
+ * $671.72 and will trigger a real central→New York `balance_settlement` on the
+ * next engine run. Don't conflate the two: this backfill is a bookkeeping
+ * entry; the scope toggle is a bank transfer.
  *
  * ── WHAT THE DRY RUN SHOULD SAY, AND WHAT ACTUALLY WARRANTS STOPPING ────────
  * Run it with no `execute` first and check the numbers against these. They are
@@ -196,7 +205,7 @@ import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
 import type { Id } from "./_generated/dataModel";
 import {
-  WBTW_CHAPTER_ID,
+  WBTW_BOOK_SCOPE,
   WBTW_PROJECT_ID,
   planRegistrationBackfill,
   externalRefFor,
@@ -249,7 +258,7 @@ export const backfillWorshipRegistrations = internalMutation({
     inserted: v.number(),
     alreadyPresent: v.number(),
     linkedPeople: v.number(),
-    /** The revenue this adds to New York's book — `paid` rows only. */
+    /** The revenue this adds to CENTRAL's book — `paid` rows only. */
     revenueAddedCents: v.number(),
     /** All six rows' face value, paid + refunded. Not revenue; here so the
      *  $300.00 Givebutter collected is visible in the output. */
@@ -367,7 +376,8 @@ export const backfillWorshipRegistrations = internalMutation({
       const now = Date.now();
       for (const row of plan.inserts) {
         await ctx.db.insert("registrations", {
-          chapterId: WBTW_CHAPTER_ID as Id<"chapters">,
+          // CENTRAL, not the project's own chapter — see `WBTW_BOOK_SCOPE`.
+          chapterId: WBTW_BOOK_SCOPE,
           projectId: projectId as Id<"projects">,
           ...(row.personId ? { personId: row.personId as Id<"people"> } : {}),
           name: row.name,

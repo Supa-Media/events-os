@@ -3273,30 +3273,42 @@ async function computeBookBalances(
             // counted above.
             if (order.status === "paid") revenueCents += order.totalCents;
           }
-          // REGISTRATIONS — paid places on a project (a class or cohort with a
-          // fee). The fourth stream, added 2026-08-10 when the last $150.00 of
-          // the org-wide gap turned out to be three Worship Beyond The Walls
-          // student registrations the schema had nowhere to put — a project is
-          // not an event, so `ticketOrders` (which REQUIRES an `eventId`)
-          // couldn't hold them. See `schema/registrations.ts`.
-          //
-          // Only `paid` earns. A `refunded` row gave the money back and a
-          // `comped` row never took any; both stay on the project so the
-          // scholarship is visible, and neither is revenue. Same rule, same
-          // shape, as the `status === "paid"` filter on ticket orders above.
-          // Chapter-scoped like tickets and sales — central runs no classes.
-          const registrationRows = await ctx.db
-            .query("registrations")
-            .withIndex("by_chapter", (q) =>
-              q.eq("chapterId", scope as Id<"chapters">),
-            )
-            .take(ROLLUP_SCAN_LIMIT);
-          if (registrationRows.length === ROLLUP_SCAN_LIMIT) {
-            warnTruncated(scope, "registrations");
-          }
-          for (const reg of registrationRows) {
-            if (reg.status === "paid") revenueCents += reg.amountCents;
-          }
+        }
+        // REGISTRATIONS — paid places on a project (a class or cohort with a
+        // fee). The fourth stream, added 2026-08-10 when the last $150.00 of
+        // the org-wide gap turned out to be three Worship Beyond The Walls
+        // student registrations the schema had nowhere to put — a project is
+        // not an event, so `ticketOrders` (which REQUIRES an `eventId`)
+        // couldn't hold them. See `schema/registrations.ts`.
+        //
+        // Only `paid` earns. A `refunded` row gave the money back and a
+        // `comped` row never took any; both stay on the project so the
+        // scholarship is visible, and neither is revenue. Same rule, same
+        // shape, as the `status === "paid"` filter on ticket orders above.
+        //
+        // ⚠ READ AT EVERY SCOPE, CENTRAL INCLUDED — the ONE revenue stream that
+        // does. Sales and ticket orders sit inside the `scope !== CENTRAL`
+        // guard above because central sells no merch and runs no events, and
+        // registrations were originally put in there with them on the same
+        // reasoning ("central runs no classes"). That reasoning was WRONG, and
+        // it was wrong about the very rows this stream was built for: Worship
+        // Beyond The Walls was a central class (the owner, 2026-08-10: "that
+        // was not a New York project"). Skipping the table at central would
+        // have made every central registration invisible to book value while
+        // the backfill still cheerfully reported `revenueAddedCents: 15000` —
+        // a SILENT $150.00 hole, because the backfill reports its own plan,
+        // not what the books actually picked up. If you are ever tempted to
+        // fold this back under the guard: the org-wide gap is the test, and it
+        // will not close.
+        const registrationRows = await ctx.db
+          .query("registrations")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
+          .take(ROLLUP_SCAN_LIMIT);
+        if (registrationRows.length === ROLLUP_SCAN_LIMIT) {
+          warnTruncated(scope, "registrations");
+        }
+        for (const reg of registrationRows) {
+          if (reg.status === "paid") revenueCents += reg.amountCents;
         }
         revenueByScope.set(scope, sandboxMode ? 0 : revenueCents);
         inKindByScope.set(scope, sandboxMode ? 0 : inKindCents);
@@ -3879,18 +3891,24 @@ export const bookValueBreakdown = query({
         ticketCents += order.totalCents;
         ticketCount += 1;
       }
-      const registrationRows = await ctx.db
-        .query("registrations")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", scope as Id<"chapters">))
-        .take(ROLLUP_SCAN_LIMIT);
-      if (registrationRows.length === ROLLUP_SCAN_LIMIT) truncated = true;
-      for (const reg of registrationRows) {
-        if (reg.status !== "paid") continue;
-        registrationCents += reg.amountCents;
-        registrationCount += 1;
-      }
-      revenueCents += ticketCents + saleCents + registrationCents;
+      revenueCents += ticketCents + saleCents;
     }
+    // Registrations read at EVERY scope, central included — see the long note
+    // in `computeBookBalances` phase 1 for why this one stream is outside the
+    // guard. This query exists to agree with that one to the cent, so the two
+    // must make the same choice here or the breakdown stops explaining the
+    // total it claims to explain.
+    const registrationRows = await ctx.db
+      .query("registrations")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (registrationRows.length === ROLLUP_SCAN_LIMIT) truncated = true;
+    for (const reg of registrationRows) {
+      if (reg.status !== "paid") continue;
+      registrationCents += reg.amountCents;
+      registrationCount += 1;
+    }
+    revenueCents += registrationCents;
     // SANDBOX: the TOTAL is zeroed while the component figures above
     // (`ticketCents`, `saleCents`, `registrationCents`, the gift methods) keep
     // their real values — so in sandbox mode the components deliberately do NOT
@@ -4233,35 +4251,41 @@ export const bookValueLines = query({
           linkedToBankRow: false,
         });
       }
-      // Paid project registrations. Refunded/comped rows are deliberately
-      // absent: this list is EVERY LINE BEHIND A BOOK'S VALUE, and a
-      // scholarship contributed none of it. Those rows live on the project's
-      // own money page, where they explain something.
-      const registrationRows = await ctx.db
-        .query("registrations")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", scope as Id<"chapters">))
-        .take(ROLLUP_SCAN_LIMIT);
-      if (registrationRows.length === ROLLUP_SCAN_LIMIT) truncated = true;
-      // One read for the project names rather than one per registration.
-      const projectIds = [...new Set(registrationRows.map((r) => r.projectId))];
-      const projectRows = await Promise.all(projectIds.map((id) => ctx.db.get(id)));
-      const projectName = new Map<string, string>();
-      for (const p of projectRows) if (p) projectName.set(p._id as string, p.name);
-      for (const reg of registrationRows) {
-        if (reg.status !== "paid") continue;
-        revenueCents += reg.amountCents;
-        earned.push({
-          kind: "registration",
-          id: reg._id,
-          at: reg.registeredAt,
-          amountCents: reg.amountCents,
-          label: reg.name,
-          detail: [projectName.get(reg.projectId as string), reg.externalRef]
-            .filter(Boolean)
-            .join(" · "),
-          linkedToBankRow: false,
-        });
-      }
+    }
+    // Paid project registrations. Refunded/comped rows are deliberately
+    // absent: this list is EVERY LINE BEHIND A BOOK'S VALUE, and a
+    // scholarship contributed none of it. Those rows live on the project's
+    // own money page, where they explain something.
+    //
+    // OUTSIDE the `scope !== CENTRAL` guard, unlike tickets and sales — see the
+    // long note in `computeBookBalances` phase 1. This list has to be able to
+    // itemise a central book's registrations, or the one place a treasurer goes
+    // to ask "what is this $150.00?" answers "nothing" for the class that
+    // prompted the whole feature.
+    const registrationRows = await ctx.db
+      .query("registrations")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (registrationRows.length === ROLLUP_SCAN_LIMIT) truncated = true;
+    // One read for the project names rather than one per registration.
+    const projectIds = [...new Set(registrationRows.map((r) => r.projectId))];
+    const projectRows = await Promise.all(projectIds.map((id) => ctx.db.get(id)));
+    const projectName = new Map<string, string>();
+    for (const p of projectRows) if (p) projectName.set(p._id as string, p.name);
+    for (const reg of registrationRows) {
+      if (reg.status !== "paid") continue;
+      revenueCents += reg.amountCents;
+      earned.push({
+        kind: "registration",
+        id: reg._id,
+        at: reg.registeredAt,
+        amountCents: reg.amountCents,
+        label: reg.name,
+        detail: [projectName.get(reg.projectId as string), reg.externalRef]
+          .filter(Boolean)
+          .join(" · "),
+        linkedToBankRow: false,
+      });
     }
     if (sandboxMode) revenueCents = 0;
 
