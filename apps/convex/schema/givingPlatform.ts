@@ -471,7 +471,18 @@ export const gifts = defineTable({
  * still something to report). Resolved — DELETED — by
  * `givingPending.resolvePendingGift` from both `settleCheckoutSession` and
  * `cancelCheckoutSession`, so a debit that clears and a debit the bank refuses
- * both leave nothing behind. A row here always means "still in flight".
+ * both leave nothing behind.
+ *
+ * A row therefore means "still in flight" — but that is a property the WRITER
+ * has to keep, not one the table enforces, and the first cut of it did not.
+ * Because a resolved row is deleted, `by_session` cannot recognise a debit that
+ * has already cleared, so a redelivered or out-of-order `completed` (Stripe
+ * promises neither once-only nor ordered delivery, and event snapshots are
+ * frozen at creation, so a retry still reads `payment_status: "unpaid"`) would
+ * re-create a row that no later event could ever resolve. Every branch of the
+ * writer now checks a key that OUTLIVES resolution — the settled gift's
+ * `externalRef`, or the source row's status — and `MAX_PENDING_AGE_MS` bounds
+ * anything that still slips through. See `givingPending.ts`.
  *
  * DELETED RATHER THAN STATUS-FLIPPED, deliberately. A `status: "settled"` row
  * would be a second, weaker copy of a `gifts` row — a thing to keep in sync, to

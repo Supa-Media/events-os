@@ -114,6 +114,7 @@ import {
   type DigestBreakdownRow,
   type NotificationGift,
 } from "./lib/givingNotificationEmails";
+import { MAX_PENDING_AGE_MS } from "./givingPending";
 import { sendEmailReporting } from "./ticketingEmails";
 import { resolveResendSettings } from "./lib/resend";
 import { requireRuleManage } from "./givingNotifications";
@@ -284,6 +285,24 @@ export const MAX_DIGEST_PENDING_ROWS = 500;
  * webhook and is never backdatable, so — unlike a gift — a pending row can
  * never be inserted behind a watermark that has already passed it.
  *
+ * WHAT THAT DOES *NOT* PROMISE is that no two digests ever report the same
+ * in-flight money. Windows partition the `submittedAt` axis, so the SCHEDULED
+ * chain never repeats itself — but `digestWindowStart` case 3 deliberately
+ * re-opens a full trailing period after a rule is edited or re-enabled (a
+ * synthetic boundary, `watermarkFromRun` cleared), and a debit that is still in
+ * flight — which for 2–4 business days it is, by definition — is read again.
+ * That is the same accepted duplicate the gifts axis takes there, and it is
+ * visible to the reader rather than silent, so it needs no code. It just must
+ * not be claimed away.
+ *
+ * ── AND A CEILING ON AGE ───────────────────────────────────────────────────
+ * A debit whose resolving webhook never arrived (see
+ * `givingPending.MAX_PENDING_AGE_MS`) stops counting. It cannot bite a normal
+ * window — a weekly reaches seven days back and the ceiling is three weeks —
+ * only one that has legitimately run long, which is exactly where a stranded
+ * row would otherwise get a second airing. The daily sweep deletes such rows
+ * anyway; this is the half that does not depend on a cron having run.
+ *
  * ── THE UPPER BOUND IS THE CLAIMED WINDOW, NOT THE REQUESTED ONE ───────────
  * Callers pass the `until` the GIFT read actually closed at, which on a cut
  * window is earlier than the one requested. That is load-bearing: the watermark
@@ -331,8 +350,13 @@ export async function collectWindowPending(
   // The SAME rule filter the gifts get — `ruleMatchesGift` reads only `scope`
   // and `amountCents`, both of which a pending row carries with the same
   // meaning. A rule set to "$500 and up" must not start announcing $5 bank
-  // debits just because they haven't cleared yet.
-  return rows.filter((row) => ruleMatchesGift(rule, row));
+  // debits just because they haven't cleared yet. Plus the age ceiling: a debit
+  // authorised three weeks before this window closed is not in flight, it is
+  // lost, and a long window must not resurrect it.
+  const oldest = until - MAX_PENDING_AGE_MS;
+  return rows.filter(
+    (row) => row.submittedAt > oldest && ruleMatchesGift(rule, row),
+  );
 }
 
 /** Which rules' moment has arrived. Rules only — no gift reads, so this can

@@ -247,6 +247,20 @@ crons.cron(
   {},
 );
 
+// Daily 07:00 UTC: delete bank debits that were authorised and never resolved.
+// A `pendingGifts` row is normally cleared by `async_payment_succeeded` /
+// `async_payment_failed`, but Stripe stops retrying after ~3 days and a longer
+// outage loses the event entirely. Without this, such a row keeps a donor's
+// name in the table forever with no screen anywhere that shows it. Ahead of the
+// 08:00 digest hour on purpose, so a stranded row is gone before the day's
+// digests read the window. See `givingPending.MAX_PENDING_AGE_MS`.
+crons.cron(
+  "stranded pending-ACH sweep",
+  "0 7 * * *",
+  internal.givingPending.sweepStrandedPendingGifts,
+  {},
+);
+
 // Daily 08:00 UTC: does Stripe still SEND us the events `http.ts` handles?
 // A handler branch for an event nobody subscribed to fails silently — it
 // raises nothing, logs nothing, and passes every test, because the tests call

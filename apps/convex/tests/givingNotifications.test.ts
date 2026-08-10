@@ -5034,6 +5034,81 @@ describe("a digest counts ACH still clearing, and says so", () => {
     }
   });
 
+  test("a debit stranded past the age ceiling stops counting, even in a long window", async () => {
+    // The sweep deletes these daily, but a window that has legitimately run
+    // long (a rule that missed a month of runs reports the month) could
+    // otherwise give a stranded row a second airing before the cron gets to it.
+    // A weekly window reaches seven days back and the ceiling is three weeks,
+    // so this can never cut off a row a normal digest was going to report.
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+
+    // Authorised 30 days ago and never resolved — Stripe lost the event.
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 30 * DAY_MS,
+      amountCents: 50_000,
+      sessionId: "cs_stranded",
+      donorName: "Stranded Giver",
+    });
+    // …and one that really is still moving.
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 2 * DAY_MS,
+      amountCents: 10_000,
+      sessionId: "cs_moving",
+      donorName: "Patient Giver",
+    });
+
+    const cap = captureEmails();
+    try {
+      // A rule that has sat unrun for six weeks: the window opens far enough
+      // back to reach both rows.
+      await run(s.t, async (ctx) => {
+        const rules = await ctx.db.query("givingNotificationRules").collect();
+        await ctx.db.patch(rules[0]._id, {
+          lastSentAt: MON_8AM_ET - 42 * DAY_MS,
+          watermarkFromRun: true,
+        });
+      });
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      // $100.00, not $600.00 — the stranded row is not in flight, it is lost.
+      expect(cap.sent[0].subject).toContain("$100.00 still clearing");
+      expect(cap.sent[0].html).toContain("Patient Giver");
+      expect(cap.sent[0].html).not.toContain("Stranded Giver");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("the caveat says a cleared transfer will be counted again, as settled", async () => {
+    // Pending is windowed on when the debit was AUTHORISED and a gift on when
+    // it ARRIVED — days apart. Adding digest headlines across weeks therefore
+    // over-counts every ACH gift exactly once, and the only place a reader
+    // could learn that is this sentence.
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 3 * DAY_MS,
+      amountCents: 50_000,
+    });
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent[0].html).toContain(
+        "when one clears you'll see it again",
+      );
+      expect(cap.sent[0].html).toContain("don't add these totals up across weeks");
+    } finally {
+      cap.restore();
+    }
+  });
+
   test("pending is windowed on submission, so no two digests report it twice", async () => {
     // `submittedAt` is the pending row's answer to `receivedAt`: windows
     // partition it exactly as they partition the gifts axis. A bank debit that

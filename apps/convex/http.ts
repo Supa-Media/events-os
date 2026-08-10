@@ -452,6 +452,22 @@ async function settleCheckoutSession(
   // `pendingGifts` row for the same session would be a second copy of it in the
   // giving digest. No-ops for the card sessions that were never pending, which
   // is almost all of them. See `givingPending.resolvePendingGift`.
+  //
+  // ── WHY DELETE-THEN-WRITE, AND WHAT MAKES IT FREE ────────────────────────
+  // Each `runMutation` from an action is its own transaction, so there is a
+  // real instant between this delete and the gift being written. The ordering
+  // decides what that instant looks like: delete-first holds the money in
+  // NEITHER place for a moment; write-first would hold it in BOTH. A digest
+  // that misses a gift for a few hundred milliseconds is invisible and
+  // self-correcting; one that reports it twice is a number somebody quotes.
+  //
+  // And the gap costs nothing, because of a constant that lives in another
+  // file: `DIGEST_LAG_MS` (60s) closes every digest window at `now − 60s`. A
+  // gift written δ<60s after this delete has a `receivedAt` BEYOND the current
+  // window's close, so it lands in the next window and is reported exactly
+  // once — never lost. ⚠ THAT IS A DEPENDENCY, not a coincidence: shrinking
+  // `DIGEST_LAG_MS` towards zero would open a window in which a gift settling
+  // mid-sweep is in no digest at all. See `lib/givingNotificationRules.ts`.
   await ctx.runMutation(internal.givingPending.resolvePendingGift, {
     sessionId: obj.id,
   });

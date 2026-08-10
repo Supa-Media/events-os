@@ -334,10 +334,33 @@ export const recordGiveDonationPaid = internalMutation({
   handler: async (ctx, args) => {
     void args.scope; // symmetry/logging only — recordGiftForDonor derives scope from the donor.
 
+    // ── A MISSING DONOR IS A NO-OP, BUT NO LONGER A SILENT ONE ─────────────
+    // Both of these were quiet returns, on the reasoning that a webhook must
+    // never fail over a row that isn't there. Still true — but the consequence
+    // got louder when the digest started reporting in-flight ACH: a bank debit
+    // announced to a fundraising team as "still clearing" whose donor is gone
+    // by settlement books NOTHING, while `resolvePendingGift` has already
+    // dropped the pending row. The money is announced and then simply vanishes,
+    // with nothing anywhere explaining it. The breadcrumb costs nothing and is
+    // the only trace such a case would otherwise leave.
     const donorId = ctx.db.normalizeId("donors", args.donorId);
-    if (!donorId) return false; // not one of our donor ids — safe no-op
+    if (!donorId) {
+      console.error(
+        `[give] session ${args.sessionId} settled with an unrecognisable donor ` +
+          `id (${args.donorId}) — no gift recorded. If this gift was reported ` +
+          "as clearing in a digest, it will never appear as settled.",
+      );
+      return false;
+    }
     const donor = await ctx.db.get(donorId);
-    if (!donor) return false; // donor since deleted — safe no-op
+    if (!donor) {
+      console.error(
+        `[give] session ${args.sessionId} settled but donor ${donorId} no ` +
+          "longer exists — no gift recorded. If this gift was reported as " +
+          "clearing in a digest, it will never appear as settled.",
+      );
+      return false;
+    }
 
     // Idempotent: a redelivered completion doesn't double-record.
     const externalRef = `give:${args.sessionId}`;

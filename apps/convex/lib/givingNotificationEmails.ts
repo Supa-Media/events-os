@@ -384,11 +384,21 @@ function overrunNote(
  * balance, so this paragraph is not a footnote: it is the thing that makes the
  * number above it safe to quote.
  *
- * Three facts, in the order a reader needs them: how much isn't here yet, how
- * much IS, and that a bank can still refuse it. The last one matters most —
- * the failure path (`checkout.session.async_payment_failed`) silently drops the
- * amount from every later digest and deliberately sends no correction, so the
- * only warning anyone ever gets that a figure might not survive is this line.
+ * Four facts, in the order a reader needs them: how much isn't here yet, how
+ * much IS, that a bank can still refuse it, and — the one that is easy to
+ * forget to say — that a transfer which DOES clear is counted again, as a
+ * settled gift, in the digest covering the day it lands.
+ *
+ * The refusal clause matters most: the failure path
+ * (`checkout.session.async_payment_failed`) silently drops the amount from
+ * every later digest and deliberately sends no correction, so the only warning
+ * anyone ever gets that a figure might not survive is this line.
+ *
+ * The clearing clause is what stops the other mistake. Pending is windowed on
+ * when the debit was AUTHORISED and a gift on when it ARRIVED, which are days
+ * apart — so adding a quarter's digest headlines together over-counts every ACH
+ * gift exactly once. Each digest is true about its own period; the sum of them
+ * is not a total, and a reader has to be told that where they'd notice.
  *
  * Rendered directly under the headline, before the summary panel and before
  * every breakdown, so there is no reading order in which the total is seen
@@ -404,7 +414,9 @@ function pendingNote(payload: DigestEmailPayload): string {
         `${n === 1 ? "One gift" : `${n} gifts`} came in by bank transfer (ACH), which takes about ` +
         `${esc(ACH_CLEARING_WINDOW)} to land — so it's committed, but it isn't in the account. ` +
         `<b>${esc(formatCents(settled))}</b> of the total has actually settled. ` +
-        `A bank can still refuse a transfer; if one is, it simply drops out of the next digest.`,
+        `A bank can still refuse a transfer; if one is, it simply drops out of the next digest. ` +
+        `And when one clears you'll see it again — as a settled gift, in the digest covering the day it lands — ` +
+        `so don't add these totals up across weeks.`,
       { margin: "0" },
     ),
     { margin: "0 0 16px" },

@@ -504,17 +504,111 @@ describe("an in-flight bank debit leaves exactly one trace", () => {
       }),
     );
 
-    // A subscription session's `amount_total` is $0 or a proration; the money
-    // that becomes a gift arrives later as its own `invoice.paid`. Guessing
-    // here would put a figure in a digest that no gift ever matches.
+    // A NON-ZERO total on purpose. A subscription session's `amount_total` is
+    // its first invoice's total and is routinely non-zero, so "there's no
+    // amount to record" is NOT why this is safe — seeding $0 here would have
+    // made this test pass for a reason that isn't the mechanism. It is safe
+    // because the session carries no `giveDonation` marker and matches no
+    // `donations` or `ticketOrders` row, so it falls through to `return false`.
+    // A backer's money becomes a gift through `invoice.paid`, keyed on
+    // `gifts.stripeInvoiceId`; a row keyed on this session could never be
+    // resolved by anything.
     await postEvent(t, "checkout.session.completed", {
       id: "cs_backer",
-      amount_total: 0,
+      amount_total: 5_000,
       payment_status: "unpaid",
       metadata: { pledgeId: String(pledgeId) },
     });
 
     expect(await pendingRows(t)).toHaveLength(0);
+  });
+
+  // ── The two ways a resolved debit came back from the dead ────────────────
+  //
+  // `by_session` is idempotency against a LIVE row, and a resolved row is
+  // DELETED — so on its own it cannot recognise a debit that has already
+  // cleared. Both of these shipped in the first cut of this feature and both
+  // produced the same permanent phantom: one $100 gift reported by the digest
+  // as `$200.00 from 2 gifts ($100.00 still clearing)`, listed once under
+  // "Every gift" and again under "Still clearing", with both terminal events
+  // already consumed so nothing would ever clean it up.
+
+  test("the settlement arrives FIRST: a late completion doesn't resurrect the debit", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    // Stripe promises neither once-only nor ordered delivery. After an outage
+    // both events queue and redeliver in whatever order — and the completion's
+    // snapshot is FROZEN at creation, so it still reads `unpaid` however long
+    // afterwards it lands.
+    await postEvent(
+      t,
+      "checkout.session.async_payment_succeeded",
+      giveSession("cs_ooo", donorId, "paid"),
+    );
+    expect(await centralGifts(t)).toHaveLength(1);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ooo", donorId, "unpaid"));
+
+    // The gift's own idempotency key is what survives the delete.
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  test("the submission is REDELIVERED after it cleared, and stays cleared", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_resend", donorId, "unpaid"), "evt_a");
+    await postEvent(
+      t,
+      "checkout.session.async_payment_succeeded",
+      giveSession("cs_resend", donorId, "paid"),
+    );
+    expect(await pendingRows(t)).toHaveLength(0);
+
+    // ACH takes 2–4 business days, Stripe retries a failing event for three,
+    // and "Resend" in the Dashboard is an ordinary debugging move.
+    await postEvent(t, "checkout.session.completed", giveSession("cs_resend", donorId, "unpaid"), "evt_b");
+
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  test("a debit that never resolved is swept, and one still in flight is not", async () => {
+    // Stripe stops retrying after about three days and a longer outage loses
+    // the event outright, leaving a row nothing will ever clear. A donor's name
+    // must not sit in a table forever with no screen that shows it.
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const now = Date.now();
+
+    await t.mutation(internal.givingPending.recordPendingGift, {
+      sessionId: "cs_stranded",
+      amountTotalCents: 10_000,
+      isGiveDonation: true,
+      giveDonorId: String(donorId),
+      submittedAt: now - 30 * 24 * 60 * 60 * 1000,
+    });
+    await t.mutation(internal.givingPending.recordPendingGift, {
+      sessionId: "cs_moving",
+      amountTotalCents: 10_000,
+      isGiveDonation: true,
+      giveDonorId: String(donorId),
+      submittedAt: now - 2 * 24 * 60 * 60 * 1000,
+    });
+    expect(await pendingRows(t)).toHaveLength(2);
+
+    const swept = await t.mutation(
+      internal.givingPending.sweepStrandedPendingGifts,
+      { now },
+    );
+
+    expect(swept).toBe(1);
+    const left = await pendingRows(t);
+    expect(left).toHaveLength(1);
+    // The one that is genuinely still moving survives.
+    expect(left[0].sessionId).toBe("cs_moving");
   });
 });
 
