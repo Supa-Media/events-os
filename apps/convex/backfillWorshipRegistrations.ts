@@ -43,6 +43,68 @@
  * immediately AFTER a settlement run rather than before, or coordinate with
  * whoever watches the engine. Don't discover it from a bank alert.
  *
+ * ── WHAT THE DRY RUN SHOULD SAY, AND WHAT ACTUALLY WARRANTS STOPPING ────────
+ * Run it with no `execute` first and check the numbers against these. They are
+ * not all equally load-bearing, and an earlier draft of this header got that
+ * backwards — it told the operator to stop unless `rosterMatches` was 2, a
+ * number that was both wrong AND not a money signal, so following it would have
+ * halted a completely correct run.
+ *
+ * STOP AND INVESTIGATE — these are the money invariants:
+ *
+ *   · `alreadyPresent` MUST be 0 on the first run. Anything else means these
+ *     transactions are ALREADY recorded somewhere in `registrations`, and
+ *     booking them again is the double-count this whole feature exists to
+ *     avoid. (On a re-run it should be 6 and `toInsert` 0 — that is the
+ *     idempotency check passing, not a problem.)
+ *   · `revenueAddedCents` MUST be exactly 15000 and `grossCents` exactly 30000.
+ *     Three paid at $50 and three refunded at $50 is the entire claim; any
+ *     other pair of numbers means the fixture and the deployment disagree about
+ *     what happened.
+ *   · `gapMovementCents` MUST be −15000. A positive number here would mean the
+ *     sign convention got inverted somewhere, which is the single easiest
+ *     mistake to make in this file (see `lib/reconciliationGap.ts`).
+ *   · `problems` MUST be empty.
+ *
+ * WORTH A LOOK, BUT NEVER A REASON TO STOP:
+ *
+ *   · `rosterMatches` is expected to be 6 — ALL SIX registrants already have a
+ *     `people` row and a `personEmails` row in production (verified against a
+ *     2026-08-10 snapshot: 589 people / 619 personEmails). A LOWER number means
+ *     the emails didn't join — a typo, the wrong CSV column, a stale export —
+ *     so the links would be missing, not wrong. Worth fixing before running,
+ *     because backfilling a link afterwards is more work than getting it right
+ *     once. But it moves NO money: `personId` is optional by design and an
+ *     unlinked registration is a complete row. Never block the books on it.
+ *
+ * ── WHY ALL SIX ARE ALREADY ON THE ROSTER ───────────────────────────────────
+ * Worth understanding, because the obvious reasoning gets it wrong. Reading the
+ * committed fixtures alone predicts TWO: `lib/seed/historical/giving.ts` has
+ * one of them as a `rowType:"ticket"` row and another as a `rowType:"gift"`
+ * row, and both `historicalBackfill.ts` paths create a `people` row carrying
+ * the email. The other four appear in the RSVP fixtures (`ltn.ts`, `nye.ts`,
+ * `eden.ts`) with a NAME AND NO EMAIL, or not at all — so that story cannot
+ * explain their `personEmails` rows.
+ *
+ * The roster is populated far more broadly than the historical backfill: EVERY
+ * Givebutter touch write-throughs an address. `personEmails.source` is
+ * `roster | pw | donor | rsvp | manual`, and three of those are automatic:
+ *   · `lib/rsvpPeople.ts#linkRsvpToPerson` calls `recordPersonEmail` on EVERY
+ *     link, matched or freshly created — and RSVP emails come from the
+ *     Givebutter TICKET sync writing `rsvps.email`, not from the name-only seed
+ *     fixtures. So anyone who ever bought a ticket to any Public Worship event
+ *     through Givebutter has both rows.
+ *   · `lib/givingDonors.ts#linkDonorToPerson` does the same for gift rows.
+ *
+ * These six are Public Worship REGULARS who had bought tickets or given before
+ * — which is unsurprising for a class that filled with familiar faces, and is
+ * the actual reason the count is 6 and not 2.
+ *
+ * Per-person attribution is one query away if anyone wants it: read
+ * `personEmails.source` for those six addresses and it says which path each
+ * arrived by. Not needed to run this, and not worth a production read on its
+ * own.
+ *
  * ── DRY RUN BY DEFAULT, AND IT SKIPS RATHER THAN GUESSES ────────────────────
  * Mirrors `gear2024Split.ts` (the closest surviving one-off — same shape: a
  * one-time runner beside a separate dataset module in `lib/`): `execute`

@@ -121,6 +121,32 @@ describe("a clean dry run", () => {
     expect(plan.linkedPeople).toBe(0);
   });
 
+  it("produces exactly the numbers the module header tells the operator to check", () => {
+    // THE STOP-RULE, as a test, so the header and the code can't drift apart.
+    // An earlier draft of that header told the operator to halt unless
+    // `rosterMatches` was 2 — a number that was both wrong (it is 6) and not a
+    // money signal at all, so following it would have stopped a correct run.
+    // These four ARE the money invariants; roster matching is not among them.
+    const plan = planRegistrationBackfill(world());
+    expect(plan.alreadyPresent).toHaveLength(0); // first run: nothing recorded yet
+    expect(plan.paidCents).toBe(15_000); // revenueAddedCents
+    expect(plan.grossCents).toBe(30_000);
+    expect(-plan.paidCents).toBe(-15_000); // gapMovementCents, sign included
+    expect(plan.problems).toEqual([]);
+  });
+
+  it("a row already present is the double-count signal, not an error", () => {
+    // `alreadyPresent > 0` on a FIRST run means something else already imported
+    // these transactions — the one outcome that should stop the operator dead,
+    // because booking them again is exactly the double-count this table exists
+    // to prevent. On a RE-run it is the idempotency check passing.
+    const done = new Set([externalRefFor("4284185383")]);
+    const plan = planRegistrationBackfill(world({ existingExternalRefs: done }));
+    expect(plan.alreadyPresent).toEqual(["gb:txn:4284185383"]);
+    expect(plan.problems).toEqual([]); // reported as a count, never as a throw
+    expect(plan.inserts).toHaveLength(5);
+  });
+
   it("moves the org-wide gap DOWN by $150.00 — the sign is the whole point", () => {
     // `differenceCents = located − books` (`lib/reconciliationGap.ts`). The
     // $150.00 of cash arrived in Givebutter payout KKJ3TQ months ago and is
