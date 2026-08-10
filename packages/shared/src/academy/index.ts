@@ -61,6 +61,7 @@ import type {
 
 export * from "./types";
 export * from "./quizShuffle";
+export * from "./quizKeys";
 
 // The curriculum, in reading order: Foundations first (who we are and how we
 // work), then Events, Works, Management, then Finances — the exact order the
