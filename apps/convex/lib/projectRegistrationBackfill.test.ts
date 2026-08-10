@@ -93,6 +93,25 @@ describe("the fixture itself", () => {
     }
   });
 
+  it("none of these transactions is in any seed fixture", () => {
+    // The load-bearing fact behind the module header's roster note: all six
+    // registrants ALREADY have `people` + `personEmails` rows in production,
+    // and it was NOT these registrations that created them — none of these ids
+    // is seeded anywhere. Whatever put them on the roster was keyed on the
+    // PERSON, not on this money. Pinned here because the header's explanation
+    // has been wrong twice, and this is the part of it that is checkable.
+    const seeded = [
+      // Every Givebutter txn id that DOES appear in `lib/seed/historical/`
+      // for one of these people — all of them other events entirely.
+      "3216256522", // a Field Day ticket
+      "5204639557", // a Pop The Balloon ticket
+      "7228719083", // an ordinary donation
+    ];
+    for (const r of WBTW_REGISTRATIONS) {
+      expect(seeded).not.toContain(r.givebutterTxnId);
+    }
+  });
+
   it("carries NO personal data — only opaque transaction ids", () => {
     // The privacy invariant, enforced rather than trusted. Names and emails are
     // run-time arguments; a fixture row must expose nothing that identifies a
