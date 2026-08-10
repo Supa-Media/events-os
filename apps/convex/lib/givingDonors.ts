@@ -11,6 +11,7 @@
 import { ConvexError } from "convex/values";
 import { Doc, Id } from "../_generated/dataModel";
 import { MutationCtx, QueryCtx } from "../_generated/server";
+import { internal } from "../_generated/api";
 import { normalizeEmail } from "./access";
 import type { GivingScope } from "./givingAccess";
 import { territoryForChapter } from "../territories";
@@ -568,6 +569,27 @@ export async function recordGiftForDonor(
   if (args.eventId !== undefined && args.donationId === undefined) {
     await bumpEventExternalGifts(ctx, args.eventId, args.amountCents, 1);
   }
+
+  // "Tell me when money comes in" (docs/plans/giving-notifications.md). This is
+  // the ONE place a gift is born, so it is the one place the immediate rules
+  // can be armed from — every channel that reaches here (desk entry, CSV
+  // import, the public /give page, a Stripe recurring cycle, a sponsorship
+  // payment, a bank-credit confirmation, an in-person sale split, and the
+  // event-donation dual-write that carries a gift bundled into a TICKET
+  // purchase) gets the same treatment, with no per-channel opt-in to forget.
+  //
+  // SCHEDULED, never awaited inline. `runAfter(0, …)` is a database write in
+  // THIS transaction; the action runs afterwards in its own context, once the
+  // gift has committed. So a Resend outage, a rate limit, a bad address, or an
+  // unhandled throw over there fails a notification and nothing else — it can
+  // never slow down or roll back the gift. And if this transaction rolls back
+  // for its own reasons, the job rolls back with it, so nobody is ever told
+  // about a gift that doesn't exist.
+  await ctx.scheduler.runAfter(
+    0,
+    internal.givingNotifications.notifyGiftRecorded,
+    { giftId },
+  );
   return giftId;
 }
 

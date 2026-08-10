@@ -40,6 +40,7 @@ import { paginationOptsValidator } from "convex/server";
 import { normalizeEmail } from "./lib/access";
 import { requireUserId } from "./lib/context";
 import { listActiveChapters } from "./lib/chapters";
+import { giftMethodLabel } from "./lib/giftLabels";
 import {
   requireGivingView,
   requireGivingManage,
@@ -686,23 +687,10 @@ function normNameKey(name: string): string {
     .trim();
 }
 
-/** Display label for a gift's source/method literal (mirrors the mobile
- *  `SOURCE_LABELS`; `stripe` reads as "Chapter OS", our own rails). */
-const GIFT_METHOD_LABELS: Record<string, string> = {
-  stripe: "Chapter OS",
-  cash: "Cash",
-  check: "Check",
-  wire: "Wire",
-  in_kind: "In-kind",
-  zelle: "Zelle",
-  venmo: "Venmo",
-  givebutter: "Givebutter",
-  cash_app: "Cash App",
-  other: "Other",
-};
-function methodLabel(method: string): string {
-  return GIFT_METHOD_LABELS[method] ?? method;
-}
+/** Display label for a gift's source/method literal. Lives in
+ *  `lib/giftLabels.ts` now that the giving notification emails read it too —
+ *  two copies of a label map is two labels that eventually disagree. */
+const methodLabel = giftMethodLabel;
 
 /** The audit `changes` for a freshly-recorded gift (amount / date / source). */
 function giftCreatedChanges(

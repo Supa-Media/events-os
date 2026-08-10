@@ -395,6 +395,13 @@ export const gifts = defineTable({
   // The dashboard's last-30-days window (bounded range read, never a full scan).
   .index("by_scope_and_received", ["scope", "receivedAt"])
   .index("by_externalRef", ["externalRef"])
+  // "Every gift the ledger learned of between these two instants", across every
+  // book — the giving-notification digests' window (see
+  // `lib/givingNotificationRules.ts` for why the window is on `createdAt` and
+  // not the backdatable `receivedAt`). `by_scope_and_received` can't serve it:
+  // an "all books" rule would have to fan out per chapter, and it ranges on the
+  // wrong field.
+  .index("by_created", ["createdAt"])
   // Gifts manually attached to an event (the fundraiser attribution feature) —
   // powers the per-event gift list + `externalGiftsCents` recompute. Only
   // attached gifts have `eventId`; unattached rows are never in this index.
