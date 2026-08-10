@@ -78,17 +78,49 @@ export function formatTimeInZone(ts: number, timeZone: string): string {
   }
 }
 
-/** e.g. "Mar 14, 2026 · 7:05 PM" in `timeZone` — the header companion to
- *  {@link formatTimeInZone}, so one page never shows two disagreeing clocks. */
-export function formatDateTimeInZone(ts: number, timeZone: string): string {
+/**
+ * e.g. "Mar 14, 2026" in `timeZone` — the date-only sibling of
+ * {@link formatTimeInZone}.
+ *
+ * A date is not a weaker version of a time: it is the SAME question with the
+ * answer rounded, and it flips a whole day for an evening event read from a
+ * zone ahead of it. A 7 PM Eastern event is already tomorrow in Tokyo, so a
+ * device-local "Aug 30" on a list that the crew calls the 29th is a worse
+ * error than an hour, not a smaller one.
+ */
+export function formatDateInZone(ts: number, timeZone: string): string {
   try {
-    const date = new Intl.DateTimeFormat("en-US", {
+    return new Intl.DateTimeFormat("en-US", {
       timeZone,
       month: "short",
       day: "numeric",
       year: "numeric",
     }).format(ts);
-    return `${date} · ${formatTimeInZone(ts, timeZone)}`;
+  } catch {
+    return formatDate(ts);
+  }
+}
+
+/** e.g. "Sat, Mar 14" in `timeZone` — the weekday-led short form door lists use
+ *  to let someone pick tonight's event off a phone at a venue entrance. */
+export function formatWeekdayDateInZone(ts: number, timeZone: string): string {
+  try {
+    return new Intl.DateTimeFormat("en-US", {
+      timeZone,
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+    }).format(ts);
+  } catch {
+    return formatDate(ts);
+  }
+}
+
+/** e.g. "Mar 14, 2026 · 7:05 PM" in `timeZone` — the header companion to
+ *  {@link formatTimeInZone}, so one page never shows two disagreeing clocks. */
+export function formatDateTimeInZone(ts: number, timeZone: string): string {
+  try {
+    return `${formatDateInZone(ts, timeZone)} · ${formatTimeInZone(ts, timeZone)}`;
   } catch {
     return formatDateTime(ts);
   }

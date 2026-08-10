@@ -24,7 +24,7 @@ import {
   ToastView,
 } from "../../../components/ui";
 import { colors, spacing } from "../../../lib/theme";
-import { formatDate } from "../../../lib/format";
+import { formatDateInZone } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { useChapterContext } from "../../../lib/ChapterContext";
 import { TemplatesView } from "../../../components/template/TemplatesView";
@@ -34,6 +34,7 @@ import {
   PHASE_LABELS,
   type EventStatus,
   type PhaseKey,
+  eventTimeZone,
 } from "@events-os/shared";
 
 /** A single enriched row from `api.events.current`. */
@@ -249,7 +250,7 @@ export default function EventsScreen() {
                       </Text>
                     </Cell>
                     <Cell flex={2}>
-                      <Text className="text-base text-ink">{formatDate(e.eventDate)}</Text>
+                      <Text className="text-base text-ink">{formatDateInZone(e.eventDate, eventTimeZone(e))}</Text>
                     </Cell>
                     <Cell flex={2}>
                       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
@@ -371,7 +372,7 @@ function EventCard({
             {event.name}
           </Text>
           <Text className="mt-0.5 text-sm text-muted" numberOfLines={1}>
-            {event.eventTypeName} · {formatDate(event.eventDate)}
+            {event.eventTypeName} · {formatDateInZone(event.eventDate, eventTimeZone(event))}
           </Text>
         </View>
         <Badge

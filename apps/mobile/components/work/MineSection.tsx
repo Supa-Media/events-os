@@ -5,11 +5,12 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import { Card, Icon, Badge, statusTone } from "../ui";
 import { colors } from "../../lib/theme";
-import { formatDate } from "../../lib/format";
+import { formatDate, formatDateInZone } from "../../lib/format";
 import {
   EVENT_STATUS_LABELS,
   isPastEvent,
   type EventStatus,
+  eventTimeZone,
 } from "@events-os/shared";
 
 type MyWork = NonNullable<FunctionReturnType<typeof api.work.myOpenWork>>;
@@ -116,7 +117,7 @@ export function MineSection() {
                   {e.name}
                 </Text>
                 <Text className="text-xs text-muted">
-                  {formatDate(e.eventDate)}
+                  {formatDateInZone(e.eventDate, eventTimeZone(e))}
                 </Text>
                 <Badge
                   label={EVENT_STATUS_LABELS[e.status as EventStatus]}

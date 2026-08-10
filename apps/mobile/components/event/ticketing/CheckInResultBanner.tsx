@@ -13,7 +13,22 @@
  */
 import { Text, View } from "react-native";
 import { teamColor } from "@events-os/shared";
-import { formatTime } from "../../../lib/format";
+import { formatTimeInZone } from "../../../lib/format";
+import { eventTimeZone } from "@events-os/shared";
+
+/*
+ * The check-in stamp reads in the EVENT's zone, not the device's. It is read
+ * beside a run sheet by someone standing at the door — "admitted at 7:04" has
+ * to be comparable with "doors 7:00", and a volunteer whose phone is still on
+ * another zone's clock must not see a guest admitted an hour before doors.
+ *
+ * `eventTimeZone()` is called with no argument because this component only ever
+ * receives a check-in OUTCOME: the queries behind it return no event doc, and
+ * threading one through purely to hand back the org zone would be a query change
+ * for zero behaviour difference today. The resolver stays the single place that
+ * answer changes — which is the point of it being a function. (Same call shape
+ * the volunteer briefing already uses.)
+ */
 
 /** The team a guest was put on, as `checkInTicket` returns it. */
 export type CheckInTeam = { teamId: string; name: string; color: string };
@@ -93,7 +108,9 @@ export function CheckInResultBanner({ outcome }: { outcome: CheckInOutcome }) {
   }
   if (outcome.result === "already") {
     const when =
-      outcome.checkedInAt != null ? ` at ${formatTime(outcome.checkedInAt)}` : "";
+      outcome.checkedInAt != null
+        ? ` at ${formatTimeInZone(outcome.checkedInAt, eventTimeZone())}`
+        : "";
     // The team still shows on a re-scan — the guest is already wearing the
     // wristband, and "what team am I again?" is what re-scans are usually for.
     if (outcome.guestTeam) {

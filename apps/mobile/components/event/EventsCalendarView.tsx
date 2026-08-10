@@ -36,6 +36,7 @@ import {
   calendarMonthGrid,
   groupByDay,
   soonestUpcoming,
+  eventTimeZone,
   EVENT_STATUS_LABELS,
   type EventStatus,
 } from "@events-os/shared";
@@ -48,7 +49,12 @@ import {
   statusTone,
 } from "../ui";
 import { colors } from "../../lib/theme";
-import { formatTime, toDateInput } from "../../lib/format";
+import {
+  formatTimeInZone,
+  toDateInput,
+  zoneAbbreviation,
+  zonedDayToCalendarMs,
+} from "../../lib/format";
 
 type EventRow = FunctionReturnType<typeof api.events.list>[number];
 
@@ -106,15 +112,24 @@ export function EventsCalendarView({
     didInit.current = true;
     const next = soonestUpcoming(events, (e) => e.eventDate, Date.now());
     if (next) {
-      const d = new Date(next.eventDate);
+      const d = new Date(zonedDayToCalendarMs(next.eventDate, eventTimeZone(next)));
       setView({ year: d.getFullYear(), month: d.getMonth() });
-      setSelected(startOfDay(next.eventDate));
+      setSelected(d.getTime());
     }
   }, [events]);
 
   // day-ms → events on that day, date-sorted. One pass over the full list.
+  //
+  // Which day an event is ON is the event's question, not the device's: a 7 PM
+  // Eastern event is already tomorrow in Tokyo, so bucketing by `startOfDay` of
+  // the raw instant filed it under a day its own crew doesn't call it. Handing
+  // `groupByDay` an already-zoned day keeps the map keyed in the same
+  // device-local-midnight space the grid and `selected` use, so nothing else
+  // has to change.
   const byDay = useMemo(() => {
-    const m = groupByDay(events ?? [], (e) => e.eventDate);
+    const m = groupByDay(events ?? [], (e) =>
+      zonedDayToCalendarMs(e.eventDate, eventTimeZone(e)),
+    );
     for (const arr of m.values()) arr.sort((a, b) => a.eventDate - b.eventDate);
     return m;
   }, [events]);
@@ -442,7 +457,9 @@ function AgendaRow({
             />
           </View>
           <Text className="mt-0.5 text-sm text-muted" numberOfLines={1}>
-            {event.eventTypeName} · {formatTime(event.eventDate)}
+            {event.eventTypeName} ·{" "}
+            {formatTimeInZone(event.eventDate, eventTimeZone(event))}{" "}
+            {zoneAbbreviation(event.eventDate, eventTimeZone(event))}
           </Text>
           {event.location ? (
             <View className="mt-1 flex-row items-center gap-1">

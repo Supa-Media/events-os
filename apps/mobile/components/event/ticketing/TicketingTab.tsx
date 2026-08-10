@@ -26,7 +26,8 @@ import {
 } from "../../ui";
 import { ToastView } from "../../ui/Toast";
 import { useActionRunner, type ActionRunner } from "../../../lib/useActionToast";
-import { formatDateTime } from "../../../lib/format";
+import { formatDateTimeInZone, zoneAbbreviation } from "../../../lib/format";
+import { eventTimeZone } from "@events-os/shared";
 import { DesignPhase } from "./DesignPhase";
 import { FeedbackCard } from "./FeedbackCard";
 import { GivingCard } from "./GivingCard";
@@ -117,7 +118,15 @@ export default function TicketingTab({ eventId }: { eventId: Id<"events"> }) {
     setGuestFilter({ value: filter });
   };
 
-  const dateLabel = ev?.eventDate ? formatDateTime(ev.eventDate) : null;
+  // The ticketing page quotes the event's start to the person writing the
+  // public listing, so it must read the way the listing will — the event's
+  // clock, named, not the composer's phone.
+  const dateLabel = ev?.eventDate
+    ? `${formatDateTimeInZone(ev.eventDate, eventTimeZone(ev))} ${zoneAbbreviation(
+        ev.eventDate,
+        eventTimeZone(ev),
+      )}`.trim()
+    : null;
 
   function phaseBody(key: LaunchPhaseKey) {
     switch (key) {

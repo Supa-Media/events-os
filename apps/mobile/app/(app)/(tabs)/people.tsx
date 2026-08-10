@@ -35,7 +35,7 @@ import {
 } from "../../../components/ui";
 import { spaceToggleProps } from "../../../components/ui/spaceToggle";
 import { colors, spacing } from "../../../lib/theme";
-import { formatDate, parseList } from "../../../lib/format";
+import { formatDate, formatDateInZone, parseList } from "../../../lib/format";
 import { alertError } from "../../../lib/errors";
 import { buildServiceLabelMap } from "../../../lib/serviceCatalog";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
@@ -46,6 +46,7 @@ import {
   composeName,
   firstNameForDesignatedLast,
   type Persona,
+  eventTimeZone,
 } from "@events-os/shared";
 import { DutyRows } from "../../../components/work/DutyRows";
 import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
@@ -1872,7 +1873,7 @@ function PersonDetailBody({
                     />
                   </View>
                   <Text style={styles.historyMeta}>
-                    {formatDate(h.eventDate)}
+                    {formatDateInZone(h.eventDate, eventTimeZone(h))}
                     {h.service ? ` · ${h.service}` : ""}
                     {h.type === "paid"
                       ? ` · $${h.amountUsd}${h.paymentStatus ? ` (${h.paymentStatus})` : ""}`
@@ -1910,7 +1911,7 @@ function PersonDetailBody({
                       tone={RSVP_STATUS_TONE[h.status] ?? "neutral"}
                     />
                   </View>
-                  <Text style={styles.historyMeta}>{formatDate(h.eventDate)}</Text>
+                  <Text style={styles.historyMeta}>{formatDateInZone(h.eventDate, eventTimeZone(h))}</Text>
                 </View>
               ))}
             </View>
