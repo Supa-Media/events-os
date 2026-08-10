@@ -87,7 +87,12 @@ import {
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { GIFT_TYPE_LABELS, giftMethodLabel, giftType } from "./lib/giftLabels";
+import {
+  GIFT_TYPE_LABELS,
+  PENDING_METHOD_LABEL,
+  giftMethodLabel,
+  giftType,
+} from "./lib/giftLabels";
 import {
   DIGEST_LAG_MS,
   MAX_DIGEST_GIFT_ROWS,
@@ -109,6 +114,7 @@ import {
   type DigestBreakdownRow,
   type NotificationGift,
 } from "./lib/givingNotificationEmails";
+import { MAX_PENDING_AGE_MS } from "./givingPending";
 import { sendEmailReporting } from "./ticketingEmails";
 import { resolveResendSettings } from "./lib/resend";
 import { requireRuleManage } from "./givingNotifications";
@@ -251,6 +257,121 @@ export async function collectWindowGifts(
   };
 }
 
+/**
+ * Hard bound on `pendingGifts` rows one window will read.
+ *
+ * Far larger than anything reachable: a row exists only between a donor
+ * authorising a bank debit and that debit clearing or failing, and it is
+ * DELETED either way (`givingPending.resolvePendingGift`), so the table's whole
+ * population is "ACH debits in flight right now" — tens, not thousands. The cap
+ * is here because an unbounded range read inside a transaction is a wedge
+ * waiting to happen, not because anything is expected to approach it.
+ */
+export const MAX_DIGEST_PENDING_ROWS = 500;
+
+/**
+ * The ACH gifts AUTHORISED in `(since, until]` that `rule` matches — money the
+ * donor has committed and the bank has not yet moved.
+ *
+ * ── WHY `submittedAt`, AND WHY THE SAME WINDOW AS THE GIFTS ────────────────
+ * A pending gift has no arrival date; that is the definition of pending. The
+ * only date it has is the instant the donor authorised the debit, which is also
+ * the date on the "your gift is on its way" email they are holding, so it is
+ * the date they would name if asked when they gave. Ranging on it makes the
+ * digest's sentence exactly true in both halves: in this period, THIS much
+ * money arrived and THIS much was authorised.
+ *
+ * It also buys a property `receivedAt` can't: `submittedAt` is stamped by the
+ * webhook and is never backdatable, so — unlike a gift — a pending row can
+ * never be inserted behind a watermark that has already passed it.
+ *
+ * WHAT THAT DOES *NOT* PROMISE is that no two digests ever report the same
+ * in-flight money. Windows partition the `submittedAt` axis, so the SCHEDULED
+ * chain never repeats itself — but `digestWindowStart` case 3 deliberately
+ * re-opens a full trailing period after a rule is edited or re-enabled (a
+ * synthetic boundary, `watermarkFromRun` cleared), and a debit that is still in
+ * flight — which for 2–4 business days it is, by definition — is read again.
+ * That is the same accepted duplicate the gifts axis takes there, and it is
+ * visible to the reader rather than silent, so it needs no code. It just must
+ * not be claimed away.
+ *
+ * ── AND A CEILING ON AGE ───────────────────────────────────────────────────
+ * A debit whose resolving webhook never arrived (see
+ * `givingPending.MAX_PENDING_AGE_MS`) stops counting. It cannot bite a normal
+ * window — a weekly reaches seven days back and the ceiling is three weeks —
+ * only one that has legitimately run long, which is exactly where a stranded
+ * row would otherwise get a second airing. The daily sweep deletes such rows
+ * anyway; this is the half that does not depend on a cron having run.
+ *
+ * ── THE UPPER BOUND IS THE CLAIMED WINDOW, NOT THE REQUESTED ONE ───────────
+ * Callers pass the `until` the GIFT read actually closed at, which on a cut
+ * window is earlier than the one requested. That is load-bearing: the watermark
+ * stops there, so the next window opens there, and reading pending past it
+ * would report the same in-flight money in two consecutive digests.
+ *
+ * NO TRUNCATION SIGNAL, deliberately. The `truncated` flag drives the watermark
+ * and the "this total is a floor" caveat, and both belong to the gift read that
+ * owns them. Hitting the cap here is logged and cannot happen at any realistic
+ * table size (see `MAX_DIGEST_PENDING_ROWS`); entangling it with the cut/resume
+ * machinery would put the money-critical watermark at the mercy of a queue.
+ */
+export async function collectWindowPending(
+  ctx: Pick<MutationCtx, "db">,
+  rule: Pick<Doc<"givingNotificationRules">, "isActive" | "scope" | "minAmountCents">,
+  since: number,
+  until: number,
+  cap: number = MAX_DIGEST_PENDING_ROWS,
+): Promise<Doc<"pendingGifts">[]> {
+  // Scoped rules read only their own book, for the same reason
+  // `collectWindowGifts` does: a quiet chapter must not walk every other book.
+  const stream =
+    rule.scope === "all"
+      ? ctx.db
+          .query("pendingGifts")
+          .withIndex("by_submitted", (q) =>
+            q.gt("submittedAt", since).lte("submittedAt", until),
+          )
+      : ctx.db
+          .query("pendingGifts")
+          .withIndex("by_scope_and_submitted", (q) =>
+            q
+              .eq("scope", rule.scope as Doc<"pendingGifts">["scope"])
+              .gt("submittedAt", since)
+              .lte("submittedAt", until),
+          );
+
+  // NEWEST FIRST. If the cap ever bites, the rows worth keeping are the most
+  // recently authorised — the oldest end of this range is, by construction, the
+  // end the age ceiling below is about to discard anyway.
+  const rows = await stream.order("desc").take(cap);
+  if (rows.length === cap) {
+    console.warn(
+      `[givingNotifications] pending-ACH read hit its ${cap}-row cap for rule ` +
+        `scope ${String(rule.scope)}; the "still clearing" figure is a floor.`,
+    );
+  }
+  // The SAME rule filter the gifts get — `ruleMatchesGift` reads only `scope`
+  // and `amountCents`, both of which a pending row carries with the same
+  // meaning. A rule set to "$500 and up" must not start announcing $5 bank
+  // debits just because they haven't cleared yet. Plus the age ceiling: a debit
+  // authorised three weeks before this window closed is not in flight, it is
+  // lost, and a long window must not resurrect it.
+  //
+  // Measured from the window's CLOSE rather than from wall-clock `now`, which
+  // is the same instant on a normal window and stricter on a cut one — never
+  // more lenient, so it cannot let an older row through. The wall-clock half of
+  // the ceiling is the daily sweep, which deletes such rows outright.
+  const oldest = until - MAX_PENDING_AGE_MS;
+  return rows.filter(
+    (row) =>
+      // A `failed` row is a TOMBSTONE, kept only so a resent webhook can be
+      // recognised. It is not money in flight and must never be counted.
+      row.status === "in_flight" &&
+      row.submittedAt > oldest &&
+      ruleMatchesGift(rule, row),
+  );
+}
+
 /** Which rules' moment has arrived. Rules only — no gift reads, so this can
  *  never approach a transaction limit however many rules exist. */
 export const dueDigestRuleIds = internalQuery({
@@ -381,7 +502,24 @@ async function buildDigestPayload(
   const requestedUntil = Math.max(since, now - DIGEST_LAG_MS);
   const window = await collectWindowGifts(ctx, rule, since, requestedUntil);
 
-  if (!shouldSendDigest(rule.cadence, window.gifts.length, window.truncated)) {
+  // In-flight ACH, over the window the gift read ACTUALLY closed at. See
+  // `collectWindowPending` for why the bound is `window.until` and not
+  // `requestedUntil`.
+  const pending = await collectWindowPending(ctx, rule, since, window.until);
+
+  // A WINDOW WITH ONLY PENDING MONEY IN IT STILL SENDS. `shouldSendDigest` asks
+  // "did anything happen?", and a $5,000 bank debit authorised today is
+  // emphatically something — skipping it as an "empty daily" would hide the
+  // single most interesting fact of the day behind the fact that the bank is
+  // slow. The asymmetry itself is untouched: with neither gifts nor pending,
+  // a daily is still skipped and a weekly is still sent.
+  if (
+    !shouldSendDigest(
+      rule.cadence,
+      window.gifts.length + pending.length,
+      window.truncated,
+    )
+  ) {
     return null;
   }
 
@@ -394,42 +532,89 @@ async function buildDigestPayload(
     (a, b) => b.receivedAt - a.receivedAt || b.createdAt - a.createdAt,
   );
 
+  // Newest authorisation first, and biggest first within an instant — a
+  // "still clearing" list is read for the one number worth chasing.
+  const pendingRows = [...pending].sort(
+    (a, b) => b.submittedAt - a.submittedAt || b.amountCents - a.amountCents,
+  );
+
   const chapterNames = new Map<string, string>();
   const byScope = new Map<string, DigestBreakdownRow>();
   const byMethod = new Map<string, DigestBreakdownRow>();
   const byType = new Map<string, DigestBreakdownRow>();
-  let totalCents = 0;
+  let settledCents = 0;
+  let pendingCents = 0;
   let largestRow: Doc<"gifts"> | null = null;
 
   for (const gift of gifts) {
-    totalCents += gift.amountCents;
+    settledCents += gift.amountCents;
     addTo(byMethod, giftMethodLabel(gift.method), gift.amountCents);
     // EVERY gift, matched or listed or not — `giftType` returns exactly one
     // bucket per gift (see `lib/giftLabels.ts`), which is what makes this cut
-    // add up to `totalCents` rather than approximately to it.
+    // add up to the headline rather than approximately to it.
     addTo(byType, GIFT_TYPE_LABELS[giftType(gift)], gift.amountCents);
     if (!largestRow || gift.amountCents > largestRow.amountCents) {
       largestRow = gift;
     }
   }
 
+  // ── PENDING IS IN EVERY CUT, BECAUSE IT IS IN THE HEADLINE ────────────────
+  // The headline total includes in-flight ACH, so every breakdown must too or
+  // its own `Total:` line stops matching the number above it — and a breakdown
+  // whose parts don't add up to the total is worse than no breakdown.
+  //
+  // Each cut takes pending on its own terms rather than lumping it in:
+  //  · BY TYPE — `giftType` again, on the same link fields (`pendingGifts`
+  //    mirrors them for exactly this). A pending event donation is Events, not
+  //    a fourth "pending" bucket, because the question that cut answers is
+  //    "why did this money come" and the answer doesn't depend on the rail.
+  //  · BY CHAPTER — its own `scope`, resolved through the same label cache.
+  //  · HOW IT ARRIVED — its own line, `PENDING_METHOD_LABEL`. This is the cut
+  //    where the rail IS the question, so it is the one place pending money is
+  //    visibly separated without the reader having to hold two numbers in their
+  //    head.
+  for (const row of pendingRows) {
+    pendingCents += row.amountCents;
+    addTo(byMethod, PENDING_METHOD_LABEL, row.amountCents);
+    addTo(byType, GIFT_TYPE_LABELS[giftType(row)], row.amountCents);
+  }
+
+  // What the email leads with: banked money PLUS money on its way. The split is
+  // stated in as many words a line later — see `renderDigestEmail`.
+  const totalCents = settledCents + pendingCents;
+
   const listed: NotificationGift[] = [];
   for (const gift of gifts.slice(0, MAX_DIGEST_GIFT_ROWS)) {
     const built = await buildNotificationGift(ctx, gift, chapterNames, now);
     if (built) listed.push(built);
   }
-  // The scope breakdown needs a label for EVERY gift, listed or not, so what
-  // it shows adds up to the total above.
-  for (const gift of gifts) {
-    const key = gift.scope as string;
+  // The scope breakdown needs a label for EVERY gift AND every pending row,
+  // listed or not, so what it shows adds up to the total above.
+  const labelFor = async (
+    scope: Doc<"gifts">["scope"] | Doc<"pendingGifts">["scope"],
+  ): Promise<string> => {
+    const key = scope as string;
     let label = chapterNames.get(key);
     if (label === undefined) {
-      label = await scopeLabel(ctx, gift.scope);
+      label = await scopeLabel(ctx, scope);
       chapterNames.set(key, label);
     }
-    addTo(byScope, label, gift.amountCents);
+    return label;
+  };
+  for (const gift of gifts) {
+    addTo(byScope, await labelFor(gift.scope), gift.amountCents);
+  }
+  for (const row of pendingRows) {
+    addTo(byScope, await labelFor(row.scope), row.amountCents);
   }
 
+  // LARGEST IS THE LARGEST SETTLED GIFT, and the email says so whenever
+  // anything is pending. The callout exists to prompt a thank-you call today,
+  // and it hangs off `buildNotificationGift` — donor rollups, a first-gift
+  // flag, a deep link into the donor's record — none of which a pending row
+  // has, because none of them are true yet. Rather than invent a half-populated
+  // donor for it, pending money gets its own itemized section below, where
+  // every row of it is visible; nothing large can hide.
   const largest = largestRow
     ? await buildNotificationGift(ctx, largestRow, chapterNames, now)
     : null;
@@ -445,13 +630,32 @@ async function buildDigestPayload(
       periodStart: since,
       periodEnd: window.until,
       totalCents,
-      giftCount: gifts.length,
+      pendingCents,
+      giftCount: gifts.length + pendingRows.length,
+      pendingCount: pendingRows.length,
       largest,
       byScope: sortedRows(byScope),
       byMethod: sortedRows(byMethod),
       byType: sortedRows(byType),
       gifts: listed,
+      pending: await Promise.all(
+        pendingRows.slice(0, MAX_DIGEST_GIFT_ROWS).map(async (row) => ({
+          amountCents: row.amountCents,
+          // PUBLIC-FORM INPUT — escaped at render, like every other donor name.
+          donorName: row.donorName,
+          submittedAt: row.submittedAt,
+          scopeLabel: await labelFor(row.scope),
+        })),
+      ),
+      // SETTLED gifts counted but not listed. Pending rows have their own
+      // section and their own cap, so they are deliberately not folded in here
+      // — "…and N more" pointing at the gifts ledger would be pointing at rows
+      // the gifts ledger does not contain.
       omittedCount: Math.max(0, gifts.length - listed.length),
+      pendingOmittedCount: Math.max(
+        0,
+        pendingRows.length - Math.min(pendingRows.length, MAX_DIGEST_GIFT_ROWS),
+      ),
       countTruncated: window.truncated,
     },
   };

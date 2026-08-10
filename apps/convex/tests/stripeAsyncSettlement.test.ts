@@ -1,7 +1,13 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { internal } from "../_generated/api";
-import { newT, run, setupChapter, type TestConvex } from "./setup.helpers";
+import {
+  newT,
+  run,
+  setupChapter,
+  type ChapterSetup,
+  type TestConvex,
+} from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -72,6 +78,36 @@ async function centralGifts(t: TestConvex) {
       .withIndex("by_scope", (q) => q.eq("scope", "central"))
       .collect(),
   );
+}
+
+/** The minimum event an in-flight `donations` / `ticketOrders` row can hang off. */
+async function seedEventPage(
+  s: ChapterSetup,
+): Promise<{ eventId: Id<"events"> }> {
+  const now = Date.now();
+  return run(s.t, async (ctx) => {
+    const eventTypeId = await ctx.db.insert("eventTypes", {
+      chapterId: s.chapterId,
+      name: "Gala",
+      slug: "gala",
+      version: 1,
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const eventId = await ctx.db.insert("events", {
+      chapterId: s.chapterId,
+      eventTypeId,
+      templateVersion: 1,
+      name: "Summer Gala",
+      eventDate: now,
+      status: "planning",
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { eventId };
+  });
 }
 
 async function seedDonor(t: TestConvex): Promise<Id<"donors">> {
@@ -236,6 +272,472 @@ describe("the async settlement events", () => {
     const gifts = await centralGifts(t);
     expect(gifts).toHaveLength(1);
     expect(gifts[0].amountCents).toBe(25_000);
+  });
+});
+
+/**
+ * THE ONE ROW AN IN-FLIGHT DEBIT LEAVES BEHIND.
+ *
+ * Everything above asserts that an unsettled ACH session records NO MONEY, and
+ * that stays true — `pendingGifts` is not the ledger, not revenue, and not
+ * visible to book value (`tests/givingNotifications.test.ts` holds that one
+ * down against `accountBalances` directly). What it is, is the only queryable
+ * evidence that a bank transfer is on its way, so the weekly giving digest can
+ * say how much of its total hasn't landed.
+ *
+ * The lifecycle these assert is small and total: written on submission, GONE
+ * on settlement, GONE on failure, GONE on abandonment. A row that outlived any
+ * of those three would be a phantom — money reported as coming that isn't.
+ */
+describe("an in-flight bank debit leaves exactly one trace", () => {
+  async function pendingRows(t: TestConvex) {
+    return run(t, (ctx) => ctx.db.query("pendingGifts").collect());
+  }
+
+  test("a submitted ACH gift is recorded as pending — with the amount, not the charge", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", {
+      // The donor gave $100 and covered $3.30 of fees, so Stripe charges
+      // $103.30. The PENDING figure has to be the gift, or it would shrink by
+      // the coverage the day it settles and look like money went missing.
+      id: "cs_ach_pending",
+      amount_total: 10_330,
+      payment_status: "unpaid",
+      metadata: {
+        giveDonation: "1",
+        giveDonorId: String(donorId),
+        giveScope: "central",
+        giveIntendedCents: "10000",
+      },
+    });
+
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountCents).toBe(10_000);
+    expect(rows[0].scope).toBe("central");
+    expect(rows[0].donorName).toBe("Bank Giver");
+    expect(rows[0].sessionId).toBe("cs_ach_pending");
+    // Still no money anywhere.
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("a CARD session records nothing pending — it was never in flight", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_card", donorId, "paid"));
+
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  test("REDELIVERY of the submission doesn't double the pending figure", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const session = giveSession("cs_dupe", donorId, "unpaid");
+
+    // Stripe delivers at least once, and the dedup ledger gates only the
+    // EMAIL — the money paths, this one included, are reached twice on purpose.
+    await postEvent(t, "checkout.session.completed", session, "evt_1");
+    await postEvent(t, "checkout.session.completed", session, "evt_2");
+
+    expect(await pendingRows(t)).toHaveLength(1);
+  });
+
+  test("the debit clears: the pending row is gone and the gift is real", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ok", donorId, "unpaid"));
+    expect(await pendingRows(t)).toHaveLength(1);
+
+    await postEvent(
+      t,
+      "checkout.session.async_payment_succeeded",
+      giveSession("cs_ok", donorId, "paid"),
+    );
+
+    // NOT BOTH. The single most important assertion here: for the four days it
+    // was in flight the digest counted this money once, as pending; from now on
+    // it counts once, as a gift. A surviving pending row would have it in both
+    // halves of the same total.
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  test("the bank refuses it: the pending row is gone and no gift was ever made", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_bad", donorId, "unpaid"));
+    expect(await pendingRows(t)).toHaveLength(1);
+
+    await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_bad" });
+
+    // The row is KEPT as a tombstone — no gift exists on this path, so the row
+    // is the only key that can recognise a resent `completed`. What matters for
+    // the money is that it is no longer `in_flight`, which is what takes it out
+    // of every future digest. A digest already sent that announced it is
+    // deliberately not corrected — see `resolvePendingGift`.
+    const after = await pendingRows(t);
+    expect(after).toHaveLength(1);
+    expect(after[0].status).toBe("failed");
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("an abandoned checkout drops it too — expiry is not a special case", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_gone", donorId, "unpaid"));
+    await postEvent(t, "checkout.session.expired", { id: "cs_gone" });
+
+    // Same tombstone, same reason: no money is coming, and the row is what
+    // stops a late redelivery claiming otherwise.
+    const after = await pendingRows(t);
+    expect(after).toHaveLength(1);
+    expect(after[0].status).toBe("failed");
+  });
+
+  test("an event-page donation in flight is recorded against its event and chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEventPage(s);
+    const donationId = await run(t, (ctx) =>
+      ctx.db.insert("donations", {
+        chapterId: s.chapterId,
+        eventId,
+        name: "Gala Guest",
+        email: "guest@example.com",
+        amountCents: 7_500,
+        currency: "usd",
+        method: "card",
+        status: "pending",
+        stripeCheckoutSessionId: "cs_event",
+        createdAt: Date.now(),
+      }),
+    );
+
+    await postEvent(t, "checkout.session.completed", {
+      id: "cs_event",
+      amount_total: 7_500,
+      payment_status: "unpaid",
+    });
+
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountCents).toBe(7_500);
+    expect(rows[0].scope).toBe(s.chapterId);
+    // The classification links, so the digest's "By giving type" cut puts this
+    // in Events — the same bucket the gift lands in when it settles.
+    expect(rows[0].eventId).toBe(eventId);
+    expect(rows[0].donationId).toBe(donationId);
+  });
+
+  test("a ticket order in flight contributes its ADD-ON GIFT and not its tickets", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEventPage(s);
+    await run(t, (ctx) =>
+      ctx.db.insert("ticketOrders", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Ticket Buyer",
+        email: "buyer@example.com",
+        items: [],
+        // $200 of tickets is REVENUE, never a gift, and has no business in a
+        // giving digest at any stage of its life.
+        totalCents: 20_000,
+        donationCents: 2_500,
+        currency: "usd",
+        status: "pending",
+        stripeCheckoutSessionId: "cs_order",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    await postEvent(t, "checkout.session.completed", {
+      id: "cs_order",
+      amount_total: 22_500,
+      payment_status: "unpaid",
+    });
+
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountCents).toBe(2_500);
+  });
+
+  test("a tickets-only order in flight contributes nothing — no gift is coming", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { eventId } = await seedEventPage(s);
+    await run(t, (ctx) =>
+      ctx.db.insert("ticketOrders", {
+        eventId,
+        chapterId: s.chapterId,
+        name: "Ticket Buyer",
+        email: "buyer@example.com",
+        items: [],
+        totalCents: 20_000,
+        currency: "usd",
+        status: "pending",
+        stripeCheckoutSessionId: "cs_tickets",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+
+    await postEvent(t, "checkout.session.completed", {
+      id: "cs_tickets",
+      amount_total: 20_000,
+      payment_status: "unpaid",
+    });
+
+    expect(await pendingRows(t)).toHaveLength(0);
+  });
+
+  test("a BACKER signup in flight contributes nothing — its session prices no gift", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const pledgeId = await run(t, (ctx) =>
+      ctx.db.insert("pledges", {
+        donorId,
+        scope: "central",
+        amountCents: 5_000,
+        status: "incomplete",
+        origin: "stripe",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // A NON-ZERO total on purpose. A subscription session's `amount_total` is
+    // its first invoice's total and is routinely non-zero, so "there's no
+    // amount to record" is NOT why this is safe — seeding $0 here would have
+    // made this test pass for a reason that isn't the mechanism. It is safe
+    // because the session carries no `giveDonation` marker and matches no
+    // `donations` or `ticketOrders` row, so it falls through to `return false`.
+    // A backer's money becomes a gift through `invoice.paid`, keyed on
+    // `gifts.stripeInvoiceId`; a row keyed on this session could never be
+    // resolved by anything.
+    await postEvent(t, "checkout.session.completed", {
+      id: "cs_backer",
+      amount_total: 5_000,
+      payment_status: "unpaid",
+      metadata: { pledgeId: String(pledgeId) },
+    });
+
+    expect(await pendingRows(t)).toHaveLength(0);
+  });
+
+  // ── The two ways a resolved debit came back from the dead ────────────────
+  //
+  // `by_session` is idempotency against a LIVE row, and a resolved row is
+  // DELETED — so on its own it cannot recognise a debit that has already
+  // cleared. Both of these shipped in the first cut of this feature and both
+  // produced the same permanent phantom: one $100 gift reported by the digest
+  // as `$200.00 from 2 gifts ($100.00 still clearing)`, listed once under
+  // "Every gift" and again under "Still clearing", with both terminal events
+  // already consumed so nothing would ever clean it up.
+
+  test("the settlement arrives FIRST: a late completion doesn't resurrect the debit", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    // Stripe promises neither once-only nor ordered delivery. After an outage
+    // both events queue and redeliver in whatever order — and the completion's
+    // snapshot is FROZEN at creation, so it still reads `unpaid` however long
+    // afterwards it lands.
+    await postEvent(
+      t,
+      "checkout.session.async_payment_succeeded",
+      giveSession("cs_ooo", donorId, "paid"),
+    );
+    expect(await centralGifts(t)).toHaveLength(1);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ooo", donorId, "unpaid"));
+
+    // The gift's own idempotency key is what survives the delete.
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  test("the submission is REDELIVERED after it cleared, and stays cleared", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_resend", donorId, "unpaid"), "evt_a");
+    await postEvent(
+      t,
+      "checkout.session.async_payment_succeeded",
+      giveSession("cs_resend", donorId, "paid"),
+    );
+    expect(await pendingRows(t)).toHaveLength(0);
+
+    // ACH takes 2–4 business days, Stripe retries a failing event for three,
+    // and "Resend" in the Dashboard is an ordinary debugging move.
+    await postEvent(t, "checkout.session.completed", giveSession("cs_resend", donorId, "unpaid"), "evt_b");
+
+    expect(await pendingRows(t)).toHaveLength(0);
+    expect(await centralGifts(t)).toHaveLength(1);
+  });
+
+  // ── The FAILURE half of the same defect ─────────────────────────────────
+  //
+  // The settled gift's `externalRef` only exists if the debit CLEARED. On the
+  // failure path there is no gift and never will be, so deleting the row left
+  // NO key at all — and the same two triggers walked straight back in. Hence
+  // the tombstone.
+
+  test("a resent completion after the bank REFUSED it doesn't resurrect the debit", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_refused", donorId, "unpaid"), "evt_a");
+    await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_refused" });
+
+    // "Resend" in the Dashboard, days later.
+    await postEvent(t, "checkout.session.completed", giveSession("cs_refused", donorId, "unpaid"), "evt_b");
+
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    // Still the tombstone — NOT a fresh in-flight row for money the bank
+    // already refused.
+    expect(rows[0].status).toBe("failed");
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("the FAILURE arrives first: a late completion doesn't resurrect the debit", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    // No pending row was ever written — the failure beat the completion.
+    await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_ooo_fail" });
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ooo_fail", donorId, "unpaid"));
+
+    // Nothing to tombstone, so this one is genuinely open: the completion
+    // creates a row, and the 21-day sweep is what bounds it. Asserted so the
+    // residual gap is a recorded decision rather than a surprise — the blast
+    // radius is one caveated "still clearing" line that never becomes a gift.
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("in_flight");
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("a donor who retries after a refusal is counted ONCE, not twice", async () => {
+    // The compound case: debit refused → donor gives again on a NEW session →
+    // a resend of the OLD completion. Without the tombstone the stale session
+    // lands a phantom beside the live row and one $100 intent reads as $200
+    // still clearing in a single digest.
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_try1", donorId, "unpaid"), "evt_1");
+    await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_try1" });
+    await postEvent(t, "checkout.session.completed", giveSession("cs_try2", donorId, "unpaid"), "evt_2");
+    // …and the old one is resent.
+    await postEvent(t, "checkout.session.completed", giveSession("cs_try1", donorId, "unpaid"), "evt_3");
+
+    const live = (await pendingRows(t)).filter((r) => r.status === "in_flight");
+    expect(live).toHaveLength(1);
+    expect(live[0].sessionId).toBe("cs_try2");
+  });
+
+  test("a swept tombstone doesn't cry wolf about webhook delivery", async () => {
+    // The sweep's `console.error` exists to say "webhooks are being lost".
+    // A tombstone aging out is the system working, and counting it as stranded
+    // would train people to ignore the one log that matters.
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const now = Date.now();
+    await t.mutation(internal.givingPending.recordPendingGift, {
+      sessionId: "cs_old_tombstone",
+      amountTotalCents: 10_000,
+      isGiveDonation: true,
+      giveDonorId: String(donorId),
+      submittedAt: now - 30 * 24 * 60 * 60 * 1000,
+    });
+    await t.mutation(internal.givingPending.resolvePendingGift, {
+      sessionId: "cs_old_tombstone",
+      outcome: "failed",
+    });
+
+    // ASSERTED ON THE LOG ITSELF, not on the return value — the return counts
+    // every row swept, tombstones included, so checking it would prove nothing
+    // about the alarm. The alarm is the whole point of the split.
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args.map(String).join(" "));
+      });
+    try {
+      expect(
+        await t.mutation(internal.givingPending.sweepStrandedPendingGifts, {
+          now,
+        }),
+      ).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await pendingRows(t)).toHaveLength(0);
+    // Nothing claiming a webhook went missing, and the session is not named.
+    expect(errors.join("\n")).not.toContain("Check webhook delivery");
+    expect(errors.join("\n")).not.toContain("cs_old_tombstone");
+  });
+
+  test("a debit that never resolved is swept, and one still in flight is not", async () => {
+    // Stripe stops retrying after about three days and a longer outage loses
+    // the event outright, leaving a row nothing will ever clear. A donor's name
+    // must not sit in a table forever with no screen that shows it.
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const now = Date.now();
+
+    await t.mutation(internal.givingPending.recordPendingGift, {
+      sessionId: "cs_stranded",
+      amountTotalCents: 10_000,
+      isGiveDonation: true,
+      giveDonorId: String(donorId),
+      submittedAt: now - 30 * 24 * 60 * 60 * 1000,
+    });
+    await t.mutation(internal.givingPending.recordPendingGift, {
+      sessionId: "cs_moving",
+      amountTotalCents: 10_000,
+      isGiveDonation: true,
+      giveDonorId: String(donorId),
+      submittedAt: now - 2 * 24 * 60 * 60 * 1000,
+    });
+    expect(await pendingRows(t)).toHaveLength(2);
+
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args.map(String).join(" "));
+      });
+    let swept!: number;
+    try {
+      swept = await t.mutation(
+        internal.givingPending.sweepStrandedPendingGifts,
+        { now },
+      );
+    } finally {
+      spy.mockRestore();
+    }
+
+    expect(swept).toBe(1);
+    // A stranded row DOES raise the alarm, and names the session so somebody
+    // can paste it into the Stripe Dashboard.
+    expect(errors.join("\n")).toContain("Check webhook delivery");
+    expect(errors.join("\n")).toContain("cs_stranded");
+    const left = await pendingRows(t);
+    expect(left).toHaveLength(1);
+    // The one that is genuinely still moving survives.
+    expect(left[0].sessionId).toBe("cs_moving");
   });
 });
 

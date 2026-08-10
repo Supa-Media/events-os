@@ -108,6 +108,31 @@ export type DigestBreakdownRow = {
   count: number;
 };
 
+/**
+ * How long the org tells people a bank debit takes.
+ *
+ * ONE ORG, ONE NUMBER. This is the same figure the donor already has in
+ * writing: `givingComms.onAchSubmitted` mails them "banks take about 2–4
+ * business days to clear one" the moment they authorise the debit. A staff
+ * digest quoting a different range would have the development team chasing a
+ * gift the donor was told was still early — keep the two in step.
+ */
+export const ACH_CLEARING_WINDOW = "2–4 business days";
+
+/** One in-flight ACH gift: authorised by the donor, not yet moved by the bank.
+ *  Deliberately thinner than `NotificationGift` — a pending gift has no donor
+ *  rollups, no first-gift flag and no donor record to link to, because none of
+ *  those are true until the money lands. */
+export type DigestPendingGift = {
+  amountCents: number;
+  /** PUBLIC-FORM INPUT. Escaped at render, like every other donor name here. */
+  donorName: string;
+  /** When the donor authorised the debit — the window bound for pending money,
+   *  and the only date an unarrived gift has. */
+  submittedAt: number;
+  scopeLabel: string;
+};
+
 export type DigestEmailPayload = {
   ruleName: string;
   cadence: "daily" | "weekly";
@@ -116,8 +141,17 @@ export type DigestEmailPayload = {
   scopeLabel: string;
   periodStart: number;
   periodEnd: number;
+  /** Money that ARRIVED in the period PLUS in-flight ACH authorised in it. The
+   *  headline figure, and what every breakdown below sums to. */
   totalCents: number;
+  /** How much of `totalCents` is a bank debit that has NOT cleared. Zero on a
+   *  period with no ACH in it, which is most of them. */
+  pendingCents: number;
+  /** Settled gifts PLUS pending ones — the "from N gifts" count, matching
+   *  `totalCents`'s basis so the two can't tell different stories. */
   giftCount: number;
+  /** How many of `giftCount` are still clearing. */
+  pendingCount: number;
   largest: NotificationGift | null;
   /** By chapter — every gift's book, with Central named as Central. */
   byScope: DigestBreakdownRow[];
@@ -127,10 +161,14 @@ export type DigestEmailPayload = {
    *  owner asked for; `lib/giftLabels.ts#giftType` puts every gift in exactly
    *  one bucket, which is why it sums. */
   byType: DigestBreakdownRow[];
-  /** The itemized gifts, newest first, capped. */
+  /** The itemized SETTLED gifts, newest first, capped. */
   gifts: NotificationGift[];
-  /** How many gifts the totals counted but the list omitted. */
+  /** The itemized IN-FLIGHT ACH gifts, newest authorisation first, capped. */
+  pending: DigestPendingGift[];
+  /** How many settled gifts the totals counted but the list omitted. */
   omittedCount: number;
+  /** How many pending gifts the totals counted but the list omitted. */
+  pendingOmittedCount: number;
   /** The window was CUT SHORT — it held more than one digest run reads, so the
    *  totals above are a FLOOR. The remainder is not lost: the watermark stopped
    *  where the read stopped, so the next digest picks it up. Said out loud
@@ -336,6 +374,70 @@ function overrunNote(
   );
 }
 
+/**
+ * The sentence that keeps this email honest.
+ *
+ * The headline total includes bank debits that have been authorised and not
+ * paid, because the owner asked for ACH "in the mix" — which is right, it is
+ * committed giving and a fundraising team should see it the week it happens.
+ * The whole cost of that decision is that the headline is no longer a bank
+ * balance, so this paragraph is not a footnote: it is the thing that makes the
+ * number above it safe to quote.
+ *
+ * Four facts, in the order a reader needs them: how much isn't here yet, how
+ * much IS, that a bank can still refuse it, and — the one that is easy to
+ * forget to say — that a transfer which DOES clear is counted again, as a
+ * settled gift, in the digest covering the day it lands.
+ *
+ * The refusal clause matters most: the failure path
+ * (`checkout.session.async_payment_failed`) silently drops the amount from
+ * every later digest and deliberately sends no correction, so the only warning
+ * anyone ever gets that a figure might not survive is this line.
+ *
+ * The clearing clause is what stops the other mistake. Pending is windowed on
+ * when the debit was AUTHORISED and a gift on when it ARRIVED, which are days
+ * apart — so adding a quarter's digest headlines together over-counts every ACH
+ * gift exactly once. Each digest is true about its own period; the sum of them
+ * is not a total, and a reader has to be told that where they'd notice.
+ *
+ * Rendered directly under the headline, before the summary panel and before
+ * every breakdown, so there is no reading order in which the total is seen
+ * without it.
+ */
+function pendingNote(payload: DigestEmailPayload): string {
+  if (payload.pendingCents <= 0) return "";
+  const settled = payload.totalCents - payload.pendingCents;
+  const n = payload.pendingCount;
+  return emailPanel(
+    emailParagraph(
+      `<b>${esc(formatCents(payload.pendingCents))} of this total hasn't cleared the bank yet.</b> ` +
+        `${n === 1 ? "One gift" : `${n} gifts`} came in by bank transfer (ACH), which takes about ` +
+        `${esc(ACH_CLEARING_WINDOW)} to land — so it's committed, but it isn't in the account. ` +
+        `<b>${esc(formatCents(settled))}</b> of the total has actually settled. ` +
+        `A bank can still refuse a transfer; if one is, it simply drops out of the next digest. ` +
+        `And when one clears you'll see it again — as a settled gift, in the digest covering the day it lands — ` +
+        `so don't add these totals up across weeks.`,
+      { margin: "0" },
+    ),
+    { margin: "0 0 16px" },
+  );
+}
+
+/** One in-flight ACH gift. No donor link and no first-gift flag, deliberately —
+ *  neither is a fact yet. See `DigestPendingGift`. */
+function pendingRowHtml(gift: DigestPendingGift): string {
+  const t = EMAIL_THEME;
+  const meta = `Authorized ${giftDate(gift.submittedAt)} · ${gift.scopeLabel} · still clearing`;
+  return (
+    `<div style="padding:10px 0;border-bottom:1px solid ${t.border}">` +
+    `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ strong: true })}">` +
+    `${esc(formatCents(gift.amountCents))} — ${esc(gift.donorName)}` +
+    `</div>` +
+    `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ size: 12 })}">${esc(meta)}</div>` +
+    `</div>`
+  );
+}
+
 function giftRowHtml(gift: NotificationGift): string {
   const t = EMAIL_THEME;
   const meta = [
@@ -394,6 +496,15 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
     : overrun
       ? `since ${DATE_FMT.format(new Date(payload.periodStart))}`
       : `this ${period}`;
+  // THE CAVEAT RIDES IN THE SUBJECT, not only in the body. A subject line is
+  // where a busy recipient triages and, more to the point, it is what gets
+  // quoted in a chat message and read aloud in a meeting by someone who never
+  // opened the mail. A headline that silently folds in money the bank hasn't
+  // moved is exactly the figure that ends up in a board deck as cash.
+  const clearing =
+    payload.pendingCents > 0
+      ? ` (${formatCents(payload.pendingCents)} still clearing)`
+      : "";
   const subject =
     payload.giftCount === 0
       ? payload.countTruncated
@@ -401,7 +512,7 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
         : `No giving ${when} — ${payload.scopeLabel}`
       : `${formatCents(payload.totalCents)} from ${payload.giftCount} ${
           payload.giftCount === 1 ? "gift" : "gifts"
-        } ${when} — ${payload.scopeLabel}`;
+        }${clearing} ${when} — ${payload.scopeLabel}`;
 
   const header = [
     emailEyebrow(esc(`${payload.cadence} giving digest`)),
@@ -439,16 +550,38 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
   }
 
   const largest = payload.largest;
+  const hasPending = payload.pendingCents > 0;
   const inner = [
     header,
+    // BEFORE the overrun note and before the panel: no reading order reaches
+    // the total without the caveat.
+    pendingNote(payload),
     overrunNote(overrun, payload, period),
     emailPanel(
       [
         detailRow("Gifts", String(payload.giftCount)),
         detailRow("Total", esc(formatCents(payload.totalCents))),
+        // The two halves of that total, spelled out on the panel as well as in
+        // the paragraph — the panel is what people screenshot.
+        hasPending
+          ? detailRow(
+              "Settled",
+              esc(formatCents(payload.totalCents - payload.pendingCents)),
+            )
+          : "",
+        hasPending
+          ? detailRow(
+              "Still clearing",
+              breakdownValue(payload.pendingCents, payload.pendingCount),
+            )
+          : "",
         largest
           ? detailRow(
-              "Largest",
+              // Named for what it actually is whenever that could mislead: with
+              // pending money in the period, the biggest gift OF THE PERIOD may
+              // well be one of the ones that hasn't landed. See the reasoning
+              // in `buildDigestPayload`.
+              hasPending ? "Largest settled" : "Largest",
               `${esc(formatCents(largest.amountCents))} — ${donorNameHtml(largest.donor)}`,
             )
           : "",
@@ -462,11 +595,30 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
     breakdownHtml("By giving type", payload.byType),
     breakdownHtml("By chapter", payload.byScope),
     breakdownHtml("How it arrived", payload.byMethod),
-    emailSubheading("Every gift", { size: 14, margin: "0 0 4px" }),
+    // Guarded, because a period can now consist ENTIRELY of pending ACH — the
+    // digest sends, the headline is real, and there is not one settled gift to
+    // list. An "Every gift" heading over nothing reads as a bug.
+    payload.gifts.length > 0
+      ? emailSubheading("Every gift", { size: 14, margin: "0 0 4px" })
+      : "",
     payload.gifts.map(giftRowHtml).join(""),
     payload.omittedCount > 0
       ? emailParagraph(
           `…and ${payload.omittedCount} more, counted in the totals above. Open the gifts ledger to see them all.`,
+          { size: 12, margin: "12px 0 0" },
+        )
+      : "",
+    // ITEMIZED SEPARATELY, never mixed into the list above. These rows are not
+    // in the gifts ledger and will not be until the bank moves the money;
+    // interleaving them with settled gifts would put a row in front of a
+    // fundraiser that looks exactly like one they can thank someone for.
+    payload.pending.length > 0
+      ? emailSubheading("Still clearing", { size: 14, margin: "20px 0 4px" })
+      : "",
+    payload.pending.map(pendingRowHtml).join(""),
+    payload.pendingOmittedCount > 0
+      ? emailParagraph(
+          `…and ${payload.pendingOmittedCount} more bank transfers still clearing, counted in the totals above.`,
           { size: 12, margin: "12px 0 0" },
         )
       : "",

@@ -447,6 +447,32 @@ async function settleCheckoutSession(
   ctx: ActionCtx,
   obj: StripeCheckoutSession,
 ): Promise<void> {
+  // FIRST, and unconditionally: this session is no longer in flight. Every
+  // branch below books real money, and the moment any of them does, a
+  // `pendingGifts` row for the same session would be a second copy of it in the
+  // giving digest. No-ops for the card sessions that were never pending, which
+  // is almost all of them. See `givingPending.resolvePendingGift`.
+  //
+  // ── WHY DELETE-THEN-WRITE, AND WHAT MAKES IT FREE ────────────────────────
+  // Each `runMutation` from an action is its own transaction, so there is a
+  // real instant between this delete and the gift being written. The ordering
+  // decides what that instant looks like: delete-first holds the money in
+  // NEITHER place for a moment; write-first would hold it in BOTH. A digest
+  // that misses a gift for a few hundred milliseconds is invisible and
+  // self-correcting; one that reports it twice is a number somebody quotes.
+  //
+  // And the gap costs nothing, because of a constant that lives in another
+  // file: `DIGEST_LAG_MS` (60s) closes every digest window at `now − 60s`. A
+  // gift written δ<60s after this delete has a `receivedAt` BEYOND the current
+  // window's close, so it lands in the next window and is reported exactly
+  // once — never lost. ⚠ THAT IS A DEPENDENCY, not a coincidence: shrinking
+  // `DIGEST_LAG_MS` towards zero would open a window in which a gift settling
+  // mid-sweep is in no digest at all. See `lib/givingNotificationRules.ts`.
+  await ctx.runMutation(internal.givingPending.resolvePendingGift, {
+    sessionId: obj.id,
+    outcome: "settled",
+  });
+
   if (obj.metadata?.giveDonation === "1") {
     // A one-time "give" checkout — settle it via the single gifts write
     // path (`recordGiveDonationPaid`, idempotent on the session id). Amount
@@ -548,11 +574,26 @@ async function settleCheckoutSession(
  * `givingDonations.ts`'s module doc — "an abandoned checkout leaves no trace"),
  * so a failed debit has left nothing behind to reverse. That property is why
  * gating settlement is a complete fix for the pre-settlement window.
+ *
+ * WHAT IS NEW SINCE THAT WAS WRITTEN: an in-flight ACH debit now leaves exactly
+ * one trace, a `pendingGifts` row, so the giving digest can say how much of its
+ * total hasn't cleared. Dropping it here is what stops a refused debit becoming
+ * a phantom — the amount is gone from every digest after this instant. It is
+ * still not a `gifts` row and still never was, so the sentence above holds for
+ * the ledger and for book value.
  */
 async function cancelCheckoutSession(
   ctx: ActionCtx,
   sessionId: string,
 ): Promise<void> {
+  // `failed`, not `settled`: this leaves the row behind as a TOMBSTONE. No
+  // gift exists to act as the key on this path — the bank refused the money —
+  // so the row is the only thing that can recognise a resent `completed` and
+  // refuse it. See `givingPending.resolvePendingGift`.
+  await ctx.runMutation(internal.givingPending.resolvePendingGift, {
+    sessionId,
+    outcome: "failed",
+  });
   await ctx.runMutation(internal.ticketing.cancelPendingOrder, { sessionId });
   await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
 }
@@ -669,11 +710,18 @@ http.route({
       } else {
         // A DELAYED payment method — today that means ACH direct debit, which
         // Stripe enabled on this account on 2026-08-09. The donor has finished
-        // the form and authorised the debit; the money has not moved. Record
-        // nothing: no gift, no fulfilled order, no activity-wall entry. The
-        // pending rows the prepare step wrote stay pending, and one of
-        // `async_payment_succeeded` / `async_payment_failed` resolves them in a
-        // few business days.
+        // the form and authorised the debit; the money has not moved. Record no
+        // MONEY: no gift, no fulfilled order, no activity-wall entry, nothing
+        // in the ledger and nothing in book value. The pending rows the prepare
+        // step wrote stay pending, and one of `async_payment_succeeded` /
+        // `async_payment_failed` resolves them in a few business days.
+        //
+        // ONE THING IS WRITTEN, and it is not money: a `pendingGifts` row, so
+        // the weekly giving digest can report how much of its total is a bank
+        // transfer still clearing. This is the only instant at which that can
+        // be recorded honestly — before it the donor might still walk away,
+        // after it the money either exists or doesn't. Nothing outside the
+        // digest reads that table; see `schema/givingPlatform.ts#pendingGifts`.
         //
         // This log is deliberately not an error — it is the correct, expected
         // path for a bank debit, and it is the breadcrumb that says an ACH
@@ -682,6 +730,23 @@ http.route({
           `[stripe] checkout ${sessionId} completed but unsettled ` +
             `(payment_status=${obj.payment_status}) — waiting for async settlement`,
         );
+        // Idempotent on the session id, and it resolves the shape itself (a
+        // `/give` gift, an event donation, a ticket order's add-on gift, or
+        // none of those). AWAITED, unlike the email below: it is a single
+        // bounded mutation, and a digest that silently missed in-flight money
+        // would be indistinguishable from there being none.
+        const intendedMeta = Number(obj.metadata?.giveIntendedCents);
+        await ctx.runMutation(internal.givingPending.recordPendingGift, {
+          sessionId,
+          amountTotalCents: obj.amount_total ?? 0,
+          isGiveDonation: obj.metadata?.giveDonation === "1",
+          ...(obj.metadata?.giveDonorId
+            ? { giveDonorId: obj.metadata.giveDonorId }
+            : {}),
+          ...(Number.isFinite(intendedMeta)
+            ? { giveIntendedCents: intendedMeta }
+            : {}),
+        });
         // …and TELL THEM. From the donor's side this is the moment they
         // finished giving; from ours it's the moment we decided to record
         // nothing for days. Silence across that gap reads as "did that

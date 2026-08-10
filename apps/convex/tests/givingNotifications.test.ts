@@ -19,6 +19,7 @@ import {
 import {
   renderDigestEmail,
   renderImmediateGiftEmail,
+  type DigestPendingGift,
   type NotificationGift,
 } from "../lib/givingNotificationEmails";
 import {
@@ -97,6 +98,20 @@ function giftLike(
     "scope" | "amountCents"
   >;
 }
+
+/**
+ * The pending-ACH half of a digest payload, empty.
+ *
+ * Nearly every render test here is about the SETTLED side, and spreading this
+ * says so in one line rather than restating four zeroes eight times. The tests
+ * that are about pending money set the fields themselves.
+ */
+const NO_PENDING = {
+  pendingCents: 0,
+  pendingCount: 0,
+  pending: [] as DigestPendingGift[],
+  pendingOmittedCount: 0,
+};
 
 function sampleGift(over: Partial<NotificationGift> = {}): NotificationGift {
   return {
@@ -884,6 +899,7 @@ describe("escaping — donor names come from a public form", () => {
       // same. Pinned with the same payload.
       byType: [{ label: XSS, cents: 50_000, count: 1 }],
       gifts: [nasty],
+      ...NO_PENDING,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -921,6 +937,7 @@ describe("the digest email", () => {
       byMethod: [],
       byType: [],
       gifts: [],
+      ...NO_PENDING,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -966,6 +983,7 @@ describe("the digest email", () => {
         { label: "One-time", cents: 2_500, count: 1 },
       ],
       gifts: [big, small],
+      ...NO_PENDING,
       omittedCount: 3,
       countTruncated: false,
     });
@@ -1006,6 +1024,7 @@ describe("the digest email", () => {
       byMethod: [{ label: "Chapter OS", cents: 33_000, count: 1 }],
       byType: [{ label: "One-time", cents: 33_000, count: 1 }],
       gifts: [sampleGift({ amountCents: 33_000 })],
+      ...NO_PENDING,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -1027,6 +1046,7 @@ describe("the digest email", () => {
       byMethod: [],
       byType: [],
       gifts: [],
+      ...NO_PENDING,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -1050,6 +1070,7 @@ describe("the digest email", () => {
       byMethod: [{ label: "Cash", cents: 1_000, count: 1 }],
       byType: [{ label: "One-time", cents: 1_000, count: 1 }],
       gifts: [sampleGift({ amountCents: 1_000 })],
+      ...NO_PENDING,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -1085,6 +1106,7 @@ describe("the digest email", () => {
         { label: "Recurring", cents: 500, count: 1 },
       ],
       gifts: [],
+      ...NO_PENDING,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -2424,6 +2446,7 @@ describe("digests", () => {
       byMethod: [],
       byType: [],
       gifts: [],
+      ...NO_PENDING,
       omittedCount: 0,
       countTruncated: true,
     });
@@ -4494,6 +4517,645 @@ describe("send now", () => {
         await expect(sendNow(s.as, ruleId)).rejects.toThrow(ConvexError);
       });
       expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// ACH in the mix — a total that includes money the bank hasn't moved yet
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The owner, 2026-08-10: *"We should add ACH giving into the mix, just with a
+ * caveat of how much of the total is ach and it will take some days to
+ * clear/process"*.
+ *
+ * So the headline counts committed giving whether or not the bank has caught
+ * up, and the email states — unmissably — how much of it isn't there yet.
+ * These hold down the two halves of that sentence, plus the two ways it can go
+ * wrong afterwards (the debit clears; the bank refuses it).
+ *
+ * WHAT IS ASSERTED ELSEWHERE, deliberately, so these stay about the email:
+ *  · the lifecycle of a `pendingGifts` row through the real Stripe webhook —
+ *    `tests/stripeAsyncSettlement.test.ts`;
+ *  · that none of this moves book value — `tests/reconciliationEngine.test.ts`,
+ *    which asserts `accountBalances` is identical before and after.
+ */
+
+/** An ACH debit authorised at `submittedAt` and not yet cleared — what the
+ *  `checkout.session.completed`-unsettled webhook branch writes. */
+async function seedPendingAch(
+  s: ChapterSetup,
+  spec: {
+    submittedAt: number;
+    amountCents: number;
+    donorName?: string;
+    scope?: Id<"chapters"> | "central";
+    sessionId?: string;
+    eventId?: Id<"events">;
+    /** A failed-debit TOMBSTONE rather than money in flight. */
+    status?: "in_flight" | "failed";
+  },
+): Promise<Id<"pendingGifts">> {
+  return run(s.t, (ctx) =>
+    ctx.db.insert("pendingGifts", {
+      sessionId: spec.sessionId ?? `cs_${spec.submittedAt}_${spec.amountCents}`,
+      scope: (spec.scope ?? "central") as "central",
+      amountCents: spec.amountCents,
+      currency: "usd",
+      submittedAt: spec.submittedAt,
+      status: spec.status ?? "in_flight",
+      donorName: spec.donorName ?? "Bank Giver",
+      ...(spec.eventId ? { eventId: spec.eventId } : {}),
+      createdAt: spec.submittedAt,
+    }),
+  );
+}
+
+/** A weekly all-books rule, created well before the window under test. */
+async function weeklyRule(
+  s: ChapterSetup,
+): Promise<Id<"givingNotificationRules">> {
+  let ruleId!: Id<"givingNotificationRules">;
+  await atClock(s.t, SETUP_AT, async () => {
+    ruleId = await saveRule(s.as, {
+      name: "Weekly roundup",
+      cadence: "weekly",
+      sendHourLocal: 8,
+      sendWeekday: 1,
+    });
+  });
+  return ruleId;
+}
+
+describe("a digest counts ACH still clearing, and says so", () => {
+  /**
+   * THE PRODUCTION SHAPE. Settled gifts and one in-flight bank debit in the
+   * same week — the arrangement every other assertion here is a slice of.
+   *
+   * $115.00 + $75.00 of settled giving, plus a $500.00 ACH authorised on the
+   * Thursday and still clearing on the Monday. The headline is $690.00 and the
+   * email is unambiguous about which $500.00 of it is not in the account.
+   */
+  test("the headline includes it, the caveat names it, and every cut still sums", async () => {
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+
+    // Spread deliberately across every axis the email cuts on, so each of the
+    // three breakdowns has at least two rows to partition and "it sums" is a
+    // real claim rather than one row restating the headline:
+    //   · by CHAPTER   — Central $190.00 (2), New York $500.00 (1)
+    //   · by TYPE      — One-time $615.00 (2), Recurring $75.00 (1)
+    //   · by RAILS     — Cash $115.00, Chapter OS $75.00, clearing $500.00
+    const at = MON_8AM_ET - 3 * DAY_MS;
+    await run(s.t, async (ctx) => {
+      const donorId = await ctx.db.insert("donors", {
+        scope: "central",
+        kind: "individual" as const,
+        name: "Settled Giver",
+        status: "prospect" as const,
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: SETUP_AT,
+      });
+      const pledgeId = await ctx.db.insert("pledges", {
+        donorId,
+        scope: "central",
+        amountCents: 7_500,
+        status: "active" as const,
+        origin: "stripe" as const,
+        createdAt: SETUP_AT,
+      });
+      await ctx.db.insert("gifts", {
+        donorId,
+        scope: "central",
+        amountCents: 11_500,
+        currency: "usd",
+        receivedAt: at,
+        method: "cash",
+        createdAt: at,
+      });
+      await ctx.db.insert("gifts", {
+        donorId,
+        scope: "central",
+        amountCents: 7_500,
+        currency: "usd",
+        receivedAt: at + 1000,
+        method: "stripe",
+        pledgeId,
+        createdAt: at + 1000,
+      });
+    });
+    await seedPendingAch(s, {
+      submittedAt: at + 2000,
+      amountCents: 50_000,
+      scope: s.chapterId,
+      donorName: "Patient Giver",
+    });
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      const { subject, html } = cap.sent[0];
+
+      // ── 1. The headline counts all three, and the SUBJECT carries the
+      // caveat — a subject line is what gets quoted in a meeting by someone
+      // who never opened the mail.
+      expect(subject).toBe(
+        "$690.00 from 3 gifts ($500.00 still clearing) this week — All books",
+      );
+      expect(html).toContain("$690.00");
+
+      // ── 2. The caveat states the figure, states the settled remainder, and
+      // says a bank can still refuse it.
+      expect(html).toContain(
+        "$500.00 of this total hasn't cleared the bank yet.",
+      );
+      expect(html).toContain("2–4 business days");
+      expect(html).toContain("<b>$190.00</b> of the total has actually settled");
+      expect(html).toContain("A bank can still refuse a transfer");
+
+      // …and the panel says the same thing, because the panel is what people
+      // screenshot.
+      expect(html).toContain("Settled:");
+      expect(html).toContain("Still clearing:");
+
+      // ── 3. EVERY CUT SUMS TO $690.00. Four `Total:` lines at that figure:
+      // the summary panel's, plus one per breakdown section. A section that
+      // dropped the pending gift on the floor would print $190.00 here.
+      const totals = html.match(/Total:<\/span>\s*<span[^>]*>\$690\.00/g) ?? [];
+      expect(totals).toHaveLength(4);
+      // Money AND count partition: each SECTION total is $690.00 over 3 gifts.
+      // (The summary panel's `Total` prints no count, which is why it isn't 4.)
+      expect(
+        html.match(
+          /Total:<\/span>\s*<span[^>]*>\$690\.00 <span[^>]*>\(3\)/g,
+        ) ?? [],
+      ).toHaveLength(3);
+      // …and each cut really is split, so those totals are sums and not
+      // restatements.
+      expect(html).toContain("New York");
+      expect(html).toContain("Recurring");
+      expect(html).toContain("One-time");
+      expect(html).toContain("Cash");
+
+      // ── 4. The rails cut is where pending is visible AS pending, so a reader
+      // skimming "How it arrived" sees it without the paragraph above.
+      expect(html).toContain("Bank transfer — still clearing");
+
+      // ── 5. It is itemized in its own section, never mixed into the gifts
+      // list — a fundraiser must not see a row that looks thankable and isn't.
+      expect(html).toContain("Still clearing</");
+      expect(html).toContain("Patient Giver");
+      expect(html).toContain("still clearing");
+
+      // ── 6. "Largest" is renamed for what it actually is, because with
+      // $500.00 pending the biggest gift of the week is not the biggest
+      // SETTLED one.
+      expect(html).toContain("Largest settled:");
+      expect(html).not.toContain("Largest:");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("with nothing pending the email says nothing about clearing, and Largest is Largest", async () => {
+    // THE CONTROL. Every sentence the feature adds has to be absent on the
+    // periods that have no ACH in them, which is most of them — an email that
+    // explains bank transfers to a team that took three cheques is noise.
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+    const donorId = await seedDonor(s, "Settled Giver");
+    await seedRawGifts(s, donorId, [
+      { receivedAt: MON_8AM_ET - 3 * DAY_MS, amountCents: 11_500 },
+    ]);
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      const { subject, html } = cap.sent[0];
+      expect(subject).toBe("$115.00 from 1 gift this week — All books");
+      expect(subject).not.toContain("clearing");
+      expect(html).not.toContain("hasn't cleared the bank yet");
+      expect(html).not.toContain("Still clearing");
+      expect(html).not.toContain("Bank transfer");
+      expect(html).toContain("Largest:");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("the debit clears: it is counted once as a gift, never as both", async () => {
+    // A window containing the WHOLE lifecycle. The pending row is resolved the
+    // moment the gift is written, so a digest reading the period afterwards
+    // sees one $500.00 gift — not $1,000.00, and not a "still clearing" line
+    // about money that is already in the account.
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+
+    const submitted = MON_8AM_ET - 4 * DAY_MS;
+    await seedPendingAch(s, {
+      submittedAt: submitted,
+      amountCents: 50_000,
+      sessionId: "cs_clears",
+      donorName: "Patient Giver",
+    });
+    // …four days later the bank moves it: the webhook's resolve, then the gift.
+    await s.t.mutation(internal.givingPending.resolvePendingGift, {
+      sessionId: "cs_clears",
+      outcome: "settled",
+    });
+    const donorId = await seedDonor(s, "Patient Giver");
+    await seedRawGifts(s, donorId, [
+      { receivedAt: submitted + 2 * DAY_MS, amountCents: 50_000 },
+    ]);
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      const { subject, html } = cap.sent[0];
+      // ONCE. $1,000.00 here would be the double-count this asserts against.
+      expect(subject).toBe("$500.00 from 1 gift this week — All books");
+      expect(html).not.toContain("hasn't cleared the bank yet");
+      expect(html).not.toContain("Still clearing");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("the bank refuses it: it vanishes from the next digest, with no correction", async () => {
+    // Requirement #4. The first digest announced $500.00 on its way and that
+    // email is out in the world; nothing chases it. What must be true is that
+    // the amount is simply GONE from everything sent afterwards.
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+
+    const submitted = MON_8AM_ET - 4 * DAY_MS;
+    await seedPendingAch(s, {
+      submittedAt: submitted,
+      amountCents: 50_000,
+      sessionId: "cs_fails",
+      donorName: "Bounced Giver",
+    });
+
+    const cap = captureEmails();
+    try {
+      // Monday: the digest reports it as clearing.
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent[0].subject).toContain("$500.00 still clearing");
+      cap.sent.length = 0;
+
+      // The bank refuses the debit — `cancelCheckoutSession`'s resolve. The row
+      // is KEPT as a tombstone (so a resent webhook can be refused) and is no
+      // longer `in_flight`, which is what takes it out of the digest.
+      await s.t.mutation(internal.givingPending.resolvePendingGift, {
+        sessionId: "cs_fails",
+        outcome: "failed",
+      });
+
+      // A manual send of the SAME trailing week now: the money is gone, and no
+      // apology is issued for the email that already went.
+      const ruleId = await run(s.t, async (ctx) => {
+        const rules = await ctx.db.query("givingNotificationRules").collect();
+        return rules[0]._id;
+      });
+      await atClock(s.t, MON_8AM_ET + 60 * 60 * 1000, async () => {
+        expect(await sendNow(s.as, ruleId)).toEqual({
+          status: "sent",
+          emailsSent: 1,
+        });
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).not.toContain("clearing");
+      expect(cap.sent[0].html).not.toContain("Bounced Giver");
+      expect(cap.sent[0].html).not.toContain("hasn't cleared the bank yet");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a period of nothing BUT pending money still sends, and is not called empty", async () => {
+    // The empty-daily asymmetry says a "nothing came in today" mail is one
+    // people learn to delete. A $5,000 bank debit authorised this morning is
+    // not nothing, and hiding it behind the fact that the bank is slow would
+    // bury the most interesting fact of the day.
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, {
+        name: "Daily roundup",
+        cadence: "daily",
+        sendHourLocal: 8,
+      });
+    });
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 6 * 60 * 60 * 1000,
+      amountCents: 500_000,
+      donorName: "Patient Giver",
+    });
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toBe(
+        "$5,000.00 from 1 gift ($5,000.00 still clearing) this day — All books",
+      );
+      // Not the empty template, and no orphan "Every gift" heading over a list
+      // that has nothing settled to put in it.
+      expect(cap.sent[0].html).not.toContain("No gifts came in");
+      expect(cap.sent[0].html).not.toContain("Every gift");
+      expect(cap.sent[0].html).toContain("Patient Giver");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("an empty daily with no pending money is still skipped", async () => {
+    // The asymmetry itself is untouched — this is the half that could have been
+    // broken by widening the "did anything happen?" test.
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, {
+        name: "Daily roundup",
+        cadence: "daily",
+        sendHourLocal: 8,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        const out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+        expect(out).toMatchObject({ digestsSent: 0 });
+      });
+      expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a rule's amount floor and its scope apply to pending money too", async () => {
+    // `ruleMatchesGift` is reused rather than reimplemented, and this is why it
+    // matters: a rule set to "$500 and up on New York" must not start
+    // announcing $5 central bank debits merely because they haven't cleared.
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, {
+        name: "Big New York gifts",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+        scope: s.chapterId,
+        minAmountCents: 50_000,
+      });
+    });
+    const at = MON_8AM_ET - 3 * DAY_MS;
+    // Under the floor, right book.
+    await seedPendingAch(s, {
+      submittedAt: at,
+      amountCents: 500,
+      scope: s.chapterId,
+      sessionId: "cs_small",
+      donorName: "Small Giver",
+    });
+    // Over the floor, wrong book.
+    await seedPendingAch(s, {
+      submittedAt: at + 1,
+      amountCents: 90_000,
+      scope: "central",
+      sessionId: "cs_central",
+      donorName: "Central Giver",
+    });
+    // Over the floor, right book — the only one that should appear.
+    await seedPendingAch(s, {
+      submittedAt: at + 2,
+      amountCents: 60_000,
+      scope: s.chapterId,
+      sessionId: "cs_match",
+      donorName: "Big Giver",
+    });
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toBe(
+        "$600.00 from 1 gift ($600.00 still clearing) this week — New York",
+      );
+      expect(cap.sent[0].html).toContain("Big Giver");
+      expect(cap.sent[0].html).not.toContain("Small Giver");
+      expect(cap.sent[0].html).not.toContain("Central Giver");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("send now shows exactly what the scheduled run would", async () => {
+    // Requirement #6. The manual send exists to answer "does my digest work?",
+    // and it is worthless if the answer omits the newest thing in it. Both
+    // paths go through `buildDigestPayload`, so this asserts they agree
+    // character for character on the parts that are about pending money.
+    const s = await devDirectorSetup();
+    const ruleId = await weeklyRule(s);
+
+    const at = MON_8AM_ET - 3 * DAY_MS;
+    const donorId = await seedDonor(s, "Settled Giver");
+    await seedRawGifts(s, donorId, [{ receivedAt: at, amountCents: 11_500 }]);
+    await seedPendingAch(s, {
+      submittedAt: at + 1000,
+      amountCents: 50_000,
+      donorName: "Patient Giver",
+    });
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      const scheduled = cap.sent[0];
+      cap.sent.length = 0;
+
+      // An hour later, by hand. Same trailing week, so the same money.
+      await atClock(s.t, MON_9AM_ET, async () => {
+        expect(await sendNow(s.as, ruleId)).toEqual({
+          status: "sent",
+          emailsSent: 1,
+        });
+      });
+      const manual = cap.sent[0];
+
+      expect(manual.subject).toBe(scheduled.subject);
+      expect(manual.subject).toContain("$500.00 still clearing");
+      expect(manual.html).toContain(
+        "$500.00 of this total hasn't cleared the bank yet.",
+      );
+      expect(manual.html).toContain("Patient Giver");
+      // A preview consumes nothing, so the pending row is still there for the
+      // next scheduled run to find.
+      const rows = await run(s.t, (ctx) => ctx.db.query("pendingGifts").collect());
+      expect(rows).toHaveLength(1);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a donor name from the public give form is escaped, not rendered", async () => {
+    // `pendingGifts.donorName` comes off the same unbounded public form every
+    // other donor name here does, and it reaches a NEW template branch that the
+    // existing escaping test could not have covered.
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 3 * DAY_MS,
+      amountCents: 50_000,
+      donorName: '<img src=x onerror=alert(1)>',
+    });
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      const html = cap.sent[0].html;
+      expect(html).not.toContain("<img");
+      expect(html).toContain("&lt;img src=x onerror=alert(1)&gt;");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a debit stranded past the age ceiling stops counting, even in a long window", async () => {
+    // The sweep deletes these daily, but a window that has legitimately run
+    // long (a rule that missed a month of runs reports the month) could
+    // otherwise give a stranded row a second airing before the cron gets to it.
+    // A weekly window reaches seven days back and the ceiling is three weeks,
+    // so this can never cut off a row a normal digest was going to report.
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+
+    // Authorised 30 days ago and never resolved — Stripe lost the event.
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 30 * DAY_MS,
+      amountCents: 50_000,
+      sessionId: "cs_stranded",
+      donorName: "Stranded Giver",
+    });
+    // …and one that really is still moving.
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 2 * DAY_MS,
+      amountCents: 10_000,
+      sessionId: "cs_moving",
+      donorName: "Patient Giver",
+    });
+
+    const cap = captureEmails();
+    try {
+      // A rule that has sat unrun for six weeks: the window opens far enough
+      // back to reach both rows.
+      await run(s.t, async (ctx) => {
+        const rules = await ctx.db.query("givingNotificationRules").collect();
+        await ctx.db.patch(rules[0]._id, {
+          lastSentAt: MON_8AM_ET - 42 * DAY_MS,
+          watermarkFromRun: true,
+        });
+      });
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      // $100.00, not $600.00 — the stranded row is not in flight, it is lost.
+      expect(cap.sent[0].subject).toContain("$100.00 still clearing");
+      expect(cap.sent[0].html).toContain("Patient Giver");
+      expect(cap.sent[0].html).not.toContain("Stranded Giver");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("the caveat says a cleared transfer will be counted again, as settled", async () => {
+    // Pending is windowed on when the debit was AUTHORISED and a gift on when
+    // it ARRIVED — days apart. Adding digest headlines across weeks therefore
+    // over-counts every ACH gift exactly once, and the only place a reader
+    // could learn that is this sentence.
+    const s = await devDirectorSetup();
+    await weeklyRule(s);
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 3 * DAY_MS,
+      amountCents: 50_000,
+    });
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent[0].html).toContain(
+        "when one clears you'll see it again",
+      );
+      expect(cap.sent[0].html).toContain("don't add these totals up across weeks");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("pending is windowed on submission, so no two digests report it twice", async () => {
+    // `submittedAt` is the pending row's answer to `receivedAt`: windows
+    // partition it exactly as they partition the gifts axis. A bank debit that
+    // takes longer than the period is therefore reported as clearing ONCE — by
+    // the digest covering the day it was authorised — and never again.
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, {
+        name: "Daily roundup",
+        cadence: "daily",
+        sendHourLocal: 8,
+      });
+    });
+    await seedPendingAch(s, {
+      submittedAt: MON_8AM_ET - 6 * 60 * 60 * 1000,
+      amountCents: 50_000,
+      donorName: "Patient Giver",
+    });
+
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toContain("$500.00 still clearing");
+      cap.sent.length = 0;
+
+      // Tuesday: the debit is STILL in flight (the row is untouched), and the
+      // day's digest says nothing about it — it was authorised on Monday.
+      await atClock(s.t, TUE_8AM_ET, async () => {
+        const out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+        expect(out).toMatchObject({ digestsSent: 0 });
+      });
+      expect(cap.sent).toHaveLength(0);
+      const rows = await run(s.t, (ctx) => ctx.db.query("pendingGifts").collect());
+      expect(rows).toHaveLength(1);
     } finally {
       cap.restore();
     }

@@ -1209,6 +1209,74 @@ describe("audit surface — accounts-page queries + flags", () => {
     expect(chapter?.bookBalanceCents).toBe(1_500);
   });
 
+  /**
+   * PENDING ACH IS NOT MONEY, AND BOOK VALUE MUST NOT NOTICE IT.
+   *
+   * The giving digest now reports in-flight bank debits (`pendingGifts`, added
+   * so the weekly email can say how much of its total hasn't cleared). The
+   * entire risk of that feature is this: the org spent months closing the
+   * book-vs-bank gap to exactly $0.00, and counting authorised-but-unmoved
+   * money as revenue would reopen it by the size of whatever is in flight.
+   *
+   * The guard is that book value reads `gifts` and `transactions` and nothing
+   * else, so this asserts the number is IDENTICAL before and after a pending
+   * row exists — not merely "still plausible". Every other property of the
+   * feature is a matter of wording; this one is a matter of money.
+   */
+  test("accountBalances: an in-flight ACH gift moves NOTHING — not revenue, not book value", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedTicketOrder(s, 2_500); // a paid GA ticket — some real revenue
+
+    const before = await s.as.query(api.reconciliation.accountBalances, {});
+    const beforeChapter = before.find((b) => b.scope === s.chapterId);
+    expect(beforeChapter?.revenueCents).toBe(2_500);
+    expect(beforeChapter?.bookBalanceCents).toBe(2_500);
+
+    // A $5,000 bank debit, authorised by a donor and not yet moved by the bank
+    // — exactly what `givingPending.recordPendingGift` writes on the
+    // `checkout.session.completed`-unsettled webhook.
+    await run(s.t, async (ctx) => {
+      const donorId = await ctx.db.insert("donors", {
+        scope: s.chapterId,
+        kind: "individual",
+        name: "Bank Giver",
+        status: "prospect",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("pendingGifts", {
+        sessionId: "cs_in_flight",
+        status: "in_flight",
+        scope: s.chapterId,
+        amountCents: 500_000,
+        currency: "usd",
+        submittedAt: Date.now(),
+        donorName: "Bank Giver",
+        donorId,
+        createdAt: Date.now(),
+      });
+    });
+
+    const after = await s.as.query(api.reconciliation.accountBalances, {});
+    // Identical, row for row. Not "close" — the same numbers.
+    expect(after).toEqual(before);
+    const afterChapter = after.find((b) => b.scope === s.chapterId);
+    expect(afterChapter?.revenueCents).toBe(2_500);
+    expect(afterChapter?.ledgerNetCents).toBe(0);
+    expect(afterChapter?.bookBalanceCents).toBe(2_500);
+
+    // …and nothing leaked into either table book value is built from.
+    const written = await run(s.t, async (ctx) => ({
+      gifts: await ctx.db.query("gifts").collect(),
+      transactions: await ctx.db.query("transactions").collect(),
+    }));
+    expect(written.gifts).toHaveLength(0);
+    expect(written.transactions).toHaveLength(0);
+  });
+
   test("flags: one open flag per artifact, resolvable with a note", async () => {
     const t = newT();
     const s = await setupChapter(t);

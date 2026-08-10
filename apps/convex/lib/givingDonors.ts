@@ -95,6 +95,48 @@ export function assertPositiveGiftCents(amountCents: number): void {
 }
 
 /**
+ * Split one Stripe charge into the GIFT and the FEE COVERAGE the donor added
+ * on top of it. Pure.
+ *
+ * The gift is what the donor MEANT to give; the coverage is the extra they paid
+ * so the processor's cut wouldn't come out of it. Splitting rather than booking
+ * the whole charge is what keeps total giving comparable across the launch of
+ * fee coverage: the same donors giving the same amounts report the same
+ * numbers, and only the org's NET moves. See `gifts.feeCoverageCents`.
+ *
+ * EVERY GUARD IS AGAINST THE SPLIT BEING WRONG RATHER THAN MERELY ABSENT. An
+ * `intendedCents` that isn't a sane integer strictly inside the charge is
+ * IGNORED, falling back to "the whole charge was the gift" — the pre-feature
+ * behaviour, which can only ever understate the org's net and can never invent
+ * a gift larger than what was actually paid.
+ *
+ * SHARED, because two paths have to agree about it: `recordGiveDonationPaid`
+ * books the gift with it, and `givingPending.recordPendingGift` reports the
+ * in-flight figure with it. If those two ever disagreed, a digest's "still
+ * clearing" line and the gift that later replaced it would differ by the fee
+ * coverage — the pending money would appear to shrink on arrival, every time.
+ *
+ * `splitIsSane` is returned rather than swallowed so a caller that books money
+ * can log the malformed metadata; a caller that only reports can stay quiet.
+ */
+export function splitIntendedGift(
+  amountTotalCents: number,
+  intendedCents: number | undefined,
+): { giftCents: number; coverageCents: number; splitIsSane: boolean } {
+  const splitIsSane =
+    intendedCents !== undefined &&
+    Number.isInteger(intendedCents) &&
+    intendedCents > 0 &&
+    intendedCents <= amountTotalCents;
+  const giftCents = splitIsSane ? (intendedCents as number) : amountTotalCents;
+  return {
+    giftCents,
+    coverageCents: amountTotalCents - giftCents,
+    splitIsSane,
+  };
+}
+
+/**
  * Derive a donor's status from their rollups (PRD §1): no gifts → `prospect`;
  * a gift within the last 90 days → `active`; otherwise → `lapsed`. Pure.
  */

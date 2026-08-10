@@ -34,6 +34,22 @@ export function giftMethodLabel(method: string): string {
   return GIFT_METHOD_LABELS[method] ?? method;
 }
 
+/**
+ * The rails label for money that hasn't arrived — an authorised ACH debit the
+ * bank hasn't moved yet (`pendingGifts`).
+ *
+ * NOT a member of `GIFT_METHOD_LABELS`, deliberately: that map is keyed on the
+ * `gifts.method` union, every member of which is money that has landed, and a
+ * key nothing can ever hold would be a trap for the next reader. A pending row
+ * has no `method` of its own — the rail is the only thing we know about it.
+ *
+ * The wording carries its own caveat because this is the ONE place in a digest
+ * where pending money is visibly separated from the rest by rails, and a reader
+ * skimming the "How it arrived" cut has to be able to see it there without
+ * having read the paragraph at the top.
+ */
+export const PENDING_METHOD_LABEL = "Bank transfer — still clearing";
+
 // ── What KIND of giving a gift is ────────────────────────────────────────────
 
 /**
