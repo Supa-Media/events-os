@@ -52,10 +52,11 @@ import {
   Text,
   View,
 } from "react-native";
-import { receiptFileKind, type ReceiptFileKind } from "@events-os/shared";
+import { receiptFileKind } from "@events-os/shared";
 import { Icon, type IconName } from "./Icon";
 import { colors } from "../../lib/theme";
 import { renderPdfPage, supportsInlinePdf, type PdfPage } from "../../lib/pdfPages";
+import { sniffFileKind, type SniffedKind } from "../../lib/sniffFile";
 import {
   clampPage,
   clampZoom,
@@ -88,10 +89,18 @@ export function FileViewer({
   /** The original filename. The fallback signal, and the download name. */
   filename?: string | null;
 }) {
-  const kind = useMemo(
+  const declared = useMemo(
     () => receiptFileKind({ contentType, filename }),
     [contentType, filename],
   );
+  // What the file's own BYTES turned out to be, once an optimistic image
+  // render has failed and `ImagePane` has gone and looked. It overrides the
+  // declared kind — the bytes are never wrong — and it is held HERE rather
+  // than inside the image pane so a rescued PDF gets the real PDF branch,
+  // with its page controls and its zoom-driven re-render, instead of a
+  // one-page copy nested inside a pane that can't page.
+  const [sniffed, setSniffed] = useState<SniffedKind | null>(null);
+  const kind = sniffed ?? declared;
 
   const [zoom, setZoom] = useState(MIN_ZOOM);
   const [page, setPage] = useState(1);
@@ -103,6 +112,7 @@ export function FileViewer({
     setZoom(MIN_ZOOM);
     setPage(1);
     setPageCount(1);
+    setSniffed(null);
   }, [uri, visible]);
 
   const zoomBy = useCallback((direction: 1 | -1) => {
@@ -138,7 +148,11 @@ export function FileViewer({
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <View className="flex-1 bg-ink/95">
+      {/* Near-opaque on purpose. A translucent backdrop let the list behind
+          show through the receipt, which is exactly the wrong thing when the
+          job is READING a document — and an explicit rgba beats a Tailwind
+          opacity modifier here, which resolved much lighter than /95 suggests. */}
+      <View className="flex-1" style={{ backgroundColor: "rgba(20, 6, 6, 0.985)" }}>
         {/* Toolbar. Always present, for every file kind — the reviewer should
             not have to work out which controls this particular file got. */}
         <View className="flex-row items-center gap-2 px-4 pb-3 pt-5">
@@ -202,8 +216,18 @@ export function FileViewer({
             />
           ) : kind === "document" ? (
             <DocumentPane uri={uri} caption={caption ?? filename ?? "Receipt"} />
+          ) : kind === "missing" ? (
+            <Unrenderable
+              uri={uri}
+              title="This file couldn't be loaded"
+              detail="It may have been deleted, or the connection dropped. The receipt record itself is unchanged."
+            />
           ) : (
-            <ImagePane uri={uri} kind={kind} caption={caption ?? filename ?? "Receipt"} />
+            <ImagePane
+              uri={uri}
+              caption={caption ?? filename ?? "Receipt"}
+              onSniffed={setSniffed}
+            />
           )}
         </ZoomPane>
       </View>
@@ -338,35 +362,54 @@ function ZoomPane({
   );
 }
 
-/** A photo — or an `"unknown"` file rendered optimistically as one. A decode
- *  failure is a real, explained state, never a blank frame. */
+/**
+ * A photo — or an `"unknown"` file rendered optimistically as one, because
+ * that is what an unlabelled receipt almost always turns out to be.
+ *
+ * If the decode fails we have to find out WHY before saying anything: a file
+ * that isn't an image and a file that isn't THERE need different words on
+ * screen, and `<Image onError>` cannot tell them apart. So the failure path —
+ * and only the failure path — reads the first sixteen bytes and asks them
+ * (`lib/sniffFile`), then hands the answer UP to `FileViewer` so the right
+ * pane takes over wholesale.
+ *
+ * That is what stops a deleted file from rendering as an empty frame, and it
+ * is also how a genuinely mislabelled historical row is rescued: a PDF stored
+ * as `application/octet-stream` with no filename ends up in the real PDF
+ * branch, page controls and all, with no data migration behind it.
+ */
 function ImagePane({
   uri,
-  kind,
   caption,
+  onSniffed,
 }: {
   uri: string;
-  kind: ReceiptFileKind;
   caption: string;
+  onSniffed: (kind: SniffedKind) => void;
 }) {
   const [failed, setFailed] = useState(false);
+
   useEffect(() => setFailed(false), [uri]);
 
+  useEffect(() => {
+    if (!failed) return;
+    let cancelled = false;
+    void sniffFileKind(uri).then((kind) => {
+      // `"image"` would send us straight back here in a loop: the bytes say
+      // image but the decoder already refused them (a truncated or corrupt
+      // file). Report that as unloadable rather than trying again.
+      if (!cancelled) onSniffed(kind === "image" ? "missing" : kind);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [failed, uri, onSniffed]);
+
   if (failed) {
-    // On web an `<iframe>` renders essentially anything the browser can
-    // display, so an unlabelled file that turned out NOT to be an image still
-    // gets shown rather than refused. Native has no such universal renderer.
-    if (Platform.OS === "web") return <DocumentPane uri={uri} caption={caption} />;
     return (
-      <Unrenderable
-        uri={uri}
-        title={
-          kind === "unknown"
-            ? "This file isn't an image"
-            : "This image couldn't be displayed"
-        }
-        detail="Open it to see the original."
-      />
+      <View className="h-full w-full items-center justify-center">
+        <ActivityIndicator color={colors.raised} />
+      </View>
     );
   }
 

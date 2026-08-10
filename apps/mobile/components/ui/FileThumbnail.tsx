@@ -20,11 +20,12 @@
  * thing is. Never an empty box.
  */
 import { useEffect, useState } from "react";
-import { ActivityIndicator, Image, Platform, Text, View } from "react-native";
+import { ActivityIndicator, Image, Text, View } from "react-native";
 import { receiptFileKind } from "@events-os/shared";
 import { Icon } from "./Icon";
 import { colors } from "../../lib/theme";
 import { renderPdfPage, supportsInlinePdf } from "../../lib/pdfPages";
+import { sniffFileKind, type SniffedKind } from "../../lib/sniffFile";
 
 export function FileThumbnail({
   uri,
@@ -39,7 +40,13 @@ export function FileThumbnail({
   filename?: string | null;
   resizeMode?: "cover" | "contain";
 }) {
-  const kind = receiptFileKind({ contentType, filename });
+  const declared = receiptFileKind({ contentType, filename });
+  // Same rule as the viewer: when the metadata says nothing and the
+  // optimistic image render fails, ask the bytes. Without this a historical
+  // PDF — no content type, no filename — sat in the list labelled "CAN'T
+  // OPEN", which is a lie about a file that opens perfectly well.
+  const [sniffed, setSniffed] = useState<SniffedKind | null>(null);
+  const kind = sniffed ?? declared;
   const [failed, setFailed] = useState(false);
   const [pdfPageUri, setPdfPageUri] = useState<string | null>(null);
   const [pdfFailed, setPdfFailed] = useState(false);
@@ -48,7 +55,21 @@ export function FileThumbnail({
     setFailed(false);
     setPdfFailed(false);
     setPdfPageUri(null);
+    setSniffed(null);
   }, [uri]);
+
+  useEffect(() => {
+    if (!failed || !uri) return;
+    let cancelled = false;
+    void sniffFileKind(uri).then((k) => {
+      // `"image"` would loop straight back into the decoder that just
+      // refused these bytes — report it as unloadable instead.
+      if (!cancelled) setSniffed(k === "image" ? "missing" : k);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [failed, uri]);
 
   // Render (and thereby cache) page one of a PDF. `zoom: 1` picks the base
   // render scale, which is the same bitmap the viewer opens with — so this
@@ -89,11 +110,18 @@ export function FileThumbnail({
     );
   }
 
-  if (kind === "document") {
-    return <Tile icon="mail" label={Platform.OS === "web" ? "EMAIL" : "EMAIL"} />;
-  }
+  if (kind === "document") return <Tile icon="mail" label="EMAIL" />;
+  if (kind === "missing") return <Tile icon="alert-triangle" label="CAN'T OPEN" />;
 
-  if (failed) return <Tile icon="alert-triangle" label="CAN'T OPEN" />;
+  // Failed, but the bytes haven't answered yet — say nothing rather than
+  // guessing wrong for a moment.
+  if (failed) {
+    return (
+      <View className="flex-1 items-center justify-center">
+        <ActivityIndicator size="small" color={colors.faint} />
+      </View>
+    );
+  }
 
   return (
     <Image
