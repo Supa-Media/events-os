@@ -10,9 +10,9 @@ import {
   buildSaveArgs,
   cadenceLabel,
   centsToDollarsInput,
+  deliveryLabel,
   hourLabel,
   isLikelyEmail,
-  lastSentLabel,
   parseDollarsToCents,
   removeRecipient,
   scheduleSummary,
@@ -167,9 +167,19 @@ describe("parseDollarsToCents", () => {
     expect(parseDollarsToCents("-50").cents).toBeUndefined();
   });
 
+  test("accepts a decimal point at either end — a decimal-pad produces both", () => {
+    expect(parseDollarsToCents(".50").cents).toBe(50);
+    expect(parseDollarsToCents(".5").cents).toBe(50);
+    expect(parseDollarsToCents("$.99").cents).toBe(99);
+    expect(parseDollarsToCents("1.").cents).toBe(100);
+    expect(parseDollarsToCents("500.").cents).toBe(50000);
+  });
+
   test("rejects text and stray punctuation", () => {
     expect(parseDollarsToCents("a lot").error).toBeTruthy();
+    // A bare point is still not a number, however lenient the ends are.
     expect(parseDollarsToCents(".").error).toBeTruthy();
+    expect(parseDollarsToCents("..").error).toBeTruthy();
     expect(parseDollarsToCents("1.2.3").error).toBeTruthy();
     expect(parseDollarsToCents("500$").error).toBeTruthy();
   });
@@ -317,15 +327,32 @@ describe("scheduleSummary", () => {
   });
 });
 
-describe("lastSentLabel", () => {
+describe("deliveryLabel", () => {
   const fmt = (ts: number) => `#${ts}`;
 
-  test("never sent is a normal state, said plainly", () => {
-    expect(lastSentLabel(undefined, fmt)).toBe("Hasn't sent yet");
+  test("a brand-new rule has nothing to report, and says so", () => {
+    expect(deliveryLabel({}, fmt)).toBe("Hasn't sent yet");
   });
 
-  test("a watermark is formatted by the caller's formatter", () => {
-    expect(lastSentLabel(1700, fmt)).toBe("Last sent #1700");
+  test("a delivered email is what 'last sent' means", () => {
+    expect(deliveryLabel({ lastDeliveredAt: 1700 }, fmt)).toBe(
+      "Last sent #1700",
+    );
+  });
+
+  test("a WATERMARK is never reported as a send", () => {
+    // The pause/resume bug: `setRuleActive` stamps `lastSentAt` so a resumed
+    // rule doesn't replay its dormancy. A rule that has mailed nobody must not
+    // claim it has.
+    const label = deliveryLabel({ lastSentAt: 1700 }, fmt);
+    expect(label).not.toContain("Last sent");
+    expect(label).toBe("Nothing sent yet — watching from #1700");
+  });
+
+  test("once something is delivered, the watermark stops being the story", () => {
+    expect(deliveryLabel({ lastDeliveredAt: 1800, lastSentAt: 1700 }, fmt)).toBe(
+      "Last sent #1800",
+    );
   });
 });
 

@@ -33,6 +33,7 @@
 import { ConvexError, v } from "convex/values";
 import {
   internalAction,
+  internalMutation,
   internalQuery,
   mutation,
   query,
@@ -116,6 +117,11 @@ export const listRules = query({
         sendHourLocal: r.sendHourLocal,
         sendWeekday: r.sendWeekday,
         lastSentAt: r.lastSentAt,
+        // Both, and they are not interchangeable — the desk shows
+        // `lastDeliveredAt` as "last sent" and `lastSentAt` only as the point
+        // it is reporting FROM. See the schema doc for why one field couldn't
+        // be both.
+        lastDeliveredAt: r.lastDeliveredAt,
         createdAt: r.createdAt,
         updatedAt: r.updatedAt,
         canManage: canManageGivingScope(access, ruleGateScope(r.scope)),
@@ -346,6 +352,37 @@ export const setRuleActive = mutation({
   },
 });
 
+/**
+ * Stamp "an email from this rule reached somebody, at this instant".
+ *
+ * The ONLY writer of `lastDeliveredAt`, called from both send paths (the
+ * immediate action here, and the digest sweep) once `sendEmailReporting` has
+ * returned true for at least one recipient. Deliberately separate from every
+ * mark `claimDigest` moves: those are decided BEFORE the mail is attempted and
+ * a released digest puts them back, whereas this can only ever be written
+ * after the fact, and is never rolled back.
+ *
+ * Does NOT touch `updatedAt` — nobody edited the rule, it just did its job, and
+ * moving `updatedAt` would make every send look like a configuration change.
+ */
+export const markRulesDelivered = internalMutation({
+  args: {
+    ruleIds: v.array(v.id("givingNotificationRules")),
+    at: v.number(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { ruleIds, at }) => {
+    for (const ruleId of ruleIds) {
+      // A rule deleted (or, today, merely absent) between the send and this
+      // stamp is not worth failing a delivery that already happened over.
+      const rule = await ctx.db.get(ruleId);
+      if (!rule) continue;
+      await ctx.db.patch(ruleId, { lastDeliveredAt: at });
+    }
+    return null;
+  },
+});
+
 // ── The immediate path ───────────────────────────────────────────────────────
 
 /** Every ACTIVE immediate rule this gift satisfies, plus the gift's own facts.
@@ -372,20 +409,29 @@ export const immediateTargets = internalQuery({
     // gift twice. "We're getting double emails" is the complaint that gets a
     // notification feature switched off, so the send is keyed on the RECIPIENT
     // and the footer names every rule that reached them.
-    const byRecipient = new Map<string, string[]>();
+    const byRecipient = new Map<
+      string,
+      { ruleNames: string[]; ruleIds: Id<"givingNotificationRules">[] }
+    >();
     for (const rule of matched) {
       for (const to of rule.recipients) {
-        const names = byRecipient.get(to) ?? [];
-        if (!names.includes(rule.name)) names.push(rule.name);
-        byRecipient.set(to, names);
+        const entry = byRecipient.get(to) ?? { ruleNames: [], ruleIds: [] };
+        // Names are de-duplicated for the FOOTER — two rules that happen to
+        // share a name shouldn't print it twice. Ids are collected separately
+        // and de-duplicated on their own, because two rules that share a name
+        // are still two rules and both of them just delivered.
+        if (!entry.ruleNames.includes(rule.name)) entry.ruleNames.push(rule.name);
+        if (!entry.ruleIds.includes(rule._id)) entry.ruleIds.push(rule._id);
+        byRecipient.set(to, entry);
       }
     }
 
     return {
       gift: payload,
-      sends: [...byRecipient.entries()].map(([to, ruleNames]) => ({
+      sends: [...byRecipient.entries()].map(([to, entry]) => ({
         to,
-        ruleNames,
+        ruleNames: entry.ruleNames,
+        ruleIds: entry.ruleIds,
       })),
     };
   },
@@ -410,6 +456,11 @@ export const notifyGiftRecorded = internalAction({
     if (!targets) return { emailsSent: 0 };
 
     let emailsSent = 0;
+    // Rules whose mail actually reached somebody. Union across recipients: a
+    // rule mailing four people has done its job if ONE of them was reached, and
+    // a rule whose only recipient bounced has not, even when a co-matching rule
+    // sharing that gift got through to a different address.
+    const delivered = new Set<Id<"givingNotificationRules">>();
     for (const send of targets.sends) {
       // The RENDER is inside the try too. It used to sit outside, one level up
       // in a per-rule loop, so a throw while building recipient #1's email
@@ -424,10 +475,29 @@ export const notifyGiftRecorded = internalAction({
         // than looking like it mailed everyone.
         if (await sendEmailReporting(ctx, { to: send.to, subject, html })) {
           emailsSent++;
+          for (const ruleId of send.ruleIds) delivered.add(ruleId);
         }
       } catch (err) {
         console.error(
           `[givingNotifications] immediate send failed for ${send.to}`,
+          err,
+        );
+      }
+    }
+
+    // AFTER the loop, in one mutation, and only for rules that reached
+    // somebody. A throw here would be a rule that mailed and doesn't say so —
+    // annoying, but the email is already out and a gift must never be able to
+    // pay for a bookkeeping failure (see the module doc).
+    if (delivered.size > 0) {
+      try {
+        await ctx.runMutation(internal.givingNotifications.markRulesDelivered, {
+          ruleIds: [...delivered],
+          at: Date.now(),
+        });
+      } catch (err) {
+        console.error(
+          "[givingNotifications] delivered, but couldn't stamp lastDeliveredAt",
           err,
         );
       }

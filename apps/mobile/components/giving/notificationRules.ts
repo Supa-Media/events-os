@@ -135,10 +135,14 @@ export function parseDollarsToCents(raw: string): {
   const badAmount = {
     error: "Enter a dollar amount, or leave it blank for every gift.",
   };
-  // Digits with at most one decimal point. Rejects the minus sign outright
-  // rather than parsing it and complaining afterwards — there is no reading of
-  // "-50" that a threshold could honour.
-  if (!/^\d+(\.\d+)?$/.test(cleaned)) return badAmount;
+  // Digits with at most one decimal point, and the point may sit at either
+  // end: this field is a `decimal-pad`, where ".50" and "1." are both natural
+  // things to have typed — the first is what you get typing a threshold under a
+  // dollar, the second is a keystroke away from every whole amount. A bare "."
+  // is still refused, because it is not a number in any reading. The minus sign
+  // is refused outright rather than parsed and complained about afterwards;
+  // there is no reading of "-50" a threshold could honour.
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(cleaned)) return badAmount;
 
   // Parsed off the DIGITS, not via `Math.round(Number(x) * 100)`. That reading
   // is wrong for a value a fundraiser can plausibly type: `1.005 * 100` is
@@ -241,17 +245,35 @@ export function scheduleSummary(rule: {
 }
 
 /**
- * "Last sent" for the list row. Takes the formatter rather than importing one,
- * so the wording is testable without pinning a timezone into this module.
- * A weekly rule that has never fired is a normal state, not a fault — say so
- * plainly rather than leaving the line blank and looking broken.
+ * The delivery line on a list row. Takes the formatter rather than importing
+ * one, so the wording is testable without pinning a timezone into this module.
+ *
+ * THREE STATES, BECAUSE THE ROW HAS THREE THINGS IT MIGHT TRUTHFULLY SAY, and
+ * an earlier cut of this screen collapsed them into two and lied. It read
+ * "Last sent" off `lastSentAt`, which is not a record of any email: it is the
+ * digest WATERMARK, and `setRuleActive` and a cadence change both stamp it to
+ * `now` on purpose so a resumed rule reports from there instead of replaying
+ * its dormancy. So a rule that had never sent anything at all announced "Last
+ * sent" with today's date the moment somebody paused and resumed it — a
+ * confident, checkable, false claim about whether the org's donors had been
+ * acknowledged.
+ *
+ * `lastDeliveredAt` is the honest field (stamped only by a delivered email),
+ * and a watermark with nothing behind it is worth SAYING rather than hiding —
+ * it is exactly the sentence that explains why a resumed rule won't mention
+ * last month's giving.
  */
-export function lastSentLabel(
-  lastSentAt: number | undefined,
+export function deliveryLabel(
+  rule: { lastDeliveredAt?: number; lastSentAt?: number },
   formatTs: (ts: number) => string,
 ): string {
-  if (lastSentAt === undefined) return "Hasn't sent yet";
-  return `Last sent ${formatTs(lastSentAt)}`;
+  if (rule.lastDeliveredAt !== undefined) {
+    return `Last sent ${formatTs(rule.lastDeliveredAt)}`;
+  }
+  if (rule.lastSentAt !== undefined) {
+    return `Nothing sent yet — watching from ${formatTs(rule.lastSentAt)}`;
+  }
+  return "Hasn't sent yet";
 }
 
 // ── The whole form ───────────────────────────────────────────────────────────

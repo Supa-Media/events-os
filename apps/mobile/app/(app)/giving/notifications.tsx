@@ -53,7 +53,7 @@ import {
   buildSaveArgs,
   cadenceLabel,
   centsToDollarsInput,
-  lastSentLabel,
+  deliveryLabel,
   removeRecipient,
   scheduleSummary,
   thresholdLabel,
@@ -242,7 +242,7 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
             To {rule.recipients.join(", ")}
           </Text>
           <Text className="mt-0.5 text-xs text-faint">
-            {lastSentLabel(rule.lastSentAt, formatSentAt)}
+            {deliveryLabel(rule, formatSentAt)}
           </Text>
         </View>
         {rule.canManage ? (
