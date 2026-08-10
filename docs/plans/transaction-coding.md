@@ -275,7 +275,8 @@ whichever way the decision goes. (Authors lose nothing: resubmitting is
    a receipt but no purpose is exactly as chased as one with neither. Decision
    6 makes that literal rather than rhetorical: the receipt is now a field the
    coding cannot be submitted without.
-   One email, one link: `appUrl("/finances/my-transactions?filter=uncoded")`.
+   One email, one link: `appUrl("/finances/coding?filter=uncoded")` (the Coding
+   tab; `/finances/my-transactions` redirects there for links already sent).
    Cardholders are authed members, so **no new token infrastructure** in v1
    (the token page family stays reimbursement-only).
 3. **My Transactions** grows the coding editor — an extension of the

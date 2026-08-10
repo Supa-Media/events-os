@@ -3068,7 +3068,7 @@ export const notifyCodingSentBack = internalAction({
         `<div style="${emailTextStyle({ strong: true })}"><b>What to change:</b> ${escapeHtml(contact.reviewNote)}</div>`,
         { dashed: true },
       );
-      const link = appUrl("/finances/my-transactions?filter=uncoded");
+      const link = appUrl("/finances/coding?filter=uncoded");
       await sendEmail(ctx, {
         to: contact.email,
         subject,
@@ -4398,7 +4398,7 @@ async function notifyReceiptDigest(
   // The cardholder's OWN list, pre-filtered to what they owe — where the
   // coding sheet (purpose, people, receipt) lives. Null (omitted) when APP_URL
   // is unset.
-  const link = appUrl("/finances/my-transactions?filter=uncoded");
+  const link = appUrl("/finances/coding?filter=uncoded");
   await sendEmail(ctx, {
     to: digest.email,
     subject,

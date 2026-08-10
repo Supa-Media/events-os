@@ -28,6 +28,7 @@ import { internal } from "./_generated/api";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   ATTENDEE_AFFILIATIONS,
+  CENTRAL,
   EXPENSE_TYPES,
   EXPENSE_TYPE_LABELS,
   MIN_PURPOSE_LENGTH,
@@ -53,6 +54,19 @@ import {
   decideCoding,
   submitCoding,
 } from "./lib/transactionCoding";
+import { codingReviewReach } from "./lib/transactionCodingAccess";
+import { isUncodedCharge } from "./lib/codingReminders";
+import { listActiveChapters } from "./lib/chapters";
+import { getChapterIdOrNull } from "./lib/context";
+import { viewerPerson } from "./lib/org";
+
+/** Generous bounds for the Coding tab's scans — a chapter's open coding work
+ *  runs to dozens, never near this (mirrors `FUND_SCAN_LIMIT`'s reasoning in
+ *  `lib/finance.ts`). */
+const CODING_SCAN_LIMIT = 5000;
+/** One page of the reviewer's queue. Deliberately small: this is a screen
+ *  someone works down, not a report they scroll. */
+const CODING_PAGE_SIZE = 100;
 
 const expenseTypeValidator = v.union(
   ...EXPENSE_TYPES.map((t) => v.literal(t)),
@@ -424,5 +438,301 @@ export const requestChanges = mutation({
       transactionId: args.transactionId,
     });
     return null;
+  },
+});
+
+// ── The Coding tab's two queues ──────────────────────────────────────────────
+//
+// One screen, two audiences, both first-class (owner, 2026-08-09):
+//
+//  - the CARDHOLDER's own charges still owing a coding — served by the
+//    existing `finances.personTransactions`, which needs no finance seat at
+//    all and is what `/finances/my-transactions` already read. Nothing new is
+//    needed for that half; it's named here so the split is obvious.
+//  - the REVIEWER's queue of submitted codings — `reviewQueue` below, with
+//    enough substantiation on each row to decide WITHOUT opening it.
+//
+// `workload` is the third piece: the per-chapter roll-up a central reviewer
+// needs to see which book is falling behind, and the same numbers the tab
+// uses to decide whether to show itself at all.
+
+/** One row of the reviewer's queue: the coding, plus the charge it explains
+ *  and the book it belongs to. */
+const reviewQueueRow = v.object({
+  transactionId: v.id("transactions"),
+  book: v.object({
+    id: v.union(v.id("chapters"), v.literal("central")),
+    name: v.string(),
+  }),
+  merchantName: v.union(v.string(), v.null()),
+  amountCents: v.number(),
+  postedAt: v.number(),
+  coding: codingRow,
+  /** How this charge proves itself, for the reviewer to read against the
+   *  purpose. `"none"` should be unreachable on a SUBMITTED coding (the
+   *  documentation gate refuses it), so seeing one is a signal, not noise. */
+  documentation: v.union(
+    v.literal("receipt"),
+    v.literal("exception_approved"),
+    v.literal("exception_pending"),
+    v.literal("none"),
+  ),
+  /** True iff THIS caller could decide THIS row — authority AND separation of
+   *  duties, the same two questions `approve` asks, so the grid never renders
+   *  a button that would throw. Rows they can't decide come back `false`
+   *  rather than hidden (the Reconcile `canEdit` posture): a reviewer who
+   *  wrote one of the codings in their own queue should still see it sitting
+   *  there waiting on somebody else. */
+  canReview: v.boolean(),
+});
+
+/**
+ * The reviewer's queue: every SUBMITTED coding in the books this caller may
+ * decide in, oldest first — the ones that have waited longest are the ones the
+ * accountable-plan clock is running against.
+ *
+ * Scope args mirror `finances.listReconcile` exactly — `scope: "central" |
+ * "all"` plus a `chapterId` drill-down — because it is the same question asked
+ * of the same books by the same people. A second vocabulary for it would be a
+ * second thing to learn and a second thing to get wrong.
+ */
+export const reviewQueue = query({
+  args: {
+    scope: v.optional(v.union(v.literal("central"), v.literal("all"))),
+    chapterId: v.optional(v.id("chapters")),
+    limit: v.optional(v.number()),
+  },
+  returns: v.object({
+    rows: v.array(reviewQueueRow),
+    hasMore: v.boolean(),
+    /** True iff the caller may decide in books beyond their own — drives the
+     *  All books / Central / <chapter> pills and the roll-up. */
+    orgWide: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const reach = await codingReviewReach(ctx);
+    if (!reach.orgWide && !reach.ownChapter) {
+      return { rows: [], hasMore: false, orgWide: false };
+    }
+
+    // Which books to read. A caller WITHOUT org-wide reach is pinned to their
+    // own chapter whatever they ask for — the same deliberate containment
+    // `requireReviewCoding` enforces per row, applied once here so a crafted
+    // `scope: "all"` can't widen a Treasurer's queue.
+    let books: (Id<"chapters"> | typeof CENTRAL)[];
+    if (!reach.orgWide) {
+      books = [reach.homeChapterId];
+    } else if (args.scope === "central") {
+      books = [CENTRAL];
+    } else if (args.chapterId != null) {
+      books = [args.chapterId];
+    } else if (args.scope === "all") {
+      books = [
+        CENTRAL,
+        ...(await listActiveChapters(ctx, CODING_SCAN_LIMIT)).map((c) => c._id),
+      ];
+    } else {
+      books = [reach.homeChapterId];
+    }
+
+    const bookNames = new Map<string, string>([[CENTRAL, "Central"]]);
+    for (const b of books) {
+      if (b === CENTRAL) continue;
+      bookNames.set(b, (await ctx.db.get(b))?.name ?? "Chapter");
+    }
+
+    const limit = Math.min(args.limit ?? CODING_PAGE_SIZE, CODING_PAGE_SIZE);
+    const pending: Doc<"transactionCodings">[] = [];
+    for (const book of books) {
+      const rows = await ctx.db
+        .query("transactionCodings")
+        .withIndex("by_chapter_and_status", (q) =>
+          q.eq("chapterId", book).eq("status", "submitted"),
+        )
+        .take(CODING_SCAN_LIMIT);
+      pending.push(...rows);
+    }
+    // Oldest submission first: this queue is a clock, not an inbox.
+    pending.sort((a, b) => a.submittedAt - b.submittedAt);
+    const page = pending.slice(0, limit);
+
+    const rows: Infer<typeof reviewQueueRow>[] = [];
+    for (const coding of page) {
+      const txn = await ctx.db.get(coding.transactionId);
+      if (!txn) continue;
+      const exceptions = await ctx.db
+        .query("receiptExceptions")
+        .withIndex("by_transaction", (q) =>
+          q.eq("transactionId", coding.transactionId),
+        )
+        .collect();
+      const documentation =
+        txn.receiptStorageId != null
+          ? ("receipt" as const)
+          : exceptions.some((e) => e.status === "approved")
+            ? ("exception_approved" as const)
+            : exceptions.some((e) => e.status === "pending")
+              ? ("exception_pending" as const)
+              : ("none" as const);
+      // Authority first — org-wide reaches every book, otherwise their own
+      // only — then SoD, the same second question `approve` asks.
+      const hasAuthority =
+        reach.orgWide ||
+        (coding.chapterId !== CENTRAL &&
+          coding.chapterId === reach.homeChapterId);
+      const canReview =
+        hasAuthority &&
+        (reach.actorPersonId == null ||
+          reach.actorPersonId !== coding.codedByPersonId);
+      rows.push({
+        transactionId: coding.transactionId,
+        book: {
+          id: coding.chapterId,
+          name: bookNames.get(coding.chapterId) ?? "Chapter",
+        },
+        merchantName: txn.merchantName ?? null,
+        amountCents: txn.amountCents,
+        postedAt: txn.postedAt,
+        // A reviewer has to weigh WHO WAS THERE, so the queue shows names to
+        // whoever may decide the row — the same bar `hasCodingNamesView`
+        // applies. Names still never publish.
+        coding: await projectCoding(ctx, coding, hasAuthority),
+        documentation,
+        canReview,
+      });
+    }
+    return {
+      rows,
+      hasMore: pending.length > page.length,
+      orgWide: reach.orgWide,
+    };
+  },
+});
+
+/**
+ * How much coding work is outstanding, and where.
+ *
+ * Two jobs. It tells the tab whether to show itself — somebody with nothing to
+ * code and no review authority gets no tab rather than a dead one. And for a
+ * central reviewer it carries the per-chapter roll-up: how many charges are
+ * still waiting on their author, and how many codings are waiting on a
+ * reviewer, in each book.
+ *
+ * The roll-up is a WORKLOAD reading, not a scoreboard. It answers "where is
+ * the work" so an FM can help the book that's behind; the copy that renders it
+ * says so, and there is deliberately no ranking, no trend and no target here
+ * to turn it into anything else.
+ *
+ * Separate from `reviewQueue` on purpose: drilling into one chapter must not
+ * empty the roll-up you're navigating with.
+ */
+export const workload = query({
+  args: {},
+  returns: v.object({
+    /** The caller's OWN charges still owing a coding — the cardholder half,
+     *  and the reason someone with no finance seat gets this tab at all. */
+    mineToCode: v.number(),
+    /** Submitted codings this caller may decide, across their whole reach. */
+    awaitingMyReview: v.number(),
+    orgWide: v.boolean(),
+    /** Empty unless `orgWide` — one row per book, central first. */
+    byChapter: v.array(
+      v.object({
+        id: v.union(v.id("chapters"), v.literal("central")),
+        name: v.string(),
+        toCode: v.number(),
+        awaitingReview: v.number(),
+      }),
+    ),
+  }),
+  handler: async (ctx) => {
+    const empty = {
+      mineToCode: 0,
+      awaitingMyReview: 0,
+      orgWide: false,
+      byChapter: [],
+    };
+    // A READ resolve (null → empty result, never a throw): this query decides
+    // whether a tab renders, so a signed-in member with no chapter yet must
+    // get "nothing to do", not an error boundary.
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return empty;
+    const { sinceMs } = await codingPolicy(ctx);
+
+    // ── The cardholder half. No finance seat required, by design. ──────────
+    const self = await viewerPerson(ctx, chapterId);
+    let mineToCode = 0;
+    if (self) {
+      const mine = await ctx.db
+        .query("transactions")
+        .withIndex("by_person", (q) => q.eq("personId", self._id))
+        .take(CODING_SCAN_LIMIT);
+      mineToCode = mine.filter(
+        (tr) => tr.chapterId === chapterId && isUncodedCharge(tr, sinceMs),
+      ).length;
+    }
+
+    // ── The reviewer half. ─────────────────────────────────────────────────
+    const reach = await codingReviewReach(ctx);
+    if (!reach.orgWide && !reach.ownChapter) {
+      return { ...empty, mineToCode };
+    }
+
+    const countSubmitted = async (
+      book: Id<"chapters"> | typeof CENTRAL,
+    ): Promise<number> =>
+      (
+        await ctx.db
+          .query("transactionCodings")
+          .withIndex("by_chapter_and_status", (q) =>
+            q.eq("chapterId", book).eq("status", "submitted"),
+          )
+          .take(CODING_SCAN_LIMIT)
+      ).length;
+
+    const countUncoded = async (
+      book: Id<"chapters"> | typeof CENTRAL,
+    ): Promise<number> =>
+      (
+        await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", book))
+          .take(CODING_SCAN_LIMIT)
+      ).filter((tr) => isUncodedCharge(tr, sinceMs)).length;
+
+    if (!reach.orgWide) {
+      return {
+        mineToCode,
+        awaitingMyReview: await countSubmitted(reach.homeChapterId),
+        orgWide: false,
+        byChapter: [],
+      };
+    }
+
+    const books: (Id<"chapters"> | typeof CENTRAL)[] = [
+      CENTRAL,
+      ...(await listActiveChapters(ctx, CODING_SCAN_LIMIT)).map((c) => c._id),
+    ];
+    const byChapter: {
+      id: Id<"chapters"> | typeof CENTRAL;
+      name: string;
+      toCode: number;
+      awaitingReview: number;
+    }[] = [];
+    let awaitingMyReview = 0;
+    for (const book of books) {
+      const awaitingReview = await countSubmitted(book);
+      awaitingMyReview += awaitingReview;
+      byChapter.push({
+        id: book,
+        name:
+          book === CENTRAL
+            ? "Central"
+            : ((await ctx.db.get(book))?.name ?? "Chapter"),
+        toCode: await countUncoded(book),
+        awaitingReview,
+      });
+    }
+    return { mineToCode, awaitingMyReview, orgWide: true, byChapter };
   },
 });

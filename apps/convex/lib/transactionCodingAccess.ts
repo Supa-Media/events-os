@@ -266,6 +266,59 @@ export async function requireReviewCoding(
   });
 }
 
+/** How far this caller's REVIEW authority reaches — the answer the Coding
+ *  tab's queue needs before it reads a single row. */
+export interface CodingReviewReach {
+  /** Every book, central included — the ED / FM arm. */
+  orgWide: boolean;
+  /** True iff they may decide their OWN chapter's codings — the Treasurer /
+   *  Chapter Director arm. Always true when `orgWide` is, since the org-wide
+   *  arm subsumes it. */
+  ownChapter: boolean;
+  homeChapterId: Id<"chapters">;
+  /** Their roster person id at their home chapter, or `null` (superuser with
+   *  no roster row) — the SoD comparand for every row in the queue. */
+  actorPersonId: Id<"people"> | null;
+}
+
+/**
+ * The REVERSE of `requireReviewCoding` — "which books may this caller decide
+ * in", rather than "may they decide THIS row". The queue needs it because it
+ * reads by book: asking the per-row gate first and then fetching would mean
+ * fetching every book's codings to find out which ones to fetch.
+ *
+ * Deliberately expressed as the SAME TWO ARMS the gate uses, in the same
+ * order, so the two cannot drift into disagreeing about who may approve what.
+ * (`lib/finance.ts#listChapterFinanceManagerPersonIds` is the same idea for
+ * the manager ladder — a reverse lookup living next to its forward gate.)
+ */
+export async function codingReviewReach(
+  ctx: QueryCtx,
+): Promise<CodingReviewReach> {
+  const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+  const access = await getFinanceRole(ctx, homeChapterId);
+  const base = { homeChapterId, actorPersonId: access.personId };
+
+  if (access.isCentral && financeRoleAtLeast(access.role, "manager")) {
+    return { ...base, orgWide: true, ownChapter: true };
+  }
+  if (access.personId != null) {
+    const seatCaps = await getSeatDerivedCapabilities(ctx, access.personId);
+    if (
+      seatCaps[CENTRAL]?.financeRole === "manager" ||
+      (await holdsApprovalSeatAt(ctx, access.personId, CENTRAL))
+    ) {
+      return { ...base, orgWide: true, ownChapter: true };
+    }
+  }
+
+  const ownChapter =
+    financeRoleAtLeast(access.role, "manager") ||
+    (access.personId != null &&
+      (await holdsApprovalSeatAt(ctx, access.personId, homeChapterId)));
+  return { ...base, orgWide: false, ownChapter };
+}
+
 /**
  * Assert the caller may READ this transaction's coding — either because they
  * may author it, or because they may decide it.

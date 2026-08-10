@@ -375,7 +375,7 @@ describe("the digest email itself", () => {
       expect(sent[0].to).toBe("ada@publicworship.life");
       expect(sent[0].subject).toContain("2 charges to code");
       expect(sent[0].html).toMatch(
-        /href="https:\/\/app\.publicworship\.life\/finances\/my-transactions\?filter=uncoded"/,
+        /href="https:\/\/app\.publicworship\.life\/finances\/coding\?filter=uncoded"/,
       );
       // The plain-words reason the deadline exists, and the honest lock
       // warning — only the un-receipted charge can actually lock the card.
@@ -755,7 +755,7 @@ describe("notifyCodingSentBack", () => {
       expect(sent[0].to).toBe("casey@publicworship.life");
       expect(sent[0].html).toContain("The receipt must show the exact amount.");
       expect(sent[0].html).toMatch(
-        /href="https:\/\/app\.publicworship\.life\/finances\/my-transactions\?filter=uncoded"/,
+        /href="https:\/\/app\.publicworship\.life\/finances\/coding\?filter=uncoded"/,
       );
     } finally {
       globalThis.fetch = realFetch;

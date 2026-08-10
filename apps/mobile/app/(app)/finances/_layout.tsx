@@ -44,9 +44,23 @@ const BUDGETS_TAB = { label: "Budgets", path: "/finances/budgets" };
 // get a surface; before this its money reached Stripe and stopped there. Gated
 // with the rest of the seat tabs rather than added to MEMBER_TABS: a cardholder
 // has no reason to read chapter revenue detail.
+// Coding — your own charges to explain, AND the codings you can decide — is
+// the other tab both sets carry, and it is the reason this comment exists.
+// Its cardholder half used to live at `/finances/my-transactions`, which
+// appeared ONLY in MEMBER_TABS: every seat holder could reach it by URL and no
+// other way, which is exactly why the owner had never seen it. It's one tab
+// now, in both sets, and `/finances/my-transactions` redirects to it.
+//
+// Gated on `transactionCodings.workload` rather than on seats, because the two
+// halves have different audiences: a cardholder with no seat at all still owns
+// charges to code, and a reviewer with no charges of their own still has a
+// queue. Somebody with NEITHER gets no tab instead of a dead one.
+const CODING_TAB = { label: "Coding", path: "/finances/coding" };
+
 const SEAT_TABS: { label: string; path: string }[] = [
   { label: "Dashboard", path: "/finances" },
   { label: "Reconcile", path: "/finances/reconcile" },
+  { label: "Coding", path: "/finances/coding" },
   { label: "Receipts", path: "/finances/receipts" },
   { label: "Sales", path: "/finances/sales" },
   BUDGETS_TAB,
@@ -56,7 +70,7 @@ const SEAT_TABS: { label: string; path: string }[] = [
 
 const MEMBER_TABS: { label: string; path: string }[] = [
   { label: "My Card", path: "/finances/cards" },
-  { label: "My Transactions", path: "/finances/my-transactions" },
+  CODING_TAB,
   BUDGETS_TAB,
   { label: "Reimbursements", path: "/finances/reimbursements" },
 ];
@@ -81,14 +95,23 @@ export default function FinancesLayout() {
   // Loading (`undefined`) → treated as "no access yet" so Accounts never
   // flashes in for a seat holder who turns out not to be ED/FM.
   const canViewAccounts = useQuery(api.financeRoles.canViewAccounts, {});
-  const tabs =
+  // Does the Coding tab have anything behind it for THIS person? Same query
+  // the screen reads, so the tab and the screen can never disagree about
+  // whether there's work. `undefined` while loading → no tab, matching the
+  // rest of this function's don't-guess posture.
+  const coding = useQuery(api.transactionCodings.workload, {});
+  const hasCodingWork =
+    coding !== undefined &&
+    (coding.mineToCode > 0 || coding.awaitingMyReview > 0 || coding.orgWide);
+  const tabs = (
     seats === undefined
       ? []
       : seats.length === 0
         ? MEMBER_TABS
         : canViewAccounts === true
           ? [...SEAT_TABS, ACCOUNTS_TAB]
-          : SEAT_TABS;
+          : SEAT_TABS
+  ).filter((t) => t.path !== CODING_TAB.path || hasCodingWork);
 
   return (
     <View className="flex-1">
