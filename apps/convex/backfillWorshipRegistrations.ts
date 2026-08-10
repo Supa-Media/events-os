@@ -18,6 +18,31 @@
  * cash arrived months ago, so booking the revenue moves the signed gap DOWN by
  * exactly $150.00 — from `cash_exceeds_books +$150.00` to balanced.
  *
+ * ── ⚠ THIS MOVES REAL CASH THE NEXT MORNING ─────────────────────────────────
+ * READ THIS BEFORE PASSING `execute: true`.
+ *
+ * Recording $150.00 of revenue raises New York's BOOK VALUE by $150.00. The
+ * morning reconciliation engine settles chapter books against the cash central
+ * is holding for them — `settleChapterBalances` runs the SAME
+ * `computeBookBalances` this backfill feeds — so on the next run central will
+ * transfer New York **$150.00 more** than it otherwise would have, as a real
+ * `balance_settlement` pair.
+ *
+ * That is CORRECT: New York earned the money, its payout landed in central's
+ * account, and the settlement is how it gets delivered. But it is not obvious
+ * from "record six registrations", and it is the difference between a
+ * bookkeeping entry and a bank transfer. Two consequences worth knowing:
+ *
+ *   - the movement clears `MIN_SETTLEMENT_CENTS` ($5.00), so it WILL be booked
+ *     rather than rounded away;
+ *   - it is a `balance_settlement`, which contributes ZERO to book value
+ *     (`lib/bookBalance.ts`), so it moves cash without moving the number that
+ *     produced it. The engine converges; it does not chase itself.
+ *
+ * If that transfer should not happen on the following morning, run this
+ * immediately AFTER a settlement run rather than before, or coordinate with
+ * whoever watches the engine. Don't discover it from a bank alert.
+ *
  * ── DRY RUN BY DEFAULT, AND IT SKIPS RATHER THAN GUESSES ────────────────────
  * Mirrors `reverseBadSettlement.ts`: `execute` defaults to false, every
  * precondition is asserted, and ANY mismatch returns a `problems[]` entry with
@@ -62,6 +87,16 @@ export const backfillWorshipRegistrations = internalMutation({
      * supplied still records all six registrations, just unlinked — which is a
      * complete row, not a broken one. Supplying them is the ONLY way a link is
      * made; this backfill never matches a payment to a human by name.
+     *
+     * WHERE TO GET THEM: the `Email` column of
+     * `3-worship-beyond-the-walls-1786127710.csv` in the 2026-08-07 Givebutter
+     * export, joined to these rows on the transaction id. (`Email` and
+     * `Contact Email` agree on every row, so there is no ambiguity to resolve.)
+     *
+     * THEY ARE NOT IN THIS REPO, ON PURPOSE. Six real people's addresses do not
+     * belong in source control, a test fixture, or a comment — which is the
+     * whole reason this is a run-time argument rather than a constant. Paste
+     * them into the call, not into this file.
      */
     emails: v.optional(
       v.array(v.object({ givebutterTxnId: v.string(), email: v.string() })),
@@ -80,7 +115,14 @@ export const backfillWorshipRegistrations = internalMutation({
     /** Signed movement of the org-wide gap (`located − books`). Negative:
      *  recording revenue raises books, which lowers the gap. */
     gapMovementCents: v.number(),
-    emailsWithNoPerson: v.array(v.string()),
+    /** How many DISTINCT supplied emails resolved to an existing `people` row.
+     *  Reported even when the run SKIPs — see where it's computed. */
+    rosterMatches: v.number(),
+    /** The supplied addresses matching nobody. NOT a problem — a registrant who
+     *  isn't a person yet is the normal case and the row stands on its own —
+     *  but worth saying out loud so a typo'd address doesn't look like "not on
+     *  the roster". */
+    emailsWithNoRosterMatch: v.array(v.string()),
     problems: v.array(v.string()),
   }),
   handler: async (ctx, { execute, emails }) => {
@@ -127,6 +169,20 @@ export const backfillWorshipRegistrations = internalMutation({
       if (person) personIdByEmail.set(normalized, person._id as string);
     }
 
+    // THE ROSTER ANSWER, computed from the lookup above rather than from the
+    // plan, so it survives a SKIP. "How many of these six are already people?"
+    // is a fact worth having BEFORE this deploys, and it is independent of
+    // whether the project preconditions matched — a dry run that refuses to
+    // write should still report everything it managed to learn. Reported on
+    // every path below.
+    const suppliedEmails = [...new Set([...emailByTxnId.values()])];
+    const rosterMatches = suppliedEmails.filter((e) =>
+      personIdByEmail.has(e),
+    ).length;
+    const emailsWithNoRosterMatch = suppliedEmails.filter(
+      (e) => !personIdByEmail.has(e),
+    );
+
     const plan = planRegistrationBackfill({
       project: project
         ? {
@@ -149,7 +205,8 @@ export const backfillWorshipRegistrations = internalMutation({
         revenueAddedCents: 0,
         grossCents: 0,
         gapMovementCents: 0,
-        emailsWithNoPerson: plan.emailsWithNoPerson,
+        rosterMatches,
+        emailsWithNoRosterMatch,
         problems: plan.problems,
       };
     }
@@ -189,7 +246,8 @@ export const backfillWorshipRegistrations = internalMutation({
       grossCents: plan.grossCents,
       // `gap = located − books`. Revenue raises books, so the gap falls.
       gapMovementCents: -revenueAddedCents,
-      emailsWithNoPerson: plan.emailsWithNoPerson,
+      rosterMatches,
+      emailsWithNoRosterMatch,
       problems: plan.problems,
     };
   },

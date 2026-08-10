@@ -383,6 +383,122 @@ describe("the Givebutter backfill", () => {
     expect(rows).toHaveLength(0);
   });
 
+  /**
+   * ROSTER RESOLUTION. Every address below is INVENTED — the real six are
+   * supplied at run time and deliberately never enter this repo (see the
+   * mutation's `emails` arg doc). What's under test is the lookup, not the
+   * people.
+   *
+   * These run against a deployment where the project ISN'T found, which is the
+   * point: the roster answer must survive a SKIP, because "how many of these
+   * are already people?" is a fact you want BEFORE anything is written.
+   */
+  test("resolves a supplied email through the personEmails ledger", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await run(s.t, async (ctx) => {
+      const personId = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Alex Roster",
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("personEmails", {
+        personId,
+        email: "alex.roster@example.com",
+        source: "roster",
+        verified: true,
+        addedAt: Date.now(),
+      });
+    });
+
+    const result = await t.mutation(
+      internal.backfillWorshipRegistrations.backfillWorshipRegistrations,
+      {
+        emails: [
+          // Mixed case + stray whitespace: normalisation must not decide
+          // whether a payment reaches someone's record.
+          { givebutterTxnId: "4284185383", email: "  Alex.Roster@Example.COM " },
+        ],
+      },
+    );
+    expect(result.rosterMatches).toBe(1);
+    expect(result.emailsWithNoRosterMatch).toEqual([]);
+    // Still refused to write — a roster hit is not a precondition pass.
+    expect(result.inserted).toBe(0);
+    expect(result.problems).toHaveLength(1);
+  });
+
+  test("falls back to the person's own email field", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Bev Contact",
+        email: "bev.contact@example.com",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await t.mutation(
+      internal.backfillWorshipRegistrations.backfillWorshipRegistrations,
+      { emails: [{ givebutterTxnId: "3267180644", email: "bev.contact@example.com" }] },
+    );
+    expect(result.rosterMatches).toBe(1);
+    expect(result.emailsWithNoRosterMatch).toEqual([]);
+  });
+
+  test("reports the addresses that match nobody, without calling them a problem", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Bev Contact",
+        email: "bev.contact@example.com",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await t.mutation(
+      internal.backfillWorshipRegistrations.backfillWorshipRegistrations,
+      {
+        emails: [
+          { givebutterTxnId: "3267180644", email: "bev.contact@example.com" },
+          { givebutterTxnId: "6680142853", email: "nobody@example.com" },
+        ],
+      },
+    );
+    expect(result.rosterMatches).toBe(1);
+    expect(result.emailsWithNoRosterMatch).toEqual(["nobody@example.com"]);
+    // A registrant who isn't a person yet is the NORMAL case — never a problem.
+    expect(result.problems).toEqual([
+      "project rd776xf2snzx3nw5sqqb2r0kn18aqnhn not found in this deployment — SKIPPED",
+    ]);
+  });
+
+  test("a name that matches a person is NOT enough — only the address counts", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A roster person carrying a registrant's exact name and a DIFFERENT
+    // address. The name-match shortcut would link these; this must not.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Dominique Hyppolite",
+        email: "someone.else@example.com",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await t.mutation(
+      internal.backfillWorshipRegistrations.backfillWorshipRegistrations,
+      { emails: [] },
+    );
+    expect(result.rosterMatches).toBe(0);
+    expect(result.linkedPeople).toBe(0);
+  });
+
   test("an EXECUTE against an unrecognised deployment still writes nothing", async () => {
     const t = newT();
     const result = await t.mutation(
