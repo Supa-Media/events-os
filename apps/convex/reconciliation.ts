@@ -1318,15 +1318,37 @@ export const saveAccountBalance = internalMutation({
  *     check closes that window exactly, and reopens it correctly when a bounced
  *     credit goes `returned` and its ledger row is deleted.
  *
- *  2. `transactions.externalId` — a morning-engine account-transfer leg. The
- *     engine books both legs first and stamps them with the account-transfer id
- *     once `POST /account_transfers` returns (`stampPairMoved`), so a stamped id
- *     means the books already moved that money.
+ * ── WHY AN ENGINE ACCOUNT-TRANSFER LEG IS NOT LOOKED UP ─────────────────────
+ * An earlier draft added a second lane on `transactions.externalId` — the
+ * morning engine stamps both legs of a central↔chapter move with the
+ * account-transfer id once `POST /account_transfers` returns (`stampPairMoved`),
+ * so a stamped id does mean the engine wrote ledger rows.
+ *
+ * It is still the wrong thing to subtract, and in the direction this whole
+ * change exists to prevent. Those legs carry `transferOrigin:
+ * "balance_settlement"` (or `"payout_allocation"`), and `lib/bookBalance.ts`
+ * returns ZERO for both — moving cash between two accounts the org already owns
+ * is neither earning nor spending, so ORG-WIDE BOOK VALUE NEVER MOVED.
+ *
+ * The cash side, meanwhile, moves twice: while the transfer is pending the
+ * sending account's `available` has already dropped and the receiving account's
+ * has not yet risen, so `Σ available` is temporarily short by the whole
+ * transfer and `Σ pending` is long by it. Adding that pending back is exactly
+ * what restores the org total. Subtracting it as "booked" would leave the cash
+ * side short against a book value that never changed — inventing a
+ * `books_exceed_cash` shortfall the size of the settlement, every morning,
+ * until it posts.
+ *
+ * It is unreachable today only because Increase returns account transfers
+ * `complete` synchronously, so they are rarely pending when the snapshot runs.
+ * That is a property of the provider, not an invariant this code states — and
+ * `runEngine` takes the snapshot at step 6 immediately after step 5 moves that
+ * very cash, which is precisely where the two would meet.
  *
  * A personal-repayment ACH debit (`personalRepayments.increaseRef`) is booked at
  * send time too, but it PULLS money in: its pending row is positive, and only
  * negative rows reduce the available balance that `pendingCents` measures. It
- * can never contribute here, so it isn't looked up.
+ * can never contribute here, so it isn't looked up either.
  */
 export const bookedTransferIds = internalQuery({
   args: { transferIds: v.array(v.string()) },
@@ -1340,15 +1362,7 @@ export const bookedTransferIds = internalQuery({
           q.eq("increaseTransferId", transferId),
         )
         .first();
-      if (payout?.status === "paid") {
-        booked.push(transferId);
-        continue;
-      }
-      const leg = await ctx.db
-        .query("transactions")
-        .withIndex("by_external_id", (q) => q.eq("externalId", transferId))
-        .first();
-      if (leg) booked.push(transferId);
+      if (payout?.status === "paid") booked.push(transferId);
     }
     return booked;
   },

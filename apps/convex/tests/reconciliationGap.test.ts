@@ -942,7 +942,19 @@ describe("bookedTransferIds", () => {
     ).toEqual([]);
   });
 
-  test("a stamped ledger leg is booked — the morning engine's account transfer", async () => {
+  test("a stamped engine account-transfer leg is NOT booked", async () => {
+    // The engine writes ledger rows for both legs of a central<->chapter move
+    // and stamps them with the account-transfer id, so it is tempting to read a
+    // stamped id as "the books already moved this". They didn't: both legs carry
+    // `transferOrigin:"balance_settlement"`, which `lib/bookBalance.ts` returns
+    // ZERO for, so ORG-WIDE BOOK VALUE NEVER CHANGED.
+    //
+    // Meanwhile the cash side moves twice — while the transfer is pending the
+    // sender's `available` has dropped and the receiver's has not yet risen — so
+    // adding that pending back is precisely what restores the org total.
+    // Subtracting it would invent a `books_exceed_cash` shortfall the size of
+    // the settlement, which is the exact failure this whole change exists to
+    // prevent, pointed the other way.
     const t = newT();
     const s = await setupChapter(t);
     await run(s.t, (ctx) =>
@@ -950,6 +962,7 @@ describe("bookedTransferIds", () => {
         chapterId: s.chapterId,
         source: "transfer",
         flow: "transfer",
+        transferOrigin: "balance_settlement",
         amountCents: 25_000,
         currency: "usd",
         postedAt: Date.now(),
@@ -962,7 +975,7 @@ describe("bookedTransferIds", () => {
       await t.query(internal.reconciliation.bookedTransferIds, {
         transferIds: ["account_transfer_moved"],
       }),
-    ).toEqual(["account_transfer_moved"]);
+    ).toEqual([]);
   });
 
   test("a transfer nothing in the app originated is NOT booked", async () => {
