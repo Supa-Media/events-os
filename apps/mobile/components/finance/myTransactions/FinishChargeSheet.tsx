@@ -58,6 +58,7 @@ import {
   type CodingFormValue,
 } from "../modals/TransactionCodingModal";
 import { CodingDocumentation } from "./CodingDocumentation";
+import { PublicPurposeNotice } from "../coding/PublicPurposeEditor";
 import { parseAmountToCents, receiptAmountMismatch } from "./receiptAmountCheck";
 import type { MyTxnRow } from "./chargeTodo";
 
@@ -289,6 +290,12 @@ export function FinishChargeSheet({
                       <Text className="text-xs text-ink">
                         {coding.businessPurpose}
                       </Text>
+                      {/* THE AUTHOR HAS TO SEE IT. If a reviewer rewrote the
+                          sentence that publishes — usually to take a name out
+                          — saying nothing would leave the public record and the
+                          author's memory of it silently disagreeing. Their own
+                          words are still the ones above, untouched. */}
+                      <PublicPurposeNotice state={coding} />
                       {coding.travelFrom || coding.travelTo ? (
                         <Text className="mt-1 text-2xs text-muted">
                           Route: {coding.travelFrom ?? "—"} →{" "}

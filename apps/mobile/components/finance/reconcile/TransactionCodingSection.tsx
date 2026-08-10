@@ -37,6 +37,10 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Badge, Button, Icon, TextField, type BadgeTone } from "../../ui";
 import { colors } from "../../../lib/theme";
 import {
+  PublicPurposeEditor,
+  PublicPurposeNotice,
+} from "../coding/PublicPurposeEditor";
+import {
   TransactionCodingModal,
   type CodingFormValue,
 } from "../modals/TransactionCodingModal";
@@ -178,6 +182,26 @@ export function TransactionCodingSection({
           </View>
 
           <Text className="text-xs text-ink">{coding.businessPurpose}</Text>
+
+          {/* The redaction pass, for whoever may decide this row — the same
+              control the Coding tab's queue carries, so an approver who
+              reaches a coding from Reconcile isn't offered less. */}
+          {canReview ? (
+            <PublicPurposeEditor
+              transactionId={transactionId}
+              state={coding}
+              runAction={async (action) => {
+                try {
+                  return await action();
+                } catch (err) {
+                  onError(err);
+                  return undefined;
+                }
+              }}
+            />
+          ) : (
+            <PublicPurposeNotice state={coding} />
+          )}
 
           {coding.travelFrom || coding.travelTo ? (
             <Text className="mt-1 text-2xs text-muted">

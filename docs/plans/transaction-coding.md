@@ -510,6 +510,39 @@ imposes on this feature:
    `finance.coding.viewNames` capability string the day a seat needs it
    carried or stripped separately — the standard gate-it-now pattern).
    Travel from/to publishes at city level.
+
+   **The hole that protection left, and how it's closed (decision 10,
+   2026-08-09).** Structured attendee names are safe forever — but a name
+   typed into the FREE-TEXT purpose bypasses every one of those rules, and
+   people do it constantly because the purpose is where they narrate: real
+   production text reads *"Travel with Michael Reid from all team meeting in
+   Manhattan to LIRR in Rosedale"* and *"ride back to Seyi's from Central
+   Park"*. Two changes, neither of them inference:
+
+   - **At the point of writing**, the field says what to keep out — no names,
+     no personally identifying detail — and points at the safe place to put
+     it ("put who was there in the attendee list below, where names stay
+     internal"). It does NOT block submission and nothing scans the prose
+     guessing at what looks like a name (decision 5 forbids inference here).
+   - **At the point of approving**, the four approval seats may write a
+     public-facing version of the sentence (`setPublicPurpose`), so an
+     approver strips a name and approves rather than bouncing the whole
+     coding back over a wording nit — which, being the more expensive option,
+     is how the name would otherwise have got published.
+
+   **REDACTION IS NOT FALSIFICATION, and this is the part not to "simplify".**
+   The author's `businessPurpose` is never rewritten and never deleted; the
+   approver's version is a SEPARATE field (`publicPurpose`). The ledger
+   renders `publishedPurpose(coding)` = `publicPurpose ?? businessPurpose`
+   — one shared helper so the renderer can't get it wrong — and every
+   internal surface shows both, labelled, including the AUTHOR's own view: a
+   rewrite nobody was told about would leave the public record and the
+   author's memory of it silently disagreeing. Each edit writes a
+   `coding_redact` audit row naming who and when, carrying both strings, and
+   separation of duties applies (nobody rewrites what publishes on their own
+   coding — otherwise "I can't approve mine, but I can decide what mine says"
+   would be a way around it). A plain editable field with the original shown
+   beneath, deliberately not a rich-text range-redaction UI.
 2. **Publishable = three green axes**: documentation state
    (receipt/exception — the existing `documentationState`), coding state
    (approved), review state (reconciled). `isUndocumented` remains the
@@ -537,6 +570,18 @@ The public ledger itself (a `/ledger` page in the `givePage` family) is a
 it.
 
 ## Beyond the ask — adjacent gaps this surfaces
+
+- **PRE-SPEND budget visibility — a separate surface, not this one.** Owner,
+  2026-08-09, on the coding budget picker: *"I feel like they should have an
+  idea of what budget something's coming under **before they spend it**. I
+  just want to make sure the UI helps with that."* Coding is what happens
+  after the money has already left, so a picker here can only ever help
+  someone classify a charge they have already made. Knowing which budget you
+  are about to spend against — before you tap the card — is a different
+  screen for a different moment (the cardholder's own "what am I spending
+  against" view, adjacent to Budgets-at-a-glance and the card itself).
+  Recorded here so it isn't mistaken for something the coding picker
+  delivered. Not built.
 
 - **Mileage.** If we ever reimburse personal-vehicle miles, §274(d) wants
   date, miles, from/to, purpose at the standard rate — the travel fields
