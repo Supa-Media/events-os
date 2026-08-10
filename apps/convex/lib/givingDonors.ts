@@ -487,6 +487,29 @@ export async function recordGiftForDonor(
     // evidence link back to the `transactions` row (see
     // `schema/givingPlatform.ts`'s `gifts.transactionId` doc).
     transactionId?: Id<"transactions">;
+    /**
+     * Whether this write is a SINGLE, POINT-IN-TIME ARRIVAL — money landing
+     * now, which a matching immediate rule should hear about now.
+     *
+     * Absent or `true` is the default, and the default is the SAFE one on
+     * purpose: a new single-gift path added next year notifies without its
+     * author having to know this flag exists. Opting out has to be typed.
+     *
+     * `false` says "this operation can write many gifts, or is re-writing
+     * money the ledger already knew about" — a CSV import, a historical
+     * backfill, a Givebutter campaign sync, splitting one gift into parts,
+     * restoring a gift after a dispute resolved. Left on the default, a
+     * three-thousand-row import would put three thousand emails into the
+     * development team's inbox, which is an outbound-email incident rather
+     * than a notification.
+     *
+     * IT DEMOTES, IT DOES NOT SILENCE. A gift written with `notify: false`
+     * is still in the ledger and still lands in the daily/weekly digest —
+     * the digest window rides `createdAt`, so an import shows up there as one
+     * correctly-totalled lump instead of a thousand separate mails. Nothing
+     * is ever hidden from the people who asked to be told.
+     */
+    notify?: boolean;
   },
 ): Promise<Id<"gifts">> {
   assertPositiveGiftCents(args.amountCents);
@@ -587,16 +610,24 @@ export async function recordGiftForDonor(
   // for its own reasons, the job rolls back with it, so nobody is ever told
   // about a gift that doesn't exist.
   //
-  // PRE-FILTERED, so a gift nobody asked about schedules NOTHING. The action
-  // re-reads and re-matches anyway (it must — it runs after the commit), but
-  // scheduling a job whose only possible outcome is "no rules matched" costs a
-  // `_scheduled_functions` write on every gift a deployment ever records, and
-  // leaves an in-flight job behind every gift written in a test. Same pure
-  // predicate both sides, so the pre-filter can never disagree with the send.
-  const immediateRules = await ctx.db
-    .query("givingNotificationRules")
-    .withIndex("by_cadence", (q) => q.eq("cadence", "immediate"))
-    .take(MAX_RULES);
+  // BULK WRITES OPT OUT (`notify: false` — see the arg's doc). They are not
+  // silenced: the gift is in the ledger and the digest, which counts on
+  // `createdAt`, still reports it.
+  //
+  // PRE-FILTERED otherwise, so a gift nobody asked about schedules NOTHING.
+  // The action re-reads and re-matches anyway (it must — it runs after the
+  // commit), but scheduling a job whose only possible outcome is "no rules
+  // matched" costs a `_scheduled_functions` write on every gift a deployment
+  // ever records, and leaves an in-flight job behind every gift written in a
+  // test. Same pure predicate both sides, so the pre-filter can never
+  // disagree with the send.
+  const immediateRules =
+    args.notify === false
+      ? []
+      : await ctx.db
+          .query("givingNotificationRules")
+          .withIndex("by_cadence", (q) => q.eq("cadence", "immediate"))
+          .take(MAX_RULES);
   const anyMatch = immediateRules.some((rule) =>
     ruleMatchesGift(rule, { scope: donor.scope, amountCents: args.amountCents }),
   );

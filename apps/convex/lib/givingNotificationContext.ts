@@ -26,6 +26,7 @@ import type {
   NotificationDonor,
   NotificationGift,
 } from "./givingNotificationEmails";
+import { isBackdatedGift } from "./givingNotificationRules";
 import type { GiftScope, RuleScope } from "./givingNotificationRules";
 
 /** Path of a donor's record in the app — `apps/mobile/app/(app)/giving/donor/
@@ -134,6 +135,7 @@ export async function buildNotificationGift(
   ctx: QueryCtx,
   gift: Doc<"gifts">,
   chapterNames?: Map<string, string>,
+  now: number = Date.now(),
 ): Promise<NotificationGift | null> {
   const donor = await ctx.db.get(gift.donorId);
   if (!donor) return null;
@@ -163,6 +165,7 @@ export async function buildNotificationGift(
     ...(gift.note ? { note: gift.note } : {}),
     ...(eventName ? { eventName } : {}),
     provenance: await giftProvenance(ctx, gift),
+    isBackdated: isBackdatedGift(gift.receivedAt, now),
     donor: donorFacts(donor),
   };
 }

@@ -56,6 +56,29 @@ export const MAX_DIGEST_GIFT_ROWS = 100;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * How far back a gift's `receivedAt` can be and still read as "money just came
+ * in". Past it the immediate email says a BACKDATED gift was RECORDED.
+ *
+ * It changes the wording and nothing else — deliberately. Suppressing an old
+ * gift's notification outright was the other option and it is worse: a
+ * treasurer entering a cheque that arrived three weeks ago would get silence,
+ * and "someone gave a big gift and I want to thank them" is exactly as true
+ * three weeks later. A notification nobody can see the absence of is the
+ * failure mode that makes people stop trusting the system. So nothing is
+ * dropped; the email simply stops claiming something untrue about when the
+ * money moved. The VOLUME problem — a bulk import firing thousands of these —
+ * is a different axis, solved deterministically by `recordGiftForDonor`'s
+ * `notify` flag rather than by guessing from a date.
+ */
+export const FRESH_ARRIVAL_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Whether a gift's stated date is far enough back that calling it an arrival
+ *  would be wrong. */
+export function isBackdatedGift(receivedAt: number, now: number): boolean {
+  return now - receivedAt > FRESH_ARRIVAL_WINDOW_MS;
+}
+
 /** A rule's reach — the three-way union, with `"all"` as an explicit sentinel
  *  rather than an absent chapter id. */
 export type RuleScope = "all" | "central" | Id<"chapters">;

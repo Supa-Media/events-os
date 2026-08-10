@@ -91,6 +91,7 @@ function sampleGift(over: Partial<NotificationGift> = {}): NotificationGift {
     method: "stripe",
     scopeLabel: "New York",
     provenance: "Given on an event page",
+    isBackdated: false,
     donor: {
       donorId: "d1",
       name: "Ada Donor",
@@ -542,6 +543,7 @@ describe("the digest email", () => {
       byMethod: [],
       gifts: [],
       omittedCount: 0,
+      countTruncated: false,
     });
     expect(subject).toBe("No giving this week — All books");
     expect(html).toContain("No gifts came in");
@@ -582,6 +584,7 @@ describe("the digest email", () => {
       ],
       gifts: [big, small],
       omittedCount: 3,
+      countTruncated: false,
     });
     expect(subject).toBe("$1,225.00 from 2 gifts this day — All books");
     expect(html).toContain("$1,225.00");
@@ -943,6 +946,55 @@ describe("immediate notifications", () => {
     }
   });
 
+  test("a backdated gift still notifies, but stops claiming money just moved", async () => {
+    const s = await devDirectorSetup();
+    await saveRule(s.as);
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, {
+          amountCents: 50_000,
+          name: "Late Cheque",
+          email: "late@example.com",
+          // A cheque that arrived a year ago, entered today.
+          receivedAt: MON_8AM_ET - 365 * DAY_MS,
+        });
+      });
+      // Sent — a gift the desk just learned about is exactly what someone
+      // wants to thank a donor for, however old the cheque is. Suppressing it
+      // would be a silence nobody could see.
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toBe(
+        "Backdated gift recorded: $500.00 from Late Cheque — Central",
+      );
+      expect(cap.sent[0].html).toContain("A backdated gift was recorded");
+      expect(cap.sent[0].html).toContain("recorded later, not today");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a gift received this week still reads as an arrival", async () => {
+    const s = await devDirectorSetup();
+    await saveRule(s.as);
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, {
+          amountCents: 50_000,
+          name: "Recent Cheque",
+          email: "recent@example.com",
+          receivedAt: MON_8AM_ET - 2 * DAY_MS,
+        });
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toBe("$500.00 from Recent Cheque — Central");
+      expect(cap.sent[0].html).toContain("A gift just came in");
+    } finally {
+      cap.restore();
+    }
+  });
+
   test("a failing email cannot cost the gift", async () => {
     const s = await devDirectorSetup();
     await saveRule(s.as);
@@ -1000,6 +1052,120 @@ describe("immediate notifications", () => {
     } finally {
       if (prev === undefined) delete process.env.RESEND_API_KEY;
       else process.env.RESEND_API_KEY = prev;
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Bulk writes are demoted to the digest, never silenced
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("bulk writes do not blast the inbox", () => {
+  test("a 25-row CSV import sends ZERO immediate emails, while one desk gift still sends one", async () => {
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, { recipients: ["development-team@publicworship.life"] });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET - 60_000, async () => {
+        await s.as.mutation(api.givingImport.importCanonical, {
+          scope: "central",
+          rows: Array.from({ length: 25 }, (_, i) => ({
+            rowType: "gift" as const,
+            name: `Historical Donor ${i}`,
+            email: `historical${i}@example.com`,
+            amountCents: 10_000 + i,
+            receivedAt: MON_8AM_ET - (400 + i) * DAY_MS,
+            externalRef: `gb_hist_${i}`,
+          })),
+        });
+      });
+      // The whole point: an import is one operation, not 25 notifications.
+      expect(cap.sent).toHaveLength(0);
+
+      // …and the default is still SAFE — a single gift down the ordinary desk
+      // path notifies without anyone having to remember a flag.
+      await atClock(s.t, MON_8AM_ET - 30_000, async () => {
+        await addGift(s.as, {
+          amountCents: 50_000,
+          name: "Live Giver",
+          email: "live@example.com",
+        });
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].subject).toContain("Live Giver");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("the imported gifts are DEMOTED, not silenced — the digest still counts every one", async () => {
+    const s = await devDirectorSetup();
+    await atClock(s.t, SETUP_AT, async () => {
+      await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET - 60_000, async () => {
+        await s.as.mutation(api.givingImport.importCanonical, {
+          scope: "central",
+          rows: Array.from({ length: 4 }, (_, i) => ({
+            rowType: "gift" as const,
+            name: `Historical Donor ${i}`,
+            email: `hist${i}@example.com`,
+            amountCents: 10_000,
+            receivedAt: MON_8AM_ET - (400 + i) * DAY_MS,
+            externalRef: `gb_d_${i}`,
+          })),
+        });
+      });
+      expect(cap.sent).toHaveLength(0);
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      // One correctly-totalled email instead of four — and nothing lost.
+      expect(cap.sent[0].subject).toBe(
+        "$400.00 from 4 gifts this day — All books",
+      );
+      expect(cap.sent[0].html).toContain("Historical Donor 0");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("splitting a gift re-announces nothing — the money already arrived once", async () => {
+    const s = await devDirectorSetup();
+    await saveRule(s.as);
+    const cap = captureEmails();
+    try {
+      let giftId!: Id<"gifts">;
+      await atClock(s.t, MON_8AM_ET, async () => {
+        const res = await addGift(s.as, {
+          amountCents: 100_000,
+          name: "Split Source",
+          email: "split@example.com",
+        });
+        giftId = res.giftId;
+      });
+      expect(cap.sent).toHaveLength(1); // the original arrival, announced once
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.as.mutation(api.givingPlatform.splitGift, {
+          giftId,
+          parts: [
+            { scope: "central", amountCents: 60_000 },
+            { scope: "central", amountCents: 40_000 },
+          ],
+          why: "Two designations bundled in one wire.",
+        });
+      });
+      expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
     }
   });
 });

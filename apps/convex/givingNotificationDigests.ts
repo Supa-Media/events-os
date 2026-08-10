@@ -217,6 +217,8 @@ export const digestPayload = internalQuery({
         byMethod: sortedRows(byMethod),
         gifts: listed,
         omittedCount: Math.max(0, gifts.length - listed.length),
+        // The window read hit its cap, so `totalCents`/`giftCount` are a floor.
+        countTruncated: gifts.length >= MAX_DIGEST_SCAN,
       },
     };
   },

@@ -102,6 +102,50 @@ deployment with no immediate rules pays no `_scheduled_functions` write per gift
 The action still re-reads and re-matches — it has to, since it runs after the
 commit — so the two can never disagree.
 
+### Bulk writes are demoted to the digest, never silenced
+
+`recordGiftForDonor` takes `notify?: boolean`. **Absent or `true` is the
+default, and the default is the safe one**: a single-gift path added next year
+notifies without its author knowing the flag exists. Opting out has to be typed.
+
+`notify: false` says *this operation can write many gifts, or is re-writing
+money the ledger already knew about*. Five call sites pass it:
+
+| Call site | Why |
+| --- | --- |
+| `givingImport.ts` (canonical CSV import) | Thousands of rows in one commit — the Import tab is live, so this is not hypothetical |
+| `historicalBackfill.ts` | A one-time load of curated historical exports |
+| `givebutterSync.ts` | Unbounded loop; attaching a campaign backfills its whole donation history |
+| `givingReversals.ts` (restore) | Putting back money already announced once, at its original date |
+| `givingPlatform.ts#splitGift` | A reclassification of one gift into parts — the money arrived once |
+
+Everything else keeps the default, including every live rail: the `/give` page,
+event-page donations, ticket add-ons, Stripe recurring cycles, sponsorship
+payments, confirmed bank credits, in-person sale splits, and ordinary desk entry.
+
+**It demotes; it does not silence.** A gift written with `notify: false` is in
+the ledger and in the daily/weekly digest — the digest window counts on
+`createdAt`, so an import lands there as one correctly-totalled lump instead of
+a thousand separate emails. Nothing is ever hidden from the people who asked to
+be told. (If a window ever holds more gifts than one digest run reads, the email
+says the total is a floor rather than quietly under-reporting money.)
+
+### A backdated gift notifies, but doesn't claim the money just moved
+
+`receivedAt` is backdatable, so "a gift just came in" can be a false statement
+about a gift recorded today for a date last year. Past `FRESH_ARRIVAL_WINDOW_MS`
+(7 days) the immediate email leads with **"A backdated gift was recorded"**, the
+subject is prefixed `Backdated gift recorded:`, and the date line says
+"recorded later, not today".
+
+**It changes the wording and nothing else.** Suppressing an old gift's
+notification was the other option and it is worse: a treasurer entering a cheque
+that arrived three weeks ago would get silence, and "someone gave a big gift and
+I want to thank them" is exactly as true three weeks later. A notification whose
+absence nobody can see is the failure mode that makes people stop trusting the
+system. The *volume* problem is a different axis, solved deterministically by
+`notify` rather than by guessing from a date.
+
 **The one bypass.** `genesisRevenueSync.ts` inserts a single hard-coded
 historical in-kind gift directly, deliberately skipping `recordGiftForDonor`
 (and every rollup with it). It is a dated one-time ops module for a 2026-08-06
@@ -216,15 +260,20 @@ chapter seat is granted `giving.manage` the chapter branch works with no code
 change. The tests mint such a seat to pin that branch down rather than leave it
 untested.
 
-## Known gap
+## Two axes, kept apart on purpose
 
-**A bulk import will fan out.** Eligibility is total by design, so committing a
-CSV of several thousand historical gifts would schedule an immediate
-notification per row. The mitigation today is operational — deactivate immediate
-rules before a large import. If that proves annoying, the clean fix is an
-explicit `notify: false` argument threaded from the bulk import/backfill call
-sites into `recordGiftForDonor`, keeping the default (and every real-time
-channel) unchanged.
+"Should this gift produce an immediate email?" has two independent answers, and
+collapsing them into one heuristic is how this goes wrong:
+
+- **Volume** — is this operation writing many gifts at once? Answered
+  *deterministically* by the caller via `notify`, because the caller knows and a
+  date can only guess.
+- **Truthfulness** — is this money that just moved? Answered by `receivedAt`,
+  and used only to change *what the email says*, never whether it is sent.
+
+A date-based volume guard would silently drop a treasurer's three-week-old
+cheque; a volume-based truthfulness guard would let an import claim a 2019 gift
+just arrived. Each axis gets the mechanism that actually fits it.
 
 ## Files
 

@@ -75,6 +75,9 @@ export type NotificationGift = {
   /** One line saying HOW this gift arrived — "Bundled with a ticket order",
    *  "Recurring backer cycle", "Split out of an in-person sale", … */
   provenance: string;
+  /** The gift's stated date is well in the past, so the email must not claim
+   *  the money just moved. See `isBackdatedGift`. */
+  isBackdated: boolean;
   donor: NotificationDonor;
 };
 
@@ -106,6 +109,10 @@ export type DigestEmailPayload = {
   gifts: NotificationGift[];
   /** How many gifts the totals counted but the list omitted. */
   omittedCount: number;
+  /** The window held more gifts than one digest run will read, so the totals
+   *  above are a FLOOR. Only reachable behind a bulk import; said out loud
+   *  rather than quietly under-reporting money. */
+  countTruncated: boolean;
 };
 
 // ── Formatting ───────────────────────────────────────────────────────────────
@@ -170,7 +177,11 @@ export function renderImmediateGiftEmail(payload: ImmediateEmailPayload): {
   const { gift } = payload;
   const donor = gift.donor;
   const amount = formatCents(gift.amountCents);
-  const subject = `${amount} from ${donor.name} — ${gift.scopeLabel}`;
+  // The subject is where a busy recipient triages, so the backdated case has to
+  // be legible there and not only in the body.
+  const subject = gift.isBackdated
+    ? `Backdated gift recorded: ${amount} from ${donor.name} — ${gift.scopeLabel}`
+    : `${amount} from ${donor.name} — ${gift.scopeLabel}`;
 
   const donorFacts: string[] = [
     donor.isFirstGift
@@ -180,7 +191,9 @@ export function renderImmediateGiftEmail(payload: ImmediateEmailPayload): {
   if (donor.email) donorFacts.push(donor.email);
 
   const inner = [
-    emailEyebrow("A gift just came in"),
+    emailEyebrow(
+      gift.isBackdated ? "A backdated gift was recorded" : "A gift just came in",
+    ),
     emailHeading(esc(amount), { size: 34, margin: "0 0 4px" }),
     emailParagraph(
       `${donorNameHtml(donor)} · ${esc(gift.scopeLabel)}`,
@@ -190,7 +203,12 @@ export function renderImmediateGiftEmail(payload: ImmediateEmailPayload): {
       [
         detailRow("Source", esc(giftMethodLabel(gift.method))),
         detailRow("Book", esc(gift.scopeLabel)),
-        detailRow("Received", esc(giftDate(gift.receivedAt))),
+        detailRow(
+          "Received",
+          gift.isBackdated
+            ? `${esc(giftDate(gift.receivedAt))} — recorded later, not today`
+            : esc(giftDate(gift.receivedAt)),
+        ),
         gift.eventName ? detailRow("Event", esc(gift.eventName)) : "",
         detailRow("How it arrived", esc(gift.provenance)),
         gift.feeCoverageCents
@@ -346,6 +364,12 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
       ? emailParagraph(
           `…and ${payload.omittedCount} more, counted in the totals above. Open the gifts ledger to see them all.`,
           { size: 12, margin: "12px 0 0" },
+        )
+      : "",
+    payload.countTruncated
+      ? emailParagraph(
+          "More gifts landed in this period than one digest reads, so the total above is a FLOOR, not the figure. Open the gifts ledger for the real number.",
+          { size: 12, margin: "12px 0 0", strong: true },
         )
       : "",
     emailRule(),

@@ -1089,6 +1089,11 @@ async function commitGiftRow(
     method: row.source ?? "givebutter",
     ...(row.externalRef ? { externalRef: row.externalRef } : {}),
     ...(row.note ? { note: row.note } : {}),
+    // A committed import is thousands of rows in one operation; one immediate
+    // email per row is an outbound-email incident, not a notification. The
+    // gifts still reach the daily/weekly digest as one totalled lump — the
+    // digest window counts on `createdAt`. See `recordGiftForDonor`'s `notify`.
+    notify: false,
   });
   counters.gifts++;
 }

@@ -434,6 +434,9 @@ async function applyTransactionGift(
 
   if (state.write) {
     await recordGiftForDonor(ctx, {
+      // A one-time load of curated historical exports — years of giving in one
+      // run, none of it money arriving now. Digest still counts it.
+      notify: false,
       donorId: entry.realId as Id<"donors">,
       amountCents: amount as number,
       receivedAt,

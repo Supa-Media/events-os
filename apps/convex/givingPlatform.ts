@@ -2070,6 +2070,11 @@ export const splitGift = triggerMutation({
       });
       const partNote = `${baseNote ? `${baseNote} ` : ""}(split ${i + 1}/${n})`;
       const childId = await recordGiftForDonor(ctx, {
+        // A RECLASSIFICATION of one gift into its parts. The money arrived
+        // once and was announced once; re-announcing it n times, at its
+        // original date, would be telling the development team about giving
+        // that didn't happen.
+        notify: false,
         donorId,
         amountCents: part.amountCents,
         receivedAt: gift.receivedAt,
