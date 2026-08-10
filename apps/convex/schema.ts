@@ -108,6 +108,7 @@ import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { territories } from "./schema/territories";
 import { givingInterest } from "./schema/givingInterest";
 import {
+  givingDigestSendNowAttempts,
   givingNotificationRuleAudit,
   givingNotificationRules,
 } from "./schema/givingNotifications";
@@ -436,6 +437,12 @@ const schema = defineSchema({
   // `givingNotificationRules.updatedBy` says who touched it last; this says
   // what they did, and survives the next edit.
   givingNotificationRuleAudit,
+
+  // Rate limit for the desk's manual "Send now" on a digest rule — one
+  // timestamped row per accepted press, keyed on the RULE. The button mails
+  // real people, so it is capped; see schema/givingNotifications.ts and
+  // `givingNotificationDigests.ts#SEND_NOW_MAX_PER_RULE`.
+  givingDigestSendNowAttempts,
 
   // Sponsorships & partnerships (F-6, P4) — dev-director-authored sponsor
   // package tiers (`sponsorPackages`) + the agreement pipeline that tracks an

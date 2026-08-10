@@ -251,3 +251,26 @@ export const givingNotificationRuleAudit = defineTable({
   // nobody has asked for. Both indexes are here so that work is a read, not a
   // migration. Rules are few, so this stays small.
   .index("by_at", ["at"]);
+
+// ── "Send now" rate limit ───────────────────────────────────────────────────
+/** A single timestamped hit against the desk's manual `sendDigestNow` action —
+ *  same shape/index as `reimbursementSubmitAttempts` / `cardDetailsRevealAttempts`
+ *  / `receiptNudgeAttempts`, checked+recorded atomically inside
+ *  `givingNotificationDigests.prepareDigestNow`.
+ *
+ *  `key` is `"rule:<ruleId>"` — keyed on the RULE, not the caller, because the
+ *  cost of this button falls on the rule's RECIPIENTS. Keying it on the person
+ *  pressing it would let two people with view of the same book take turns
+ *  mailing the same team twice as often, which is the thing the limit exists to
+ *  prevent. See `givingNotificationDigests.ts` for the threshold + rationale.
+ *
+ *  One-hour window, so it is swept with the other hourly attempt tables
+ *  (`maintenance.ts`). */
+export const givingDigestSendNowAttempts = defineTable({
+  key: v.string(),
+  createdAt: v.number(),
+})
+  .index("by_key_and_time", ["key", "createdAt"])
+  // Deployment-wide TTL sweep (maintenance.ts): drop rows older than the rate
+  // window regardless of key.
+  .index("by_time", ["createdAt"]);

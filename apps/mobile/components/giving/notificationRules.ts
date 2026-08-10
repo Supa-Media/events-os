@@ -428,3 +428,36 @@ export function buildSaveArgs(
   }
   return { args, error: null };
 }
+
+/** What the desk's "Send now" action came back with. Mirrors the union
+ *  `givingNotificationDigests.sendDigestNow` returns — four cases, because "it
+ *  sent nothing" has four honest explanations and a button that says only
+ *  "done" for all of them is worse than no button. */
+export type SendNowStatus =
+  | "sent"
+  | "empty_window"
+  | "nobody_reached"
+  | "no_mailer";
+
+/** The one sentence the screen shows after a manual send. Pure, so the wording
+ *  is testable without a Convex client. */
+export function sendNowResultMessage(
+  status: SendNowStatus,
+  emailsSent: number,
+): string {
+  switch (status) {
+    case "sent":
+      return emailsSent === 1
+        ? "Sent — 1 email is on its way."
+        : `Sent — ${emailsSent} emails are on their way.`;
+    case "empty_window":
+      // Deliberately explains WHY rather than saying "nothing happened": a
+      // daily digest with nothing in it is skipped on purpose, and the next
+      // scheduled run is unaffected by this press.
+      return "Nothing has come in since the last digest, so there was nothing to send. This rule's schedule is unchanged.";
+    case "nobody_reached":
+      return "Nobody could be reached — check the addresses on this rule.";
+    case "no_mailer":
+      return "No email provider is configured for this deployment, so nothing could be sent.";
+  }
+}

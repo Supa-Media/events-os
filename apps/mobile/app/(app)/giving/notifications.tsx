@@ -30,7 +30,7 @@
  */
 import { useState } from "react";
 import { ActivityIndicator, Text, View } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import { useAction, useMutation, useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import { EASTERN_TIME_ZONE } from "@events-os/shared";
@@ -63,12 +63,14 @@ import {
   removeRecipient,
   ruleScopeChoices,
   scheduleSummary,
+  sendNowResultMessage,
   thresholdLabel,
   type RuleCadence,
   type RuleScope,
   type ScopeChoice,
 } from "../../../components/giving/notificationRules";
-import { alertError, errorMessage } from "../../../lib/errors";
+import { confirmAction } from "../../../components/event/ticketing/helpers";
+import { alertError, alertInfo, errorMessage } from "../../../lib/errors";
 import { formatDateTimeInZone } from "../../../lib/format";
 import { colors } from "../../../lib/theme";
 import { useGivingScope } from "../../../lib/useGivingScope";
@@ -204,10 +206,20 @@ function NotificationsBody() {
 
 function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
   const setRuleActive = useMutation(api.givingNotifications.setRuleActive);
+  const sendDigestNow = useAction(api.givingNotificationDigests.sendDigestNow);
+  const [sending, setSending] = useState(false);
   // WHO LAST POINTED THIS SOMEWHERE. A rule outlives its author's seat and goes
   // on mailing donor names either way, so the desk names the last editor rather
   // than the creator — see `lastEditedLabel`.
   const lastEdited = lastEditedLabel(rule, formatSentAt);
+  // ONLY A DIGEST HAS ANYTHING TO SEND ON DEMAND. An `immediate` rule fires
+  // from the gift write, and a paused rule matches nothing — the server refuses
+  // both, and offering a button that can only be refused is worse than not
+  // offering one.
+  const canSendNow =
+    rule.canManage &&
+    rule.isActive &&
+    (rule.cadence === "daily" || rule.cadence === "weekly");
 
   async function toggle(next: boolean) {
     try {
@@ -216,6 +228,32 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
       // Fire-and-forget switch: a server refusal would otherwise be a silent
       // no-op with the row snapping back for no stated reason.
       alertError(e);
+    }
+  }
+
+  function askToSend() {
+    confirmAction({
+      title: "Send this digest now?",
+      // Names the actual addresses. This puts real mail in real inboxes on a
+      // press, and "who is about to get this" is the one thing worth being
+      // sure of before pressing it.
+      message: `${rule.recipients.join(", ")} will get this rule's digest right away, covering everything since its last one. It doesn't change the schedule — the next ${cadenceLabel(rule.cadence).toLowerCase()} still goes out as normal.`,
+      confirmLabel: "Send now",
+      onConfirm: () => void send(),
+    });
+  }
+
+  async function send() {
+    setSending(true);
+    try {
+      const result = await sendDigestNow({ ruleId: rule._id });
+      alertInfo(sendNowResultMessage(result.status, result.emailsSent), "Send now");
+    } catch (e) {
+      // The server is the authority — its written refusal ("This rule has
+      // already been sent 3 times in the last hour") beats any guess made here.
+      alertError(e);
+    } finally {
+      setSending(false);
     }
   }
 
@@ -247,9 +285,21 @@ function RuleRow({ rule, onEdit }: { rule: Rule; onEdit: () => void }) {
             <Text className="mt-0.5 text-xs text-faint">{lastEdited}</Text>
           ) : null}
         </View>
-        {rule.canManage ? (
-          <Button title="Edit" variant="ghost" size="sm" onPress={onEdit} />
-        ) : null}
+        <View className="items-end gap-1">
+          {rule.canManage ? (
+            <Button title="Edit" variant="ghost" size="sm" onPress={onEdit} />
+          ) : null}
+          {canSendNow ? (
+            <Button
+              title="Send now"
+              variant="ghost"
+              size="sm"
+              icon="send"
+              loading={sending}
+              onPress={askToSend}
+            />
+          ) : null}
+        </View>
       </View>
       {rule.canManage ? (
         <View className="mt-2 border-t border-border pt-1">

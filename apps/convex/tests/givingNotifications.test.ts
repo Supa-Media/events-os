@@ -23,6 +23,7 @@ import {
 } from "../lib/givingNotificationEmails";
 import {
   MAX_DIGEST_MATCHES,
+  SEND_NOW_MAX_PER_RULE,
   collectWindowGifts,
 } from "../givingNotificationDigests";
 import { GIFT_TYPE_LABELS, giftType } from "../lib/giftLabels";
@@ -3745,5 +3746,366 @@ describe("listRules and givingScopeOptions agree about manage rights", () => {
     const opts = await s.as.query(api.givingPlatform.givingScopeOptions, {});
     expect(opts.canManageCentral).toBe(true);
     expect(opts.options.every((o) => o.canManage)).toBe(true);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// "Send now" — an on-demand digest
+// ═══════════════════════════════════════════════════════════════════════════
+
+/** Every mark the send-now path promises not to touch, plus the two fields a
+ *  patch would move as a side effect. Read as a set, compared as a set — the
+ *  whole design rests on this tuple being identical before and after. */
+async function marksOf(
+  s: ChapterSetup,
+  ruleId: Id<"givingNotificationRules">,
+): Promise<Record<string, unknown>> {
+  const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+  return {
+    lastSentAt: row?.lastSentAt,
+    lastRunDayKey: row?.lastRunDayKey,
+    watermarkFromRun: row?.watermarkFromRun,
+    updatedAt: row?.updatedAt,
+  };
+}
+
+async function sendNow(
+  as: ChapterSetup["as"],
+  ruleId: Id<"givingNotificationRules">,
+): Promise<{ status: string; emailsSent: number }> {
+  return await as.action(api.givingNotificationDigests.sendDigestNow, {
+    ruleId,
+  });
+}
+
+describe("send now", () => {
+  test("a rule that is NOT due sends anyway, and the scheduled run still reports the window afterwards", async () => {
+    // THE BUG THIS EXISTS FOR: the 09:00 run stamped the day, so the noon tick
+    // correctly skipped — and there was no way to see the digest before next
+    // week. Here the 08:00 sweep has already run, so the rule is emphatically
+    // not due, and Send now mails it regardless.
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, {
+        name: "Weekly roundup",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET - 6 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, { amountCents: 11_500, name: "Ada Donor" });
+      });
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Ada Donor");
+      cap.sent.length = 0;
+
+      // A gift lands AFTER that run's watermark — it belongs to next Monday's
+      // digest, and it is what the manual send should show.
+      await atClock(s.t, MON_8AM_ET + 30 * 60 * 1000, async () => {
+        await addGift(s.as, {
+          amountCents: 4_000,
+          name: "Bea Donor",
+          email: "bea@example.com",
+        });
+      });
+      cap.sent.length = 0;
+
+      const before = await marksOf(s, ruleId);
+      // The rule is stamped for the day, so the scheduled sweep does nothing at
+      // 09:00 — which is the whole premise.
+      await atClock(s.t, MON_9AM_ET, async () => {
+        const out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+        expect(out).toMatchObject({ digestsSent: 0 });
+      });
+      expect(cap.sent).toHaveLength(0);
+
+      await atClock(s.t, MON_9AM_ET, async () => {
+        expect(await sendNow(s.as, ruleId)).toEqual({
+          status: "sent",
+          emailsSent: 1,
+        });
+      });
+
+      // It went out, to the rule's own recipients, carrying the CURRENT window
+      // — everything since the last run reported, which is what a preview of
+      // the next digest means.
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].to).toBe("dev@publicworship.life");
+      expect(cap.sent[0].html).toContain("Bea Donor");
+      // …and not a gift the 08:00 run already reported.
+      expect(cap.sent[0].html).not.toContain("Ada Donor");
+
+      // NOT ONE MARK MOVED — asserted as actual field values, before and after.
+      expect(await marksOf(s, ruleId)).toEqual(before);
+      expect(before.lastSentAt).toBe(MON_8AM_ET - 60_000);
+      expect(before.watermarkFromRun).toBe(true);
+      expect(before.lastRunDayKey).toBe(localParts(MON_8AM_ET).dayKey);
+
+      // THE PROPERTY THE WHOLE DESIGN RESTS ON, stated as behaviour rather than
+      // as field values: next Monday's scheduled digest still reports Bea's
+      // gift. The preview showed it; it did not consume it.
+      cap.sent.length = 0;
+      await atClock(s.t, MON_8AM_ET + 7 * DAY_MS, async () => {
+        const out = await s.t.action(
+          internal.givingNotificationDigests.sendGivingDigests,
+          {},
+        );
+        expect(out).toMatchObject({ digestsSent: 1 });
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Bea Donor");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("delivery IS stamped — the row that offers the button shows it worked", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, {
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      const before = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(before?.lastDeliveredAt).toBeUndefined();
+      await atClock(s.t, MON_9AM_ET, async () => {
+        expect((await sendNow(s.as, ruleId)).status).toBe("sent");
+      });
+      const after = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(after?.lastDeliveredAt).toBe(MON_9AM_ET);
+      // …without pretending anybody edited the rule.
+      expect(after?.updatedAt).toBe(before?.updatedAt);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a caller with no reach into the rule's book is refused, and nothing is mailed", async () => {
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      // CENTRAL's rule. The chapter director holds `giving.view` of New York
+      // and nothing else, so `canManageRuleScope` refuses — the same gate that
+      // stops them editing or pausing it.
+      ruleId = await saveRule(s.as, {
+        name: "Central weekly",
+        cadence: "weekly",
+        scope: "central",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_9AM_ET, async () => {
+        await expect(sendNow(viewer, ruleId)).rejects.toThrow(ConvexError);
+      });
+      expect(cap.sent).toHaveLength(0);
+      // A refused press is not an attempt: it costs the rule's hourly budget
+      // nothing, so a stranger can't exhaust it on the owner's behalf.
+      const attempts = await run(s.t, (ctx) =>
+        ctx.db.query("givingDigestSendNowAttempts").collect(),
+      );
+      expect(attempts).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a caller who CAN reach the book sends it", async () => {
+    // The other half of the gate: view of the rule's own book is enough, which
+    // is the 2026-08-10 decision this affordance inherits.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, {
+        name: "New York weekly",
+        cadence: "weekly",
+        scope: s.chapterId,
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_9AM_ET, async () => {
+        expect((await sendNow(viewer, ruleId)).status).toBe("sent");
+      });
+      expect(cap.sent).toHaveLength(1);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("no mailer configured says so, rather than looking like a bounce", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, {
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const prev = process.env.RESEND_API_KEY;
+    delete process.env.RESEND_API_KEY;
+    try {
+      await atClock(s.t, MON_9AM_ET, async () => {
+        expect(await sendNow(s.as, ruleId)).toEqual({
+          status: "no_mailer",
+          emailsSent: 0,
+        });
+      });
+      const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(row?.lastDeliveredAt).toBeUndefined();
+      expect(row?.lastSentAt).toBeUndefined();
+    } finally {
+      if (prev === undefined) delete process.env.RESEND_API_KEY;
+      else process.env.RESEND_API_KEY = prev;
+    }
+  });
+
+  test("an empty DAILY window sends nothing — and unlike the sweep, doesn't stamp the day", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const cap = captureEmails();
+    try {
+      const before = await marksOf(s, ruleId);
+      await atClock(s.t, MON_9AM_ET, async () => {
+        expect(await sendNow(s.as, ruleId)).toEqual({
+          status: "empty_window",
+          emailsSent: 0,
+        });
+      });
+      expect(cap.sent).toHaveLength(0);
+      // The SCHEDULED empty daily stamps `lastRunDayKey` (so `>=`-hour matching
+      // doesn't re-scan all day). A preview must not: stamping it here would
+      // let a press at 07:00 cancel the 08:00 digest outright.
+      expect(await marksOf(s, ruleId)).toEqual(before);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("three presses an hour, and the fourth is refused", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, {
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_9AM_ET, async () => {
+        for (let i = 0; i < SEND_NOW_MAX_PER_RULE; i++) {
+          expect((await sendNow(s.as, ruleId)).status).toBe("sent");
+        }
+        await expect(sendNow(s.as, ruleId)).rejects.toThrow(ConvexError);
+      });
+      expect(cap.sent).toHaveLength(SEND_NOW_MAX_PER_RULE);
+
+      // An hour later the window has rolled and the budget is back.
+      await atClock(s.t, MON_9AM_ET + 60 * 60 * 1000 + 1, async () => {
+        expect((await sendNow(s.as, ruleId)).status).toBe("sent");
+      });
+      expect(cap.sent).toHaveLength(SEND_NOW_MAX_PER_RULE + 1);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("the budget is per RULE, not per caller", async () => {
+    // Two people with reach into the same book must not get a budget each —
+    // the cost of this button falls on the recipients, who only have one inbox.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, {
+        cadence: "weekly",
+        scope: s.chapterId,
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_9AM_ET, async () => {
+        for (let i = 0; i < SEND_NOW_MAX_PER_RULE; i++) {
+          expect((await sendNow(s.as, ruleId)).status).toBe("sent");
+        }
+        await expect(sendNow(viewer, ruleId)).rejects.toThrow(ConvexError);
+      });
+      expect(cap.sent).toHaveLength(SEND_NOW_MAX_PER_RULE);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a paused rule refuses, rather than mailing a false 'no giving this week'", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, {
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+      await s.as.mutation(api.givingNotifications.setRuleActive, {
+        ruleId,
+        isActive: false,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_9AM_ET, async () => {
+        await expect(sendNow(s.as, ruleId)).rejects.toThrow(ConvexError);
+      });
+      expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("an immediate rule has no digest to send", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, SETUP_AT, async () => {
+      ruleId = await saveRule(s.as, { cadence: "immediate" });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_9AM_ET, async () => {
+        await expect(sendNow(s.as, ruleId)).rejects.toThrow(ConvexError);
+      });
+      expect(cap.sent).toHaveLength(0);
+    } finally {
+      cap.restore();
+    }
   });
 });
