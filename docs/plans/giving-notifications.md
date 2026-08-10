@@ -20,9 +20,10 @@ builds against the API surface below.
 
 ## The model
 
-One table, `givingNotificationRules` (`schema/givingNotifications.ts`). A row is
-a standing instruction: *these people* hear about *these gifts* at *this
-frequency*.
+Two tables (`schema/givingNotifications.ts`). `givingNotificationRules` is the
+standing instruction — *these people* hear about *these gifts* at *this
+frequency*. `givingNotificationRuleAudit` is the immutable trail of who changed
+one and to what; see "A rule outlives the person who aimed it" below.
 
 | Field | Meaning |
 | --- | --- |
@@ -37,6 +38,7 @@ frequency*.
 | `lastSentAt?` | Digest watermark — "reported up to here". A fact about money |
 | `lastRunDayKey?` | "Already looked at today" (`YYYY-MM-DD` ET). A fact about scheduling |
 | `createdBy` / `createdAt` / `updatedAt` | Provenance |
+| `updatedBy?` | Who last CHANGED it — **not** the author. Absent only on rules older than the field |
 
 ### Why `scope` is a three-way string union
 
@@ -346,19 +348,36 @@ Reads and writes both go through `lib/givingAccess.ts`, the giving desk's own
 scope-aware gate, rather than the finance ladder (`requireFinanceRole` can't
 even take the `"central"` sentinel).
 
-- `requireGivingManage(ctx, gateScope)` on every write.
-- `gateScope` maps `"all"` → `"central"`: a rule that reaches every book needs
-  the same central reach a central rule does, or a chapter holder could point an
-  org-wide firehose at their own inbox.
-- Editing a rule's **scope** requires manage rights on the scope it is *leaving*
-  as well as the one it is joining.
-- `listRules` filters by `canViewGivingScope` — the same predicate the gate
-  uses, exported so a list and a gate can never disagree — and returns a
-  `canManage` flag per row. It reads **newest-first through `by_createdAt`**;
-  an unindexed read returning the oldest rows meant a rule past the cap was
-  invisible in the UI (and so un-deactivatable) while it carried on sending.
-  `saveRule` also refuses to create past `MAX_RULES` (`TOO_MANY_RULES`), so the
-  cap can't be reached in the first place.
+**The level is giving VIEW, not giving manage** — reads and writes alike, via
+`givingNotifications.ts#canManageRuleScope`. It was `giving.manage` until
+2026-08-10; see "Anybody with access to giving" below for why it moved and who
+decided.
+
+- `canManageRuleScope(access, scope)` = `canViewGivingScope(access,
+  ruleGateScope(scope))`, and it is the single predicate behind the list filter,
+  the per-row `canManage` flag, all three mutations, and (transitively) the
+  screen's book picker. One predicate, so no two of them can disagree.
+- `ruleGateScope` maps `"all"` → `"central"`: a rule that reaches every book
+  needs the same central reach a central rule does, or a chapter holder could
+  point an org-wide firehose at their own inbox.
+- Editing a rule's **scope** requires rights on the scope it is *leaving* as
+  well as the one it is joining, so a rule can't be walked between books a step
+  at a time.
+- `listRules` filters by that predicate and returns a `canManage` flag per row —
+  necessarily `true` on every row it returns, since visibility and manageability
+  now ask the same question. The flag stays so the affordance is a property of
+  the row, and re-narrowing the gate one day is a change to one function. It
+  reads **newest-first through `by_createdAt`**; an unindexed read returning the
+  oldest rows meant a rule past the cap was invisible in the UI (and so
+  un-deactivatable) while it carried on sending. `saveRule` also refuses to
+  create past `MAX_RULES` (`TOO_MANY_RULES`), so the cap can't be reached in the
+  first place.
+- The screen's book picker (`ruleScopeChoices`) derives from
+  `givingPlatform.givingScopeOptions`, whose `options` are built from the
+  caller's *view* reach — so every book it lists is already a book a rule may
+  watch, and `canSeeAllScopes` is exactly "may watch every book". It ignores
+  that query's `canManage` field, which means "may record a **gift** here" and
+  is a strictly narrower power belonging to the Gifts screen.
 
 ### A rule never opens with an empty digest about a period it wasn't watching
 
@@ -390,14 +409,75 @@ received the same gift twice. The immediate send is keyed on the **recipient**;
 the footer names every rule that reached them. "We're getting double emails" is
 the complaint that gets a notification feature switched off.
 
-**Worth knowing:** no seat on the *chapter* chart carries `giving.manage` today
-(donor-CRM write is central's, per the giving PRD). `chapter_director` holds
-`giving.view` only. So in practice today, only central/superuser reach can write
-a rule at any scope — and a chapter seat sees its own book's rules read-only.
-The gate is written against the capability, not a seat list, so the day a
-chapter seat is granted `giving.manage` the chapter branch works with no code
-change. The tests mint such a seat to pin that branch down rather than leave it
-untested.
+### Anybody with access to giving (2026-08-10)
+
+Writes were gated on `giving.manage` when this shipped — the same gate that
+guards writing a gift or a donor, which reads well on paper. It was wrong in
+practice: **no seat on the *chapter* chart carries `giving.manage`** (donor-CRM
+write is central's, per the giving PRD), and `chapter_director` holds
+`giving.view` only. So against the shipped seat chart the manage gate resolved
+to "central and superusers, nobody else". A chapter director watched their own
+book's rules sit in a read-only list — unable to change a threshold, unable even
+to switch off a mailer that was reaching the wrong people.
+
+The owner settled it: *"You should allow anybody with access to giving to do the
+notifications. That's fine."* So the gate is `giving.view` of the rule's own
+book. Don't quietly put it back.
+
+What widened is **which capability opens a book**, never **which books a
+capability opens**. Containment is untouched and tested in both directions: a
+New York viewer can create, edit and pause New York's rules, and is refused
+`"all"`, `"central"`, a sibling chapter, moving its own rule out to `"all"`, and
+pulling a central rule into New York. The ceiling on what a rule can do is what
+makes view the right level — it emails a summary of gifts you can already read,
+to addresses you name. It moves no money, edits no gift, and discloses no book
+you had no reach into.
+
+The gate is still written against the capability rather than a seat list, so the
+day a chapter seat is granted `giving.manage` nothing here needs to change. The
+tests still mint such a seat to keep that branch pinned down.
+
+**Who this actually enfranchised — it is not only chapter directors.**
+`canViewGivingScope` short-circuits on central view, so a central `giving.view`
+holder reaches every book, `"all"` included. Three central seats hold
+`giving.view` without `giving.manage` (`packages/shared/src/seats.ts`):
+
+| Seat | Holders |
+| --- | --- |
+| `partnership_associate` | multi-holder |
+| `fundraising_associate` | multi-holder |
+| `expansion_director` | single — and its `giving.view` is itself toggleable at runtime by the ED (`seats.ts#setSeatGivingPower`) |
+
+Each can author a `scope: "all"`, `cadence: "immediate"` rule to any address,
+including an external one. In-reach by design, and what the owner asked for — a
+rule only forwards gift summaries its author could already read — but two of
+those seats are multi-holder, so the population is not a fixed number of people.
+Anyone reasoning about this gate from the `chapter_director` story alone is
+underestimating it.
+
+### A rule outlives the person who aimed it
+
+The send paths bound each email by the RULE's scope and never re-check any
+caller's access, correctly — a cron has no caller. So a rule quietly re-pointed
+at a personal address keeps mailing donor names and gift amounts after that
+person's seat is revoked. Two records answer for it, both written at write time:
+
+- **`givingNotificationRules.updatedBy`** — who last CHANGED the rule, set by
+  `saveRule` (create and edit) and by `setRuleActive` in both directions.
+  `createdBy` on its own was a misattribution once anyone but the author could
+  edit: a rule authored by the development director and re-pointed by someone
+  else still named the director. `listRules` surfaces it as `updatedByName` and
+  the desk renders "Edited by … · date" on each row. Optional only because rules
+  predate the field; an absent value means exactly "written before this shipped".
+- **`givingNotificationRuleAudit`** — the immutable trail (`giftAudit`'s shape),
+  one row per human change: `created`, `edited`, `activated`, `deactivated`.
+  `updatedBy` alone was not enough, because the next editor overwrites it and
+  the next editor is precisely who you would want to catch. `changes` is a
+  display-ready diff and **recipients are diffed in full** — "who did this start
+  mailing" is the whole question, and a count would hide a swap. An `edited` row
+  is stamped with the scope the rule was LEAVING, so a move reads "this was New
+  York's, and here it is becoming central's". A no-op `setRuleActive` writes
+  nothing (the switch fires on every render).
 
 ## Two axes, kept apart on purpose
 

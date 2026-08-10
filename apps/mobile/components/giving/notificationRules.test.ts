@@ -13,8 +13,10 @@ import {
   deliveryLabel,
   hourLabel,
   isLikelyEmail,
+  lastEditedLabel,
   parseDollarsToCents,
   removeRecipient,
+  ruleScopeChoices,
   scheduleSummary,
   thresholdLabel,
   weekdayLabel,
@@ -220,6 +222,71 @@ describe("the Select option sets", () => {
   });
 });
 
+describe("ruleScopeChoices — which books the picker offers", () => {
+  /** What `givingScopeOptions` returns for a CENTRAL viewer: Central plus every
+   *  active chapter. `canManage` is the GIFT power and is set false here on
+   *  purpose — a viewer who can't record a gift can still work a rule. */
+  const centralViewer = {
+    canSeeAllScopes: true,
+    options: [
+      { scope: "central", label: "Central", canManage: false },
+      { scope: "chap_ny", label: "New York", canManage: false },
+      { scope: "chap_la", label: "Los Angeles", canManage: false },
+    ],
+  };
+
+  /** A chapter-scope `giving.view` seat — one book, no central reach. */
+  const chapterViewer = {
+    canSeeAllScopes: false,
+    options: [{ scope: "chap_ny", label: "New York", canManage: false }],
+  };
+
+  test("undefined (still loading) offers nothing", () => {
+    expect(ruleScopeChoices(undefined)).toEqual([]);
+  });
+
+  test("a central viewer gets All books, Central, and every chapter", () => {
+    expect(ruleScopeChoices(centralViewer)).toEqual([
+      { value: "all", label: "All books" },
+      { value: "central", label: "Central" },
+      { value: "chap_ny", label: "New York" },
+      { value: "chap_la", label: "Los Angeles" },
+    ]);
+  });
+
+  test("'All books' leads, so the org-wide choice is the first one seen", () => {
+    expect(ruleScopeChoices(centralViewer)[0].value).toBe("all");
+  });
+
+  test("a chapter viewer is offered their own book and NOTHING else", () => {
+    // The containment property, at the affordance: no "All books", no Central,
+    // no sibling chapter. The server refuses all three as well — this is only
+    // what stops the screen from asking for something it will be told off for.
+    expect(ruleScopeChoices(chapterViewer)).toEqual([
+      { value: "chap_ny", label: "New York" },
+    ]);
+  });
+
+  test("a chapter viewer can still create — this is the whole change", () => {
+    // Under the old manage gate this list was EMPTY for every chapter seat (no
+    // chapter seat carries `giving.manage`), so "New rule" never rendered for
+    // anyone but central. The screen keys `canCreate` off exactly this.
+    expect(ruleScopeChoices(chapterViewer).length).toBeGreaterThan(0);
+  });
+
+  test("`canManage` is never consulted — a gift power is not a rule power", () => {
+    const manageable = {
+      ...chapterViewer,
+      options: chapterViewer.options.map((o) => ({ ...o, canManage: true })),
+    };
+    expect(ruleScopeChoices(manageable)).toEqual(ruleScopeChoices(chapterViewer));
+  });
+
+  test("no books in reach means no picker, and so no create button", () => {
+    expect(ruleScopeChoices({ canSeeAllScopes: false, options: [] })).toEqual([]);
+  });
+});
+
 describe("centsToDollarsInput", () => {
   test("an absent floor is an empty field, never \"0\"", () => {
     expect(centsToDollarsInput(undefined)).toBe("");
@@ -353,6 +420,22 @@ describe("deliveryLabel", () => {
     expect(deliveryLabel({ lastDeliveredAt: 1800, lastSentAt: 1700 }, fmt)).toBe(
       "Last sent #1800",
     );
+  });
+});
+
+describe("lastEditedLabel", () => {
+  const at = (ts: number) => `day ${ts}`;
+
+  test("names the last editor, not the author", () => {
+    expect(
+      lastEditedLabel({ updatedByName: "Shay", updatedAt: 7 }, at),
+    ).toBe("Edited by Shay · day 7");
+  });
+
+  test("a rule from before the field existed shows no line at all", () => {
+    // Deliberately null rather than falling back to the creator — claiming the
+    // author was the last toucher is the exact misattribution this closes.
+    expect(lastEditedLabel({ updatedByName: null, updatedAt: 7 }, at)).toBeNull();
   });
 });
 

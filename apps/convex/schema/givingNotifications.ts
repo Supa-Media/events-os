@@ -118,6 +118,20 @@ export const givingNotificationRules = defineTable({
    */
   lastRunDayKey: v.optional(v.string()),
   createdBy: v.id("users"),
+  /**
+   * Who last CHANGED this rule. Optional only because rules predate the field;
+   * every write path sets it (`saveRule` on create and edit, `setRuleActive` on
+   * both directions).
+   *
+   * `createdBy` alone was a misattribution waiting to happen once the gate
+   * widened to `giving.view` (2026-08-10): a rule authored by the development
+   * director and later re-pointed at somebody else's inbox still named the
+   * director, and the desk had no field that disagreed. This is the "who
+   * touched it last" the list renders; `givingNotificationRuleAudit` below is
+   * the trail that survives the NEXT edit, because a single field is overwritten
+   * by exactly the person you would want to catch.
+   */
+  updatedBy: v.optional(v.id("users")),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
@@ -133,3 +147,71 @@ export const givingNotificationRules = defineTable({
   // so the cap can't be reached in the first place; this is the second half of
   // the same fix.)
   .index("by_createdAt", ["createdAt"]);
+
+/** What a breadcrumb records. `edited` carries the field diff; the two
+ *  switch actions carry none, because the action IS the change. */
+export const GIVING_NOTIFICATION_RULE_AUDIT_ACTIONS = [
+  "created",
+  "edited",
+  "activated",
+  "deactivated",
+] as const;
+
+/**
+ * One immutable breadcrumb per HUMAN change to a notification rule — the
+ * `giftAudit`/`donorAudit` shape, applied to the thing that decides who reads
+ * donor names and gift amounts in their inbox.
+ *
+ * ── WHY A RULE NEEDS A TRAIL AND NOT JUST AN `updatedBy` ───────────────────
+ * A rule is the one row on the giving desk that keeps acting on its own after
+ * the person who wrote it is gone. The send paths bound each email by the
+ * RULE's scope, never by the current reach of whoever authored it, and they do
+ * not re-check anyone's access at send time — correctly, since a cron has no
+ * caller. So a rule quietly re-pointed at a personal address goes on mailing
+ * donor PII after that person's seat is revoked, and `updatedBy` would by then
+ * name whoever edited it next.
+ *
+ * That risk existed before the gate widened to `giving.view` (2026-08-10) and
+ * was survivable while only three seats could reach these mutations. Widening
+ * the population is what made it worth a table.
+ *
+ * `changes` is a compact, display-ready field-level diff — pre-formatted
+ * strings ("$500.00", "New York", "shay@x.org, aj@x.org"), never raw ids —
+ * following `giftAudit.changes` exactly, so the trail still reads years later
+ * without joining back to rows that may be gone. RECIPIENTS are diffed in full
+ * on purpose: "who did this start mailing" is the whole question.
+ *
+ * Immutable — never patched, never deleted. Rules are never deleted either
+ * (`isActive`), so these are never orphaned.
+ */
+export const givingNotificationRuleAudit = defineTable({
+  ruleId: v.id("givingNotificationRules"),
+  /** The rule's scope AT THE TIME of the change — the book whose gifts it could
+   *  reach then. A `scope` change writes the row with the OLD one, so the trail
+   *  reads "it was New York's, and here is it becoming central's". */
+  scope: givingNotificationScope,
+  actorUserId: v.id("users"),
+  at: v.number(),
+  action: v.union(
+    ...GIVING_NOTIFICATION_RULE_AUDIT_ACTIONS.map((a) => v.literal(a)),
+  ),
+  changes: v.optional(
+    v.array(
+      v.object({
+        field: v.string(),
+        from: v.optional(v.string()),
+        to: v.optional(v.string()),
+      }),
+    ),
+  ),
+})
+  // The rule's own history, newest first.
+  .index("by_rule", ["ruleId"])
+  // "What has been done to the mailers lately", org-wide — the question asked
+  // when a seat is revoked and somebody needs to know what that person aimed
+  // where. NO QUERY READS EITHER INDEX YET: the trail is written now and read
+  // from the Convex dashboard, because the record has to exist BEFORE the
+  // incident that wants it, and a desk UI for it is a separate piece of work
+  // nobody has asked for. Both indexes are here so that work is a read, not a
+  // migration. Rules are few, so this stays small.
+  .index("by_at", ["at"]);

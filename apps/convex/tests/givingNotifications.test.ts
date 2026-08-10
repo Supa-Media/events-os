@@ -798,6 +798,15 @@ describe("saveRule", () => {
   });
 });
 
+/**
+ * A rule is gated on giving VIEW of its own book, not giving MANAGE — the
+ * owner's call on 2026-08-10 ("You should allow anybody with access to giving
+ * to do the notifications"), because no chapter seat carries `giving.manage`
+ * and the manage gate therefore meant "central only" in the shipped seat chart.
+ *
+ * What widened is WHICH CAPABILITY opens a book. WHICH BOOKS a capability opens
+ * did not move an inch, and the second half of this suite is the proof.
+ */
 describe("who may manage a rule", () => {
   test("central reach writes a rule for any book", async () => {
     const s = await devDirectorSetup();
@@ -806,11 +815,133 @@ describe("who may manage a rule", () => {
     expect(row?.scope).toBe(s.chapterId);
   });
 
-  test("a chapter seat that only READS the desk writes nothing", async () => {
+  test("a chapter seat that only READS the desk writes its own book's rule", async () => {
+    // THE CHANGE, stated once: `chapter_director` is `giving.view` and nothing
+    // more, and it can now aim a mailer at the book it already reads.
     const s = await devDirectorSetup();
     const viewer = await seatChapterViewer(s, s.chapterId);
-    await expect(saveRule(viewer, { scope: s.chapterId })).rejects.toThrow(
+    const ruleId = await saveRule(viewer, { scope: s.chapterId });
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(row?.scope).toBe(s.chapterId);
+  });
+
+  test("a view-only seat edits and pauses the rule it made", async () => {
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(viewer, {
+      name: "New York gifts",
+      scope: s.chapterId,
+    });
+
+    await saveRule(viewer, {
+      ruleId,
+      name: "New York gifts over $500",
+      minAmountCents: 50_000,
+      scope: s.chapterId,
+    });
+    await viewer.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: false,
+    });
+
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(row?.name).toBe("New York gifts over $500");
+    expect(row?.minAmountCents).toBe(50_000);
+    expect(row?.isActive).toBe(false);
+  });
+
+  test("a view-only seat works a rule CENTRAL wrote for its book", async () => {
+    // Authorship confers nothing either way — the gate is the rule's scope.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, { name: "Ours", scope: s.chapterId });
+    await viewer.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: false,
+    });
+    expect((await run(s.t, (ctx) => ctx.db.get(ruleId)))?.isActive).toBe(false);
+  });
+
+  test("a view-only seat cannot point a rule at every book", async () => {
+    // Containment, direction one: `ruleGateScope` routes `"all"` through
+    // `"central"`, so an org-wide firehose still needs central reach. Widening
+    // the capability must never widen the REACH.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    await expect(saveRule(viewer, { scope: "all" })).rejects.toThrow(ConvexError);
+  });
+
+  test("a view-only seat cannot write a central rule", async () => {
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    await expect(saveRule(viewer, { scope: "central" })).rejects.toThrow(
       ConvexError,
+    );
+  });
+
+  test("a view-only seat cannot write ANOTHER chapter's rule", async () => {
+    // Containment, direction two: view of New York is view of New York. A
+    // sibling book is as far out of reach as central is.
+    const s = await devDirectorSetup();
+    const other = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Los Angeles",
+        slug: "los-angeles",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    await expect(saveRule(viewer, { scope: other })).rejects.toThrow(
+      ConvexError,
+    );
+  });
+
+  test("a view-only seat cannot pause another chapter's rule", async () => {
+    const s = await devDirectorSetup();
+    const other = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Los Angeles",
+        slug: "los-angeles",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const ruleId = await saveRule(s.as, { name: "Theirs", scope: other });
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    await expect(
+      viewer.mutation(api.givingNotifications.setRuleActive, {
+        ruleId,
+        isActive: false,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a view-only seat cannot walk its own rule out to every book", async () => {
+    // The escalation the scope-change check exists to stop, now from the seat
+    // that can actually reach this mutation: create where you may, then edit
+    // the scope to somewhere you may not.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(viewer, { scope: s.chapterId });
+    await expect(
+      saveRule(viewer, { ruleId, scope: "all" }),
+    ).rejects.toThrow(ConvexError);
+    expect((await run(s.t, (ctx) => ctx.db.get(ruleId)))?.scope).toBe(
+      s.chapterId,
+    );
+  });
+
+  test("a view-only seat cannot pull a central rule into its own book", async () => {
+    // The other half of the scope-change check: rights on the book it LEAVES.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const centralRule = await saveRule(s.as, { scope: "central" });
+    await expect(
+      saveRule(viewer, { ruleId: centralRule, scope: s.chapterId }),
+    ).rejects.toThrow(ConvexError);
+    expect((await run(s.t, (ctx) => ctx.db.get(centralRule)))?.scope).toBe(
+      "central",
     );
   });
 
@@ -857,7 +988,7 @@ describe("who may manage a rule", () => {
 });
 
 describe("listRules and setRuleActive", () => {
-  test("a chapter seat sees only their own book's rules, and can't manage them", async () => {
+  test("a chapter seat sees only their own book's rules — and now manages them", async () => {
     const s = await devDirectorSetup();
     const viewer = await seatChapterViewer(s, s.chapterId);
     await saveRule(s.as, { name: "Org-wide", scope: "all" });
@@ -867,10 +998,30 @@ describe("listRules and setRuleActive", () => {
     expect(all.map((r) => r.name).sort()).toEqual(["Chapter", "Org-wide"]);
     expect(all.every((r) => r.canManage)).toBe(true);
 
+    // The org-wide rule is still invisible to them — the widened gate did not
+    // widen the LIST either, because both halves ask the same question.
     const mine = await viewer.query(api.givingNotifications.listRules, {});
     expect(mine.map((r) => r.name)).toEqual(["Chapter"]);
     expect(mine[0].scopeLabel).toBe("New York");
-    expect(mine[0].canManage).toBe(false);
+    // True since 2026-08-10: seeing a rule and working it are the same right.
+    expect(mine[0].canManage).toBe(true);
+  });
+
+  test("every row anyone is shown comes back manageable", async () => {
+    // The invariant that falls out of one predicate serving both the filter and
+    // the flag. If this ever fails, `listRules` has grown two opinions.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const chapMgr = await seatChapterGivingManager(s, s.chapterId);
+    await saveRule(s.as, { name: "Org-wide", scope: "all" });
+    await saveRule(s.as, { name: "Central", scope: "central" });
+    await saveRule(s.as, { name: "Chapter", scope: s.chapterId });
+
+    for (const caller of [s.as, viewer, chapMgr]) {
+      const rows = await caller.query(api.givingNotifications.listRules, {});
+      expect(rows.length).toBeGreaterThan(0);
+      expect(rows.every((r) => r.canManage)).toBe(true);
+    }
   });
 
   test("a rule is deactivated, never deleted — and reactivates", async () => {
@@ -961,6 +1112,38 @@ describe("immediate notifications", () => {
         await addGift(s.as, { scope: s.chapterId, name: "Chapter Giver" });
       });
       expect(cap.sent).toHaveLength(1);
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a rule authored by a VIEW-only chapter seat still can't reach central's gifts", async () => {
+    // Every other send-path containment test here was written when only central
+    // could author a rule. Now that a chapter `giving.view` seat can, the
+    // property has to be re-proved from THAT seat: the send path bounds gifts by
+    // the RULE's scope, so authorship buys no extra reach at send time either.
+    // Belt and braces with the mutation gate — that stops the rule being
+    // written; this stops it mattering if one ever were.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    await saveRule(viewer, {
+      name: "New York, mine",
+      scope: s.chapterId,
+      recipients: ["chapdir@publicworship.life"],
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { scope: "central", name: "Central Giver" });
+      });
+      // A central donor's name and amount never reach a chapter seat's inbox.
+      expect(cap.sent).toHaveLength(0);
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await addGift(s.as, { scope: s.chapterId, name: "Chapter Giver" });
+      });
+      expect(cap.sent.map((e) => e.to)).toEqual(["chapdir@publicworship.life"]);
+      expect(cap.sent[0].html).toContain("Chapter Giver");
     } finally {
       cap.restore();
     }
@@ -2305,18 +2488,221 @@ describe("a rule only claims to have sent when it has", () => {
 });
 
 // ═══════════════════════════════════════════════════════════════════════════
+// Who aimed this mailer, and where
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * A rule keeps mailing donor names and gift amounts after its author's seat is
+ * revoked — the send paths bound each email by the RULE's scope and never
+ * re-check a caller, because a cron has no caller. So the only defence is the
+ * record made at write time, and widening the gate to `giving.view` widened who
+ * can write.
+ */
+describe("a rule names who last touched it, and keeps the trail", () => {
+  async function auditFor(
+    s: ChapterSetup,
+    ruleId: Id<"givingNotificationRules">,
+  ) {
+    return await run(s.t, (ctx) =>
+      ctx.db
+        .query("givingNotificationRuleAudit")
+        .withIndex("by_rule", (q) => q.eq("ruleId", ruleId))
+        .collect(),
+    );
+  }
+
+  test("creating writes updatedBy and a `created` breadcrumb", async () => {
+    const s = await devDirectorSetup();
+    const ruleId = await saveRule(s.as, { scope: s.chapterId });
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(row?.updatedBy).toBe(row?.createdBy);
+
+    const trail = await auditFor(s, ruleId);
+    expect(trail.map((a) => a.action)).toEqual(["created"]);
+    // A bare create carries no diff — there is nothing it changed FROM.
+    expect(trail[0].changes).toBeUndefined();
+  });
+
+  test("an edit by someone else re-points updatedBy — createdBy does NOT move", async () => {
+    // THE MISATTRIBUTION this closes: central authors a rule, a chapter viewer
+    // re-points it at their own inbox, and the row went on naming central.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, {
+      name: "New York gifts",
+      scope: s.chapterId,
+      recipients: ["dev@publicworship.life"],
+    });
+    const before = await run(s.t, (ctx) => ctx.db.get(ruleId));
+
+    await saveRule(viewer, {
+      ruleId,
+      name: "New York gifts",
+      scope: s.chapterId,
+      recipients: ["me@personal.example"],
+    });
+
+    const after = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(after?.createdBy).toBe(before?.createdBy);
+    expect(after?.updatedBy).not.toBe(before?.createdBy);
+
+    // And the desk SHOWS it — the flag is worthless if the list still reads
+    // like nothing happened.
+    const listed = await viewer.query(api.givingNotifications.listRules, {});
+    const shown = listed.find((r) => r._id === ruleId);
+    expect(shown?.updatedByName).toBe("chapdir@publicworship.life");
+  });
+
+  test("the retarget is recorded with the addresses it moved between", async () => {
+    // "Who did this start mailing" is the whole question, so recipients are
+    // diffed in full rather than summarized.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, {
+      name: "New York gifts",
+      scope: s.chapterId,
+      recipients: ["dev@publicworship.life"],
+    });
+    await saveRule(viewer, {
+      ruleId,
+      name: "New York gifts",
+      scope: s.chapterId,
+      recipients: ["me@personal.example"],
+    });
+
+    const trail = await auditFor(s, ruleId);
+    expect(trail.map((a) => a.action)).toEqual(["created", "edited"]);
+    const recipients = trail[1].changes?.find((c) => c.field === "Recipients");
+    expect(recipients?.from).toBe("dev@publicworship.life");
+    expect(recipients?.to).toBe("me@personal.example");
+  });
+
+  test("a scope move is stamped with the book it LEFT, and names both", async () => {
+    const s = await devDirectorSetup();
+    const ruleId = await saveRule(s.as, {
+      name: "Moving",
+      scope: s.chapterId,
+    });
+    await saveRule(s.as, { ruleId, name: "Moving", scope: "central" });
+
+    const trail = await auditFor(s, ruleId);
+    const move = trail[1];
+    // The row is filed under the book it could reach at the time.
+    expect(move.scope).toBe(s.chapterId);
+    const book = move.changes?.find((c) => c.field === "Book");
+    expect(book?.from).toBe("New York");
+    expect(book?.to).toBe("Central");
+  });
+
+  test("pausing and resuming are recorded, and a no-op is not", async () => {
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, { scope: s.chapterId });
+
+    await viewer.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: false,
+    });
+    // Idempotent — the switch fires on every render, and a trail padded with
+    // no-op rows is a trail nobody reads.
+    await viewer.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: false,
+    });
+    await viewer.mutation(api.givingNotifications.setRuleActive, {
+      ruleId,
+      isActive: true,
+    });
+
+    const trail = await auditFor(s, ruleId);
+    expect(trail.map((a) => a.action)).toEqual([
+      "created",
+      "deactivated",
+      "activated",
+    ]);
+    // And the switch names its actor too — turning a mailer off and on is a
+    // change to who hears about money.
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    expect(row?.updatedBy).not.toBe(row?.createdBy);
+  });
+
+  test("the trail is immutable — later edits append, never rewrite", async () => {
+    // The reason a bare `updatedBy` wasn't enough: the next editor overwrites
+    // it, and the next editor is exactly who you'd want to catch.
+    const s = await devDirectorSetup();
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    const ruleId = await saveRule(s.as, {
+      name: "Rule",
+      scope: s.chapterId,
+      recipients: ["dev@publicworship.life"],
+    });
+    await saveRule(viewer, {
+      ruleId,
+      name: "Rule",
+      scope: s.chapterId,
+      recipients: ["me@personal.example"],
+    });
+    await saveRule(s.as, {
+      ruleId,
+      name: "Rule",
+      scope: s.chapterId,
+      recipients: ["dev@publicworship.life"],
+    });
+
+    const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
+    // The row now names central again — it has forgotten the detour.
+    expect(row?.updatedBy).toBe(row?.createdBy);
+    // The trail has not.
+    const trail = await auditFor(s, ruleId);
+    expect(trail).toHaveLength(3);
+    expect(trail[1].changes?.find((c) => c.field === "Recipients")?.to).toBe(
+      "me@personal.example",
+    );
+  });
+
+  test("a rule written before the field existed reports no editor", async () => {
+    // Backfill-free: `updatedBy` is optional, and the desk omits the line
+    // rather than guessing the author was the last toucher.
+    const s = await devDirectorSetup();
+    const ruleId = await saveRule(s.as, { scope: s.chapterId });
+    await run(s.t, (ctx) => ctx.db.patch(ruleId, { updatedBy: undefined }));
+    const listed = await s.as.query(api.givingNotifications.listRules, {});
+    expect(listed.find((r) => r._id === ruleId)?.updatedByName).toBeNull();
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
 // One screen, one answer about who you are
 // ═══════════════════════════════════════════════════════════════════════════
 
 /**
  * The Notifications screen reads `listRules` (for the per-row edit affordances)
  * and `givingPlatform.givingScopeOptions` (for the book picker on the create
- * form). They must agree about what the caller may manage, or the screen offers
+ * form). They must agree about what the caller may do, or the screen offers
  * Edit on a row while refusing to offer the book to create one in. This test
  * lives here rather than in `givingPlatform.test.ts` because the disagreement
  * is only visible when both are asked at once, which is what this screen does.
+ *
+ * Since the rule gate became giving VIEW (2026-08-10), the picker no longer
+ * reads `option.canManage` at all — that field still means "may record a GIFT
+ * in this book", a narrower power the Gifts screen asks about. It reads the
+ * OFFER instead: `givingScopeOptions.options` is built from the caller's view
+ * reach, so a book being listed is exactly "a book a rule may watch", and
+ * `canSeeAllScopes` is exactly "may watch every book". `ruleScopeChoices` in
+ * the mobile app is that derivation; `offersBook` below is the same statement
+ * on this side of the wire.
  */
 describe("listRules and givingScopeOptions agree about manage rights", () => {
+  /** Would the screen's book picker offer `scope`? Mirrors
+   *  `components/giving/notificationRules.ts#ruleScopeChoices`. */
+  function offersBook(
+    opts: { canSeeAllScopes: boolean; options: { scope: string }[] },
+    scope: string,
+  ): boolean {
+    if (scope === "all") return opts.canSeeAllScopes;
+    return opts.options.some((o) => o.scope === scope);
+  }
+
   /** Central `giving.view` (and nothing more at central) PLUS chapter-scope
    *  `giving.manage` — the seat shape the two queries used to disagree about. */
   async function seatCentralViewerWithChapterManage(
@@ -2380,27 +2766,64 @@ describe("listRules and givingScopeOptions agree about manage rights", () => {
     const mixed = await seatCentralViewerWithChapterManage(s, s.chapterId);
     await saveRule(s.as, { name: "Chapter rule", scope: s.chapterId });
     await saveRule(s.as, { name: "Central rule", scope: "central" });
+    await saveRule(s.as, { name: "Org-wide rule", scope: "all" });
 
     const rules = await mixed.query(api.givingNotifications.listRules, {});
     const byName = new Map(rules.map((r) => [r.name, r]));
+    // Central VIEW reaches every book, so all three rules are theirs to work.
     expect(byName.get("Chapter rule")?.canManage).toBe(true);
-    expect(byName.get("Central rule")?.canManage).toBe(false);
+    expect(byName.get("Central rule")?.canManage).toBe(true);
+    expect(byName.get("Org-wide rule")?.canManage).toBe(true);
 
     const opts = await mixed.query(api.givingPlatform.givingScopeOptions, {});
     const byScope = new Map(opts.options.map((o) => [o.scope as string, o]));
-    // The half that used to be wrong: central view sent this caller down the
-    // central branch, which stamped every option from central MANAGE — so the
-    // chapter they genuinely manage came back unmanageable and the screen
-    // offered them no book to create a rule in.
+    // The gift powers are UNCHANGED by any of this, and the bug this half of
+    // the test was written for stays fixed: central view sent this caller down
+    // the central branch, which stamped every option from central MANAGE — so
+    // the chapter they genuinely manage came back unmanageable.
     expect(byScope.get(s.chapterId)?.canManage).toBe(true);
     expect(byScope.get("central")?.canManage).toBe(false);
     expect(opts.canManageCentral).toBe(false);
 
-    // The invariant, stated directly: for every book this caller can see, the
-    // two queries say the same thing.
+    // The invariant, stated directly: for every rule this caller can see, the
+    // picker offers the book it lives in. Row affordance and create affordance
+    // cannot contradict each other.
+    expect(rules.length).toBe(3);
     for (const rule of rules) {
-      const option = byScope.get(rule.scope as string);
-      if (option) expect(option.canManage).toBe(rule.canManage);
+      expect(offersBook(opts, rule.scope as string)).toBe(rule.canManage);
+    }
+  });
+
+  test("a chapter VIEWER's rows and picker agree, and neither reaches further", async () => {
+    const s = await devDirectorSetup();
+    const other = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Los Angeles",
+        slug: "los-angeles",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const viewer = await seatChapterViewer(s, s.chapterId);
+    await saveRule(s.as, { name: "Chapter rule", scope: s.chapterId });
+    await saveRule(s.as, { name: "Central rule", scope: "central" });
+    await saveRule(s.as, { name: "Org-wide rule", scope: "all" });
+    await saveRule(s.as, { name: "Sibling rule", scope: other });
+
+    const rules = await viewer.query(api.givingNotifications.listRules, {});
+    expect(rules.map((r) => r.name)).toEqual(["Chapter rule"]);
+
+    const opts = await viewer.query(api.givingPlatform.givingScopeOptions, {});
+    // One book offered, and it is theirs. Not central, not "all", not the
+    // sibling chapter — the containment the widened gate had to preserve.
+    expect(opts.canSeeAllScopes).toBe(false);
+    expect(opts.options.map((o) => o.scope)).toEqual([s.chapterId]);
+    expect(offersBook(opts, "all")).toBe(false);
+    expect(offersBook(opts, "central")).toBe(false);
+    expect(offersBook(opts, other)).toBe(false);
+
+    for (const rule of rules) {
+      expect(offersBook(opts, rule.scope as string)).toBe(rule.canManage);
     }
   });
 

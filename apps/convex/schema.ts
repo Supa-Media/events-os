@@ -107,7 +107,10 @@ import {
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { territories } from "./schema/territories";
 import { givingInterest } from "./schema/givingInterest";
-import { givingNotificationRules } from "./schema/givingNotifications";
+import {
+  givingNotificationRuleAudit,
+  givingNotificationRules,
+} from "./schema/givingNotifications";
 import { givingActivity } from "./schema/givingActivity";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
@@ -425,6 +428,14 @@ const schema = defineSchema({
   // (the hourly digest sweep). See schema/givingNotifications.ts +
   // docs/plans/giving-notifications.md.
   givingNotificationRules,
+
+  // Who changed a notification rule, and to what. A rule keeps mailing donor
+  // names and gift amounts long after its author's seat is revoked, and the
+  // send paths never re-check anyone's access (a cron has no caller), so the
+  // one thing that can be kept honest is the record of who aimed it where.
+  // `givingNotificationRules.updatedBy` says who touched it last; this says
+  // what they did, and survives the next edit.
+  givingNotificationRuleAudit,
 
   // Sponsorships & partnerships (F-6, P4) — dev-director-authored sponsor
   // package tiers (`sponsorPackages`) + the agreement pipeline that tracks an
