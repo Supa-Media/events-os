@@ -14,6 +14,7 @@ import {
 } from "../../../../components/ui";
 import { ToastView } from "../../../../components/ui/Toast";
 import { DateTimePanel } from "../../../../components/ui/DateTimeField";
+import { spaceToggleProps } from "../../../../components/ui/spaceToggle";
 import { colors, radius, spacing } from "../../../../lib/theme";
 import {
   formatTime,
@@ -48,6 +49,34 @@ function nextStatus(s: string | undefined): string {
   const current = s ?? TASK_STATUSES[0];
   const i = TASK_STATUSES.indexOf(current);
   return TASK_STATUSES[(i + 1) % TASK_STATUSES.length];
+}
+
+/**
+ * The task toggle's checked state — genuinely THREE-valued, because the control
+ * has three states (not started → in progress → done), not two.
+ *
+ * The role stays `checkbox`. ARIA's checkbox is a tri-state control by
+ * definition — `aria-checked` takes `"mixed"`, and a screen reader announces it
+ * as "partially checked" — so `checkbox` is not the thing that was wrong here.
+ * What was wrong is that the control reported a BOOLEAN (`checked: done`), so
+ * "in progress" announced as plain unchecked and a screen-reader user could not
+ * tell a task somebody had started from one nobody had touched. The honest fix
+ * is to report the third value, not to relabel the control: `role="button"`
+ * would buy Space activation for free (see `ui/spaceToggle`) while throwing the
+ * checked-state announcement away entirely — a keyboard bug traded for a worse
+ * screen-reader one. A three-radio `radiogroup` would be honest too, but it is a
+ * redesign of a one-tap cycling control, not a role fix.
+ *
+ * `aria-checked` (not `accessibilityState`) is what actually reaches the DOM:
+ * `accessibilityState` is absent from react-native-web 0.21.2's forwarded-prop
+ * list, so every `accessibilityState={{ checked }}` in this app emitted no
+ * attribute at all and measured as literally `null` (#598). `accessibilityState`
+ * is kept beside it for the native paths that read it.
+ */
+function ariaChecked(status: string | undefined): boolean | "mixed" {
+  if (status === "done") return true;
+  if (status === "in_progress") return "mixed";
+  return false;
 }
 
 /**
@@ -366,22 +395,31 @@ export default function DayOfScreen() {
             {tasks.map((t) => {
               const done = t.status === "done";
               const next = nextStatus(t.status ?? undefined);
+              const checked = ariaChecked(t.status ?? undefined);
+              const advance = () =>
+                run(() => setTaskStatus({ itemId: t._id, status: next }), {
+                  errorTitle: "Couldn't update task",
+                });
               return (
                 <Pressable
                   key={t._id}
+                  // Space, never Enter — the shared helper, for the reasons
+                  // written in `ui/spaceToggle`: react-native-web withholds
+                  // Space from every non-button role, and `Pressable` COMPOSES
+                  // this handler with the responder's rather than replacing it,
+                  // so answering Enter here too would advance the status twice.
+                  {...spaceToggleProps(advance)}
                   accessibilityRole="checkbox"
-                  accessibilityState={{ checked: done }}
+                  // `aria-checked` is the one that survives to the DOM on web
+                  // (#598); `accessibilityState` beside it is for native. Both
+                  // carry the tri-state value, never a flattened boolean.
+                  aria-checked={checked}
+                  accessibilityState={{ checked }}
                   accessibilityLabel={`${t.title}. Status ${statusLabel(
                     t.status ?? undefined,
                   )}. Tap to mark ${statusLabel(next)}.`}
                   hitSlop={8}
-                  onPress={() =>
-                    run(
-                      () =>
-                        setTaskStatus({ itemId: t._id, status: next }),
-                      { errorTitle: "Couldn't update task" },
-                    )
-                  }
+                  onPress={advance}
                 >
                   <Card>
                     <View style={styles.taskRow}>

@@ -52,17 +52,19 @@ const PRIMITIVES = new Set([
 ]);
 
 /**
- * The one known offender, exempted deliberately rather than silently.
+ * Nothing is exempt.
  *
- * The day-of task toggle is TRI-state (`todo → in_progress → done`) while
- * claiming `role="checkbox"` — the wrong role before `aria-checked` even
- * enters the picture, and a two-valued attribute can't describe it. Fixing the
- * role is a behaviour question (does it become a button with `aria-pressed`? a
- * three-way `radiogroup`?) that belongs with whoever owns that screen, not to
- * an ARIA sweep. Delete this entry when it's fixed — the rules apply to it
- * like everything else.
+ * There used to be one entry here: the Day-of task toggle, which is TRI-state
+ * (`not_started → in_progress → done`) while claiming `role="checkbox"`. It was
+ * left out because "what should a three-state control announce?" looked like a
+ * behaviour question rather than an ARIA one. It wasn't: ARIA's checkbox IS
+ * tri-state (`aria-checked="mixed"`), so the role was fine and the control was
+ * simply reporting a flattened boolean — through `accessibilityState`, which
+ * reaches the DOM as nothing at all. Both rules below applied to it the whole
+ * time. Fixed, and the exemption is gone with it; if a future control needs one,
+ * that is a conversation, not a line added quietly here.
  */
-const EXEMPT = new Set([path.join("app", "(app)", "event", "[id]", "day-of.tsx")]);
+const EXEMPT = new Set([]);
 
 const TOGGLE_ROLE = /accessibilityRole=(?:"(checkbox|switch|radio)"|\{"(checkbox|switch|radio)"\})/g;
 
