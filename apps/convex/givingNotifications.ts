@@ -60,7 +60,7 @@ import {
   ruleScopeLabel,
 } from "./lib/givingNotificationContext";
 import { renderImmediateGiftEmail } from "./lib/givingNotificationEmails";
-import { sendEmail } from "./ticketingEmails";
+import { sendEmailReporting } from "./ticketingEmails";
 
 /**
  * The scope a rule is GATED on. `"all"` reaches every book, so managing one
@@ -327,8 +327,12 @@ export const notifyGiftRecorded = internalAction({
       });
       for (const to of rule.recipients) {
         try {
-          await sendEmail(ctx, { to, subject, html });
-          emailsSent++;
+          // `sendEmailReporting`, not `sendEmail`: the count has to mean
+          // DELIVERED, so a deployment with no Resend key reports 0 rather
+          // than looking like it mailed everyone.
+          if (await sendEmailReporting(ctx, { to, subject, html })) {
+            emailsSent++;
+          }
         } catch (err) {
           console.error(
             `[givingNotifications] immediate send failed for ${to}`,

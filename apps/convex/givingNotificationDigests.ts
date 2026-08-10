@@ -56,7 +56,7 @@ import {
   type DigestBreakdownRow,
   type NotificationGift,
 } from "./lib/givingNotificationEmails";
-import { sendEmail } from "./ticketingEmails";
+import { sendEmailReporting } from "./ticketingEmails";
 
 /**
  * How many gifts one digest window will read. Generous against any real
@@ -225,7 +225,7 @@ export const digestPayload = internalQuery({
 /**
  * The hourly sweep. Claims, renders, sends. Per-recipient best effort — one
  * bad address can't cost the rest of a fundraising team their digest — and a
- * deployment with no Resend key degrades to a logged no-op inside `sendEmail`.
+ * deployment with no Resend key degrades to a logged no-op inside `sendEmailReporting`.
  */
 export const sendGivingDigests = internalAction({
   args: {},
@@ -248,8 +248,10 @@ export const sendGivingDigests = internalAction({
       digestsSent++;
       for (const to of built.recipients) {
         try {
-          await sendEmail(ctx, { to, subject, html });
-          emailsSent++;
+          // Counts DELIVERIES, not attempts — see `notifyGiftRecorded`.
+          if (await sendEmailReporting(ctx, { to, subject, html })) {
+            emailsSent++;
+          }
         } catch (err) {
           console.error(
             `[givingNotifications] digest send failed for ${to}`,

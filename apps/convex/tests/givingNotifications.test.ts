@@ -990,11 +990,13 @@ describe("immediate notifications", () => {
         const res = await addGift(s.as);
         giftId = res.giftId;
       });
+      // Zero DELIVERED, not zero attempted — `sendEmailReporting` reports the
+      // real outcome, so a keyless deployment can't look like it mailed anyone.
       await expect(
         s.t.action(internal.givingNotifications.notifyGiftRecorded, {
           giftId: giftId as unknown as Id<"gifts">,
         }),
-      ).resolves.toEqual({ emailsSent: 1 });
+      ).resolves.toEqual({ emailsSent: 0 });
     } finally {
       if (prev === undefined) delete process.env.RESEND_API_KEY;
       else process.env.RESEND_API_KEY = prev;
