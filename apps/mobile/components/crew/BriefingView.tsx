@@ -6,7 +6,8 @@ import { Card, Icon, OptionTag } from "../ui";
 import { MarkdownView } from "../markdown";
 import { RunOfShowView } from "./RunOfShowView";
 import { colors } from "../../lib/theme";
-import { formatDateTimeEastern } from "../../lib/format";
+import { formatDateTimeInZone } from "../../lib/format";
+import { eventTimeZone } from "@events-os/shared";
 import { videoEmbedUrl } from "../../lib/videoEmbed";
 import type { FunctionReturnType } from "convex/server";
 
@@ -277,9 +278,10 @@ export function BriefingView({
         <View className="flex-row flex-wrap items-center gap-x-4 gap-y-1">
           <View className="flex-row items-center gap-1.5">
             <Icon name="calendar" size={14} color={colors.muted} />
-            {/* Eastern-pinned like the run of show below — one page, one clock. */}
+            {/* Pinned to the event's zone like the run of show below — one
+                page, one clock, and the same resolver decides which. */}
             <Text className="text-sm text-muted">
-              {formatDateTimeEastern(crew.eventDate)}
+              {formatDateTimeInZone(crew.eventDate, eventTimeZone())}
             </Text>
           </View>
           {crew.location ? (
