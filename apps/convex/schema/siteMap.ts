@@ -20,6 +20,10 @@ export const siteMarkers = defineTable({
   label: v.string(),
   // Free color name (e.g. "red"); markers aren't a fixed category set.
   color: v.optional(v.string()),
+  // Pin diameter (px). Unset (legacy) markers render at DEFAULT_MARKER_SIZE —
+  // stored unclamped, same precedent as siteShapes' w/h; UI-side bounds
+  // (MIN/MAX_MARKER_SIZE) are enforced where the user drags, not here.
+  size: v.optional(v.number()),
   createdAt: v.number(),
 })
   .index("by_event", ["eventId"])

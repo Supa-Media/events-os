@@ -102,6 +102,7 @@ export const get = query({
         y: m.y,
         label: m.label,
         color: m.color ?? null,
+        size: m.size ?? null,
       }));
 
     const shapes = (await shapesForScope(ctx, scope))
@@ -157,6 +158,7 @@ export const addMarker = mutation({
     y: v.number(),
     label: v.optional(v.string()),
     color: v.optional(v.string()),
+    size: v.optional(v.number()),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
@@ -168,12 +170,13 @@ export const addMarker = mutation({
       y: Math.max(0, Math.min(1, args.y)),
       label: args.label ?? "",
       color: args.color ?? "red",
+      size: args.size,
       createdAt: Date.now(),
     });
   },
 });
 
-/** Move / relabel / recolor a marker. */
+/** Move / resize / relabel / recolor a marker. */
 export const updateMarker = mutation({
   args: {
     markerId: v.id("siteMarkers"),
@@ -181,6 +184,7 @@ export const updateMarker = mutation({
     y: v.optional(v.number()),
     label: v.optional(v.string()),
     color: v.optional(v.string()),
+    size: v.optional(v.number()),
   },
   handler: async (ctx, { markerId, ...patch }) => {
     const chapterId = await requireChapterId(ctx);
@@ -191,6 +195,7 @@ export const updateMarker = mutation({
     if (patch.y !== undefined) fields.y = Math.max(0, Math.min(1, patch.y));
     if (patch.label !== undefined) fields.label = patch.label;
     if (patch.color !== undefined) fields.color = patch.color;
+    if (patch.size !== undefined) fields.size = patch.size;
     await ctx.db.patch(markerId, fields);
     return markerId;
   },
@@ -498,7 +503,13 @@ export const publicSiteMap = query({
   handler: async (ctx, { eventId }) => {
     const empty = {
       imageUrl: null as string | null,
-      markers: [] as { x: number; y: number; label: string; color?: string | null }[],
+      markers: [] as {
+        x: number;
+        y: number;
+        label: string;
+        color?: string | null;
+        size?: number | null;
+      }[],
       shapes: [] as {
         type: "rect" | "circle" | "line";
         x: number;
@@ -543,6 +554,7 @@ export const publicSiteMap = query({
         y: m.y,
         label: m.label ?? "",
         color: m.color ?? null,
+        size: m.size ?? null,
       }));
 
     const shapes = (

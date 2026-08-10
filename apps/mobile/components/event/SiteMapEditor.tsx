@@ -30,11 +30,14 @@ import {
   DEFAULT_MARKER_COLOR,
   DEFAULT_SHAPE_COLOR,
   DEFAULT_SHAPE_SIZE,
-  MARKER_HALF,
+  MAX_MARKER_SIZE,
+  MIN_MARKER_SIZE,
   clamp01,
+  clampMarkerSize,
   firstLetter,
   initials,
   lineGeometry,
+  markerHalf,
   markerHex,
   percentPosition,
   shapeFill,
@@ -108,9 +111,6 @@ const SHAPE_COLORS = ["red", "blue", "green", "amber", "purple", "gray"] as cons
  * shared base; only the interactive editor needs the larger hit area.
  */
 const CIRCLE_SIZE = BASE_CIRCLE_SIZE + 6; // 42
-
-/** Marker pin half-offset for react-rnd positioning (px). */
-const MARKER_RND_OFFSET = MARKER_HALF + 1; // 9
 
 /** Per-kind overlay styling — icon + readable theme background/foreground. */
 const OVERLAY_STYLE: Record<
@@ -365,33 +365,42 @@ function EditorShape({
 function Pin({
   marker,
   selected,
+  containerSize,
   onPress,
   onMove,
+  onResize,
   toNorm,
 }: {
   marker: Marker;
   selected: boolean;
+  containerSize: { width: number; height: number } | null;
   onPress: () => void;
   onMove: (x: number, y: number) => void;
+  onResize: (size: number) => void;
   toNorm: (e: GestureResponderEvent) => { x: number; y: number } | null;
 }) {
   const color = markerHex(marker.color);
   // Local drag position (normalized) while dragging; null = use the stored value.
   const [drag, setDrag] = useState<{ x: number; y: number } | null>(null);
   const dragged = useRef(false);
+  // Local resize diameter (px) while resizing; null = use the stored value.
+  const [resizeSize, setResizeSize] = useState<number | null>(null);
+  const resizing = useRef(false);
 
   const x = drag?.x ?? marker.x;
   const y = drag?.y ?? marker.y;
+  const half = markerHalf({ size: resizeSize ?? marker.size });
+  const size = half * 2;
 
   const canDrag = true;
 
   return (
     <View
-      // Center the pin on its point: shift left/up by half the badge.
+      // Center the pin on its point: shift left/up by half the dot.
       style={{
         position: "absolute",
         ...percentPosition(x, y),
-        transform: [{ translateX: -MARKER_HALF }, { translateY: -MARKER_HALF }],
+        transform: [{ translateX: -half }, { translateY: -half }],
       }}
       // Drag handling via the responder system (web-safe). Tap is handled in
       // onResponderRelease so we don't fight the press handler.
@@ -420,8 +429,10 @@ function Pin({
       <View className="flex-row items-center gap-1.5">
         {/* Colored dot */}
         <View
-          className="h-4 w-4 rounded-pill border-2 border-white"
+          className="rounded-pill border-2 border-white"
           style={{
+            width: size,
+            height: size,
             backgroundColor: color,
             ...(selected
               ? {
@@ -439,7 +450,50 @@ function Pin({
                   shadowOffset: { width: 0, height: 1 },
                 }),
           }}
-        />
+        >
+          {/* Resize grip — shown only while selected, at the dot's
+              bottom-right edge. Claims the SAME responder system as drag
+              (not react-native-gesture-handler): it lives inside the node
+              that already claims the responder for drag, and mixing
+              gesture-handler's GestureDetector in risks fighting that
+              responder for the same touch. RN's responder negotiation
+              queries the touched (leaf) node first, so a touch that starts
+              on the grip claims it before the parent's drag handlers see it. */}
+          {selected && containerSize ? (
+            <View
+              onStartShouldSetResponder={() => true}
+              onMoveShouldSetResponder={() => true}
+              onResponderGrant={() => {
+                resizing.current = true;
+              }}
+              onResponderMove={(e) => {
+                const n = toNorm(e);
+                if (!n) return;
+                const dx = (n.x - marker.x) * containerSize.width;
+                const dy = (n.y - marker.y) * containerSize.height;
+                setResizeSize(clampMarkerSize(Math.hypot(dx, dy) * 2));
+              }}
+              onResponderRelease={() => {
+                if (resizing.current && resizeSize != null) {
+                  onResize(resizeSize);
+                }
+                setResizeSize(null);
+                resizing.current = false;
+              }}
+              style={{
+                position: "absolute",
+                right: -6,
+                bottom: -6,
+                width: 12,
+                height: 12,
+                borderRadius: 6,
+                backgroundColor: colors.ink,
+                borderWidth: 2,
+                borderColor: "#fff",
+              }}
+            />
+          ) : null}
+        </View>
         {/* Label chip */}
         {marker.label ? (
           <View
@@ -559,6 +613,7 @@ function WebMarkerRnd({
   H,
   onSelect,
   onDragStop,
+  onResizeStop,
 }: {
   marker: Marker;
   selected: boolean;
@@ -566,34 +621,47 @@ function WebMarkerRnd({
   H: number;
   onSelect: () => void;
   onDragStop: (x: number, y: number) => void;
+  onResizeStop: (size: number, x: number, y: number) => void;
 }) {
   const color = markerHex(marker.color);
+  const half = markerHalf(marker);
+  const size = half * 2;
 
   return (
-    <Rnd
-      position={{
-        x: marker.x * W - MARKER_RND_OFFSET,
-        y: marker.y * H - MARKER_RND_OFFSET,
-      }}
-      enableResizing={false}
-      bounds="parent"
-      style={{ pointerEvents: "auto" }}
-      onDragStart={onSelect}
-      onDragStop={(_e, d) => onDragStop(d.x, d.y)}
-    >
-      <div
-        style={{
-          display: "flex",
-          flexDirection: "row",
-          alignItems: "center",
-          gap: 6,
+    <>
+      {/* The Rnd wraps ONLY the dot (drag + single corner-resize handle) —
+          mirrors WebShapeRnd's corner-resize wiring. */}
+      <Rnd
+        position={{ x: marker.x * W - half, y: marker.y * H - half }}
+        size={{ width: size, height: size }}
+        bounds="parent"
+        lockAspectRatio
+        enableResizing={{
+          bottomRight: true,
+          topLeft: false,
+          topRight: false,
+          bottomLeft: false,
+          top: false,
+          right: false,
+          bottom: false,
+          left: false,
+        }}
+        minWidth={MIN_MARKER_SIZE}
+        minHeight={MIN_MARKER_SIZE}
+        maxWidth={MAX_MARKER_SIZE}
+        maxHeight={MAX_MARKER_SIZE}
+        style={{ pointerEvents: "auto" }}
+        onDragStart={onSelect}
+        onDragStop={(_e, d) => onDragStop(d.x + half, d.y + half)}
+        onResizeStop={(_e, _dir, ref, _delta, pos) => {
+          const newHalf = ref.offsetWidth / 2;
+          onResizeStop(ref.offsetWidth, pos.x + newHalf, pos.y + newHalf);
         }}
       >
-        {/* Colored dot */}
         <div
           style={{
-            width: 16,
-            height: 16,
+            width: "100%",
+            height: "100%",
             borderRadius: 9999,
             backgroundColor: color,
             borderStyle: "solid",
@@ -604,27 +672,36 @@ function WebMarkerRnd({
               : "0 1px 2px rgba(0,0,0,0.25)",
           }}
         />
-        {/* Label chip */}
-        {marker.label ? (
-          <div
-            style={{
-              backgroundColor: "rgba(255,255,255,0.92)",
-              borderRadius: 4,
-              padding: "1px 6px",
-              fontSize: 12,
-              fontWeight: 600,
-              color: colors.ink,
-              whiteSpace: "nowrap",
-              ...(selected
-                ? { borderStyle: "solid", borderWidth: 1, borderColor: colors.ink }
-                : null),
-            }}
-          >
-            {marker.label}
-          </div>
-        ) : null}
-      </div>
-    </Rnd>
+      </Rnd>
+      {/* Label chip — a sibling OUTSIDE the Rnd, positioned via the marker's
+          committed x/y/half. Not tracked live during an active drag/resize;
+          it snaps to the right position once onDragStop/onResizeStop commits
+          — same latency model as every other committed-on-release edit in
+          this file. */}
+      {marker.label ? (
+        <div
+          style={{
+            position: "absolute",
+            left: marker.x * W + half + 6,
+            top: marker.y * H,
+            transform: "translateY(-50%)",
+            backgroundColor: "rgba(255,255,255,0.92)",
+            borderRadius: 4,
+            padding: "1px 6px",
+            fontSize: 12,
+            fontWeight: 600,
+            color: colors.ink,
+            whiteSpace: "nowrap",
+            pointerEvents: "none",
+            ...(selected
+              ? { borderStyle: "solid", borderWidth: 1, borderColor: colors.ink }
+              : null),
+          }}
+        >
+          {marker.label}
+        </div>
+      ) : null}
+    </>
   );
 }
 
@@ -2455,7 +2532,7 @@ export function SiteMapEditor({
                             />
                           ))}
 
-                        {/* Marker pins — drag only. */}
+                        {/* Marker pins — drag + corner-resize. */}
                         {markers.map((m) => (
                           <WebMarkerRnd
                             key={m._id}
@@ -2466,8 +2543,15 @@ export function SiteMapEditor({
                             onSelect={() => selectMarker(m._id)}
                             onDragStop={(x, y) =>
                               opPatchMarker(m._id, {
-                                x: clamp01((x + MARKER_RND_OFFSET) / W),
-                                y: clamp01((y + MARKER_RND_OFFSET) / H),
+                                x: clamp01(x / W),
+                                y: clamp01(y / H),
+                              })
+                            }
+                            onResizeStop={(size, x, y) =>
+                              opPatchMarker(m._id, {
+                                size: clampMarkerSize(size),
+                                x: clamp01(x / W),
+                                y: clamp01(y / H),
                               })
                             }
                           />
@@ -2569,6 +2653,7 @@ export function SiteMapEditor({
                         key={m._id}
                         marker={m}
                         selected={m._id === selectedId}
+                        containerSize={containerRect}
                         toNorm={eventToNorm}
                         onPress={() => {
                           if (mode !== "select") return;
@@ -2576,6 +2661,9 @@ export function SiteMapEditor({
                         }}
                         onMove={(x, y) => {
                           opPatchMarker(m._id, { x, y });
+                        }}
+                        onResize={(size) => {
+                          opPatchMarker(m._id, { size: clampMarkerSize(size) });
                         }}
                       />
                     ))}

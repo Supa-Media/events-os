@@ -17,8 +17,8 @@ import { colors } from "../../lib/theme";
 import {
   CIRCLE_SIZE,
   DEFAULT_SHAPE_SIZE,
-  MARKER_HALF,
   lineGeometry,
+  markerHalf,
   markerHex,
   percentPosition,
   shapeFill,
@@ -130,18 +130,22 @@ export function ShapeView({
 /** A single read-only marker pin — a colored dot + optional label chip. */
 export function MarkerView({ marker }: { marker: MarkerGeometry }) {
   const color = markerHex(marker.color);
+  const half = markerHalf(marker);
+  const size = half * 2;
   return (
     <View
       style={{
         position: "absolute",
         ...percentPosition(marker.x, marker.y),
-        transform: [{ translateX: -MARKER_HALF }, { translateY: -MARKER_HALF }],
+        transform: [{ translateX: -half }, { translateY: -half }],
       }}
     >
       <View className="flex-row items-center gap-1.5">
         <View
-          className="h-4 w-4 rounded-pill border-2 border-white"
+          className="rounded-pill border-2 border-white"
           style={{
+            width: size,
+            height: size,
             backgroundColor: color,
             shadowColor: "#000",
             shadowOpacity: 0.25,
