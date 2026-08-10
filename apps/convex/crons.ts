@@ -223,6 +223,30 @@ crons.cron(
   {},
 );
 
+// HOURLY on the hour: the giving-notification digest sweep. Every OTHER cron
+// in this file names one UTC hour because it serves one audience; this one
+// can't — a rule carries the local hour ITS recipients want (and a weekly rule
+// its weekday), so the sweep has to look every hour and ask each rule whether
+// its moment in America/New_York has arrived. `crons.cron("0 * * * *")` rather
+// than `crons.interval({ hours: 1 })` deliberately: an interval is measured
+// from deploy time and would drift off the hour boundary the local-hour match
+// depends on.
+//
+// Idempotent: `claimDigest` moves a rule's marks in the same transaction it
+// reads its window in, so a second pass inside the same local hour claims
+// nothing. An empty DAILY digest is skipped (and leaves the watermark alone);
+// an empty WEEKLY digest is sent on purpose — see
+// `lib/givingNotificationRules.ts`. Returns before claiming ANYTHING when no
+// Resend key resolves (local/dev), so an unmailable sweep can never eat a
+// window; otherwise it costs one bounded indexed read per cadence per tick when
+// no rule is due.
+crons.cron(
+  "giving notification digests",
+  "0 * * * *",
+  internal.givingNotificationDigests.sendGivingDigests,
+  {},
+);
+
 // Daily 08:00 UTC: does Stripe still SEND us the events `http.ts` handles?
 // A handler branch for an event nobody subscribed to fails silently — it
 // raises nothing, logs nothing, and passes every test, because the tests call

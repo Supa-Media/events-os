@@ -98,15 +98,30 @@ export async function resolveGivingAccess(ctx: QueryCtx): Promise<GivingAccess> 
   return access;
 }
 
-/** Whether the resolved access grants READ of `scope`. */
-function accessCanView(access: GivingAccess, scope: GivingScope): boolean {
+/**
+ * Whether the resolved access grants READ of `scope`.
+ *
+ * Exported alongside `requireGivingView` because some surfaces FILTER by reach
+ * instead of gating one row — a list of notification rules spanning several
+ * books shows the caller the ones they can see, and a throw-per-row is the
+ * wrong shape for that. Same predicate either way, so the list and the gate
+ * can never disagree.
+ */
+export function canViewGivingScope(
+  access: GivingAccess,
+  scope: GivingScope,
+): boolean {
   if (access.isSuperuser || access.centralView) return true;
   if (scope === "central") return false; // central reach is central-only
   return access.viewChapters.has(scope);
 }
 
-/** Whether the resolved access grants WRITE of `scope`. */
-function accessCanManage(access: GivingAccess, scope: GivingScope): boolean {
+/** Whether the resolved access grants WRITE of `scope`. The filtering twin of
+ *  `requireGivingManage` — see `canViewGivingScope`. */
+export function canManageGivingScope(
+  access: GivingAccess,
+  scope: GivingScope,
+): boolean {
   if (access.isSuperuser || access.centralManage) return true;
   if (scope === "central") return false;
   return access.manageChapters.has(scope);
@@ -118,7 +133,7 @@ export async function requireGivingView(
   scope: GivingScope,
 ): Promise<GivingAccess> {
   const access = await resolveGivingAccess(ctx);
-  if (!accessCanView(access, scope)) {
+  if (!canViewGivingScope(access, scope)) {
     throw new ConvexError({
       code: "FORBIDDEN",
       message: "You don't have access to the development desk for this scope.",
@@ -133,7 +148,7 @@ export async function requireGivingManage(
   scope: GivingScope,
 ): Promise<GivingAccess> {
   const access = await resolveGivingAccess(ctx);
-  if (!accessCanManage(access, scope)) {
+  if (!canManageGivingScope(access, scope)) {
     throw new ConvexError({
       code: "FORBIDDEN",
       message: "You don't have permission to manage donors for this scope.",

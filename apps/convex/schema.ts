@@ -106,6 +106,7 @@ import {
 import { sponsorPackages, sponsorships } from "./schema/sponsorships";
 import { territories } from "./schema/territories";
 import { givingInterest } from "./schema/givingInterest";
+import { givingNotificationRules } from "./schema/givingNotifications";
 import { givingActivity } from "./schema/givingActivity";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
@@ -410,6 +411,14 @@ const schema = defineSchema({
   // recorded elsewhere" record it consults instead. See
   // schema/givingPlatform.ts for the full reasoning.
   givebutterConvertedDonations,
+
+  // "Tell me when money comes in" — standing instructions pairing a set of
+  // email addresses with a book, an amount floor, and a frequency (immediate /
+  // daily / weekly). Read by `givingNotifications.ts` (the immediate send,
+  // scheduled from `recordGiftForDonor`) and `givingNotificationDigests.ts`
+  // (the hourly digest sweep). See schema/givingNotifications.ts +
+  // docs/plans/giving-notifications.md.
+  givingNotificationRules,
 
   // Sponsorships & partnerships (F-6, P4) — dev-director-authored sponsor
   // package tiers (`sponsorPackages`) + the agreement pipeline that tracks an

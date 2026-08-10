@@ -272,6 +272,10 @@ export const restoreGiftForDispute = internalMutation({
     if (!donor) return { restored: false, skipped: "donor is gone" };
 
     const giftId = await recordGiftForDonor(ctx, {
+      // Putting BACK money the ledger already knew about and already announced
+      // once, at its original date — not a fresh arrival. See the `receivedAt`
+      // note just below, which makes the same point about the calendar.
+      notify: false,
       donorId: reversal.donorId,
       amountCents: reversal.amountCents,
       // The ORIGINAL date, not today. The money arrived when it arrived; a

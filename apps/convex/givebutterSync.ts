@@ -774,6 +774,13 @@ export const applyGivebutterDonations = triggerInternalMutation({
         method: "givebutter",
         eventId,
         externalRef,
+        // A MIRROR, not an arrival. This loop is unbounded — attaching a
+        // campaign backfills its entire donation history in one pass, which is
+        // precisely the thousand-email case. Givebutter donations still reach
+        // the digest; the live rails that DO fire immediately (`/give`, event
+        // pages, ticket add-ons, Stripe recurring) are the ones where the write
+        // really is one payment landing once.
+        notify: false,
       });
       inserted += 1;
     }

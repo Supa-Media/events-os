@@ -11,12 +11,14 @@
 import { ConvexError } from "convex/values";
 import { Doc, Id } from "../_generated/dataModel";
 import { MutationCtx, QueryCtx } from "../_generated/server";
+import { internal } from "../_generated/api";
 import { normalizeEmail } from "./access";
 import type { GivingScope } from "./givingAccess";
 import { territoryForChapter } from "../territories";
 import { chapterRoster } from "./org";
 import { syncDonorIdentity } from "./donorIdentity";
 import { recordPersonEmail } from "./personEmails";
+import { MAX_RULES, ruleMatchesGift } from "./givingNotificationRules";
 
 /** The 90-day lapse window (the AJ donor system's rule, PRD §1). */
 export const LAPSE_WINDOW_MS = 90 * 24 * 60 * 60 * 1000;
@@ -485,6 +487,29 @@ export async function recordGiftForDonor(
     // evidence link back to the `transactions` row (see
     // `schema/givingPlatform.ts`'s `gifts.transactionId` doc).
     transactionId?: Id<"transactions">;
+    /**
+     * Whether this write is a SINGLE, POINT-IN-TIME ARRIVAL — money landing
+     * now, which a matching immediate rule should hear about now.
+     *
+     * Absent or `true` is the default, and the default is the SAFE one on
+     * purpose: a new single-gift path added next year notifies without its
+     * author having to know this flag exists. Opting out has to be typed.
+     *
+     * `false` says "this operation can write many gifts, or is re-writing
+     * money the ledger already knew about" — a CSV import, a historical
+     * backfill, a Givebutter campaign sync, splitting one gift into parts,
+     * restoring a gift after a dispute resolved. Left on the default, a
+     * three-thousand-row import would put three thousand emails into the
+     * development team's inbox, which is an outbound-email incident rather
+     * than a notification.
+     *
+     * IT DEMOTES, IT DOES NOT SILENCE. A gift written with `notify: false`
+     * is still in the ledger and still lands in the daily/weekly digest —
+     * the digest window rides `createdAt`, so an import shows up there as one
+     * correctly-totalled lump instead of a thousand separate mails. Nothing
+     * is ever hidden from the people who asked to be told.
+     */
+    notify?: boolean;
   },
 ): Promise<Id<"gifts">> {
   assertPositiveGiftCents(args.amountCents);
@@ -567,6 +592,51 @@ export async function recordGiftForDonor(
   // `schema/ticketing.ts`'s `externalGiftsCents` doc.
   if (args.eventId !== undefined && args.donationId === undefined) {
     await bumpEventExternalGifts(ctx, args.eventId, args.amountCents, 1);
+  }
+
+  // "Tell me when money comes in" (docs/plans/giving-notifications.md). This is
+  // the ONE place a gift is born, so it is the one place the immediate rules
+  // can be armed from — every channel that reaches here (desk entry, CSV
+  // import, the public /give page, a Stripe recurring cycle, a sponsorship
+  // payment, a bank-credit confirmation, an in-person sale split, and the
+  // event-donation dual-write that carries a gift bundled into a TICKET
+  // purchase) gets the same treatment, with no per-channel opt-in to forget.
+  //
+  // SCHEDULED, never awaited inline. `runAfter(0, …)` is a database write in
+  // THIS transaction; the action runs afterwards in its own context, once the
+  // gift has committed. So a Resend outage, a rate limit, a bad address, or an
+  // unhandled throw over there fails a notification and nothing else — it can
+  // never slow down or roll back the gift. And if this transaction rolls back
+  // for its own reasons, the job rolls back with it, so nobody is ever told
+  // about a gift that doesn't exist.
+  //
+  // BULK WRITES OPT OUT (`notify: false` — see the arg's doc). They are not
+  // silenced: the gift is in the ledger and the digest, which counts on
+  // `createdAt`, still reports it.
+  //
+  // PRE-FILTERED otherwise, so a gift nobody asked about schedules NOTHING.
+  // The action re-reads and re-matches anyway (it must — it runs after the
+  // commit), but scheduling a job whose only possible outcome is "no rules
+  // matched" costs a `_scheduled_functions` write on every gift a deployment
+  // ever records, and leaves an in-flight job behind every gift written in a
+  // test. Same pure predicate both sides, so the pre-filter can never
+  // disagree with the send.
+  const immediateRules =
+    args.notify === false
+      ? []
+      : await ctx.db
+          .query("givingNotificationRules")
+          .withIndex("by_cadence", (q) => q.eq("cadence", "immediate"))
+          .take(MAX_RULES);
+  const anyMatch = immediateRules.some((rule) =>
+    ruleMatchesGift(rule, { scope: donor.scope, amountCents: args.amountCents }),
+  );
+  if (anyMatch) {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.givingNotifications.notifyGiftRecorded,
+      { giftId },
+    );
   }
   return giftId;
 }
