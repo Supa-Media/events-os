@@ -96,6 +96,12 @@ with it, so nobody is told about a gift that doesn't exist.
 Hooking the chokepoint (rather than each of the thirteen callers) means every
 channel gets the same treatment with no per-channel opt-in to forget.
 
+The schedule is **pre-filtered** with the same pure `ruleMatchesGift` the action
+uses: a gift no immediate rule cares about schedules nothing at all, so a
+deployment with no immediate rules pays no `_scheduled_functions` write per gift.
+The action still re-reads and re-matches — it has to, since it runs after the
+commit — so the two can never disagree.
+
 **The one bypass.** `genesisRevenueSync.ts` inserts a single hard-coded
 historical in-kind gift directly, deliberately skipping `recordGiftForDonor`
 (and every rollup with it). It is a dated one-time ops module for a 2026-08-06
