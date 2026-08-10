@@ -444,6 +444,117 @@ export const RECEIPT_EXCEPTION_STATUS_LABELS: Record<
  *  note is refused. Shared by the server mutation and the form's validation so
  *  the two can't drift. */
 export const MIN_EXCEPTION_NOTE_LENGTH = 12;
+
+// ── Real friction before "the receipt is lost" ───────────────────────────────
+//
+// Owner, 2026-08-09: *"I want to create a lot of friction for someone to say
+// no receipt… a couple of stage processes: did you try going to the website
+// portal to see if the receipt's there? Yes or no. Did you try calling the
+// local store and asking them to reproduce the receipt? Yes or no. And if it's
+// no, then hey, you can't mark it as lost — go do the work to fish out the
+// receipt. Another one is: did you check all your email inboxes including your
+// spam folders."*
+//
+// THE REASON BRANCHES FIRST, and only `lost` gets this (owner, same day:
+// *"This should only be if they say the receipt was lost. If they say no
+// receipt issued, then it's just no receipt issued."*). Chasing a receipt that
+// cannot exist — a subway fare, a vending machine, a donation box — is pure
+// friction with no yield, so those file on an explanation alone.
+//
+// UNIFORM AT EVERY AMOUNT (owner: *"I feel like you should keep your receipts,
+// and it doesn't take much to take a picture of it when you are spending
+// money."*). The $75 line
+// (`DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS`) is a separate control and
+// governs only who must APPROVE — it does not modulate this.
+//
+// ## What this achieves, honestly
+//
+// Someone can click "yes" three times and lie, and no copy anywhere should
+// imply the system checked. It didn't. What it actually buys is two real
+// things: it prompts recall of the two paths people genuinely forget (the spam
+// folder and the vendor's order history are where the receipt usually turns
+// out to be), and it turns the answers into an ATTESTED RECORD an approver can
+// weigh — which is the point. *"This just gives the approver a lot of context
+// information for what was going on that we don't have a receipt."*
+export const LOST_RECEIPT_CHECKS = [
+  {
+    key: "vendor_portal",
+    prompt:
+      "Did you check the vendor's website or your account with them? (Order history, past orders, billing.)",
+    /** Shown when they answer no — the block is the point, so it has to say
+     *  what to go and do rather than just refusing. */
+    blockedHint:
+      "Most online and card purchases sit in an order history forever. Check there first — it's usually the fastest place to find it.",
+  },
+  {
+    key: "merchant_asked",
+    prompt:
+      "Did you contact the merchant and ask them to reproduce it?",
+    blockedHint:
+      "Shops and restaurants can normally reprint from the card's last four and the date. Ask before filing this.",
+  },
+  {
+    key: "inboxes_searched",
+    prompt:
+      "Did you search ALL your email inboxes — including spam — for an automatic receipt?",
+    blockedHint:
+      "Automatic receipts land in spam constantly. Search every address you might have used, spam included.",
+  },
+] as const;
+export type LostReceiptCheckKey = (typeof LOST_RECEIPT_CHECKS)[number]["key"];
+
+// The two questions that come BEFORE "no receipt was issued" is accepted.
+//
+// Owner: *"Sometimes no receipt was issued because no receipt was ASKED for.
+// So we need to ask: does this store do receipts? Did you remember to ask? And
+// if they say no, they forgot to ask — then that's the end of the question…
+// and then we take them essentially to the lost-receipt flow."*
+//
+// So this is a CLASSIFIER, not a punishment: "I forgot to ask" is not "no
+// receipt was issued", it's a receipt that existed and wasn't kept — which is
+// what `lost` means and what the checks above are for. The copy says that
+// plainly and without shaming; the point is that the record ends up true.
+export const NOT_ISSUED_CHECKS = [
+  {
+    key: "merchant_issues_receipts",
+    prompt: "Does this merchant issue receipts at all?",
+    /** Answering NO is the honest end of it — a parking meter issues nothing. */
+    noEndsIt: true,
+  },
+  {
+    key: "asked_for_receipt",
+    prompt: "Did you ask for one?",
+    /** Answering NO reroutes to `lost` — see this block's doc. */
+    noEndsIt: false,
+  },
+] as const;
+export type NotIssuedCheckKey = (typeof NOT_ISSUED_CHECKS)[number]["key"];
+
+/** One recorded yes/no, stored WITH the question it answered so the record
+ *  stays legible even if the wording later changes, and so an approver reads
+ *  what was actually asked rather than a bare key. */
+export interface ExceptionAttestation {
+  key: string;
+  prompt: string;
+  answer: boolean;
+}
+
+/**
+ * Is this attestation set complete enough to file a `lost` exception?
+ *
+ * Every check must be present AND answered yes. Shared by the server guard and
+ * the form so the two can't disagree about what "you did the work" means.
+ * Returns the FIRST unmet check, or null.
+ */
+export function lostReceiptBlocker(
+  attestations: readonly ExceptionAttestation[] | undefined,
+): (typeof LOST_RECEIPT_CHECKS)[number] | null {
+  for (const check of LOST_RECEIPT_CHECKS) {
+    const answered = attestations?.find((a) => a.key === check.key);
+    if (!answered || answered.answer !== true) return check;
+  }
+  return null;
+}
 /** Same cap + rationale as `MAX_NOTE_LENGTH` — an attestation is a short
  *  justification, not a document. */
 export const MAX_EXCEPTION_NOTE_LENGTH = 2000;

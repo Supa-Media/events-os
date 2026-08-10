@@ -406,6 +406,59 @@ make a rejectable submission hard to produce:
   publishes it and still counts it as ours. Nothing infers it: per decision 5
   there is no heuristic reading anybody's prose and guessing. A human declares
   it.
+- **Real friction before "the receipt is lost"** (owner, 2026-08-09). Saying
+  there is no receipt used to cost one radio button and a sentence. Now the
+  REASON BRANCHES FIRST, and only `lost` faces the gauntlet — *"this should
+  only be if they say the receipt was lost. If they say no receipt issued,
+  then it's just no receipt issued."* Chasing a receipt that cannot exist (a
+  subway fare, a vending machine, a donation box) is pure friction with no
+  yield, so those file on an explanation alone.
+
+  For `lost`, three staged yes/no questions (`LOST_RECEIPT_CHECKS`), each of
+  which **genuinely blocks** on a no, enforced server-side in
+  `attestException` rather than only in the form: the vendor's website or
+  order history, contacting the merchant to reproduce it, and searching every
+  inbox **including spam**. Each refusal says what to go and do — a block that
+  only refuses teaches nothing.
+
+  For `no_receipt_issued`, two classifying questions (`NOT_ISSUED_CHECKS`)
+  rather than a gauntlet: does this merchant issue receipts at all, and did
+  you ask? *"Sometimes no receipt was issued because no receipt was ASKED
+  for."* Answering "I forgot to ask" **reroutes to `lost`** — a receipt that
+  existed and wasn't kept is what `lost` means — said plainly and without
+  shaming, because the point is an accurate record, not a telling-off.
+
+  **UNIFORM AT EVERY AMOUNT.** No tiering by size (*"you should keep your
+  receipts, and it doesn't take much to take a picture of it"*).
+  `DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS` ($75) is a separate control and
+  still governs only who must APPROVE.
+
+  **What this actually achieves, stated honestly.** Somebody can answer yes
+  three times and be lying, and no copy anywhere claims otherwise — every
+  surface says *attested*, never *confirmed*. The value is two real things:
+  it prompts recall of the two paths people genuinely forget (spam, and the
+  vendor's order history are where the receipt usually turns out to be), and
+  the answers become a record an approver can weigh — *"this just gives the
+  approver a lot of context information for what was going on that we don't
+  have a receipt."* Stored on the exception as `attestations`, each answer
+  **with the question it answered**, so the row stays legible years later and
+  survives a wording change. The 36 historically decided exceptions have no
+  answers and render as "nothing recorded", not as three unanswered questions.
+
+  **The failure mode this is watched for:** friction that's too punishing
+  pushes people to stop coding, or to mark a legitimate org expense personal
+  so they can pay it themselves and make the nagging stop — which silently
+  moves org cost onto a volunteer and is strictly worse than a documented
+  exception. So the path to a legitimate exception stays completable (three
+  honest yeses file it), the reasons that deserve no gauntlet don't get one,
+  and the personal-charge option stays honestly available rather than framed
+  as the way out.
+
+  **No reason value was added, renamed, or remapped.** The existing five
+  (`no_receipt_issued`, `lost`, `predates_policy`, `vendor_unreachable`,
+  `bank_record_only`) keep their meanings exactly; the branching is a UI
+  classifier over the same vocabulary plus one server guard. Julie's pending
+  $15.51 `lost` exception, and every decided row, still render unchanged.
 - **Plain-words education inline**, not in a help doc: one line under each
   requirement saying why ("the IRS requires who attended and their
   relationship to the org"), teaching the rule at the moment it applies —

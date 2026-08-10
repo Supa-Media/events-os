@@ -5,6 +5,17 @@ import { disarmCodingPolicy, newT, run, setupChapter, storeBlob, type ChapterSet
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { MAX_EXCEPTION_EVIDENCE } from "@events-os/shared";
+import { LOST_RECEIPT_CHECKS } from "@events-os/shared";
+/** Every lost-receipt check answered yes — since 2026-08-09 the interactive
+ *  `receiptExceptions.attest` refuses a `lost` exception without them (the
+ *  staged "did you actually look?" gauntlet). Bulk/backfill paths are
+ *  deliberately exempt, so only fixtures that go through `attest` need this. */
+const LOST_CHECKS = LOST_RECEIPT_CHECKS.map((c) => ({
+  key: c.key,
+  prompt: c.prompt,
+  answer: true,
+}));
+
 
 /**
  * Receipt exceptions — the documentation of record when no receipt can be
@@ -126,6 +137,7 @@ describe("attesting", () => {
       s.as.mutation(api.receiptExceptions.attest, {
         transactionId: txnId,
         reason: "lost",
+        attestations: LOST_CHECKS,
         note: "   n/a  ",
       }),
     ).rejects.toMatchObject({ data: { code: "NOTE_REQUIRED" } });
@@ -143,6 +155,7 @@ describe("attesting", () => {
       s.as.mutation(api.receiptExceptions.attest, {
         transactionId: txnId,
         reason: "lost",
+        attestations: LOST_CHECKS,
         note: GOOD_NOTE,
       }),
     ).rejects.toMatchObject({ data: { code: "HAS_RECEIPT" } });
@@ -156,6 +169,7 @@ describe("attesting", () => {
     await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
 
@@ -178,6 +192,7 @@ describe("attesting", () => {
       s.as.mutation(api.receiptExceptions.attest, {
         transactionId: txnId,
         reason: "lost",
+        attestations: LOST_CHECKS,
         note: GOOD_NOTE,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
@@ -256,6 +271,7 @@ describe("evidence — proof of the purchase", () => {
       s.as.mutation(api.receiptExceptions.attest, {
         transactionId: txnId,
         reason: "lost",
+        attestations: LOST_CHECKS,
         note: "Flowers for the Aug 2 outdoor service — photos are from the event",
         evidenceStorageIds: tooMany,
       }),
@@ -294,6 +310,7 @@ describe("deciding — separation of duties", () => {
     const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
 
@@ -322,6 +339,7 @@ describe("deciding — separation of duties", () => {
         chapterId: s.chapterId,
         amountCents: 8000,
         reason: "lost",
+        attestations: LOST_CHECKS,
         note: GOOD_NOTE,
         status: "pending",
         attestedByPersonId: filer,
@@ -350,6 +368,7 @@ describe("deciding — separation of duties", () => {
     const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
 
@@ -366,6 +385,7 @@ describe("deciding — separation of duties", () => {
     const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
 
@@ -391,6 +411,7 @@ describe("deciding — separation of duties", () => {
     const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
     await s.as.mutation(api.receiptExceptions.approve, { exceptionId });
@@ -412,6 +433,7 @@ describe("deciding — separation of duties", () => {
     const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
 
@@ -430,6 +452,7 @@ describe("withdrawal + supersession — the pointer never goes stale", () => {
     const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
     await s.as.mutation(api.receiptExceptions.approve, { exceptionId });
@@ -449,6 +472,7 @@ describe("withdrawal + supersession — the pointer never goes stale", () => {
     const exceptionId = await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
     await s.as.mutation(api.receiptExceptions.approve, { exceptionId });
@@ -505,6 +529,7 @@ describe("reconciled means documented", () => {
     await s.as.mutation(api.receiptExceptions.attest, {
       transactionId: txnId,
       reason: "lost",
+      attestations: LOST_CHECKS,
       note: GOOD_NOTE,
     });
 
@@ -634,6 +659,11 @@ describe("bulk backfill", () => {
     const big = await seedTxn(s, { amountCents: 9000 });
     const small = await seedTxn(s, { amountCents: 500 });
 
+    // NO attestations here, and that's the rule not an omission: the staged
+    // lost-receipt gauntlet is on the INTERACTIVE `attest` path only. Bulk is
+    // a bookkeeper acknowledging historical rows they weren't present for —
+    // asking them "did you email the merchant?" would be asking about
+    // somebody else's purchase from a year ago.
     const res = await s.as.mutation(api.receiptExceptions.attestBulk, {
       transactionIds: [big, small],
       reason: "lost",

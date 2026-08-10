@@ -20,6 +20,7 @@ import {
   MIN_EXCEPTION_NOTE_LENGTH,
   MAX_EXCEPTION_NOTE_LENGTH,
   MAX_EXCEPTION_EVIDENCE,
+  type ExceptionAttestation,
   type ReceiptExceptionReason,
 } from "@events-os/shared";
 import type { FinanceScope } from "./finance";
@@ -92,6 +93,7 @@ export async function attestException(
     reason: ReceiptExceptionReason;
     note: string;
     evidenceStorageIds?: Id<"_storage">[];
+    attestations?: ExceptionAttestation[];
     attestedByPersonId: Id<"people"> | null;
     attestedByUserId: Id<"users">;
   },
@@ -144,6 +146,9 @@ export async function attestException(
     ...(args.evidenceStorageIds?.length
       ? { evidenceStorageIds: args.evidenceStorageIds }
       : {}),
+    // Recorded whatever the reason — the two "was one even issued?" answers
+    // are as much a part of the story as the three lost-receipt ones.
+    ...(args.attestations?.length ? { attestations: args.attestations } : {}),
     status: "pending",
     ...(args.attestedByPersonId
       ? { attestedByPersonId: args.attestedByPersonId }

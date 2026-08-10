@@ -23,7 +23,11 @@
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
-import { formatCents, type ReceiptExceptionReason } from "@events-os/shared";
+import {
+  formatCents,
+  type ExceptionAttestation,
+  type ReceiptExceptionReason,
+} from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
@@ -175,6 +179,38 @@ export function ReceiptExceptionSection({
                 “{row.decisionNote}”
               </Text>
             ) : null}
+
+            {/* WHAT THEY SAID THEY TRIED. The whole point of the staged
+                questions: an approver should be able to read this row and
+                understand the situation without asking anyone.
+
+                Worded as ATTESTED, deliberately and everywhere. Nothing here
+                was verified — a person can answer yes and be wrong — and copy
+                that implied otherwise would turn a useful record into a false
+                one. Absent on rows filed before this existed, which read as
+                nothing recorded rather than as unanswered questions. */}
+            {row.attestations.length > 0 ? (
+              <View className="mt-2 rounded-md border border-border bg-sunken px-2.5 py-2">
+                <Text className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted">
+                  Attested by the filer — not verified
+                </Text>
+                {row.attestations.map((a) => (
+                  <View key={a.key} className="flex-row items-start gap-1.5">
+                    <Icon
+                      name={a.answer ? "check" : "x"}
+                      size={11}
+                      color={a.answer ? colors.success : colors.muted}
+                    />
+                    <Text className="flex-1 text-2xs text-muted">
+                      {a.prompt}{" "}
+                      <Text className="font-semibold text-ink">
+                        {a.answer ? "Yes" : "No"}
+                      </Text>
+                    </Text>
+                  </View>
+                ))}
+              </View>
+            ) : null}
             {row.evidence.length > 0 ? (
               <View className="mt-2">
                 <View className="mb-1 flex-row items-center gap-1.5">
@@ -299,10 +335,12 @@ export function ReceiptExceptionSection({
             reason,
             note,
             evidenceStorageIds,
+            attestations,
           }: {
             reason: ReceiptExceptionReason;
             note: string;
             evidenceStorageIds: Id<"_storage">[];
+            attestations: ExceptionAttestation[];
           }) =>
             void run(async () => {
               await attest({
@@ -310,6 +348,9 @@ export function ReceiptExceptionSection({
                 reason,
                 note,
                 ...(evidenceStorageIds.length ? { evidenceStorageIds } : {}),
+                // See CodingDocumentation — dropping these makes a `lost`
+                // exception permanently unfilable.
+                ...(attestations.length ? { attestations } : {}),
               });
               setFiling(false);
             })
