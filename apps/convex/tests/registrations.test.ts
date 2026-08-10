@@ -100,20 +100,31 @@ async function seedRegistration(
   });
 }
 
-/** The real Worship Beyond The Walls cohort: six $50 places, three refunded as
- *  scholarships. $300.00 collected, $150.00 kept. */
+/**
+ * A cohort shaped like Worship Beyond The Walls: six $50 places, three refunded
+ * as scholarships. $300.00 collected, $150.00 kept.
+ *
+ * The NAMES are invented. The real six are supplied to the backfill at run time
+ * and never enter this repo — "this named person received a scholarship" is
+ * financial-need information about a real individual, and a test fixture is
+ * still source control. The money shape is what's under test; the humans are
+ * not.
+ */
+const PAID_NAMES = ["Ada Placeholder", "Bo Placeholder", "Cy Placeholder"];
+const SCHOLARSHIP_NAMES = ["Dee Placeholder", "Eli Placeholder", "Fay Placeholder"];
+
 async function seedWbtwCohort(
   s: ChapterSetup,
   projectId: Id<"projects">,
 ): Promise<void> {
-  for (const name of ["Jasmine Diaz", "Julia Kudlick", "Dominique Hyppolite"]) {
+  for (const name of PAID_NAMES) {
     await seedRegistration(s, projectId, {
       name,
       amountCents: CENTS_50,
       status: "paid",
     });
   }
-  for (const name of ["Trinitee Alston", "Jocelyn Naranjo", "Esosa Asemota"]) {
+  for (const name of SCHOLARSHIP_NAMES) {
     await seedRegistration(s, projectId, {
       name,
       amountCents: CENTS_50,
@@ -243,14 +254,10 @@ describe("the breakdown agrees with the total it claims to explain", () => {
     });
     const regs = lines.earned.filter((e) => e.kind === "registration");
     expect(regs).toHaveLength(3);
-    expect(regs.map((r) => r.label).sort()).toEqual([
-      "Dominique Hyppolite",
-      "Jasmine Diaz",
-      "Julia Kudlick",
-    ]);
+    expect(regs.map((r) => r.label).sort()).toEqual([...PAID_NAMES].sort());
     // A scholarship contributed nothing to book value, so it is not a line
     // BEHIND book value. It is still on the project's own page.
-    expect(regs.some((r) => r.label === "Trinitee Alston")).toBe(false);
+    expect(regs.some((r) => SCHOLARSHIP_NAMES.includes(r.label))).toBe(false);
     // The line detail names the class the money was for.
     expect(regs[0].detail).toContain("Worship Beyond the walls");
     expect(lines.earned.reduce((sum, e) => sum + e.amountCents, 0)).toBe(
@@ -374,6 +381,7 @@ describe("the Givebutter backfill", () => {
       {},
     );
     expect(result.dryRun).toBe(true);
+    expect(result.toInsert).toBe(0);
     expect(result.inserted).toBe(0);
     expect(result.revenueAddedCents).toBe(0);
     expect(result.problems).toEqual([
@@ -414,17 +422,21 @@ describe("the Givebutter backfill", () => {
     const result = await t.mutation(
       internal.backfillWorshipRegistrations.backfillWorshipRegistrations,
       {
-        emails: [
+        registrants: [
           // Mixed case + stray whitespace: normalisation must not decide
           // whether a payment reaches someone's record.
-          { givebutterTxnId: "4284185383", email: "  Alex.Roster@Example.COM " },
+          {
+            givebutterTxnId: "4284185383",
+            name: "Ada Placeholder",
+            email: "  Alex.Roster@Example.COM ",
+          },
         ],
       },
     );
     expect(result.rosterMatches).toBe(1);
     expect(result.emailsWithNoRosterMatch).toEqual([]);
     // Still refused to write — a roster hit is not a precondition pass.
-    expect(result.inserted).toBe(0);
+    expect(result.toInsert).toBe(0);
     expect(result.problems).toHaveLength(1);
   });
 
@@ -442,7 +454,15 @@ describe("the Givebutter backfill", () => {
 
     const result = await t.mutation(
       internal.backfillWorshipRegistrations.backfillWorshipRegistrations,
-      { emails: [{ givebutterTxnId: "3267180644", email: "bev.contact@example.com" }] },
+      {
+        registrants: [
+          {
+            givebutterTxnId: "3267180644",
+            name: "Bo Placeholder",
+            email: "bev.contact@example.com",
+          },
+        ],
+      },
     );
     expect(result.rosterMatches).toBe(1);
     expect(result.emailsWithNoRosterMatch).toEqual([]);
@@ -463,9 +483,17 @@ describe("the Givebutter backfill", () => {
     const result = await t.mutation(
       internal.backfillWorshipRegistrations.backfillWorshipRegistrations,
       {
-        emails: [
-          { givebutterTxnId: "3267180644", email: "bev.contact@example.com" },
-          { givebutterTxnId: "6680142853", email: "nobody@example.com" },
+        registrants: [
+          {
+            givebutterTxnId: "3267180644",
+            name: "Bo Placeholder",
+            email: "bev.contact@example.com",
+          },
+          {
+            givebutterTxnId: "6680142853",
+            name: "Cy Placeholder",
+            email: "nobody@example.com",
+          },
         ],
       },
     );
@@ -482,10 +510,11 @@ describe("the Givebutter backfill", () => {
     const s = await setupChapter(t);
     // A roster person carrying a registrant's exact name and a DIFFERENT
     // address. The name-match shortcut would link these; this must not.
+    // (Placeholder name — the real six are never in this repo.)
     await run(s.t, (ctx) =>
       ctx.db.insert("people", {
         chapterId: s.chapterId,
-        name: "Dominique Hyppolite",
+        name: "Cy Placeholder",
         email: "someone.else@example.com",
         createdAt: Date.now(),
       }),
@@ -493,7 +522,7 @@ describe("the Givebutter backfill", () => {
 
     const result = await t.mutation(
       internal.backfillWorshipRegistrations.backfillWorshipRegistrations,
-      { emails: [] },
+      { registrants: [] },
     );
     expect(result.rosterMatches).toBe(0);
     expect(result.linkedPeople).toBe(0);
@@ -506,6 +535,7 @@ describe("the Givebutter backfill", () => {
       { execute: true },
     );
     expect(result.dryRun).toBe(false);
+    expect(result.toInsert).toBe(0);
     expect(result.inserted).toBe(0);
     expect(result.problems).toHaveLength(1);
     const rows = await run(t, (ctx) => ctx.db.query("registrations").collect());

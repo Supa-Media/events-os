@@ -335,7 +335,7 @@ export function ReconciliationSection() {
       <Text className="mb-3 text-sm text-muted">
         Once a morning the engine does three things. It finds each Stripe payout
         and labels the bank deposit it arrived as, so that deposit isn&apos;t
-        counted as income on top of the donations and ticket sales it was
+        counted as income on top of the revenue it was
         already paying for. It settles cross-book card spend, where one
         book&apos;s card paid for another book&apos;s costs. Then it compares
         every chapter&apos;s book value to what&apos;s actually in its bank
@@ -504,7 +504,7 @@ export function ReconciliationSection() {
               Each time Stripe pays out, the cash lands as one deposit in
               central&apos;s bank account. All the engine does with it is find
               that deposit and label it, so it isn&apos;t counted as income on
-              top of the donations and ticket sales it was paying for. Nothing
+              top of the revenue it was paying for. Nothing
               here needs a decision from you unless a row says so.
             </Text>
             {overview.payouts.length === 0 ? (

@@ -4,14 +4,16 @@
  * the money we have, and then use transactions from reconcile to determine
  * money going out."
  *
- *   book value = REVENUE EARNED (gifts + paid ticket orders, per scope —
- *                summed in `reconciliation.ts#accountBalances`)
+ *   book value = REVENUE EARNED (gifts + paid ticket orders + in-person sales
+ *                + paid project registrations, per scope — summed in
+ *                `reconciliation.ts#accountBalances`)
  *              + Σ signedBookCents over the book's LEDGER rows (this file)
  *
  * The ledger side is money-out plus corrections — NOT a second copy of
- * revenue. The anti-double-count rule that makes the model sound: a gift or
- * ticket sale is counted ONCE, at the giving/ticketing layer, so the ledger
- * rows that represent that same money's bank arrival contribute ZERO here:
+ * revenue. The anti-double-count rule that makes the model sound: a gift,
+ * ticket sale, in-person sale or class registration is counted ONCE, at the
+ * layer that earned it, so the ledger rows that represent that same money's
+ * bank arrival contribute ZERO here:
  *
  *  - a PAYOUT DEPOSIT (`payoutProcessor` set, or engine-matched via
  *    `stripePayoutId`) → 0. It's the cash arrival of already-counted revenue.

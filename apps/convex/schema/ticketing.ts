@@ -558,7 +558,8 @@ export const sales = defineTable({
    *  leaving merch money out of `sales` would push it into `ticketOrders` (which
    *  would inflate attendance — see this table's header) or into `transactions`
    *  as plain income (which contradicts the revenue model: revenue is gifts,
-   *  tickets and sales, and the ledger is spend). `ticketOrders` already solves
+   *  tickets, sales and class registrations, and the ledger is spend).
+   *  `ticketOrders` already solves
    *  exactly this with an optional `stripeCheckoutSessionId` beside an optional
    *  `externalRef`; this mirrors it. */
   stripeChargeId: v.optional(v.string()),

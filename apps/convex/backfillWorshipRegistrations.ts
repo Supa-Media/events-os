@@ -44,17 +44,59 @@
  * whoever watches the engine. Don't discover it from a bank alert.
  *
  * ── DRY RUN BY DEFAULT, AND IT SKIPS RATHER THAN GUESSES ────────────────────
- * Mirrors `reverseBadSettlement.ts`: `execute` defaults to false, every
- * precondition is asserted, and ANY mismatch returns a `problems[]` entry with
- * nothing written. The preconditions are the project's existence, its chapter,
+ * Mirrors `gear2024Split.ts` (the closest surviving one-off — same shape: a
+ * one-time runner beside a separate dataset module in `lib/`): `execute`
+ * defaults to false, every precondition is asserted, and ANY mismatch returns a
+ * `problems[]` entry with nothing written. The preconditions are the project's existence, its chapter,
  * and its name — a deployment where any of those reads differently is not the
  * deployment this fixture describes, and writing six money rows into it would
  * be worse than doing nothing.
  *
- * ── IDEMPOTENT ──────────────────────────────────────────────────────────────
+ * ── IDEMPOTENT, AND WHAT THAT DOES *NOT* COVER ──────────────────────────────
  * Each row is keyed on `externalRef = "gb:txn:<givebutter id>"` and looked up
  * through the `by_external_ref` index. A second execute inserts nothing and
  * reports all six under `alreadyPresent`.
+ *
+ * ⚠ THAT PREFIX IS NOT UNIQUE ACROSS TABLES, and there is a live double-count
+ * path this backfill cannot close from here. NOTHING IN `givebutterSync.ts`
+ * READS `registrations` (verified: zero hits in that file and its helpers).
+ * `eventPages.givebutterCampaignId` is a single free-text box with no allowlist
+ * and no date gate on the manual sync button — so attaching the Worship Beyond
+ * The Walls campaign to any event re-imports these transactions. The sync drops
+ * the three refunds itself (`isRefundedTransaction`), so the exposure is
+ * precisely the three PAID rows: $150.00 counted twice, and the org-wide gap
+ * swinging from balanced to −$150.00 (books claiming money that is nowhere).
+ * Whether they land as `ticketOrders` or as `gifts` depends only on the
+ * Givebutter line item's `subtype`; both are counted by
+ * `reconciliation.ts#computeBookBalances`, so both double-count. The same move
+ * cost $665 of duplicate giving on Pop The Balloon in 2026-08.
+ *
+ * DO NOT ATTACH THAT CAMPAIGN TO AN EVENT.
+ *
+ * ── WHY THE CODE GUARD IS DEFERRED, NOT FORGOTTEN ───────────────────────────
+ * The obvious guard — "skip a transaction already in `registrations`" — cannot
+ * be written correctly from here, and writing it anyway is the worse option.
+ *
+ * The ids in this fixture are 10 DIGITS: the Reference Number the Givebutter
+ * EXPORT prints. The sync holds the API's own 16-character transaction id.
+ * Those are different id spaces for the same transaction, which is EXACTLY the
+ * mismatch that cost $665 — see `givebutterSync.ts`'s LEGACY-BACKFILL GUARD,
+ * which exists because a lookup across those two spaces silently missed. A
+ * guard keyed `registrations.by_external_ref.eq("gb:txn:" + apiTxnId)` would
+ * therefore miss all six and produce nothing but false confidence.
+ *
+ * Doing it properly needs a fact I cannot get from here: whether these six ids
+ * are API ids or export Reference Numbers, checked against the live API. Then
+ * two guards, at seams already argued for in that file:
+ *   - `applyGivebutterDonations`, after the `givebutterConvertedDonations`
+ *     check and BEFORE `matchOrCreateDonor` — same reasoning that file already
+ *     gives for converted donations: don't even manufacture a donor row for
+ *     someone who didn't give.
+ *   - `applyGivebutterTickets`, after the `existingOrder` dedup and BEFORE the
+ *     ticket-type resolution. This one also needs `transaction_id` threaded
+ *     through `normalizeTicket`, which currently discards it.
+ * Until then, this comment and `schema/registrations.ts#externalRef` are the
+ * guard, and they are honest about being only that.
  *
  * ── WHAT IT DELIBERATELY DOES NOT DO ────────────────────────────────────────
  * No donors, no gifts. These are registrations — a fee for a place in a class —
@@ -82,28 +124,45 @@ export const backfillWorshipRegistrations = internalMutation({
   args: {
     execute: v.optional(v.boolean()),
     /**
-     * Registrant emails, keyed by Givebutter transaction id, so a row can be
-     * linked to the `people` row it belongs to. Optional: a run with none
-     * supplied still records all six registrations, just unlinked — which is a
-     * complete row, not a broken one. Supplying them is the ONLY way a link is
-     * made; this backfill never matches a payment to a human by name.
+     * WHO each transaction belongs to, keyed by Givebutter transaction id.
+     * REQUIRED for a run that writes: `name` is required by the schema and
+     * lives only in the export, so a missing one SKIPS rather than guesses.
+     * `email` is optional — a registration with no address still records, just
+     * unlinked, which is a complete row. Supplying an email is the ONLY way a
+     * `personId` link is made; this backfill never matches a payment to a human
+     * by name.
      *
-     * WHERE TO GET THEM: the `Email` column of
+     * WHERE TO GET THEM: the `Name` and `Email` columns of
      * `3-worship-beyond-the-walls-1786127710.csv` in the 2026-08-07 Givebutter
-     * export, joined to these rows on the transaction id. (`Email` and
+     * export, joined to the fixture on the transaction id. (`Email` and
      * `Contact Email` agree on every row, so there is no ambiguity to resolve.)
      *
-     * THEY ARE NOT IN THIS REPO, ON PURPOSE. Six real people's addresses do not
-     * belong in source control, a test fixture, or a comment — which is the
-     * whole reason this is a run-time argument rather than a constant. Paste
-     * them into the call, not into this file.
+     * NONE OF IT IS IN THIS REPO, ON PURPOSE. Addresses are obvious. NAMES are
+     * here for the less obvious reason: three of these six are refunded
+     * scholarships, and "this named person received a scholarship" is
+     * financial-need information about a real individual — at least as
+     * sensitive as an address, and a repo is forever while this module is not.
+     * Paste them into the call, never into a file.
      */
-    emails: v.optional(
-      v.array(v.object({ givebutterTxnId: v.string(), email: v.string() })),
+    registrants: v.optional(
+      v.array(
+        v.object({
+          givebutterTxnId: v.string(),
+          name: v.string(),
+          email: v.optional(v.string()),
+        }),
+      ),
     ),
   },
   returns: v.object({
     dryRun: v.boolean(),
+    /** Rows this run WOULD write. Nonzero on a dry run — that is the point of
+     *  a dry run — so read it with `dryRun`, never alone. */
+    toInsert: v.number(),
+    /** Rows this run ACTUALLY wrote. Always 0 when `dryRun` is true. Separate
+     *  from `toInsert` because a single `inserted: 6` on a dry run reads as
+     *  "wrote 6" to anyone skimming, and on a money backfill that is the worst
+     *  possible thing to be unclear about. */
     inserted: v.number(),
     alreadyPresent: v.number(),
     linkedPeople: v.number(),
@@ -125,7 +184,7 @@ export const backfillWorshipRegistrations = internalMutation({
     emailsWithNoRosterMatch: v.array(v.string()),
     problems: v.array(v.string()),
   }),
-  handler: async (ctx, { execute, emails }) => {
+  handler: async (ctx, { execute, registrants }) => {
     const write = execute ?? false;
 
     const projectId = ctx.db.normalizeId("projects", WBTW_PROJECT_ID);
@@ -146,13 +205,16 @@ export const backfillWorshipRegistrations = internalMutation({
     // person's own contact field and the `personEmails` ledger of every address
     // known for them (`schema/people.ts`). Only the addresses the operator
     // actually supplied are looked up — no roster scan.
-    const supplied = emails ?? [];
+    const supplied = registrants ?? [];
     const personIdByEmail = new Map<string, string>();
-    const emailByTxnId = new Map<string, string>();
-    for (const { givebutterTxnId, email } of supplied) {
-      const normalized = email.trim().toLowerCase();
+    const registrantByTxnId = new Map<string, { name: string; email?: string }>();
+    for (const { givebutterTxnId, name, email } of supplied) {
+      const normalized = email?.trim().toLowerCase();
+      registrantByTxnId.set(givebutterTxnId, {
+        name,
+        ...(normalized ? { email: normalized } : {}),
+      });
       if (!normalized) continue;
-      emailByTxnId.set(givebutterTxnId, normalized);
       if (personIdByEmail.has(normalized)) continue;
       const known = await ctx.db
         .query("personEmails")
@@ -175,7 +237,13 @@ export const backfillWorshipRegistrations = internalMutation({
     // whether the project preconditions matched — a dry run that refuses to
     // write should still report everything it managed to learn. Reported on
     // every path below.
-    const suppliedEmails = [...new Set([...emailByTxnId.values()])];
+    const suppliedEmails = [
+      ...new Set(
+        [...registrantByTxnId.values()]
+          .map((r) => r.email)
+          .filter((e): e is string => e != null),
+      ),
+    ];
     const rosterMatches = suppliedEmails.filter((e) =>
       personIdByEmail.has(e),
     ).length;
@@ -193,12 +261,13 @@ export const backfillWorshipRegistrations = internalMutation({
         : null,
       existingExternalRefs,
       personIdByEmail,
-      emailByTxnId,
+      registrantByTxnId,
     });
 
     if (plan.problems.length > 0) {
       return {
         dryRun: !write,
+        toInsert: 0,
         inserted: 0,
         alreadyPresent: plan.alreadyPresent.length,
         linkedPeople: 0,
@@ -239,7 +308,8 @@ export const backfillWorshipRegistrations = internalMutation({
 
     return {
       dryRun: !write,
-      inserted: plan.inserts.length,
+      toInsert: plan.inserts.length,
+      inserted: write ? plan.inserts.length : 0,
       alreadyPresent: plan.alreadyPresent.length,
       linkedPeople: plan.linkedPeople,
       revenueAddedCents,

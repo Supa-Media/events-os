@@ -25,12 +25,42 @@ const goodProject = {
   name: "Worship Beyond the walls",
 };
 
+/**
+ * INVENTED registrant identities, positionally matched to the fixture's six
+ * transaction ids. The real names and addresses are supplied at run time and
+ * deliberately never enter this repo — three of these rows are refunded
+ * scholarships, and "this named person received a scholarship" is financial-need
+ * information about a real individual. See the module header.
+ */
+const FAKE_NAMES = [
+  "Ada Placeholder",
+  "Bo Placeholder",
+  "Cy Placeholder",
+  "Dee Placeholder",
+  "Eli Placeholder",
+  "Fay Placeholder",
+];
+
+function registrants(
+  emailFor: (txnId: string, i: number) => string | undefined = () => undefined,
+): Map<string, { name: string; email?: string }> {
+  return new Map(
+    WBTW_REGISTRATIONS.map((r, i) => {
+      const email = emailFor(r.givebutterTxnId, i);
+      return [
+        r.givebutterTxnId,
+        { name: FAKE_NAMES[i], ...(email ? { email } : {}) },
+      ] as const;
+    }),
+  );
+}
+
 function world(over: Partial<BackfillWorld> = {}): BackfillWorld {
   return {
     project: goodProject,
     existingExternalRefs: new Set<string>(),
     personIdByEmail: new Map<string, string>(),
-    emailByTxnId: new Map<string, string>(),
+    registrantByTxnId: registrants(),
     ...over,
   };
 }
@@ -62,6 +92,22 @@ describe("the fixture itself", () => {
       );
     }
   });
+
+  it("carries NO personal data — only opaque transaction ids", () => {
+    // The privacy invariant, enforced rather than trusted. Names and emails are
+    // run-time arguments; a fixture row must expose nothing that identifies a
+    // human, and least of all beside the word "scholarship".
+    for (const r of WBTW_REGISTRATIONS) {
+      expect(Object.keys(r).sort()).toEqual(
+        r.refundReason
+          ? ["givebutterTxnId", "refundReason", "registeredAt", "status"]
+          : ["givebutterTxnId", "registeredAt", "status"],
+      );
+      expect(r.givebutterTxnId).toMatch(/^\d{10}$/);
+    }
+    // And nothing that looks like a name or an address anywhere in the fixture.
+    expect(JSON.stringify(WBTW_REGISTRATIONS)).not.toMatch(/@|[A-Z][a-z]+ [A-Z][a-z]+/);
+  });
 });
 
 describe("a clean dry run", () => {
@@ -90,10 +136,16 @@ describe("a clean dry run", () => {
   });
 
   it("never fabricates a refund date the source didn't have", () => {
+    // `PlannedRegistration` has no `refundedAt` field AT ALL — the export gave
+    // the refunds a status but no date, so there is nothing to copy and the
+    // type makes copying impossible rather than merely unlikely. The schema
+    // documents the column as "when known", explicitly NOT an iff-refunded
+    // invariant, so a refunded row without one is honest and not malformed.
     const plan = planRegistrationBackfill(world());
     for (const row of plan.inserts) {
-      expect(row.refundedAt).toBeUndefined();
+      expect(Object.keys(row)).not.toContain("refundedAt");
     }
+    expect(plan.inserts.filter((r) => r.status === "refunded")).toHaveLength(3);
   });
 
   it("carries the scholarship reason onto every refunded row", () => {
@@ -172,54 +224,97 @@ describe("person linking is by EMAIL, never by name", () => {
   it("links the rows whose supplied email is on the roster", () => {
     const plan = planRegistrationBackfill(
       world({
-        emailByTxnId: new Map([["6680142853", "Dominique@Example.com "]]),
-        personIdByEmail: new Map([["dominique@example.com", "person_dom"]]),
+        registrantByTxnId: registrants((txnId) =>
+          txnId === "6680142853" ? "Cy.Placeholder@Example.com " : undefined,
+        ),
+        personIdByEmail: new Map([["cy.placeholder@example.com", "person_c"]]),
       }),
     );
-    const dom = plan.inserts.find((r) => r.name === "Dominique Hyppolite");
-    expect(dom?.personId).toBe("person_dom");
-    // Normalised on the way in — a trailing space and a capital D must not
+    const linked = plan.inserts.find((r) => r.externalRef === "gb:txn:6680142853");
+    expect(linked?.personId).toBe("person_c");
+    // Normalised on the way in — a trailing space and a capital C must not
     // decide whether a payment reaches someone's record.
-    expect(dom?.email).toBe("dominique@example.com");
+    expect(linked?.email).toBe("cy.placeholder@example.com");
     expect(plan.linkedPeople).toBe(1);
   });
 
   it("leaves the other five unlinked — a name match is never enough", () => {
     const plan = planRegistrationBackfill(
       world({
-        emailByTxnId: new Map([["6680142853", "dominique@example.com"]]),
+        registrantByTxnId: registrants((txnId) =>
+          txnId === "6680142853" ? "cy.placeholder@example.com" : undefined,
+        ),
         personIdByEmail: new Map([
-          ["dominique@example.com", "person_dom"],
-          // A roster person who happens to share a registrant's NAME. The
-          // whole point: this must not produce a link, because nobody
-          // supplied that registrant's address.
-          ["someone.else@example.com", "person_esosa"],
+          ["cy.placeholder@example.com", "person_c"],
+          // A roster person who happens to share a registrant's NAME. The whole
+          // point: this must not produce a link, because nobody supplied that
+          // registrant's address.
+          ["someone.else@example.com", "person_f"],
         ]),
       }),
     );
     expect(plan.linkedPeople).toBe(1);
     expect(
-      plan.inserts.filter((r) => r.name !== "Dominique Hyppolite").every(
-        (r) => r.personId === undefined,
-      ),
+      plan.inserts
+        .filter((r) => r.externalRef !== "gb:txn:6680142853")
+        .every((r) => r.personId === undefined),
     ).toBe(true);
   });
 
-  it("a supplied email matching nobody is reported, not silently dropped", () => {
+  it("a supplied email matching nobody still records the row", () => {
     const plan = planRegistrationBackfill(
-      world({ emailByTxnId: new Map([["3267180644", "typo@exmaple.com"]]) }),
+      world({
+        registrantByTxnId: registrants((txnId) =>
+          txnId === "3267180644" ? "typo@exmaple.com" : undefined,
+        ),
+      }),
     );
     expect(plan.linkedPeople).toBe(0);
-    expect(plan.emailsWithNoPerson).toEqual(["typo@exmaple.com"]);
-    // The row still goes in — an unlinked registration is complete on its own.
+    // An unlinked registration is complete on its own — never a problem.
     expect(plan.inserts).toHaveLength(6);
     expect(plan.problems).toEqual([]);
+    expect(
+      plan.inserts.find((r) => r.externalRef === "gb:txn:3267180644")?.email,
+    ).toBe("typo@exmaple.com");
   });
 
   it("links nobody at all when no emails are supplied", () => {
     const plan = planRegistrationBackfill(world());
     expect(plan.linkedPeople).toBe(0);
-    expect(plan.emailsWithNoPerson).toEqual([]);
     expect(plan.inserts.every((r) => r.personId === undefined)).toBe(true);
+    expect(plan.inserts.every((r) => r.email === undefined)).toBe(true);
+  });
+});
+
+describe("a missing registrant name is a precondition failure", () => {
+  it("SKIPS, by transaction id, rather than inventing a name", () => {
+    const partial = registrants();
+    partial.delete("8784708028");
+    const plan = planRegistrationBackfill(world({ registrantByTxnId: partial }));
+    expect(plan.inserts).toEqual([]);
+    expect(plan.problems).toEqual([
+      "no registrant name supplied for gb:txn:8784708028 — SKIPPED",
+    ]);
+  });
+
+  it("a blank name counts as missing", () => {
+    const blank = registrants();
+    blank.set("4284185383", { name: "   " });
+    const plan = planRegistrationBackfill(world({ registrantByTxnId: blank }));
+    expect(plan.inserts).toEqual([]);
+    expect(plan.problems).toHaveLength(1);
+  });
+
+  it("reports EVERY missing name, so one run names all the gaps", () => {
+    const plan = planRegistrationBackfill(
+      world({ registrantByTxnId: new Map() }),
+    );
+    expect(plan.problems).toHaveLength(6);
+    expect(plan.inserts).toEqual([]);
+  });
+
+  it("names a person on every row it does plan", () => {
+    const plan = planRegistrationBackfill(world());
+    expect(plan.inserts.every((r) => r.name.trim().length > 0)).toBe(true);
   });
 });

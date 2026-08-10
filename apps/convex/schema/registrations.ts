@@ -87,12 +87,34 @@ export const registrations = defineTable({
   refundReason: v.optional(v.string()),
   /**
    * THE IDEMPOTENCY KEY for a registration that arrived on a non-Stripe rail,
-   * namespaced by rail so the string stays unique across every rail that ever
-   * lands here: `gb:txn:<givebutter transaction id>`. Mirrors
+   * namespaced by rail: `gb:txn:<givebutter transaction id>`. Mirrors
    * `sales.externalRef` (`cashapp:sale:…`) and `ticketOrders.externalRef`
    * (`gb:ticket:…`) — same idiom, deliberately, rather than a fourth spelling
    * of the same idea. Indexed, so "have I already imported this payment?" is
-   * one lookup.
+   * one lookup AGAINST THIS TABLE.
+   *
+   * ⚠ IT IS NOT UNIQUE ACROSS TABLES, and an earlier version of this comment
+   * wrongly implied it was. `gifts` already holds `gb:txn:<id>` rows — written
+   * by the 2026-07-19 one-time CSV backfill (`lib/seed/historical/giving.ts` →
+   * `historicalBackfill.ts`), keyed on the 10-digit Reference Number the
+   * Givebutter EXPORT prints. (The live sync is a separate matter: it writes
+   * `gifts.externalRef` UNPREFIXED, as the bare 16-char API transaction id, and
+   * only READS the `gb:txn:` prefix in its legacy guard.) The string identifies
+   * a Givebutter TRANSACTION, not a row, so dedup is per-table by construction
+   * and "does this externalRef exist?" is not a question anyone can ask
+   * globally.
+   *
+   * ⚠ AND THERE IS A LIVE DOUBLE-COUNT PATH THIS TABLE CANNOT CLOSE. Nothing in
+   * `givebutterSync.ts` reads `registrations`. Attach the Worship Beyond The
+   * Walls campaign to an `eventPages.givebutterCampaignId` — one text box, no
+   * allowlist — and the sync re-imports the three PAID transactions (it drops
+   * the three refunds itself, via `isRefundedTransaction`), counting exactly
+   * $150.00 twice and swinging the org-wide gap to −$150.00. The same move cost
+   * $665 of duplicate giving on Pop The Balloon in 2026-08.
+   *
+   * DO NOT ATTACH THAT CAMPAIGN TO AN EVENT. See
+   * `backfillWorshipRegistrations.ts` for why the code guard is deferred rather
+   * than guessed at.
    *
    * No `externalProvider` column beside it: the namespace prefix already says
    * which rail carried the money, and `sales` settled on exactly that.
@@ -106,7 +128,13 @@ export const registrations = defineTable({
   stripePaymentIntentId: v.optional(v.string()),
   /** When they registered — the event in the world, not when we imported it. */
   registeredAt: v.number(),
-  /** Set iff `status: "refunded"`. */
+  /** WHEN the money went back, where that is known — NOT an "iff refunded"
+   *  invariant, deliberately. The Givebutter export that seeded the first six
+   *  rows gave each refund a status but no date, and copying `registeredAt`
+   *  into here would be a fabricated fact on a money row. So a `refunded` row
+   *  with no `refundedAt` means "we know it was refunded, we don't know the
+   *  day" — which is the truth — and code must not read the absence of this
+   *  field as "not refunded". `status` is the only authority on that. */
   refundedAt: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),

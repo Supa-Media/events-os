@@ -3273,7 +3273,7 @@ export const reconciliationSummary = query({
     unattributedBankCents: v.number(),
     /** Payouts Stripe says are paid whose bank deposit we never found. Each is
      *  a candidate double count: the deposit lands in the ledger as a plain
-     *  credit while the revenue is already counted at the gift/ticket. */
+     *  credit while the revenue is already counted at the gift/ticket/sale/registration. */
     unmatchedPayoutCount: v.number(),
     unmatchedPayoutCents: v.number(),
     /** A book's scan hit the read limit, so its figure is approximate and the
@@ -3661,6 +3661,21 @@ export const bookValueBreakdown = query({
       }
       revenueCents += ticketCents + saleCents + registrationCents;
     }
+    // SANDBOX: the TOTAL is zeroed while the component figures above
+    // (`ticketCents`, `saleCents`, `registrationCents`, the gift methods) keep
+    // their real values — so in sandbox mode the components deliberately do NOT
+    // sum to `revenueCents`.
+    //
+    // Registrations INHERIT this rather than fix it, deliberately. It is
+    // pre-existing behaviour shared by all four streams (`computeBookBalances`
+    // does the same zeroing at its own phase 1), and a demo deployment reads
+    // book value as pure sandbox-ledger numbers by design. Making registrations
+    // alone behave differently would be the worst of both worlds: the drift
+    // would remain, and it would no longer be uniform enough to reason about.
+    // Fixing it properly means zeroing the components too, which is a change to
+    // three existing streams and belongs in its own PR — not smuggled in behind
+    // a fourth. The breakdown-sums-to-total test asserts the REAL-money path,
+    // which is the one every production reader is on.
     if (sandboxMode) revenueCents = 0;
 
     // ── Ledger, mirroring accountBalances phase 2 ────────────────────────────
@@ -4064,7 +4079,7 @@ export const bookValueLines = query({
       }
       if (tr.payoutProcessor != null || tr.stripePayoutId != null) {
         push(
-          `Processor payout — the revenue is already counted at the gift, ticket or sale`,
+          `Processor payout — the revenue is already counted at the gift, ticket, sale or registration`,
         );
         continue;
       }

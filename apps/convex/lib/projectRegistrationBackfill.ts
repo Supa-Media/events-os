@@ -3,9 +3,13 @@
  * turns it into rows — the decision half of `backfillWorshipRegistrations.ts`,
  * split out so the arithmetic and the SKIP rules can be tested without a
  * deployment (the mutation's ids are production ids; convex-test can't mint
- * them).
+ * them). Same shape `gear2024Split.ts` uses: a one-time runner beside a
+ * separate dataset module, dry-run by default, refusing rather than
+ * half-applying.
  *
- * DELETE THIS FILE WITH ITS MUTATION once the backfill has run.
+ * DELETE THIS FILE WITH ITS MUTATION once the backfill has run — that is the
+ * house rule, and #596 ("A one-off that has finished its job is dead code")
+ * deleted fourteen of them at once to make the point.
  *
  * ── WHAT HAPPENED ───────────────────────────────────────────────────────────
  * "Worship Beyond The Walls" was a multi-session class with a $50 Student
@@ -19,6 +23,21 @@
  * That $150.00 is the last of the org-wide reconciliation gap. `gap = cash −
  * books`, the cash already arrived, so booking the revenue moves the gap DOWN
  * by $150.00 — see `lib/reconciliationGap.ts`'s sign convention.
+ *
+ * ── WHY THERE ARE NO NAMES IN THIS FILE ─────────────────────────────────────
+ * Only opaque Givebutter transaction ids live here. The registrants' names and
+ * emails are supplied at RUN TIME.
+ *
+ * The emails are obvious: six real people's addresses don't belong in source
+ * control. The names are the same call for a less obvious reason — three of
+ * these six rows say `refunded (scholarship)`, and "this named person received
+ * a scholarship" is financial-need information about a real individual. That is
+ * at least as sensitive as an address, and a repo is forever while a one-off
+ * module is not. A transaction id is meaningless without the export; a name
+ * beside the word "scholarship" is not.
+ *
+ * The cost is that the operator supplies more at run time. For a module headed
+ * "delete this once run", that is the right trade.
  */
 import type { RegistrationStatus } from "@events-os/shared";
 
@@ -27,19 +46,19 @@ export const WBTW_PROJECT_ID = "rd776xf2snzx3nw5sqqb2r0kn18aqnhn";
 export const WBTW_CHAPTER_ID = "kh73xrr66rxt2wzr3ny5c2c4kh88n06n";
 /** Every row is one $50.00 "Student Registration" item. Asserted, not assumed. */
 export const REGISTRATION_CENTS = 5_000;
-/** Givebutter's payout that remitted the three that stuck. Recorded on the
- *  rows' provenance note in the PR, not in the table — the table's job is the
- *  registration, and the payout is already a reconciled deposit. */
+/** Givebutter's payout that remitted the three that stuck. */
 export const PAYOUT_REF = "KKJ3TQ";
 
 export interface RegistrationFixtureRow {
-  name: string;
   /** The Givebutter transaction id — the idempotency key, namespaced into
-   *  `externalRef` as `gb:txn:<id>` by `externalRefFor` below. */
+   *  `externalRef` as `gb:txn:<id>` by `externalRefFor` below, and the join key
+   *  the operator supplies names/emails against. */
   givebutterTxnId: string;
   /** UTC midnight of the day the registration was taken. Dates come from
    *  Givebutter's transaction list; the class had no timestamp finer than the
-   *  day, and inventing one would be inventing precision. */
+   *  day, and inventing one would be inventing precision. Rendered back in UTC
+   *  for the same reason — see
+   *  `apps/mobile/components/money/registrationDisplay.ts`. */
   registeredAt: number;
   status: RegistrationStatus;
   refundReason?: string;
@@ -51,55 +70,57 @@ function utcDay(iso: string): number {
   return Date.parse(`${iso}T00:00:00.000Z`);
 }
 
+/**
+ * The namespaced idempotency key.
+ *
+ * ⚠ `gb:txn:<id>` IS NOT UNIQUE ACROSS TABLES. `gifts.externalRef` already uses
+ * exactly this prefix for Givebutter transactions (see
+ * `lib/seed/historical/giving.ts` and `givebutterSync.ts`), so the string
+ * identifies a Givebutter TRANSACTION, not a row in one table. Dedup is
+ * per-table by construction — this backfill checks `registrations`'
+ * `by_external_ref` index and nothing else — which is correct here (a
+ * transaction that produced a registration produced no gift), but it means
+ * "does this externalRef exist?" is never a question you can ask globally.
+ */
 export function externalRefFor(givebutterTxnId: string): string {
   return `gb:txn:${givebutterTxnId}`;
 }
 
 /**
- * The six. Names and dates are as they appear on the Givebutter campaign; the
- * three refunds were all scholarships, which is why the org kept exactly half.
+ * The six, as transaction ids only. Dates and statuses are facts about the
+ * money; the humans behind them arrive at run time (see the header).
  */
 export const WBTW_REGISTRATIONS: RegistrationFixtureRow[] = [
+  { givebutterTxnId: "4284185383", registeredAt: utcDay("2026-01-29"), status: "paid" },
+  { givebutterTxnId: "3267180644", registeredAt: utcDay("2026-01-26"), status: "paid" },
+  { givebutterTxnId: "6680142853", registeredAt: utcDay("2026-01-26"), status: "paid" },
   {
-    name: "Jasmine Diaz",
-    givebutterTxnId: "4284185383",
-    registeredAt: utcDay("2026-01-29"),
-    status: "paid",
-  },
-  {
-    name: "Julia Kudlick",
-    givebutterTxnId: "3267180644",
-    registeredAt: utcDay("2026-01-26"),
-    status: "paid",
-  },
-  {
-    name: "Dominique Hyppolite",
-    givebutterTxnId: "6680142853",
-    registeredAt: utcDay("2026-01-26"),
-    status: "paid",
-  },
-  {
-    name: "Trinitee Alston",
     givebutterTxnId: "8784708028",
     registeredAt: utcDay("2026-01-29"),
     status: "refunded",
     refundReason: "scholarship",
   },
   {
-    name: "Jocelyn Naranjo",
     givebutterTxnId: "4030672614",
     registeredAt: utcDay("2026-01-26"),
     status: "refunded",
     refundReason: "scholarship",
   },
   {
-    name: "Esosa Asemota",
     givebutterTxnId: "7372397745",
     registeredAt: utcDay("2026-01-26"),
     status: "refunded",
     refundReason: "scholarship",
   },
 ];
+
+/** What the operator supplies for one transaction id. */
+export interface RegistrantIdentity {
+  name: string;
+  /** Normalised (trimmed, lowercased) by the caller. Optional — a registration
+   *  with no address still records, just unlinked. */
+  email?: string;
+}
 
 /** What the planner was told about the deployment. Deliberately plain data —
  *  the mutation does every read, this function does every decision. */
@@ -117,19 +138,15 @@ export interface BackfillWorld {
    *  `personId` is optional in the schema. */
   personIdByEmail: ReadonlyMap<string, string>;
   /**
-   * Givebutter transaction id → the registrant's email, SUPPLIED BY THE
-   * OPERATOR at run time (`emails` on the mutation).
+   * Givebutter transaction id → who that registration belongs to, SUPPLIED BY
+   * THE OPERATOR at run time. Keyed on the transaction id because two people
+   * can share a name; they cannot share a txn id.
    *
-   * Not hard-coded in the fixture below because the table this backfill was
-   * specified from carried names, dates, amounts and transaction ids — no
-   * addresses. Two of the six (Dominique Hyppolite and Esosa Asemota) are known
-   * to be on the roster already, but "known to be on the roster" is a NAME
-   * match, and matching a payment to a person by name is the one thing this
-   * backfill must not do. So the emails come from whoever runs it, keyed on the
-   * transaction id (two people can share a name; they cannot share a txn id),
-   * and a run with none supplied links nobody and says so.
+   * Source: the `Name` and `Email` columns of
+   * `3-worship-beyond-the-walls-1786127710.csv` in the 2026-08-07 Givebutter
+   * export. See this file's header for why they are not checked in.
    */
-  emailByTxnId: ReadonlyMap<string, string>;
+  registrantByTxnId: ReadonlyMap<string, RegistrantIdentity>;
 }
 
 export interface PlannedRegistration {
@@ -139,7 +156,6 @@ export interface PlannedRegistration {
   status: RegistrationStatus;
   refundReason?: string;
   registeredAt: number;
-  refundedAt?: number;
   /** The `people` row this registration links to, matched on EMAIL. */
   personId?: string;
   email?: string;
@@ -158,15 +174,10 @@ export interface BackfillPlan {
   grossCents: number;
   /** How many rows found a `people` row to link to. */
   linkedPeople: number;
-  /** Emails the operator supplied that match nobody on the roster. NOT a
-   *  problem — a registrant who isn't a person yet is the normal case, and the
-   *  row stands on its own — but worth saying out loud so a typo'd address
-   *  doesn't silently look like "not on the roster". */
-  emailsWithNoPerson: string[];
   /**
-   * Anything that didn't match. NON-EMPTY MEANS NOTHING IS WRITTEN — the
-   * house rule from `reverseBadSettlement.ts`: a backfill that half-applies
-   * against a deployment it doesn't recognise is worse than one that stops.
+   * Anything that didn't match. NON-EMPTY MEANS NOTHING IS WRITTEN — the house
+   * rule from `gear2024Split.ts`: a backfill that half-applies against a
+   * deployment it doesn't recognise is worse than one that stops.
    */
   problems: string[];
 }
@@ -174,10 +185,10 @@ export interface BackfillPlan {
 /**
  * Decide what the backfill would do. Pure: no ctx, no writes, no clock.
  *
- * `refundedAt` is deliberately absent on the refunded rows. Givebutter's export
- * gave the refund a status but not a date, and a `refundedAt` copied from
- * `registeredAt` would be a fabricated fact on a money row — the field is
- * optional precisely so it can be honestly missing.
+ * NOTE ON `refundedAt`: never set. Givebutter's export gave the refund a status
+ * but not a date, and a `refundedAt` copied from `registeredAt` would be a
+ * fabricated fact on a money row. The schema documents the field as "when
+ * known" for exactly this reason.
  */
 export function planRegistrationBackfill(world: BackfillWorld): BackfillPlan {
   const problems: string[] = [];
@@ -187,7 +198,6 @@ export function planRegistrationBackfill(world: BackfillWorld): BackfillPlan {
     paidCents: 0,
     grossCents: 0,
     linkedPeople: 0,
-    emailsWithNoPerson: [],
     problems,
   };
 
@@ -207,6 +217,17 @@ export function planRegistrationBackfill(world: BackfillWorld): BackfillPlan {
       `project ${WBTW_PROJECT_ID} is named "${world.project.name}", expected "Worship Beyond the walls" — SKIPPED`,
     );
   }
+  // A name is REQUIRED by the schema and lives only in the operator's export,
+  // so a missing one is a precondition failure, not a row to guess at. Reported
+  // by transaction id — never by any identifying detail we do hold.
+  for (const row of WBTW_REGISTRATIONS) {
+    const identity = world.registrantByTxnId.get(row.givebutterTxnId);
+    if (identity == null || identity.name.trim() === "") {
+      problems.push(
+        `no registrant name supplied for ${externalRefFor(row.givebutterTxnId)} — SKIPPED`,
+      );
+    }
+  }
   if (problems.length > 0) return empty;
 
   const inserts: PlannedRegistration[] = [];
@@ -214,7 +235,6 @@ export function planRegistrationBackfill(world: BackfillWorld): BackfillPlan {
   let paidCents = 0;
   let grossCents = 0;
   let linkedPeople = 0;
-  const emailsWithNoPerson: string[] = [];
 
   for (const row of WBTW_REGISTRATIONS) {
     const externalRef = externalRefFor(row.givebutterTxnId);
@@ -224,12 +244,13 @@ export function planRegistrationBackfill(world: BackfillWorld): BackfillPlan {
       alreadyPresent.push(externalRef);
       continue;
     }
-    const email = world.emailByTxnId.get(row.givebutterTxnId)?.trim().toLowerCase();
+    // Non-null by the precondition loop above.
+    const identity = world.registrantByTxnId.get(row.givebutterTxnId) as RegistrantIdentity;
+    const email = identity.email?.trim().toLowerCase();
     const personId = email ? world.personIdByEmail.get(email) : undefined;
     if (personId) linkedPeople += 1;
-    else if (email) emailsWithNoPerson.push(email);
     inserts.push({
-      name: row.name,
+      name: identity.name.trim(),
       externalRef,
       amountCents: REGISTRATION_CENTS,
       status: row.status,
@@ -240,13 +261,5 @@ export function planRegistrationBackfill(world: BackfillWorld): BackfillPlan {
     });
   }
 
-  return {
-    inserts,
-    alreadyPresent,
-    paidCents,
-    grossCents,
-    linkedPeople,
-    emailsWithNoPerson,
-    problems,
-  };
+  return { inserts, alreadyPresent, paidCents, grossCents, linkedPeople, problems };
 }
