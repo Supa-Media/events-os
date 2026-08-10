@@ -473,16 +473,28 @@ export const gifts = defineTable({
  * `cancelCheckoutSession`, so a debit that clears and a debit the bank refuses
  * both leave nothing behind.
  *
- * A row therefore means "still in flight" — but that is a property the WRITER
- * has to keep, not one the table enforces, and the first cut of it did not.
- * Because a resolved row is deleted, `by_session` cannot recognise a debit that
- * has already cleared, so a redelivered or out-of-order `completed` (Stripe
- * promises neither once-only nor ordered delivery, and event snapshots are
- * frozen at creation, so a retry still reads `payment_status: "unpaid"`) would
- * re-create a row that no later event could ever resolve. Every branch of the
- * writer now checks a key that OUTLIVES resolution — the settled gift's
- * `externalRef`, or the source row's status — and `MAX_PENDING_AGE_MS` bounds
- * anything that still slips through. See `givingPending.ts`.
+ * ── WHY A FAILED DEBIT IS MARKED AND A CLEARED ONE IS DELETED ─────────────
+ * "A row means money is in flight" is a property the WRITER has to keep, and
+ * two cuts of this file failed to keep it — both times because a resolved row
+ * left NO KEY BEHIND, and Stripe promises neither once-only nor ordered
+ * delivery (an event snapshot is frozen at creation, so a `completed` retry
+ * still reads `payment_status: "unpaid"` days later).
+ *
+ * A CLEARED debit needs no row, because the gift it became is the key: the
+ * writer checks `gifts.by_externalRef` for `give:<session>` and refuses. A
+ * FAILED one has no such key — the bank refused it, so no gift exists and none
+ * ever will — and deleting the row left literally nothing to say "we have seen
+ * this session", so a Dashboard "Resend" re-created a phantom for money that
+ * had already been refused.
+ *
+ * So a failed debit keeps its row, flipped to `status: "failed"`, and the row
+ * IS the key: the writer's `by_session` lookup refuses on any existing row
+ * whatever its status, and the digest counts only `in_flight`. The tombstone is
+ * cleaned up by the same 21-day sweep that removes stranded rows
+ * (`givingPending.MAX_PENDING_AGE_MS`) — long past Stripe's ~3 days of retries.
+ *
+ * The asymmetry is therefore not an inconsistency: each side keeps whichever
+ * key survives it. See `givingPending.ts`.
  *
  * DELETED RATHER THAN STATUS-FLIPPED, deliberately. A `status: "settled"` row
  * would be a second, weaker copy of a `gifts` row — a thing to keep in sync, to
@@ -504,6 +516,17 @@ export const pendingGifts = defineTable({
   /** Stripe Checkout Session id — the idempotency key. Stripe delivers at
    *  least once, so both the writer and the resolver key on this. */
   sessionId: v.string(),
+  /**
+   * `in_flight` — authorised, not yet moved by the bank. The ONLY status the
+   * digest counts.
+   * `failed` — the bank refused it (or the session died). A TOMBSTONE, kept
+   * solely so a redelivered `checkout.session.completed` can be recognised and
+   * refused; see the module doc. Swept with everything else at 21 days.
+   *
+   * An explicit sentinel rather than a nullable `failedAt`, so every read says
+   * which state it means out loud and a missing field can never read as "live".
+   */
+  status: v.union(v.literal("in_flight"), v.literal("failed")),
   scope: givingScope,
   /** What the donor MEANT to give, fee coverage excluded — `gifts.amountCents`'
    *  definition, so a pending figure and the gift it becomes are comparable. */

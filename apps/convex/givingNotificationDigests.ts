@@ -340,7 +340,10 @@ export async function collectWindowPending(
               .lte("submittedAt", until),
           );
 
-  const rows = await stream.take(cap);
+  // NEWEST FIRST. If the cap ever bites, the rows worth keeping are the most
+  // recently authorised — the oldest end of this range is, by construction, the
+  // end the age ceiling below is about to discard anyway.
+  const rows = await stream.order("desc").take(cap);
   if (rows.length === cap) {
     console.warn(
       `[givingNotifications] pending-ACH read hit its ${cap}-row cap for rule ` +
@@ -353,9 +356,19 @@ export async function collectWindowPending(
   // debits just because they haven't cleared yet. Plus the age ceiling: a debit
   // authorised three weeks before this window closed is not in flight, it is
   // lost, and a long window must not resurrect it.
+  //
+  // Measured from the window's CLOSE rather than from wall-clock `now`, which
+  // is the same instant on a normal window and stricter on a cut one — never
+  // more lenient, so it cannot let an older row through. The wall-clock half of
+  // the ceiling is the daily sweep, which deletes such rows outright.
   const oldest = until - MAX_PENDING_AGE_MS;
   return rows.filter(
-    (row) => row.submittedAt > oldest && ruleMatchesGift(rule, row),
+    (row) =>
+      // A `failed` row is a TOMBSTONE, kept only so a resent webhook can be
+      // recognised. It is not money in flight and must never be counted.
+      row.status === "in_flight" &&
+      row.submittedAt > oldest &&
+      ruleMatchesGift(rule, row),
   );
 }
 

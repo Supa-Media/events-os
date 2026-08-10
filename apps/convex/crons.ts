@@ -247,13 +247,18 @@ crons.cron(
   {},
 );
 
-// Daily 07:00 UTC: delete bank debits that were authorised and never resolved.
-// A `pendingGifts` row is normally cleared by `async_payment_succeeded` /
-// `async_payment_failed`, but Stripe stops retrying after ~3 days and a longer
-// outage loses the event entirely. Without this, such a row keeps a donor's
-// name in the table forever with no screen anywhere that shows it. Ahead of the
-// 08:00 digest hour on purpose, so a stranded row is gone before the day's
-// digests read the window. See `givingPending.MAX_PENDING_AGE_MS`.
+// Daily 07:00 UTC: age out `pendingGifts` — debits that were authorised and
+// never resolved (Stripe stops retrying after ~3 days and a longer outage loses
+// the event entirely), plus the failed-debit tombstones kept to recognise a
+// resent webhook. Without this a donor's name sits in a table no screen shows,
+// forever. See `givingPending.MAX_PENDING_AGE_MS`.
+//
+// BELT AND BRACES, not a required ordering. This runs before the DEFAULT 08:00
+// digest hour, but that is not a guarantee worth leaning on: `sendHourLocal` is
+// user-settable and LOCAL, and the digest sweep is hourly, so a rule can fire
+// ahead of this. It doesn't matter — `collectWindowPending` applies the same
+// ceiling on the read, so an aged row is already uncountable whether or not
+// this cron has run. This only keeps the table tidy.
 crons.cron(
   "stranded pending-ACH sweep",
   "0 7 * * *",

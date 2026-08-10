@@ -2,24 +2,48 @@
  * ACH giving that is in flight — authorised by the donor, not yet moved by the
  * bank.
  *
- * Two mutations and nothing else: one writes a `pendingGifts` row, one deletes
- * it. Both are called ONLY from the Stripe webhook (`http.ts`) and both key on
- * the Checkout Session id. See `schema/givingPlatform.ts#pendingGifts` for why
- * this table exists, why it is not `donations` / `ticketOrders` /
- * `givingActivity`, and why a resolved row is deleted rather than flipped to a
- * status.
+ * A writer, a resolver and a sweeper. All three are called ONLY from the Stripe
+ * webhook (`http.ts`) or a cron, and all three key on the Checkout Session id.
+ * See `schema/givingPlatform.ts#pendingGifts` for why this table exists and why
+ * it is not `donations` / `ticketOrders` / `givingActivity`.
  *
- * ── IDEMPOTENCY TAKES TWO KEYS, NOT ONE ────────────────────────────────────
- * Stripe delivers at least once and in no guaranteed order, so both mutations
- * are reached twice. `resolvePendingGift` is trivially safe (deleting a row
- * that isn't there is a no-op). `recordPendingGift` is NOT safe on the session
- * id alone, and assuming it was is the one real bug this file has shipped:
- * because a resolved row is DELETED, `by_session` cannot see a debit that has
- * ALREADY CLEARED, so a redelivered or out-of-order `completed` re-created a
- * pending row that no later event would ever resolve. Each branch therefore
- * checks a key that OUTLIVES resolution as well — for `/give` that is the
- * settled gift's `externalRef`; for the other two, the source row's status.
- * See the branch comments.
+ * ── EVERY RESOLUTION MUST LEAVE A KEY BEHIND ───────────────────────────────
+ * Stripe delivers at least once and in no guaranteed order, and an event's
+ * object is frozen at creation — so a `checkout.session.completed` retry still
+ * reads `payment_status: "unpaid"` days after the debit resolved, and lands
+ * here. This is the ONE thing this file has to get right, and it got it wrong
+ * twice, in the same shape both times: a resolved row that leaves NOTHING
+ * behind cannot recognise its own session again, so the redelivery re-creates a
+ * pending row that no later event will ever clear.
+ *
+ * `by_session` alone is therefore not idempotency — it is idempotency against a
+ * LIVE row. Every path a session can take now ends holding a key that outlives
+ * it:
+ *
+ *   CLEARED   → row deleted; the `gifts` row's `externalRef` is the key.
+ *   FAILED    → row KEPT, marked `failed`; the row itself is the key, because
+ *               no gift exists or ever will.
+ *   (branches 2 and 3 have a third: their `donations` / `ticketOrders` source
+ *    row, which goes `paid` on success and `expired` on failure, so neither
+ *    ever reads as `pending` again.)
+ *
+ * ── THE ONE CASE THAT IS STILL OPEN, STATED RATHER THAN CLAIMED AWAY ───────
+ * A key can only outlive a resolution it was present for. If a `/give`
+ * session's FAILURE is processed before its `completed` ever arrives — a true
+ * out-of-order delivery, not a redelivery — there is no row to tombstone and no
+ * gift to point at, so the late completion writes a fresh `in_flight` row.
+ *
+ * Left open deliberately, because closing it needs a durable record of every
+ * session we have ever seen, which is a different and much larger thing than
+ * this table. The blast radius is bounded and small: the row is windowed on the
+ * redelivery instant so it enters exactly ONE digest, that digest says
+ * `$X still clearing` — already caveated as money a bank can refuse — and no
+ * gift is ever booked behind it, so nothing real is double-counted and book
+ * value cannot move. `MAX_PENDING_AGE_MS` caps it at 21 days. There is a test
+ * asserting this shape, so it stays a decision rather than becoming a surprise.
+ *
+ * Nothing here is bounded by trust in Stripe's delivery: `MAX_PENDING_AGE_MS`
+ * caps anything that still slips through.
  *
  * ── THE ONE RULE THIS FILE MUST NOT BREAK ──────────────────────────────────
  * NOTHING HERE MAY TOUCH `gifts`, `transactions`, `donors` ROLLUPS, OR ANY
@@ -148,6 +172,12 @@ export const recordPendingGift = internalMutation({
 
     // Stripe delivers at least once, and a redelivered completion must not
     // double the pending figure.
+    //
+    // ANY existing row refuses, `in_flight` or `failed` alike. A `failed` row
+    // is a TOMBSTONE kept for exactly this: the bank refused the debit, so no
+    // gift will ever exist to act as the key, and without the row a Dashboard
+    // "Resend" would re-create a phantom for money that is already gone. See
+    // `resolvePendingGift`.
     const existing = await ctx.db
       .query("pendingGifts")
       .withIndex("by_session", (q) => q.eq("sessionId", args.sessionId))
@@ -215,6 +245,7 @@ export const recordPendingGift = internalMutation({
       );
       await ctx.db.insert("pendingGifts", {
         sessionId: args.sessionId,
+        status: "in_flight",
         scope: donor.scope,
         amountCents: giftCents,
         currency: "usd",
@@ -241,6 +272,7 @@ export const recordPendingGift = internalMutation({
       }
       await ctx.db.insert("pendingGifts", {
         sessionId: args.sessionId,
+        status: "in_flight",
         scope: donation.chapterId,
         amountCents: donation.amountCents,
         currency: donation.currency,
@@ -267,6 +299,7 @@ export const recordPendingGift = internalMutation({
     if (order && order.status === "pending" && addOnCents > 0) {
       await ctx.db.insert("pendingGifts", {
         sessionId: args.sessionId,
+        status: "in_flight",
         scope: order.chapterId,
         // ONLY the upsell. `order.totalCents` is ticket revenue, which never
         // becomes a gift and has no business in a giving digest.
@@ -287,25 +320,39 @@ export const recordPendingGift = internalMutation({
 });
 
 /**
- * The debit resolved, one way or the other — drop the pending row.
+ * The debit resolved — it is no longer in flight, whichever way it went.
  *
- * ONE mutation for both outcomes, called from `settleCheckoutSession` (it
- * cleared — the `gifts` row now carries it) and `cancelCheckoutSession` (the
- * bank refused it, or the donor walked away). They mean opposite things about
- * the money and exactly the same thing about this table: it is no longer in
- * flight. A cleared debit and a returned one leaving different residue here is
- * how a phantom gets built.
+ * ONE mutation, two outcomes, because the two leave behind different keys and
+ * that is the whole of the design:
  *
- * Requirement #4 of the brief lands entirely on this function: after a failure
- * the amount must be gone from FUTURE digests. It is — the row is deleted. A
- * digest already mailed announcing it is water under the bridge and is
- * deliberately not corrected; the pending line says out loud that a bank can
+ *  · `settled` — the debit cleared (`settleCheckoutSession`). DELETE the row.
+ *    The gift now in the ledger is the durable key: a redelivered `completed`
+ *    is refused by the writer's `gifts.by_externalRef` check.
+ *  · `failed` — the bank refused it, or the session died
+ *    (`cancelCheckoutSession`). MARK the row `failed` and KEEP it, because
+ *    there is no gift and there never will be, so the row is the only key that
+ *    can exist. Deleting it is what let a resent `completed` re-create a
+ *    phantom for money the bank had already refused — the failure-side mirror
+ *    of the cleared-side bug, and it shipped for the same reason: a resolved
+ *    row that leaves nothing behind cannot recognise its own session again.
+ *
+ * The asymmetry looks like an inconsistency and is the opposite. Each side
+ * keeps whichever key OUTLIVES it: delete when something better survives, mark
+ * when nothing else would.
+ *
+ * After a failure the amount is gone from FUTURE digests either way — a
+ * `failed` row is not `in_flight`, and `collectWindowPending` counts only
+ * `in_flight`. A digest already mailed announcing it is water under the bridge
+ * and is deliberately not corrected; the caveat says out loud that a bank can
  * still refuse the money.
  */
 export const resolvePendingGift = internalMutation({
-  args: { sessionId: v.string() },
+  args: {
+    sessionId: v.string(),
+    outcome: v.union(v.literal("settled"), v.literal("failed")),
+  },
   returns: v.boolean(),
-  handler: async (ctx, { sessionId }) => {
+  handler: async (ctx, { sessionId, outcome }) => {
     const row = await ctx.db
       .query("pendingGifts")
       .withIndex("by_session", (q) => q.eq("sessionId", sessionId))
@@ -313,29 +360,44 @@ export const resolvePendingGift = internalMutation({
     // No row is the NORMAL case: every card checkout in the system reaches
     // here, and none of them was ever pending.
     if (!row) return false;
-    await ctx.db.delete(row._id);
+    if (outcome === "settled") {
+      await ctx.db.delete(row._id);
+      return true;
+    }
+    // Idempotent: re-marking an already-failed row writes the same value.
+    await ctx.db.patch(row._id, { status: "failed" });
     return true;
   },
 });
 
 /**
- * Delete debits that were never resolved — the daily cron.
+ * Age out this table — the daily cron. Two different rows, one rule.
  *
- * The resolving webhook is the ONLY thing that normally clears a row, and it
- * can go missing: Stripe stops retrying after about three days, and an outage
- * longer than that loses the event outright. This is the backstop, and it
- * exists for the donor data as much as for the arithmetic — a row here carries
- * a person's name, no screen in the app shows this table, and "forever" is not
- * a retention policy. `MAX_PENDING_AGE_MS` explains the ceiling.
+ *  · STRANDED (`in_flight`): the resolving webhook never arrived. Stripe stops
+ *    retrying after about three days and a longer outage loses the event
+ *    outright. Such a row is wrong — money announced as committed that the bank
+ *    may well have refused — and it exists for the donor data as much as for
+ *    the arithmetic: it carries a person's name, no screen in the app shows
+ *    this table, and "forever" is not a retention policy.
+ *  · TOMBSTONES (`failed`): deliberately kept by `resolvePendingGift` so a
+ *    resent `completed` can be refused. Past the ceiling no redelivery is
+ *    coming, so the key has done its job.
  *
- * DELETES rather than flagging. There is nothing to review: the row says a bank
- * debit was authorised three weeks ago and never landed, which is a fact about
- * Stripe's delivery, not about the money — if the debit DID clear, the gift is
- * in the ledger under its own idempotency key and was never this table's
- * business. Keeping a tombstone would mean building a screen for it.
+ * DELETES rather than flagging. There is nothing to review — the row says a
+ * bank debit was authorised three weeks ago and never landed, which is a fact
+ * about Stripe's delivery, not about the money. Stripe remains the system of
+ * record for the session, and if the debit DID clear, the gift is in the ledger
+ * under its own key and was never this table's business.
  *
- * LOUD, once per sweep, because a nonzero count means webhooks are being lost
- * and that is worth knowing before it costs something that matters.
+ * A PARTIAL SWEEP IS A DECISION, NOT A LIMIT. `.take(500)` reads the index
+ * ascending, so the oldest go first and a bigger backlog finishes on the
+ * following day's run rather than blowing the transaction. Nothing degrades
+ * meanwhile: `collectWindowPending` applies the same ceiling on the read, so a
+ * row the sweep hasn't reached yet is already uncountable.
+ *
+ * LOUD, and it names the SESSIONS — a count tells you webhooks are being lost
+ * and gives you no way to chase them; a session id can be pasted into the
+ * Stripe Dashboard. Session ids only: no donor name, no amount, no PII.
  */
 export const sweepStrandedPendingGifts = internalMutation({
   args: { now: v.optional(v.number()) },
@@ -344,19 +406,25 @@ export const sweepStrandedPendingGifts = internalMutation({
     const cutoff = (args.now ?? Date.now()) - MAX_PENDING_AGE_MS;
     // Bounded: the table holds debits in flight, so this is normally empty and
     // never large. The index range means an empty sweep reads nothing at all.
-    const stranded = await ctx.db
+    const aged = await ctx.db
       .query("pendingGifts")
       .withIndex("by_submitted", (q) => q.lte("submittedAt", cutoff))
       .take(500);
-    for (const row of stranded) await ctx.db.delete(row._id);
+    // Only the ones that never resolved say anything about webhook health; a
+    // swept tombstone is the system working as designed and must not raise an
+    // alarm that trains people to ignore this log.
+    const stranded = aged.filter((row) => row.status === "in_flight");
+    for (const row of aged) await ctx.db.delete(row._id);
     if (stranded.length > 0) {
       console.error(
-        `[givingPending] swept ${stranded.length} bank debit(s) that were ` +
-          `authorised over ${Math.round(MAX_PENDING_AGE_MS / 86_400_000)} days ` +
-          "ago and never resolved. Stripe never delivered their " +
-          "async_payment_succeeded/failed — check webhook delivery.",
+        `[givingPending] swept ${stranded.length} bank debit(s) authorised over ` +
+          `${Math.round(MAX_PENDING_AGE_MS / 86_400_000)} days ago that never ` +
+          "resolved — Stripe delivered no async_payment_succeeded/failed for " +
+          `them. Check webhook delivery for: ${stranded
+            .map((row) => row.sessionId)
+            .join(", ")}`,
       );
     }
-    return stranded.length;
+    return aged.length;
   },
 });

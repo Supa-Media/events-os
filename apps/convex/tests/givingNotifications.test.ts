@@ -4555,6 +4555,8 @@ async function seedPendingAch(
     scope?: Id<"chapters"> | "central";
     sessionId?: string;
     eventId?: Id<"events">;
+    /** A failed-debit TOMBSTONE rather than money in flight. */
+    status?: "in_flight" | "failed";
   },
 ): Promise<Id<"pendingGifts">> {
   return run(s.t, (ctx) =>
@@ -4564,6 +4566,7 @@ async function seedPendingAch(
       amountCents: spec.amountCents,
       currency: "usd",
       submittedAt: spec.submittedAt,
+      status: spec.status ?? "in_flight",
       donorName: spec.donorName ?? "Bank Giver",
       ...(spec.eventId ? { eventId: spec.eventId } : {}),
       createdAt: spec.submittedAt,
@@ -4767,6 +4770,7 @@ describe("a digest counts ACH still clearing, and says so", () => {
     // …four days later the bank moves it: the webhook's resolve, then the gift.
     await s.t.mutation(internal.givingPending.resolvePendingGift, {
       sessionId: "cs_clears",
+      outcome: "settled",
     });
     const donorId = await seedDonor(s, "Patient Giver");
     await seedRawGifts(s, donorId, [
@@ -4812,9 +4816,12 @@ describe("a digest counts ACH still clearing, and says so", () => {
       expect(cap.sent[0].subject).toContain("$500.00 still clearing");
       cap.sent.length = 0;
 
-      // The bank refuses the debit — `cancelCheckoutSession`'s resolve.
+      // The bank refuses the debit — `cancelCheckoutSession`'s resolve. The row
+      // is KEPT as a tombstone (so a resent webhook can be refused) and is no
+      // longer `in_flight`, which is what takes it out of the digest.
       await s.t.mutation(internal.givingPending.resolvePendingGift, {
         sessionId: "cs_fails",
+        outcome: "failed",
       });
 
       // A manual send of the SAME trailing week now: the money is gone, and no

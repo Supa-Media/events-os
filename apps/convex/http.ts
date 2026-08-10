@@ -470,6 +470,7 @@ async function settleCheckoutSession(
   // mid-sweep is in no digest at all. See `lib/givingNotificationRules.ts`.
   await ctx.runMutation(internal.givingPending.resolvePendingGift, {
     sessionId: obj.id,
+    outcome: "settled",
   });
 
   if (obj.metadata?.giveDonation === "1") {
@@ -585,8 +586,13 @@ async function cancelCheckoutSession(
   ctx: ActionCtx,
   sessionId: string,
 ): Promise<void> {
+  // `failed`, not `settled`: this leaves the row behind as a TOMBSTONE. No
+  // gift exists to act as the key on this path — the bank refused the money —
+  // so the row is the only thing that can recognise a resent `completed` and
+  // refuse it. See `givingPending.resolvePendingGift`.
   await ctx.runMutation(internal.givingPending.resolvePendingGift, {
     sessionId,
+    outcome: "failed",
   });
   await ctx.runMutation(internal.ticketing.cancelPendingOrder, { sessionId });
   await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });

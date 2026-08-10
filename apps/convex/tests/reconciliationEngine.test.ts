@@ -1249,6 +1249,7 @@ describe("audit surface — accounts-page queries + flags", () => {
       });
       await ctx.db.insert("pendingGifts", {
         sessionId: "cs_in_flight",
+        status: "in_flight",
         scope: s.chapterId,
         amountCents: 500_000,
         currency: "usd",

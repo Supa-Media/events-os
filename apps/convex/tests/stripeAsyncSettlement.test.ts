@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { internal } from "../_generated/api";
 import {
@@ -376,9 +376,14 @@ describe("an in-flight bank debit leaves exactly one trace", () => {
 
     await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_bad" });
 
-    // The amount is out of every future digest. A digest already sent that
-    // announced it is deliberately not corrected — see `resolvePendingGift`.
-    expect(await pendingRows(t)).toHaveLength(0);
+    // The row is KEPT as a tombstone — no gift exists on this path, so the row
+    // is the only key that can recognise a resent `completed`. What matters for
+    // the money is that it is no longer `in_flight`, which is what takes it out
+    // of every future digest. A digest already sent that announced it is
+    // deliberately not corrected — see `resolvePendingGift`.
+    const after = await pendingRows(t);
+    expect(after).toHaveLength(1);
+    expect(after[0].status).toBe("failed");
     expect(await centralGifts(t)).toHaveLength(0);
   });
 
@@ -389,7 +394,11 @@ describe("an in-flight bank debit leaves exactly one trace", () => {
     await postEvent(t, "checkout.session.completed", giveSession("cs_gone", donorId, "unpaid"));
     await postEvent(t, "checkout.session.expired", { id: "cs_gone" });
 
-    expect(await pendingRows(t)).toHaveLength(0);
+    // Same tombstone, same reason: no money is coming, and the row is what
+    // stops a late redelivery claiming otherwise.
+    const after = await pendingRows(t);
+    expect(after).toHaveLength(1);
+    expect(after[0].status).toBe("failed");
   });
 
   test("an event-page donation in flight is recorded against its event and chapter", async () => {
@@ -575,6 +584,111 @@ describe("an in-flight bank debit leaves exactly one trace", () => {
     expect(await centralGifts(t)).toHaveLength(1);
   });
 
+  // ── The FAILURE half of the same defect ─────────────────────────────────
+  //
+  // The settled gift's `externalRef` only exists if the debit CLEARED. On the
+  // failure path there is no gift and never will be, so deleting the row left
+  // NO key at all — and the same two triggers walked straight back in. Hence
+  // the tombstone.
+
+  test("a resent completion after the bank REFUSED it doesn't resurrect the debit", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_refused", donorId, "unpaid"), "evt_a");
+    await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_refused" });
+
+    // "Resend" in the Dashboard, days later.
+    await postEvent(t, "checkout.session.completed", giveSession("cs_refused", donorId, "unpaid"), "evt_b");
+
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    // Still the tombstone — NOT a fresh in-flight row for money the bank
+    // already refused.
+    expect(rows[0].status).toBe("failed");
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("the FAILURE arrives first: a late completion doesn't resurrect the debit", async () => {
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    // No pending row was ever written — the failure beat the completion.
+    await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_ooo_fail" });
+    await postEvent(t, "checkout.session.completed", giveSession("cs_ooo_fail", donorId, "unpaid"));
+
+    // Nothing to tombstone, so this one is genuinely open: the completion
+    // creates a row, and the 21-day sweep is what bounds it. Asserted so the
+    // residual gap is a recorded decision rather than a surprise — the blast
+    // radius is one caveated "still clearing" line that never becomes a gift.
+    const rows = await pendingRows(t);
+    expect(rows).toHaveLength(1);
+    expect(rows[0].status).toBe("in_flight");
+    expect(await centralGifts(t)).toHaveLength(0);
+  });
+
+  test("a donor who retries after a refusal is counted ONCE, not twice", async () => {
+    // The compound case: debit refused → donor gives again on a NEW session →
+    // a resend of the OLD completion. Without the tombstone the stale session
+    // lands a phantom beside the live row and one $100 intent reads as $200
+    // still clearing in a single digest.
+    const t = newT();
+    const donorId = await seedDonor(t);
+
+    await postEvent(t, "checkout.session.completed", giveSession("cs_try1", donorId, "unpaid"), "evt_1");
+    await postEvent(t, "checkout.session.async_payment_failed", { id: "cs_try1" });
+    await postEvent(t, "checkout.session.completed", giveSession("cs_try2", donorId, "unpaid"), "evt_2");
+    // …and the old one is resent.
+    await postEvent(t, "checkout.session.completed", giveSession("cs_try1", donorId, "unpaid"), "evt_3");
+
+    const live = (await pendingRows(t)).filter((r) => r.status === "in_flight");
+    expect(live).toHaveLength(1);
+    expect(live[0].sessionId).toBe("cs_try2");
+  });
+
+  test("a swept tombstone doesn't cry wolf about webhook delivery", async () => {
+    // The sweep's `console.error` exists to say "webhooks are being lost".
+    // A tombstone aging out is the system working, and counting it as stranded
+    // would train people to ignore the one log that matters.
+    const t = newT();
+    const donorId = await seedDonor(t);
+    const now = Date.now();
+    await t.mutation(internal.givingPending.recordPendingGift, {
+      sessionId: "cs_old_tombstone",
+      amountTotalCents: 10_000,
+      isGiveDonation: true,
+      giveDonorId: String(donorId),
+      submittedAt: now - 30 * 24 * 60 * 60 * 1000,
+    });
+    await t.mutation(internal.givingPending.resolvePendingGift, {
+      sessionId: "cs_old_tombstone",
+      outcome: "failed",
+    });
+
+    // ASSERTED ON THE LOG ITSELF, not on the return value — the return counts
+    // every row swept, tombstones included, so checking it would prove nothing
+    // about the alarm. The alarm is the whole point of the split.
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args.map(String).join(" "));
+      });
+    try {
+      expect(
+        await t.mutation(internal.givingPending.sweepStrandedPendingGifts, {
+          now,
+        }),
+      ).toBe(1);
+    } finally {
+      spy.mockRestore();
+    }
+    expect(await pendingRows(t)).toHaveLength(0);
+    // Nothing claiming a webhook went missing, and the session is not named.
+    expect(errors.join("\n")).not.toContain("Check webhook delivery");
+    expect(errors.join("\n")).not.toContain("cs_old_tombstone");
+  });
+
   test("a debit that never resolved is swept, and one still in flight is not", async () => {
     // Stripe stops retrying after about three days and a longer outage loses
     // the event outright, leaving a row nothing will ever clear. A donor's name
@@ -599,12 +713,27 @@ describe("an in-flight bank debit leaves exactly one trace", () => {
     });
     expect(await pendingRows(t)).toHaveLength(2);
 
-    const swept = await t.mutation(
-      internal.givingPending.sweepStrandedPendingGifts,
-      { now },
-    );
+    const errors: string[] = [];
+    const spy = vi
+      .spyOn(console, "error")
+      .mockImplementation((...args: unknown[]) => {
+        errors.push(args.map(String).join(" "));
+      });
+    let swept!: number;
+    try {
+      swept = await t.mutation(
+        internal.givingPending.sweepStrandedPendingGifts,
+        { now },
+      );
+    } finally {
+      spy.mockRestore();
+    }
 
     expect(swept).toBe(1);
+    // A stranded row DOES raise the alarm, and names the session so somebody
+    // can paste it into the Stripe Dashboard.
+    expect(errors.join("\n")).toContain("Check webhook delivery");
+    expect(errors.join("\n")).toContain("cs_stranded");
     const left = await pendingRows(t);
     expect(left).toHaveLength(1);
     // The one that is genuinely still moving survives.
