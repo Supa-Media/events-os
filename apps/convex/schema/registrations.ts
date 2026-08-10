@@ -29,9 +29,12 @@ import { v } from "convex/values";
  * ── REVENUE ─────────────────────────────────────────────────────────────────
  * This is the FOURTH revenue stream, alongside gifts, paid ticket orders and
  * sales. `status: "paid"` counts toward book value exactly as a paid
- * `ticketOrders` row does — summed chapter-scoped in
- * `reconciliation.ts#computeBookBalances` (phase 1) and itemised by
- * `bookValueBreakdown` / `bookValueLines`. `refunded` and `comped` count
+ * `ticketOrders` row does — summed PER SCOPE (chapter or central, see
+ * `chapterId` below) in `reconciliation.ts#computeBookBalances` (phase 1) and
+ * itemised by `bookValueBreakdown` / `bookValueLines`. It is the one revenue
+ * stream that reads at central as well as at a chapter: tickets and sales are
+ * skipped there because central runs no events and sells no merch, but central
+ * DOES run classes. `refunded` and `comped` count
  * NOTHING, and are still stored and still shown on the project: a scholarship
  * is a decision the org made, and a table that only keeps the money would
  * erase it.
@@ -45,10 +48,28 @@ import { v } from "convex/values";
  * lands as new functions against this table rather than as a migration.
  */
 export const registrations = defineTable({
-  /** The book this registration's money belongs to. Denormalised from the
-   *  project so the chapter-scoped revenue sum is one indexed read, exactly as
-   *  `ticketOrders.chapterId` is. */
-  chapterId: v.id("chapters"),
+  /**
+   * The book this registration's money belongs to: a real chapter id, OR the
+   * `"central"` string sentinel for an org-level class (the house pattern —
+   * never null, never a `chapters` row; see `budgets.chapterId`,
+   * `transactions.chapterId`, `gifts.scope`, `FinanceScope`). Denormalised so
+   * the scoped revenue sum is one indexed read.
+   *
+   * ⚠ THIS IS NOT DERIVABLE FROM `projectId`, AND THAT IS DELIBERATE.
+   * `projects.chapterId` is `v.id("chapters")` with no central union and never
+   * changes (the WP-2.2 finding, reconfirmed for events): when a project's
+   * money moves to central, `finances.ts#transferProjectScope` moves its
+   * BUDGETS and their transactions and returns `projectScopeDeferred: true`,
+   * leaving the project ROW on its home chapter. So a registration on a
+   * New-York-rowed project can legitimately book to central — which is exactly
+   * what Worship Beyond The Walls is (the owner, 2026-08-10: "that was not a
+   * New York project"). Read the book from HERE, never from the project.
+   *
+   * Widened 2026-08-10, before the table held a single production row, so no
+   * migration was needed and none of the readers below had to cope with a mixed
+   * table mid-flight.
+   */
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   /** The class/cohort/course they registered for. */
   projectId: v.id("projects"),
   /** The roster person, WHERE ONE EXISTS. Optional on purpose: someone paying
@@ -141,8 +162,10 @@ export const registrations = defineTable({
 })
   // The project money page's registrations section — one bounded read.
   .index("by_project", ["projectId"])
-  // The book-value revenue sum: a chapter's registrations in one bounded read
-  // (`reconciliation.ts#computeBookBalances`), mirroring `ticketOrders.by_chapter`.
+  // The book-value revenue sum: a SCOPE's registrations in one bounded read
+  // (`reconciliation.ts#computeBookBalances`), mirroring `ticketOrders.by_chapter`
+  // — but over the chapter-or-central union above, so the central scope is a
+  // real indexed lookup here rather than a branch that skips the table.
   .index("by_chapter", ["chapterId"])
   // Dedup key for an imported payment — the backfill applies on this.
   .index("by_external_ref", ["externalRef"])

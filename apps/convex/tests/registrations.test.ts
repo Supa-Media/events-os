@@ -81,12 +81,17 @@ async function seedRegistration(
     status: "paid" | "refunded" | "comped";
     refundReason?: string;
     externalRef?: string;
+    /** The BOOK this registration's money lands on. Defaults to the setup's
+     *  chapter; pass `"central"` for an org-level class. Deliberately
+     *  independent of `projectId` — the project row is always chapter-scoped,
+     *  so these two disagreeing is the normal shape, not a broken fixture. */
+    scope?: "central";
   },
 ): Promise<Id<"registrations">> {
   return run(s.t, (ctx) => {
     const now = Date.now();
     return ctx.db.insert("registrations", {
-      chapterId: s.chapterId,
+      chapterId: reg.scope ?? s.chapterId,
       projectId,
       name: reg.name,
       amountCents: reg.amountCents,
@@ -185,7 +190,81 @@ describe("registrations as revenue", () => {
     expect(chapter?.revenueCents).toBe(CENTS_50 + 3_000);
   });
 
-  test("central runs no classes — a registration never lands on central's book", async () => {
+  /**
+   * CENTRAL DOES RUN CLASSES — and this used to assert the opposite.
+   *
+   * The original test read "central runs no classes — a registration never
+   * lands on central's book", and it passed because `computeBookBalances` read
+   * `registrations` only inside its `scope !== CENTRAL` guard, alongside sales
+   * and ticket orders. That guard is right for those two (central sells no
+   * merch and runs no events) and was wrong for this one, about the very rows
+   * the stream was built for: Worship Beyond The Walls was a CENTRAL class
+   * ("that was not a New York thing, it was a central thing" — owner,
+   * 2026-08-10), and its six registrations book to the `"central"` sentinel.
+   *
+   * A registration's book is `registrations.chapterId`, read directly. It is
+   * NOT derived from the project — `projects.chapterId` has no central union
+   * and stays on the project's home chapter even after its money moves
+   * (`transferProjectScope` → `projectScopeDeferred: true`). So a central
+   * registration on a New-York-rowed project is the normal case, not a
+   * contradiction, and this test seeds exactly that.
+   */
+  test("a central-scoped registration IS revenue on central's book", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    // The project ROW stays on the chapter — as it always does.
+    const projectId = await seedProject(s);
+    await seedRegistration(s, projectId, {
+      name: "Paid Student",
+      amountCents: CENTS_50,
+      status: "paid",
+      scope: "central",
+    });
+    // A refunded central place still earns nothing, same rule as everywhere.
+    await seedRegistration(s, projectId, {
+      name: "Scholarship Student",
+      amountCents: CENTS_50,
+      status: "refunded",
+      refundReason: "scholarship",
+      scope: "central",
+    });
+
+    const balances = await s.as.query(api.reconciliation.accountBalances, {});
+    expect(balances.find((b) => b.scope === "central")?.revenueCents).toBe(
+      CENTS_50,
+    );
+    // …and it did NOT also land on the chapter. One home per dollar: booking
+    // to central must not raise the chapter's book, or `settleChapterBalances`
+    // would wire the chapter cash for revenue central earned.
+    expect(balances.find((b) => b.scope === s.chapterId)?.revenueCents).toBe(0);
+  });
+
+  test("tickets and sales still never reach central — only registrations do", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    // Chapter-scoped merch: central sells nothing directly, so widening
+    // registrations must not have widened its neighbours in the same block.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("sales", {
+        chapterId: s.chapterId,
+        soldAt: Date.now(),
+        grossCents: 3_000,
+        feeCents: 100,
+        items: [],
+        itemSource: "unresolved",
+        channel: "in_person",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const balances = await s.as.query(api.reconciliation.accountBalances, {});
+    expect(balances.find((b) => b.scope === "central")?.revenueCents).toBe(0);
+    expect(balances.find((b) => b.scope === s.chapterId)?.revenueCents).toBe(3_000);
+  });
+
+  test("the central breakdown and line list itemise what the total claims", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
@@ -194,10 +273,27 @@ describe("registrations as revenue", () => {
       name: "Paid Student",
       amountCents: CENTS_50,
       status: "paid",
+      scope: "central",
     });
 
-    const balances = await s.as.query(api.reconciliation.accountBalances, {});
-    expect(balances.find((b) => b.scope === "central")?.revenueCents).toBe(0);
+    // The drill-downs a treasurer opens to ask "what IS this $50.00?" — they
+    // have to answer at central too, or the one place that explains a book's
+    // value says "nothing" for the class that prompted the whole feature.
+    const breakdown = await s.as.query(api.reconciliation.bookValueBreakdown, {
+      scope: "central",
+    });
+    expect(breakdown.revenue.registrationCents).toBe(CENTS_50);
+    expect(breakdown.revenue.registrationCount).toBe(1);
+    expect(breakdown.revenueCents).toBe(CENTS_50);
+
+    const lines = await s.as.query(api.reconciliation.bookValueLines, {
+      scope: "central",
+    });
+    const registrationLines = lines.earned.filter(
+      (l) => l.kind === "registration",
+    );
+    expect(registrationLines).toHaveLength(1);
+    expect(registrationLines[0]?.amountCents).toBe(CENTS_50);
   });
 });
 

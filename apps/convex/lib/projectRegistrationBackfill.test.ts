@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   REGISTRATION_CENTS,
-  WBTW_CHAPTER_ID,
+  WBTW_BOOK_SCOPE,
+  WBTW_PROJECT_HOME_CHAPTER_ID,
   WBTW_PROJECT_ID,
   WBTW_REGISTRATIONS,
   externalRefFor,
@@ -21,7 +22,7 @@ import {
 
 const goodProject = {
   id: WBTW_PROJECT_ID,
-  chapterId: WBTW_CHAPTER_ID,
+  chapterId: WBTW_PROJECT_HOME_CHAPTER_ID,
   name: "Worship Beyond the walls",
 };
 
@@ -126,6 +127,23 @@ describe("the fixture itself", () => {
     }
     // And nothing that looks like a name or an address anywhere in the fixture.
     expect(JSON.stringify(WBTW_REGISTRATIONS)).not.toMatch(/@|[A-Z][a-z]+ [A-Z][a-z]+/);
+  });
+
+  /**
+   * THE ATTRIBUTION THE OWNER ASKED FOR, pinned on its own because it is the
+   * one fact here that a reader would otherwise infer from two constants that
+   * look interchangeable and emphatically are not.
+   *
+   * The project ROW is New York's — `projects.chapterId` has no central union
+   * and never moves. The MONEY is central's: "Worship Beyond the Walls was not
+   * a New York thing, it was a central thing" (owner, 2026-08-10). Collapse
+   * these two into one constant and the six rows land on New York's book, New
+   * York's book value rises $150.00, and `settleChapterBalances` wires it
+   * $150.00 it did not earn on the next morning run.
+   */
+  it("books to central, not to the chapter the project row lives on", () => {
+    expect(WBTW_BOOK_SCOPE).toBe("central");
+    expect(WBTW_BOOK_SCOPE as string).not.toBe(WBTW_PROJECT_HOME_CHAPTER_ID);
   });
 });
 

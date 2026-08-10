@@ -22,7 +22,24 @@
  *
  * That $150.00 is the last of the org-wide reconciliation gap. `gap = cash −
  * books`, the cash already arrived, so booking the revenue moves the gap DOWN
- * by $150.00 — see `lib/reconciliationGap.ts`'s sign convention.
+ * by $150.00 — see `lib/reconciliationGap.ts`'s sign convention. The gap sums
+ * book value across ALL scopes (`reconciliationSummary`), so WHICH book takes
+ * the $150.00 does not change that figure by a cent.
+ *
+ * ── WHICH BOOK: CENTRAL, NOT NEW YORK ───────────────────────────────────────
+ * The first cut of this fixture booked to New York, because the `projects` row
+ * sits there. The owner corrected it before it ever ran (2026-08-10): "Worship
+ * Beyond the Walls was not a New York thing, it was a central thing." So the
+ * six rows book to the `"central"` sentinel (`WBTW_BOOK_SCOPE`), while the
+ * project row stays on New York where `projects.chapterId` requires it.
+ *
+ * That split is not a fudge — it is the model. `transferProjectScope` has
+ * always moved a project's BUDGETS and their transactions to central and left
+ * the project row alone (`projectScopeDeferred: true`), because a project row
+ * is a container and the money is scoped separately. `registrations.chapterId`
+ * was widened to the same chapter-or-central union for the same reason.
+ *
+ * It also happens to be the run that moves no cash: see `WBTW_BOOK_SCOPE`.
  *
  * ── WHY THERE ARE NO NAMES IN THIS FILE ─────────────────────────────────────
  * Only opaque Givebutter transaction ids live here. The registrants' names and
@@ -39,11 +56,47 @@
  * The cost is that the operator supplies more at run time. For a module headed
  * "delete this once run", that is the right trade.
  */
-import type { RegistrationStatus } from "@events-os/shared";
+import { CENTRAL, type RegistrationStatus } from "@events-os/shared";
 
-/** The project the class ran as, and the book its money belongs to. */
+/** The project the class ran as. */
 export const WBTW_PROJECT_ID = "rd776xf2snzx3nw5sqqb2r0kn18aqnhn";
-export const WBTW_CHAPTER_ID = "kh73xrr66rxt2wzr3ny5c2c4kh88n06n";
+
+/**
+ * WHERE THE PROJECT ROW LIVES — New York. A FINGERPRINT, NOT A DESTINATION.
+ *
+ * This is asserted so the backfill can tell it is looking at the deployment
+ * this fixture describes; it is NOT where the money goes (see
+ * `WBTW_BOOK_SCOPE`). It stays New York forever: `projects.chapterId` is
+ * `v.id("chapters")` with no central union, and moving a project's money to
+ * central deliberately leaves the row where it is — `transferProjectScope`
+ * returns `projectScopeDeferred: true` and says so.
+ */
+export const WBTW_PROJECT_HOME_CHAPTER_ID = "kh73xrr66rxt2wzr3ny5c2c4kh88n06n";
+
+/**
+ * THE BOOK THIS MONEY BELONGS TO — central.
+ *
+ * The owner, 2026-08-10: "Worship Beyond the Walls was not a New York thing, it
+ * was a central thing… change the budget for worship beyond the walls to
+ * central because that was not a New York project."
+ *
+ * WHY THAT IS A DIFFERENT FIELD FROM THE ONE ABOVE, which is the whole point of
+ * this pair: a registration's book is `registrations.chapterId`, read directly,
+ * NEVER derived from `projects.chapterId`. The project row is a container that
+ * stays on its home chapter; the money is scoped on its own. Reading the book
+ * off the project would silently re-attribute every central class to New York.
+ *
+ * ⚠ THE $150.00 THIS BOOKS NOW MOVES NO CASH — THAT CHANGED WITH THIS CONSTANT.
+ * The earlier New-York-scoped version of this backfill raised NEW YORK's book
+ * by $150.00, and `settleChapterBalances` settles each chapter's book against
+ * the cash central holds for it — so central would have wired New York an extra
+ * $150.00 the next morning. Booking to CENTRAL instead leaves every chapter's
+ * book untouched, so the settlement engine has nothing to react to. The
+ * org-wide gap still closes by the full $150.00, because
+ * `reconciliationSummary` sums book value across ALL scopes including central.
+ * Attribution fixed, cash stationary — which is the better of the two runs.
+ */
+export const WBTW_BOOK_SCOPE = CENTRAL;
 /** Every row is one $50.00 "Student Registration" item. Asserted, not assumed. */
 export const REGISTRATION_CENTS = 5_000;
 /** Givebutter's payout that remitted the three that stuck. */
@@ -167,7 +220,8 @@ export interface BackfillPlan {
   /** Rows already present under the same `externalRef` — the idempotency
    *  evidence. A second run puts all six here and inserts nothing. */
   alreadyPresent: string[];
-  /** Revenue this plan adds to the chapter's book: the `paid` rows only. */
+  /** Revenue this plan adds to the book named by `WBTW_BOOK_SCOPE` (central):
+   *  the `paid` rows only. */
   paidCents: number;
   /** What the six rows are worth in total, paid + refunded. Not revenue —
    *  reported so the $300.00 Givebutter collected is visible in the output. */
@@ -207,9 +261,12 @@ export function planRegistrationBackfill(world: BackfillWorld): BackfillPlan {
     );
     return empty;
   }
-  if (world.project.chapterId !== WBTW_CHAPTER_ID) {
+  // A FINGERPRINT CHECK, not an attribution one: "is this the deployment the
+  // fixture describes?" The rows themselves book to `WBTW_BOOK_SCOPE`
+  // (central), which is deliberately NOT this value — see those constants.
+  if (world.project.chapterId !== WBTW_PROJECT_HOME_CHAPTER_ID) {
     problems.push(
-      `project ${WBTW_PROJECT_ID} belongs to chapter ${world.project.chapterId}, expected ${WBTW_CHAPTER_ID} — SKIPPED`,
+      `project ${WBTW_PROJECT_ID} belongs to chapter ${world.project.chapterId}, expected ${WBTW_PROJECT_HOME_CHAPTER_ID} — SKIPPED`,
     );
   }
   if (!/worship beyond the walls/i.test(world.project.name)) {
