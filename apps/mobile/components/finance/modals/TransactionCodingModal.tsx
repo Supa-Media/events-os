@@ -441,6 +441,37 @@ export function TransactionCodingModal({
                     </Text>
                   </View>
 
+                  {/* THE PII LINE, and it is not a duplicate of the one above.
+                      "This publishes" tells you the sentence is public; it
+                      doesn't tell you what to keep OUT of it, and the gap
+                      between those two is where real production text ended up
+                      reading "Travel with Michael Reid from all team meeting
+                      in Manhattan to LIRR in Rosedale".
+
+                      The hole is specific and worth naming rather than
+                      moralising about: structured attendee names are
+                      protected forever — they render internal-only and the
+                      ledger prints the affiliation breakdown instead — but a
+                      name typed into THIS box bypasses all of that. So the
+                      copy's job is to point at the safe place to put it,
+                      which is a few fields down. No blocking, and nothing
+                      scans the text guessing at what looks like a name. */}
+                  <View className="mt-1.5 flex-row items-start gap-2">
+                    <Icon name="user-x" size={12} color={colors.muted} />
+                    <Text className="flex-1 text-2xs text-muted">
+                      <Text className="font-semibold text-ink">
+                        Keep people out of it.
+                      </Text>{" "}
+                      No names, addresses, phone numbers or anything else that
+                      identifies someone
+                      {expenseType === "meal"
+                        ? " — put who was there in the attendee list below, where names stay internal and only the breakdown (“5 volunteers, 3 community members”) is ever published."
+                        : expenseType === "travel" || expenseType === "lodging"
+                          ? " — the route publishes at city level, so “to LIRR in Rosedale” is fine and “to Michael’s place” is not."
+                          : " — describe the work, not the person."}
+                    </Text>
+                  </View>
+
                   {/* THE ESCAPE HATCH, directly under the field it exists to
                       catch. Somebody about to type "charged in error" into a
                       business purpose is telling us this wasn't org spending;

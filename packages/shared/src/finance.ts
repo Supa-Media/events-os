@@ -235,6 +235,13 @@ export const FINANCE_AUDIT_ACTIONS = [
   "budget_delete", // deleteBudget
   "coding_submit", // transactionCodings.submit — initial submission AND each resubmission after a send-back (the revision history)
   "coding_decide", // transactionCodings.approve / requestChanges
+  // An approver rewrote the PUBLISHED wording of a coding — stripping a name
+  // or other personal detail out of the sentence that goes on the public
+  // ledger. REDACTION, NOT FALSIFICATION: the author's original
+  // `businessPurpose` is retained and stays internally readable; this action
+  // records who wrote the public version and when. `before`/`after` carry the
+  // two published strings, so the trail reads as a revision history.
+  "coding_redact", // transactionCodings.setPublicPurpose
   "merchant_rename", // finances.renameMerchant / clearMerchantRename (display name only — the provider's own string is never touched)
   // SALES (subjectType "sale"). A sale's money is never editable — gross and fee
   // come from the processor and stay there. What a human can settle is the two
@@ -265,6 +272,7 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   budget_delete: "Budget deleted",
   coding_submit: "Coding submitted",
   coding_decide: "Coding decided",
+  coding_redact: "Published wording edited",
   merchant_rename: "Merchant renamed",
   sale_items_set: "Sale items set",
   sale_event_set: "Sale event set",
@@ -580,10 +588,34 @@ export const TRANSACTION_CODING_STATUS_LABELS: Record<
   approved: "Approved",
 };
 
-/** The business purpose is the string the public ledger prints — "travel to
- *  NY to film Eden event", never "bus to NY". Length-floored so a shrug can't
- *  submit; the reviewer is the real quality gate. */
+/** The business purpose is the sentence behind what the public ledger prints
+ *  — "travel to NY to film Eden event", never "bus to NY". Length-floored so a
+ *  shrug can't submit; the reviewer is the real quality gate. (What actually
+ *  prints is `publishedPurpose` below, which prefers an approver's redacted
+ *  rewrite when one exists.) */
 export const MIN_PURPOSE_LENGTH = 20;
+
+/**
+ * WHAT THE PUBLIC LEDGER PRINTS. The single place that decision lives, so the
+ * ledger renderer (a separate scope, not built yet) cannot get it wrong.
+ *
+ * An approver may write a public-facing version of a coding's purpose —
+ * stripping a name or other personal detail out of a sentence that is about to
+ * be published. That rewrite is stored SEPARATELY (`publicPurpose`); the
+ * author's own `businessPurpose` is retained untouched, because this is
+ * substantiation for an IRS accountable plan and what actually happened has to
+ * survive. Redaction, not falsification.
+ *
+ * So: publish the approver's version when there is one, the author's otherwise
+ * — and never resolve this at the call site.
+ */
+export function publishedPurpose(coding: {
+  businessPurpose: string;
+  publicPurpose?: string | null;
+}): string {
+  const redacted = coding.publicPurpose?.trim();
+  return redacted ? redacted : coding.businessPurpose;
+}
 /** Same cap + rationale as `MAX_NOTE_LENGTH` — a purpose is a sentence or
  *  three, not a document. */
 export const MAX_PURPOSE_LENGTH = 2000;

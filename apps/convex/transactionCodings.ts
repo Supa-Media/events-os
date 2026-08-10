@@ -96,6 +96,13 @@ const codingRow = v.object({
   // What the public ledger renders in place of names — always present.
   affiliationBreakdown: v.record(v.string(), v.number()),
   groupDescription: v.union(v.string(), v.null()),
+  /** The APPROVER's public-facing rewrite, when one exists. Null means the
+   *  author's own `businessPurpose` is what publishes. Both are always sent
+   *  to internal surfaces — redaction is not falsification, so the record
+   *  shows what was written and what will be published, side by side. */
+  publicPurpose: v.union(v.string(), v.null()),
+  publicPurposeByName: v.union(v.string(), v.null()),
+  publicPurposeAt: v.union(v.number(), v.null()),
   status: statusValidator,
   statusLabel: v.string(),
   codedByName: v.union(v.string(), v.null()),
@@ -131,6 +138,9 @@ async function projectCoding(
     attendees: canSeeNames ? (row.attendees ?? null) : null,
     affiliationBreakdown: attendeeAffiliationBreakdown(row.attendees ?? []),
     groupDescription: row.groupDescription ?? null,
+    publicPurpose: row.publicPurpose ?? null,
+    publicPurposeByName: await name(row.publicPurposeByPersonId),
+    publicPurposeAt: row.publicPurposeAt ?? null,
     status: row.status,
     statusLabel:
       TRANSACTION_CODING_STATUS_LABELS[row.status as TransactionCodingStatus],
@@ -436,6 +446,112 @@ export const requestChanges = mutation({
     // send in the app.
     await ctx.scheduler.runAfter(0, internal.cards.notifyCodingSentBack, {
       transactionId: args.transactionId,
+    });
+    return null;
+  },
+});
+
+/**
+ * Rewrite the PUBLISHED wording of a coding — the approver's redaction pass.
+ *
+ * Owner, 2026-08-09: *"That should be part of the financial manager or whoever
+ * is approving's role — to see if they could just edit things to get it ready
+ * for public viewing… since they know that, they should be able to go in and
+ * edit it, or highlight something and redact it."*
+ *
+ * ## Redaction is not falsification
+ *
+ * This is a substantiation record for an IRS accountable plan. What actually
+ * happened has to survive, so the author's `businessPurpose` is NEVER touched
+ * — not by this mutation, not by anything. The approver's version is stored
+ * beside it in `publicPurpose`, the ledger renders `publicPurpose ??
+ * businessPurpose`, and every internal surface shows both, labelled. An
+ * auditor reading this row can still see the sentence the spender wrote.
+ *
+ * The hole it closes: structured attendee names are protected forever and
+ * render internal-only, but a name typed into the free-text purpose bypasses
+ * that entirely. Real production text reads "Travel with Michael Reid from all
+ * team meeting in Manhattan to LIRR in Rosedale". Before this, an approver's
+ * only options were to publish the name or bounce the whole coding back over a
+ * wording nit — so the likely outcome was publishing the name.
+ *
+ * ## What it is NOT
+ *
+ * Not a rich-text range-redaction UI. The owner floated "highlight something
+ * and redact it" as a thought; a plain editable field with the original shown
+ * beneath satisfies every requirement above, and three similar lines beat a
+ * premature abstraction (CLAUDE.md). Not an inference engine either — nothing
+ * scans the prose for things that look like names (decision 5).
+ *
+ * SEPARATION OF DUTIES applies. Rewriting the published sentence is part of
+ * deciding, so it is gated by `requireReviewCoding` and refused on your own
+ * coding — otherwise "I can't approve my own, but I can rewrite what mine
+ * says before somebody else does" would be a way around it.
+ *
+ * Passing `null` clears the redaction and restores the author's words as the
+ * published version. That path is audited exactly like a rewrite: taking a
+ * redaction OFF is as much of a publishing decision as putting one on.
+ */
+export const setPublicPurpose = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    publicPurpose: v.union(v.string(), v.null()),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, scope, actorPersonId } = await requireReviewCoding(
+      ctx,
+      args.transactionId,
+    );
+    const coding = await codingForTransaction(ctx, args.transactionId);
+    if (!coding) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "This transaction has no coding to edit.",
+      });
+    }
+    if (actorPersonId != null) {
+      assertSeparationOfDuties(actorPersonId, coding.codedByPersonId);
+    }
+    const next = args.publicPurpose?.trim() ?? null;
+    if (next != null && next.length < MIN_PURPOSE_LENGTH) {
+      // The published sentence has to clear the same bar the author's did —
+      // a redaction that guts it into "travel" is a worse public record than
+      // the name it removed.
+      throw new ConvexError({
+        code: "PURPOSE_TOO_SHORT",
+        message: `The published wording still has to say what the money was for — at least ${MIN_PURPOSE_LENGTH} characters.`,
+      });
+    }
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const before = coding.publicPurpose ?? coding.businessPurpose;
+    // A no-op rewrite writes nothing and logs nothing: an approver who opens
+    // the field, changes their mind, and saves shouldn't leave an audit row
+    // claiming they redacted something.
+    if ((next ?? coding.businessPurpose) === before) return null;
+
+    await ctx.db.patch(coding._id, {
+      publicPurpose: next ?? undefined,
+      publicPurposeByPersonId: next ? (actorPersonId ?? undefined) : undefined,
+      publicPurposeByUserId: next ? userId : undefined,
+      publicPurposeAt: next ? Date.now() : undefined,
+    });
+    await logFinanceAudit(ctx, {
+      chapterId: scope,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "coding_redact",
+      actorPersonId,
+      field: "publicPurpose",
+      before,
+      after: next ?? coding.businessPurpose,
+      // WHY it reads as a redaction rather than an edit: the author's own
+      // sentence is still on the row, and this names what replaced it.
+      reason:
+        next == null
+          ? "Restored the author's wording as the published version"
+          : "Edited the wording that publishes; the author's original is retained",
+      amountCents: txn.amountCents,
     });
     return null;
   },

@@ -35,6 +35,10 @@ import {
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { daysWaiting, substantiationLine } from "./queueDisplay";
+import {
+  PublicPurposeEditor,
+  PublicPurposeNotice,
+} from "./PublicPurposeEditor";
 
 export interface ReviewQueueRow {
   transactionId: string;
@@ -54,6 +58,9 @@ export interface ReviewQueueRow {
     attendees: { name: string; affiliation: string }[] | null;
     affiliationBreakdown: Record<string, number>;
     groupDescription: string | null;
+    publicPurpose: string | null;
+    publicPurposeByName: string | null;
+    publicPurposeAt: number | null;
     codedByName: string | null;
     submittedAt: number;
   };
@@ -204,12 +211,23 @@ function QueueRow({
       </Row>
 
       {/* The purpose is the substance of the review, so it gets its own line
-          at full width rather than a truncated column. */}
+          at full width rather than a truncated column — and, for whoever can
+          decide the row, the place to strip a name out of it before it
+          publishes rather than bouncing the whole coding back over one. */}
       <View className="px-4 pb-3">
         <Text className="text-xs text-ink">{row.coding.businessPurpose}</Text>
         {substantiation ? (
           <Text className="mt-0.5 text-2xs text-muted">{substantiation}</Text>
         ) : null}
+        {row.canReview ? (
+          <PublicPurposeEditor
+            transactionId={row.transactionId}
+            state={row.coding}
+            runAction={runAction}
+          />
+        ) : (
+          <PublicPurposeNotice state={row.coding} />
+        )}
       </View>
 
       {sendingBack ? (

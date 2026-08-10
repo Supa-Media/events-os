@@ -2050,6 +2050,28 @@ export const transactionCodings = defineTable({
   // The reviewer's latest send-back note ("receipt must show exact amount") —
   // required on `changes_requested`, cleared on approval.
   reviewNote: v.optional(v.string()),
+  // ── REDACTION, NOT FALSIFICATION ──────────────────────────────────────────
+  // `businessPurpose` above is and remains the AUTHOR'S OWN WORDS. It is never
+  // rewritten by anyone else and never deleted — it is the substantiation of
+  // record for an IRS accountable plan, and what actually happened has to
+  // survive. What an approver may write is a separate, public-facing version
+  // of the same sentence, stored HERE, alongside it.
+  //
+  // The published ledger renders `publicPurpose ?? businessPurpose`; every
+  // internal review surface shows BOTH, labelled. The hole this closes:
+  // structured attendee names are protected forever and render internal-only,
+  // but a name typed into the free-text purpose bypasses that entirely
+  // ("Travel with Michael Reid from all team meeting in Manhattan…" is real
+  // production text). An approver can now strip the name and approve instead
+  // of bouncing the whole coding back over a wording nit.
+  //
+  // Do NOT "simplify" this into editing `businessPurpose` in place. That would
+  // destroy the author's testimony to tidy up a public string, which is the
+  // one thing this design exists to prevent.
+  publicPurpose: v.optional(v.string()),
+  publicPurposeByPersonId: v.optional(v.id("people")),
+  publicPurposeByUserId: v.optional(v.id("users")),
+  publicPurposeAt: v.optional(v.number()),
   // When the REVIEWERS were last told this coding is waiting on them. The
   // sibling of `transactions.lastReminderSentAt` on the cardholder side, and
   // the same job: without it the daily sweep would re-mail the same queue
