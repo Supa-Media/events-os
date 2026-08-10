@@ -30,11 +30,12 @@ import {
 } from "../role/RoleChips";
 import { ScopeToggle, type ScopeChoice } from "../team/ScopeToggle";
 import { colors } from "../../lib/theme";
-import { formatDateTime } from "../../lib/format";
+import { formatDateTimeInZone, zoneAbbreviation } from "../../lib/format";
 import { webAppUrl } from "../../lib/appUrl";
 import {
   EVENT_STATUSES,
   EVENT_STATUS_LABELS,
+  eventTimeZone,
   type EventStatus,
   type PhaseKey,
   type PhasePace,
@@ -185,7 +186,7 @@ export function EventHeader({
         style={{ zIndex: 20 }}
       >
         <StatusPill status={event.status as EventStatus} onSetStatus={onSetStatus} />
-        <DateSeg eventDate={event.eventDate} onReschedule={onReschedule} />
+        <DateSeg event={event} onReschedule={onReschedule} />
         <LocationSeg
           location={event.location ?? null}
           value={locationValue}
@@ -453,14 +454,26 @@ function MetaSeg({
   );
 }
 
-/** Date — opens the calendar/time popover; rescheduling reflows due dates. */
+/**
+ * Date — opens the calendar/time popover; rescheduling reflows due dates.
+ *
+ * Takes the whole event rather than a bare `eventDate` so the zone comes from
+ * `eventTimeZone(event)` — the seam every event clock asks, and the one that
+ * starts answering per-event the day a `timeZone` column exists. Both halves
+ * of this segment are the event's clock: the label reads in it, and the picker
+ * WRITES in it, so rescheduling from a Pacific airport sets the hour the crew
+ * will actually turn up for.
+ */
 function DateSeg({
-  eventDate,
+  event,
   onReschedule,
 }: {
-  eventDate: number;
+  event: { eventDate: number; timeZone?: string | null };
   onReschedule: (ts: number) => void;
 }) {
+  const eventDate = event.eventDate;
+  const timeZone = eventTimeZone(event);
+  const zoneLabel = zoneAbbreviation(eventDate, timeZone);
   const { ref, anchor, visible, open, close } = useAnchor();
   // Local draft while the popover is open: each edit must compound on the
   // previous one immediately — driving the panel from the server value would
@@ -474,7 +487,9 @@ function DateSeg({
       <MetaSeg
         innerRef={ref}
         icon="calendar"
-        text={formatDateTime(eventDate)}
+        text={`${formatDateTimeInZone(eventDate, timeZone)}${
+          zoneLabel ? ` ${zoneLabel}` : ""
+        }`}
         onPress={() => {
           setDraft(null);
           open();
@@ -489,6 +504,7 @@ function DateSeg({
         </View>
         <DateTimePanel
           value={draft ?? eventDate}
+          timeZone={timeZone}
           onChange={(ts) => {
             setDraft(ts);
             onReschedule(ts);

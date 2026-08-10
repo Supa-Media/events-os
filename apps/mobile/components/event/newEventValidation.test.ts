@@ -6,6 +6,7 @@ const VALID: CreateFormState = {
   effectiveName: "Test",
   date: "2026-07-24",
   time: "10:40",
+  timeZone: "America/New_York",
 };
 
 describe("getCreateBlockReason", () => {
@@ -58,6 +59,7 @@ describe("getCreateBlockReason", () => {
         effectiveName: "",
         date: "",
         time: "",
+        timeZone: "America/New_York",
       }),
     ).toBe("Pick a template — or start blank.");
   });

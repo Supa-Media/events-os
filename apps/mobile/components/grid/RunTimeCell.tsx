@@ -12,11 +12,23 @@
  * placed on the occurrence nearest the segment's current time — nudging
  * 11:30 PM → 11:45 PM stays on the same night. Without an event date to anchor
  * against, the cell is read-only formatted text.
+ *
+ * Every clock here — the chip, the seeded fields, and the commit — is the
+ * EVENT's, resolved once through `eventTimeZone(event)`. A run sheet is a fact
+ * about the room the event happens in: two phones in that room must read the
+ * same sheet, and a leader who types "5:00 PM" from a Pacific airport must set
+ * the load-in her crew will actually turn up for, not 8:00 PM.
  */
 import { useState } from "react";
 import { View, Text, Pressable, TextInput } from "react-native";
-import { computeRunTime, formatOffsetMinutes, MINUTE_MS } from "@events-os/shared";
-import { formatTime } from "../../lib/format";
+import {
+  computeRunTime,
+  eventTimeZone,
+  formatOffsetMinutes,
+  MINUTE_MS,
+  zonedParts,
+} from "@events-os/shared";
+import { formatTimeInZone, withZonedTime, zoneAbbreviation } from "../../lib/format";
 import { colors } from "../../lib/theme";
 import { Icon } from "../ui/Icon";
 import { Popover } from "../ui/Popover";
@@ -43,11 +55,12 @@ export function RunTimeCell({
   // Editing needs the event start to back-calculate the offset; without it (or
   // when read-only) the cell is just the formatted time chip.
   const canPick = editable && eventDate != null;
+  const timeZone = eventTimeZone(eventDate != null ? { eventDate } : null);
   const label =
     value == null
       ? null
       : eventDate != null
-        ? formatTime(computeRunTime(eventDate, value))
+        ? formatTimeInZone(computeRunTime(eventDate, value), timeZone)
         : formatOffsetMinutes(value);
 
   if (!canPick) {
@@ -74,7 +87,12 @@ export function RunTimeCell({
       </Pressable>
 
       <Popover visible={visible} onClose={close} anchor={anchor} width={196}>
-        <TimeEntryPanel value={value} eventDate={eventDate!} onChange={onChange} />
+        <TimeEntryPanel
+          value={value}
+          eventDate={eventDate!}
+          timeZone={timeZone}
+          onChange={onChange}
+        />
       </Popover>
     </>
   );
@@ -88,28 +106,33 @@ function Chip({ label }: { label: string }) {
   );
 }
 
-/** Typed hour : minute + AM·PM toggle. Commits a minute offset from T-0. */
+/** Typed hour : minute + AM·PM toggle, in the event's timezone. Commits a
+ *  minute offset from T-0. */
 function TimeEntryPanel({
   value,
   eventDate,
+  timeZone,
   onChange,
 }: {
   value: number | null | undefined;
   eventDate: number;
+  timeZone: string;
   onChange: (offsetMinutes: number) => void;
 }) {
-  const seed = new Date(computeRunTime(eventDate, value ?? 0));
-  const seedH12 = seed.getHours() % 12 === 0 ? 12 : seed.getHours() % 12;
+  const base = computeRunTime(eventDate, value ?? 0);
+  const seed = zonedParts(base, timeZone);
+  const seedH12 = seed.hour % 12 === 0 ? 12 : seed.hour % 12;
+  const zoneLabel = zoneAbbreviation(base, timeZone);
 
   const [hourText, setHourText] = useState(pad(seedH12));
-  const [minText, setMinText] = useState(pad(seed.getMinutes()));
-  const [isPm, setIsPm] = useState(seed.getHours() >= 12);
+  const [minText, setMinText] = useState(pad(seed.minute));
+  const [isPm, setIsPm] = useState(seed.hour >= 12);
 
   const commit = (hStr: string, mStr: string, pm: boolean) => {
     let h = parseInt(hStr, 10);
     let m = parseInt(mStr, 10);
     if (!Number.isFinite(h)) h = seedH12;
-    if (!Number.isFinite(m)) m = seed.getMinutes();
+    if (!Number.isFinite(m)) m = seed.minute;
     h = Math.min(12, Math.max(1, h));
     m = Math.min(59, Math.max(0, m));
     // Reflect the clamped/normalized values back into the fields.
@@ -119,46 +142,53 @@ function TimeEntryPanel({
     const h24 = (h % 12) + (pm ? 12 : 0);
     // Anchor to the segment's current time, then pick the occurrence of the
     // typed time nearest it so a run of show that crosses midnight stays put.
-    const base = computeRunTime(eventDate, value ?? 0);
-    const d = new Date(base);
-    d.setHours(h24, m, 0, 0);
-    let ts = d.getTime();
+    // "Same day, different time" is asked in the EVENT's zone — asked on the
+    // device it lands on the wrong day whenever the two disagree about which
+    // day it is, which is most of the evening for anyone west of the event.
+    let ts = withZonedTime(base, h24, m, timeZone);
     while (ts - base > HALF_DAY_MS) ts -= DAY_MS;
     while (base - ts > HALF_DAY_MS) ts += DAY_MS;
     onChange(Math.round((ts - eventDate) / MINUTE_MS));
   };
 
   return (
-    <View className="flex-row items-center justify-center gap-1.5 p-3">
-      <TimeInput
-        value={hourText}
-        onChangeText={setHourText}
-        onBlur={() => commit(hourText, minText, isPm)}
-        autoFocus
-      />
-      <Text className="text-lg font-semibold text-muted">:</Text>
-      <TimeInput
-        value={minText}
-        onChangeText={setMinText}
-        onBlur={() => commit(hourText, minText, isPm)}
-      />
-      <View className="gap-1 pl-1">
-        <MeridiemButton
-          label="AM"
-          active={!isPm}
-          onPress={() => {
-            setIsPm(false);
-            commit(hourText, minText, false);
-          }}
+    <View className="p-3">
+      {zoneLabel ? (
+        <Text className="pb-1.5 text-center text-2xs font-semibold uppercase tracking-wide text-muted">
+          {zoneLabel}
+        </Text>
+      ) : null}
+      <View className="flex-row items-center justify-center gap-1.5">
+        <TimeInput
+          value={hourText}
+          onChangeText={setHourText}
+          onBlur={() => commit(hourText, minText, isPm)}
+          autoFocus
         />
-        <MeridiemButton
-          label="PM"
-          active={isPm}
-          onPress={() => {
-            setIsPm(true);
-            commit(hourText, minText, true);
-          }}
+        <Text className="text-lg font-semibold text-muted">:</Text>
+        <TimeInput
+          value={minText}
+          onChangeText={setMinText}
+          onBlur={() => commit(hourText, minText, isPm)}
         />
+        <View className="gap-1 pl-1">
+          <MeridiemButton
+            label="AM"
+            active={!isPm}
+            onPress={() => {
+              setIsPm(false);
+              commit(hourText, minText, false);
+            }}
+          />
+          <MeridiemButton
+            label="PM"
+            active={isPm}
+            onPress={() => {
+              setIsPm(true);
+              commit(hourText, minText, true);
+            }}
+          />
+        </View>
       </View>
     </View>
   );
