@@ -2,7 +2,7 @@
  * RECEIPTS TAB — Receipt detail panel (item 4 of the receipt CRM UI plan):
  * the full record for one `receipts` document, backed by
  * `api.receipts.getReceipt`. House modal shape (mirrors
- * `TransactionNoteModal`/`TransactionDetailModal`).
+ * `TransactionDocumentationModal`/`TransactionDetailModal`).
  *
  *  - Image preview, or — for a PDF (inferred from the filename extension;
  *    the backend never surfaces a content-type) — an INLINE preview on web

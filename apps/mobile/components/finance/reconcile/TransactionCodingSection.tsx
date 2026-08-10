@@ -107,6 +107,7 @@ export function TransactionCodingSection({
     coding,
     requiresCoding,
     hasDocumentation,
+    canReview,
     namesMaxHeadcount,
     minPurposeLength,
   } = data;
@@ -218,16 +219,25 @@ export function TransactionCodingSection({
             </Text>
           ) : null}
 
+          {/* DECIDING and AUTHORING are different powers, and used to share one
+              gate. `readOnly` is a bookkeeper-or-better flag; Approve and Send
+              back need finance MANAGER plus separation of duties (you cannot
+              approve your own testimony). So a bookkeeper — or a manager
+              looking at a coding they wrote themselves — was shown a working
+              Approve button that threw FORBIDDEN on every press. `canReview`
+              comes from the server, computed by the same resolver and the same
+              SoD rule the mutation enforces, so the button can no longer
+              promise something the backend will refuse. */}
           {!readOnly ? (
             <View className="mt-2 flex-row flex-wrap gap-2">
-              {coding.status === "submitted" ? (
+              {canReview && coding.status === "submitted" ? (
                 <Button
                   title="Approve"
                   onPress={() => void run(() => approve({ transactionId }))}
                   loading={submitting}
                 />
               ) : null}
-              {coding.status !== "changes_requested" ? (
+              {canReview && coding.status !== "changes_requested" ? (
                 <Button
                   title={coding.status === "approved" ? "Reopen" : "Send back"}
                   variant="secondary"
@@ -249,6 +259,17 @@ export function TransactionCodingSection({
                 />
               ) : null}
             </View>
+          ) : null}
+
+          {/* Say WHY there are no decide buttons, but only to someone who could
+              plausibly expect them — the author of a coding that's sitting in
+              review. Silence there reads as "nothing is happening"; everyone
+              else would just be told about a power they never had. */}
+          {!readOnly && !canReview && coding.status === "submitted" ? (
+            <Text className="mt-2 text-2xs text-muted">
+              Waiting on a Finance manager. Approving your own coding isn&apos;t
+              something you can do — a second person is the point.
+            </Text>
           ) : null}
 
           {sendingBack ? (
