@@ -394,11 +394,15 @@ function TransactionDetailBody({
     }
   }
 
-  async function editReceipt(storageId: Id<"_storage">) {
+  async function editReceipt(storageId: Id<"_storage">, filename: string | null) {
     const prev = hasReceipt;
     setHasReceiptState(true);
     try {
-      await attachReceipt({ transactionId: txn.id, storageId });
+      await attachReceipt({
+        transactionId: txn.id,
+        storageId,
+        ...(filename ? { filename } : {}),
+      });
     } catch (err) {
       setHasReceiptState(prev);
       alertError(err);
@@ -539,8 +543,8 @@ function TransactionDetailBody({
             hasReceipt={hasReceipt}
             reminderStage={txn.reminderStage}
             transactionId={txn.id}
-            onUpload={async (storageId) => {
-              await editReceipt(storageId);
+            onUpload={async (storageId, filename) => {
+              await editReceipt(storageId, filename);
             }}
             generateUploadUrl={generateUploadUrl}
           />

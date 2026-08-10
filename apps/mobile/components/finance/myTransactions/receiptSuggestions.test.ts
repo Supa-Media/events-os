@@ -3,7 +3,6 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   adaptReceiptSuggestions,
-  looksLikeDocument,
   suggestionMeta,
   suggestionTitle,
   suggestionWarning,
@@ -164,22 +163,3 @@ describe("suggestionWarning", () => {
   });
 });
 
-describe("looksLikeDocument", () => {
-  test("only an image gets a thumbnail; everything else gets a document icon", () => {
-    expect(looksLikeDocument(one())).toBe(false);
-    expect(looksLikeDocument(one({ contentType: "application/pdf" }))).toBe(true);
-    expect(looksLikeDocument(one({ contentType: "text/html" }))).toBe(true);
-  });
-
-  test("falls back to the filename or URL when no content type came through", () => {
-    expect(
-      looksLikeDocument(one({ contentType: null, filename: "receipt.PDF" })),
-    ).toBe(true);
-    expect(
-      looksLikeDocument(
-        one({ contentType: null, filename: null, url: "https://f/x.pdf?sig=1" }),
-      ),
-    ).toBe(true);
-    expect(looksLikeDocument(one({ contentType: null }))).toBe(false);
-  });
-});

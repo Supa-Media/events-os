@@ -45,7 +45,7 @@ export function ChargeRow({
   todo: ChargeTodo;
   last: boolean;
   onOpen: () => void;
-  onUpload: (storageId: Id<"_storage">) => Promise<void>;
+  onUpload: (storageId: Id<"_storage">, filename: string | null) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
 }) {
   const sentBack = todo.kind === "sent_back";

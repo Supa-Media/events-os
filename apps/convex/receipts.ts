@@ -1009,6 +1009,9 @@ const inboundReceiptSummary = v.object({
   url: v.union(v.string(), v.null()),
   // See `receiptSummary.contentType` — the viewer branches on this.
   contentType: v.union(v.string(), v.null()),
+  // The fallback signal when the content type is uninformative, and the label
+  // the inbox tile shows. `receiptFileKind` takes both.
+  filename: v.union(v.string(), v.null()),
   amountCents: v.union(v.number(), v.null()),
   receiptDate: v.union(v.number(), v.null()),
   merchant: v.union(v.string(), v.null()),
@@ -1129,6 +1132,7 @@ export const listInboundQueue = query({
           url: await ctx.storage.getUrl(rd.storageId),
           contentType:
             (await ctx.db.system.get("_storage", rd.storageId))?.contentType ?? null,
+          filename: rd.filename ?? null,
           amountCents: rd.amountCents ?? null,
           receiptDate: rd.receiptDate ?? null,
           merchant: rd.merchant ?? null,

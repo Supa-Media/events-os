@@ -9650,11 +9650,22 @@ export const setTransactionStatus = mutation({
  * finance seat may still attach to their OWN transaction (the member "My
  * transactions" path) — a cardholder chasing their own receipt shouldn't need
  * a finance grant to do it.
+ *
+ * `filename` is the name of the file the human actually picked. This is the
+ * BUSIEST upload path in the app (every "Attached" chip's own uploader —
+ * Reconcile, Transaction Detail, My transactions, the Money view) and it used
+ * to record none, while every other ingest path did. The viewer's file-kind
+ * detector prefers the stored content type, so a missing name was never fatal
+ * — but it is the fallback that saves a browser-supplied
+ * `application/octet-stream`, and a receipt whose row says "Feb-invoice.pdf"
+ * is simply legible in a way `receipts/kg2f…` is not. Optional: an older
+ * client sends nothing, and a native camera roll pick genuinely has no name.
  */
 export const attachReceipt = mutation({
   args: {
     transactionId: v.id("transactions"),
     storageId: v.id("_storage"),
+    filename: v.optional(v.string()),
   },
   returns: v.null(),
   handler: async (ctx, args) => {
@@ -9722,6 +9733,9 @@ export const attachReceipt = mutation({
       storageId: args.storageId,
       source: "upload",
       ...(uploader ? { uploadedByPersonId: uploader._id } : {}),
+      ...(args.filename && args.filename.trim() !== ""
+        ? { filename: args.filename.trim() }
+        : {}),
     });
     await linkReceiptToTransaction(ctx, {
       receiptId,

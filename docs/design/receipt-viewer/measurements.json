@@ -1,0 +1,106 @@
+[
+  {
+    "name": "thumbnail photo",
+    "value": "image 2400x3200"
+  },
+  {
+    "name": "thumbnail single",
+    "value": "image 1224x1584"
+  },
+  {
+    "name": "thumbnail multi",
+    "value": "image 1224x1584"
+  },
+  {
+    "name": "thumbnail mystery",
+    "value": "image 2400x3200"
+  },
+  {
+    "name": "thumbnail email",
+    "value": "label \"EMAIL\""
+  },
+  {
+    "name": "thumbnail legacy",
+    "value": "image 1224x1584"
+  },
+  {
+    "name": "thumbnail broken",
+    "value": "label \"CAN'T OPEN\""
+  },
+  {
+    "name": "BEFORE photo — new tab to pixels (ms)",
+    "value": 76
+  },
+  {
+    "name": "BEFORE photo — browser DOWNLOADED instead of displaying",
+    "value": "no"
+  },
+  {
+    "name": "BEFORE pdf — new tab (ms)",
+    "value": 50
+  },
+  {
+    "name": "BEFORE pdf — browser DOWNLOADED instead of displaying",
+    "value": "YES"
+  },
+  {
+    "name": "AFTER photo — click to pixels, in place (ms)",
+    "value": 61
+  },
+  {
+    "name": "photo width at fit (px)",
+    "value": 1440
+  },
+  {
+    "name": "photo width after 3 zoom steps (px)",
+    "value": 4320
+  },
+  {
+    "name": "zoom readout after reset",
+    "value": "100%"
+  },
+  {
+    "name": "AFTER single-page PDF — click to pixels, in place (ms)",
+    "value": 53
+  },
+  {
+    "name": "single-page PDF shows page controls",
+    "value": "no (correct — 1 page)"
+  },
+  {
+    "name": "AFTER multi-page PDF — click to page 1, in place (ms)",
+    "value": 50
+  },
+  {
+    "name": "page control at open",
+    "value": "Page 1 of 3"
+  },
+  {
+    "name": "page 1 → page 3 (ms)",
+    "value": 2161
+  },
+  {
+    "name": "page control after two Next presses",
+    "value": "Page 3 of 3"
+  },
+  {
+    "name": "AFTER multi-page PDF — RE-open, cached (ms)",
+    "value": 46
+  },
+  {
+    "name": "AFTER unlabelled file — click to pixels, in place (ms)",
+    "value": 43
+  },
+  {
+    "name": "unlabelled PDF rescued by byte-sniffing",
+    "value": "yes — rendered as a PDF"
+  },
+  {
+    "name": "emailed HTML body renders inline",
+    "value": "yes"
+  },
+  {
+    "name": "missing file shows an explicit state + action",
+    "value": "yes"
+  }
+]

@@ -13,6 +13,19 @@
  * results list; new/updated receipts themselves show up in the Library
  * section via its own live `listReceipts` subscription — this component
  * never patches that list itself.
+ *
+ * ONE PICKED FILE = ONE RECEIPT. This zone used to run picked PDFs through a
+ * client-side pdfjs rasterizer (`lib/receiptPdfRasterize`) that replaced a
+ * scanned PDF with one PNG PER PAGE — so a 3-page scanned receipt became
+ * THREE library rows, each a fragment, none of them the document the person
+ * uploaded. That existed because the server genuinely couldn't rasterize a
+ * scanned PDF at the time (PR #406's reverted native-canvas attempt). It can
+ * now: `receiptPdf.ts#renderScannedPdfPages` renders pages with pdfium WASM,
+ * hands them to vision, and DELETES them again — the original PDF stays the
+ * canonical stored file. Rasterization is an OCR implementation detail, so it
+ * belongs entirely on the server, and the client just uploads what it was
+ * given. (The same removal fixes the opposite bug on the single-attach path:
+ * `ReceiptViewerModal` took `expanded[0]` and silently dropped pages 2..N.)
  */
 import { useState } from "react";
 import { ActivityIndicator, Platform, Pressable, Text, View } from "react-native";
@@ -24,11 +37,6 @@ import * as ImagePicker from "expo-image-picker";
 import { Badge, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import type { ActionRunner } from "../../../lib/useActionToast";
-// Web resolves `.web.ts` (real pdfjs rasterization); native gets a passthrough
-// stub. A SCANNED PDF picked on web is rendered to page images here so it flows
-// through the server's image-OCR path (a scanned PDF has no text layer the
-// backend can read — see PR #406). Digital PDFs pass through untouched.
-import { expandScannedPdfs } from "../../../lib/receiptPdfRasterize";
 
 /** `receipts.submitUploadedReceipts`'s own per-call cap — mirrored here so a
  *  big batch splits into legal-sized chunks rather than throwing. */
@@ -100,13 +108,15 @@ export function UploadZone({
       if (!fileList || fileList.length === 0) return;
       const files = Array.from(fileList).map((f) => ({
         blob: f as Blob,
-        contentType: f.type || "image/jpeg",
+        // NOT `|| "image/jpeg"`: a browser that reports no type on a PDF would
+        // have had it stored as a JPEG, and the stored content type is the
+        // viewer's primary signal for how to render it (see
+        // `@events-os/shared#receiptFileKind`). Say "unknown" honestly and let
+        // the filename answer instead.
+        contentType: f.type || "application/octet-stream",
         name: f.name,
       }));
-      // Rasterize any scanned PDFs to page images before upload (digital PDFs
-      // and non-PDFs pass through). Never blocks on failure — expandScannedPdfs
-      // degrades to the original file.
-      void expandScannedPdfs(files).then(uploadFiles);
+      void uploadFiles(files);
     };
     input.click();
   }

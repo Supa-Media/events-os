@@ -18,8 +18,8 @@
  *   - rows are tall enough to actually read the thumbnail,
  *   - HOVERING a thumbnail floats a large preview beside the cursor
  *     (`useHoverImagePreview`, web only — hover has no touch equivalent),
- *   - PRESSING the thumbnail opens the full `ImageLightbox` (works
- *     everywhere, and is the native path),
+ *   - PRESSING the thumbnail opens the full `FileViewer` — zoomable, pannable
+ *     and paged for a PDF, so a photographed receipt can finally be READ,
  *   - pressing anywhere else on the row opens the detail modal as before.
  *
  * The receipt LIBRARY IS ORG-WIDE (founder decision, 2026-07-24 — see
@@ -27,7 +27,7 @@
  * it's what tells a bookkeeper whose receipt they're looking at now that
  * nothing is filtered out by chapter.
  */
-import { Image, Pressable, Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { useState } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -40,19 +40,18 @@ import {
   GridHeaderCell,
   GridHeaderRow,
   GridRow,
+  FileThumbnail,
+  FileViewer,
   Icon,
-  ImageLightbox,
   Pill,
   useHoverImagePreview,
   useResizableColumns,
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
-import { isReceiptExtractionActive } from "@events-os/shared";
+import { isReceiptExtractionActive, receiptFileKind } from "@events-os/shared";
 import {
   formatCents,
-  isPdfReceipt,
-  isDocumentReceipt,
   senderClassLabel,
   senderClassTone,
   LIBRARY_FILTERS,
@@ -99,12 +98,14 @@ export function LibrarySection({
     DEFAULT_COLS,
   );
   const { wrapperRef, onWrapperLayout, hoverProps, layer } = useHoverImagePreview();
-  // The full-size viewer a thumbnail press opens (the native + click path).
-  const [lightbox, setLightbox] = useState<{
+  // The full-size viewer a thumbnail press opens. It takes the receipt's own
+  // content type + filename and works out the rest itself — no `isPdf`/
+  // `isDocument` flags for a caller to compute (and get wrong) any more.
+  const [viewing, setViewing] = useState<{
     uri: string;
     caption?: string;
-    isPdf?: boolean;
-    isDocument?: boolean;
+    contentType: string | null;
+    filename: string | null;
   } | null>(null);
 
   const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
@@ -157,7 +158,7 @@ export function LibrarySection({
               widths={widths}
               isLast={i === rows.length - 1}
               hoverProps={hoverProps}
-              onOpenLightbox={setLightbox}
+              onOpenViewer={setViewing}
               onPress={() => onOpenReceipt(r._id)}
               onJumpToOriginal={
                 r.duplicateOfReceiptId
@@ -174,14 +175,14 @@ export function LibrarySection({
           never steal the hover that's keeping it open. */}
       {layer}
 
-      {lightbox ? (
-        <ImageLightbox
-          uri={lightbox.uri}
-          caption={lightbox.caption}
-          isPdf={lightbox.isPdf}
-          isDocument={lightbox.isDocument}
+      {viewing ? (
+        <FileViewer
+          uri={viewing.uri}
+          caption={viewing.caption}
+          contentType={viewing.contentType}
+          filename={viewing.filename}
           visible
-          onClose={() => setLightbox(null)}
+          onClose={() => setViewing(null)}
         />
       ) : null}
     </View>
@@ -193,7 +194,7 @@ function ReceiptGridRow({
   widths,
   isLast,
   hoverProps,
-  onOpenLightbox,
+  onOpenViewer,
   onPress,
   onJumpToOriginal,
   original,
@@ -202,11 +203,11 @@ function ReceiptGridRow({
   widths: Record<ColKey, number>;
   isLast: boolean;
   hoverProps: (uri: string | null | undefined) => object;
-  onOpenLightbox: (v: {
+  onOpenViewer: (v: {
     uri: string;
     caption?: string;
-    isPdf?: boolean;
-    isDocument?: boolean;
+    contentType: string | null;
+    filename: string | null;
   }) => void;
   onPress: () => void;
   onJumpToOriginal?: () => void;
@@ -216,25 +217,18 @@ function ReceiptGridRow({
   // row re-renders on every extraction state change — the query is reactive),
   // it just has to be current enough to apply the staleness rule.
   const now = Date.now();
-  // No content-type from the backend — infer PDF from the filename extension
-  // (see `helpers.ts#isPdfReceipt`'s doc; ONE definition shared with
-  // `ReceiptDetailModal`).
-  const isPdf = isPdfReceipt(receipt.filename);
-  // An emailed receipt's `text/html` body is a DOCUMENT, not a photo —
-  // `<Image>` can't decode it, so it takes the same framed treatment a PDF
-  // does (see `isDocumentReceipt`).
-  const isDoc = !isPdf && isDocumentReceipt(receipt.contentType);
-  // A genuinely broken image URL (bad file, expired signed URL, ...) used to
-  // just render nothing — now it degrades to the same icon treatment as "no
-  // file" rather than silently blanking (mirrors `ReceiptDetailModal`'s
-  // `imgFailed` state).
-  const [imgFailed, setImgFailed] = useState(false);
-  const showImage = !!receipt.url && !isPdf && !isDoc && !imgFailed;
-  // PDFs have no rendered preview to float (there's no persisted preview
-  // image — see the PR's doc) — `null` uri makes `hoverProps` return no
-  // handlers at all, so the hook's existing "nothing to show" path applies
-  // instead of floating a blank white card.
-  const hoverUri = isPdf || isDoc ? null : receipt.url;
+  // WHAT KIND OF FILE this is — one shared detector, from the stored content
+  // type with the filename as fallback (`@events-os/shared#receiptFileKind`).
+  // This row used to compute it two ways of its own, neither of which could
+  // see a PDF uploaded from a transaction (no filename was ever stored).
+  const kind = receiptFileKind({
+    contentType: receipt.contentType,
+    filename: receipt.filename,
+  });
+  // Only a real bitmap can be floated as a hover preview; a `null` uri makes
+  // `hoverProps` return no handlers, which is the hook's "nothing to show"
+  // path. (A PDF's rendered first page isn't addressable by URL here.)
+  const hoverUri = kind === "image" || kind === "unknown" ? receipt.url : null;
 
   return (
     <GridRow
@@ -243,28 +237,31 @@ function ReceiptGridRow({
       accessibilityLabel={`Open receipt ${receipt.merchant ?? "unknown merchant"}`}
     >
       <GridCell width={widths.preview}>
-        {/* Hover → float a big preview; press → full lightbox, keeping "look
-            at this image" distinct from the row's "open the record". Nesting a
+        {/* Hover → float a big preview; press → the full viewer, keeping "look
+            at this file" distinct from the row's "open the record". Nesting a
             Pressable inside a pressable row is the shape the old ReceiptCard
             already used (its duplicate-jump badge), so the responder system
-            handles the inner press. When there's no image the Pressable is
-            disabled and the press falls through to the row, which is the
-            behavior you'd want anyway. */}
+            handles the inner press. When there's no file the Pressable is
+            disabled and the press falls through to the row. */}
         <Pressable
           {...hoverProps(hoverUri)}
           onPress={() => {
             if (receipt.url) {
-              onOpenLightbox({
+              onOpenViewer({
                 uri: receipt.url,
                 caption: receipt.filename ?? undefined,
-                isPdf,
-                isDocument: isDoc,
+                contentType: receipt.contentType,
+                filename: receipt.filename,
               });
             }
           }}
           disabled={!receipt.url}
           accessibilityLabel={
-            isPdf ? "View receipt PDF" : isDoc ? "View emailed receipt" : "View receipt image"
+            kind === "pdf"
+              ? "View receipt PDF"
+              : kind === "document"
+                ? "View emailed receipt"
+                : "View receipt image"
           }
           className="p-1.5"
           style={{ height: ROW_HEIGHT }}
@@ -273,31 +270,13 @@ function ReceiptGridRow({
             className="h-full overflow-hidden rounded border border-border bg-sunken"
             style={{ width: widths.preview - 12 }}
           >
-            {showImage ? (
-              <Image
-                // `showImage` already guarantees `receipt.url` is set — the
-                // `?? undefined` is only to satisfy `ImageSourcePropType`,
-                // which (unlike `ReceiptRow["url"]`) doesn't accept `null`.
-                source={{ uri: receipt.url ?? undefined }}
-                style={{ width: "100%", height: "100%" }}
-                resizeMode="cover"
-                onError={() => setImgFailed(true)}
-              />
-            ) : receipt.url && (isPdf || isDoc) ? (
-              // Legible "this is a PDF, not a missing file" affordance — a
-              // bare file-text icon reads identically to "no file at all",
-              // which these two states must not.
-              <View className="flex-1 items-center justify-center gap-0.5">
-                <Icon name="file-text" size={16} color={colors.faint} />
-                <Text className="text-2xs font-bold text-faint">
-                  {isPdf ? "PDF" : "EMAIL"}
-                </Text>
-              </View>
-            ) : (
-              <View className="flex-1 items-center justify-center">
-                <Icon name="file-text" size={18} color={colors.faint} />
-              </View>
-            )}
+            {/* A PDF shows its first PAGE here rather than a grey tile — and
+                rendering it warms the cache the viewer opens from. */}
+            <FileThumbnail
+              uri={receipt.url}
+              contentType={receipt.contentType}
+              filename={receipt.filename}
+            />
           </View>
         </Pressable>
       </GridCell>

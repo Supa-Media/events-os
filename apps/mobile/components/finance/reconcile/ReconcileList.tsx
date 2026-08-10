@@ -731,8 +731,14 @@ function ReconcileRow({
           readOnly={readOnly}
           reminderStage={row.reminderStage}
           transactionId={id}
-          onUpload={async (storageId) => {
-            await guard(attachReceipt({ transactionId: id, storageId }));
+          onUpload={async (storageId, filename) => {
+            await guard(
+              attachReceipt({
+                transactionId: id,
+                storageId,
+                ...(filename ? { filename } : {}),
+              }),
+            );
           }}
           generateUploadUrl={generateUploadUrl}
         />
@@ -1373,7 +1379,11 @@ export function ReceiptCell({
    *  keeps compiling unchanged; omitting it just falls back to the old inert
    *  chip rather than opening a viewer. */
   transactionId?: Id<"transactions">;
-  onUpload: (storageId: Id<"_storage">) => Promise<void>;
+  /** `filename` is the name of the file the human picked, or `null` when there
+   *  genuinely isn't one (a native camera-roll pick). Every caller forwards it
+   *  to `finances.attachReceipt` so the receipt row records what it is — see
+   *  that mutation's doc. */
+  onUpload: (storageId: Id<"_storage">, filename: string | null) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
   /** What actually backs this row up (`listReconcile`'s `documentation`).
    *  Absent on the call sites that only know `hasReceipt` (MoneyView), which
@@ -1399,7 +1409,7 @@ export function ReceiptCell({
   const [decideOpen, setDecideOpen] = useState(false);
   const attestException = useMutation(api.receiptExceptions.attest);
 
-  async function uploadBlob(blob: Blob, contentType: string) {
+  async function uploadBlob(blob: Blob, contentType: string, filename: string | null) {
     setBusy(true);
     try {
       const uploadUrl = await generateUploadUrl();
@@ -1409,7 +1419,7 @@ export function ReceiptCell({
         body: blob,
       });
       const { storageId } = await res.json();
-      await onUpload(storageId as Id<"_storage">);
+      await onUpload(storageId as Id<"_storage">, filename);
     } finally {
       setBusy(false);
     }
@@ -1423,7 +1433,9 @@ export function ReceiptCell({
     input.accept = "image/*,application/pdf";
     input.onchange = () => {
       const file = input.files?.[0];
-      if (file) void uploadBlob(file, file.type || "application/octet-stream");
+      if (file) {
+        void uploadBlob(file, file.type || "application/octet-stream", file.name || null);
+      }
     };
     input.click();
   }
@@ -1441,7 +1453,11 @@ export function ReceiptCell({
     const asset = result.assets[0];
     const resp = await fetch(asset.uri);
     const blob = await resp.blob();
-    await uploadBlob(blob, asset.mimeType || blob.type || "image/jpeg");
+    await uploadBlob(
+      blob,
+      asset.mimeType || blob.type || "image/jpeg",
+      asset.fileName ?? null,
+    );
   }
 
   function pick() {
