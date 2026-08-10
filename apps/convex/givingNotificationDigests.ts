@@ -47,6 +47,14 @@
  * what it matched (breaking the wedge), and the email says its total is a
  * floor.
  *
+ * ── A WEEKLY DIGEST COVERS A WEEK ──────────────────────────────────────────
+ * The window opens at `min(now − period, watermark)`, so it is never shorter
+ * than the cadence promises and never shorter than the un-reported tail. The
+ * first digest off a rule created this morning still reports the trailing seven
+ * days; a rule that missed a fortnight of runs reports the fortnight. The one
+ * exception is a drain in progress — full reasoning on `digestWindowStart` and
+ * on `lastWindowTruncated` in the schema.
+ *
  * ── THE ASYMMETRY ──────────────────────────────────────────────────────────
  * An empty DAILY digest is skipped and leaves the WATERMARK alone (it still
  * marks itself run for the day). An empty WEEKLY digest is SENT — "nothing
@@ -63,7 +71,7 @@ import {
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { giftMethodLabel } from "./lib/giftLabels";
+import { GIFT_TYPE_LABELS, giftMethodLabel, giftType } from "./lib/giftLabels";
 import {
   DIGEST_LAG_MS,
   MAX_DIGEST_GIFT_ROWS,
@@ -284,12 +292,17 @@ export const claimDigest = internalMutation({
     const chapterNames = new Map<string, string>();
     const byScope = new Map<string, DigestBreakdownRow>();
     const byMethod = new Map<string, DigestBreakdownRow>();
+    const byType = new Map<string, DigestBreakdownRow>();
     let totalCents = 0;
     let largestRow: Doc<"gifts"> | null = null;
 
     for (const gift of gifts) {
       totalCents += gift.amountCents;
       addTo(byMethod, giftMethodLabel(gift.method), gift.amountCents);
+      // EVERY gift, matched or listed or not — `giftType` returns exactly one
+      // bucket per gift (see `lib/giftLabels.ts`), which is what makes this cut
+      // add up to `totalCents` rather than approximately to it.
+      addTo(byType, GIFT_TYPE_LABELS[giftType(gift)], gift.amountCents);
       if (!largestRow || gift.amountCents > largestRow.amountCents) {
         largestRow = gift;
       }
@@ -326,9 +339,15 @@ export const claimDigest = internalMutation({
     // with every later gift queued behind it. Hourly ticks catch up the same
     // day, and the drain stops on its own the moment a run completes the window
     // (which stamps the mark normally).
+    //
+    // `lastWindowTruncated` rides along because the NEXT window's start depends
+    // on which kind of mark this is: a completed window's watermark gets the
+    // trailing-period floor, a cut one's must not (it would re-read the gifts
+    // that cut it and cut again in the same place, hourly). See the schema doc.
     await ctx.db.patch(rule._id, {
       lastSentAt: window.until,
       lastRunDayKey: window.truncated ? undefined : dayKey,
+      lastWindowTruncated: window.truncated ? true : undefined,
       updatedAt: now,
     });
 
@@ -338,6 +357,7 @@ export const claimDigest = internalMutation({
       previousMarks: {
         lastSentAt: rule.lastSentAt,
         lastRunDayKey: rule.lastRunDayKey,
+        lastWindowTruncated: rule.lastWindowTruncated,
       },
       claimedUntil: window.until,
       recipients: rule.recipients,
@@ -352,6 +372,7 @@ export const claimDigest = internalMutation({
         largest,
         byScope: sortedRows(byScope),
         byMethod: sortedRows(byMethod),
+        byType: sortedRows(byType),
         gifts: listed,
         omittedCount: Math.max(0, gifts.length - listed.length),
         countTruncated: window.truncated,
@@ -380,6 +401,7 @@ export const releaseDigest = internalMutation({
     claimedUntil: v.number(),
     previousLastSentAt: v.optional(v.number()),
     previousLastRunDayKey: v.optional(v.string()),
+    previousLastWindowTruncated: v.optional(v.boolean()),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -389,6 +411,11 @@ export const releaseDigest = internalMutation({
     await ctx.db.patch(args.ruleId, {
       lastSentAt: args.previousLastSentAt,
       lastRunDayKey: args.previousLastRunDayKey,
+      // ALL THREE marks, or none. Restoring the watermark while leaving a cut
+      // run's `true` behind would strip the re-read of its trailing-period
+      // floor; leaving a `true` off a restored mid-drain mark would re-wedge
+      // the drain. They only mean anything together.
+      lastWindowTruncated: args.previousLastWindowTruncated,
     });
     return true;
   },
@@ -495,6 +522,8 @@ export const sendGivingDigests = internalAction({
               claimedUntil: built.claimedUntil,
               previousLastSentAt: built.previousMarks.lastSentAt,
               previousLastRunDayKey: built.previousMarks.lastRunDayKey,
+              previousLastWindowTruncated:
+                built.previousMarks.lastWindowTruncated,
             },
           );
           continue;

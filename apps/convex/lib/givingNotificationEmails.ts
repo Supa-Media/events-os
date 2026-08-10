@@ -103,8 +103,14 @@ export type DigestEmailPayload = {
   totalCents: number;
   giftCount: number;
   largest: NotificationGift | null;
+  /** By chapter — every gift's book, with Central named as Central. */
   byScope: DigestBreakdownRow[];
+  /** By rails — card, cash, check. */
   byMethod: DigestBreakdownRow[];
+  /** By KIND of giving — recurring, sponsorships, events, one-time. The cut the
+   *  owner asked for; `lib/giftLabels.ts#giftType` puts every gift in exactly
+   *  one bucket, which is why it sums. */
+  byType: DigestBreakdownRow[];
   /** The itemized gifts, newest first, capped. */
   gifts: NotificationGift[];
   /** How many gifts the totals counted but the list omitted. */
@@ -255,19 +261,41 @@ export function renderImmediateGiftEmail(payload: ImmediateEmailPayload): {
 
 // ── The digest email ─────────────────────────────────────────────────────────
 
+/** `$1,200.00 (3)` — a breakdown row's money and how many gifts made it. */
+function breakdownValue(cents: number, count: number): string {
+  return `${esc(formatCents(cents))} <span style="color:${EMAIL_THEME.muted}">(${count})</span>`;
+}
+
+/**
+ * One cut of the period, and its own TOTAL LINE.
+ *
+ * The total is not decoration. Every breakdown here partitions the same set of
+ * gifts, so each one's parts must add up to the headline figure — and the only
+ * way a reader can check that without a calculator is to see the section say so
+ * itself. A breakdown whose parts silently don't sum to the total is worse than
+ * no breakdown, because it is the one people quote in a meeting.
+ *
+ * Summed from the rows RENDERED rather than taken from the payload's headline,
+ * deliberately: if a cut ever stopped covering every gift, this line would
+ * disagree with the total above it in the email, loudly, instead of restating
+ * the headline and hiding the gap.
+ */
 function breakdownHtml(title: string, rows: DigestBreakdownRow[]): string {
   if (rows.length === 0) return "";
   const body = rows
-    .map((r) =>
-      detailRow(
-        r.label,
-        `${esc(formatCents(r.cents))} <span style="color:${EMAIL_THEME.muted}">(${r.count})</span>`,
-      ),
-    )
+    .map((r) => detailRow(r.label, breakdownValue(r.cents, r.count)))
     .join("");
+  const cents = rows.reduce((sum, r) => sum + r.cents, 0);
+  const count = rows.reduce((sum, r) => sum + r.count, 0);
+  const total =
+    `<div style="border-top:1px solid ${EMAIL_THEME.border};margin:8px 0 0;padding:8px 0 0">` +
+    `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ strong: true, margin: "0" })}">` +
+    `<span style="color:${EMAIL_THEME.muted}">Total:</span> ` +
+    `<span style="color:${EMAIL_THEME.ink}">${breakdownValue(cents, count)}</span>` +
+    `</div></div>`;
   return (
     emailSubheading(esc(title), { size: 14, margin: "0 0 6px" }) +
-    emailPanel(body, { margin: "0 0 16px" })
+    emailPanel(body + total, { margin: "0 0 16px" })
   );
 }
 
@@ -294,9 +322,14 @@ function giftRowHtml(gift: NotificationGift): string {
 
 /**
  * A period of giving. Totals first (that's the number the fundraising team
- * carries around), the biggest gift called out by name, then the two cuts that
- * answer "where did it come from" — by book and by source — and finally every
- * gift, each linking to its own donor.
+ * carries around), the biggest gift called out by name, then three cuts of that
+ * same money — by giving type, by chapter, by rails — and finally every gift,
+ * each linking to its own donor.
+ *
+ * EACH CUT PARTITIONS THE WHOLE PERIOD and prints its own total, so all three
+ * add up to the headline figure and a reader can see that they do. They are
+ * three answers to three different questions about one number, not three
+ * samples of it.
  *
  * An EMPTY weekly digest still renders, and says so plainly. See
  * `lib/givingNotificationRules.ts` for why that is deliberate and why the
@@ -368,7 +401,10 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
         .join(""),
       { margin: "0 0 16px" },
     ),
-    breakdownHtml("Where it went", payload.byScope),
+    // Type first: "how much of this recurs" is the question the rest of the
+    // email can't answer and the one a fundraising team plans against.
+    breakdownHtml("By giving type", payload.byType),
+    breakdownHtml("By chapter", payload.byScope),
     breakdownHtml("How it arrived", payload.byMethod),
     emailSubheading("Every gift", { size: 14, margin: "0 0 4px" }),
     payload.gifts.map(giftRowHtml).join(""),

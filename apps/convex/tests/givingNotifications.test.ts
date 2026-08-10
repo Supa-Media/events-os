@@ -25,6 +25,7 @@ import {
   MAX_DIGEST_MATCHES,
   collectWindowGifts,
 } from "../givingNotificationDigests";
+import { GIFT_TYPE_LABELS, giftType } from "../lib/giftLabels";
 
 /**
  * Giving notification rules — "tell me when money comes in."
@@ -466,17 +467,136 @@ describe("the digest clock", () => {
     expect(isDigestDue(weekly, SUN_8AM_ET)).toBe(true);
   });
 
-  test("the window starts at the watermark once there is one", () => {
+  test("a rule running on schedule opens at its watermark", () => {
+    // Steady state: the watermark IS a period back, so the `min` picks it and
+    // the window is exactly the day since the last digest.
     const r = rule({ cadence: "daily", lastSentAt: MON_8AM_ET, createdAt: 0 });
     expect(digestWindowStart(r, TUE_8AM_ET)).toBe(MON_8AM_ET);
   });
 
-  test("a first run looks back one period, but never past the rule's own birth", () => {
-    const old = rule({ cadence: "weekly", createdAt: 0 });
-    expect(digestWindowStart(old, MON_8AM_ET)).toBe(MON_8AM_ET - 7 * DAY_MS);
+  test("a WEEKLY digest covers seven days on its very first run", () => {
+    // The bug the owner saw: a rule created this morning mailed
+    // `Aug 10 – Aug 10 · No gifts came in` while there had been giving all
+    // week. "Weekly digest" means the trailing seven days to a reader, on the
+    // first outing as much as the fiftieth.
+    const bornAnHourAgo = rule({
+      cadence: "weekly",
+      createdAt: MON_8AM_ET - 60 * 60 * 1000,
+    });
+    expect(digestWindowStart(bornAnHourAgo, MON_8AM_ET)).toBe(
+      MON_8AM_ET - 7 * DAY_MS,
+    );
 
-    const fresh = rule({ cadence: "weekly", createdAt: MON_8AM_ET - DAY_MS });
-    expect(digestWindowStart(fresh, MON_8AM_ET)).toBe(MON_8AM_ET - DAY_MS);
+    const daily = rule({ cadence: "daily", createdAt: MON_8AM_ET - 1_000 });
+    expect(digestWindowStart(daily, MON_8AM_ET)).toBe(MON_8AM_ET - DAY_MS);
+  });
+
+  test("a missed run EXTENDS the window back, so nothing is silently skipped", () => {
+    // Cron dropped ticks for a fortnight. The watermark is older than a period,
+    // so it wins — the un-reported tail is reported, not lost.
+    const stalled = rule({
+      cadence: "weekly",
+      lastSentAt: MON_8AM_ET - 21 * DAY_MS,
+      createdAt: 0,
+    });
+    expect(digestWindowStart(stalled, MON_8AM_ET)).toBe(
+      MON_8AM_ET - 21 * DAY_MS,
+    );
+  });
+
+  test("a rule dormant for three months comes back reporting a WEEK, not a quarter", () => {
+    // The floor never reaches past the watermark's own reasoning: resuming
+    // stamps `lastSentAt = now` (`setRuleActive`), so the furthest back a
+    // resumed weekly rule can look is one period. Both properties at once —
+    // it covers the trailing week, and it covers no more than that.
+    const resumedYesterday = rule({
+      cadence: "weekly",
+      lastSentAt: MON_8AM_ET - DAY_MS, // stamped on resume, after 90 dark days
+      createdAt: MON_8AM_ET - 200 * DAY_MS,
+    });
+    expect(digestWindowStart(resumedYesterday, MON_8AM_ET)).toBe(
+      MON_8AM_ET - 7 * DAY_MS,
+    );
+    // Nowhere near the dormant stretch.
+    expect(digestWindowStart(resumedYesterday, MON_8AM_ET)).toBeGreaterThan(
+      MON_8AM_ET - 90 * DAY_MS,
+    );
+  });
+
+  test("a CUT window resumes from its bookmark, without the trailing-period floor", () => {
+    // Mid-drain the watermark sits inside a period, not at the edge of one.
+    // Applying the floor would re-read the gifts that cut it, cut at the same
+    // instant, and re-mail the same 750 gifts on every hourly tick for a week.
+    const midDrain = rule({
+      cadence: "daily",
+      lastSentAt: MON_8AM_ET - 6 * 60 * 60 * 1000,
+      lastWindowTruncated: true,
+      createdAt: 0,
+    });
+    expect(digestWindowStart(midDrain, MON_8AM_ET)).toBe(
+      MON_8AM_ET - 6 * 60 * 60 * 1000,
+    );
+    // …and the floor is back the moment a window completes.
+    expect(
+      digestWindowStart({ ...midDrain, lastWindowTruncated: undefined }, MON_8AM_ET),
+    ).toBe(MON_8AM_ET - DAY_MS);
+  });
+});
+
+describe("what KIND of giving a gift is", () => {
+  const ids = {
+    pledgeId: "p1" as Id<"pledges">,
+    sponsorshipId: "s1" as Id<"sponsorships">,
+    eventId: "e1" as Id<"events">,
+    donationId: "dn1" as Id<"donations">,
+  };
+
+  test("the four shapes, each on its own", () => {
+    expect(giftType({ pledgeId: ids.pledgeId })).toBe("recurring");
+    expect(giftType({ sponsorshipId: ids.sponsorshipId })).toBe("sponsorship");
+    expect(giftType({ eventId: ids.eventId })).toBe("event");
+    // A ticket-bundled add-on arrives as a `donations` row that dual-writes its
+    // gift, and doesn't always carry the `eventId` itself.
+    expect(giftType({ donationId: ids.donationId })).toBe("event");
+    expect(giftType({})).toBe("one_time");
+  });
+
+  test("a recurring cycle attached to an event is still RECURRING", () => {
+    // The reachable overlap: the fundraiser attribution feature can hang an
+    // `eventId` on any gift, including a backer's monthly cycle. Counting it as
+    // event money would inflate what the gala raised with money that recurs
+    // regardless, AND under-report the committed base a team budgets from.
+    expect(giftType({ pledgeId: ids.pledgeId, eventId: ids.eventId })).toBe(
+      "recurring",
+    );
+    expect(
+      giftType({ pledgeId: ids.pledgeId, sponsorshipId: ids.sponsorshipId }),
+    ).toBe("recurring");
+  });
+
+  test("a sponsorship payment against an event is a SPONSORSHIP", () => {
+    // Sponsorship money is sold, invoiced and chased by different people than
+    // gifts are, so it gets its own line rather than being folded into Events
+    // — and above all it must not land silently in One-time.
+    expect(
+      giftType({ sponsorshipId: ids.sponsorshipId, eventId: ids.eventId }),
+    ).toBe("sponsorship");
+  });
+
+  test("every gift lands in exactly ONE bucket — that's what makes the cut sum", () => {
+    // Whatever combination of links a row carries, it is counted once.
+    const combos: Parameters<typeof giftType>[0][] = [
+      {},
+      { pledgeId: ids.pledgeId },
+      { sponsorshipId: ids.sponsorshipId },
+      { eventId: ids.eventId },
+      { donationId: ids.donationId },
+      { pledgeId: ids.pledgeId, eventId: ids.eventId, donationId: ids.donationId },
+      { ...ids },
+    ];
+    for (const combo of combos) {
+      expect(GIFT_TYPE_LABELS[giftType(combo)]).toBeTypeOf("string");
+    }
   });
 });
 
@@ -636,6 +756,10 @@ describe("escaping — donor names come from a public form", () => {
       largest: nasty,
       byScope: [{ label: XSS, cents: 50_000, count: 1 }],
       byMethod: [{ label: XSS, cents: 50_000, count: 1 }],
+      // Type labels are ours, not a donor's — but the section renders through
+      // the same builder, so an unescaped label there would be a hole all the
+      // same. Pinned with the same payload.
+      byType: [{ label: XSS, cents: 50_000, count: 1 }],
       gifts: [nasty],
       omittedCount: 0,
       countTruncated: false,
@@ -672,6 +796,7 @@ describe("the digest email", () => {
       largest: null,
       byScope: [],
       byMethod: [],
+      byType: [],
       gifts: [],
       omittedCount: 0,
       countTruncated: false,
@@ -680,7 +805,7 @@ describe("the digest email", () => {
     expect(html).toContain("No gifts came in");
   });
 
-  test("totals, the largest gift, both breakdowns, and a link per donor", () => {
+  test("totals, the largest gift, ALL THREE breakdowns, and a link per donor", () => {
     const big = sampleGift({ giftId: "g1", amountCents: 120_000 });
     const small = sampleGift({
       giftId: "g2",
@@ -713,6 +838,10 @@ describe("the digest email", () => {
         { label: "Chapter OS", cents: 120_000, count: 1 },
         { label: "Cash", cents: 2_500, count: 1 },
       ],
+      byType: [
+        { label: "Recurring", cents: 120_000, count: 1 },
+        { label: "One-time", cents: 2_500, count: 1 },
+      ],
       gifts: [big, small],
       omittedCount: 3,
       countTruncated: false,
@@ -721,11 +850,61 @@ describe("the digest email", () => {
     expect(html).toContain("$1,225.00");
     expect(html).toContain("$1,200.00");
     expect(html).toContain("Bo Giver");
+    // All three cuts are titled and present — the type one is what the owner
+    // asked for and the one the digest didn't have.
+    expect(html).toContain("By giving type");
+    expect(html).toContain("By chapter");
+    expect(html).toContain("How it arrived");
+    expect(html).toContain("Recurring");
+    expect(html).toContain("One-time");
+    expect(html).toContain("New York");
     expect(html).toContain("Chapter OS");
     expect(html).toContain("Cash");
     expect(html).toContain("https://publicworship.life/os/giving/donor/d1");
     expect(html).toContain("https://publicworship.life/os/giving/donor/d2");
     expect(html).toContain("and 3 more");
+  });
+
+  test("every breakdown prints a total, and all three equal the headline", () => {
+    // A breakdown whose parts don't sum to the total is worse than no
+    // breakdown, because it's the one people quote in a meeting. Each section
+    // sums the rows it RENDERS (not the headline), so a cut that ever stopped
+    // covering every gift would disagree out loud instead of restating the
+    // total and hiding the gap.
+    const { html } = renderDigestEmail({
+      ruleName: "Weekly roundup",
+      cadence: "weekly",
+      scopeLabel: "All books",
+      periodStart: MON_8AM_ET - 7 * DAY_MS,
+      periodEnd: MON_8AM_ET,
+      totalCents: 13_500,
+      giftCount: 3,
+      largest: sampleGift({ amountCents: 11_500 }),
+      byScope: [
+        { label: "New York", cents: 11_500, count: 1 },
+        { label: "Central", cents: 2_000, count: 2 },
+      ],
+      byMethod: [
+        { label: "Chapter OS", cents: 11_500, count: 1 },
+        { label: "Cash", cents: 2_000, count: 2 },
+      ],
+      byType: [
+        { label: "Events", cents: 11_500, count: 1 },
+        { label: "One-time", cents: 1_500, count: 1 },
+        { label: "Recurring", cents: 500, count: 1 },
+      ],
+      gifts: [],
+      omittedCount: 0,
+      countTruncated: false,
+    });
+    // Four `Total:` lines reading the same figure — the headline panel's, and
+    // one under each of the three cuts. Anything less than four is a section
+    // that doesn't add up.
+    const totals = html.match(/Total:<\/span>\s*<span[^>]*>\$135\.00/g) ?? [];
+    expect(totals).toHaveLength(4);
+    // …and each of the three sections counts all three gifts (the headline
+    // panel states its count separately, as "Gifts").
+    expect(html.match(/\$135\.00 <span[^>]*>\(3\)/g) ?? []).toHaveLength(3);
   });
 });
 
@@ -1739,6 +1918,11 @@ describe("a real over-cap window, end to end", () => {
       // …and the run mark is CLEARED, so the drain continues within the day
       // instead of waiting until tomorrow.
       expect(afterFirst?.lastRunDayKey).toBeUndefined();
+      // The mark is flagged as a mid-drain BOOKMARK. Without this the next
+      // window's trailing-period floor would reach back past the cut, re-read
+      // the gifts that caused it, cut at the same instant, and re-mail the same
+      // 750 gifts every hour until the import aged out of the period.
+      expect(afterFirst?.lastWindowTruncated).toBe(true);
       cap.sent.length = 0;
 
       // An hour later the sweep picks up exactly the 40 it left behind.
@@ -1750,8 +1934,10 @@ describe("a real over-cap window, end to end", () => {
       expect(cap.sent[0].html).not.toContain("FLOOR");
 
       const afterSecond = await run(s.t, (ctx) => ctx.db.get(ruleId));
-      // Caught up: the window is complete, so the rule marks itself done today.
+      // Caught up: the window is complete, so the rule marks itself done today
+      // and the bookmark flag comes off — the trailing-period floor is back.
       expect(afterSecond?.lastRunDayKey).toBe(localParts(MON_8AM_ET).dayKey);
+      expect(afterSecond?.lastWindowTruncated).toBeUndefined();
     } finally {
       cap.restore();
     }
@@ -1988,6 +2174,7 @@ describe("digests", () => {
       largest: null,
       byScope: [],
       byMethod: [],
+      byType: [],
       gifts: [],
       omittedCount: 0,
       countTruncated: true,
@@ -2266,6 +2453,311 @@ describe("digests", () => {
       expect(cap.sent).toHaveLength(0);
       const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
       expect(row?.lastSentAt).toBeUndefined();
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// A weekly digest covers a week — end to end, against the real window
+// ═══════════════════════════════════════════════════════════════════════════
+
+/**
+ * The first weekly digest this feature ever mailed read:
+ *
+ *   WEEKLY GIVING DIGEST — No gifts came in
+ *   Aug 10, 2026 – Aug 10, 2026 · All books
+ *
+ * It was created that morning, so its window opened at its own birth and could
+ * only ever be empty — while there had been giving all week. These hold the two
+ * halves of the fix down together, because they pull in opposite directions:
+ * ALWAYS AT LEAST THE TRAILING PERIOD, and NEVER a dormant rule's backlog.
+ */
+describe("the window a digest reports", () => {
+  test("a brand-new weekly rule's first digest covers the trailing SEVEN DAYS", async () => {
+    const s = await devDirectorSetup();
+    const cap = captureEmails();
+    try {
+      // The real ledger's week: $20 on the Sunday, $115 on the Monday morning.
+      await atClock(s.t, MON_8AM_ET - DAY_MS, async () => {
+        await addGift(s.as, {
+          amountCents: 2_000,
+          name: "Sunday Giver",
+          email: "sun@example.com",
+        });
+      });
+      await atClock(s.t, MON_8AM_ET - 2 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, {
+          amountCents: 11_500,
+          name: "Monday Giver",
+          email: "mon@example.com",
+        });
+      });
+
+      // The rule is written an hour before its send moment — so it IS due at
+      // 8am, and under the old `max(createdAt, …)` clamp its window would have
+      // been one hour long.
+      await atClock(s.t, MON_8AM_ET - 60 * 60 * 1000, async () => {
+        await saveRule(s.as, {
+          name: "Weekly roundup",
+          cadence: "weekly",
+          sendHourLocal: 8,
+          sendWeekday: 1,
+        });
+      });
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+
+      expect(cap.sent).toHaveLength(1);
+      // Both gifts, including the one that predates the rule by six days.
+      expect(cap.sent[0].subject).toBe(
+        "$135.00 from 2 gifts this week — All books",
+      );
+      expect(cap.sent[0].html).toContain("Sunday Giver");
+      expect(cap.sent[0].html).toContain("Monday Giver");
+      // And the header names the window it actually queried — a week, not a day.
+      expect(cap.sent[0].html).toContain("Aug 3, 2026 – Aug 10, 2026");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a fortnight of missed runs is reported, not quietly skipped", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, MON_8AM_ET - 30 * DAY_MS, async () => {
+      ruleId = await saveRule(s.as, {
+        name: "Weekly roundup",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    // It last reported three weeks ago and the cron has been down since.
+    await run(s.t, (ctx) =>
+      ctx.db.patch(ruleId, { lastSentAt: MON_8AM_ET - 21 * DAY_MS }),
+    );
+
+    const cap = captureEmails();
+    try {
+      // A gift twelve days back — older than a period, newer than the
+      // watermark. The floor must not shorten the window past it.
+      await atClock(s.t, MON_8AM_ET - 12 * DAY_MS, async () => {
+        await addGift(s.as, { amountCents: 33_000, name: "Blackout Giver" });
+      });
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Blackout Giver");
+      expect(cap.sent[0].subject).toContain("$330.00");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("a rule paused for three months reports the WEEK it came back to, and nothing older", async () => {
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, MON_8AM_ET - 120 * DAY_MS, async () => {
+      ruleId = await saveRule(s.as, {
+        name: "Weekly roundup",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+    const cap = captureEmails();
+    try {
+      await atClock(s.t, MON_8AM_ET - 100 * DAY_MS, async () => {
+        await s.as.mutation(api.givingNotifications.setRuleActive, {
+          ruleId,
+          isActive: false,
+        });
+      });
+      // Ninety dark days of giving it deliberately wasn't told about.
+      await atClock(s.t, MON_8AM_ET - 60 * DAY_MS, async () => {
+        await addGift(s.as, { amountCents: 900_000, name: "Dormant Era" });
+      });
+      // Back on, two days before the next Monday.
+      await atClock(s.t, MON_8AM_ET - 2 * DAY_MS, async () => {
+        await s.as.mutation(api.givingNotifications.setRuleActive, {
+          ruleId,
+          isActive: true,
+        });
+      });
+      // …and a gift inside the trailing week, from BEFORE it was resumed.
+      await atClock(s.t, MON_8AM_ET - 5 * DAY_MS, async () => {
+        await addGift(s.as, {
+          amountCents: 4_400,
+          name: "This Week",
+          email: "week@example.com",
+        });
+      });
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+
+      expect(cap.sent).toHaveLength(1);
+      // BOTH properties in one assertion pair. The trailing week is reported
+      // even though the resume stamped the watermark two days ago…
+      expect(cap.sent[0].html).toContain("This Week");
+      // …and the ninety days it was switched off for are NOT replayed, because
+      // the floor reaches back exactly one period and the watermark is `now`.
+      expect(cap.sent[0].html).not.toContain("Dormant Era");
+      expect(cap.sent[0].subject).toBe(
+        "$44.00 from 1 gift this week — All books",
+      );
+    } finally {
+      cap.restore();
+    }
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════════
+// The breakdowns — three cuts of one number, each of which must add up
+// ═══════════════════════════════════════════════════════════════════════════
+
+describe("a digest breaks its total down, and every cut sums back to it", () => {
+  test("by giving type and by chapter, against real gift rows", async () => {
+    const s = await devDirectorSetup();
+    await atClock(s.t, MON_8AM_ET - 30 * DAY_MS, async () => {
+      await saveRule(s.as, {
+        name: "Weekly roundup",
+        cadence: "weekly",
+        sendHourLocal: 8,
+        sendWeekday: 1,
+      });
+    });
+
+    // Written straight into the ledger, because `addGift` is the DESK's entry
+    // point and deliberately takes none of the link fields — a pledge cycle and
+    // an event donation are written by their own paths. The type cut has to be
+    // driven by the real links on the rows, not by a hand-built payload.
+    const at = MON_8AM_ET - 3 * DAY_MS;
+    await run(s.t, async (ctx) => {
+      const donor = async (name: string, scope: Id<"chapters"> | "central") =>
+        ctx.db.insert("donors", {
+          scope,
+          kind: "individual" as const,
+          name,
+          status: "prospect" as const,
+          lifetimeCents: 0,
+          giftCount: 0,
+          createdAt: MON_8AM_ET - 30 * DAY_MS,
+        });
+      const backerId = await donor("Backer", "central");
+      const pledgeId = await ctx.db.insert("pledges", {
+        donorId: backerId,
+        scope: "central",
+        amountCents: 5_000,
+        status: "active",
+        origin: "stripe",
+        createdAt: MON_8AM_ET - 30 * DAY_MS,
+      });
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Gala",
+        slug: "gala",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: MON_8AM_ET - 30 * DAY_MS,
+        updatedAt: MON_8AM_ET - 30 * DAY_MS,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Summer Gala",
+        eventDate: MON_8AM_ET,
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: MON_8AM_ET - 30 * DAY_MS,
+        updatedAt: MON_8AM_ET - 30 * DAY_MS,
+      });
+
+      // $50 recurring, central — AND attached to the gala. Precedence decides:
+      // recurring-ness is a fact about the payment mechanism, an `eventId` is a
+      // tag a human can hang on any row, so it counts as Recurring.
+      await ctx.db.insert("gifts", {
+        donorId: backerId,
+        scope: "central",
+        amountCents: 5_000,
+        currency: "usd",
+        receivedAt: at,
+        method: "stripe",
+        pledgeId,
+        eventId,
+        createdAt: at,
+      });
+      // $75 event-attached, New York.
+      await ctx.db.insert("gifts", {
+        donorId: await donor("Gala Giver", s.chapterId),
+        scope: s.chapterId,
+        amountCents: 7_500,
+        currency: "usd",
+        receivedAt: at,
+        method: "stripe",
+        eventId,
+        createdAt: at,
+      });
+      // $115 one-time, New York — nothing explains it but the desk.
+      await ctx.db.insert("gifts", {
+        donorId: await donor("Walk In", s.chapterId),
+        scope: s.chapterId,
+        amountCents: 11_500,
+        currency: "usd",
+        receivedAt: at,
+        method: "cash",
+        createdAt: at,
+      });
+    });
+
+    const cap = captureEmails();
+    try {
+      cap.sent.length = 0;
+
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      const html = cap.sent[0].html;
+      expect(cap.sent[0].subject).toBe(
+        "$240.00 from 3 gifts this week — All books",
+      );
+
+      // All three sections are there…
+      expect(html).toContain("By giving type");
+      expect(html).toContain("By chapter");
+      expect(html).toContain("How it arrived");
+
+      // …the type cut names all three kinds, off the rows' own links…
+      expect(html).toContain("Recurring");
+      expect(html).toContain("Events");
+      expect(html).toContain("One-time");
+
+      // …the chapter cut uses real chapter names, with Central named Central…
+      expect(html).toContain("New York");
+      expect(html).toContain("Central");
+
+      // …and every cut adds up to the headline. Four `Total:` lines at
+      // $240.00: the summary panel's, plus one per section. A section that
+      // dropped a gift on the floor would print a smaller number here.
+      const totals = html.match(/Total:<\/span>\s*<span[^>]*>\$240\.00/g) ?? [];
+      expect(totals).toHaveLength(4);
+      // Each section counts all three gifts too — money AND count partition.
+      expect(html.match(/\$240\.00 <span[^>]*>\(3\)/g) ?? []).toHaveLength(3);
+
+      // The donor deep links survived the redesign.
+      expect(html).toContain("https://publicworship.life/os/giving/donor/");
     } finally {
       cap.restore();
     }

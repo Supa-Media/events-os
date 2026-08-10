@@ -86,6 +86,26 @@ export const givingNotificationRules = defineTable({
    */
   lastSentAt: v.optional(v.number()),
   /**
+   * True iff the run that set `lastSentAt` had to CUT its window short — so
+   * that mark is a bookmark part-way through a period, not the edge of one.
+   *
+   * It exists because the window start is `min(now − period, lastSentAt)`: a
+   * digest always covers at least its trailing period, however recent the
+   * watermark is (see `lib/givingNotificationRules.ts#digestWindowStart`).
+   * Applied to a mid-drain bookmark that floor is a WEDGE — the next run
+   * reaches back past the cut, re-reads the very gifts that caused it, cuts at
+   * the same instant, and mails the same 750 gifts again on every hourly tick
+   * until the import ages out of the period. A week of duplicate digests from
+   * one CSV.
+   *
+   * So the flag says which kind of mark this is, and a drain resumes from
+   * exactly where it stopped. Cleared the moment a window completes, and by
+   * every path that re-stamps `lastSentAt` as a fresh boundary (resume, cadence
+   * change) — a stale `true` would pin a rule's window to its watermark and
+   * quietly cost it the trailing-period floor.
+   */
+  lastWindowTruncated: v.optional(v.boolean()),
+  /**
    * The instant an email from this rule was last actually DELIVERED to at
    * least one recipient. Absent until one has been.
    *

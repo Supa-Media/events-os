@@ -34,10 +34,13 @@
  * backdatable (a CSV import of 2019 giving, a desk entry for a check that
  * arrived last week). A window on it would silently drop any gift entered
  * after its own period closed. `createdAt` is when the ledger learned of the
- * gift; it only moves forward, so `(lastSentAt, now]` is a partition of every
- * gift that will ever exist — nothing is reported twice and nothing is
- * missed. The email still SHOWS `receivedAt` as the gift's date, because that
- * is the true answer to "when was this given".
+ * gift; it only moves forward, so a `createdAt` range can't lose a gift to a
+ * backdated entry the way a `receivedAt` range can, and NOTHING IS EVER MISSED.
+ * (Nothing is double-reported either, in steady state — but a window
+ * deliberately reaches back a full period even when the watermark is newer, so
+ * a young or freshly-resumed rule overlaps the previous digest on purpose. See
+ * `digestWindowStart`.) The email still SHOWS `receivedAt` as the gift's date,
+ * because that is the true answer to "when was this given".
  */
 import type { Doc, Id } from "../_generated/dataModel";
 
@@ -317,20 +320,57 @@ export function cadencePeriodMs(cadence: string): number {
 /**
  * The exclusive lower bound of the gifts this digest covers, on `createdAt`.
  *
- * Normally the watermark. On the FIRST run there is no watermark, so it falls
- * back to one nominal period — clamped to the rule's own `createdAt`, because
- * a rule written yesterday must not open by reporting a week of giving that
- * predates it.
+ * ── `min(now − period, watermark)` — never less than the period, never past
+ *    the un-reported tail ─────────────────────────────────────────────────
+ * Two promises, and the `min` is what keeps both:
+ *
+ *  • AT LEAST THE TRAILING PERIOD. "Weekly digest" means the last seven days
+ *    to the person reading it, on the first run as much as the fiftieth. The
+ *    old `max(createdAt, now − period)` clamp meant a rule created this morning
+ *    mailed `Aug 10 – Aug 10 · No gifts came in` — technically true about a
+ *    window nobody asked for, and flatly wrong about the week, which had
+ *    giving in it. A digest whose first outing is a confident falsehood is one
+ *    nobody trusts afterwards.
+ *  • NEVER LESS THAN THE WATERMARK REACHES BACK. If a run was missed, or the
+ *    cron dropped ticks for a fortnight, the watermark is older than
+ *    `now − period` and it wins — so nothing that has not been reported is
+ *    silently skipped.
+ *
+ * The cost is an OVERLAP, deliberately: on a rule younger than its own period,
+ * or one resumed inside the last period, the window re-reads gifts an earlier
+ * digest already showed. That is the point — a weekly digest that covers four
+ * days because that is all that is new is not a weekly digest.
+ *
+ * ── AND THE THREE-MONTH REPLAY STILL CAN'T HAPPEN ──────────────────────────
+ * Reaching back further than the period requires a watermark older than
+ * `now − period`, and a dormant rule never has one: `setRuleActive` stamps
+ * `lastSentAt = now` on resume, and `saveRule` does the same on a cadence
+ * change (the other door into dormancy). So a rule paused for three months
+ * comes back with a watermark of "now", and `min(now − 7d, now)` is `now − 7d`
+ * — the trailing week, which is what a reader expects, and not one day more.
+ * Only genuinely un-reported time extends the window.
+ *
+ * ── EXCEPT MID-DRAIN, WHERE THE WATERMARK IS A BOOKMARK, NOT A BOUNDARY ────
+ * A cut window (`lastWindowTruncated`) stops the read part-way and parks the
+ * watermark on the last gift it managed to read. That mark is INSIDE a period,
+ * not at the edge of one, and applying the floor to it would re-read the
+ * gifts that caused the cut, cut at exactly the same place, and mail the same
+ * 750 gifts again — every hour, until the import aged past the period. So a
+ * drain resumes from precisely where it stopped, and the floor comes back the
+ * moment a window completes.
  */
 export function digestWindowStart(
   rule: Pick<
     Doc<"givingNotificationRules">,
-    "cadence" | "lastSentAt" | "createdAt"
+    "cadence" | "lastSentAt" | "createdAt" | "lastWindowTruncated"
   >,
   now: number,
 ): number {
-  if (rule.lastSentAt !== undefined) return rule.lastSentAt;
-  return Math.max(rule.createdAt, now - cadencePeriodMs(rule.cadence));
+  // Before the first send the rule's own birth is the watermark — it is the
+  // earliest instant anything could have been reported from.
+  const watermark = rule.lastSentAt ?? rule.createdAt;
+  if (rule.lastWindowTruncated) return watermark;
+  return Math.min(now - cadencePeriodMs(rule.cadence), watermark);
 }
 
 /**

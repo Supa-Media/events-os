@@ -436,6 +436,10 @@ export const saveRule = mutation({
           ? {
               lastSentAt: now,
               lastRunDayKey: firstRunDayKey(fields, now),
+              // `now` is a fresh period BOUNDARY, not a mid-drain bookmark, so
+              // the new cadence's first window gets its full trailing-period
+              // floor. A stale `true` here would pin it to this instant.
+              lastWindowTruncated: undefined,
             }
           : {}),
       });
@@ -546,6 +550,12 @@ export const setRuleActive = mutation({
             // reachable straight from the practice of switching rules off
             // around an import.
             lastRunDayKey: firstRunDayKey(rule, now),
+            // Same reason as the cadence change above: resuming sets a fresh
+            // boundary, so the first digest back covers its trailing period
+            // (and, because the watermark is `now`, no more than that — which
+            // is exactly what stops a three-month pause replaying three
+            // months). See `digestWindowStart`.
+            lastWindowTruncated: undefined,
           }
         : {}),
     });
