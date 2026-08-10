@@ -1251,20 +1251,30 @@ export const listAccountsForSnapshot = internalQuery({
  * Cache one account's balance and, when the same pass could read it, the
  * itemisation of its pending total.
  *
- * ONE MUTATION FOR THE WHOLE PENDING PICTURE, deliberately. `pendingCents` and
- * `pendingAlreadyBookedCents` are the two halves of one subtraction on the cash
- * side, so a reader that gets a fresh total beside a stale booked figure would
- * take real money off the books on the strength of a transfer that posted days
- * ago. Writing them together makes that impossible, which is why the itemisation
- * is CLEARED rather than left in place when `pending` is absent: a rollup that
- * describes a different read is worse than no rollup, and absent is a state
- * `addableBankPendingCents` handles honestly (it adds the whole total back).
+ * EVERY PENDING FIELD IS WRITTEN OR CLEARED ON EVERY CALL — never carried over.
+ * `pendingCents` and `pendingAlreadyBookedCents` are the two halves of one
+ * subtraction on the cash side, so a fresh total beside a booked figure measured
+ * against a different read would take real money off the books on the strength
+ * of a transfer that posted days ago. The two still arrive from two separate
+ * HTTP calls, so this is not a transactional read of the bank; the guarantee is
+ * narrower and sufficient: whatever this row holds came from ONE pass, seconds
+ * apart, and a half-measured pass leaves `undefined` (which `patch` deletes)
+ * rather than a survivor from the last one. `addableBankPendingCents` reads
+ * `undefined` as "unmeasured" and adds the whole total back.
+ *
+ * That is also why `pendingCents` is cleared when `available_balance` was
+ * missing and `balanceCents` fell back to `current_balance`: `current` ALREADY
+ * INCLUDES the pending it holds, so carrying the previous `pendingCents`
+ * alongside it would put that money on the cash side twice. Cleared, the sum
+ * reads `current` alone — available-plus-held, which is the right answer.
  */
 export const saveAccountBalance = internalMutation({
   args: {
     accountRowId: v.id("increaseAccounts"),
     balanceCents: v.number(),
-    /** Everything the bank has set aside but not posted — see the schema doc. */
+    /** Everything the bank has set aside but not posted — see the schema doc.
+     *  ABSENT CLEARS IT: this pass could not measure a total, so the row must
+     *  not go on showing the last one. */
     pendingCents: v.optional(v.number()),
     /** Present only when `/pending_transactions` succeeded in the SAME pass. */
     pending: v.optional(
@@ -1284,10 +1294,11 @@ export const saveAccountBalance = internalMutation({
   returns: v.null(),
   handler: async (ctx, { accountRowId, balanceCents, pendingCents, pending }) => {
     const now = Date.now();
+    // `undefined` deletes the field — which is the whole mechanism here, so
+    // none of these four may be written conditionally.
     await ctx.db.patch(accountRowId, {
       balanceCents,
-      ...(pendingCents !== undefined ? { pendingCents } : {}),
-      // `undefined` deletes the field, which is the point of the else-branch.
+      pendingCents,
       pendingAlreadyBookedCents: pending?.alreadyBookedCents,
       pendingBreakdown: pending?.breakdown,
       pendingBreakdownAsOf: pending ? now : undefined,
@@ -1956,11 +1967,12 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
         }
       | undefined;
     // A split is only ever measured for a total measured in the SAME pass. If
-    // `/balance` came back without an `available_balance`, `pendingCents` keeps
-    // whatever it had, and a freshly-measured booked figure beside a carried-over
-    // total is exactly the drift this whole shape exists to make impossible — so
-    // don't measure one. The clear below then reads as "unmeasured", which
-    // `addableBankPendingCents` handles by adding the total back whole.
+    // `/balance` came back without an `available_balance` there is no total to
+    // split, and `balanceCents` has fallen back to `current_balance` — which
+    // already INCLUDES the pending it holds. So write the balance alone and let
+    // the mutation clear all four pending fields: the cash side then reads
+    // `current` on its own, which is available-plus-held and therefore right,
+    // instead of `current` plus a carried-over pending counted a second time.
     if (pendingCents === undefined) {
       await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
         accountRowId: account.accountRowId,
@@ -1996,7 +2008,7 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
           base,
           `/pending_transactions?${params.toString()}`,
         );
-        const page = (body.data ?? []) as Array<{
+        const pageRows = (body.data ?? []) as Array<{
           amount?: number;
           /** The kind lives on `source`, NOT at the top level — a Pending
            *  Transaction's top level carries only `type`, `route_type` and the
@@ -2018,7 +2030,7 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
            *  right answer: not ours to have booked. */
           source?: Record<string, unknown> & { category?: string };
         }>;
-        for (const row of page) {
+        for (const row of pageRows) {
           if (typeof row.amount !== "number") continue;
           // Real values seen in production: `card_authorization` and
           // `ach_transfer_instruction`. That second one is the reason this
@@ -3147,11 +3159,17 @@ export type BookBalanceRow = {
   truncated: boolean;
   bankBalanceCents: number | null;
   bankBalanceAsOf: number | null;
-  /** THE ADDABLE SLICE, not the bank's raw `current − available` — the same
-   *  figure `reconciliationSummary` sums into the panel directly above this
-   *  table, so the column and the panel agree instead of differing by whatever
-   *  is in flight. The bank's own total is this plus
-   *  `pendingAlreadyBookedCents`. See `lib/reconciliationGap.ts`. */
+  /** THE ADDABLE SLICE, not the bank's raw `current − available` — computed by
+   *  the same `addableBankPendingCents` the panel above this table sums, so a
+   *  reader comparing the two is comparing like with like instead of finding
+   *  them differ by whatever is in flight. The bank's own total is this plus
+   *  `pendingAlreadyBookedCents`. See `lib/reconciliationGap.ts`.
+   *
+   *  The column SUMS to the panel only when every live account belongs to a live
+   *  book — the normal case, but not a guarantee: the panel walks every account
+   *  and reports cash held by a deactivated chapter as `unattributedBankCents`,
+   *  where this table has no row to put it in. Same per-account figure,
+   *  deliberately different populations. */
   pendingCents: number | null;
   /** The part excluded from the line above because the ledger already booked
    *  it. Null when no snapshot has measured the split. */

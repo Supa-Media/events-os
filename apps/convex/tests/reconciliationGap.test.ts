@@ -1260,6 +1260,64 @@ describe("snapshotBalances — resolving pending against the ledger", () => {
       alreadyBookedCents: 0,
     });
   });
+
+  test("no available_balance clears the pending total instead of counting it twice", async () => {
+    // The one branch of this function with no coverage, and it moves a number.
+    // When Increase returns a `current_balance` but no `available_balance`,
+    // `balanceCents` falls back to `current` — which ALREADY INCLUDES whatever
+    // is pending. Carrying the previous `pendingCents` beside it would put that
+    // money on the cash side twice and stamp a fresh `balanceAsOf` over the lie.
+    // Cleared, the cash side reads `current` alone: available plus held, right.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const accountId = await seedAccount(s, {
+      chapterId: s.chapterId,
+      balanceCents: 704112,
+      pendingCents: 18354,
+      pendingAlreadyBookedCents: 4499,
+      pendingBreakdown: [
+        {
+          category: "ach_transfer_instruction",
+          amountCents: -4499,
+          count: 1,
+          alreadyBookedCents: 4499,
+        },
+      ],
+    });
+    const before = await accountRow(t, accountId);
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/balance")) {
+        // No `available_balance` at all.
+        return new Response(JSON.stringify({ current_balance: 722466 }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path.includes("/pending_transactions")) {
+        throw new Error("must not be asked — there is no total to split");
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+    await snapshot(s);
+
+    const row = await accountRow(t, accountId);
+    expect(row?.balanceCents).toBe(722466);
+    expect(row?.pendingCents).toBeUndefined();
+    expect(row?.pendingAlreadyBookedCents).toBeUndefined();
+    expect(row?.pendingBreakdown).toBeUndefined();
+    expect(row?.pendingBreakdownAsOf).toBeUndefined();
+    // The cash side is `current` and nothing more — not `current` + $183.54.
+    expect(addableBankPendingCents(row!)).toEqual({
+      addableCents: 0,
+      alreadyBookedCents: 0,
+    });
+    // The freshness stamp is honest, because every figure beside it is fresh.
+    expect(row!.balanceAsOf!).toBeGreaterThanOrEqual(before!.balanceAsOf!);
+  });
 });
 
 // ── The three surfaces have to agree (finding 5) ────────────────────────────
@@ -1346,7 +1404,10 @@ describe("the panel, the table and the drill-down report one number", () => {
       scope: s.chapterId,
     });
 
-    // Panel === Σ table.
+    // Panel === Σ table. Holds here because both accounts belong to live books,
+    // which is the only case in which the two populations are the same one: the
+    // panel walks every account and reports a deactivated chapter's cash as
+    // `unattributedBankCents`, where this table has no row to put it in.
     expect(rows.reduce((sum, r) => sum + (r.pendingCents ?? 0), 0)).toBe(
       summary.bankPendingCents,
     );
