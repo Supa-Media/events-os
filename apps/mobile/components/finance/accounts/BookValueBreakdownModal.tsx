@@ -121,6 +121,12 @@ export function BookValueBreakdownModal({
   // rather than every row going busy at once.
   const [linking, setLinking] = useState<string | null>(null);
 
+  // `cash.pendingCents` is the ADDABLE slice, so the bank's own "set aside"
+  // figure — the one a reader would see in Increase — is it plus the part the
+  // ledger already booked. Named here so the hint can quote both.
+  const alreadyBooked = data?.cash.pendingAlreadyBookedCents ?? 0;
+  const bankPendingTotal = (data?.cash.pendingCents ?? 0) + alreadyBooked;
+
   return (
     <Modal
       visible={scope !== null}
@@ -195,9 +201,20 @@ export function BookValueBreakdownModal({
                 )}
                 {data.cash.pendingCents == null ? null : (
                   <>
+                    {/* THE SAME NUMBER AS THE PANEL AND THE TABLE. This line
+                        showed the bank's raw `current − available` while the
+                        panel one tap away showed the addable slice — two
+                        different figures under one identical label, on a screen
+                        that exists because the founder asked whether the pending
+                        figure could be trusted at all. Whatever is excluded is
+                        now named here, not silently dropped. */}
                     <Line
                       label="Set aside, not yet posted"
-                      hint="The bank has already taken this off the available balance, but it hasn't posted — so the ledger hasn't seen it and book value hasn't either"
+                      hint={
+                        alreadyBooked > 0
+                          ? `The bank has ${formatCents(bankPendingTotal)} set aside and not yet posted. ${formatCents(alreadyBooked)} of that is a transfer already sent, which the ledger has already counted as spend — so only the rest is still ours to count.`
+                          : "The bank has already taken this off the available balance, but it hasn't posted — so the ledger hasn't seen it and book value hasn't either"
+                      }
                       value={formatCents(data.cash.pendingCents)}
                       tone={data.cash.pendingCents > 0 ? "warn" : "muted"}
                     />
@@ -205,7 +222,9 @@ export function BookValueBreakdownModal({
                     data.cash.pendingBreakdown.length === 0 ? (
                       <Text className="text-2xs text-faint">
                         What it&apos;s made of hasn&apos;t been read yet — it
-                        arrives with the next balance sync.
+                        arrives with the next balance sync. Until then the whole
+                        total is counted as ours, because none of it is KNOWN to
+                        be booked.
                       </Text>
                     ) : null}
                     {/* Increase reports pending amounts SIGNED, and only the
@@ -221,6 +240,12 @@ export function BookValueBreakdownModal({
                         hint={`${p.count} ${p.count === 1 ? "item" : "items"}${
                           p.amountCents > 0
                             ? " · coming back to us; doesn't change the available balance"
+                            : ""
+                        }${
+                          p.alreadyBookedCents
+                            ? p.alreadyBookedCents >= Math.abs(p.amountCents)
+                              ? " · already sent and already booked as spend — not counted above"
+                              : ` · ${formatCents(p.alreadyBookedCents)} of this is already booked as spend — not counted above`
                             : ""
                         }`}
                         value={

@@ -1247,46 +1247,110 @@ export const listAccountsForSnapshot = internalQuery({
   },
 });
 
+/**
+ * Cache one account's balance and, when the same pass could read it, the
+ * itemisation of its pending total.
+ *
+ * ONE MUTATION FOR THE WHOLE PENDING PICTURE, deliberately. `pendingCents` and
+ * `pendingAlreadyBookedCents` are the two halves of one subtraction on the cash
+ * side, so a reader that gets a fresh total beside a stale booked figure would
+ * take real money off the books on the strength of a transfer that posted days
+ * ago. Writing them together makes that impossible, which is why the itemisation
+ * is CLEARED rather than left in place when `pending` is absent: a rollup that
+ * describes a different read is worse than no rollup, and absent is a state
+ * `addableBankPendingCents` handles honestly (it adds the whole total back).
+ */
 export const saveAccountBalance = internalMutation({
   args: {
     accountRowId: v.id("increaseAccounts"),
     balanceCents: v.number(),
-    /** Authorizations held but not settled — see the schema field's doc. */
+    /** Everything the bank has set aside but not posted — see the schema doc. */
     pendingCents: v.optional(v.number()),
+    /** Present only when `/pending_transactions` succeeded in the SAME pass. */
+    pending: v.optional(
+      v.object({
+        alreadyBookedCents: v.number(),
+        breakdown: v.array(
+          v.object({
+            category: v.string(),
+            amountCents: v.number(),
+            count: v.number(),
+            alreadyBookedCents: v.optional(v.number()),
+          }),
+        ),
+      }),
+    ),
   },
   returns: v.null(),
-  handler: async (ctx, { accountRowId, balanceCents, pendingCents }) => {
+  handler: async (ctx, { accountRowId, balanceCents, pendingCents, pending }) => {
+    const now = Date.now();
     await ctx.db.patch(accountRowId, {
       balanceCents,
       ...(pendingCents !== undefined ? { pendingCents } : {}),
-      balanceAsOf: Date.now(),
-      updatedAt: Date.now(),
+      // `undefined` deletes the field, which is the point of the else-branch.
+      pendingAlreadyBookedCents: pending?.alreadyBookedCents,
+      pendingBreakdown: pending?.breakdown,
+      pendingBreakdownAsOf: pending ? now : undefined,
+      balanceAsOf: now,
+      updatedAt: now,
     });
     return null;
   },
 });
 
-/** The category rollup behind one account's pending total — see the schema
- *  field's doc for why a bare total wasn't enough. */
-export const savePendingBreakdown = internalMutation({
-  args: {
-    accountRowId: v.id("increaseAccounts"),
-    breakdown: v.array(
-      v.object({
-        category: v.string(),
-        amountCents: v.number(),
-        count: v.number(),
-      }),
-    ),
-  },
-  returns: v.null(),
-  handler: async (ctx, { accountRowId, breakdown }) => {
-    await ctx.db.patch(accountRowId, {
-      pendingBreakdown: breakdown,
-      pendingBreakdownAsOf: Date.now(),
-      updatedAt: Date.now(),
-    });
-    return null;
+/**
+ * Which of these Increase transfer ids the reconcile LEDGER HAS ALREADY BOOKED.
+ *
+ * The same two keys `increaseLedger.ts:207-247` uses to decide whether a POSTED
+ * transaction would double-count, asked one step earlier about a transfer that
+ * is still pending:
+ *
+ *  1. `payouts.increaseTransferId` — a reimbursement ACH. It MUST also be `paid`.
+ *     `applyAchTransfer` stamps the transfer id the instant `POST /ach_transfers`
+ *     returns, with the payout still `processing`, but the expense row is only
+ *     written when a fetched transfer status of `submitted` maps the payout to
+ *     `paid` (`increasePayoutMachine.ts#payoutTargetFor`). Increase opens the
+ *     pending transaction at creation. So between the POST and the `submitted`
+ *     webhook — an overnight ACH cutoff, a weekend, the whole time a large
+ *     transfer sits in `pending_approval` — the id exists and the books do NOT
+ *     carry the spend. Matching on the id alone would subtract it anyway and
+ *     report a shortfall that is purely an artifact of the wait. The status
+ *     check closes that window exactly, and reopens it correctly when a bounced
+ *     credit goes `returned` and its ledger row is deleted.
+ *
+ *  2. `transactions.externalId` — a morning-engine account-transfer leg. The
+ *     engine books both legs first and stamps them with the account-transfer id
+ *     once `POST /account_transfers` returns (`stampPairMoved`), so a stamped id
+ *     means the books already moved that money.
+ *
+ * A personal-repayment ACH debit (`personalRepayments.increaseRef`) is booked at
+ * send time too, but it PULLS money in: its pending row is positive, and only
+ * negative rows reduce the available balance that `pendingCents` measures. It
+ * can never contribute here, so it isn't looked up.
+ */
+export const bookedTransferIds = internalQuery({
+  args: { transferIds: v.array(v.string()) },
+  returns: v.array(v.string()),
+  handler: async (ctx, { transferIds }) => {
+    const booked: string[] = [];
+    for (const transferId of transferIds) {
+      const payout = await ctx.db
+        .query("payouts")
+        .withIndex("by_increase_transfer", (q) =>
+          q.eq("increaseTransferId", transferId),
+        )
+        .first();
+      if (payout?.status === "paid") {
+        booked.push(transferId);
+        continue;
+      }
+      const leg = await ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) => q.eq("externalId", transferId))
+        .first();
+      if (leg) booked.push(transferId);
+    }
+    return booked;
   },
 });
 
@@ -1813,6 +1877,8 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
       account.increaseAccountId,
     );
     if (!incKey) continue;
+    let balanceCents: number | null = null;
+    let pendingCents: number | undefined;
     try {
       const balance = await increaseGet(
         incKey,
@@ -1842,17 +1908,11 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
       // unsettled card refund) does not raise the available balance, so
       // available can never exceed current. The clamp is belt-and-braces
       // against a provider surprise, not a case we expect.
-      const pendingCents =
+      pendingCents =
         available != null && current != null
           ? Math.max(0, current - available)
           : undefined;
-      if (cents != null) {
-        await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
-          accountRowId: account.accountRowId,
-          balanceCents: cents,
-          ...(pendingCents !== undefined ? { pendingCents } : {}),
-        });
-      }
+      balanceCents = cents;
     } catch (err) {
       // Display-only data — log and move on.
       console.error(
@@ -1860,12 +1920,30 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
         err,
       );
     }
+    // No balance, nothing to describe. Leaves every cached figure alone, which
+    // is the best-effort contract: a stale balance is visibly stale, not wrong.
+    if (balanceCents == null) continue;
 
-    // What the pending total is MADE OF. A separate, separately-failing call:
-    // the total above is the one the reconciliation arithmetic depends on, and
-    // it must not be lost because the itemisation endpoint had a bad minute.
+    // What the pending total is MADE OF, and how much of it the ledger has
+    // ALREADY BOOKED. A separate, separately-failing call — the total above is
+    // the one the reconciliation arithmetic depends on and must not be lost
+    // because the itemisation endpoint had a bad minute — but the result is
+    // written in the SAME mutation as the total, so the two halves of the cash
+    // side's subtraction can never describe different reads of the account.
+    let pending:
+      | {
+          alreadyBookedCents: number;
+          breakdown: {
+            category: string;
+            amountCents: number;
+            count: number;
+            alreadyBookedCents?: number;
+          }[];
+        }
+      | undefined;
     try {
-      const byCategory = new Map<string, { amountCents: number; count: number }>();
+      const rows: { category: string; amountCents: number; transferId: string | null }[] =
+        [];
       let cursor: string | undefined;
       for (let page = 0; page < PENDING_TXN_PAGES; page++) {
         const params = new URLSearchParams();
@@ -1891,15 +1969,29 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
           base,
           `/pending_transactions?${params.toString()}`,
         );
-        const rows = (body.data ?? []) as Array<{
+        const page = (body.data ?? []) as Array<{
           amount?: number;
           /** The kind lives on `source`, NOT at the top level — a Pending
            *  Transaction's top level carries only `type`, `route_type` and the
            *  money. Reading `row.category` (which is simply absent) put every
-           *  row in "other", so the itemisation existed but said nothing. */
-          source?: { category?: string };
+           *  row in "other", so the itemisation existed but said nothing.
+           *
+           *  The detail object is keyed BY the category (`source.category ===
+           *  "ach_transfer_instruction"` ⇒ the details are on
+           *  `source.ach_transfer_instruction`), and every outbound kind carries
+           *  the originating transfer's id there — verified against Increase's
+           *  own SDK types: `account_transfer_instruction`,
+           *  `ach_transfer_instruction`, `card_push_transfer_instruction`,
+           *  `check_transfer_instruction`, `fednow_transfer_instruction`,
+           *  `real_time_payments_transfer_instruction`,
+           *  `swift_transfer_instruction` and `wire_transfer_instruction` all
+           *  have `transfer_id`. The kinds that DON'T are exactly the ones that
+           *  are nobody's outgoing transfer — a card authorization, an
+           *  inbound-funds hold, a check deposit — so a missing id is itself the
+           *  right answer: not ours to have booked. */
+          source?: Record<string, unknown> & { category?: string };
         }>;
-        for (const row of rows) {
+        for (const row of page) {
           if (typeof row.amount !== "number") continue;
           // Real values seen in production: `card_authorization` and
           // `ach_transfer_instruction`. That second one is the reason this
@@ -1908,29 +2000,91 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
           // "card authorizations" (as this panel once did) sends a reader
           // hunting for a card charge that does not exist.
           const category = row.source?.category ?? "other";
-          const entry = byCategory.get(category) ?? { amountCents: 0, count: 0 };
-          entry.amountCents += row.amount;
-          entry.count += 1;
-          byCategory.set(category, entry);
+          const detail = row.source?.[category];
+          const transferId =
+            detail &&
+            typeof detail === "object" &&
+            typeof (detail as { transfer_id?: unknown }).transfer_id === "string"
+              ? (detail as { transfer_id: string }).transfer_id
+              : null;
+          rows.push({ category, amountCents: row.amount, transferId });
         }
         const next = body.next_cursor;
         if (typeof next !== "string" || next.length === 0) break;
         cursor = next;
       }
-      await ctx.runMutation(internal.reconciliation.savePendingBreakdown, {
-        accountRowId: account.accountRowId,
-        breakdown: [...byCategory.entries()]
-          .map(([category, e]) => ({ category, ...e }))
-          // Biggest absolute mover first — a reader scanning this wants the
-          // line that explains most of the total, not alphabetical order.
-          .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents)),
-      });
+
+      // One indexed lookup per distinct transfer id, answered by the ledger's
+      // own already-booked keys. Resolved HERE rather than at read time so the
+      // answer is stored beside the total it splits.
+      const transferIds = [
+        ...new Set(
+          rows.map((r) => r.transferId).filter((id): id is string => id !== null),
+        ),
+      ];
+      const bookedIds = new Set(
+        transferIds.length === 0
+          ? []
+          : await ctx.runQuery(internal.reconciliation.bookedTransferIds, {
+              transferIds,
+            }),
+      );
+
+      const byCategory = new Map<
+        string,
+        { amountCents: number; count: number; alreadyBookedCents: number }
+      >();
+      for (const row of rows) {
+        const entry = byCategory.get(row.category) ?? {
+          amountCents: 0,
+          count: 0,
+          alreadyBookedCents: 0,
+        };
+        entry.amountCents += row.amountCents;
+        entry.count += 1;
+        // ONLY THE DEBIT SIDE. `pendingCents` is `current − available`, which by
+        // Increase's definition counts only the rows that REDUCE the available
+        // balance. A positive pending row (an unsettled card refund, or the
+        // inbound leg of an ACH debit we pulled) doesn't raise available, so it
+        // is not in the total and must never be subtracted from it.
+        if (row.transferId && bookedIds.has(row.transferId)) {
+          entry.alreadyBookedCents += Math.max(0, -row.amountCents);
+        }
+        byCategory.set(row.category, entry);
+      }
+
+      const breakdown = [...byCategory.entries()]
+        .map(([category, e]) => ({
+          category,
+          amountCents: e.amountCents,
+          count: e.count,
+          ...(e.alreadyBookedCents > 0
+            ? { alreadyBookedCents: e.alreadyBookedCents }
+            : {}),
+        }))
+        // Biggest absolute mover first — a reader scanning this wants the
+        // line that explains most of the total, not alphabetical order.
+        .sort((a, b) => Math.abs(b.amountCents) - Math.abs(a.amountCents));
+      pending = {
+        alreadyBookedCents: breakdown.reduce(
+          (s, r) => s + (r.alreadyBookedCents ?? 0),
+          0,
+        ),
+        breakdown,
+      };
     } catch (err) {
       console.error(
         `[reconciliation] pending itemisation failed for ${account.increaseAccountId}`,
         err,
       );
     }
+
+    await ctx.runMutation(internal.reconciliation.saveAccountBalance, {
+      accountRowId: account.accountRowId,
+      balanceCents,
+      ...(pendingCents !== undefined ? { pendingCents } : {}),
+      ...(pending ? { pending } : {}),
+    });
   }
 
   // Stripe's own balance, in the same best-effort spirit. Money sitting at the
@@ -2966,7 +3120,15 @@ export type BookBalanceRow = {
   truncated: boolean;
   bankBalanceCents: number | null;
   bankBalanceAsOf: number | null;
+  /** THE ADDABLE SLICE, not the bank's raw `current − available` — the same
+   *  figure `reconciliationSummary` sums into the panel directly above this
+   *  table, so the column and the panel agree instead of differing by whatever
+   *  is in flight. The bank's own total is this plus
+   *  `pendingAlreadyBookedCents`. See `lib/reconciliationGap.ts`. */
   pendingCents: number | null;
+  /** The part excluded from the line above because the ledger already booked
+   *  it. Null when no snapshot has measured the split. */
+  pendingAlreadyBookedCents: number | null;
 };
 
 /**
@@ -3101,6 +3263,7 @@ async function computeBookBalances(
       bankBalanceCents: number | null;
       bankBalanceAsOf: number | null;
       pendingCents: number | null;
+      pendingAlreadyBookedCents: number | null;
     }[] = [];
     await Promise.all(
       scopes.map(async ({ scope, scopeName: name }) => {
@@ -3130,6 +3293,11 @@ async function computeBookBalances(
                 sandboxMode,
           ) ?? null;
         const revenueCents = revenueByScope.get(scope) ?? 0;
+        // The SAME split the panel above the table sums — see the type's doc.
+        // Null when nothing has ever synced, which the column renders as "—"
+        // rather than as a zero it can't stand behind.
+        const pending =
+          account?.pendingCents == null ? null : addableBankPendingCents(account);
         out.push({
           scope,
           scopeName: name,
@@ -3140,7 +3308,8 @@ async function computeBookBalances(
           truncated: truncatedScopes.has(scope),
           bankBalanceCents: account?.balanceCents ?? null,
           bankBalanceAsOf: account?.balanceAsOf ?? null,
-          pendingCents: account?.pendingCents ?? null,
+          pendingCents: pending?.addableCents ?? null,
+          pendingAlreadyBookedCents: pending?.alreadyBookedCents ?? null,
         });
       }),
     );
@@ -3165,12 +3334,16 @@ export const accountBalances = query({
       truncated: v.boolean(),
       bankBalanceCents: v.union(v.number(), v.null()),
       bankBalanceAsOf: v.union(v.number(), v.null()),
-      /** Everything the bank has set aside but not posted — card
-       *  authorizations, outbound transfers in flight, inbound-funds holds.
-       *  None of it reaches Reconcile or book value, but the bank figure
-       *  already excludes it, so without this the two differ with nothing on
-       *  screen to say why. */
+      /** What the bank has set aside but not posted AND the ledger has not yet
+       *  booked — card authorizations, inbound-funds holds, a dashboard wire or
+       *  check on its way out. None of it reaches Reconcile or book value, but
+       *  the bank figure already excludes it, so without this the two differ
+       *  with nothing on screen to say why. */
       pendingCents: v.union(v.number(), v.null()),
+      /** The rest of the bank's pending: transfers the ledger already carries
+       *  as spend, excluded from the line above so this column and the panel
+       *  above it are the same number. */
+      pendingAlreadyBookedCents: v.union(v.number(), v.null()),
     }),
   ),
   handler: async (ctx) => {
@@ -3210,8 +3383,9 @@ export const reconciliationSummary = query({
     /** Pending the ledger has NOT booked — the only part that is still ours to
      *  count. See `lib/reconciliationGap.ts#addableBankPendingCents`. */
     bankPendingCents: v.number(),
-    /** Pending the ledger HAS booked (outbound transfers we sent), excluded
-     *  from the line above and shown beside it so the difference is legible. */
+    /** Pending the ledger HAS booked — a pending transfer whose id matches a
+     *  `paid` payout or a stamped ledger leg — excluded from the line above and
+     *  reported beside it so the difference is legible rather than mysterious. */
     bankPendingBookedCents: v.number(),
     stripeAvailableCents: v.union(v.number(), v.null()),
     stripePendingCents: v.union(v.number(), v.null()),
@@ -3558,16 +3732,25 @@ export const bookValueBreakdown = query({
      * Increase Pending Transaction category. Empty until a snapshot has read
      * it; that is not the same as "nothing is pending", so the UI distinguishes
      * them.
+     *
+     * `pendingCents` here is the ADDABLE slice — the same number the accounts
+     * table and the panel show, because a drill-down that answers "is the
+     * pending accurate?" with a different figure than the one it drills into is
+     * worse than no drill-down. The bank's own `current − available` is this
+     * plus `pendingAlreadyBookedCents`, and the per-category rows carry their
+     * own share so the reader can see WHICH rows were excluded.
      */
     cash: v.object({
       bankBalanceCents: v.union(v.number(), v.null()),
       bankBalanceAsOf: v.union(v.number(), v.null()),
       pendingCents: v.union(v.number(), v.null()),
+      pendingAlreadyBookedCents: v.union(v.number(), v.null()),
       pendingBreakdown: v.array(
         v.object({
           category: v.string(),
           amountCents: v.number(),
           count: v.number(),
+          alreadyBookedCents: v.optional(v.number()),
         }),
       ),
       pendingBreakdownAsOf: v.union(v.number(), v.null()),
@@ -3588,6 +3771,11 @@ export const bookValueBreakdown = query({
     // the same row (and therefore the same numbers) the accounts-page table
     // reads, so the two can never disagree.
     const account = await getChapterAccountForMode(ctx, scope, sandboxMode);
+    // Null when the account has no cached pending at all, which is NOT the same
+    // as a pending of zero — the UI says "never synced" for one and "$0.00" for
+    // the other.
+    const cashPending =
+      account?.pendingCents == null ? null : addableBankPendingCents(account);
 
     // ── Revenue, mirroring accountBalances phase 1 ───────────────────────────
     const gifts = await ctx.db
@@ -3771,7 +3959,9 @@ export const bookValueBreakdown = query({
       cash: {
         bankBalanceCents: account?.balanceCents ?? null,
         bankBalanceAsOf: account?.balanceAsOf ?? null,
-        pendingCents: account?.pendingCents ?? null,
+        // The SAME split the panel and the table show — see the validator's doc.
+        pendingCents: cashPending?.addableCents ?? null,
+        pendingAlreadyBookedCents: cashPending?.alreadyBookedCents ?? null,
         pendingBreakdown: account?.pendingBreakdown ?? [],
         pendingBreakdownAsOf: account?.pendingBreakdownAsOf ?? null,
       },

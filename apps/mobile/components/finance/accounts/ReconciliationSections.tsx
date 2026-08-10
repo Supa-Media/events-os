@@ -159,24 +159,37 @@ export function BalancesSection() {
                     </>
                   )}
                 </View>
-                {/* Everything the bank has set aside but not posted — NOT just
-                    card authorizations, which is what this column claimed until
+                {/* What the bank has set aside but not posted — NOT just card
+                    authorizations, which is what this column claimed until
                     2026-08-08 (Increase computes it as current minus available,
                     which nets every pending category: card spend, outbound
                     transfers, inbound-funds holds). It's already OUT of the Bank
                     figure and not yet IN the ledger, so showing it is what makes
-                    the two columns reconcile by eye. The drill-down itemises it
-                    by category. */}
+                    the two columns reconcile by eye.
+
+                    Which is exactly why a transfer the ledger HAS booked doesn't
+                    belong in this number: it is out of the bank figure AND in
+                    the ledger, so counting it here reconciles nothing and
+                    invents a gap. It gets its own faint line rather than
+                    disappearing, and the total of this column now matches the
+                    panel above it. The drill-down itemises both by category. */}
                 <View className="w-20 items-end">
                   {row.pendingCents == null ? (
                     <Text className="text-2xs text-faint">—</Text>
                   ) : (
-                    <Text
-                      className={`text-sm ${row.pendingCents > 0 ? "text-warn" : "text-faint"}`}
-                      style={{ fontVariant: ["tabular-nums"] }}
-                    >
-                      {formatCents(row.pendingCents)}
-                    </Text>
+                    <>
+                      <Text
+                        className={`text-sm ${row.pendingCents > 0 ? "text-warn" : "text-faint"}`}
+                        style={{ fontVariant: ["tabular-nums"] }}
+                      >
+                        {formatCents(row.pendingCents)}
+                      </Text>
+                      {row.pendingAlreadyBookedCents ? (
+                        <Text className="text-2xs text-faint">
+                          +{formatCents(row.pendingAlreadyBookedCents)} sent
+                        </Text>
+                      ) : null}
+                    </>
                   )}
                 </View>
               </Pressable>

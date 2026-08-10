@@ -57,13 +57,12 @@
  *     displayed line a real, findable pile of money.)
  *
  *     THAT REASONING DOES NOT HOLD FOR EVERY PENDING ITEM, and this line used
- *     to add back all of them. An outbound transfer WE initiated is booked as
- *     spend the moment it is sent — `increasePayouts.ts` writes the ledger row
- *     in the same mutation that marks the payout paid — so by the time it shows
- *     up in Increase's pending it has ALREADY left book value. Adding it back to
- *     the cash side while the books carry it as gone counts it once on each
- *     side, in opposite directions, and opens a gap the width of the transfer
- *     until it posts.
+ *     to add back all of them. Once a reimbursement payout reaches `paid`, the
+ *     ledger carries its expense (`increasePayoutMachine.ts#postReimbursementSpend`)
+ *     while Increase still holds the ACH instruction in pending until it
+ *     settles. For that overlap, book value has ALREADY dropped — so adding the
+ *     instruction back to the cash side counts it once on each side, in
+ *     opposite directions, and opens a gap the width of the transfer.
  *
  *     That is not hypothetical: on 2026-08-10 New York's $183.54 of pending was
  *     $138.55 of card authorizations and one $44.99 `ach_transfer_instruction` —
@@ -194,84 +193,54 @@
  */
 
 /**
- * Increase Pending Transaction categories the reconcile LEDGER HAS ALREADY SEEN,
- * and which therefore must NOT be added back onto the cash side.
+ * Split one account's pending total into the part that is still ours to count
+ * on the cash side and the part the books have already spent.
  *
- * All four are outbound transfers the org itself initiated through the app.
- * `increasePayouts.ts` books the expense in the same mutation that sends the
- * money, so book value drops immediately while Increase holds the instruction
- * in pending for a day or two. Every other category — card authorizations,
- * inbound funds holds, and the dozen rarer ones — is invisible to the ledger
- * until it posts, which is the case the add-back exists for.
+ * ── WHY THIS IS A LOOKUP AND NOT A CALCULATION ──────────────────────────────
+ * There is nothing to decide here. Both numbers are measured together during the
+ * snapshot (`reconciliation.ts#snapshotBalances`) and written by ONE mutation,
+ * so they always describe the same read of the same account and cannot drift
+ * apart. This function only has to spend them safely.
  *
- * An allowlist of the booked kinds rather than a denylist of the unbooked ones,
- * deliberately: a category nobody anticipated keeps today's behaviour (added
- * back) instead of silently vanishing from the cash side.
- */
-const LEDGER_BOOKED_PENDING_CATEGORIES: ReadonlySet<string> = new Set([
-  "ach_transfer_instruction",
-  "wire_transfer_instruction",
-  "check_transfer_instruction",
-  "real_time_payments_transfer_instruction",
-]);
-
-/** One account's pending rollup, as `increaseAccounts.pendingBreakdown` stores it. */
-export type PendingBreakdownRow = {
-  category: string;
-  /** SIGNED as Increase reports it — a debit is negative. */
-  amountCents: number;
-  count: number;
-};
-
-/**
- * The part of one account's pending that belongs on the cash side, and the part
- * the books have already spent.
+ * The measurement matches each pending item's `source.<category>.transfer_id`
+ * against `payouts.increaseTransferId` (payout `paid`) or `transactions.externalId`.
+ * THE CATEGORY IS NOT THE ANSWER: an earlier cut of this excluded four outbound
+ * categories outright, on the theory that an outbound transfer is booked when
+ * it is sent. Three of the four are never booked at send time — the app has no
+ * `/wire_transfers`, `/check_transfers` or `/real_time_payments_transfers` call
+ * at all, so those can only come from a human in the Increase dashboard and
+ * reach the ledger at SETTLEMENT. Refusing them would have opened a
+ * `books_exceed_cash` gap the size of a mailed check for as long as it stayed
+ * uncashed.
  *
- * ── WHY THE BREAKDOWN HAS TO AGREE WITH THE TOTAL ───────────────────────────
- * `pendingCents` and `pendingBreakdown` are written by two different steps of
- * the snapshot, and a failed `/pending_transactions` fetch deliberately leaves
- * the PREVIOUS rollup in place rather than blanking it. So the breakdown can
- * describe a pending total that no longer exists, and subtracting from a stale
- * rollup would take real money off the cash side on the strength of a transfer
- * that posted days ago.
+ * ── WHY ABSENT ADDS THE WHOLE TOTAL BACK ────────────────────────────────────
+ * `pendingAlreadyBookedCents` is absent when no snapshot has ever measured it,
+ * or when the one that wrote this `pendingCents` could not reach
+ * `/pending_transactions` (it is cleared, never left stale). Absent therefore
+ * means "unknown", and the two available answers are both wrong in some case —
+ * so pick the one that fails safely.
  *
- * The guard is arithmetic rather than a timestamp comparison: the categories'
- * signed amounts sum to exactly −`pendingCents` when the two are from the same
- * read. If they don't, the rollup is not describing this total, and the honest
- * answer is the pre-2026-08-10 behaviour — add it all back and report nothing
- * as booked. That overstates cash by any in-flight transfer, which is the bug
- * this function exists to fix, so it is logged rather than passed over in
- * silence.
+ * Adding it all back overstates cash by any in-flight booked transfer, which
+ * shows up as `cash_exceeds_books`: an unexplained surplus that invites someone
+ * to look. Subtracting an unmeasured figure would invent a number and report
+ * `books_exceed_cash` — money apparently missing — on no evidence. An audit
+ * panel may overstate what it can point at; it must never accuse the org of a
+ * shortfall it made up. So absent adds it all back, and the drill-down says the
+ * split has not been read yet rather than implying a zero.
  */
 export function addableBankPendingCents(account: {
   pendingCents?: number | null;
-  pendingBreakdown?: readonly PendingBreakdownRow[] | null;
+  pendingAlreadyBookedCents?: number | null;
 }): { addableCents: number; alreadyBookedCents: number } {
-  const pendingCents = account.pendingCents ?? 0;
-  const breakdown = account.pendingBreakdown;
-  if (pendingCents === 0) return { addableCents: 0, alreadyBookedCents: 0 };
-  if (!breakdown || breakdown.length === 0) {
-    return { addableCents: pendingCents, alreadyBookedCents: 0 };
-  }
-
-  // Increase reports debits negative; `pendingCents` is the positive total.
-  const rollupTotal = breakdown.reduce((s, r) => s + Math.abs(r.amountCents), 0);
-  if (rollupTotal !== pendingCents) {
-    console.warn(
-      `[reconciliation] pending breakdown (${rollupTotal}¢ across ${breakdown.length} categories) ` +
-        `does not match pendingCents (${pendingCents}¢); adding the whole total back rather than ` +
-        `subtracting from a rollup that describes a different read.`,
-    );
-    return { addableCents: pendingCents, alreadyBookedCents: 0 };
-  }
-
-  const alreadyBookedCents = breakdown
-    .filter((r) => LEDGER_BOOKED_PENDING_CATEGORIES.has(r.category))
-    .reduce((s, r) => s + Math.abs(r.amountCents), 0);
-  return {
-    addableCents: pendingCents - alreadyBookedCents,
-    alreadyBookedCents,
-  };
+  // `pendingCents` is `current − available` clamped at the writer, but a legacy
+  // row predating that clamp must not turn into a negative pile of cash.
+  const pendingCents = Math.max(0, account.pendingCents ?? 0);
+  const measured = account.pendingAlreadyBookedCents;
+  if (measured == null) return { addableCents: pendingCents, alreadyBookedCents: 0 };
+  // Can't be booked for more than the bank is holding, and can't be negative:
+  // the displayed lines have to stay real piles of money.
+  const alreadyBookedCents = Math.min(Math.max(0, measured), pendingCents);
+  return { addableCents: pendingCents - alreadyBookedCents, alreadyBookedCents };
 }
 
 /** Everything the gap is computed from. All fields are integer cents. */

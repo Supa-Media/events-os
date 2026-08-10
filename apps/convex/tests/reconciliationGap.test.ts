@@ -1,6 +1,12 @@
 /// <reference types="vite/client" />
-import { describe, expect, test } from "vitest";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { afterEach, describe, expect, test, vi } from "vitest";
+import {
+  newT,
+  run,
+  setupChapter,
+  type ChapterSetup,
+  type TestConvex,
+} from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
@@ -77,6 +83,16 @@ async function seedAccount(
     chapterId: Id<"chapters"> | "central";
     balanceCents?: number;
     pendingCents?: number;
+    /** The measured booked slice. UNDEFINED IS A REAL STATE — no snapshot has
+     *  split this total yet — and it is the state that puts the whole thing
+     *  back on the cash side, so tests have to be able to seed both. */
+    pendingAlreadyBookedCents?: number;
+    pendingBreakdown?: {
+      category: string;
+      amountCents: number;
+      count: number;
+      alreadyBookedCents?: number;
+    }[];
     sandbox?: boolean;
     increaseAccountId?: string;
   },
@@ -94,6 +110,15 @@ async function seedAccount(
         : {}),
       ...(opts.pendingCents !== undefined
         ? { pendingCents: opts.pendingCents }
+        : {}),
+      ...(opts.pendingAlreadyBookedCents !== undefined
+        ? { pendingAlreadyBookedCents: opts.pendingAlreadyBookedCents }
+        : {}),
+      ...(opts.pendingBreakdown !== undefined
+        ? {
+            pendingBreakdown: opts.pendingBreakdown,
+            pendingBreakdownAsOf: Date.now(),
+          }
         : {}),
       createdAt: Date.now(),
       updatedAt: Date.now(),
@@ -721,97 +746,82 @@ describe("balance snapshot throttle", () => {
 //
 // The panel added back ALL of Increase's `current - available`, on the premise
 // that a pending item hasn't reached the ledger. True for a card swipe; false
-// for a transfer we sent ourselves, which `increasePayouts.ts` books as spend
-// in the same mutation that sends it. Adding that back while the books carry it
-// as gone opens a gap exactly as wide as the transfer.
+// for a reimbursement ACH, whose expense row is written when the payout reaches
+// `paid` while Increase still holds the instruction pending. Adding that back
+// while the books carry it as gone opens a gap exactly as wide as the transfer.
+//
+// The FIRST cut of this fix discriminated by Increase category, excluding four
+// outbound kinds. The tests below exist mostly to pin down why that was wrong:
+// the app cannot originate a wire, a check or an RTP transfer at all, so those
+// can only come from the Increase dashboard and reach the ledger at SETTLEMENT.
+// The transfer id is the only honest discriminator, and it is resolved during
+// the snapshot rather than at read time.
 
 describe("addableBankPendingCents", () => {
-  const CARD = { category: "card_authorization", amountCents: -13855, count: 2 };
-  const ACH = {
-    category: "ach_transfer_instruction",
-    amountCents: -4499,
-    count: 1,
-  };
-
   test("New York on 2026-08-10: $183.54 pending is $138.55 ours, $44.99 booked", () => {
     // The real numbers. The $44.99 is Sayo Olujide's bus-ticket reimbursement,
     // sent 2026-08-09, and it was the whole of that day's phantom gap.
     expect(
       addableBankPendingCents({
         pendingCents: 18354,
-        pendingBreakdown: [CARD, ACH],
+        pendingAlreadyBookedCents: 4499,
       }),
     ).toEqual({ addableCents: 13855, alreadyBookedCents: 4499 });
   });
 
-  test("card authorizations are still added back in full", () => {
+  test("nothing booked leaves the whole total on the cash side", () => {
     expect(
       addableBankPendingCents({
         pendingCents: 13855,
-        pendingBreakdown: [CARD],
+        pendingAlreadyBookedCents: 0,
       }),
     ).toEqual({ addableCents: 13855, alreadyBookedCents: 0 });
   });
 
-  test("every outbound instruction kind counts as booked", () => {
-    for (const category of [
-      "ach_transfer_instruction",
-      "wire_transfer_instruction",
-      "check_transfer_instruction",
-      "real_time_payments_transfer_instruction",
-    ]) {
-      expect(
-        addableBankPendingCents({
-          pendingCents: 1000,
-          pendingBreakdown: [{ category, amountCents: -1000, count: 1 }],
-        }),
-      ).toEqual({ addableCents: 0, alreadyBookedCents: 1000 });
-    }
-  });
-
-  test("an unrecognised category keeps the old behaviour, not silence", () => {
-    // Allowlist, not denylist: Increase has ~16 pending categories and a new
-    // one must not quietly disappear off the cash side.
-    expect(
-      addableBankPendingCents({
-        pendingCents: 500,
-        pendingBreakdown: [
-          { category: "inbound_funds_hold", amountCents: -500, count: 1 },
-        ],
-      }),
-    ).toEqual({ addableCents: 500, alreadyBookedCents: 0 });
-  });
-
-  test("no breakdown yet falls back to adding the whole total back", () => {
+  test("UNMEASURED is not zero-booked — the whole total goes back", () => {
+    // Absent means no snapshot has split this total (an old row, or one whose
+    // /pending_transactions call failed and was therefore CLEARED rather than
+    // left stale). Subtracting an unmeasured figure would invent a number and
+    // report money missing; adding it all back only overstates what we can
+    // point at, which is the direction that invites a look rather than an alarm.
     expect(addableBankPendingCents({ pendingCents: 18354 })).toEqual({
       addableCents: 18354,
       alreadyBookedCents: 0,
     });
     expect(
-      addableBankPendingCents({ pendingCents: 18354, pendingBreakdown: [] }),
-    ).toEqual({ addableCents: 18354, alreadyBookedCents: 0 });
-  });
-
-  test("a STALE breakdown is refused rather than subtracted from", () => {
-    // A failed /pending_transactions fetch leaves the previous rollup in place
-    // while pendingCents moves on. Subtracting from it would take $44.99 off
-    // the cash side for a transfer that posted days ago.
-    expect(
       addableBankPendingCents({
-        pendingCents: 13855, // the ACH posted; the rollup still lists it
-        pendingBreakdown: [CARD, ACH],
+        pendingCents: 18354,
+        pendingAlreadyBookedCents: null,
       }),
-    ).toEqual({ addableCents: 13855, alreadyBookedCents: 0 });
+    ).toEqual({ addableCents: 18354, alreadyBookedCents: 0 });
   });
 
   test("zero pending is zero on both counts", () => {
     expect(
-      addableBankPendingCents({ pendingCents: 0, pendingBreakdown: [] }),
+      addableBankPendingCents({ pendingCents: 0, pendingAlreadyBookedCents: 0 }),
     ).toEqual({ addableCents: 0, alreadyBookedCents: 0 });
     expect(addableBankPendingCents({})).toEqual({
       addableCents: 0,
       alreadyBookedCents: 0,
     });
+  });
+
+  test("neither line can be a number that isn't a real pile of money", () => {
+    // Booked can't exceed what the bank is holding...
+    expect(
+      addableBankPendingCents({
+        pendingCents: 1000,
+        pendingAlreadyBookedCents: 5000,
+      }),
+    ).toEqual({ addableCents: 0, alreadyBookedCents: 1000 });
+    // ...and a legacy row from before the writer's clamp can't turn into
+    // negative cash.
+    expect(
+      addableBankPendingCents({
+        pendingCents: -500,
+        pendingAlreadyBookedCents: -200,
+      }),
+    ).toEqual({ addableCents: 0, alreadyBookedCents: 0 });
   });
 
   test("the gap closes when the booked slice comes out", () => {
@@ -820,7 +830,7 @@ describe("addableBankPendingCents", () => {
     // Givebutter + $56.93 Relay read $164.31 over. $44.99 of that was this.
     const pending = addableBankPendingCents({
       pendingCents: 18354,
-      pendingBreakdown: [CARD, ACH],
+      pendingAlreadyBookedCents: 4499,
     });
     const before = reconcileOrgMoney({
       bookValueCents: 872260,
@@ -844,5 +854,517 @@ describe("addableBankPendingCents", () => {
     });
     expect(before.differenceCents).toBe(16431);
     expect(after.differenceCents).toBe(16431 - 4499);
+  });
+});
+
+// ── WHICH pending transfer the ledger has already booked ────────────────────
+//
+// The measurement itself. `bookedTransferIds` is asked about ids pulled off
+// `/pending_transactions`; the answer decides whether real money comes off the
+// cash side, so every lane of it is pinned here — including the two that must
+// answer NO.
+
+describe("bookedTransferIds", () => {
+  async function seedPayout(
+    s: ChapterSetup,
+    transferId: string,
+    status: "pending" | "processing" | "paid" | "returned" | "failed",
+  ): Promise<void> {
+    await run(s.t, async (ctx) => {
+      const personId = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Payee",
+        createdAt: Date.now(),
+      });
+      const reimbursementId = await ctx.db.insert("reimbursementRequests", {
+        chapterId: s.chapterId,
+        token: crypto.randomUUID(),
+        status: status === "paid" ? "paid" : "paying",
+        payeeName: "Payee",
+        personId,
+        totalCents: 4499,
+        approvedCents: 4499,
+        submittedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("payouts", {
+        chapterId: s.chapterId,
+        reimbursementId,
+        payeePersonId: personId,
+        amountCents: 4499,
+        provider: "increase",
+        status,
+        increaseTransferId: transferId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+  }
+
+  test("a PAID payout's transfer is booked", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPayout(s, "ach_transfer_paid", "paid");
+    expect(
+      await t.query(internal.reconciliation.bookedTransferIds, {
+        transferIds: ["ach_transfer_paid"],
+      }),
+    ).toEqual(["ach_transfer_paid"]);
+  });
+
+  test("a payout still PROCESSING is NOT booked — the pre-submission window", async () => {
+    // `applyAchTransfer` stamps `increaseTransferId` the instant
+    // POST /ach_transfers returns, with the payout `processing`; the expense row
+    // is only written when a fetched status of `submitted` maps it to `paid`.
+    // Increase opens the pending transaction at CREATION. Matching on the id
+    // alone would subtract a transfer the books have not booked — a phantom
+    // shortfall for the length of an ACH cutoff, a weekend, or a
+    // `pending_approval` review.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPayout(s, "ach_transfer_inflight", "processing");
+    expect(
+      await t.query(internal.reconciliation.bookedTransferIds, {
+        transferIds: ["ach_transfer_inflight"],
+      }),
+    ).toEqual([]);
+  });
+
+  test("a RETURNED payout is not booked — its ledger row was deleted", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPayout(s, "ach_transfer_bounced", "returned");
+    expect(
+      await t.query(internal.reconciliation.bookedTransferIds, {
+        transferIds: ["ach_transfer_bounced"],
+      }),
+    ).toEqual([]);
+  });
+
+  test("a stamped ledger leg is booked — the morning engine's account transfer", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "transfer",
+        flow: "transfer",
+        amountCents: 25_000,
+        currency: "usd",
+        postedAt: Date.now(),
+        status: "reconciled",
+        externalId: "account_transfer_moved",
+        createdAt: Date.now(),
+      }),
+    );
+    expect(
+      await t.query(internal.reconciliation.bookedTransferIds, {
+        transferIds: ["account_transfer_moved"],
+      }),
+    ).toEqual(["account_transfer_moved"]);
+  });
+
+  test("a transfer nothing in the app originated is NOT booked", async () => {
+    // FINDING 1's failure case, at its source. A treasurer mails a $2,000 check
+    // from the Increase dashboard: the app has no /check_transfers call at all,
+    // so nothing books it until it clears. Calling it booked would refuse $2,000
+    // of real cash for as long as the check stayed uncashed.
+    const t = newT();
+    await setupChapter(t);
+    expect(
+      await t.query(internal.reconciliation.bookedTransferIds, {
+        transferIds: ["check_transfer_from_the_dashboard"],
+      }),
+    ).toEqual([]);
+  });
+
+  test("asks about many ids at once and answers only for the booked ones", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPayout(s, "ach_paid", "paid");
+    await seedPayout(s, "ach_processing", "processing");
+    expect(
+      await t.query(internal.reconciliation.bookedTransferIds, {
+        transferIds: ["ach_paid", "ach_processing", "wire_from_dashboard"],
+      }),
+    ).toEqual(["ach_paid"]);
+  });
+});
+
+// ── The snapshot: measuring the split at the source ─────────────────────────
+
+describe("snapshotBalances — resolving pending against the ledger", () => {
+  const originalFetch = globalThis.fetch;
+  const originalKey = process.env.INCREASE_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalKey === undefined) delete process.env.INCREASE_API_KEY;
+    else process.env.INCREASE_API_KEY = originalKey;
+  });
+
+  /** `GET /accounts/{id}/balance` + `GET /pending_transactions`, in the exact
+   *  shape Increase returns them — the detail object keyed BY the category, with
+   *  `transfer_id` on the outbound kinds and absent on the rest. */
+  function mockIncrease(
+    balance: { current: number; available: number },
+    pendingRows: Array<{ amount: number; category: string; transferId?: string }>,
+  ) {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/balance")) {
+        return new Response(
+          JSON.stringify({
+            current_balance: balance.current,
+            available_balance: balance.available,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (path.includes("/pending_transactions")) {
+        return new Response(
+          JSON.stringify({
+            data: pendingRows.map((r) => ({
+              amount: r.amount,
+              source: {
+                category: r.category,
+                [r.category]: {
+                  amount: r.amount,
+                  ...(r.transferId ? { transfer_id: r.transferId } : {}),
+                },
+              },
+            })),
+            next_cursor: null,
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+  }
+
+  async function accountRow(t: TestConvex, id: Id<"increaseAccounts">) {
+    return run(t, (ctx) => ctx.db.get(id));
+  }
+
+  /**
+   * Run the snapshot AND DRAIN WHAT IT SCHEDULES. `refreshBalancesNow` kicks off
+   * the legacy (Relay) feed refresh with `ctx.scheduler.runAfter(0, …)`; left
+   * pending it executes after this test has finished, and convex-test attributes
+   * its failure to whatever file happens to be running by then — a CI-only,
+   * entirely misleading red.
+   */
+  async function snapshot(s: ChapterSetup): Promise<void> {
+    vi.useFakeTimers();
+    try {
+      await s.as.action(api.reconciliation.refreshBalancesNow, { force: true });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  test("a paid reimbursement's ACH is measured as booked; the card swipe isn't", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const accountId = await seedAccount(s, { chapterId: s.chapterId });
+    await run(s.t, async (ctx) => {
+      const personId = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Sayo Olujide",
+        createdAt: Date.now(),
+      });
+      const reimbursementId = await ctx.db.insert("reimbursementRequests", {
+        chapterId: s.chapterId,
+        token: crypto.randomUUID(),
+        status: "paid",
+        payeeName: "Sayo Olujide",
+        personId,
+        totalCents: 4499,
+        approvedCents: 4499,
+        submittedAt: Date.now(),
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("payouts", {
+        chapterId: s.chapterId,
+        reimbursementId,
+        payeePersonId: personId,
+        amountCents: 4499,
+        provider: "increase",
+        status: "paid",
+        increaseTransferId: "ach_transfer_sayo",
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    mockIncrease({ current: 722466, available: 704112 }, [
+      { amount: -13855, category: "card_authorization" },
+      {
+        amount: -4499,
+        category: "ach_transfer_instruction",
+        transferId: "ach_transfer_sayo",
+      },
+    ]);
+    await snapshot(s);
+
+    const row = await accountRow(t, accountId);
+    expect(row?.pendingCents).toBe(18354);
+    expect(row?.pendingAlreadyBookedCents).toBe(4499);
+    // And the per-category share, so the drill-down can say WHICH row.
+    const ach = row?.pendingBreakdown?.find(
+      (p) => p.category === "ach_transfer_instruction",
+    );
+    expect(ach?.alreadyBookedCents).toBe(4499);
+    const card = row?.pendingBreakdown?.find(
+      (p) => p.category === "card_authorization",
+    );
+    expect(card?.alreadyBookedCents).toBeUndefined();
+  });
+
+  test("a dashboard check transfer is measured as NOT booked", async () => {
+    // FINDING 1, end to end. Nothing in the app originates a check, so nothing
+    // books it until it clears — it stays on the cash side for however many
+    // weeks it takes the payee to cash it.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const accountId = await seedAccount(s, { chapterId: s.chapterId });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    mockIncrease({ current: 900_000, available: 700_000 }, [
+      {
+        amount: -200_000,
+        category: "check_transfer_instruction",
+        transferId: "check_transfer_from_dashboard",
+      },
+    ]);
+    await snapshot(s);
+
+    const row = await accountRow(t, accountId);
+    expect(row?.pendingCents).toBe(200_000);
+    expect(row?.pendingAlreadyBookedCents).toBe(0);
+    expect(
+      addableBankPendingCents(row!).addableCents,
+    ).toBe(200_000);
+  });
+
+  test("a POSITIVE pending row never subtracts from the cash side", async () => {
+    // FINDING 2. `pendingCents` is `current - available`, which by Increase's
+    // definition counts only the rows that REDUCE available — a positive row
+    // (an unsettled card refund, or the inbound leg of an ACH debit we pulled)
+    // is not in the total, so it must never come out of it. Even when the
+    // positive row's transfer IS one the ledger booked.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const accountId = await seedAccount(s, { chapterId: s.chapterId });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "transfer",
+        flow: "transfer",
+        amountCents: 2000,
+        currency: "usd",
+        postedAt: Date.now(),
+        status: "reconciled",
+        externalId: "inbound_pull",
+        createdAt: Date.now(),
+      }),
+    );
+
+    process.env.INCREASE_API_KEY = "test_key";
+    // current - available = 18354: the two debits. The +$20 raises neither.
+    mockIncrease({ current: 722466, available: 704112 }, [
+      { amount: -13855, category: "card_authorization" },
+      { amount: -4499, category: "ach_transfer_instruction" },
+      {
+        amount: 2000,
+        category: "ach_transfer_instruction",
+        transferId: "inbound_pull",
+      },
+    ]);
+    await snapshot(s);
+
+    const row = await accountRow(t, accountId);
+    expect(row?.pendingCents).toBe(18354);
+    expect(row?.pendingAlreadyBookedCents).toBe(0);
+    expect(addableBankPendingCents(row!)).toEqual({
+      addableCents: 18354,
+      alreadyBookedCents: 0,
+    });
+  });
+
+  test("an itemisation failure CLEARS the split rather than leaving it stale", async () => {
+    // FINDING 3's failure, made impossible by construction. The two numbers are
+    // written by one mutation, so a fresh total can never sit beside a booked
+    // figure measured against a different read.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const accountId = await seedAccount(s, {
+      chapterId: s.chapterId,
+      balanceCents: 704112,
+      pendingCents: 18354,
+      pendingAlreadyBookedCents: 4499,
+      pendingBreakdown: [
+        {
+          category: "ach_transfer_instruction",
+          amountCents: -4499,
+          count: 1,
+          alreadyBookedCents: 4499,
+        },
+      ],
+    });
+
+    process.env.INCREASE_API_KEY = "test_key";
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/balance")) {
+        return new Response(
+          JSON.stringify({ current_balance: 722466, available_balance: 704112 }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (path.includes("/pending_transactions")) {
+        return new Response("nope", { status: 500 });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+    await snapshot(s);
+
+    const row = await accountRow(t, accountId);
+    expect(row?.pendingCents).toBe(18354);
+    expect(row?.pendingAlreadyBookedCents).toBeUndefined();
+    expect(row?.pendingBreakdown).toBeUndefined();
+    // Unmeasured, so the whole total goes back — never a stale $44.99 off.
+    expect(addableBankPendingCents(row!)).toEqual({
+      addableCents: 18354,
+      alreadyBookedCents: 0,
+    });
+  });
+});
+
+// ── The three surfaces have to agree (finding 5) ────────────────────────────
+
+describe("the panel, the table and the drill-down report one number", () => {
+  test("the booked slice accumulates across accounts and leaves the cash side", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    // Two books, each with something pending; only one has a transfer the
+    // ledger already booked. The panel is a SUM, so a per-account split that
+    // isn't accumulated correctly is invisible in a one-account test.
+    await seedAccount(s, {
+      chapterId: CENTRAL,
+      balanceCents: 100_000,
+      pendingCents: 6000,
+      pendingAlreadyBookedCents: 1000,
+    });
+    await seedAccount(s, {
+      chapterId: s.chapterId,
+      balanceCents: 50_000,
+      pendingCents: 18354,
+      pendingAlreadyBookedCents: 4499,
+      increaseAccountId: "account_ny",
+    });
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.bankAvailableCents).toBe(150_000);
+    expect(summary.bankPendingCents).toBe(5000 + 13855);
+    expect(summary.bankPendingBookedCents).toBe(1000 + 4499);
+    // The located total counts the addable slice only — the booked part is
+    // already deducted on the books side, so counting it here too would be the
+    // double count this whole change exists to stop.
+    expect(summary.locatedCents).toBe(150_000 + 5000 + 13855);
+  });
+
+  test("an unmeasured account contributes its whole pending, booked stays zero", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, {
+      chapterId: CENTRAL,
+      balanceCents: 100_000,
+      pendingCents: 18354,
+    });
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.bankPendingCents).toBe(18354);
+    expect(summary.bankPendingBookedCents).toBe(0);
+  });
+
+  test("the table's Pending column sums to the panel's, and the drill-down matches its row", async () => {
+    // Three numbers under two labels on one screen was the bug: the panel said
+    // $138.55, the table beneath it said $183.54, and the drill-down one tap
+    // away said $183.54 under the panel's own label. They are one number now.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, {
+      chapterId: CENTRAL,
+      balanceCents: 100_000,
+      pendingCents: 6000,
+      pendingAlreadyBookedCents: 1000,
+    });
+    await seedAccount(s, {
+      chapterId: s.chapterId,
+      balanceCents: 50_000,
+      pendingCents: 18354,
+      pendingAlreadyBookedCents: 4499,
+      increaseAccountId: "account_ny",
+      pendingBreakdown: [
+        { category: "card_authorization", amountCents: -13855, count: 2 },
+        {
+          category: "ach_transfer_instruction",
+          amountCents: -4499,
+          count: 1,
+          alreadyBookedCents: 4499,
+        },
+      ],
+    });
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    const rows = await s.as.query(api.reconciliation.accountBalances, {});
+    const drill = await s.as.query(api.reconciliation.bookValueBreakdown, {
+      scope: s.chapterId,
+    });
+
+    // Panel === Σ table.
+    expect(rows.reduce((sum, r) => sum + (r.pendingCents ?? 0), 0)).toBe(
+      summary.bankPendingCents,
+    );
+    expect(
+      rows.reduce((sum, r) => sum + (r.pendingAlreadyBookedCents ?? 0), 0),
+    ).toBe(summary.bankPendingBookedCents);
+
+    // Table row === drill-down for the same book.
+    const ny = rows.find((r) => r.scope === s.chapterId);
+    expect(ny?.pendingCents).toBe(13855);
+    expect(ny?.pendingAlreadyBookedCents).toBe(4499);
+    expect(drill.cash.pendingCents).toBe(13855);
+    expect(drill.cash.pendingAlreadyBookedCents).toBe(4499);
+    // And the drill-down can name WHICH category was excluded, so the
+    // categories summing to more than the figure above them is explained
+    // rather than merely visible.
+    expect(
+      drill.cash.pendingBreakdown.find(
+        (p) => p.category === "ach_transfer_instruction",
+      )?.alreadyBookedCents,
+    ).toBe(4499);
+  });
+
+  test("an account with no pending at all still reads null, not zero", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 100_000 });
+    const rows = await s.as.query(api.reconciliation.accountBalances, {});
+    const central = rows.find((r) => r.scope === CENTRAL);
+    expect(central?.pendingCents).toBeNull();
+    expect(central?.pendingAlreadyBookedCents).toBeNull();
   });
 });
