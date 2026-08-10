@@ -453,7 +453,10 @@ export async function loadChapterOwesCentralRows(
  * and the two settling-leg directions already recorded (`source:"transfer"`,
  * every new one, OR the historical `source:"settlement"` — see this file's
  * header comment on why old prod rows keep the old source literal). Every
- * group is mode-filtered. `interScopeBalances` sums each group (all-time, and
+ * group is mode-filtered, and every group drops `status:"excluded"` rows — the
+ * spend sides via `isSpend`, the settling sides via their own test (see the
+ * filter below for why the two sides agreeing is load-bearing).
+ * `interScopeBalances` sums each group (all-time, and
  * `inPeriod`-filtered for the period figure); `interScopeBalanceContributors`
  * returns them directly as the "why" behind a chapter's balance.
  */
@@ -497,6 +500,41 @@ export function chapterInterScopeRows(
       // book value that no real spending justified, and the next run would
       // have done it again in the other direction, for ever.
       tr.transferOrigin !== "balance_settlement" &&
+      // AN EXCLUDED LEG IS NOT A SETTLEMENT — and the same loop proves it.
+      //
+      // The two sides of this net MUST agree on what counts. The spend sides
+      // above (and `loadChapterOwesCentralRows`) go through `isSpend`, which
+      // drops `status:"excluded"` (`finances.ts`); this side filtered on
+      // `source`/`transferOrigin`/mode and never looked at `status`. So the one
+      // move a human has to neutralise a bad row — mark it Excluded — took it
+      // out of the spend side while leaving it standing on the settled side.
+      //
+      // That completed the very loop the `balance_settlement` filter above was
+      // added to break. The bogus $2,003.95 `chapter_to_central` pair booked on
+      // 2026-08-09 was set to `excluded` to kill it; the next morning's run read
+      // it as "New York has already paid central $2,003.95" and booked a NEW
+      // `central_to_chapter` pair for $2,003.95 against a $0.00 base — its own
+      // note reads "central's spend on New York's cards $0.00 (0 rows) less
+      // $2,003.95 already settled." An `auto_settlement` leg is SIGNED
+      // (`lib/bookBalance.ts`), so that moved $2,003.95 of book value from
+      // central to New York for spending that does not exist, and — being
+      // itself a live settling leg on the opposite side — would have ping-ponged
+      // the same $2,003.95 back every morning after. It nets to zero org-wide,
+      // which is exactly why the reconciliation panel kept saying "it adds up".
+      //
+      // `"excluded"` is the ONLY status that means "out of all totals" —
+      // `unreviewed`/`categorized`/`reconciled` are all live rows at different
+      // stages of review, and a leg that has settled real debt settles it
+      // whether or not a bookkeeper has got to it yet. This is deliberately the
+      // same single test `signedBookCents` opens with, so a row that moves book
+      // value and a row that counts as settled are never two different sets.
+      //
+      // The rest of `isSpend` stays off this side on purpose: `isPersonal` is
+      // NOT excluded because `signedBookCents` keeps personal charges too ("the
+      // money really left"), and `refundedByTransactionId` cannot appear here at
+      // all — `finances.markAsRefund` refuses any row carrying a
+      // `transferGroupId`, which every settling leg has.
+      tr.status !== "excluded" &&
       matchesMode(tr.externalId ?? null, sandboxMode),
   );
   const settledCentralToChapterRows = settlingRows.filter(

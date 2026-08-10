@@ -546,6 +546,99 @@ describe("auto settlement + the settling-leg exclusion", () => {
     expect(second.settlementsBooked).toBe(0);
   });
 
+  /** A settling pair written straight to the ledger at a chosen status — the
+   *  shape `recordTransferPair` produces, so the read side can't tell it apart.
+   *  `recordTransferPair` has no way to book an already-excluded pair, and the
+   *  production row that caused the loop below was excluded AFTER the fact. */
+  async function seedSettlingPair(
+    s: ChapterSetup,
+    args: {
+      amountCents: number;
+      direction: "central_to_chapter" | "chapter_to_central";
+      status: "reconciled" | "excluded";
+      transferGroupId: string;
+    },
+  ): Promise<void> {
+    await run(s.t, async (ctx) => {
+      for (const scope of [CENTRAL, s.chapterId] as const) {
+        await ctx.db.insert("transactions", {
+          chapterId: scope,
+          source: "transfer",
+          flow: "transfer",
+          amountCents: args.amountCents,
+          postedAt: Date.now(),
+          status: args.status,
+          transferGroupId: args.transferGroupId,
+          transferDirection: args.direction,
+          transferOrigin: "auto_settlement",
+          createdAt: Date.now(),
+        });
+      }
+    });
+  }
+
+  test("an EXCLUDED settling leg is not a settlement — it must not re-open the net", async () => {
+    // THE SECOND HALF OF THE FEEDBACK LOOP `settleChapterBalances` pinned above.
+    // `chapterInterScopeRows` filtered settling legs on source/origin/mode and
+    // never on `status`, while both spend sides go through `isSpend`, which
+    // drops `status:"excluded"`. So the one move a human has to neutralise a bad
+    // engine pair — marking it Excluded — took it off the spend side and left it
+    // standing on the settled side.
+    //
+    // Production, 2026-08-09: a bogus $2,003.95 chapter→central `auto_settlement`
+    // pair was set to `excluded` to kill it. The next morning the engine read it
+    // as "New York has already paid central $2,003.95" and booked a fresh
+    // central→chapter pair for $2,003.95 against a $0.00 base. That leg is
+    // SIGNED, so $2,003.95 of book value moved for spending that does not exist
+    // — and the new pair would have counted on the other side the morning after,
+    // for ever. It nets to zero org-wide, so the reconciliation panel never
+    // complained.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+
+    // No card spend anywhere: nothing is owed in either direction.
+    await seedSettlingPair(s, {
+      amountCents: 200_395,
+      direction: "chapter_to_central",
+      status: "excluded",
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-09`,
+    });
+
+    const balances = await s.as.query(api.transfers.interScopeBalances, {});
+    expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(0);
+
+    const out = await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: "2026-08-10",
+    });
+    expect(out.settlementsBooked).toBe(0);
+    expect(await legsFor(s, `autosettle-${s.chapterId}-2026-08-10`)).toHaveLength(0);
+  });
+
+  test("a LIVE settling leg still settles — the status test is not a blanket drop", async () => {
+    // The guard above must not be satisfiable by ignoring settling legs
+    // wholesale: an identical pair left `reconciled` has to keep paying its
+    // direction down, exactly as it did before.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedCrossBookSpend(s, 30_000); // central owes the chapter $300
+
+    await seedSettlingPair(s, {
+      amountCents: 30_000,
+      direction: "central_to_chapter",
+      status: "reconciled",
+      transferGroupId: `autosettle-${s.chapterId}-2026-08-09`,
+    });
+
+    const balances = await s.as.query(api.transfers.interScopeBalances, {});
+    expect(balances.find((b) => b.chapterId === s.chapterId)?.netCents).toBe(0);
+    const out = await t.mutation(internal.reconciliation.runAutoSettlement, {
+      dateStr: "2026-08-10",
+    });
+    expect(out.settlementsBooked).toBe(0);
+  });
+
   test("engine pairs never touch the City Launch Fund position", async () => {
     const t = newT();
     const s = await setupChapter(t);
