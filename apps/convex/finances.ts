@@ -864,7 +864,7 @@ function toBudgetSummary(
  *  fallback the mobile `budgetName()` helper uses (kept as one twinned rule,
  *  not two). Used by the "For" picker's Recurring group + the AI suggestion's
  *  resolved budget name. */
-function budgetDisplayName(b: Doc<"budgets">): string {
+export function budgetDisplayName(b: Doc<"budgets">): string {
   return b.label?.trim() || BUDGET_TYPE_LABELS[effectiveType(b)];
 }
 

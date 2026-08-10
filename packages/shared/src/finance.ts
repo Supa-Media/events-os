@@ -188,6 +188,95 @@ export const TRANSACTION_SOURCES = [
 ] as const;
 export type TransactionSource = (typeof TRANSACTION_SOURCES)[number];
 
+/**
+ * WHICH RAIL CARRIED THE ROW, in words a treasurer uses.
+ *
+ * The enum values are internal plumbing names and two of them are actively
+ * misleading on a screen: `stripe_fc` is the RELAY bank feed (Stripe Financial
+ * Connections is only the pipe we read it through, and the money never touched
+ * Stripe), and `relay_csv` is the historical Relay statement import rather than
+ * anything live. The owner, reading the book-value audit page: "I just see like
+ * stripe rows and stuff like that." He was looking at his own bank.
+ *
+ * Named here, beside the tuple, for the same reason `TRANSACTION_STATUS_LABELS`
+ * is: an enum that reaches a screen needs exactly one English spelling.
+ */
+export const TRANSACTION_SOURCE_LABELS: Record<TransactionSource, string> = {
+  increase_card: "Increase card",
+  increase_ach: "Increase account",
+  stripe_fc: "Relay bank feed",
+  relay_csv: "Relay statement import",
+  manual: "Entered by hand",
+  reimbursement: "Reimbursement payout",
+  repayment: "Personal-charge repayment",
+  skim: "City Launch Fund skim (historical)",
+  launch_grant: "Launch grant (historical)",
+  settlement: "Inter-scope settlement (historical)",
+  transfer: "Recorded transfer",
+};
+
+/** The rail's name, tolerant of a value this map hasn't been taught — a source
+ *  added tomorrow renders as words rather than disappearing. */
+export function transactionSourceLabel(source: string): string {
+  return (
+    TRANSACTION_SOURCE_LABELS[source as TransactionSource] ??
+    source.replace(/_/g, " ")
+  );
+}
+
+// ── Why a ledger row contributed nothing to book value ──────────────────────
+/**
+ * The vocabulary of `apps/convex/lib/bookBalance.ts`, as codes a screen can
+ * render. THAT FILE IS THE AUTHORITY — this list adds no rule and decides
+ * nothing; it only lets the audit page name the branch a row fell down, in the
+ * same order `signedBookCents` tests them.
+ *
+ * It exists because the page used to give every zero the same sentence
+ * ("Transfer with no recorded direction"), which is false for most of them — a
+ * marked bank transfer and a balance settlement are zero for reasons that have
+ * nothing to do with a missing direction, and telling a treasurer to go
+ * "categorise" them sends him after work that isn't there.
+ *
+ * Two of the eight have no branch in `signedBookCents` at all, for opposite
+ * reasons. `linked_gift` is decided BEFORE it is asked — the query skips those
+ * rows because the gift layer already counted that money. `zero_amount` is
+ * decided AFTER: a $0.00 row goes down an ordinary inflow/outflow branch and
+ * signs to zero arithmetically, so it is not a rule at all, just a row with
+ * nothing in it. Naming it separately keeps it out of
+ * `unknown_transfer_shape`, which is the only code that means "go fix
+ * something".
+ */
+export const BOOK_VALUE_ZERO_REASONS = [
+  "linked_gift",
+  "excluded",
+  "payout_deposit",
+  "payout_allocation",
+  "balance_settlement",
+  "marked_transfer",
+  "zero_amount",
+  "unknown_transfer_shape",
+] as const;
+export type BookValueZeroReason = (typeof BOOK_VALUE_ZERO_REASONS)[number];
+
+export const BOOK_VALUE_ZERO_REASON_LABELS: Record<
+  BookValueZeroReason,
+  string
+> = {
+  linked_gift: "Counted once, at the gift this bank row belongs to",
+  excluded: "Excluded by hand — out of every total",
+  payout_deposit:
+    "A processor payout arriving — already counted at the gift, ticket, sale or registration",
+  payout_allocation:
+    "A payout being split between books — the revenue is already on the right book",
+  balance_settlement:
+    "Cash delivered to a book that had already earned it — it moves money, not value",
+  marked_transfer:
+    "Marked as a transfer between our own accounts — that moves cash, not value",
+  zero_amount: "A zero-amount row",
+  unknown_transfer_shape:
+    "A transfer with no recorded direction — counted as nothing rather than guessed at",
+};
+
 // Direction of money. `transfer` is money moving without being category spend
 // (e.g. a reimbursement payout) — excluded from category/budget spend totals.
 export const TRANSACTION_FLOWS = ["outflow", "inflow", "transfer"] as const;
@@ -1384,6 +1473,73 @@ export function providerMerchantName(
   fallback = "Unlabeled charge",
 ): string {
   return row.merchantName ?? row.description ?? fallback;
+}
+
+// ── Naming a book-value row ─────────────────────────────────────────────────
+/** Everything the title chain and the rail name are resolved from. */
+export interface BookValueRowLabelSource extends MerchantNameSource {
+  /** The bookkeeper's freeform "who was this for and why". */
+  note?: string | null;
+  /** `transactions.source` — the rail. */
+  source: string;
+  /** `transactions.transferOrigin`, when the engine wrote the row. */
+  transferOrigin?: string | null;
+}
+
+/**
+ * WHICH RAIL CARRIED THE ROW, for a row that may be an engine transfer.
+ *
+ * An engine-written leg names the engine STEP it came from ("Auto
+ * settlement"), because its `source` is the generic `"transfer"` every one of
+ * them carries and that says nothing about why the row exists.
+ *
+ * Here rather than in the mobile screen because the SERVER names rows too —
+ * the "same amount, same day" members are labelled in the query — and the two
+ * paths disagreeing means one settlement row reads "Auto settlement" on one
+ * tab and "Recorded transfer" on the next.
+ */
+export function bookValueRailLabel(row: BookValueRowLabelSource): string {
+  const origin = row.transferOrigin;
+  if (origin && origin in AUTO_TRANSFER_ORIGIN_LABELS) {
+    return AUTO_TRANSFER_ORIGIN_LABELS[origin as AutoTransferOrigin];
+  }
+  return transactionSourceLabel(row.source);
+}
+
+/**
+ * WHAT THIS ROW IS, in the order a reader would accept an answer: the
+ * bookkeeper's rename, then the provider's own strings, then the bookkeeper's
+ * note, and only then a generic that at least names the rail.
+ *
+ * NOT `displayMerchantName` with a fallback. That chains on `??`, and a
+ * projection that normalizes `description` to `""` (both book-value queries
+ * do, so the field can be a plain `v.string()`) makes the empty string a
+ * "value" — the fallback becomes unreachable and an unlabeled row renders as
+ * nothing at all. That is exactly the bug this whole area exists to fix, so
+ * every candidate here is TRIMMED and an empty one is not an answer.
+ */
+export function bookValueLineTitle(row: BookValueRowLabelSource): string {
+  return (
+    firstNonBlank(row.merchantNameOverride, row.merchantName, row.description, row.note) ??
+    `Unlabeled ${bookValueRailLabel(row).toLowerCase()} row`
+  );
+}
+
+/** True when `bookValueLineTitle` fell back to the note, so a caller doesn't
+ *  print the same sentence twice. */
+export function bookValueTitleUsedNote(row: BookValueRowLabelSource): boolean {
+  return (
+    firstNonBlank(row.merchantNameOverride, row.merchantName, row.description) == null &&
+    firstNonBlank(row.note) != null
+  );
+}
+
+function firstNonBlank(...values: (string | null | undefined)[]): string | null {
+  for (const value of values) {
+    const trimmed = value?.trim();
+    if (trimmed) return trimmed;
+  }
+  return null;
 }
 
 // ── Card requests (WP-C.1: request-a-card) ──────────────────────────────────

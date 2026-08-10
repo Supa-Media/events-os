@@ -20,6 +20,14 @@ import {
   providerMerchantName,
   FINANCE_AUDIT_ACTIONS,
   FINANCE_AUDIT_ACTION_LABELS,
+  TRANSACTION_SOURCES,
+  TRANSACTION_SOURCE_LABELS,
+  transactionSourceLabel,
+  BOOK_VALUE_ZERO_REASONS,
+  BOOK_VALUE_ZERO_REASON_LABELS,
+  bookValueLineTitle,
+  bookValueRailLabel,
+  bookValueTitleUsedNote,
 } from "./finance";
 
 /**
@@ -275,5 +283,120 @@ describe("finance audit actions", () => {
     for (const action of FINANCE_AUDIT_ACTIONS) {
       expect(FINANCE_AUDIT_ACTION_LABELS[action]).toBeTruthy();
     }
+  });
+});
+
+describe("transaction source labels", () => {
+  test("every source carries a label (a new rail must not render as an enum)", () => {
+    for (const source of TRANSACTION_SOURCES) {
+      expect(TRANSACTION_SOURCE_LABELS[source]).toBeTruthy();
+    }
+  });
+
+  test("the two that read as jargon on a money screen name the bank, not the pipe", () => {
+    // `stripe_fc` is the Relay bank feed read through Stripe Financial
+    // Connections; the money never touched Stripe. The owner, looking at his
+    // own bank rows: "I just see like stripe rows and stuff like that."
+    expect(transactionSourceLabel("stripe_fc")).toBe("Relay bank feed");
+    expect(transactionSourceLabel("relay_csv")).toBe("Relay statement import");
+    expect(transactionSourceLabel("stripe_fc")).not.toMatch(/stripe/i);
+  });
+
+  test("a source this map has never seen renders as words", () => {
+    expect(transactionSourceLabel("some_future_rail")).toBe("some future rail");
+  });
+});
+
+describe("naming a book-value row", () => {
+  const bare = {
+    description: "",
+    merchantName: null,
+    merchantNameOverride: null,
+    note: null,
+    source: "stripe_fc",
+    transferOrigin: null,
+  };
+
+  test("an EMPTY description is not an answer — the trap `displayMerchantName` fell into", () => {
+    // Both book-value queries normalize `description` to `""` so the field can
+    // be a plain `v.string()`. `displayMerchantName(row, fallback)` chains on
+    // `??`, so `""` counts as a value, the fallback is unreachable, and the
+    // row renders as nothing at all.
+    expect(displayMerchantName(bare, "fallback")).toBe("");
+    expect(bookValueLineTitle(bare)).toBe("Unlabeled relay bank feed row");
+  });
+
+  test("whitespace is not an answer either", () => {
+    expect(
+      bookValueLineTitle({ ...bare, merchantName: "  ", description: "\n" }),
+    ).toBe("Unlabeled relay bank feed row");
+  });
+
+  test("the chain runs rename → merchant → description → note", () => {
+    expect(
+      bookValueLineTitle({ ...bare, merchantNameOverride: "Costco", merchantName: "IC* COSTCO" }),
+    ).toBe("Costco");
+    expect(bookValueLineTitle({ ...bare, merchantName: "IC* COSTCO" })).toBe(
+      "IC* COSTCO",
+    );
+    expect(bookValueLineTitle({ ...bare, description: "Givebutter fees" })).toBe(
+      "Givebutter fees",
+    );
+    expect(bookValueLineTitle({ ...bare, note: "Van hire" })).toBe("Van hire");
+    expect(bookValueTitleUsedNote({ ...bare, note: "Van hire" })).toBe(true);
+    expect(
+      bookValueTitleUsedNote({ ...bare, merchantName: "Uber", note: "airport" }),
+    ).toBe(false);
+  });
+
+  test("an engine leg names its step, not the generic source every one of them carries", () => {
+    expect(
+      bookValueRailLabel({ ...bare, source: "transfer", transferOrigin: "auto_settlement" }),
+    ).toBe("Auto settlement");
+    expect(bookValueRailLabel({ ...bare, source: "transfer" })).toBe(
+      "Recorded transfer",
+    );
+    // An origin this map hasn't been taught falls back rather than blanking.
+    expect(
+      bookValueRailLabel({ ...bare, source: "transfer", transferOrigin: "future" }),
+    ).toBe("Recorded transfer");
+  });
+
+  test("the unlabeled fallback uses the SAME rail name the row is badged with", () => {
+    const row = { ...bare, source: "transfer", transferOrigin: "auto_settlement" };
+    expect(bookValueLineTitle(row)).toBe("Unlabeled auto settlement row");
+    expect(bookValueLineTitle(row)).toContain(
+      bookValueRailLabel(row).toLowerCase(),
+    );
+  });
+});
+
+describe("book-value zero reasons", () => {
+  test("every reason carries a label", () => {
+    for (const reason of BOOK_VALUE_ZERO_REASONS) {
+      expect(BOOK_VALUE_ZERO_REASON_LABELS[reason]).toBeTruthy();
+    }
+  });
+
+  test("the reasons are distinct — the bug was one sentence standing in for all of them", () => {
+    const labels = BOOK_VALUE_ZERO_REASONS.map(
+      (r) => BOOK_VALUE_ZERO_REASON_LABELS[r],
+    );
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  test("only the unrecognized shape asks the reader to do something about it", () => {
+    // A marked transfer and a balance settlement are zero deliberately and
+    // correctly; describing them as missing a direction sent the treasurer
+    // after work that doesn't exist.
+    expect(BOOK_VALUE_ZERO_REASON_LABELS.unknown_transfer_shape).toContain(
+      "no recorded direction",
+    );
+    expect(BOOK_VALUE_ZERO_REASON_LABELS.marked_transfer).not.toContain(
+      "no recorded direction",
+    );
+    expect(BOOK_VALUE_ZERO_REASON_LABELS.balance_settlement).not.toContain(
+      "no recorded direction",
+    );
   });
 });

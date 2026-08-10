@@ -29,6 +29,17 @@
  * here were only distinguishable from an innocent match by a person who knew
  * what the money was, and a filter tight enough to hide the noise would have
  * hidden them too. So it's framed as a place to look, never a verdict.
+ *
+ * ── EVERY STRING ON A ROW COMES FROM `bookValueLines.ts` ────────────────────
+ * This file lays rows out; it composes no sentences. The reason is the 2026-08
+ * complaint that produced the current shape — "(no description)" on 7 of 13
+ * rows, `stripe_fc` printed at a treasurer, and a $2,003.95 transfer reducing
+ * book value on a screen whose own explainer says transfers don't. All three
+ * were label decisions, and label decisions made inline in JSX cannot be
+ * tested (`jest.config.js` is `testEnvironment: "node"`; nothing here renders).
+ * They live in the sibling module, with the vocabulary of
+ * `apps/convex/lib/bookBalance.ts` — the authority on what counts, which this
+ * screen must never restate in its own words.
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -47,6 +58,17 @@ import {
   SectionHeader,
 } from "../../../components/ui";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
+import {
+  codingLine,
+  countingTransfers,
+  lineIdentity,
+  lineTitle,
+  railAndStatus,
+  signedAmount,
+  titleUsedNote,
+  transferNote,
+  zeroReasonLabel,
+} from "../../../components/finance/accounts/bookValueLines";
 import { useChapterContext } from "../../../lib/ChapterContext";
 
 function shortDate(ts: number): string {
@@ -208,14 +230,16 @@ function Body() {
               <Text className="mb-2 text-2xs text-muted">
                 Rows the ledger holds that book value deliberately ignores —
                 usually because the money is already counted somewhere else.
-                This is where a wrong number most often hides.
+                This is where a wrong number most often hides. Each row says
+                which rule zeroed it; only &ldquo;no recorded direction&rdquo;
+                is a gap worth acting on.
               </Text>
               <Card>
                 {data.ignored.map((r) => (
                   <View key={r.id} className="border-t border-border py-2">
                     <View className="flex-row items-baseline gap-3">
                       <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-                        {r.description || "(no description)"}
+                        {lineTitle(r)}
                       </Text>
                       <Text
                         className="text-sm text-faint"
@@ -225,7 +249,15 @@ function Body() {
                       </Text>
                     </View>
                     <Text className="text-2xs text-faint">
-                      {shortDate(r.at)} · {r.reason}
+                      {shortDate(r.at)} · {railAndStatus(r)}
+                    </Text>
+                    {lineIdentity(r) ? (
+                      <Text className="text-2xs text-faint" numberOfLines={1}>
+                        {lineIdentity(r)}
+                      </Text>
+                    ) : null}
+                    <Text className="mt-0.5 text-2xs text-muted">
+                      {zeroReasonLabel(r.reason)}
                     </Text>
                   </View>
                 ))}
@@ -259,26 +291,80 @@ function Body() {
           ) : null}
 
           {section === "out" ? (
-            <Card>
-              {data.ledger.map((l) => (
-                <View key={l.id} className="border-t border-border py-2">
-                  <View className="flex-row items-baseline gap-3">
-                    <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-                      {l.description || "(no description)"}
-                    </Text>
-                    <Text
-                      className={`text-sm ${l.amountCents < 0 ? "text-ink" : "text-success"}`}
-                      style={{ fontVariant: ["tabular-nums"] }}
-                    >
-                      {formatCents(l.amountCents)}
-                    </Text>
-                  </View>
-                  <Text className="text-2xs text-faint" numberOfLines={1}>
-                    {shortDate(l.at)} · {l.category} · {l.source} · {l.status}
-                  </Text>
-                </View>
-              ))}
-            </Card>
+            <>
+              {/* THE TRANSFER QUESTION, ANSWERED BEFORE IT IS ASKED. The
+                  owner's: "to understand why there's a huge $2,000 charge on
+                  it, are we including transfers in this? I'm confused." Both
+                  halves of the answer are true at once — nearly every transfer
+                  shape counts as zero, and a settlement deliberately does not —
+                  so the tab states the rule and then each transfer row states
+                  its own exception. */}
+              {countingTransfers(data.ledger) > 0 ? (
+                <Text className="mb-2 text-2xs text-muted">
+                  Almost every internal transfer counts as ZERO here and sits
+                  under &ldquo;Counted as zero&rdquo; — moving cash between our
+                  own accounts changes where the money is, not what a book is
+                  worth. {countingTransfers(data.ledger)} of these{" "}
+                  {data.ledger.length} rows{" "}
+                  {countingTransfers(data.ledger) === 1 ? "is" : "are"} the
+                  exception, marked below with the reason it moves value and not
+                  just cash.
+                </Text>
+              ) : null}
+              <Card>
+                {data.ledger.map((l) => {
+                  const transfer = transferNote(l);
+                  const identity = lineIdentity(l);
+                  return (
+                    <View key={l.id} className="border-t border-border py-2">
+                      <View className="flex-row items-baseline gap-3">
+                        <Text
+                          className="flex-1 text-sm text-ink"
+                          numberOfLines={1}
+                        >
+                          {lineTitle(l)}
+                        </Text>
+                        <Text
+                          className={`text-sm ${l.amountCents < 0 ? "text-ink" : "text-success"}`}
+                          style={{ fontVariant: ["tabular-nums"] }}
+                        >
+                          {signedAmount(l.amountCents)}
+                        </Text>
+                      </View>
+                      <Text className="text-2xs text-faint" numberOfLines={1}>
+                        {shortDate(l.at)} · {railAndStatus(l)}
+                      </Text>
+                      <Text className="text-2xs text-muted" numberOfLines={1}>
+                        {codingLine(l)}
+                        {identity ? ` · ${identity}` : ""}
+                      </Text>
+                      {l.codedPurpose ? (
+                        <Text className="text-2xs text-faint" numberOfLines={2}>
+                          &ldquo;{l.codedPurpose}&rdquo;
+                        </Text>
+                      ) : null}
+                      {l.note && !titleUsedNote(l) ? (
+                        <Text className="text-2xs text-faint" numberOfLines={2}>
+                          {l.note}
+                        </Text>
+                      ) : null}
+                      {transfer ? (
+                        <View className="mt-1.5 gap-1">
+                          <Badge
+                            tone={l.amountCents < 0 ? "warn" : "success"}
+                            icon="repeat"
+                            label={transfer.badge}
+                          />
+                          <Text className="text-2xs text-muted">
+                            {transfer.sentence}
+                          </Text>
+                        </View>
+                      ) : null}
+                    </View>
+                  );
+                })}
+              </Card>
+            </>
           ) : null}
         </View>
 

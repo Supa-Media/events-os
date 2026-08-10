@@ -28,6 +28,10 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents, increasePendingCategoryLabel } from "@events-os/shared";
 import { Badge, Button, Card, Icon, ToastView } from "../../ui";
+// The grouped rung shares the every-line page's labels rather than keeping its
+// own: it printed the same "(no description)" and the same raw `stripe_fc`,
+// and one tap separates the two screens.
+import { lineTitle, railAndStatus } from "./bookValueLines";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 
@@ -301,7 +305,7 @@ export function BookValueBreakdownModal({
                       >
                         <View className="flex-row items-baseline gap-3">
                           <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-                            {s.description || "(no description)"}
+                            {lineTitle(s)}
                           </Text>
                           <Text
                             className="text-sm font-semibold text-warn"
@@ -423,7 +427,7 @@ export function BookValueBreakdownModal({
                       <View key={t.transactionId} className="border-t border-border py-1.5">
                         <View className="flex-row items-baseline gap-3">
                           <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-                            {t.description || "(no description)"}
+                            {lineTitle(t)}
                           </Text>
                           <Text
                             className="text-sm text-ink"
@@ -433,7 +437,7 @@ export function BookValueBreakdownModal({
                           </Text>
                         </View>
                         <Text className="text-2xs text-faint">
-                          {shortDate(t.postedAt)} · {t.source || "—"} · {t.status}
+                          {shortDate(t.postedAt)} · {railAndStatus(t)}
                         </Text>
                       </View>
                     ))}
