@@ -1301,11 +1301,19 @@ export type GivebutterFeeEntry = {
  * actually READ to find them.
  *
  * `scanned` is carried out separately because on this rail the two numbers are
- * 263 and 1, and a caller reporting only the second cannot distinguish "read the
+ * 267 and 1, and a caller reporting only the second cannot distinguish "read the
  * whole account, one gift's fee wasn't covered" from "the feed returned one row
  * and we booked from it". Reporting only fee-bearing entries would destroy the
  * one signal that tells a broken read from a normal quiet one — which is the
  * same argument the truncation refusal below rests on.
+ *
+ * `scanned` counts EVERY transaction in the feed, succeeded or not — 267 on this
+ * account today, of which 263 succeeded. Deliberately counted before the status
+ * filter, because its job is to answer "did we read the account?", not "how many
+ * were bookable": a feed that returns only refunded rows has still been read,
+ * and a feed that returns nothing has not. `processorFees.ts#withZeroedMonths`
+ * leans on exactly that distinction to refuse to reverse a month on the strength
+ * of a read that saw nothing at all.
  */
 export type GivebutterFeeSweep = {
   entries: GivebutterFeeEntry[];
@@ -1329,13 +1337,18 @@ export type GivebutterFeeSweep = {
  * never surfaces it and nobody is ever asked to confirm it, and move the
  * reconciliation gap by the same $1,000.00.
  *
- * And null is a shape this endpoint genuinely produces: `payout` is populated
- * WHEN GIVEBUTTER SETTLES the transaction (see `GivebutterTransactionRaw`), so
- * anything unsettled legitimately has none. "We do not know what they will
- * remit" and "they will remit nothing" are opposite facts, and only one of them
- * is an expense. So an absent, empty or unparseable `amount` or `payout` is
- * SKIPPED and warned about — exactly the way an unreadable date is a few lines
- * below — and never coerced.
+ * And a missing `payout` is a shape we must assume this endpoint can produce.
+ * `payout` is what Givebutter will REMIT for a transaction; `payout_id` is the
+ * settlement it went out in, and is null until then. On the payloads we have
+ * seen, `payout` is present on unsettled rows too — `fetchGivebutterUndepositedCents`
+ * sums it over exactly those (`payout_id == null`) and that is where the $75.00
+ * held figure comes from — so "populated only once settled" would be wrong. What
+ * we do NOT have is any guarantee it is always present, on every plan, for every
+ * transaction state, forever. The guard does not depend on knowing which:
+ * "we cannot read what they will remit" and "they will remit nothing" are
+ * opposite facts, and only one of them is an expense. So an absent, empty or
+ * unparseable `amount` or `payout` is SKIPPED and warned about — exactly the way
+ * an unreadable date is a few lines below — and never coerced.
  */
 export function normalizeGivebutterFee(
   txn: GivebutterTransactionRaw,
@@ -1374,13 +1387,21 @@ export function normalizeGivebutterFee(
   if (feeCents <= 0) return null;
   // A "fee" that consumes the ENTIRE gift is not a fee.
   //
-  // Equivalently: `payout` must be positive. A settled transaction remitting
-  // nothing at all is not a Givebutter fee schedule, it is a reversal or a
-  // broken read — and it is also exactly what the old `?? 0` coercion produced,
-  // so refusing it keeps the worst outcome unreachable by a SECOND route rather
-  // than trusting one guard. Deliberately stated as "the fee cannot be the whole
-  // gift" rather than as a percentage ceiling: there is no evidence for any
-  // particular threshold, and inventing one is its own wrong number.
+  // Equivalently: `payout` must be positive. A transaction remitting nothing at
+  // all is not a Givebutter fee schedule, it is a reversal or a broken read —
+  // and it is also exactly what the old `?? 0` coercion produced, so refusing it
+  // keeps the worst outcome unreachable by a SECOND route rather than trusting
+  // one guard. That redundancy is real and it earns its keep: `Number("   ")`
+  // and `Number([])` are both `0`, so whitespace and an empty array parse
+  // cleanly past the readability check above and are caught only here.
+  //
+  // Deliberately stated as "the fee cannot be the whole gift" rather than as a
+  // percentage ceiling: there is no evidence for any particular threshold, and
+  // inventing one is its own wrong number. Note the limit of that, so nobody
+  // reads "two guards" as "airtight" — both collapse to "`payout` parses to a
+  // positive number below `amount`", so a parseable-but-WRONG payout still books
+  // (`"1"` on a $1,000 gift books a $999.00 fee past both, silently). Detecting
+  // that needs a plausibility model we do not have.
   if (feeCents >= grossCents) {
     console.warn(
       `[givebutter] transaction ${txn.id} implies a ${feeCents}¢ fee on a ` +
@@ -1459,8 +1480,9 @@ export function normalizeGivebutterFee(
  * NORMAL case, not a missing read, and zero-fee rows are dropped rather than
  * stored as $0.00 evidence nobody needs. This is also why the sweep reports how
  * many transactions it SCANNED and not just how many carried a fee: on this
- * account those numbers are 263 and 1, and an operator has to be able to tell a
- * quiet month from a broken read.
+ * account those numbers are 267 and 1, and an operator has to be able to tell a
+ * quiet month from a broken read. A dry run here should report
+ * `chargesScanned: 267` — every transaction in the feed, of which 263 succeeded.
  *
  * ── THE SCOPE IS THE WHOLE ACCOUNT, DELIBERATELY ─────────────────────────────
  * `sweepCampaignTransactions` filters transactions to ONE `campaign_id`; this

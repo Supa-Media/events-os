@@ -410,7 +410,11 @@ describe("upsertFeeRows — a fee is never asked which budget it belongs to", ()
     const s = await seedNy();
     const r = await s.t.mutation(internal.processorFees.upsertFeeRows, { processor: "stripe", months: [JULY] });
     expect(r.created).toBe(1);
-    expect(r.marked).toBe(0);
+    // `marked` counts the same row `created` does — every new fee row is
+    // `feeOrigin`-stamped — so a preview reporting one without the other was
+    // under-reporting itself. It used to say 0 here only because the counter sat
+    // inside `if (write)`.
+    expect(r.marked).toBe(1);
     expect(await feeRows(s.t)).toHaveLength(0);
   });
 });
@@ -503,6 +507,55 @@ describe("runFeeSync (mocked Stripe)", () => {
     expect(r.totalFeeCents).toBe(1500);
     expect(await run(s.t, (ctx) => ctx.db.query("processorFeeEntries").collect())).toHaveLength(0);
     expect(await feeRow(s, "2026-07")).toBeNull();
+  });
+
+  test("AN EMPTY LEDGER REVERSES NOTHING — this is the rail with real history", async () => {
+    // The dangerous half of the same hazard. A `STRIPE_SECRET_KEY` rotated to a
+    // test key, or repointed at another account, returns a valid empty ledger —
+    // not an error. Without a floor the morning engine would write $0.00 over
+    // every historical fee row and delete every entry underneath, and the
+    // entries are not re-derivable once the source account is gone.
+    const s = await seedNy();
+    const july = Date.UTC(2026, 6, 10, 12);
+    mockLedger([
+      { id: "txn_1", type: "charge", amount: 50000, fee: 1500, created: secs(july), source: "ch_1" },
+    ]);
+    await s.t.action(internal.processorFees.syncStripeFeesOps, { execute: true });
+    expect((await feeRow(s, "2026-07"))!.amountCents).toBe(1500);
+
+    mockLedger([]); // authenticated fine, read nothing
+    const r = await s.t.action(internal.processorFees.syncStripeFeesOps, {
+      execute: true,
+    });
+
+    expect(r.chargesScanned).toBe(0);
+    expect(r.zeroed).toBe(0);
+    expect((await feeRow(s, "2026-07"))!.amountCents).toBe(1500);
+    expect(
+      await run(s.t, (ctx) => ctx.db.query("processorFeeEntries").collect()),
+    ).toHaveLength(1);
+  });
+
+  test("a Stripe month that genuinely stops carrying fees is still reversed", async () => {
+    // The floor is total silence, not "any shrinkage" — the self-healing this
+    // was extended to Stripe for still has to work.
+    const s = await seedNy();
+    const july = Date.UTC(2026, 6, 10, 12);
+    mockLedger([
+      { id: "txn_1", type: "charge", amount: 50000, fee: 1500, created: secs(july), source: "ch_1" },
+    ]);
+    await s.t.action(internal.processorFees.syncStripeFeesOps, { execute: true });
+
+    // The ledger still reads — it just has nothing fee-bearing in it now.
+    mockLedger([
+      { id: "txn_p", type: "payout", amount: -50000, fee: 0, created: secs(july) },
+    ]);
+    const r = await s.t.action(internal.processorFees.syncStripeFeesOps, {
+      execute: true,
+    });
+    expect(r.chargesScanned).toBe(1);
+    expect(r.zeroed).toBe(1);
+    expect((await feeRow(s, "2026-07"))!.amountCents).toBe(0);
   });
 });
 
@@ -1114,13 +1167,92 @@ describe("runGivebutterFeeSync (mocked Givebutter)", () => {
     expect((await feeRowsFor(s.t, "stripe"))[0].amountCents).toBe(5000);
   });
 
+  test("AN EMPTY READ REVERSES NOTHING — a 200 with no data is a broken read", async () => {
+    // The hazard the zeroing fix itself introduced. `!res.ok` throws and
+    // truncation throws, but HTTP 200 with `data: []` is neither — and it is
+    // what a key pointed at a wound-down or wrong account actually returns.
+    // Without a floor the sweep reads that as "every month went quiet at once",
+    // writes $0.00 over every fee row, and DELETES every stored entry beneath
+    // them. A read that saw nothing has not observed a quiet period.
+    const s = await seedNy();
+    mockTransactions([RX3CUU, covered(1)]);
+    await s.t.action(internal.processorFees.syncGivebutterFeesOps, {
+      execute: true,
+    });
+    const before = await feeRowsFor(s.t, "givebutter");
+    expect(before[0].amountCents).toBe(2930);
+
+    mockTransactions([]); // 200 OK, empty feed
+    const r = await s.t.action(internal.processorFees.syncGivebutterFeesOps, {
+      execute: true,
+    });
+
+    expect(r.chargesScanned).toBe(0);
+    expect(r.zeroed).toBe(0);
+    // The row is untouched — same amount, same status, same note.
+    const after = await feeRowsFor(s.t, "givebutter");
+    expect(after[0].amountCents).toBe(2930);
+    expect(after[0].status).toBe(before[0].status);
+    expect(after[0].note).toBe(before[0].note);
+    // And the evidence, which is the part that is NOT re-derivable.
+    expect(
+      await run(s.t, (ctx) => ctx.db.query("processorFeeEntries").collect()),
+    ).toHaveLength(1);
+  });
+
+  test("a genuinely quiet month is still reversed — the floor is total silence only", async () => {
+    // The floor must not swallow the real case it sits next to: a feed that
+    // still returns transactions, none of which carry a fee.
+    const s = await seedNy();
+    mockTransactions([RX3CUU, covered(1)]);
+    await s.t.action(internal.processorFees.syncGivebutterFeesOps, {
+      execute: true,
+    });
+    mockTransactions([covered(1), covered(2)]); // read fine, no fees
+    const r = await s.t.action(internal.processorFees.syncGivebutterFeesOps, {
+      execute: true,
+    });
+    expect(r.chargesScanned).toBe(2);
+    expect(r.zeroed).toBe(1);
+    expect((await feeRowsFor(s.t, "givebutter"))[0].amountCents).toBe(0);
+  });
+
+  test("a reversed row is closed out, not left as a $0.00 chore", async () => {
+    // `needsDocumentation` and `isUncoded` both stop at `reconciled`. Left
+    // `categorized`, the reversed row would sit in the receipt chase and the
+    // coding queue forever with nothing anyone could do about it.
+    const s = await seedNy();
+    mockTransactions([RX3CUU]);
+    await s.t.action(internal.processorFees.syncGivebutterFeesOps, {
+      execute: true,
+    });
+    expect((await feeRowsFor(s.t, "givebutter"))[0].status).toBe("categorized");
+
+    mockTransactions([{ ...RX3CUU, transactions: [{ refunded: true }] }]);
+    await s.t.action(internal.processorFees.syncGivebutterFeesOps, {
+      execute: true,
+    });
+    expect((await feeRowsFor(s.t, "givebutter"))[0].status).toBe("reconciled");
+
+    // And healing puts it back into the normal lifecycle it was closed out of.
+    mockTransactions([RX3CUU]);
+    await s.t.action(internal.processorFees.syncGivebutterFeesOps, {
+      execute: true,
+    });
+    const healed = (await feeRowsFor(s.t, "givebutter"))[0];
+    expect(healed.amountCents).toBe(2930);
+    expect(healed.status).toBe("categorized");
+  });
+
   test("a dry run never reverses a row either", async () => {
     const s = await seedNy();
     mockTransactions([RX3CUU]);
     await s.t.action(internal.processorFees.syncGivebutterFeesOps, {
       execute: true,
     });
-    mockTransactions([]);
+    // A feed that still READS but carries no fee — an empty one would be
+    // refused by the total-silence floor rather than previewed.
+    mockTransactions([covered(1)]);
     const r = await s.t.action(internal.processorFees.syncGivebutterFeesOps, {});
     expect(r.zeroed).toBe(1); // the preview SAYS it would
     expect((await feeRowsFor(s.t, "givebutter"))[0].amountCents).toBe(2930);

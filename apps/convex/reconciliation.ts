@@ -2281,13 +2281,22 @@ async function runEngine(
           const fees: {
             created: number;
             updated: number;
+            zeroed: number;
             marked: number;
           } = await ctx.runAction(internal.processorFees.syncStripeFeesOps, {
             execute: true,
           });
-          if (fees.created > 0 || fees.updated > 0) {
+          if (fees.created > 0 || fees.updated > 0 || fees.zeroed > 0) {
             notes.push(
-              `Refreshed Stripe processor fees (${fees.created} new, ${fees.updated} updated monthly row(s)).`,
+              `Refreshed Stripe processor fees (${fees.created} new, ` +
+                `${fees.updated} updated` +
+                // Named rather than folded into "updated", and the condition
+                // above tests it, because a reversal is the one outcome here
+                // that REMOVES booked expense — and on this rail there is real
+                // history to remove. A mass reversal reporting nothing at all
+                // is exactly how a bad read would go unnoticed.
+                (fees.zeroed > 0 ? `, ${fees.zeroed} reversed to $0.00` : "") +
+                ` monthly row(s)).`,
             );
           }
           // The old fee-budget notes are gone with the fee budgets themselves.

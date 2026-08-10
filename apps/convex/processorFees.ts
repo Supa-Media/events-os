@@ -400,8 +400,22 @@ export const upsertFeeRows = internalMutation({
           `returned by the API. The row is kept at zero rather than deleted so the ` +
           `change is visible and anything referencing it still resolves. If this ` +
           `month SHOULD carry a fee, the sweep's read is what to check.`;
-        if (prior.amountCents === 0 && prior.note === note) { unchanged++; continue; }
-        if (write) await ctx.db.patch(prior._id, { amountCents: 0, note });
+        // CLOSED as well as zeroed. `needsDocumentation` and `isUncoded` both
+        // stop at `reconciled`, and a row left `categorized` would sit in the
+        // receipt chase and the coding queue forever as a $0.00 chore nobody can
+        // action. There is genuinely nothing left to reconcile on it.
+        if (
+          prior.amountCents === 0 &&
+          prior.note === note &&
+          prior.status === "reconciled"
+        ) { unchanged++; continue; }
+        if (write) {
+          await ctx.db.patch(prior._id, {
+            amountCents: 0,
+            note,
+            status: "reconciled",
+          });
+        }
         zeroed++;
         continue;
       }
@@ -443,6 +457,12 @@ export const upsertFeeRows = internalMutation({
         // migration, and it self-heals if one is ever missed.
         const samePostedAt = prior.postedAt === mo.postedAt;
         const needsMark = prior.feeOrigin == null;
+        // A month that was reversed to $0.00 and now carries a fee again is
+        // being UN-zeroed, and has to re-enter the normal lifecycle it was
+        // closed out of — otherwise a healed row keeps the `reconciled` the
+        // reversal gave it while a freshly booked one starts `categorized`, and
+        // the same month reads differently depending on its history.
+        const healing = prior.amountCents === 0;
         if (
           prior.amountCents === mo.feeCents &&
           samePostedAt &&
@@ -455,6 +475,7 @@ export const upsertFeeRows = internalMutation({
             postedAt: mo.postedAt,
             note,
             ...(needsMark ? { feeOrigin: rail.feeOrigin } : {}),
+            ...(healing ? { status: "categorized" as const } : {}),
           });
         }
         if (needsMark) marked++;
@@ -479,8 +500,11 @@ export const upsertFeeRows = internalMutation({
           externalId,
           createdAt: Date.now(),
         });
-        marked++;
       }
+      // Outside the `if (write)`, like every other counter here. A new row is
+      // always `feeOrigin`-stamped, so a dry run that reports `created` without
+      // the matching `marked` was under-reporting its own preview.
+      marked++;
       created++;
     }
     return { created, updated, unchanged, totalFeeCents, marked, zeroed };
@@ -494,15 +518,23 @@ export const upsertFeeRows = internalMutation({
  * can be un-booked at all: a sweep only knows about months it still finds fees
  * in, so the months it must also VISIT have to come from what is already stored.
  *
- * Read off the fee rows rather than off `processorFeeEntries`, for two reasons.
- * It is bounded — one row per month, a few dozen ever — where collecting a
- * rail's entries would pull every fee-bearing charge Stripe has ever made
- * (`by_processor_and_month` has no distinct support, so "which months" would
- * mean reading them all and de-duping in memory, which grows without limit).
- * And the row is what actually shows in the ledger: entries with no row above
- * them are invisible to `feeRowDetail`, which resolves a month FROM a row's
- * `externalId`. Entries orphaned by a crash between the two writes are
- * therefore harmless, and are cleaned up the next time that month has a fee.
+ * Read off the fee ROWS rather than off `processorFeeEntries`, and the reason is
+ * boundedness alone. One row per month, a few dozen ever; collecting a rail's
+ * entries would pull every fee-bearing charge Stripe has ever made, because
+ * `by_processor_and_month` has no distinct support and "which months" would mean
+ * reading them all and de-duping in memory — which grows without limit.
+ *
+ * The cost of that choice, stated honestly: an entry ORPHANED by a crash between
+ * the two writes is not reachable here, so it is never cleaned up until that
+ * month carries a fee again. It is not invisible in the meantime —
+ * `dashboardCharts.ts#feeRateByMonth` queries `processorFeeEntries` directly
+ * with no join to a fee row, so an orphan would inflate that chart's numerator
+ * and the year's blended rate, which is the monitor whose whole job is noticing
+ * when reality diverges. What makes this acceptable is reachability, not
+ * harmlessness: it needs the action to die BETWEEN the entry write and the row
+ * write AND that month to never carry a fee again, which on Stripe's append-only
+ * ledger effectively cannot happen. If orphans ever do show up, sweep them from
+ * a migration rather than making this query unbounded.
  */
 export const feeMonthsOnRecord = internalQuery({
   args: { processor: feeRailArg },
@@ -564,16 +596,49 @@ function monthEndPostedAt(month: string): number {
  * reach — the entire booked expense there is one gift in 263, so a single refund
  * empties a month — while Stripe's balance-transaction ledger is append-only and
  * a month with charges effectively never drops to zero fees. But "effectively
- * never" is not a guarantee (repoint `STRIPE_SECRET_KEY` at a different account
- * and every month goes quiet at once), the hole is in shared code, and a
- * self-healing sweep that self-heals on only one rail is a footnote waiting to
- * be forgotten.
+ * never" is not a guarantee, the hole is in shared code, and a sweep that
+ * self-heals on only one rail is a footnote waiting to be forgotten.
+ *
+ * ── A READ THAT SAW NOTHING IS NOT A QUIET PERIOD ────────────────────────────
+ * `scanned === 0` REFUSES to reverse anything, and that floor is the whole
+ * reason `scanned` is carried this far.
+ *
+ * The error paths are already guarded — a non-ok response throws, a truncated
+ * sweep throws, an unconfigured key returns before any of this — but "HTTP 200
+ * with an empty list" is none of those, and it is the shape the realistic
+ * accidents actually produce: `STRIPE_SECRET_KEY` rotated to a `sk_test_…` key
+ * or repointed at another account, or a Givebutter key that still authenticates
+ * against an account that has been wound down. Without this floor the morning
+ * engine would take that as "every month went quiet at once", write $0.00 over
+ * every historical fee row, and DELETE every stored entry underneath them —
+ * entries that are not re-derivable if the source account is gone, and that
+ * `dashboardCharts.ts#feeRateByMonth` reads directly.
+ *
+ * A repointed key does not mean the org stopped incurring 2026-07's fees. Every
+ * month going quiet at once is the signature of a BROKEN READ, and this module
+ * says three times over that a read it is not sure of is worse than no read at
+ * all. This is that rule applied to the one write that destroys evidence.
+ *
+ * The floor deliberately covers only the total-silence case. A PARTIAL read —
+ * some months present, others missing — is still trusted, because that is
+ * indistinguishable from real reversals without a proportional guard (refuse to
+ * zero more than k months in one run), and no evidence yet says which k. Total
+ * silence is the dominant failure and the one with unbounded blast radius.
  */
 async function withZeroedMonths(
   ctx: ActionCtx,
   processor: FeeRail,
   swept: FeeMonth[],
+  scanned: number,
 ): Promise<FeeMonth[]> {
+  if (scanned === 0) {
+    console.warn(
+      `[processorFees] ${processor} sweep read 0 transactions; refusing to ` +
+        `reverse any month. A read that saw nothing has not observed a quiet ` +
+        `period, it has failed to observe anything.`,
+    );
+    return swept;
+  }
   const onRecord: string[] = await ctx.runQuery(
     internal.processorFees.feeMonthsOnRecord,
     { processor },
@@ -771,6 +836,7 @@ async function runFeeSync(
       byType: [...slot.byType.entries()].map(([type, t]) => ({ type, ...t })),
       postedAt: monthEndPostedAt(month),
     })),
+    chargesScanned,
   );
 
   // ── The evidence goes down FIRST ───────────────────────────────────────────
@@ -880,6 +946,7 @@ async function runGivebutterFeeSync(
       ],
       postedAt: monthEndPostedAt(month),
     })),
+    scanned,
   );
 
   // Evidence first, then the row — see `runFeeSync` for why that order matters.
@@ -916,7 +983,7 @@ async function runGivebutterFeeSync(
   });
   return {
     dryRun: !execute,
-    // TRANSACTIONS READ, not fees found — the two are 263 and 1 on this account,
+    // TRANSACTIONS READ, not fees found — the two are 267 and 1 on this account,
     // and reporting the second here would make "swept the whole account, one
     // gift's fee wasn't covered" and "the feed returned one row and we booked
     // off it" identical in the ops output. `entriesRecorded` is the fee-bearing
