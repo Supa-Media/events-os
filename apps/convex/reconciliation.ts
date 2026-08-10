@@ -122,7 +122,10 @@ import {
   requireReconciliationAudit,
 } from "./lib/reconciliationAccess";
 import { signedBookCents } from "./lib/bookBalance";
-import { reconcileOrgMoney } from "./lib/reconciliationGap";
+import {
+  reconcileOrgMoney,
+  addableBankPendingCents,
+} from "./lib/reconciliationGap";
 import {
   increaseEnvForMode,
   increaseEnvForObjectId,
@@ -3204,7 +3207,12 @@ export const reconciliationSummary = query({
   returns: v.object({
     bookValueCents: v.number(),
     bankAvailableCents: v.number(),
+    /** Pending the ledger has NOT booked — the only part that is still ours to
+     *  count. See `lib/reconciliationGap.ts#addableBankPendingCents`. */
     bankPendingCents: v.number(),
+    /** Pending the ledger HAS booked (outbound transfers we sent), excluded
+     *  from the line above and shown beside it so the difference is legible. */
+    bankPendingBookedCents: v.number(),
     stripeAvailableCents: v.union(v.number(), v.null()),
     stripePendingCents: v.union(v.number(), v.null()),
     /** Givebutter's derived undeposited balance; null = never snapshotted. */
@@ -3283,12 +3291,18 @@ export const reconciliationSummary = query({
 
     let bankAvailableCents = 0;
     let bankPendingCents = 0;
+    // The slice of pending the ledger has already booked — reported so the
+    // panel can say why "set aside" is smaller than the bank's own figure,
+    // rather than leaving a reader to wonder which number is wrong.
+    let bankPendingBookedCents = 0;
     let unattributedBankCents = 0;
     let balancesAsOf: number | null = null;
     for (const account of liveAccounts) {
       const available = account.balanceCents ?? 0;
       bankAvailableCents += available;
-      bankPendingCents += account.pendingCents ?? 0;
+      const pending = addableBankPendingCents(account);
+      bankPendingCents += pending.addableCents;
+      bankPendingBookedCents += pending.alreadyBookedCents;
       if (!bookScopes.has(String(account.chapterId))) {
         unattributedBankCents += available;
       }
@@ -3384,6 +3398,7 @@ export const reconciliationSummary = query({
       bookValueCents,
       bankAvailableCents,
       bankPendingCents,
+      bankPendingBookedCents,
       stripeAvailableCents,
       stripePendingCents,
       givebutterUndepositedCents,

@@ -4,7 +4,10 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
-import { reconcileOrgMoney } from "../lib/reconciliationGap";
+import {
+  reconcileOrgMoney,
+  addableBankPendingCents,
+} from "../lib/reconciliationGap";
 
 /**
  * DOES IT ADD UP? — the org-wide reconciliation gap.
@@ -711,5 +714,135 @@ describe("balance snapshot throttle", () => {
     const row = await run(t, (ctx) => ctx.db.query("financeSettings").first());
     expect(row?.balanceSnapshotRunningSince).toBeUndefined();
     expect(row?.balanceSnapshotAt).toBeGreaterThan(0);
+  });
+});
+
+// ── Which pending belongs on the cash side (2026-08-10) ─────────────────────
+//
+// The panel added back ALL of Increase's `current - available`, on the premise
+// that a pending item hasn't reached the ledger. True for a card swipe; false
+// for a transfer we sent ourselves, which `increasePayouts.ts` books as spend
+// in the same mutation that sends it. Adding that back while the books carry it
+// as gone opens a gap exactly as wide as the transfer.
+
+describe("addableBankPendingCents", () => {
+  const CARD = { category: "card_authorization", amountCents: -13855, count: 2 };
+  const ACH = {
+    category: "ach_transfer_instruction",
+    amountCents: -4499,
+    count: 1,
+  };
+
+  test("New York on 2026-08-10: $183.54 pending is $138.55 ours, $44.99 booked", () => {
+    // The real numbers. The $44.99 is Sayo Olujide's bus-ticket reimbursement,
+    // sent 2026-08-09, and it was the whole of that day's phantom gap.
+    expect(
+      addableBankPendingCents({
+        pendingCents: 18354,
+        pendingBreakdown: [CARD, ACH],
+      }),
+    ).toEqual({ addableCents: 13855, alreadyBookedCents: 4499 });
+  });
+
+  test("card authorizations are still added back in full", () => {
+    expect(
+      addableBankPendingCents({
+        pendingCents: 13855,
+        pendingBreakdown: [CARD],
+      }),
+    ).toEqual({ addableCents: 13855, alreadyBookedCents: 0 });
+  });
+
+  test("every outbound instruction kind counts as booked", () => {
+    for (const category of [
+      "ach_transfer_instruction",
+      "wire_transfer_instruction",
+      "check_transfer_instruction",
+      "real_time_payments_transfer_instruction",
+    ]) {
+      expect(
+        addableBankPendingCents({
+          pendingCents: 1000,
+          pendingBreakdown: [{ category, amountCents: -1000, count: 1 }],
+        }),
+      ).toEqual({ addableCents: 0, alreadyBookedCents: 1000 });
+    }
+  });
+
+  test("an unrecognised category keeps the old behaviour, not silence", () => {
+    // Allowlist, not denylist: Increase has ~16 pending categories and a new
+    // one must not quietly disappear off the cash side.
+    expect(
+      addableBankPendingCents({
+        pendingCents: 500,
+        pendingBreakdown: [
+          { category: "inbound_funds_hold", amountCents: -500, count: 1 },
+        ],
+      }),
+    ).toEqual({ addableCents: 500, alreadyBookedCents: 0 });
+  });
+
+  test("no breakdown yet falls back to adding the whole total back", () => {
+    expect(addableBankPendingCents({ pendingCents: 18354 })).toEqual({
+      addableCents: 18354,
+      alreadyBookedCents: 0,
+    });
+    expect(
+      addableBankPendingCents({ pendingCents: 18354, pendingBreakdown: [] }),
+    ).toEqual({ addableCents: 18354, alreadyBookedCents: 0 });
+  });
+
+  test("a STALE breakdown is refused rather than subtracted from", () => {
+    // A failed /pending_transactions fetch leaves the previous rollup in place
+    // while pendingCents moves on. Subtracting from it would take $44.99 off
+    // the cash side for a transfer that posted days ago.
+    expect(
+      addableBankPendingCents({
+        pendingCents: 13855, // the ACH posted; the rollup still lists it
+        pendingBreakdown: [CARD, ACH],
+      }),
+    ).toEqual({ addableCents: 13855, alreadyBookedCents: 0 });
+  });
+
+  test("zero pending is zero on both counts", () => {
+    expect(
+      addableBankPendingCents({ pendingCents: 0, pendingBreakdown: [] }),
+    ).toEqual({ addableCents: 0, alreadyBookedCents: 0 });
+    expect(addableBankPendingCents({})).toEqual({
+      addableCents: 0,
+      alreadyBookedCents: 0,
+    });
+  });
+
+  test("the gap closes when the booked slice comes out", () => {
+    // End to end, in the shape the panel reports: books $8,722.60 against
+    // $7,041.12 available + $183.54 pending + $1,530.32 Stripe + $75.00
+    // Givebutter + $56.93 Relay read $164.31 over. $44.99 of that was this.
+    const pending = addableBankPendingCents({
+      pendingCents: 18354,
+      pendingBreakdown: [CARD, ACH],
+    });
+    const before = reconcileOrgMoney({
+      bookValueCents: 872260,
+      bankAvailableCents: 704112,
+      bankPendingCents: 18354,
+      stripeAvailableCents: 24012,
+      stripePendingCents: 129020,
+      givebutterUndepositedCents: 7500,
+      givebutterConfigured: true,
+      relayBalanceCents: 5693,
+    });
+    const after = reconcileOrgMoney({
+      bookValueCents: 872260,
+      bankAvailableCents: 704112,
+      bankPendingCents: pending.addableCents,
+      stripeAvailableCents: 24012,
+      stripePendingCents: 129020,
+      givebutterUndepositedCents: 7500,
+      givebutterConfigured: true,
+      relayBalanceCents: 5693,
+    });
+    expect(before.differenceCents).toBe(16431);
+    expect(after.differenceCents).toBe(16431 - 4499);
   });
 });
