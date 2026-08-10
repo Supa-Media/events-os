@@ -45,6 +45,7 @@ import {
   hasReviewCoding,
   requireReviewCoding,
   requireSubmitCoding,
+  requireViewCoding,
 } from "./lib/transactionCodingAccess";
 import {
   codingForTransaction,
@@ -147,9 +148,12 @@ export const policy = query({
 /**
  * The coding on one transaction (or null), plus everything the editor needs
  * to render honestly: the policy numbers and whether this row is required to
- * be coded before it can reconcile. Read-gated by the SUBMIT resolver — whoever
- * may author on a row may read what's on it, which keeps a cardholder able to
- * read the send-back note explaining what to fix.
+ * be coded before it can reconcile. Read-gated by the VIEW resolver — whoever
+ * may author on a row OR decide it may read what's on it. The author half
+ * keeps a cardholder able to read the send-back note explaining what to fix;
+ * the reviewer half is what lets a central reviewer open a row in a book they
+ * don't author in, instead of being able to approve it from the queue and not
+ * read it (see `lib/transactionCodingAccess.ts#requireViewCoding`).
  */
 export const getForTransaction = query({
   args: { transactionId: v.id("transactions") },
@@ -180,7 +184,7 @@ export const getForTransaction = query({
     minPurposeLength: v.number(),
   }),
   handler: async (ctx, args) => {
-    const { txn, actorPersonId } = await requireSubmitCoding(
+    const { txn, actorPersonId } = await requireViewCoding(
       ctx,
       args.transactionId,
     );
@@ -353,6 +357,18 @@ export const approve = mutation({
  * a `submitted` coding (the everyday loop) and on an `approved` one (the
  * audited way to reopen the record when something turns out wrong). The note
  * is required: the author needs to know what would make it approvable.
+ *
+ * SEPARATION OF DUTIES applies here too, and it didn't used to. `canReview`
+ * has always reported `false` to the author of a coding — so the client
+ * already hid both buttons from them — while this mutation checked only rank.
+ * That's the same class of client/server disagreement `canReview` was
+ * introduced to end, just pointing the other way: the server was the LAXER
+ * of the two, which is the direction that actually matters. It also left a
+ * real hole, because this mutation reopens an APPROVED coding: an
+ * author who was also a manager could undo somebody else's decision about
+ * their own testimony, single-handed. Deciding on your own coding is
+ * deciding on your own coding whichever way the decision goes. (Matches
+ * `finances.ts#requestBudgetChanges`, which has always asserted it.)
  */
 export const requestChanges = mutation({
   args: {
@@ -371,6 +387,10 @@ export const requestChanges = mutation({
         code: "NOT_FOUND",
         message: "This transaction has no coding to send back.",
       });
+    }
+    if (actorPersonId != null) {
+      // Same superuser-with-no-roster-row escape hatch as `approve` above.
+      assertSeparationOfDuties(actorPersonId, coding.codedByPersonId);
     }
     const userId = (await requireUserId(ctx)) as Id<"users">;
     await decideCoding(ctx, {

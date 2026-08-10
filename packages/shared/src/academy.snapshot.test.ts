@@ -1064,7 +1064,9 @@ const EXPECTED_SECTIONS: {
     slug: "finance-approving-budgets",
     title: "Approving budgets",
     minutes: 3,
-    quizLength: 3,
+    // 4 since 2026-08-09: the four approval seats now approve CODINGS too,
+    // with different reach per seat, and that's the part people get wrong.
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },

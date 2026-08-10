@@ -88,6 +88,45 @@ async function asManager(s: ChapterSetup, name = "Manager Mo"): Promise<Id<"peop
   return personId;
 }
 
+interface ChapterMember {
+  as: ReturnType<ChapterSetup["t"]["withIdentity"]>;
+  personId: Id<"people">;
+}
+
+/** A second authenticated member — their own `users`/`userChapters`/`people`
+ *  rows — so a test can have a real cardholder who is NOT the manager. */
+async function addCardholder(
+  s: ChapterSetup,
+  opts: { email: string; name: string },
+): Promise<ChapterMember> {
+  const userId = await run(s.t, (ctx) =>
+    ctx.db.insert("users", { email: opts.email }),
+  );
+  await run(s.t, (ctx) =>
+    ctx.db.insert("userChapters", {
+      userId,
+      chapterId: s.chapterId,
+      role: "member",
+      isActive: true,
+      joinedAt: Date.now(),
+    }),
+  );
+  const personId = await run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: opts.name,
+      pwEmail: opts.email,
+      userId,
+      isTeamMember: true,
+      createdAt: Date.now(),
+    }),
+  );
+  return {
+    as: s.t.withIdentity({ subject: `${userId}|session`, issuer: "test" }),
+    personId,
+  };
+}
+
 async function seedCard(
   s: ChapterSetup,
   cardholderPersonId: Id<"people">,
@@ -650,19 +689,40 @@ describe("notifyCodingSentBack", () => {
   const realFetch = globalThis.fetch;
   const GOOD_PURPOSE = "Travel to NY to film the Eden event with the team";
 
-  /** A cardholder-authored coding, sent back by a manager. Returns the txn. */
-  async function sentBackCoding(s: ChapterSetup): Promise<Id<"transactions">> {
-    const manager = await asManager(s);
-    void manager;
-    const txnId = await seedCharge(s, { ageDays: 2, receiptStorageId: await storeBlob(s.t) });
-    await s.as.mutation(api.transactionCodings.submit, {
+  /**
+   * A cardholder-authored coding, ready for a manager to send back — two
+   * DIFFERENT people, which is what the helper always claimed to build and
+   * what send-back now requires (deciding on a coding, either way, is
+   * separation-of-duties-bound).
+   *
+   * Splitting them also makes these tests mean what they say: the thing
+   * `notifyCodingSentBack` has to get right is that the note reaches the
+   * AUTHOR, and a fixture where the author and the reviewer are one person
+   * cannot tell a correct implementation from one that mails the reviewer.
+   * Mo stays the manager (so `reviewerName` is still "Manager Mo"); Casey is
+   * the cardholder whose charge it is, and the recipient under test.
+   */
+  async function sentBackCoding(
+    s: ChapterSetup,
+  ): Promise<{ transactionId: Id<"transactions">; author: ChapterMember }> {
+    await asManager(s);
+    const author = await addCardholder(s, {
+      email: "casey@publicworship.life",
+      name: "Casey Cardholder",
+    });
+    const txnId = await seedCharge(s, {
+      ageDays: 2,
+      personId: author.personId,
+      receiptStorageId: await storeBlob(s.t),
+    });
+    await author.as.mutation(api.transactionCodings.submit, {
       transactionId: txnId,
       expenseType: "travel",
       businessPurpose: GOOD_PURPOSE,
       travelFrom: "Boston",
       travelTo: "New York",
     });
-    return txnId;
+    return { transactionId: txnId, author };
   }
 
   test("emails the AUTHOR the reviewer's note plus a deep link", async () => {
@@ -675,7 +735,7 @@ describe("notifyCodingSentBack", () => {
       const t = newT();
       const s = await setupChapter(t);
       await armCodingPolicy(s);
-      const txnId = await sentBackCoding(s);
+      const { transactionId: txnId } = await sentBackCoding(s);
 
       const sent: { to: string; subject: string; html: string }[] = [];
       globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
@@ -691,7 +751,8 @@ describe("notifyCodingSentBack", () => {
       await s.t.finishAllScheduledFunctions(vi.runAllTimers);
 
       expect(sent).toHaveLength(1);
-      expect(sent[0].to).toBe("mo@publicworship.life");
+      // The AUTHOR, not the reviewer — the whole point of the notification.
+      expect(sent[0].to).toBe("casey@publicworship.life");
       expect(sent[0].html).toContain("The receipt must show the exact amount.");
       expect(sent[0].html).toMatch(
         /href="https:\/\/app\.publicworship\.life\/finances\/my-transactions\?filter=uncoded"/,
@@ -712,7 +773,7 @@ describe("notifyCodingSentBack", () => {
       const t = newT();
       const s = await setupChapter(t);
       await armCodingPolicy(s);
-      const txnId = await sentBackCoding(s);
+      const { transactionId: txnId, author } = await sentBackCoding(s);
       await s.as.mutation(api.transactionCodings.requestChanges, {
         transactionId: txnId,
         reviewNote: "Say which event this trip served.",
@@ -725,7 +786,7 @@ describe("notifyCodingSentBack", () => {
       expect(before?.reviewNote).toBe("Say which event this trip served.");
       expect(before?.reviewerName).toBe("Manager Mo");
 
-      await s.as.mutation(api.transactionCodings.submit, {
+      await author.as.mutation(api.transactionCodings.submit, {
         transactionId: txnId,
         expenseType: "travel",
         businessPurpose: "Travel to NY to film the Eden event, night two",
@@ -750,7 +811,7 @@ describe("notifyCodingSentBack", () => {
       const t = newT();
       const s = await setupChapter(t);
       await armCodingPolicy(s);
-      const txnId = await sentBackCoding(s);
+      const { transactionId: txnId } = await sentBackCoding(s);
       await s.as.mutation(api.transactionCodings.requestChanges, {
         transactionId: txnId,
         reviewNote: "Attach the itemized folio, not the card slip.",
