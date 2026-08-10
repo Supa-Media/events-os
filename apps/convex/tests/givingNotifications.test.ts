@@ -623,19 +623,36 @@ describe("the digest clock", () => {
     );
   });
 
-  test("a rule written before the flag existed self-heals after one run", () => {
-    // Pre-existing prod rows have a run's watermark and no flag, so they read
-    // as case 3 once. Bounded — at most one window's overlap — and the next
-    // claim stamps the flag.
+  test("an unflagged watermark reads as synthetic — which is why 0061 exists", () => {
+    // Pre-existing prod rows have a RUN's watermark and no flag, so they read
+    // as case 3 until a claim re-stamps them. That fallback is the right
+    // default for a field that has to mean something on day one, but it is not
+    // free: for a rule caught mid-drain it is a full duplicate digest, not the
+    // few hours of overlap first claimed. Hence
+    // `0061_stamp_digest_watermark_provenance`.
     const legacy = rule({
       cadence: "weekly",
       lastSentAt: MON_8AM_ET - 7 * DAY_MS + 6 * 60 * 60 * 1000,
       createdAt: 0,
     });
     expect(digestWindowStart(legacy, MON_8AM_ET)).toBe(MON_8AM_ET - 7 * DAY_MS);
+    // What the migration turns it into: exact, from the first tick.
     expect(
       digestWindowStart({ ...legacy, watermarkFromRun: true }, MON_8AM_ET),
     ).toBe(MON_8AM_ET - 7 * DAY_MS + 6 * 60 * 60 * 1000);
+
+    // The mid-drain shape, which is the one that re-mails. Unflagged, a
+    // bookmark six hours into a daily period gets the floor and reaches back a
+    // whole day past itself — over every gift the cut digest just reported.
+    const midDrain = rule({
+      cadence: "daily",
+      lastSentAt: MON_8AM_ET - 6 * 60 * 60 * 1000,
+      createdAt: 0,
+    });
+    expect(digestWindowStart(midDrain, MON_8AM_ET)).toBe(MON_8AM_ET - DAY_MS);
+    expect(
+      digestWindowStart({ ...midDrain, watermarkFromRun: true }, MON_8AM_ET),
+    ).toBe(MON_8AM_ET - 6 * 60 * 60 * 1000);
   });
 });
 
@@ -2075,10 +2092,13 @@ describe("a real over-cap window, end to end", () => {
         expect(out).toMatchObject({ digestsSent: 1, emailsSent: 1 });
       });
       expect(cap.sent).toHaveLength(1);
-      // The first pass reports exactly the cap, and says the total is a floor.
+      // The first pass reports exactly the cap, and says the total is a floor —
+      // in the SUBJECT as well as the body. A cut window is a SLICE of the
+      // period, not the period, so it doesn't get to claim the day.
       expect(cap.sent[0].subject).toContain(
-        `from ${MAX_DIGEST_MATCHES} gifts this day`,
+        `from ${MAX_DIGEST_MATCHES} gifts so far`,
       );
+      expect(cap.sent[0].subject).not.toContain("this day");
       expect(cap.sent[0].html).toContain("FLOOR");
       expect(cap.sent[0].html).toContain(
         "carries on from exactly where this one stopped",
@@ -2426,9 +2446,17 @@ describe("digests", () => {
       const failed = rules.find((r) => r.recipients[0] === "a@publicworship.life");
       expect(failed?.lastSentAt).toBeUndefined();
       expect(failed?.lastRunDayKey).toBeUndefined();
-      // …while the two that did land kept theirs.
+      // ALL THREE marks come back, not two. `claimDigest` set
+      // `watermarkFromRun: true` on the way in, so this assertion is genuinely
+      // reachable: drop the restore from `releaseDigest` and the rule keeps a
+      // `true` describing a watermark that no longer exists — and the next run
+      // would resume from a mark that was rolled back, losing the floor that
+      // rule is entitled to.
+      expect(failed?.watermarkFromRun).toBeUndefined();
+      // …while the two that did land kept theirs, flag included.
       const landed = rules.find((r) => r.recipients[0] === "b@publicworship.life");
       expect(landed?.lastSentAt).toBe(MON_8AM_ET - 60_000);
+      expect(landed?.watermarkFromRun).toBe(true);
     } finally {
       globalThis.fetch = realFetch;
       if (prevKey === undefined) delete process.env.RESEND_API_KEY;
@@ -2751,6 +2779,71 @@ describe("the window a digest reports", () => {
     }
   });
 
+  test("setRuleActive clears the provenance flag a real run had set", async () => {
+    // The flag has to be genuinely `true` before the resume, or this asserts
+    // nothing: on a rule that never ran the field is already absent, and
+    // deleting `setRuleActive`'s clear leaves the suite green. So the rule
+    // sends a real digest first, and the `true` is checked before it matters.
+    const s = await devDirectorSetup();
+    let ruleId!: Id<"givingNotificationRules">;
+    await atClock(s.t, MON_8AM_ET - 40 * DAY_MS, async () => {
+      ruleId = await saveRule(s.as, { cadence: "daily", sendHourLocal: 8 });
+    });
+    const cap = captureEmails();
+    try {
+      // Two hours before the run, not a whole day: the window is
+      // `(since, until]`, so a gift landing exactly ON `since` is excluded and
+      // the digest would skip as an empty daily without ever stamping.
+      await atClock(s.t, MON_8AM_ET - 30 * DAY_MS - 2 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, { amountCents: 15_000, name: "Pre Pause" });
+      });
+      await atClock(s.t, MON_8AM_ET - 30 * DAY_MS, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      const ran = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(ran?.watermarkFromRun).toBe(true);
+      expect(ran?.lastSentAt).toBe(MON_8AM_ET - 30 * DAY_MS - 60_000);
+
+      await atClock(s.t, MON_8AM_ET - 20 * DAY_MS, async () => {
+        await s.as.mutation(api.givingNotifications.setRuleActive, {
+          ruleId,
+          isActive: false,
+        });
+      });
+      await atClock(s.t, MON_8AM_ET - 3 * DAY_MS, async () => {
+        await s.as.mutation(api.givingNotifications.setRuleActive, {
+          ruleId,
+          isActive: true,
+        });
+      });
+
+      const resumed = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      // Both halves of the stamp, and the flag is the half that fails loudly if
+      // the clear is removed.
+      expect(resumed?.lastSentAt).toBe(MON_8AM_ET - 3 * DAY_MS);
+      expect(resumed?.watermarkFromRun).toBeUndefined();
+
+      // …and the consequence, so this isn't only a field assertion: a gift from
+      // BEFORE the resume but inside the trailing day is reported, which only
+      // happens because the flag came off and the floor applied.
+      await atClock(s.t, MON_8AM_ET - 20 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, {
+          amountCents: 4_200,
+          name: "Before Resume",
+          email: "before@example.com",
+        });
+      });
+      cap.sent.length = 0;
+      await atClock(s.t, MON_8AM_ET, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      expect(cap.sent).toHaveLength(1);
+      expect(cap.sent[0].html).toContain("Before Resume");
+    } finally {
+      cap.restore();
+    }
+  });
+
   test("resuming through saveRule closes the same door setRuleActive does", async () => {
     // `isActive` is settable on the edit mutation too, and the mark reset there
     // was gated on a cadence change only — so a rule switched off for months and
@@ -2764,6 +2857,20 @@ describe("the window a digest reports", () => {
     });
     const cap = captureEmails();
     try {
+      // IT MUST HAVE RUN FIRST. Asserting `watermarkFromRun` is undefined on a
+      // rule that never ran proves nothing — the field was already absent, and
+      // deleting the clear in `saveRule` would leave the suite green. So give
+      // it a real digest, and check the flag is genuinely `true` before the
+      // resume has to clear it.
+      await atClock(s.t, MON_8AM_ET - 110 * DAY_MS - 2 * 60 * 60 * 1000, async () => {
+        await addGift(s.as, { amountCents: 12_000, name: "Before The Pause" });
+      });
+      await atClock(s.t, MON_8AM_ET - 110 * DAY_MS, async () => {
+        await s.t.action(internal.givingNotificationDigests.sendGivingDigests, {});
+      });
+      const ran = await run(s.t, (ctx) => ctx.db.get(ruleId));
+      expect(ran?.watermarkFromRun).toBe(true);
+
       await atClock(s.t, MON_8AM_ET - 100 * DAY_MS, async () => {
         await s.as.mutation(api.givingNotifications.setRuleActive, {
           ruleId,
@@ -2785,7 +2892,8 @@ describe("the window a digest reports", () => {
       const row = await run(s.t, (ctx) => ctx.db.get(ruleId));
       expect(row?.lastSentAt).toBe(MON_8AM_ET - 2 * DAY_MS);
       // Synthetic boundary, so the first window back still gets its full
-      // trailing period — it just can't reach past the resume.
+      // trailing period — it just can't reach past the resume. This is the
+      // assertion that fails if `saveRule` stops clearing the flag.
       expect(row?.watermarkFromRun).toBeUndefined();
       cap.sent.length = 0;
 

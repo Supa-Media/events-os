@@ -340,6 +340,7 @@ const REGISTRY_NAMES = [
   "0058_add_data_export_defaults",
   "0059_split_legacy_increase_cards",
   "0060_add_events_checkin_defaults",
+  "0061_stamp_digest_watermark_provenance",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

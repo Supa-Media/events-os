@@ -444,8 +444,17 @@ export const releaseDigest = internalMutation({
  *     advanced every watermark daily and mailed nothing — and the day someone
  *     configured the key, every gift behind those watermarks was permanently
  *     un-digested. Resolved up front now, and the sweep returns BEFORE claiming
- *     anything. Nothing has been consumed, so the backlog is simply still there
- *     when a key appears.
+ *     anything. Nothing is CONSUMED, so no window is ever eaten unmailed.
+ *
+ *     What that does NOT promise is an unbounded backlog, and it used to say so.
+ *     A sweep that claims nothing leaves the rule with no watermark at all, and
+ *     `digestWindowStart`'s never-reported case deliberately gives such a rule
+ *     exactly ONE trailing period — so a key configured three months late gets
+ *     the last week, not the last quarter. That is the same bound protecting
+ *     every other watermark-less rule (a quiet daily never stamps one either),
+ *     and it is the point: a first digest has to be readable. The distinction
+ *     that matters is that nothing was silently consumed and re-reported as
+ *     empty; the older gifts are still in the ledger, just not in an email.
  *  2. A RESEND OUTAGE. Every recipient throws, each is caught per-recipient,
  *     and the window was consumed anyway. Now a claim where NOT ONE recipient
  *     was reached is released (`releaseDigest`) and counted in `failedRules`,

@@ -392,9 +392,18 @@ export function cadencePeriodMs(cadence: string): number {
  *     dormancy stamps `now` and clears it, and case 1 is capped at one period
  *     regardless. Three months off comes back reporting a week.
  *
- * A rule written before `watermarkFromRun` existed reads as case 3 once, which
- * costs at most one window's overlap; its next run stamps the flag and it is
- * exact from then on.
+ * ── LEGACY ROWS ARE MIGRATED, NOT LEFT TO HEAL ─────────────────────────────
+ * A rule written before `watermarkFromRun` existed has a run's watermark and no
+ * flag, so it reads as case 3 until its next claim re-stamps it. "At most one
+ * window's overlap" was the estimate, and it was too kind: a rule caught
+ * MID-DRAIN re-reads from a period back, matches the same first
+ * `MAX_DIGEST_MATCHES` gifts, and mails a BYTE-IDENTICAL duplicate digest
+ * before the flag it just stamped takes effect. It recovers on the run after
+ * and never skips a gift — but a duplicate digest is exactly what costs a new
+ * feature its credibility with the people reading it, so migration
+ * `0061_stamp_digest_watermark_provenance` stamps every existing watermark
+ * rather than waiting. The case-3 fallback stays as the honest default for a
+ * field that has to mean something the instant it ships.
  */
 export function digestWindowStart(
   rule: Pick<

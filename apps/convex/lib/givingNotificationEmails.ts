@@ -384,9 +384,16 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
   // names the window's start instead, which is never wrong at any length.
   const span = payload.periodEnd - payload.periodStart;
   const overrun = span > LONG_WINDOW_FACTOR * cadencePeriodMs(payload.cadence);
-  const when = overrun
-    ? `since ${DATE_FMT.format(new Date(payload.periodStart))}`
-    : `this ${period}`;
+  const when = payload.countTruncated
+    ? // A CUT window is a SLICE of the period, not the period: the read stopped
+      // partway and the rest is the next digest's. "this week" over a slice
+      // overstates in exactly the direction the FLOOR caveat further down works
+      // to correct, and a subject shouldn't need the paragraph underneath it to
+      // walk it back.
+      "so far"
+    : overrun
+      ? `since ${DATE_FMT.format(new Date(payload.periodStart))}`
+      : `this ${period}`;
   const subject =
     payload.giftCount === 0
       ? payload.countTruncated

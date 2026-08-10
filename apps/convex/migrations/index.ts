@@ -79,6 +79,7 @@ import { backfillIncreaseAccountActivity } from "./0057_backfill_increase_transa
 import { addDataExportDefaults } from "./0058_add_data_export_defaults";
 import { splitLegacyIncreaseCards } from "./0059_split_legacy_increase_cards";
 import { addEventsCheckinDefaults } from "./0060_add_events_checkin_defaults";
+import { stampDigestWatermarkProvenance } from "./0061_stamp_digest_watermark_provenance";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -330,4 +331,12 @@ export const MIGRATIONS: Migration[] = [
   // up the same default door-check-in access the template now grants a
   // brand-new org automatically. Additive-only (see 0060's doc). Idempotent.
   addEventsCheckinDefaults,
+  // Giving digests — label every EXISTING rule's watermark as a digest run's,
+  // because that is where all of them came from. Absent reads as a synthetic
+  // boundary, which would give a rule caught mid-drain the trailing-period
+  // floor for one tick and mail a byte-identical duplicate digest before its
+  // next claim re-stamps the flag. Self-healing either way, never skips a
+  // gift — but one patch per rule is cheaper than one duplicate email to a
+  // fundraising team. Additive-only, idempotent. See 0061.
+  stampDigestWatermarkProvenance,
 ];
