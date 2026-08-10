@@ -168,7 +168,7 @@ export function canManageRuleScope(
  * is upheld: there is exactly one `require` form, every call site uses it, and
  * nothing here checks a seat inline.
  */
-async function requireRuleManage(
+export async function requireRuleManage(
   ctx: QueryCtx,
   scope: RuleScope,
 ): Promise<GivingAccess> {

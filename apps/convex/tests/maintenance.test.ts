@@ -5,12 +5,13 @@ import { internal } from "../_generated/api";
 
 /**
  * TTL sweep for the rate-limit "attempt" tables (#134 reimbursementSubmitAttempts,
- * #161 cardDetailsRevealAttempts, receiptNudgeAttempts) — all three only ever
- * INSERT, so a daily cron (crons.ts) sweeps rows older than each table's own
- * rate window (1 hour for the first two, 24h for receiptNudgeAttempts).
+ * #161 cardDetailsRevealAttempts, receiptNudgeAttempts,
+ * givingDigestSendNowAttempts) — all four only ever INSERT, so a daily cron
+ * (crons.ts) sweeps rows older than each table's own rate window (1 hour for
+ * three of them, 24h for receiptNudgeAttempts).
  */
 describe("maintenance.sweepRateLimitAttempts", () => {
-  test("drops attempt rows older than each table's own window, keeps recent ones, across all three tables", async () => {
+  test("drops attempt rows older than each table's own window, keeps recent ones, across all four tables", async () => {
     const t = newT();
     const now = Date.now();
     const HOUR = 60 * 60 * 1000;
@@ -53,12 +54,25 @@ describe("maintenance.sweepRateLimitAttempts", () => {
         createdAt: now - DAY - 1,
       }),
     );
+    const staleSendNow = await run(t, (ctx) =>
+      ctx.db.insert("givingDigestSendNowAttempts", {
+        key: "rule:abc",
+        createdAt: now - HOUR - 1,
+      }),
+    );
+    const freshSendNow = await run(t, (ctx) =>
+      ctx.db.insert("givingDigestSendNowAttempts", {
+        key: "rule:abc",
+        createdAt: now - 1000,
+      }),
+    );
 
     const result = await t.mutation(internal.maintenance.sweepRateLimitAttempts, {});
     expect(result).toEqual({
       reimbursementAttempts: 1,
       cardRevealAttempts: 1,
       receiptNudgeAttempts: 1,
+      digestSendNowAttempts: 1,
     });
 
     const remainingReimbursements = await run(t, (ctx) =>
@@ -78,6 +92,12 @@ describe("maintenance.sweepRateLimitAttempts", () => {
     );
     expect(remainingNudges.map((r) => r._id)).toEqual([freshNudge]);
     expect(remainingNudges.map((r) => r._id)).not.toContain(staleNudge);
+
+    const remainingSendNows = await run(t, (ctx) =>
+      ctx.db.query("givingDigestSendNowAttempts").collect(),
+    );
+    expect(remainingSendNows.map((r) => r._id)).toEqual([freshSendNow]);
+    expect(remainingSendNows.map((r) => r._id)).not.toContain(staleSendNow);
   });
 
   test("no-ops cleanly when all tables are empty", async () => {
@@ -87,6 +107,7 @@ describe("maintenance.sweepRateLimitAttempts", () => {
       reimbursementAttempts: 0,
       cardRevealAttempts: 0,
       receiptNudgeAttempts: 0,
+      digestSendNowAttempts: 0,
     });
   });
 });

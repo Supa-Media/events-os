@@ -63,8 +63,9 @@
  * proof the pipeline is alive. Reasoning in full in
  * `lib/givingNotificationRules.ts`.
  */
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import {
+  action,
   internalAction,
   internalMutation,
   internalQuery,
@@ -77,6 +78,7 @@ import {
   DIGEST_LAG_MS,
   MAX_DIGEST_GIFT_ROWS,
   MAX_RULES,
+  cadencePeriodMs,
   digestWindowStart,
   isDigestDue,
   ruleMatchesGift,
@@ -95,6 +97,7 @@ import {
 } from "./lib/givingNotificationEmails";
 import { sendEmailReporting } from "./ticketingEmails";
 import { resolveResendSettings } from "./lib/resend";
+import { requireRuleManage } from "./givingNotifications";
 
 /**
  * How many MATCHING gifts one digest window will collect before it cuts the
@@ -247,6 +250,171 @@ function sortedRows(rows: Map<string, DigestBreakdownRow>): DigestBreakdownRow[]
   return [...rows.values()].sort((a, b) => b.cents - a.cents);
 }
 
+/** A digest that is ready to be rendered and mailed — the window it read, and
+ *  the payload built from it. `null` from `buildDigestPayload` means the
+ *  window said not to send at all (`shouldSendDigest`). */
+type BuiltDigest = {
+  /** Where the window ACTUALLY closed — what a claim stamps as the watermark. */
+  until: number;
+  /** The read stopped early; totals are a floor. */
+  truncated: boolean;
+  recipients: readonly string[];
+  payload: Parameters<typeof renderDigestEmail>[0];
+};
+
+/**
+ * The exclusive lower bound of the window a MANUAL send covers: exactly the
+ * trailing period, ignoring `lastSentAt` and its provenance entirely.
+ *
+ * ── WHY "SEND NOW" DOESN'T ASK `digestWindowStart` ─────────────────────────
+ * The two windows answer two different questions, and only one of them is
+ * about a watermark.
+ *
+ * A SCHEDULED run asks "what has arrived since the last one?" — it is one link
+ * in a chain that must not skip a gift or report one twice, so it resumes from
+ * the watermark exactly (see `digestWindowStart`, whose three cases exist for
+ * precisely that). A MANUAL send asks a different question: "what does a
+ * weekly digest look like?" Nobody presses this button wanting a three-hour
+ * slice.
+ *
+ * Which is exactly what the watermark window would give them, in the case the
+ * button was built for. The owner's rule ran at 09:00, leaving a
+ * report-provenance watermark; he pressed Send now at noon to see his weekly
+ * digest and — on the watermark window — would have got a confident, empty
+ * three-hour report. That is worse than having no button at all, because it
+ * looks like the feature is broken while it is working as specified.
+ *
+ * ── THIS IS ONLY SAFE BECAUSE THE PREVIEW CONSUMES NOTHING ────────────────
+ * Reaching past a watermark would be a serious bug in any path that then moved
+ * it — it is the "dormant replay" `digestWindowStart` case 1 is bounded to
+ * prevent. It is harmless here for one reason and it is worth naming: a
+ * preview neither reads the scheduling state nor writes it, so it cannot
+ * desync it. `prepareDigestNow` leaves all three marks exactly as found, and
+ * the scheduled run afterwards resumes from its watermark as though this never
+ * happened. The two decisions hold each other up — change either one and check
+ * the other still stands.
+ *
+ * The accepted cost, stated plainly: a manual send re-reports gifts the last
+ * scheduled digest already mailed. That is the point. It is a preview of the
+ * PERIOD, not a claim about what is new.
+ */
+export function sendNowWindowStart(
+  rule: Pick<Doc<"givingNotificationRules">, "cadence">,
+  now: number,
+): number {
+  return now - cadencePeriodMs(rule.cadence);
+}
+
+/**
+ * Read one rule's window and build its email payload. NO WRITES — every mark
+ * belongs to the caller, which is the whole reason this is a function rather
+ * than part of `claimDigest`.
+ *
+ * TWO CALLERS, ONE PATH. `claimDigest` (the hourly sweep) moves the marks
+ * afterwards; `prepareDigestNow` (the desk's "Send now") deliberately doesn't.
+ * Everything that decides WHAT a digest says — the scope filter, the amount
+ * floor, the minute-early close, the cut/truncation machinery, the breakdowns,
+ * the `MAX_DIGEST_GIFT_ROWS` list cap, the empty-daily asymmetry — happens
+ * here exactly once, so the manual send can never drift from the scheduled one
+ * it exists to preview.
+ *
+ * `since` IS THE ONE THING THE TWO CALLERS DISAGREE ABOUT, which is why it is
+ * a parameter rather than computed here: the sweep passes
+ * `digestWindowStart` (resume from the watermark — a chain that must not skip
+ * or duplicate), the manual send passes `sendNowWindowStart` (the trailing
+ * period — the honest answer to "what does a weekly digest look like?"). Both
+ * are documented at their own definitions.
+ *
+ * Returns `null` when this window shouldn't send (today: an empty daily).
+ */
+async function buildDigestPayload(
+  ctx: MutationCtx,
+  rule: Doc<"givingNotificationRules">,
+  now: number,
+  since: number,
+): Promise<BuiltDigest | null> {
+  // An `immediate` rule has no window and no digest template. Both callers
+  // already refuse one before they get here; this is the narrowing that makes
+  // that a type-level fact rather than a convention.
+  if (rule.cadence !== "daily" && rule.cadence !== "weekly") return null;
+
+  // The window closes a minute behind `now`, so a gift whose transaction
+  // started before this run but commits after it lands in the NEXT window
+  // rather than behind the watermark. See `DIGEST_LAG_MS`.
+  const requestedUntil = Math.max(since, now - DIGEST_LAG_MS);
+  const window = await collectWindowGifts(ctx, rule, since, requestedUntil);
+
+  if (!shouldSendDigest(rule.cadence, window.gifts.length, window.truncated)) {
+    return null;
+  }
+
+  // Newest first — a digest is read top-down and the freshest gift is the
+  // one most likely to still be worth a phone call today.
+  const gifts = [...window.gifts].sort((a, b) => b.createdAt - a.createdAt);
+
+  const chapterNames = new Map<string, string>();
+  const byScope = new Map<string, DigestBreakdownRow>();
+  const byMethod = new Map<string, DigestBreakdownRow>();
+  const byType = new Map<string, DigestBreakdownRow>();
+  let totalCents = 0;
+  let largestRow: Doc<"gifts"> | null = null;
+
+  for (const gift of gifts) {
+    totalCents += gift.amountCents;
+    addTo(byMethod, giftMethodLabel(gift.method), gift.amountCents);
+    // EVERY gift, matched or listed or not — `giftType` returns exactly one
+    // bucket per gift (see `lib/giftLabels.ts`), which is what makes this cut
+    // add up to `totalCents` rather than approximately to it.
+    addTo(byType, GIFT_TYPE_LABELS[giftType(gift)], gift.amountCents);
+    if (!largestRow || gift.amountCents > largestRow.amountCents) {
+      largestRow = gift;
+    }
+  }
+
+  const listed: NotificationGift[] = [];
+  for (const gift of gifts.slice(0, MAX_DIGEST_GIFT_ROWS)) {
+    const built = await buildNotificationGift(ctx, gift, chapterNames, now);
+    if (built) listed.push(built);
+  }
+  // The scope breakdown needs a label for EVERY gift, listed or not, so what
+  // it shows adds up to the total above.
+  for (const gift of gifts) {
+    const key = gift.scope as string;
+    let label = chapterNames.get(key);
+    if (label === undefined) {
+      label = await scopeLabel(ctx, gift.scope);
+      chapterNames.set(key, label);
+    }
+    addTo(byScope, label, gift.amountCents);
+  }
+
+  const largest = largestRow
+    ? await buildNotificationGift(ctx, largestRow, chapterNames, now)
+    : null;
+
+  return {
+    until: window.until,
+    truncated: window.truncated,
+    recipients: rule.recipients,
+    payload: {
+      ruleName: rule.name,
+      cadence: rule.cadence,
+      scopeLabel: await ruleScopeLabel(ctx, rule.scope),
+      periodStart: since,
+      periodEnd: window.until,
+      totalCents,
+      giftCount: gifts.length,
+      largest,
+      byScope: sortedRows(byScope),
+      byMethod: sortedRows(byMethod),
+      byType: sortedRows(byType),
+      gifts: listed,
+      omittedCount: Math.max(0, gifts.length - listed.length),
+      countTruncated: window.truncated,
+    },
+  };
+}
+
 /**
  * Claim ONE rule's digest: read its window, decide, move its marks, and build
  * the payload — all in a single transaction, so what is mailed is exactly what
@@ -274,14 +442,16 @@ export const claimDigest = internalMutation({
     // the window on every remaining hour of the day.
     const dayKey = runDayKey(now);
 
-    const since = digestWindowStart(rule, now);
-    // The window closes a minute behind `now`, so a gift whose transaction
-    // started before this run but commits after it lands in the NEXT window
-    // rather than behind the watermark. See `DIGEST_LAG_MS`.
-    const requestedUntil = Math.max(since, now - DIGEST_LAG_MS);
-    const window = await collectWindowGifts(ctx, rule, since, requestedUntil);
-
-    if (!shouldSendDigest(rule.cadence, window.gifts.length, window.truncated)) {
+    // The SCHEDULED window: resume from the watermark, exactly. See
+    // `digestWindowStart` — unchanged, and deliberately untouched by the
+    // manual path below.
+    const built = await buildDigestPayload(
+      ctx,
+      rule,
+      now,
+      digestWindowStart(rule, now),
+    );
+    if (!built) {
       // THE FOURTH MARK-WRITER, and the one that deliberately writes least.
       // An empty daily moves ONLY the scheduling mark: no watermark, because
       // nothing was reported, so the window carries forward; and no
@@ -293,50 +463,6 @@ export const claimDigest = internalMutation({
       await ctx.db.patch(rule._id, { lastRunDayKey: dayKey });
       return null;
     }
-
-    // Newest first — a digest is read top-down and the freshest gift is the
-    // one most likely to still be worth a phone call today.
-    const gifts = [...window.gifts].sort((a, b) => b.createdAt - a.createdAt);
-
-    const chapterNames = new Map<string, string>();
-    const byScope = new Map<string, DigestBreakdownRow>();
-    const byMethod = new Map<string, DigestBreakdownRow>();
-    const byType = new Map<string, DigestBreakdownRow>();
-    let totalCents = 0;
-    let largestRow: Doc<"gifts"> | null = null;
-
-    for (const gift of gifts) {
-      totalCents += gift.amountCents;
-      addTo(byMethod, giftMethodLabel(gift.method), gift.amountCents);
-      // EVERY gift, matched or listed or not — `giftType` returns exactly one
-      // bucket per gift (see `lib/giftLabels.ts`), which is what makes this cut
-      // add up to `totalCents` rather than approximately to it.
-      addTo(byType, GIFT_TYPE_LABELS[giftType(gift)], gift.amountCents);
-      if (!largestRow || gift.amountCents > largestRow.amountCents) {
-        largestRow = gift;
-      }
-    }
-
-    const listed: NotificationGift[] = [];
-    for (const gift of gifts.slice(0, MAX_DIGEST_GIFT_ROWS)) {
-      const built = await buildNotificationGift(ctx, gift, chapterNames, now);
-      if (built) listed.push(built);
-    }
-    // The scope breakdown needs a label for EVERY gift, listed or not, so what
-    // it shows adds up to the total above.
-    for (const gift of gifts) {
-      const key = gift.scope as string;
-      let label = chapterNames.get(key);
-      if (label === undefined) {
-        label = await scopeLabel(ctx, gift.scope);
-        chapterNames.set(key, label);
-      }
-      addTo(byScope, label, gift.amountCents);
-    }
-
-    const largest = largestRow
-      ? await buildNotificationGift(ctx, largestRow, chapterNames, now)
-      : null;
 
     // The watermark moves to where the window ACTUALLY closed. On a cut window
     // that is the last gift read, so the remainder is the next window's
@@ -354,8 +480,8 @@ export const claimDigest = internalMutation({
     // so the next window must resume from it exactly rather than reaching a
     // period back and re-reporting them. See the schema doc.
     await ctx.db.patch(rule._id, {
-      lastSentAt: window.until,
-      lastRunDayKey: window.truncated ? undefined : dayKey,
+      lastSentAt: built.until,
+      lastRunDayKey: built.truncated ? undefined : dayKey,
       watermarkFromRun: true,
       updatedAt: now,
     });
@@ -368,24 +494,9 @@ export const claimDigest = internalMutation({
         lastRunDayKey: rule.lastRunDayKey,
         watermarkFromRun: rule.watermarkFromRun,
       },
-      claimedUntil: window.until,
-      recipients: rule.recipients,
-      payload: {
-        ruleName: rule.name,
-        cadence: rule.cadence,
-        scopeLabel: await ruleScopeLabel(ctx, rule.scope),
-        periodStart: since,
-        periodEnd: window.until,
-        totalCents,
-        giftCount: gifts.length,
-        largest,
-        byScope: sortedRows(byScope),
-        byMethod: sortedRows(byMethod),
-        byType: sortedRows(byType),
-        gifts: listed,
-        omittedCount: Math.max(0, gifts.length - listed.length),
-        countTruncated: window.truncated,
-      },
+      claimedUntil: built.until,
+      recipients: built.recipients,
+      payload: built.payload,
     };
   },
 });
@@ -577,5 +688,237 @@ export const sendGivingDigests = internalAction({
       }
     }
     return { digestsSent, emailsSent, failedRules, skippedNoMailer: false };
+  },
+});
+
+// ── "Send now": the desk's on-demand digest ─────────────────────────────────
+
+/**
+ * How many manual sends one rule will accept in a rolling hour, and over what
+ * window.
+ *
+ * THREE PER HOUR, PER RULE. This button puts a real email in real inboxes on a
+ * press, so it is capped — but it is a TESTING affordance and the honest use is
+ * "send it, read it, fix the amount floor, send it again", which needs more
+ * than one. Three covers that and makes a mistake cost the recipients three
+ * emails rather than thirty.
+ *
+ * KEYED ON THE RULE, not the caller. The cost falls on the rule's recipients,
+ * and since the gate became giving VIEW several people can reach the same rule
+ * — keying on the presser would let two of them take turns and double the rate
+ * the team actually experiences. A caller who wants to mail themselves more
+ * often can make their own rule, which is fine: it reaches their own inbox.
+ */
+export const SEND_NOW_WINDOW_MS = 60 * 60 * 1000;
+export const SEND_NOW_MAX_PER_RULE = 3;
+
+/** What one press of "Send now" ended up doing. The UI says one sentence per
+ *  case, so each one has to be distinguishable from the others. */
+const sendNowStatus = v.union(
+  v.literal("sent"),
+  v.literal("empty_window"),
+  v.literal("nobody_reached"),
+  v.literal("no_mailer"),
+);
+
+/**
+ * Authorize, rate-limit, and build ONE rule's digest on demand — WITHOUT
+ * moving any of its marks.
+ *
+ * ── AN ON-DEMAND SEND IS A PREVIEW, AND A PREVIEW MUST NOT CONSUME ─────────
+ * `lastSentAt`, `watermarkFromRun` and `lastRunDayKey` are all left exactly as
+ * found. That is the decision this whole affordance rests on, so it is worth
+ * stating why rather than leaving it to be inferred from the absence of a
+ * patch:
+ *
+ *  • The button exists to ANSWER "does my Monday 12pm digest work?". If it
+ *    consumed the window, the act of checking would guarantee that Monday's
+ *    real digest arrived empty — the button would break the one thing it is
+ *    for. That is exactly the shape of the bug that prompted it: the owner set
+ *    a noon send, the 09:00 run had already stamped the day, and the noon tick
+ *    correctly did nothing.
+ *  • Consuming would also make it a weapon shaped like a convenience. Anyone
+ *    with giving VIEW of a book could silence that book's next scheduled
+ *    digest by pressing a button, with the rule row showing nothing but a
+ *    moved watermark to explain it.
+ *  • The cost of NOT consuming is that the same gifts are reported twice —
+ *    once now, once at the scheduled hour. That is visible, harmless, and was
+ *    asked for by whoever pressed the button. A silently skipped period is
+ *    none of those things. Given the choice between a duplicate the reader can
+ *    see and a gap they cannot, take the duplicate.
+ *
+ * `lastDeliveredAt` IS stamped, by the action, once somebody was actually
+ * reached — see `markRulesDelivered`. It is not a window mark and nothing
+ * schedules off it; it means literally "an email from this rule reached
+ * somebody at this instant", which just became true, and it is what the desk
+ * shows as "last sent". Suppressing it would make the button's own success
+ * invisible on the row that offers it.
+ *
+ * ── TWO THINGS DIFFER FROM A SCHEDULED RUN, AND ONLY TWO ──────────────────
+ *  1. The DUE check (`isDigestDue` / `lastRunDayKey`) is bypassed. That is the
+ *     point of the button.
+ *  2. The window is the TRAILING PERIOD rather than the watermark window — see
+ *     `sendNowWindowStart`. Not an oversight and not a shortcut: a manual send
+ *     asks "what does a weekly digest look like?", and on the watermark window
+ *     a press an hour after the scheduled run answers that with an empty
+ *     three-hour report. This is safe ONLY because of the marks decision
+ *     above; the two hold each other up.
+ *
+ * EVERYTHING ELSE STILL APPLIES, through `buildDigestPayload`, unchanged and
+ * unforked: the scope filter, the amount floor, the `DIGEST_LAG_MS` window
+ * close, the cut/truncation machinery, the breakdowns, the
+ * `MAX_DIGEST_GIFT_ROWS` list cap and the empty-daily/empty-weekly asymmetry.
+ */
+export const prepareDigestNow = internalMutation({
+  args: {
+    ruleId: v.id("givingNotificationRules"),
+    now: v.optional(v.number()),
+  },
+  handler: async (ctx, args) => {
+    const now = args.now ?? Date.now();
+    const rule = await ctx.db.get(args.ruleId);
+    if (!rule) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That rule doesn't exist.",
+      });
+    }
+    // The SAME gate that lets a caller edit or pause this rule — giving VIEW of
+    // its own book (see `givingNotifications.ts#canManageRuleScope`). Nothing
+    // here checks a seat inline, and superusers pass as they do everywhere.
+    await requireRuleManage(ctx, rule.scope);
+
+    if (rule.cadence !== "daily" && rule.cadence !== "weekly") {
+      throw new ConvexError({
+        code: "NOT_A_DIGEST",
+        message:
+          "This rule sends as each gift arrives, so there's no digest to send.",
+      });
+    }
+    // A PAUSED RULE REFUSES, rather than mailing an empty digest. `isActive` is
+    // half of `ruleMatchesGift`, so a paused rule's window matches nothing —
+    // sending anyway would put a confident "No giving this week" in front of a
+    // team whose rule is simply switched off. Say so instead.
+    if (!rule.isActive) {
+      throw new ConvexError({
+        code: "RULE_PAUSED",
+        message: "This rule is paused. Turn it back on to send its digest.",
+      });
+    }
+
+    // Checked and recorded in the same transaction as the build, so two
+    // simultaneous presses can't both pass the check. One row per ACCEPTED
+    // press — a refusal costs the budget nothing.
+    const key = `rule:${args.ruleId}`;
+    const recent = await ctx.db
+      .query("givingDigestSendNowAttempts")
+      .withIndex("by_key_and_time", (q) =>
+        q.eq("key", key).gte("createdAt", now - SEND_NOW_WINDOW_MS),
+      )
+      .take(SEND_NOW_MAX_PER_RULE);
+    if (recent.length >= SEND_NOW_MAX_PER_RULE) {
+      throw new ConvexError({
+        code: "RATE_LIMITED",
+        message: `This rule has already been sent ${SEND_NOW_MAX_PER_RULE} times in the last hour. Give it a little while.`,
+      });
+    }
+    await ctx.db.insert("givingDigestSendNowAttempts", { key, createdAt: now });
+
+    // THE TRAILING PERIOD, not the watermark window — see
+    // `sendNowWindowStart` for why the manual send asks a different question
+    // from the cron, and why ignoring the watermark is safe only because
+    // nothing below touches it.
+    const built = await buildDigestPayload(
+      ctx,
+      rule,
+      now,
+      sendNowWindowStart(rule, now),
+    );
+    if (!built) return null;
+    return { recipients: built.recipients, payload: built.payload };
+  },
+});
+
+/**
+ * Send ONE rule's digest right now — the desk's "Send now" button.
+ *
+ * A digest rule otherwise cannot be tested without waiting for its next slot,
+ * which is a week for a weekly rule. This is the whole of the fix: the trailing
+ * period, the same render, the same send, the same recipients, no marks moved.
+ * See `prepareDigestNow` for the authorization, the rate limit and the marks,
+ * and `sendNowWindowStart` for why the window is the period rather than
+ * whatever is left of the watermark's.
+ *
+ * Every refusal throws a `ConvexError` the screen can read out; every
+ * NON-refusal comes back as a status, because "it sent nothing" has four
+ * different honest explanations and a button that says only "done" for all of
+ * them is worse than no button.
+ *
+ * The mailer is resolved AFTER the gate, not before it — unlike the hourly
+ * sweep, which checks first because it must never CLAIM a window it can't mail.
+ * Nothing is consumed here, so there is no window to protect, and doing it in
+ * this order means an unauthorized caller is refused rather than told what this
+ * deployment has configured.
+ */
+export const sendDigestNow = action({
+  args: { ruleId: v.id("givingNotificationRules") },
+  returns: v.object({ status: sendNowStatus, emailsSent: v.number() }),
+  handler: async (
+    ctx,
+    { ruleId },
+  ): Promise<{
+    status: "sent" | "empty_window" | "nobody_reached" | "no_mailer";
+    emailsSent: number;
+  }> => {
+    const built = await ctx.runMutation(
+      internal.givingNotificationDigests.prepareDigestNow,
+      { ruleId },
+    );
+    // An empty DAILY window — and because the manual window is the trailing
+    // PERIOD, this now means "no gifts at all in the last 24 hours", which is
+    // a real and rare answer rather than "nothing since the 08:00 run".
+    // `shouldSendDigest` says a "nothing came in today" email is one people
+    // learn to delete, and the manual path has no business disagreeing with
+    // the scheduled one about that. (An empty WEEKLY does send — that absence
+    // is the signal.)
+    if (!built) return { status: "empty_window", emailsSent: 0 };
+
+    // Explicitly, so "no Resend key on this deployment" reads as itself rather
+    // than as the bounce that `sendEmailReporting`'s `false` would look like.
+    const mailer = await resolveResendSettings(ctx);
+    if (!mailer) return { status: "no_mailer", emailsSent: 0 };
+
+    const { subject, html } = renderDigestEmail(built.payload);
+    let delivered = 0;
+    for (const to of built.recipients) {
+      // Per recipient, like every other send path here: one bad address must
+      // not cost the rest of the team their copy.
+      try {
+        if (await sendEmailReporting(ctx, { to, subject, html })) delivered++;
+      } catch (err) {
+        console.error(
+          `[givingNotifications] manual digest send failed for ${to}`,
+          err,
+        );
+      }
+    }
+    // No `releaseDigest` counterpart, and none needed: nothing was claimed, so
+    // there is nothing to give back. The window is still exactly where the
+    // scheduled run will find it.
+    if (delivered === 0) return { status: "nobody_reached", emailsSent: 0 };
+
+    try {
+      await ctx.runMutation(internal.givingNotifications.markRulesDelivered, {
+        ruleIds: [ruleId],
+        at: Date.now(),
+      });
+    } catch (err) {
+      console.error(
+        `[givingNotifications] manual digest for rule ${ruleId} was delivered, ` +
+          "but couldn't stamp lastDeliveredAt",
+        err,
+      );
+    }
+    return { status: "sent", emailsSent: delivered };
   },
 });

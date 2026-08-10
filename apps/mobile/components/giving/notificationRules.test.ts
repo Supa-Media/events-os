@@ -18,6 +18,7 @@ import {
   removeRecipient,
   ruleScopeChoices,
   scheduleSummary,
+  sendNowResultMessage,
   thresholdLabel,
   weekdayLabel,
   type RuleDraft,
@@ -541,6 +542,30 @@ describe("buildSaveArgs", () => {
   test("money crosses the boundary in integer cents", () => {
     expect(buildSaveArgs({ ...base, minAmount: "$1,000.50" }).args?.minAmountCents).toBe(
       100050,
+    );
+  });
+});
+
+describe("sendNowResultMessage", () => {
+  test("a send says how many went out, in the right plural", () => {
+    expect(sendNowResultMessage("sent", 1)).toBe("Sent — 1 email is on its way.");
+    expect(sendNowResultMessage("sent", 3)).toBe(
+      "Sent — 3 emails are on their way.",
+    );
+  });
+
+  test("an empty window blames the whole period, not the gap since the last run", () => {
+    const message = sendNowResultMessage("empty_window", 0);
+    expect(message).toContain("in the last period");
+    expect(message).toContain("nothing to send");
+    expect(message).toContain("schedule is unchanged");
+  });
+
+  test("the two failure cases are distinguishable from each other", () => {
+    expect(sendNowResultMessage("nobody_reached", 0)).toContain("addresses");
+    expect(sendNowResultMessage("no_mailer", 0)).toContain("email provider");
+    expect(sendNowResultMessage("nobody_reached", 0)).not.toBe(
+      sendNowResultMessage("no_mailer", 0),
     );
   });
 });

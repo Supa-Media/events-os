@@ -3,10 +3,11 @@
  *
  * Today: TTL sweep for the rate-limit "attempt" tables (`reimbursements.ts`
  * §submit rate limit / #134, `cards.ts` §revealCardDetails rate limit / #161,
- * `cards.ts` §manual receipt-nudge rate limit). All three only ever INSERT a
- * timestamped row per attempt and never delete — left alone they'd grow
- * forever. The first two windows are 1 hour (see SUBMIT_RATE_LIMIT_WINDOW_MS /
- * CARD_DETAILS_REVEAL_WINDOW_MS); the manual-nudge window is 24h
+ * `cards.ts` §manual receipt-nudge rate limit, `givingNotificationDigests.ts`
+ * §"Send now"). All four only ever INSERT a timestamped row per attempt and
+ * never delete — left alone they'd grow forever. Three of the windows are
+ * 1 hour (see SUBMIT_RATE_LIMIT_WINDOW_MS / CARD_DETAILS_REVEAL_WINDOW_MS /
+ * SEND_NOW_WINDOW_MS); the manual-nudge window is 24h
  * (MANUAL_NUDGE_WINDOW_MS in cards.ts) since it caps a per-cardholder nudge to
  * once a day, so it's swept with its own (longer) cutoff rather than folded
  * into the shared 1-hour one. Sweeping once a day comfortably keeps every
@@ -28,7 +29,8 @@ async function sweepOldAttempts(
   table:
     | "reimbursementSubmitAttempts"
     | "cardDetailsRevealAttempts"
-    | "receiptNudgeAttempts",
+    | "receiptNudgeAttempts"
+    | "givingDigestSendNowAttempts",
   windowMs: number,
   batchSize = 500,
 ): Promise<number> {
@@ -59,6 +61,16 @@ export const sweepRateLimitAttempts = internalMutation({
       "receiptNudgeAttempts",
       MANUAL_NUDGE_ATTEMPT_WINDOW_MS,
     );
-    return { reimbursementAttempts, cardRevealAttempts, receiptNudgeAttempts };
+    const digestSendNowAttempts = await sweepOldAttempts(
+      ctx,
+      "givingDigestSendNowAttempts",
+      RATE_LIMIT_ATTEMPT_WINDOW_MS,
+    );
+    return {
+      reimbursementAttempts,
+      cardRevealAttempts,
+      receiptNudgeAttempts,
+      digestSendNowAttempts,
+    };
   },
 });
