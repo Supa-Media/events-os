@@ -195,7 +195,7 @@ export type ChargeFilter = (typeof CHARGE_FILTERS)[number];
 
 /**
  * The `?filter=` URL param the reminder email deep-links with
- * (`appUrl("/finances/my-transactions?filter=uncoded")`). Anything we don't
+ * (`appUrl("/finances/coding?filter=uncoded")`). Anything we don't
  * recognise falls back to "all" — a mistyped link must land somebody on their
  * transactions, never on an empty screen that reads as "you have none".
  */
