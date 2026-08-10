@@ -425,6 +425,14 @@ export const saveRule = mutation({
       // back mailed the lot. Scope and threshold changes deliberately do NOT
       // reset — they narrow the same stream, and the window is still honest.
       const cadenceChanged = existing.cadence !== args.cadence;
+      // …AND SO DOES A RESUME THROUGH THIS DOOR. `isActive` is settable here,
+      // not only through `setRuleActive`, so a rule could be switched off for
+      // three months and switched back on by an edit — reaching the dormant
+      // replay by a THIRD door, past the guard that was written for the other
+      // two. Not reachable from the desk UI (which resumes via the switch), but
+      // this is a public mutation and the UI is not the contract.
+      const resuming = args.isActive === true && !existing.isActive;
+      const freshBoundary = cadenceChanged || resuming;
       await ctx.db.patch(args.ruleId, {
         ...fields,
         // WHO TOUCHED IT LAST. `createdBy` is not that, and saying so was a
@@ -432,10 +440,15 @@ export const saveRule = mutation({
         // re-pointed at a personal inbox still named the development director.
         updatedBy: userId,
         isActive: args.isActive ?? existing.isActive,
-        ...(cadenceChanged
+        ...(freshBoundary
           ? {
               lastSentAt: now,
               lastRunDayKey: firstRunDayKey(fields, now),
+              // `now` is a SYNTHETIC boundary — nothing was reported at this
+              // instant — so the flag comes off and the first window back gets
+              // its full trailing-period floor. Leaving a run's `true` on it
+              // would pin that window to this instant and mail an empty sliver.
+              watermarkFromRun: undefined,
             }
           : {}),
       });
@@ -499,17 +512,25 @@ export const saveRule = mutation({
  * Turn a rule on or off. The only "delete" this table has — see the module
  * doc. Idempotent.
  *
- * REACTIVATION MOVES THE WATERMARK TO NOW. A digest rule turned off for three
- * months would otherwise come back and mail one digest covering three months
- * of donor records in a single email, because `lastSentAt` still pointed at
- * the last send before it was switched off. Turning something back on means
- * "tell me what happens from here", not "catch me up on everything I chose
- * not to be told".
+ * REACTIVATION MOVES THE WATERMARK TO NOW, AND MARKS IT SYNTHETIC. A digest
+ * rule turned off for three months would otherwise come back and mail one
+ * digest covering three months of donor records, because `lastSentAt` still
+ * pointed at the last send before it was switched off. Turning something back
+ * on means "tell me what happens from here", not "catch me up on everything I
+ * chose not to be told".
  *
- * Clearing the field instead of stamping it is the wrong fix: with no
- * watermark, `digestWindowStart` falls back to one nominal period, which for a
- * rule reactivated the day after a large import is exactly the replay this is
- * trying to prevent.
+ * `watermarkFromRun` is cleared alongside, and the pair is what makes the
+ * resumed rule's first digest a REAL one. The stamp bounds how far back it may
+ * look (one period, never the dormant stretch); clearing the flag says nothing
+ * was actually reported at this instant, so `digestWindowStart` is free to
+ * reach that full period back rather than opening the window at this very
+ * moment and mailing an empty sliver. Neither half works without the other.
+ *
+ * Clearing `lastSentAt` instead of stamping it is a third option and the wrong
+ * one: it would land in `digestWindowStart`'s never-reported case, which is
+ * also bounded at one period — the same answer, but reached by claiming the
+ * rule has never reported anything, which stops being true the moment somebody
+ * reads the field.
  */
 export const setRuleActive = mutation({
   args: {
@@ -546,6 +567,10 @@ export const setRuleActive = mutation({
             // reachable straight from the practice of switching rules off
             // around an import.
             lastRunDayKey: firstRunDayKey(rule, now),
+            // The other half of the stamp — see the doc above. Synthetic
+            // boundary, so the first digest back covers its trailing period,
+            // and because the watermark is `now` it covers no more than that.
+            watermarkFromRun: undefined,
           }
         : {}),
     });

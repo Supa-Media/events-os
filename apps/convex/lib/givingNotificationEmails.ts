@@ -37,7 +37,23 @@ import {
 } from "./emailShell";
 import { escapeHtml } from "./html";
 import { giftMethodLabel } from "./giftLabels";
-import { ORG_TIME_ZONE, clampSubjectName } from "./givingNotificationRules";
+import {
+  ORG_TIME_ZONE,
+  cadencePeriodMs,
+  clampSubjectName,
+} from "./givingNotificationRules";
+
+/**
+ * How much longer than its nominal period a window may run before the email
+ * stops calling it "this week".
+ *
+ * Not 1.0: run-hour jitter and DST routinely make a window a few hours longer
+ * or shorter than the nominal period, and a subject that flipped its wording
+ * over an hour's drift would be noise. 1.5 is past anything the clock does on
+ * its own and inside anything a missed run produces (the shortest overrun a
+ * dropped weekly tick can cause is a full extra week).
+ */
+export const LONG_WINDOW_FACTOR = 1.5;
 
 // ── Payload shapes (what the context builder must produce) ──────────────────
 
@@ -103,8 +119,14 @@ export type DigestEmailPayload = {
   totalCents: number;
   giftCount: number;
   largest: NotificationGift | null;
+  /** By chapter — every gift's book, with Central named as Central. */
   byScope: DigestBreakdownRow[];
+  /** By rails — card, cash, check. */
   byMethod: DigestBreakdownRow[];
+  /** By KIND of giving — recurring, sponsorships, events, one-time. The cut the
+   *  owner asked for; `lib/giftLabels.ts#giftType` puts every gift in exactly
+   *  one bucket, which is why it sums. */
+  byType: DigestBreakdownRow[];
   /** The itemized gifts, newest first, capped. */
   gifts: NotificationGift[];
   /** How many gifts the totals counted but the list omitted. */
@@ -255,19 +277,62 @@ export function renderImmediateGiftEmail(payload: ImmediateEmailPayload): {
 
 // ── The digest email ─────────────────────────────────────────────────────────
 
+/** `$1,200.00 (3)` — a breakdown row's money and how many gifts made it. */
+function breakdownValue(cents: number, count: number): string {
+  return `${esc(formatCents(cents))} <span style="color:${EMAIL_THEME.muted}">(${count})</span>`;
+}
+
+/**
+ * One cut of the period, and its own TOTAL LINE.
+ *
+ * The total is not decoration. Every breakdown here partitions the same set of
+ * gifts, so each one's parts must add up to the headline figure — and the only
+ * way a reader can check that without a calculator is to see the section say so
+ * itself. A breakdown whose parts silently don't sum to the total is worse than
+ * no breakdown, because it is the one people quote in a meeting.
+ *
+ * Summed from the rows RENDERED rather than taken from the payload's headline,
+ * deliberately: if a cut ever stopped covering every gift, this line would
+ * disagree with the total above it in the email, loudly, instead of restating
+ * the headline and hiding the gap.
+ */
 function breakdownHtml(title: string, rows: DigestBreakdownRow[]): string {
   if (rows.length === 0) return "";
   const body = rows
-    .map((r) =>
-      detailRow(
-        r.label,
-        `${esc(formatCents(r.cents))} <span style="color:${EMAIL_THEME.muted}">(${r.count})</span>`,
-      ),
-    )
+    .map((r) => detailRow(r.label, breakdownValue(r.cents, r.count)))
     .join("");
+  const cents = rows.reduce((sum, r) => sum + r.cents, 0);
+  const count = rows.reduce((sum, r) => sum + r.count, 0);
+  const total =
+    `<div style="border-top:1px solid ${EMAIL_THEME.border};margin:8px 0 0;padding:8px 0 0">` +
+    `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ strong: true, margin: "0" })}">` +
+    `<span style="color:${EMAIL_THEME.muted}">Total:</span> ` +
+    `<span style="color:${EMAIL_THEME.ink}">${breakdownValue(cents, count)}</span>` +
+    `</div></div>`;
   return (
     emailSubheading(esc(title), { size: 14, margin: "0 0 6px" }) +
-    emailPanel(body, { margin: "0 0 16px" })
+    emailPanel(body + total, { margin: "0 0 16px" })
+  );
+}
+
+/**
+ * One line saying the window ran long, when it did.
+ *
+ * A digest covering three weeks is not a mistake — a rule that missed runs
+ * reports everything it missed, which is the guarantee that nothing goes
+ * un-reported — but a reader comparing "this week" to last week's figure will
+ * draw the wrong conclusion from it unless the email says so. The header dates
+ * are already honest; this makes them impossible to skim past.
+ */
+function overrunNote(
+  overrun: boolean,
+  payload: DigestEmailPayload,
+  period: string,
+): string {
+  if (!overrun) return "";
+  return emailParagraph(
+    `This digest covers a longer stretch than one ${period} — the dates above are the window it actually read. That happens when a run was missed or the rule was paused: rather than skip the gap, the next digest reports all of it. Don't compare this total to a normal ${period} without allowing for that.`,
+    { size: 12, margin: "0 0 16px" },
   );
 }
 
@@ -294,9 +359,14 @@ function giftRowHtml(gift: NotificationGift): string {
 
 /**
  * A period of giving. Totals first (that's the number the fundraising team
- * carries around), the biggest gift called out by name, then the two cuts that
- * answer "where did it come from" — by book and by source — and finally every
- * gift, each linking to its own donor.
+ * carries around), the biggest gift called out by name, then three cuts of that
+ * same money — by giving type, by chapter, by rails — and finally every gift,
+ * each linking to its own donor.
+ *
+ * EACH CUT PARTITIONS THE WHOLE PERIOD and prints its own total, so all three
+ * add up to the headline figure and a reader can see that they do. They are
+ * three answers to three different questions about one number, not three
+ * samples of it.
  *
  * An EMPTY weekly digest still renders, and says so plainly. See
  * `lib/givingNotificationRules.ts` for why that is deliberate and why the
@@ -307,14 +377,31 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
   html: string;
 } {
   const period = payload.cadence === "weekly" ? "week" : "day";
+  // "THIS WEEK" HAS TO BE TRUE. A window can legitimately run long — a rule
+  // that missed a fortnight of runs reports the fortnight, so nothing
+  // un-reported is skipped — and a subject reading "this week" over 21 days is
+  // a lie in the one line most recipients read. Past the tolerance the subject
+  // names the window's start instead, which is never wrong at any length.
+  const span = payload.periodEnd - payload.periodStart;
+  const overrun = span > LONG_WINDOW_FACTOR * cadencePeriodMs(payload.cadence);
+  const when = payload.countTruncated
+    ? // A CUT window is a SLICE of the period, not the period: the read stopped
+      // partway and the rest is the next digest's. "this week" over a slice
+      // overstates in exactly the direction the FLOOR caveat further down works
+      // to correct, and a subject shouldn't need the paragraph underneath it to
+      // walk it back.
+      "so far"
+    : overrun
+      ? `since ${DATE_FMT.format(new Date(payload.periodStart))}`
+      : `this ${period}`;
   const subject =
     payload.giftCount === 0
       ? payload.countTruncated
         ? `Giving digest cut short — ${payload.scopeLabel}`
-        : `No giving this ${period} — ${payload.scopeLabel}`
+        : `No giving ${when} — ${payload.scopeLabel}`
       : `${formatCents(payload.totalCents)} from ${payload.giftCount} ${
           payload.giftCount === 1 ? "gift" : "gifts"
-        } this ${period} — ${payload.scopeLabel}`;
+        } ${when} — ${payload.scopeLabel}`;
 
   const header = [
     emailEyebrow(esc(`${payload.cadence} giving digest`)),
@@ -338,9 +425,10 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
       emailParagraph(
         payload.countTruncated
           ? `Nothing matched this rule in the stretch of the ledger this digest was able to read — but the read stopped short of the whole ${period}, so this is not the same as "no giving". The next digest carries on from where this one stopped.`
-          : `Nothing was recorded in the giving ledger for this ${period}. That's the whole report — if you expected gifts here, that's worth a look.`,
+          : `Nothing was recorded in the giving ledger ${when}. That's the whole report — if you expected gifts here, that's worth a look.`,
         { margin: "0 0 16px" },
       ),
+      overrunNote(overrun, payload, period),
       emailRule(),
       emailParagraph(`Sent by the giving rule “${esc(payload.ruleName)}”.`, {
         size: 12,
@@ -353,6 +441,7 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
   const largest = payload.largest;
   const inner = [
     header,
+    overrunNote(overrun, payload, period),
     emailPanel(
       [
         detailRow("Gifts", String(payload.giftCount)),
@@ -368,7 +457,10 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
         .join(""),
       { margin: "0 0 16px" },
     ),
-    breakdownHtml("Where it went", payload.byScope),
+    // Type first: "how much of this recurs" is the question the rest of the
+    // email can't answer and the one a fundraising team plans against.
+    breakdownHtml("By giving type", payload.byType),
+    breakdownHtml("By chapter", payload.byScope),
     breakdownHtml("How it arrived", payload.byMethod),
     emailSubheading("Every gift", { size: 14, margin: "0 0 4px" }),
     payload.gifts.map(giftRowHtml).join(""),

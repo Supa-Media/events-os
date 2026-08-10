@@ -86,6 +86,42 @@ export const givingNotificationRules = defineTable({
    */
   lastSentAt: v.optional(v.number()),
   /**
+   * True iff `lastSentAt` was set by an actual DIGEST RUN, as opposed to being
+   * stamped as a synthetic boundary by `setRuleActive` or `saveRule`.
+   *
+   * It exists because `lastSentAt` is doing two jobs that want opposite
+   * treatment. A run's mark is a REPORT — gifts up to here have been mailed —
+   * so a window must never start before it, or the same gifts are reported
+   * twice and the new period's total is inflated. A resume/cadence stamp is a
+   * BOUNDARY: nothing was reported at that instant, it exists only to stop a
+   * dormant rule replaying its backlog, so a window is free to reach a full
+   * period back from it — which is what makes the first digest after a pause a
+   * real one rather than an empty sliver.
+   *
+   * Without the flag, the trailing-period floor that fixes the boundary case
+   * breaks the report case in three ordinary ways: run-hour jitter (the hour
+   * test is `>=`, so a dropped 08:00 tick catching up at 14:00 leaves next
+   * week's floor six hours behind the watermark), DST (an hour, twice a year),
+   * and a mid-drain bookmark from a cut window (which re-reads the gifts that
+   * caused the cut, cuts in the same place, and re-mails the same 750 gifts
+   * hourly until the import ages out of the period).
+   *
+   * ── THE FOUR WRITERS, AND WHAT EACH DOES WITH IT ──────────────────────────
+   *   • `claimDigest` — sets it whenever it moves the watermark. Cut window or
+   *     complete, both are reports.
+   *   • `releaseDigest` — restores it with the watermark it is putting back.
+   *     All three marks together or none; they only mean anything as a set.
+   *   • `setRuleActive` / `saveRule` — CLEAR it when they stamp a fresh
+   *     boundary (resume, cadence change, `isActive` flip).
+   *   • The empty-daily skip — deliberately leaves it alone, because it moves
+   *     no watermark. The mark's provenance hasn't changed, so neither has
+   *     this. That is why the fourth writer needs no special case, which the
+   *     truncation-flag version of this field did.
+   *
+   * Full reasoning on `lib/givingNotificationRules.ts#digestWindowStart`.
+   */
+  watermarkFromRun: v.optional(v.boolean()),
+  /**
    * The instant an email from this rule was last actually DELIVERED to at
    * least one recipient. Absent until one has been.
    *

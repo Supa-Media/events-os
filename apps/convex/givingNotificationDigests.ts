@@ -47,6 +47,15 @@
  * what it matched (breaking the wedge), and the email says its total is a
  * floor.
  *
+ * ── A WEEKLY DIGEST COVERS A WEEK ──────────────────────────────────────────
+ * A rule that has never reported anything opens its window at `now − period`
+ * exactly, so the first digest off a rule created this morning still covers the
+ * trailing seven days — and a rule that has sat watermark-less for six months
+ * (an empty daily never stamps one) still covers seven days and not six months.
+ * A rule that HAS reported resumes from its watermark exactly, so nothing is
+ * mailed twice. `watermarkFromRun` is what distinguishes the two — full
+ * reasoning on `digestWindowStart` and in the schema.
+ *
  * ── THE ASYMMETRY ──────────────────────────────────────────────────────────
  * An empty DAILY digest is skipped and leaves the WATERMARK alone (it still
  * marks itself run for the day). An empty WEEKLY digest is SENT — "nothing
@@ -63,7 +72,7 @@ import {
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
-import { giftMethodLabel } from "./lib/giftLabels";
+import { GIFT_TYPE_LABELS, giftMethodLabel, giftType } from "./lib/giftLabels";
 import {
   DIGEST_LAG_MS,
   MAX_DIGEST_GIFT_ROWS,
@@ -273,6 +282,14 @@ export const claimDigest = internalMutation({
     const window = await collectWindowGifts(ctx, rule, since, requestedUntil);
 
     if (!shouldSendDigest(rule.cadence, window.gifts.length, window.truncated)) {
+      // THE FOURTH MARK-WRITER, and the one that deliberately writes least.
+      // An empty daily moves ONLY the scheduling mark: no watermark, because
+      // nothing was reported, so the window carries forward; and no
+      // `watermarkFromRun`, because a mark's provenance can't change while the
+      // mark itself doesn't. Both omissions are load-bearing rather than
+      // oversights — a rule can sit here for months (a quiet chapter, a high
+      // amount floor), which is exactly why `digestWindowStart` bounds the
+      // never-reported case at one period instead of trusting `createdAt`.
       await ctx.db.patch(rule._id, { lastRunDayKey: dayKey });
       return null;
     }
@@ -284,12 +301,17 @@ export const claimDigest = internalMutation({
     const chapterNames = new Map<string, string>();
     const byScope = new Map<string, DigestBreakdownRow>();
     const byMethod = new Map<string, DigestBreakdownRow>();
+    const byType = new Map<string, DigestBreakdownRow>();
     let totalCents = 0;
     let largestRow: Doc<"gifts"> | null = null;
 
     for (const gift of gifts) {
       totalCents += gift.amountCents;
       addTo(byMethod, giftMethodLabel(gift.method), gift.amountCents);
+      // EVERY gift, matched or listed or not — `giftType` returns exactly one
+      // bucket per gift (see `lib/giftLabels.ts`), which is what makes this cut
+      // add up to `totalCents` rather than approximately to it.
+      addTo(byType, GIFT_TYPE_LABELS[giftType(gift)], gift.amountCents);
       if (!largestRow || gift.amountCents > largestRow.amountCents) {
         largestRow = gift;
       }
@@ -326,9 +348,15 @@ export const claimDigest = internalMutation({
     // with every later gift queued behind it. Hourly ticks catch up the same
     // day, and the drain stops on its own the moment a run completes the window
     // (which stamps the mark normally).
+    //
+    // `watermarkFromRun` rides along, and is set on BOTH branches: cut or
+    // complete, this watermark is a REPORT of gifts that have now been mailed,
+    // so the next window must resume from it exactly rather than reaching a
+    // period back and re-reporting them. See the schema doc.
     await ctx.db.patch(rule._id, {
       lastSentAt: window.until,
       lastRunDayKey: window.truncated ? undefined : dayKey,
+      watermarkFromRun: true,
       updatedAt: now,
     });
 
@@ -338,6 +366,7 @@ export const claimDigest = internalMutation({
       previousMarks: {
         lastSentAt: rule.lastSentAt,
         lastRunDayKey: rule.lastRunDayKey,
+        watermarkFromRun: rule.watermarkFromRun,
       },
       claimedUntil: window.until,
       recipients: rule.recipients,
@@ -352,6 +381,7 @@ export const claimDigest = internalMutation({
         largest,
         byScope: sortedRows(byScope),
         byMethod: sortedRows(byMethod),
+        byType: sortedRows(byType),
         gifts: listed,
         omittedCount: Math.max(0, gifts.length - listed.length),
         countTruncated: window.truncated,
@@ -380,6 +410,7 @@ export const releaseDigest = internalMutation({
     claimedUntil: v.number(),
     previousLastSentAt: v.optional(v.number()),
     previousLastRunDayKey: v.optional(v.string()),
+    previousWatermarkFromRun: v.optional(v.boolean()),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -389,6 +420,11 @@ export const releaseDigest = internalMutation({
     await ctx.db.patch(args.ruleId, {
       lastSentAt: args.previousLastSentAt,
       lastRunDayKey: args.previousLastRunDayKey,
+      // ALL THREE marks, or none — a watermark and the claim about where it
+      // came from only mean anything together. Putting a synthetic boundary
+      // back while leaving `watermarkFromRun` true would cost that rule its
+      // trailing-period floor for good.
+      watermarkFromRun: args.previousWatermarkFromRun,
     });
     return true;
   },
@@ -408,8 +444,17 @@ export const releaseDigest = internalMutation({
  *     advanced every watermark daily and mailed nothing — and the day someone
  *     configured the key, every gift behind those watermarks was permanently
  *     un-digested. Resolved up front now, and the sweep returns BEFORE claiming
- *     anything. Nothing has been consumed, so the backlog is simply still there
- *     when a key appears.
+ *     anything. Nothing is CONSUMED, so no window is ever eaten unmailed.
+ *
+ *     What that does NOT promise is an unbounded backlog, and it used to say so.
+ *     A sweep that claims nothing leaves the rule with no watermark at all, and
+ *     `digestWindowStart`'s never-reported case deliberately gives such a rule
+ *     exactly ONE trailing period — so a key configured three months late gets
+ *     the last week, not the last quarter. That is the same bound protecting
+ *     every other watermark-less rule (a quiet daily never stamps one either),
+ *     and it is the point: a first digest has to be readable. The distinction
+ *     that matters is that nothing was silently consumed and re-reported as
+ *     empty; the older gifts are still in the ledger, just not in an email.
  *  2. A RESEND OUTAGE. Every recipient throws, each is caught per-recipient,
  *     and the window was consumed anyway. Now a claim where NOT ONE recipient
  *     was reached is released (`releaseDigest`) and counted in `failedRules`,
@@ -495,6 +540,7 @@ export const sendGivingDigests = internalAction({
               claimedUntil: built.claimedUntil,
               previousLastSentAt: built.previousMarks.lastSentAt,
               previousLastRunDayKey: built.previousMarks.lastRunDayKey,
+              previousWatermarkFromRun: built.previousMarks.watermarkFromRun,
             },
           );
           continue;
