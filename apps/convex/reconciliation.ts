@@ -113,6 +113,7 @@ import {
   type TransferDirection,
 } from "./transfers";
 import { readSandbox } from "./financeSettings";
+import { isCandidateShaped } from "./givingCandidates";
 import { requireUserId } from "./lib/context";
 import {
   getChapterAccountForMode,
@@ -3510,6 +3511,14 @@ export const accountBalances = query({
  * because its chapter left. Anything found that way is reported separately, by
  * account, so it reads as the anomaly it is rather than padding the total.
  */
+// The unrecorded-inflow lead's window: how far back a bank credit can be and
+// still count as a LIVE lead rather than history. Matches the giving-candidates
+// desk's own 45-day window in spirit but kept as our own constant — the lead
+// and the desk answer at different cadences, and coupling the numbers would
+// make tuning one silently retune the other.
+const UNRECORDED_INFLOW_WINDOW_MS = 45 * 24 * 60 * 60 * 1000;
+const UNRECORDED_INFLOW_SCAN_LIMIT = 2000;
+
 export const reconciliationSummary = query({
   args: {},
   returns: v.object({
@@ -3568,6 +3577,16 @@ export const reconciliationSummary = query({
      *  credit while the revenue is already counted at the gift/ticket/sale/registration. */
     unmatchedPayoutCount: v.number(),
     unmatchedPayoutCents: v.number(),
+    /** Recent bank credits that LOOK like gifts and are booked as neither a
+     *  gift nor a payout — `givingCandidates.isCandidateShaped`, minus the
+     *  linked/dismissed ones. Each is cash the bank holds that the books have
+     *  no revenue for, i.e. exactly the shape of a positive gap: an ACH or
+     *  Zelle that landed and was never recorded. The single most common
+     *  explanation for "more money than the books explain", surfaced HERE so
+     *  the panel can point at it instead of leaving a number to be puzzled
+     *  over (owner report, 2026-08-11: a $309.27 ACH did precisely this). */
+    unrecordedInflowCount: v.number(),
+    unrecordedInflowCents: v.number(),
     /** A book's scan hit the read limit, so its figure is approximate and the
      *  gap cannot be trusted to the cent. */
     truncated: v.boolean(),
@@ -3703,6 +3722,43 @@ export const reconciliationSummary = query({
       (p) => p.stripeStatus === "paid" && p.matchedTransactionId == null,
     );
 
+    // Recent inflows that look like gifts and are booked as nothing — the
+    // same window and shape rule the giving-candidates desk uses
+    // (`givingCandidates.isCandidateShaped`), checked per book. Bounded: the
+    // window read is indexed and the per-row lookups only run on the few rows
+    // that survive the shape filter.
+    let unrecordedInflowCount = 0;
+    let unrecordedInflowCents = 0;
+    const candidateCutoff = Date.now() - UNRECORDED_INFLOW_WINDOW_MS;
+    for (const book of books) {
+      const recent = await ctx.db
+        .query("transactions")
+        .withIndex("by_chapter_and_postedAt", (q) =>
+          q.eq("chapterId", book.scope).gte("postedAt", candidateCutoff),
+        )
+        .take(UNRECORDED_INFLOW_SCAN_LIMIT);
+      for (const txn of recent) {
+        if (!txnMatchesMode(txn, sandboxMode)) continue;
+        if (txn.status === "excluded") continue;
+        if (!isCandidateShaped(txn)) continue;
+        // Marked/engine-matched payout deposits contribute zero to book value
+        // already — they are not unrecorded money.
+        if (txn.payoutProcessor != null || txn.stripePayoutId != null) continue;
+        const linked = await ctx.db
+          .query("gifts")
+          .withIndex("by_transaction", (q) => q.eq("transactionId", txn._id))
+          .first();
+        if (linked) continue;
+        const dismissed = await ctx.db
+          .query("dismissedGiftCandidates")
+          .withIndex("by_transaction", (q) => q.eq("transactionId", txn._id))
+          .first();
+        if (dismissed) continue;
+        unrecordedInflowCount += 1;
+        unrecordedInflowCents += txn.amountCents;
+      }
+    }
+
     return {
       bookValueCents,
       bankAvailableCents,
@@ -3731,6 +3787,8 @@ export const reconciliationSummary = query({
       unattributedBankCents,
       unmatchedPayoutCount: unmatched.length,
       unmatchedPayoutCents: unmatched.reduce((s, p) => s + p.amountCents, 0),
+      unrecordedInflowCount,
+      unrecordedInflowCents,
       truncated: books.some((b) => b.truncated),
     };
   },
