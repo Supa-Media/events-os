@@ -1,0 +1,156 @@
+---
+/**
+ * One blog post: masthead, optional table of contents, body, reaction bar.
+ *
+ * Used by both /blog/[...slug] and /blog/drafts/[...slug] — the only
+ * difference between them is the draft banner and `noindex`, so the two
+ * pages stay thin wrappers and nothing about a post's presentation can drift
+ * between its draft and published forms.
+ */
+import type { MarkdownHeading } from "astro";
+import BaseLayout from "./BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import Reactions from "../components/blog/Reactions.astro";
+import { formatPostDate, isoDate, type Post } from "../lib/blog";
+import { asset } from "../lib/asset";
+
+export interface Props {
+  post: Post;
+  headings: MarkdownHeading[];
+  readingMinutes: number;
+  /** Canonical absolute URL for the PUBLISHED location of this post. */
+  canonical: string;
+}
+
+const { post, headings, readingMinutes, canonical } = Astro.props;
+const { title, description, subtitle, audience, pubDate, updatedDate, author, heroImage, tags, draft, reactions } =
+  post.data;
+
+// Only h2s — the posts here run long enough to need a map, and including
+// every h3 turns the map into a second copy of the article.
+const toc = headings.filter((h) => h.depth === 2);
+---
+
+<BaseLayout
+  title={title}
+  description={description}
+  ogType="article"
+  canonical={canonical}
+  noindex={draft}
+  {...(heroImage ? { ogImage: heroImage } : {})}
+>
+  <article>
+    <Container size="narrow" class="pt-10 sm:pt-16">
+      {
+        draft && (
+          <p class="mb-8 rounded-xl border border-red-200 bg-pink-softer px-4 py-3 text-sm text-ink">
+            <strong class="font-semibold">Unpublished draft.</strong> This page
+            is password-protected and left out of the blog index, the feed, and
+            search engines. Share the link and the password with anyone you
+            want to read it.
+          </p>
+        )
+      }
+
+      <header data-animate="fade-up">
+        {
+          audience && (
+            <p class="font-display text-sm text-red-500">Written for {audience}</p>
+          )
+        }
+        <h1
+          class="mt-3 font-display font-normal leading-[1.1] text-3xl sm:text-[42px]"
+        >
+          {title}
+        </h1>
+        {
+          subtitle && (
+            <p class="mt-4 text-lg italic leading-relaxed text-ink/75">
+              {subtitle}
+            </p>
+          )
+        }
+
+        <p class="mt-6 flex flex-wrap items-center gap-x-2 gap-y-1 text-sm text-ink/60">
+          <span>{author}</span>
+          <span aria-hidden="true">·</span>
+          <time datetime={isoDate(pubDate)}>{formatPostDate(pubDate)}</time>
+          <span aria-hidden="true">·</span>
+          <span>{readingMinutes} min read</span>
+        </p>
+        {
+          updatedDate && (
+            <p class="mt-1 text-sm text-ink/50">
+              Updated <time datetime={isoDate(updatedDate)}>{formatPostDate(updatedDate)}</time>
+            </p>
+          )
+        }
+      </header>
+
+      {
+        heroImage && (
+          <img
+            src={asset(heroImage)}
+            alt=""
+            class="mt-8 w-full rounded-2xl object-cover"
+            loading="eager"
+          />
+        )
+      }
+
+      {
+        toc.length > 2 && (
+          <nav
+            class="mt-10 rounded-2xl bg-cream-soft px-5 py-4"
+            aria-labelledby="toc-heading"
+          >
+            <h2
+              id="toc-heading"
+              class="font-display text-sm font-normal text-red-500"
+            >
+              In this post
+            </h2>
+            <ol class="mt-2 space-y-1.5 text-sm">
+              {toc.map((h) => (
+                <li>
+                  <a
+                    href={`#${h.slug}`}
+                    class="text-ink/80 underline decoration-red-200 underline-offset-2 hover:text-red-500 hover:decoration-red-500"
+                  >
+                    {h.text}
+                  </a>
+                </li>
+              ))}
+            </ol>
+          </nav>
+        )
+      }
+
+      <div class="pw-post mt-10">
+        <slot />
+      </div>
+
+      {
+        tags.length > 0 && (
+          <ul class="mt-12 flex flex-wrap gap-2" aria-label="Topics">
+            {tags.map((tag) => (
+              <li class="rounded-pill bg-pink-softer px-3 py-1 text-sm text-ink/70">
+                {tag}
+              </li>
+            ))}
+          </ul>
+        )
+      }
+
+      {reactions && <Reactions slug={post.id} />}
+
+      <div class="mt-12 mb-20 border-t border-red-100 pt-8">
+        <a
+          href={asset("/blog")}
+          class="text-base text-red-500 underline decoration-red-200 underline-offset-2 hover:decoration-red-500"
+          >← All posts</a
+        >
+      </div>
+    </Container>
+  </article>
+</BaseLayout>

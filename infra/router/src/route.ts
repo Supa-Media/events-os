@@ -21,7 +21,9 @@
 export type RouteDecision =
   | { kind: "redirect"; location: string }
   | { kind: "proxy"; target: string; cache?: "immutable" }
-  | { kind: "assets" };
+  // `gate: "draft"` marks the unpublished-blog-post prefix, which index.ts
+  // puts behind a shared password before serving the asset. See draftGate.ts.
+  | { kind: "assets"; gate?: "draft" };
 
 export const EXPO_ORIGIN = "https://events-os.expo.app";
 export const CONVEX_ORIGIN = "https://vivid-rhinoceros-688.convex.site";
@@ -31,6 +33,12 @@ export const CONVEX_ORIGIN = "https://vivid-rhinoceros-688.convex.site";
 // apps/mobile/app.config.js. infra/router/src/drift.test.ts asserts all
 // three stay in sync.
 export const OS_PREFIX = "/os";
+
+// Unpublished blog posts. Astro builds a `draft: true` post to
+// /blog/drafts/<slug> instead of /blog/<slug> (apps/landing/src/pages/blog/)
+// precisely so this one prefix can be gated — see draftGate.ts. Everything
+// under it, HTML and assets alike, needs the password.
+export const DRAFTS_PREFIX = "/blog/drafts";
 
 const APEX = "publicworship.life";
 const WWW_HOST = "www.publicworship.life";
@@ -114,6 +122,12 @@ export function route(url: URL): RouteDecision {
 
   if (isConvexPath(pathname)) {
     return { kind: "proxy", target: `${CONVEX_ORIGIN}${pathname}${search}` };
+  }
+
+  // Draft posts are still static assets — they just don't get served until
+  // index.ts has checked the password.
+  if (pathname === DRAFTS_PREFIX || pathname.startsWith(`${DRAFTS_PREFIX}/`)) {
+    return { kind: "assets", gate: "draft" };
   }
 
   return { kind: "assets" };

@@ -37,6 +37,7 @@ import {
 import { registerTicketApiRoutes } from "./lib/ticketApiRoutes";
 import { registerReimburseApiRoutes } from "./lib/reimburseApiRoutes";
 import { registerGiveApiRoutes } from "./lib/giveApiRoutes";
+import { registerBlogApiRoutes } from "./lib/blogApiRoutes";
 import {
   renderReimburseForm,
   renderReimburseStatus,
@@ -97,6 +98,9 @@ registerReimburseApiRoutes(http);
 
 // JSON API for the public giving map's become-a-backer form (/api/give/*).
 registerGiveApiRoutes(http);
+
+// JSON API for the marketing blog's emoji reactions (/api/blog/reactions).
+registerBlogApiRoutes(http);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 

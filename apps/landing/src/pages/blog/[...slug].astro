@@ -1,0 +1,28 @@
+---
+/**
+ * A published blog post. Drafts are deliberately excluded here and built by
+ * src/pages/blog/drafts/[...slug].astro instead, so an unpublished post can
+ * never be reachable at a public URL — see src/lib/blog.ts.
+ */
+import { render } from "astro:content";
+import PostLayout from "../../layouts/PostLayout.astro";
+import { getPublishedPosts, readingMinutes } from "../../lib/blog";
+
+export async function getStaticPaths() {
+  const posts = await getPublishedPosts();
+  return posts.map((post) => ({ params: { slug: post.id }, props: { post } }));
+}
+
+const { post } = Astro.props;
+const { Content, headings } = await render(post);
+const canonical = new URL(`/blog/${post.id}`, Astro.site).toString();
+---
+
+<PostLayout
+  post={post}
+  headings={headings}
+  readingMinutes={readingMinutes(post.body)}
+  canonical={canonical}
+>
+  <Content />
+</PostLayout>

@@ -4,6 +4,7 @@ import Button from "../ui/Button.astro";
 import Logo from "../icons/Logo.astro";
 import MenuIcon from "../icons/MenuIcon.astro";
 import { asset } from "../../lib/asset";
+import { hasPublishedPosts } from "../../lib/blog";
 
 export interface Props {
   brand?: "public-worship" | "global-echo";
@@ -13,11 +14,16 @@ const { brand = "public-worship" } = Astro.props;
 
 const home = asset(brand === "global-echo" ? "/ge" : "/");
 
+// The blog only enters the nav once something is actually published — a link
+// to an empty page is worse than no link. Drafts don't count (see lib/blog.ts).
+const showBlog = await hasPublishedPosts();
+
 const navLinks = [
   { label: "About", href: `${home}#about` },
   { label: "Impact", href: `${home}#impact` },
   { label: "Links", href: `${home}#links` },
   { label: "FAQ", href: `${home}#faq` },
+  ...(showBlog ? [{ label: "Blog", href: asset("/blog") }] : []),
 ];
 ---
 

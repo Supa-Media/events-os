@@ -10,6 +10,14 @@ export interface Props {
   description?: string;
   ogImage?: string;
   brand?: "public-worship" | "global-echo";
+  /** "article" for blog posts, so shares render as writing, not a site. */
+  ogType?: "website" | "article";
+  /** Absolute canonical URL. Set on pages that can be reached by more than
+   *  one path (a post and its draft URL) so search engines pick the right one. */
+  canonical?: string;
+  /** Keep this page out of search results. Belt-and-braces for unpublished
+   *  drafts, whose real protection is pw-router's password gate. */
+  noindex?: boolean;
 }
 
 const {
@@ -17,6 +25,9 @@ const {
   description = "Public Worship is a worship initiative of Global Echo Charitable Co., a 501(c)(3) nonprofit, bringing bold, public Jesus worship into the streets, parks, and trains of New York City.",
   ogImage = "/og-default.jpg",
   brand = "public-worship",
+  ogType = "website",
+  canonical,
+  noindex = false,
 } = Astro.props;
 
 const faviconHref = asset("/favicon-pw.png");
@@ -47,12 +58,14 @@ const fullTitle =
 
     <title>{fullTitle}</title>
     <meta name="description" content={description} />
+    {canonical && <link rel="canonical" href={canonical} />}
+    {noindex && <meta name="robots" content="noindex, nofollow" />}
 
     {/* Mark JS-enabled so the entrance-animation CSS only hides
         elements when the IntersectionObserver can reveal them. */}
     <script is:inline>document.documentElement.classList.add("js-enabled");</script>
 
-    <meta property="og:type" content="website" />
+    <meta property="og:type" content={ogType} />
     <meta property="og:title" content={fullTitle} />
     <meta property="og:description" content={description} />
     <meta property="og:image" content={ogImageHref} />
