@@ -10,14 +10,18 @@
  * pastor, a collaborator) before it is published, without shipping it to the
  * open web first.
  *
- * The shape is deliberately the simplest thing that is honestly private: one
- * shared password, held as a Worker secret, exchanged for a cookie. It is not
- * per-person and there is no audit trail — everyone with the link gets the
- * same password, and rotating it (`wrangler secret put DRAFT_PASSWORD`)
- * revokes everyone at once. For "let three specific people read a draft
- * before Sunday", that is the right amount of machinery. It would NOT be
- * enough for anything sensitive, and nothing sensitive belongs in a marketing
- * post.
+ * The shape is deliberately minimal: one shared password, exchanged for a
+ * cookie. Not per-person, no audit trail — everyone with the link gets the
+ * same password, and changing it revokes everyone at once.
+ *
+ * Know what this is worth today: `DRAFT_PASSWORD` is currently a plaintext
+ * var in wrangler.jsonc, in a PUBLIC repository, so the password is public
+ * too. What this gate actually buys in that configuration is keeping drafts
+ * off guessable URLs and out of crawlers' reach — not secrecy from anyone
+ * who thinks to read the config. Treat a draft as "not yet announced", never
+ * as "confidential", and put nothing in one that would matter if read early.
+ * wrangler.jsonc documents the two-step upgrade to a real Worker secret,
+ * which is what makes it private for real.
  *
  * The cookie stores a SHA-256 of the password rather than the password
  * itself, so a stolen cookie can't be read back into the shared secret and
