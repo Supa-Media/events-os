@@ -71,6 +71,37 @@ export function periodLabel(key: string): string {
   return `${name} ${parsed.year}`;
 }
 
+// ── Year keys ────────────────────────────────────────────────────────────────
+// The public page also rolls a whole YEAR up (`/finances/2026`), which is the
+// shape an annual report takes. A year is NOT its own publication — it is the
+// published months of that year, added together, and the page says which
+// months those were. Nothing is ever published at year granularity, so there
+// is no way for a year total to claim more than the months behind it.
+
+/** The 4-digit year a key names, or `null`. Strict, for the same reason
+ *  `parsePeriodKey` is: this parses public URL input. The window is
+ *  deliberately narrow — a "year" outside it is a typo or a probe, not a
+ *  period anyone is asking about. */
+export function parseYearKey(key: string): number | null {
+  if (!/^\d{4}$/.test(key)) return null;
+  const year = Number(key);
+  return year >= 2000 && year <= 2200 ? year : null;
+}
+
+/** The `YYYY-MM` keys of a year, January first. Drives the month dropdown. */
+export function monthsOfYear(year: number): string[] {
+  return Array.from({ length: 12 }, (_v, i) => periodKey(year, i + 1));
+}
+
+/** "August" — the month name alone, for the month dropdown (the year is
+ *  already chosen in the dropdown beside it). */
+export function monthName(month: number): string {
+  return new Date(Date.UTC(2000, month - 1, 1)).toLocaleString("en-US", {
+    month: "long",
+    timeZone: "UTC",
+  });
+}
+
 /** The period key immediately before `key`, or `null` if unparseable. Used to
  *  find the prior published month for the opening-balance line. */
 export function previousPeriodKey(key: string): string | null {
@@ -314,6 +345,31 @@ export function publicGiftMethodLabel(method: string): string {
     PUBLIC_GIFT_METHOD_LABELS[method] ??
     method.replace(/_/g, " ").replace(/^./, (c) => c.toUpperCase())
   );
+}
+
+// ── Where a reader goes when the page is wrong ───────────────────────────────
+/**
+ * The address the public finances page tells people to write to.
+ *
+ * `hello@publicworship.life` because that is already the org's public contact
+ * everywhere else — the site header, the collaborate page, the songs page,
+ * the newsletter footer. Inventing a `giving@` or `finance@` alias for this
+ * one page would create an address that has to be monitored by someone, and
+ * an unmonitored address on a "tell us if this is wrong" prompt is worse than
+ * no prompt at all: it converts a person willing to help into a person who
+ * was ignored.
+ *
+ * (The marketing site — `apps/landing`, a separate Astro build — hardcodes
+ * the same address in about ten places. Consolidating those is a cleanup
+ * worth doing on its own; this constant is the server-rendered side's single
+ * source, so at least the pages Convex renders move together.)
+ */
+export const PUBLIC_CONTACT_EMAIL = "hello@publicworship.life";
+
+/** A `mailto:` with the subject pre-filled, so a report arrives already
+ *  triaged instead of as an untitled email somebody has to categorize. */
+export function contactMailto(subject: string): string {
+  return `mailto:${PUBLIC_CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}`;
 }
 
 // ── Amendment reasons ────────────────────────────────────────────────────────

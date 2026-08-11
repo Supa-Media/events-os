@@ -44,10 +44,14 @@ import {
   DOCUMENTATION_STATE_LABELS,
   EXPENSE_TYPE_LABELS,
   formatAffiliationMix,
+  contactMailto,
   formatCents,
   INCOME_STREAM_BLURBS,
   INCOME_STREAM_LABELS,
+  monthName,
+  monthsOfYear,
   periodLabel,
+  PUBLIC_CONTACT_EMAIL,
   type AmendmentReason,
   type DocumentationState,
   type ExpenseType,
@@ -96,15 +100,23 @@ export type PublicLedgerGift = {
   bookLabel: string;
 };
 
-export type PublicStatement = {
-  periodKey: string;
+export type BudgetRow = {
   label: string;
+  allocatedCents: number | null;
+  spentCents: number;
+  count: number;
+};
+
+/** Everything a month and a year have in common — which is everything except
+ *  how the period is named. The two renderers share every section below. */
+export type StatementCore = {
   incomeCents: number;
   expenseCents: number;
   netCents: number;
   incomeByStream: { stream: IncomeStream; cents: number; count: number }[];
   expenseByCategory: { label: string; cents: number; count: number }[];
   expenseByProject: { label: string; cents: number; count: number }[];
+  spendByBudget: BudgetRow[];
   reconstructedCount: number;
   reconstructedCents: number;
   undocumentedCount: number;
@@ -113,9 +125,13 @@ export type PublicStatement = {
   uncodedCents: number;
   entryCount: number;
   giftCount: number;
+  giverCount: number;
+  backerCount: number;
   entriesTruncated: boolean;
   books: {
     bookLabel: string;
+    periodKey: string;
+    label: string;
     revision: number;
     publishedAt: number;
     amendments: {
@@ -129,12 +145,26 @@ export type PublicStatement = {
   gifts: PublicLedgerGift[];
 };
 
+export type PublicStatement = StatementCore & {
+  periodKey: string;
+  label: string;
+};
+
+export type PublicYearStatement = StatementCore & {
+  year: string;
+  label: string;
+  /** The `YYYY-MM` keys that contributed, oldest first. */
+  months: string[];
+};
+
 export type PublishedMonth = {
   periodKey: string;
   label: string;
   publishedAt: number;
   bookCount: number;
 };
+
+export type PublishedYear = { year: string; monthCount: number };
 
 // ── Formatting ───────────────────────────────────────────────────────────────
 
@@ -207,32 +237,104 @@ ${opts.body}
 
 // ── Sections ─────────────────────────────────────────────────────────────────
 
-function monthPickerHtml(months: PublishedMonth[], current: string): string {
-  if (months.length === 0) return "";
-  const chips = months
+/**
+ * The period picker: a YEAR dropdown and a MONTH dropdown whose first option
+ * is "All months" — which is what a yearly rollup is.
+ *
+ * A plain `<form method="get">` posting to `/finances`, which redirects to the
+ * canonical path (`/finances/2026-08` or `/finances/2026`). Three properties
+ * fall out of doing it that way and none of them are free if you wire the
+ * selects straight to `location.href`:
+ *
+ *  - It works with JavaScript disabled. A transparency page that needs JS to
+ *    let you change the year is not one an auditor can rely on.
+ *  - The URL a reader ends up on, and therefore shares, names the period.
+ *    A query-string page would leave `?year=&month=` in circulation and mean
+ *    something different next year.
+ *  - The browser's back button behaves.
+ *
+ * The inline script auto-submits on change so it still feels immediate; the
+ * View button is left visible rather than hidden by JS, because a control
+ * that vanishes depending on how the page loaded is worse than a redundant
+ * one.
+ *
+ * UNPUBLISHED MONTHS ARE LISTED AND DISABLED, not omitted. "September isn't
+ * in the dropdown" and "September hasn't been published" are different facts,
+ * and only the second one is true — so the option says so.
+ */
+function periodPickerHtml(opts: {
+  years: PublishedYear[];
+  months: PublishedMonth[];
+  selectedYear: string;
+  /** `""` when the whole year is selected. */
+  selectedMonth: string;
+}): string {
+  const { years, months, selectedYear, selectedMonth } = opts;
+  if (years.length === 0) return "";
+  const published = new Set(months.map((m) => m.periodKey));
+
+  const yearOptions = years
     .map(
-      (m) =>
-        `<a class="monthchip${m.periodKey === current ? " on" : ""}" href="${esc(
-          ledgerPath(m.periodKey),
-        )}">${esc(m.label)}</a>`,
+      (y) =>
+        `<option value="${esc(y.year)}"${y.year === selectedYear ? " selected" : ""}>${esc(y.year)} · ${y.monthCount} month${y.monthCount === 1 ? "" : "s"}</option>`,
     )
     .join("");
-  return `<nav class="months" aria-label="Published months">${chips}</nav>`;
+
+  const monthOptions = [
+    `<option value=""${selectedMonth === "" ? " selected" : ""}>All months (year total)</option>`,
+    ...monthsOfYear(Number(selectedYear)).map((key, i) => {
+      const mm = String(i + 1).padStart(2, "0");
+      const isPublished = published.has(key);
+      return `<option value="${mm}"${mm === selectedMonth ? " selected" : ""}${
+        isPublished ? "" : " disabled"
+      }>${esc(monthName(i + 1))}${isPublished ? "" : " — not published"}</option>`;
+    }),
+  ].join("");
+
+  return `<form class="picker" action="${esc(ledgerPath())}" method="get">
+  <label class="pickerlabel" for="year">Year</label>
+  <select id="year" name="year">${yearOptions}</select>
+  <label class="pickerlabel" for="month">Month</label>
+  <select id="month" name="month">${monthOptions}</select>
+  <button type="submit" class="pickerbtn">View</button>
+</form>`;
 }
 
-function statsHtml(s: PublicStatement): string {
-  // The third figure is called "Difference," not "Surplus" or "Profit." A
-  // deliberate month of spending down reserves has not lost anything, and a
-  // month that happens to end up ahead has not earned a profit. "Difference"
-  // is the only word that is true in both directions without editorializing.
-  const netLabel = s.netCents >= 0 ? "More in than out" : "More out than in";
-  return `<div class="stats">
-  <div class="stat in"><div class="k">Money in</div><div class="v">${esc(money(s.incomeCents))}</div>
-    <div class="sub">${s.giftCount.toLocaleString()} gift${s.giftCount === 1 ? "" : "s"} and other income</div></div>
-  <div class="stat out"><div class="k">Money out</div><div class="v">${esc(money(s.expenseCents))}</div>
-    <div class="sub">${s.entryCount.toLocaleString()} line${s.entryCount === 1 ? "" : "s"} published</div></div>
-  <div class="stat net"><div class="k">Difference</div><div class="v">${esc(money(Math.abs(s.netCents)))}</div>
-    <div class="sub">${esc(netLabel)}</div></div>
+/**
+ * THE FOUR NUMBERS — raised, spent, givers, backers.
+ *
+ * The owner's ask, and the right four: two about the money and two about the
+ * people, because "we spent $377,000" and "412 people made that possible" are
+ * different claims and a page that made only the first one would read as an
+ * accounting exercise rather than an account of a community.
+ *
+ * "Difference" rides along under Total spent rather than taking a fifth tile.
+ * It is genuinely useful and genuinely secondary — and it is called
+ * "Difference," not "Surplus" or "Profit," because a deliberate month of
+ * spending down reserves has not lost anything and a month that ends up ahead
+ * has not earned a profit. It is the only word true in both directions.
+ *
+ * GIVERS AND BACKERS ARE DISTINCT PEOPLE, unioned across every month being
+ * shown (`publicLedger.ts#mergeLive`) — never the sum of monthly counts, which
+ * would report someone who gives every month as twelve people. The tiles are
+ * omitted entirely, rather than printed as 0, on a statement published before
+ * those figures existed: a confident zero is worse than a missing tile.
+ */
+function statsHtml(s: StatementCore): string {
+  const netLabel = s.netCents >= 0 ? "more in than out" : "more out than in";
+  const hasPeople = s.giverCount > 0 || s.backerCount > 0;
+  const peopleTiles = hasPeople
+    ? `<div class="stat people"><div class="k">Givers</div><div class="v">${s.giverCount.toLocaleString()}</div>
+    <div class="sub">${s.giftCount.toLocaleString()} gift${s.giftCount === 1 ? "" : "s"} between them</div></div>
+  <div class="stat people"><div class="k">Backers</div><div class="v">${s.backerCount.toLocaleString()}</div>
+    <div class="sub">giving on a recurring basis</div></div>`
+    : "";
+  return `<div class="stats${hasPeople ? " four" : ""}">
+  <div class="stat in"><div class="k">Total raised</div><div class="v">${esc(money(s.incomeCents))}</div>
+    <div class="sub">gifts, tickets, merch and program fees</div></div>
+  <div class="stat out"><div class="k">Total spent</div><div class="v">${esc(money(s.expenseCents))}</div>
+    <div class="sub">${esc(money(Math.abs(s.netCents)))} ${esc(netLabel)}</div></div>
+  ${peopleTiles}
 </div>`;
 }
 
@@ -256,7 +358,7 @@ function barRowsHtml(
     .join("");
 }
 
-function incomeHtml(s: PublicStatement): string {
+function incomeHtml(s: StatementCore): string {
   if (s.incomeByStream.length === 0) return "";
   const rows = s.incomeByStream.map((r) => ({
     label: INCOME_STREAM_LABELS[r.stream],
@@ -271,7 +373,7 @@ function incomeHtml(s: PublicStatement): string {
 </section>`;
 }
 
-function expenseHtml(s: PublicStatement): string {
+function expenseHtml(s: StatementCore): string {
   if (s.expenseByCategory.length === 0 && s.expenseByProject.length === 0) {
     return "";
   }
@@ -337,6 +439,67 @@ function contextHtml(e: PublicLedgerEntry): string {
     bits.push(EXPENSE_TYPE_LABELS[e.expenseType]);
   }
   return bits.length > 0 ? `<span class="detail">${esc(bits.join(" · "))}</span>` : "";
+}
+
+/**
+ * BUDGETS — what was planned, and what was actually used.
+ *
+ * The owner's ask ("make sure the budgets are in there as well and how much
+ * was spent in each budget"), and the section that turns the page from a
+ * record into an account: a ledger says what happened, a plan-vs-actual says
+ * whether it was what you meant to happen.
+ *
+ * ── ESTIMATED AND ACTUAL SIT SIDE BY SIDE, NEVER SUMMED ──────────────────────
+ * The schema's third invariant is that budget money and transaction money are
+ * never added together. They are not added here — they are two columns of one
+ * row, which is exactly the comparison a reader is making. The bar shows
+ * spend as a fraction of the allocation, and is deliberately allowed to run
+ * past 100%: an over-budget line is the single most interesting row in the
+ * table and clamping it would hide it.
+ *
+ * ── A MISSING ALLOCATION IS NOT A ZERO ───────────────────────────────────────
+ * Two rows legitimately have no allocation: spend that carried no budget at
+ * all ("Not attached to a budget"), and any row in a YEAR rollup whose months
+ * didn't all carry one. Both render "—", never "$0.00", because "we did not
+ * budget this" and "we budgeted nothing for this" are different statements and
+ * only one of them is being made.
+ */
+function budgetsHtml(s: StatementCore, isYear: boolean): string {
+  if (s.spendByBudget.length === 0) return "";
+  const rows = s.spendByBudget
+    .map((b) => {
+      const pct =
+        b.allocatedCents && b.allocatedCents > 0
+          ? Math.round((b.spentCents / b.allocatedCents) * 100)
+          : null;
+      const over = pct != null && pct > 100;
+      return `<div class="budgetrow">
+  <div class="barhead">
+    <span class="barlabel">${esc(b.label)} <span class="barnote">${b.count.toLocaleString()}&nbsp;${b.count === 1 ? "line" : "lines"}</span></span>
+    <span class="baramt">${esc(money(b.spentCents))}${
+      b.allocatedCents != null
+        ? ` <span class="ofplan">of ${esc(money(b.allocatedCents))}</span>`
+        : ` <span class="ofplan">— no budget set</span>`
+    }</span>
+  </div>
+  ${
+    pct == null
+      ? ""
+      : `<div class="bartrack"><div class="barfill${over ? " over" : ""}" style="width:${Math.min(pct, 100)}%"></div></div>
+  <div class="barpct${over ? " over" : ""}">${pct}% of the plan${over ? ` — over by ${esc(money(b.spentCents - (b.allocatedCents ?? 0)))}` : ""}</div>`
+  }
+</div>`;
+    })
+    .join("");
+  return `<section>
+  <h2 class="sectionhead">Against the plan</h2>
+  <p class="sectionsub">Every budget that money came out of this ${isYear ? "year" : "month"}, what it was allowed, and what it actually used. ${
+    isYear
+      ? "Allocations only show where every month behind the figure carried one — otherwise this reads as spend alone, and the month view has the full plan."
+      : "Spending past a budget isn't hidden here; it's the row worth looking at."
+  }</p>
+  <div class="bars">${rows}</div>
+</section>`;
 }
 
 function ledgerHtml(s: PublicStatement): string {
@@ -424,6 +587,24 @@ function ledgerHtml(s: PublicStatement): string {
 </section>`;
 }
 
+/**
+ * THE GIVING ROLL — "find the minute you gave."
+ *
+ * The owner's ask, and the thing that makes the page personal rather than
+ * institutional: a giver should be able to locate their own gift in the
+ * public record and see it counted, without any giver being named.
+ *
+ * ── AND A WAY TO SAY "MINE ISN'T HERE" ───────────────────────────────────────
+ * An invitation to look yourself up is also an invitation to fail to find
+ * yourself, and that is a much worse experience than never having looked —
+ * it turns "they're transparent" into "they lost my money." So the roll ends
+ * with the three benign explanations (wrong month, unpublished month, a
+ * pledge that settles on its own date) and a real address to write to.
+ *
+ * The benign reasons come FIRST, deliberately. Most people who can't find a
+ * gift are looking in the wrong month, and telling them that costs nothing
+ * and resolves it instantly. The email is for whoever it doesn't resolve.
+ */
 function givingRollHtml(s: PublicStatement): string {
   if (s.gifts.length === 0) return "";
   const rows = s.gifts
@@ -437,14 +618,43 @@ function givingRollHtml(s: PublicStatement): string {
     .join("");
   return `<section>
   <h2 class="sectionhead">The giving roll</h2>
-  <p class="sectionsub">Every gift received this month, by the minute it arrived — and nothing else. No names, no amounts tied to a person, no way to work backwards to one. If you gave, you can find your gift here and see it counted.</p>
+  <p class="sectionsub">Every gift received in ${esc(s.label)}, by the minute it arrived — and nothing else. No names, no amounts tied to a person, no way to work backwards to one. If you gave, you can find your gift here and see it counted.</p>
   <div class="roll">${rows}</div>
+  ${missingGiftHtml(s.label)}
 </section>`;
 }
 
-function amendmentsHtml(s: PublicStatement): string {
+/**
+ * "Don't see your gift?" — the recovery path.
+ *
+ * Written to be actionable rather than reassuring. It names the specific
+ * month being viewed, because "check another month" is useless advice without
+ * saying which month you are currently in.
+ */
+function missingGiftHtml(periodLabelText: string): string {
+  const mailto = contactMailto(`Gift missing from the ${periodLabelText} finances page`);
+  return `<div class="note missing">
+  <strong>Don't see your gift?</strong> Three things usually explain it, and they're worth checking first:
+  <ul class="misslist">
+    <li><strong>It landed in a different month.</strong> A gift counts in the month it was received. One given in the last days of a month — or a card that took a day to settle — can sit in the month either side of ${esc(periodLabelText)}.</li>
+    <li><strong>That month isn't published yet.</strong> We publish a month only after it's closed and reviewed, so the most recent weeks are usually not up here yet.</li>
+    <li><strong>Recurring gifts charge on their own date</strong>, which may not be the day you first set them up.</li>
+  </ul>
+  <p class="missfoot">Still can't find it? Email <a href="${esc(mailto)}">${esc(PUBLIC_CONTACT_EMAIL)}</a> with the date and amount and we'll go looking — a real person reads it, and if we got something wrong we'll publish the correction. We'd genuinely rather hear from you than have the record be quietly wrong.</p>
+</div>`;
+}
+
+/**
+ * The corrections log.
+ *
+ * On a YEAR the rows have to name their month — "Central · revision 2" is
+ * ambiguous across twelve of them, and an amendment log a reader can't place
+ * in time is barely a log. On a month the label would be the same on every
+ * row, so it's dropped.
+ */
+function amendmentsHtml(s: StatementCore, isYear: boolean): string {
   const all = s.books.flatMap((b) =>
-    b.amendments.map((a) => ({ ...a, bookLabel: b.bookLabel })),
+    b.amendments.map((a) => ({ ...a, bookLabel: b.bookLabel, periodLabel: b.label })),
   );
   if (all.length === 0) return "";
   all.sort((a, b) => b.publishedAt - a.publishedAt);
@@ -452,7 +662,7 @@ function amendmentsHtml(s: PublicStatement): string {
     .map(
       (a) => `<div class="amendrow">
   <div class="amendtop">
-    <span>${esc(a.bookLabel)} · revision ${a.revision}</span>
+    <span>${esc(a.bookLabel)}${isYear ? ` · ${esc(a.periodLabel)}` : ""} · revision ${a.revision}</span>
     <span>${esc(longDate(a.publishedAt))}</span>
     ${a.reason ? `<span class="amendreason">${esc(AMENDMENT_REASON_LABELS[a.reason as AmendmentReason] ?? a.reason)}</span>` : ""}
   </div>
@@ -460,10 +670,15 @@ function amendmentsHtml(s: PublicStatement): string {
 </div>`,
     )
     .join("");
+  const noun = isYear ? "year" : "month";
   return `<section>
-  <div class="amendbanner">This month has been corrected since it was first published. Here is every change, and why.</div>
+  <div class="amendbanner">${
+    isYear
+      ? `Some months in this year have been corrected since they were first published. Here is every change, and why.`
+      : `This ${noun} has been corrected since it was first published. Here is every change, and why.`
+  }</div>
   <h2 class="sectionhead" style="margin-top:24px">Corrections</h2>
-  <p class="sectionsub">We publish our mistakes. When a month changes after publication, the change is dated, attributed, and explained here — the earlier version is never quietly overwritten.</p>
+  <p class="sectionsub">We publish our mistakes. When a ${noun} changes after publication, the change is dated, attributed, and explained here — the earlier version is never quietly overwritten.</p>
   <div class="amendlist">${rows}</div>
 </section>`;
 }
@@ -474,7 +689,7 @@ function lines(n: number): string {
   return `${n} ${n === 1 ? "line" : "lines"}`;
 }
 
-function disclosuresHtml(s: PublicStatement, totalBooks: number): string {
+function disclosuresHtml(s: StatementCore, totalBooks: number): string {
   const notes: string[] = [];
   if (s.reconstructedCount > 0) {
     const was = s.reconstructedCount === 1 ? "was" : "were";
@@ -525,6 +740,10 @@ function howToReadHtml(): string {
 
   <details class="faq"><summary>Who decides what gets published?</summary>
   <p>One person prepares the month; a different person reviews and publishes it. The system refuses a self-approval unless a single named operator is running the org, and it records which of the two happened for every month published.</p></details>
+
+  <details class="faq"><summary>I think something here is wrong. What do I do?</summary>
+  <p>Tell us. Email <a href="${esc(contactMailto("Something looks wrong on the finances page"))}">${esc(PUBLIC_CONTACT_EMAIL)}</a> with what you're looking at and what looks off — a missing gift, a line that doesn't make sense, a number that doesn't add up.</p>
+  <p>A real person reads it. If we got something wrong, the fix is a published correction with our explanation attached, not a quiet edit — so reporting it puts the record right in public, where the mistake was.</p></details>
 </section>`;
 }
 
@@ -534,6 +753,7 @@ function howToReadHtml(): string {
 export function renderLedgerPage(
   statement: PublicStatement,
   months: PublishedMonth[],
+  years: PublishedYear[],
   totalBooks: number,
 ): string {
   const body = `
@@ -541,12 +761,18 @@ export function renderLedgerPage(
   <h1 class="title serif">Where the money goes</h1>
   <p class="lede">Every dollar Public Worship received and spent in <strong>${esc(statement.label)}</strong> — not a summary of it. Each line shows what we bought, who we bought it from, what it was for, and whether we can produce the receipt.</p>
 </div>
-${monthPickerHtml(months, statement.periodKey)}
+${periodPickerHtml({
+  years,
+  months,
+  selectedYear: statement.periodKey.slice(0, 4),
+  selectedMonth: statement.periodKey.slice(5, 7),
+})}
 ${statsHtml(statement)}
 ${disclosuresHtml(statement, totalBooks)}
-${amendmentsHtml(statement)}
+${amendmentsHtml(statement, false)}
 ${incomeHtml(statement)}
 ${expenseHtml(statement)}
+${budgetsHtml(statement, false)}
 ${ledgerHtml(statement)}
 ${givingRollHtml(statement)}
 ${howToReadHtml()}
@@ -556,7 +782,7 @@ ${howToReadHtml()}
       .map((b) => `${b.bookLabel} on ${longDate(b.publishedAt)}`)
       .join(" · "),
   )}.</p>
-  <p style="margin-top:8px">Something here look wrong? Tell us — <a href="/give">get in touch</a>. We'd rather publish a correction than be right by accident.</p>
+  <p style="margin-top:8px">Something here look wrong? Email <a href="${esc(contactMailto(`Question about the ${statement.label} finances page`))}">${esc(PUBLIC_CONTACT_EMAIL)}</a>. We'd rather publish a correction than be right by accident.</p>
 </footer>`;
 
   return shell({
@@ -567,22 +793,98 @@ ${howToReadHtml()}
   });
 }
 
+/**
+ * THE YEAR ROLLUP — the annual-report shape, built only from published months.
+ *
+ * Summary-level on purpose. A year is thousands of lines, and putting them all
+ * into the most-shared URL on the site would make it the slowest page for a
+ * table nobody scrolls to the end of. The lines are one click away in each
+ * month, and complete in the year CSV — both of which this page says out loud
+ * rather than leaving a reader to wonder where the detail went.
+ *
+ * The months that contributed are listed and linked. A year missing four
+ * months must never read like a whole one, and the only reliable way to
+ * prevent that is to show the reader which months they are looking at.
+ */
+export function renderLedgerYearPage(
+  statement: PublicYearStatement,
+  months: PublishedMonth[],
+  years: PublishedYear[],
+  totalBooks: number,
+): string {
+  const monthLinks = statement.months
+    .map(
+      (key) =>
+        `<a class="monthchip" href="${esc(ledgerPath(key))}">${esc(periodLabel(key))}</a>`,
+    )
+    .join("");
+  const complete = statement.months.length === 12;
+
+  const body = `
+<div class="hero">
+  <h1 class="title serif">Where the money goes</h1>
+  <p class="lede">Everything Public Worship received and spent in <strong>${esc(statement.label)}</strong>, added up from the months we've published. Pick a month to read it transaction by transaction.</p>
+</div>
+${periodPickerHtml({ years, months, selectedYear: statement.year, selectedMonth: "" })}
+${statsHtml(statement)}
+<div class="note"><strong>${statement.months.length} of 12 months published for ${esc(statement.label)}.</strong> ${
+    complete
+      ? "This is the complete year."
+      : "The totals above cover only those months — nothing here is estimated or filled in for the rest."
+  }</div>
+${disclosuresHtml(statement, totalBooks)}
+${amendmentsHtml(statement, true)}
+${incomeHtml(statement)}
+${expenseHtml(statement)}
+${budgetsHtml(statement, true)}
+<section>
+  <h2 class="sectionhead">Every line, month by month</h2>
+  <p class="sectionsub">A year is thousands of transactions, so they live in the months rather than on one page. Open any month to search it line by line — or take the whole year as a spreadsheet.</p>
+  <nav class="months">${monthLinks}</nav>
+  <p style="margin-top:16px">
+    <a class="dl" href="${esc(ledgerPath(statement.year))}.csv" download>⬇ Download all of ${esc(statement.label)} (CSV)</a>
+  </p>
+</section>
+${howToReadHtml()}
+<footer>
+  <p>Built from ${statement.months.length} published month${statement.months.length === 1 ? "" : "s"}. Each one was reviewed and frozen on its own; this page only adds them up.</p>
+  <p style="margin-top:8px">Something here look wrong? Email <a href="${esc(contactMailto(`Question about the ${statement.label} finances page`))}">${esc(PUBLIC_CONTACT_EMAIL)}</a>. We'd rather publish a correction than be right by accident.</p>
+</footer>`;
+
+  return shell({
+    title: `${statement.label} finances · Public Worship`,
+    description: `Public Worship's ${statement.label}: ${money(statement.incomeCents)} raised, ${money(statement.expenseCents)} spent, across ${statement.months.length} published months.`,
+    canonicalPath: ledgerPath(statement.year),
+    body,
+  });
+}
+
 /** Shown when a month has nothing published — including `/finances` itself
  *  before the first month ever goes out. Says which months DO exist rather
  *  than dead-ending, and explains the process instead of apologising. */
 export function renderLedgerEmpty(
   months: PublishedMonth[],
+  years: PublishedYear[],
   requested?: string,
 ): string {
   const heading = requested
-    ? `${periodLabel(requested)} hasn't been published yet`
+    ? `${requested.length === 4 ? requested : periodLabel(requested)} hasn't been published yet`
     : `Nothing published yet`;
   const body = `
 <div class="hero">
   <h1 class="title serif">Where the money goes</h1>
   <p class="lede">We publish our books month by month — every transaction, what it was for, and whether we can produce the receipt.</p>
 </div>
-${monthPickerHtml(months, requested ?? "")}
+${
+  years.length > 0
+    ? periodPickerHtml({
+        years,
+        months,
+        selectedYear: (requested ?? years[0].year).slice(0, 4),
+        selectedMonth: requested && requested.length === 7 ? requested.slice(5, 7) : "",
+      })
+    : ""
+}
 <div class="empty">
   <h2>${esc(heading)}</h2>
   <p>A month goes up once it's closed, reviewed by someone who didn't prepare it, and approved. ${

@@ -35,7 +35,7 @@
  * duties — publisher ≠ preparer — is enforced HERE, because it is a question
  * about a specific row rather than about a person.
  */
-import { v, ConvexError } from "convex/values";
+import { v, ConvexError, type Infer } from "convex/values";
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
@@ -47,7 +47,9 @@ import {
   INCOME_STREAMS,
   MAX_PUBLISHED_ENTRIES,
   MIN_AMENDMENT_NOTE_LENGTH,
+  monthsOfYear,
   parsePeriodKey,
+  parseYearKey,
   periodLabel,
   PUBLICATION_STATUSES,
   REBUILDABLE_STATUSES,
@@ -215,8 +217,18 @@ const snapshotTotals = v.object({
   expenseByProject: v.array(
     v.object({ label: v.string(), cents: v.number(), count: v.number() }),
   ),
+  spendByBudget: v.array(
+    v.object({
+      label: v.string(),
+      allocatedCents: v.optional(v.number()),
+      spentCents: v.number(),
+      count: v.number(),
+    }),
+  ),
   entryCount: v.number(),
   giftCount: v.number(),
+  giverCount: v.number(),
+  backerCount: v.number(),
   reconstructedCount: v.number(),
   reconstructedCents: v.number(),
   undocumentedCount: v.number(),
@@ -227,8 +239,10 @@ const snapshotTotals = v.object({
   overCap: v.boolean(),
 });
 
+/** The console's preview: every figure, none of the rows — and never
+ *  `giverKeys`, which is identity data that exists only to be counted. */
 function totalsOf(s: Snapshot) {
-  const { entries: _entries, ...totals } = s;
+  const { entries: _entries, giverKeys: _giverKeys, ...totals } = s;
   return totals;
 }
 
@@ -484,8 +498,11 @@ export const publish = mutation({
       incomeByStream: snapshot.incomeByStream,
       expenseByCategory: snapshot.expenseByCategory,
       expenseByProject: snapshot.expenseByProject,
+      spendByBudget: snapshot.spendByBudget,
       entryCount: snapshot.entryCount,
       giftCount: snapshot.giftCount,
+      giverCount: snapshot.giverCount,
+      backerCount: snapshot.backerCount,
       reconstructedCount: snapshot.reconstructedCount,
       reconstructedCents: snapshot.reconstructedCents,
       undocumentedCount: snapshot.undocumentedCount,
@@ -509,6 +526,21 @@ export const publish = mutation({
         scope,
         periodKey: args.periodKey,
         ...entry,
+      });
+    }
+
+    // Frozen giver identities — INTERNAL ONLY, never served (see
+    // `schema/publicLedger.ts#financePublicationGiverKeys`). They exist so a
+    // year can UNION its months rather than adding twelve distinct counts
+    // together and reporting a monthly giver as twelve people.
+    const periodYear = args.periodKey.slice(0, 4);
+    for (const giver of snapshot.giverKeys) {
+      await ctx.db.insert("financePublicationGiverKeys", {
+        publicationId: pub._id,
+        revision,
+        year: periodYear,
+        key: giver.key,
+        isBacker: giver.isBacker,
       });
     }
 
@@ -727,6 +759,290 @@ export const publishedMonths = query({
  * re-derivation would be a second implementation of the same arithmetic with
  * the power to silently disagree with what was signed off.
  */
+// ── The merge (shared by the month view and the year rollup) ────────────────
+/**
+ * Fold a set of LIVE publications into one statement.
+ *
+ * One month across several books and one year across several months are the
+ * same operation — sum the frozen aggregates, merge the frozen breakdowns,
+ * concatenate the frozen lines — so they share this rather than growing two
+ * implementations that could disagree about, say, whether an amendment log
+ * from a book that stopped publishing still counts.
+ *
+ * TOTALS COME FROM THE STORED REVISION AGGREGATES, never re-derived from the
+ * entries. The stored figures are the ones a human approved; re-deriving them
+ * would be a second implementation of the same arithmetic with the power to
+ * silently disagree with what was signed off.
+ *
+ * DISTINCT GIVERS ARE UNIONED, NOT ADDED. Adding two months' giver counts
+ * reports somebody who gave in both as two people. The union runs over
+ * `financePublicationGiverKeys` — read here, counted here, and never returned
+ * from this function or any other.
+ */
+const budgetRow = v.object({
+  label: v.string(),
+  allocatedCents: v.union(v.number(), v.null()),
+  spentCents: v.number(),
+  count: v.number(),
+});
+
+const statementShape = {
+  incomeCents: v.number(),
+  expenseCents: v.number(),
+  netCents: v.number(),
+  incomeByStream: v.array(
+    v.object({
+      stream: v.union(...INCOME_STREAMS.map((s) => v.literal(s))),
+      cents: v.number(),
+      count: v.number(),
+    }),
+  ),
+  expenseByCategory: v.array(
+    v.object({ label: v.string(), cents: v.number(), count: v.number() }),
+  ),
+  expenseByProject: v.array(
+    v.object({ label: v.string(), cents: v.number(), count: v.number() }),
+  ),
+  spendByBudget: v.array(budgetRow),
+  reconstructedCount: v.number(),
+  reconstructedCents: v.number(),
+  undocumentedCount: v.number(),
+  undocumentedCents: v.number(),
+  uncodedCount: v.number(),
+  uncodedCents: v.number(),
+  entryCount: v.number(),
+  giftCount: v.number(),
+  /** DISTINCT people, unioned across everything being merged. */
+  giverCount: v.number(),
+  backerCount: v.number(),
+  /** True when the response carries fewer lines than the period has — the
+   *  page says so and points at the CSV, which is never truncated. */
+  entriesTruncated: v.boolean(),
+  books: v.array(
+    v.object({
+      bookLabel: v.string(),
+      periodKey: v.string(),
+      label: v.string(),
+      revision: v.number(),
+      publishedAt: v.number(),
+      amendments: v.array(
+        v.object({
+          revision: v.number(),
+          publishedAt: v.number(),
+          reason: v.union(v.string(), v.null()),
+          note: v.union(v.string(), v.null()),
+        }),
+      ),
+    }),
+  ),
+  entries: v.array(publicEntry),
+  gifts: v.array(publicGift),
+};
+
+type MergeOptions = {
+  /** How many lines to return. `0` returns none — the year rollup's default,
+   *  because a year of lines is a download, not a page (see `yearStatement`). */
+  entryLimit: number;
+};
+
+async function mergeLive(
+  ctx: QueryCtx,
+  pubs: Doc<"financePublications">[],
+  { entryLimit }: MergeOptions,
+) {
+  let incomeCents = 0;
+  let expenseCents = 0;
+  let reconstructedCount = 0;
+  let reconstructedCents = 0;
+  let undocumentedCount = 0;
+  let undocumentedCents = 0;
+  let uncodedCount = 0;
+  let uncodedCents = 0;
+  let entryCount = 0;
+  let giftCount = 0;
+  const incomeByStream = new Map<string, { cents: number; count: number }>();
+  const expenseByCategory = new Map<string, { cents: number; count: number }>();
+  const expenseByProject = new Map<string, { cents: number; count: number }>();
+  // Budgets merge BY LABEL across books and months — the same budget appearing
+  // in March and April is one row with the spend added. Allocations are summed
+  // only when every contributing row carried one; see `allocatedCents` below.
+  const byBudget = new Map<
+    string,
+    { allocatedCents: number | null; spentCents: number; count: number }
+  >();
+  const giverKeys = new Set<string>();
+  const backerKeys = new Set<string>();
+  const books: Infer<typeof statementShape.books> = [];
+  const entries: ReturnType<typeof toPublicEntry>[] = [];
+  const gifts: ReturnType<typeof toPublicGift>[] = [];
+  let entriesTruncated = false;
+
+  const addTo = (
+    map: Map<string, { cents: number; count: number }>,
+    key: string,
+    cents: number,
+    count: number,
+  ) => {
+    const b = map.get(key) ?? { cents: 0, count: 0 };
+    b.cents += cents;
+    b.count += count;
+    map.set(key, b);
+  };
+
+  for (const pub of pubs) {
+    const live = pub.liveRevision;
+    if (live == null) continue;
+    const revisions = await ctx.db
+      .query("financePublicationRevisions")
+      .withIndex("by_publication", (q) => q.eq("publicationId", pub._id))
+      .take(200);
+    const current = revisions.find((r) => r.revision === live);
+    if (!current) continue;
+
+    incomeCents += current.incomeCents;
+    expenseCents += current.expenseCents;
+    reconstructedCount += current.reconstructedCount;
+    reconstructedCents += current.reconstructedCents;
+    undocumentedCount += current.undocumentedCount;
+    undocumentedCents += current.undocumentedCents;
+    uncodedCount += current.uncodedCount;
+    uncodedCents += current.uncodedCents;
+    entryCount += current.entryCount;
+    giftCount += current.giftCount;
+    for (const r of current.incomeByStream) {
+      addTo(incomeByStream, r.stream, r.cents, r.count);
+    }
+    for (const r of current.expenseByCategory) {
+      addTo(expenseByCategory, r.label, r.cents, r.count);
+    }
+    for (const r of current.expenseByProject) {
+      addTo(expenseByProject, r.label, r.cents, r.count);
+    }
+    // ABSENT on a revision published before budgets were part of the
+    // statement — treated as "nothing to say", never as zero spend.
+    for (const r of current.spendByBudget ?? []) {
+      const existing = byBudget.get(r.label);
+      if (!existing) {
+        byBudget.set(r.label, {
+          allocatedCents: r.allocatedCents ?? null,
+          spentCents: r.spentCents,
+          count: r.count,
+        });
+        continue;
+      }
+      existing.spentCents += r.spentCents;
+      existing.count += r.count;
+      // An allocation only survives the merge if BOTH sides had one. Adding a
+      // known cap to an unknown one would publish a plan figure that is
+      // simply wrong, and the reader has no way to tell.
+      existing.allocatedCents =
+        existing.allocatedCents == null || r.allocatedCents == null
+          ? null
+          : existing.allocatedCents + r.allocatedCents;
+    }
+
+    // Distinct givers: UNION, never sum. The identities are read here and
+    // counted here; nothing below returns them.
+    const keys = await ctx.db
+      .query("financePublicationGiverKeys")
+      .withIndex("by_revision", (q) =>
+        q.eq("publicationId", pub._id).eq("revision", live),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const k of keys) {
+      giverKeys.add(k.key);
+      if (k.isBacker) backerKeys.add(k.key);
+    }
+
+    if (entryLimit > 0) {
+      const rows = await ctx.db
+        .query("financePublicationEntries")
+        .withIndex("by_revision", (q) =>
+          q.eq("publicationId", pub._id).eq("revision", live),
+        )
+        .take(entryLimit + 1);
+      if (rows.length > entryLimit) entriesTruncated = true;
+      for (const row of rows.slice(0, entryLimit)) {
+        if (row.kind === "gift") gifts.push(toPublicGift(row));
+        else entries.push(toPublicEntry(row));
+      }
+    } else if (current.entryCount > 0) {
+      entriesTruncated = true;
+    }
+
+    const bookLabel =
+      pub.scope === CENTRAL
+        ? "Central"
+        : ((await ctx.db.get(pub.scope))?.name ?? "Chapter");
+    books.push({
+      bookLabel,
+      periodKey: pub.periodKey,
+      label: periodLabel(pub.periodKey),
+      revision: live,
+      publishedAt: current.publishedAt,
+      // Revision 1 is not an amendment — it is the original statement, and
+      // listing it in the amendment log would read as a correction of
+      // something that never existed.
+      amendments: revisions
+        .filter((r) => r.revision > 1)
+        .sort((a, b) => b.revision - a.revision)
+        .map((r) => ({
+          revision: r.revision,
+          publishedAt: r.publishedAt,
+          reason: r.amendmentReason ?? null,
+          note: r.note ?? null,
+        })),
+    });
+  }
+
+  entries.sort((a, b) => a.occurredAt - b.occurredAt);
+  gifts.sort((a, b) => a.occurredAt - b.occurredAt);
+  const sortRows = (m: Map<string, { cents: number; count: number }>) =>
+    [...m.entries()]
+      .map(([label, b]) => ({ label, cents: b.cents, count: b.count }))
+      .sort((a, b) => b.cents - a.cents);
+
+  return {
+    incomeCents,
+    expenseCents,
+    netCents: incomeCents - expenseCents,
+    incomeByStream: INCOME_STREAMS.map((stream) => ({
+      stream,
+      cents: incomeByStream.get(stream)?.cents ?? 0,
+      count: incomeByStream.get(stream)?.count ?? 0,
+    })).filter((r) => r.count > 0),
+    expenseByCategory: sortRows(expenseByCategory),
+    expenseByProject: sortRows(expenseByProject),
+    spendByBudget: [...byBudget.entries()]
+      .map(([label, b]) => ({ label, ...b }))
+      .sort((a, b) => b.spentCents - a.spentCents),
+    reconstructedCount,
+    reconstructedCents,
+    undocumentedCount,
+    undocumentedCents,
+    uncodedCount,
+    uncodedCents,
+    entryCount,
+    giftCount,
+    giverCount: giverKeys.size,
+    backerCount: backerKeys.size,
+    entriesTruncated,
+    books: books.sort(
+      (a, b) =>
+        a.periodKey.localeCompare(b.periodKey) ||
+        a.bookLabel.localeCompare(b.bookLabel),
+    ),
+    entries,
+    gifts,
+  };
+}
+
+/**
+ * THE PUBLIC STATEMENT — one month, every published book, merged.
+ *
+ * Returns `null` when nothing is published for the month, which the page
+ * renders as an honest "not published yet" rather than as zeros.
+ */
 export const publicStatement = query({
   args: { periodKey: v.string(), entryLimit: v.optional(v.number()) },
   returns: v.union(
@@ -734,50 +1050,7 @@ export const publicStatement = query({
     v.object({
       periodKey: v.string(),
       label: v.string(),
-      incomeCents: v.number(),
-      expenseCents: v.number(),
-      netCents: v.number(),
-      incomeByStream: v.array(
-        v.object({
-          stream: v.union(...INCOME_STREAMS.map((s) => v.literal(s))),
-          cents: v.number(),
-          count: v.number(),
-        }),
-      ),
-      expenseByCategory: v.array(
-        v.object({ label: v.string(), cents: v.number(), count: v.number() }),
-      ),
-      expenseByProject: v.array(
-        v.object({ label: v.string(), cents: v.number(), count: v.number() }),
-      ),
-      reconstructedCount: v.number(),
-      reconstructedCents: v.number(),
-      undocumentedCount: v.number(),
-      undocumentedCents: v.number(),
-      uncodedCount: v.number(),
-      uncodedCents: v.number(),
-      entryCount: v.number(),
-      giftCount: v.number(),
-      /** True when the response carries fewer lines than the month has —
-       *  the page says so and points at the CSV. */
-      entriesTruncated: v.boolean(),
-      books: v.array(
-        v.object({
-          bookLabel: v.string(),
-          revision: v.number(),
-          publishedAt: v.number(),
-          amendments: v.array(
-            v.object({
-              revision: v.number(),
-              publishedAt: v.number(),
-              reason: v.union(v.string(), v.null()),
-              note: v.union(v.string(), v.null()),
-            }),
-          ),
-        }),
-      ),
-      entries: v.array(publicEntry),
-      gifts: v.array(publicGift),
+      ...statementShape,
     }),
   ),
   handler: async (ctx, args) => {
@@ -790,144 +1063,97 @@ export const publicStatement = query({
     ).filter((p) => p.isLive && p.liveRevision != null);
     if (pubs.length === 0) return null;
 
-    const limit = Math.max(1, Math.min(args.entryLimit ?? PUBLIC_PAGE_ENTRY_LIMIT, 5000));
+    const merged = await mergeLive(ctx, pubs, {
+      entryLimit: Math.max(
+        1,
+        Math.min(args.entryLimit ?? PUBLIC_PAGE_ENTRY_LIMIT, 5000),
+      ),
+    });
+    if (merged.books.length === 0) return null;
+    return { periodKey: args.periodKey, label: periodLabel(args.periodKey), ...merged };
+  },
+});
 
-    let incomeCents = 0;
-    let expenseCents = 0;
-    let reconstructedCount = 0;
-    let reconstructedCents = 0;
-    let undocumentedCount = 0;
-    let undocumentedCents = 0;
-    let uncodedCount = 0;
-    let uncodedCents = 0;
-    let entryCount = 0;
-    let giftCount = 0;
-    const incomeByStream = new Map<string, { cents: number; count: number }>();
-    const expenseByCategory = new Map<string, { cents: number; count: number }>();
-    const expenseByProject = new Map<string, { cents: number; count: number }>();
-    const books: {
-      bookLabel: string;
-      revision: number;
-      publishedAt: number;
-      amendments: {
-        revision: number;
-        publishedAt: number;
-        reason: string | null;
-        note: string | null;
-      }[];
-    }[] = [];
-    const entries: ReturnType<typeof toPublicEntry>[] = [];
-    const gifts: ReturnType<typeof toPublicGift>[] = [];
-    let entriesTruncated = false;
-
-    for (const pub of pubs) {
-      const live = pub.liveRevision!;
-      const revisions = await ctx.db
-        .query("financePublicationRevisions")
-        .withIndex("by_publication", (q) => q.eq("publicationId", pub._id))
-        .take(200);
-      const current = revisions.find((r) => r.revision === live);
-      if (!current) continue;
-
-      incomeCents += current.incomeCents;
-      expenseCents += current.expenseCents;
-      reconstructedCount += current.reconstructedCount;
-      reconstructedCents += current.reconstructedCents;
-      undocumentedCount += current.undocumentedCount;
-      undocumentedCents += current.undocumentedCents;
-      uncodedCount += current.uncodedCount;
-      uncodedCents += current.uncodedCents;
-      entryCount += current.entryCount;
-      giftCount += current.giftCount;
-      for (const r of current.incomeByStream) {
-        const b = incomeByStream.get(r.stream) ?? { cents: 0, count: 0 };
-        b.cents += r.cents;
-        b.count += r.count;
-        incomeByStream.set(r.stream, b);
-      }
-      for (const r of current.expenseByCategory) {
-        const b = expenseByCategory.get(r.label) ?? { cents: 0, count: 0 };
-        b.cents += r.cents;
-        b.count += r.count;
-        expenseByCategory.set(r.label, b);
-      }
-      for (const r of current.expenseByProject) {
-        const b = expenseByProject.get(r.label) ?? { cents: 0, count: 0 };
-        b.cents += r.cents;
-        b.count += r.count;
-        expenseByProject.set(r.label, b);
-      }
-
-      const rows = await ctx.db
-        .query("financePublicationEntries")
-        .withIndex("by_revision", (q) =>
-          q.eq("publicationId", pub._id).eq("revision", live),
-        )
-        .take(limit + 1);
-      if (rows.length > limit) entriesTruncated = true;
-      for (const row of rows.slice(0, limit)) {
-        if (row.kind === "gift") gifts.push(toPublicGift(row));
-        else entries.push(toPublicEntry(row));
-      }
-
-      const bookLabel =
-        pub.scope === CENTRAL
-          ? "Central"
-          : ((await ctx.db.get(pub.scope))?.name ?? "Chapter");
-      books.push({
-        bookLabel,
-        revision: live,
-        publishedAt: current.publishedAt,
-        // Revision 1 is not an amendment — it is the original statement, and
-        // listing it in the amendment log would read as a correction of
-        // something that never existed.
-        amendments: revisions
-          .filter((r) => r.revision > 1)
-          .sort((a, b) => b.revision - a.revision)
-          .map((r) => ({
-            revision: r.revision,
-            publishedAt: r.publishedAt,
-            reason: r.amendmentReason ?? null,
-            note: r.note ?? null,
-          })),
+/**
+ * THE YEAR ROLLUP — every published month of one year, added together.
+ *
+ * A year is NOT its own publication and never becomes one. It is the months
+ * that have been published, summed, and the response says exactly which those
+ * were (`books`) so a partial year can never read as a whole one. Nothing
+ * here can report a figure the months behind it don't support.
+ *
+ * ── WHY THE LINES ARE NOT INCLUDED BY DEFAULT ────────────────────────────────
+ * A year is thousands of rows. Rendering them into one server-rendered page
+ * would make the most-shared URL on the site the slowest, for a table nobody
+ * scrolls to the bottom of. So the rollup is summary-level — the big numbers,
+ * where it came from, where it went, budgets — and the lines stay one click
+ * away in each month, or in the year CSV, which is complete. `entryLimit`
+ * exists for that CSV.
+ */
+export const publicYearStatement = query({
+  args: { year: v.string(), entryLimit: v.optional(v.number()) },
+  returns: v.union(
+    v.null(),
+    v.object({
+      year: v.string(),
+      label: v.string(),
+      /** The `YYYY-MM` keys that contributed, oldest first — what the page
+       *  lists so "8 of 12 months" is visible rather than inferred. */
+      months: v.array(v.string()),
+      ...statementShape,
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const year = parseYearKey(args.year);
+    if (year == null) {
+      throw new ConvexError({
+        code: "BAD_PERIOD",
+        message: `"${args.year}" is not a year. Expected YYYY, e.g. 2026.`,
       });
     }
+    const pubs: Doc<"financePublications">[] = [];
+    for (const key of monthsOfYear(year)) {
+      const rows = await ctx.db
+        .query("financePublications")
+        .withIndex("by_period", (q) => q.eq("periodKey", key))
+        .take(ROLLUP_SCAN_LIMIT);
+      pubs.push(...rows.filter((p) => p.isLive && p.liveRevision != null));
+    }
+    if (pubs.length === 0) return null;
 
-    if (books.length === 0) return null;
-
-    entries.sort((a, b) => a.occurredAt - b.occurredAt);
-    gifts.sort((a, b) => a.occurredAt - b.occurredAt);
-    const sortRows = (m: Map<string, { cents: number; count: number }>) =>
-      [...m.entries()]
-        .map(([label, b]) => ({ label, cents: b.cents, count: b.count }))
-        .sort((a, b) => b.cents - a.cents);
-
+    const merged = await mergeLive(ctx, pubs, {
+      entryLimit: Math.max(0, Math.min(args.entryLimit ?? 0, 20_000)),
+    });
+    if (merged.books.length === 0) return null;
     return {
-      periodKey: args.periodKey,
-      label: periodLabel(args.periodKey),
-      incomeCents,
-      expenseCents,
-      netCents: incomeCents - expenseCents,
-      incomeByStream: INCOME_STREAMS.map((stream) => ({
-        stream,
-        cents: incomeByStream.get(stream)?.cents ?? 0,
-        count: incomeByStream.get(stream)?.count ?? 0,
-      })).filter((r) => r.count > 0),
-      expenseByCategory: sortRows(expenseByCategory),
-      expenseByProject: sortRows(expenseByProject),
-      reconstructedCount,
-      reconstructedCents,
-      undocumentedCount,
-      undocumentedCents,
-      uncodedCount,
-      uncodedCents,
-      entryCount,
-      giftCount,
-      entriesTruncated,
-      books: books.sort((a, b) => a.bookLabel.localeCompare(b.bookLabel)),
-      entries,
-      gifts,
+      year: args.year,
+      label: String(year),
+      months: [...new Set(merged.books.map((b) => b.periodKey))].sort(),
+      ...merged,
     };
+  },
+});
+
+/** Which YEARS have at least one published month, newest first. Drives the
+ *  year dropdown. */
+export const publishedYears = query({
+  args: {},
+  returns: v.array(v.object({ year: v.string(), monthCount: v.number() })),
+  handler: async (ctx) => {
+    const rows = await ctx.db
+      .query("financePublications")
+      .withIndex("by_live_and_period", (q) => q.eq("isLive", true))
+      .take(ROLLUP_SCAN_LIMIT);
+    const byYear = new Map<string, Set<string>>();
+    for (const row of rows) {
+      const year = row.periodKey.slice(0, 4);
+      const set = byYear.get(year) ?? new Set<string>();
+      set.add(row.periodKey);
+      byYear.set(year, set);
+    }
+    return [...byYear.entries()]
+      .map(([year, months]) => ({ year, monthCount: months.size }))
+      .sort((a, b) => b.year.localeCompare(a.year));
   },
 });
 

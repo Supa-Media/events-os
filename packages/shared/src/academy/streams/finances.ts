@@ -1505,6 +1505,15 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "**Corrections are the feature, not the embarrassment.** A published month can never be taken down — only amended. You start a correction, say what changed and why, and it publishes as revision 2 with the earlier version still readable beside it. An organization that shows its corrections is more believable than one that has never appeared to make any.",
       },
       {
+        kind: "p",
+        text: "The page also rolls a whole YEAR up — pick a year and \"All months\" — and that rollup is nothing but the published months added together. It is never published on its own, it never fills in a month nobody closed, and it says on its face how many of the twelve it is built from. So the fastest way to make the year look complete is to close the months.",
+      },
+      {
+        kind: "rule",
+        title: "Budgets publish too",
+        text: "Every budget money came out of appears with what it was allowed and what it actually used — including the ones that went over, which are the rows people read first. Two consequences worth planning around: spend with no budget attached publishes as **\"Not attached to a budget\"** rather than being hidden, and a budget's name is public the moment its first charge is. Name budgets like a stranger will read them, because one will.",
+      },
+      {
         kind: "reveal",
         prompt:
           "You publish August. In September you notice a Costco charge was entered as $47.83 when the receipt says $52.10. What do you do?",
@@ -1557,6 +1566,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 2,
         explanation:
           "Publishing is a separate seat power from reconciling, because its audience is outside the org and a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book — notably not the Treasurer, who prepares it.",
+      },
+      {
+        prompt:
+          "The 2026 year view shows $1.4M raised. Four months of 2026 haven't been closed. What is the page showing?",
+        options: [
+          "An estimate for the whole year, projected from the eight closed months",
+          "Only the eight published months, added together — and it says so on the page",
+          "The whole year, because the year is published separately from the months",
+          "Nothing — a year needs all twelve months before it appears",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A year is never published on its own; it is the months added up. It never estimates or fills in a month nobody closed, and it states how many of the twelve it covers — so the way to make the year complete is to close the months.",
       },
       {
         prompt:

@@ -40,9 +40,22 @@ h1.title{font-size:clamp(34px,5.6vw,54px);line-height:1.06;font-weight:700;lette
 .monthchip:hover{background:var(--accent-soft);color:var(--accent)}
 .monthchip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 
+/* ── Period picker (year + month dropdowns) ── */
+.picker{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin-top:20px}
+.pickerlabel{font-size:11.5px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
+.picker select{background:var(--raised);border:1px solid var(--border);border-radius:999px;
+  padding:9px 16px;font-family:inherit;font-size:14.5px;font-weight:600;color:var(--ink);box-shadow:var(--shadow)}
+.picker select:hover{border-color:var(--border-strong)}
+.picker select option:disabled{color:var(--faint)}
+.pickerbtn{background:var(--accent);border-radius:999px;padding:9px 20px;
+  font-size:14px;font-weight:700;color:#fff;box-shadow:var(--shadow)}
+.pickerbtn:hover{background:var(--accent-hover)}
+
 /* ── Stat row ── */
-.stats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:22px}
-@media(max-width:760px){.stats{grid-template-columns:1fr}}
+.stats{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:22px}
+.stats.four{grid-template-columns:repeat(4,minmax(0,1fr))}
+@media(max-width:900px){.stats.four{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:560px){.stats,.stats.four{grid-template-columns:1fr}}
 .stat{background:var(--raised);border:1px solid var(--border);border-radius:16px;padding:18px 20px;box-shadow:var(--shadow)}
 .stat .k{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;color:var(--faint)}
 .stat .v{font-size:clamp(26px,3.4vw,34px);font-weight:700;letter-spacing:-.02em;margin-top:6px;font-variant-numeric:tabular-nums}
@@ -50,6 +63,7 @@ h1.title{font-size:clamp(34px,5.6vw,54px);line-height:1.06;font-weight:700;lette
 .stat.in .v{color:var(--success)}
 .stat.out .v{color:var(--accent)}
 .stat.net .v{color:var(--ink)}
+.stat.people .v{color:var(--ink)}
 
 /* ── Sections ── */
 section{margin-top:44px}
@@ -67,6 +81,14 @@ h2.sectionhead{font-size:clamp(22px,3vw,28px);font-weight:700;letter-spacing:-.0
 .bartrack{height:7px;border-radius:999px;background:var(--sunken);overflow:hidden;margin-top:8px}
 .barfill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-hover))}
 .barfill.inflow{background:linear-gradient(90deg,var(--success),#1F5C41)}
+/* An over-budget line is the most interesting row in the table; it gets its
+   own treatment rather than a bar that silently pins at 100%. */
+.barfill.over{background:repeating-linear-gradient(45deg,var(--accent),var(--accent) 6px,var(--accent-hover) 6px,var(--accent-hover) 12px)}
+.budgetrow{padding:12px 0;border-bottom:1px solid var(--border)}
+.budgetrow:last-child{border-bottom:0}
+.ofplan{font-weight:500;color:var(--faint)}
+.barpct{font-size:12.5px;color:var(--muted);margin-top:5px;font-weight:600}
+.barpct.over{color:var(--accent)}
 .barblurb{font-size:13px;color:var(--muted);margin-top:6px;max-width:70ch}
 .tabs{display:flex;gap:8px;margin-bottom:12px}
 .tabs button{background:var(--raised);border:1px solid var(--border);border-radius:999px;padding:6px 14px;
@@ -114,6 +136,11 @@ td.purpose{color:var(--muted);min-width:260px}
 .note{background:var(--raised);border:1px solid var(--border);border-left:3px solid var(--accent);
   border-radius:12px;padding:14px 18px;margin-top:16px;font-size:14.5px;color:var(--muted);box-shadow:var(--shadow)}
 .note strong{color:var(--ink)}
+.note.missing{border-left-color:var(--success);margin-top:14px}
+.misslist{margin:10px 0 0;padding-left:20px}
+.misslist li{margin-bottom:6px;max-width:72ch}
+.misslist strong{color:var(--ink)}
+.missfoot{margin-top:12px;max-width:72ch}
 .notegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:16px}
 details.faq{background:var(--raised);border:1px solid var(--border);border-radius:12px;padding:14px 18px;
   margin-top:10px;box-shadow:var(--shadow)}
@@ -195,6 +222,24 @@ export const LEDGER_SCRIPT = `
   }
   [q,dir,doc].forEach(function(el){if(el)el.addEventListener('input',apply)});
   apply();
+  // The period picker auto-submits on change so it feels immediate. The form
+  // still works — and the View button still shows — without any of this, which
+  // is the whole reason it is a real GET form and not a JS navigation.
+  var picker=document.querySelector('form.picker');
+  if(picker){
+    [].slice.call(picker.querySelectorAll('select')).forEach(function(sel){
+      sel.addEventListener('change',function(){
+        // Changing the YEAR invalidates the chosen month (it may not be
+        // published in the new year), so fall back to the year rollup rather
+        // than submitting a month that 404s.
+        if(sel.name==='year'){
+          var m=picker.querySelector('select[name=month]');
+          if(m)m.value='';
+        }
+        picker.submit();
+      });
+    });
+  }
   // The breakdown toggle: by category vs by what it was for.
   var tabs=[].slice.call(document.querySelectorAll('[data-tab]'));
   tabs.forEach(function(btn){

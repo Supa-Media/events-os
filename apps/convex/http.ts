@@ -56,6 +56,7 @@ import {
   LEDGER_PATH,
   renderLedgerEmpty,
   renderLedgerPage,
+  renderLedgerYearPage,
 } from "./lib/publicLedgerPage";
 import { givingCsv, ledgerCsv } from "./lib/publicLedgerCsv";
 import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions";
@@ -354,11 +355,15 @@ http.route({
 
 const LEDGER_CACHE = "public, max-age=60";
 
-/** The published months, newest first. Every ledger route needs them (the
- *  month picker, and the "which month is latest" redirect), so they are read
- *  through one helper rather than four copies of the same query call. */
-async function publishedMonths(ctx: ActionCtx) {
-  return ctx.runQuery(api.publicLedger.publishedMonths, {});
+/** The published months and years, which every ledger route needs (the two
+ *  dropdowns, and the "which month is latest" redirect). Read through one
+ *  helper rather than four copies of the same pair of query calls. */
+async function ledgerPeriods(ctx: ActionCtx) {
+  const [months, years] = await Promise.all([
+    ctx.runQuery(api.publicLedger.publishedMonths, {}),
+    ctx.runQuery(api.publicLedger.publishedYears, {}),
+  ]);
+  return { months, years };
 }
 
 function csv(body: string, filename: string): Response {
@@ -372,83 +377,140 @@ function csv(body: string, filename: string): Response {
   });
 }
 
+function ledgerHtml(body: string, status = 200): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": LEDGER_CACHE,
+    },
+  });
+}
+
+function redirectTo(path: string): Response {
+  return new Response(null, {
+    status: 302,
+    headers: { Location: path, "Cache-Control": LEDGER_CACHE },
+  });
+}
+
+/**
+ * `/finances` — the entry point, and the target of the period picker's form.
+ *
+ * With `?year=&month=` (what the picker submits) it redirects to the canonical
+ * path, so the URL a reader ends up on and shares always names the period
+ * rather than carrying a query string that means something different next
+ * year. With nothing, it redirects to the newest published month.
+ *
+ * The picker is a plain GET form precisely so this route exists — it is what
+ * makes the dropdowns work with JavaScript disabled.
+ */
 http.route({
   path: `/${LEDGER_PATH}`,
   method: "GET",
-  handler: httpAction(async (ctx) => {
-    const months = await publishedMonths(ctx);
-    if (months.length === 0) return html(renderLedgerEmpty(months));
-    return new Response(null, {
-      status: 302,
-      headers: {
-        Location: `/${LEDGER_PATH}/${months[0].periodKey}`,
-        "Cache-Control": LEDGER_CACHE,
-      },
-    });
+  handler: httpAction(async (ctx, req) => {
+    const params = new URL(req.url).searchParams;
+    const year = params.get("year");
+    const month = params.get("month");
+    if (year && /^\d{4}$/.test(year)) {
+      // A month of "" is the picker's "All months" — the year rollup.
+      const target =
+        month && /^(0[1-9]|1[0-2])$/.test(month)
+          ? `/${LEDGER_PATH}/${year}-${month}`
+          : `/${LEDGER_PATH}/${year}`;
+      return redirectTo(target);
+    }
+    const { months, years } = await ledgerPeriods(ctx);
+    if (months.length === 0) return ledgerHtml(renderLedgerEmpty(months, years));
+    return redirectTo(`/${LEDGER_PATH}/${months[0].periodKey}`);
   }),
 });
 
+/**
+ * `/finances/<YYYY-MM>` (a month), `/finances/<YYYY>` (the year rollup), and
+ * the `.csv` of either. One prefix route because they share the same 404
+ * page, the same period parsing, and the same "is anything published?" answer.
+ */
 http.route({
   pathPrefix: `/${LEDGER_PATH}/`,
   method: "GET",
   handler: httpAction(async (ctx, req) => {
     const url = new URL(req.url);
-    // ["finances", "2026-08"] | ["finances", "2026-08.csv"]
+    // ["finances", "2026-08"] | ["finances", "2026"] | ["finances", "2026.csv"]
     //                         | ["finances", "2026-08", "giving.csv"]
     const segments = url.pathname.split("/").filter(Boolean);
     const raw = decodeURIComponent(segments[1] ?? "");
     const sub = segments[2];
-    if (!raw || segments.length > 3) {
-      return html(renderLedgerEmpty(await publishedMonths(ctx)), 404);
-    }
+    const notFound = async (requested?: string) => {
+      const { months, years } = await ledgerPeriods(ctx);
+      return ledgerHtml(renderLedgerEmpty(months, years, requested), 404);
+    };
+    if (!raw || segments.length > 3) return notFound();
 
-    const wantsLedgerCsv = raw.endsWith(".csv");
-    const periodKey = wantsLedgerCsv ? raw.slice(0, -".csv".length) : raw;
+    const wantsCsv = raw.endsWith(".csv");
+    const key = wantsCsv ? raw.slice(0, -".csv".length) : raw;
     const wantsGivingCsv = sub === "giving.csv";
-    if (sub != null && !wantsGivingCsv) {
-      return html(renderLedgerEmpty(await publishedMonths(ctx)), 404);
-    }
-    // A malformed month reaches the query, which rejects it — catching here
-    // keeps a typo'd URL a 404 page instead of a 500.
-    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodKey)) {
-      return html(renderLedgerEmpty(await publishedMonths(ctx)), 404);
-    }
+    if (sub != null && !wantsGivingCsv) return notFound();
 
-    // The CSV is the COMPLETE month (see lib/publicLedgerCsv.ts) — the page's
-    // row cap exists so a shared link paints fast, and must not silently
-    // become the cap on the download somebody audits us with.
-    const statement = await ctx.runQuery(api.publicLedger.publicStatement, {
-      periodKey,
-      ...(wantsLedgerCsv || wantsGivingCsv ? { entryLimit: 5000 } : {}),
-    });
+    const isMonth = /^\d{4}-(0[1-9]|1[0-2])$/.test(key);
+    const isYear = /^\d{4}$/.test(key);
+    // A malformed period reaches the query, which rejects it — catching it
+    // here keeps a typo'd URL a 404 page instead of a 500.
+    if (!isMonth && !isYear) return notFound();
+    // There is no year-level giving roll: the giving CSV is per month, where
+    // its rows are small enough to be worth reading one at a time.
+    if (wantsGivingCsv && !isMonth) return notFound();
 
-    if (!statement) {
-      if (wantsLedgerCsv || wantsGivingCsv) {
-        return new Response("Not found", { status: 404 });
+    // ── The year rollup ─────────────────────────────────────────────────────
+    if (isYear) {
+      // The CSV is the COMPLETE year (see lib/publicLedgerCsv.ts); the page is
+      // summary-level by design and carries no lines at all.
+      const statement = await ctx.runQuery(api.publicLedger.publicYearStatement, {
+        year: key,
+        ...(wantsCsv ? { entryLimit: 20_000 } : {}),
+      });
+      if (!statement) {
+        return wantsCsv
+          ? new Response("Not found", { status: 404 })
+          : notFound(key);
       }
-      return html(renderLedgerEmpty(await publishedMonths(ctx), periodKey), 404);
-    }
-    if (wantsGivingCsv) {
-      return csv(givingCsv(statement.gifts), `public-worship-giving-${periodKey}.csv`);
-    }
-    if (wantsLedgerCsv) {
-      return csv(
-        ledgerCsv(statement.entries),
-        `public-worship-ledger-${periodKey}.csv`,
+      if (wantsCsv) {
+        return csv(
+          ledgerCsv(statement.entries),
+          `public-worship-ledger-${key}.csv`,
+        );
+      }
+      const [{ months, years }, totalBooks] = await Promise.all([
+        ledgerPeriods(ctx),
+        ctx.runQuery(api.publicLedger.publicBookCount, {}),
+      ]);
+      return ledgerHtml(
+        renderLedgerYearPage(statement, months, years, totalBooks),
       );
     }
 
-    const [months, totalBooks] = await Promise.all([
-      publishedMonths(ctx),
+    // ── One month ───────────────────────────────────────────────────────────
+    const statement = await ctx.runQuery(api.publicLedger.publicStatement, {
+      periodKey: key,
+      ...(wantsCsv || wantsGivingCsv ? { entryLimit: 5000 } : {}),
+    });
+    if (!statement) {
+      return wantsCsv || wantsGivingCsv
+        ? new Response("Not found", { status: 404 })
+        : notFound(key);
+    }
+    if (wantsGivingCsv) {
+      return csv(givingCsv(statement.gifts), `public-worship-giving-${key}.csv`);
+    }
+    if (wantsCsv) {
+      return csv(ledgerCsv(statement.entries), `public-worship-ledger-${key}.csv`);
+    }
+
+    const [{ months, years }, totalBooks] = await Promise.all([
+      ledgerPeriods(ctx),
       ctx.runQuery(api.publicLedger.publicBookCount, {}),
     ]);
-    return new Response(renderLedgerPage(statement, months, totalBooks), {
-      status: 200,
-      headers: {
-        "Content-Type": "text/html; charset=utf-8",
-        "Cache-Control": LEDGER_CACHE,
-      },
-    });
+    return ledgerHtml(renderLedgerPage(statement, months, years, totalBooks));
   }),
 });
 

@@ -118,6 +118,7 @@ import {
   financePublications,
   financePublicationRevisions,
   financePublicationEntries,
+  financePublicationGiverKeys,
 } from "./schema/publicLedger";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
@@ -494,6 +495,10 @@ const schema = defineSchema({
   financePublications,
   financePublicationRevisions,
   financePublicationEntries,
+  // INTERNAL ONLY — never served to an anonymous caller. Distinct giver
+  // identities per published revision, so a YEAR can report how many people
+  // gave without adding twelve monthly counts together. See its doc comment.
+  financePublicationGiverKeys,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see

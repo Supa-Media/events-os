@@ -643,3 +643,341 @@ describe("published months", () => {
     expect(months.map((m) => m.periodKey)).toEqual(["2026-09", AUG_KEY]);
   });
 });
+
+// ── The year rollup, budgets, and the people numbers ─────────────────────────
+
+/** Insert a gift from a named donor. `identityKey` groups two donor rows into
+ *  one person the way `donorIdentities` does in production, which is what the
+ *  distinct-giver count has to respect. */
+async function insertGift(
+  s: ChapterSetup,
+  opts: {
+    donorName: string;
+    amountCents: number;
+    receivedAt: number;
+    recurring?: boolean;
+    identityId?: Id<"donorIdentities">;
+  },
+): Promise<void> {
+  await run(s.t, async (ctx) => {
+    const donorId = await ctx.db.insert("donors", {
+      scope: s.chapterId,
+      kind: "individual",
+      name: opts.donorName,
+      status: "active",
+      lifetimeCents: opts.amountCents,
+      giftCount: 1,
+      identityId: opts.identityId,
+      createdAt: Date.now(),
+    });
+    const pledgeId = opts.recurring
+      ? await ctx.db.insert("pledges", {
+          donorId,
+          scope: s.chapterId,
+          amountCents: opts.amountCents,
+          status: "active",
+          origin: "stripe",
+          createdAt: Date.now(),
+        })
+      : undefined;
+    await ctx.db.insert("gifts", {
+      donorId,
+      scope: s.chapterId,
+      amountCents: opts.amountCents,
+      currency: "usd",
+      receivedAt: opts.receivedAt,
+      method: "stripe",
+      pledgeId,
+      createdAt: Date.now(),
+    });
+  });
+}
+
+const SEP_KEY = "2026-09";
+
+describe("givers and backers are distinct PEOPLE", () => {
+  test("one person giving four times is one giver, not four", async () => {
+    const s = await asPublisher();
+    const identityId = await run(s.t, (ctx) =>
+      ctx.db.insert("donorIdentities", {
+        key: "e:one@example.com",
+        email: "one@example.com",
+        name: "Weekly Giver",
+        lifetimeCents: 0,
+        giftCount: 0,
+        scopes: [s.chapterId],
+        createdAt: Date.now(),
+      }),
+    );
+    // The same human, four donor rows, four gifts — the shape a weekly giver
+    // produces, and the shape that inflates a headline number if you count
+    // gifts and call them givers.
+    for (const day of [2, 9, 16, 23]) {
+      await insertGift(s, {
+        donorName: "Weekly Giver",
+        amountCents: 2500,
+        receivedAt: Date.UTC(2026, 7, day, 16),
+        identityId,
+      });
+    }
+    await insertGift(s, {
+      donorName: "Someone Else",
+      amountCents: 10_000,
+      receivedAt: AUG_2026,
+    });
+    await publishMonth(s);
+
+    const statement = (await statementOf(s))!;
+    expect(statement.giftCount).toBe(5);
+    expect(statement.giverCount).toBe(2);
+  });
+
+  test("a giver on a recurring pledge counts as a backer, once", async () => {
+    const s = await asPublisher();
+    const identityId = await run(s.t, (ctx) =>
+      ctx.db.insert("donorIdentities", {
+        key: "e:backer@example.com",
+        email: "backer@example.com",
+        name: "Monthly Backer",
+        lifetimeCents: 0,
+        giftCount: 0,
+        scopes: [s.chapterId],
+        createdAt: Date.now(),
+      }),
+    );
+    // A monthly pledge AND a one-off from the same person: one giver, one
+    // backer — not two of either.
+    await insertGift(s, {
+      donorName: "Monthly Backer",
+      amountCents: 5000,
+      receivedAt: AUG_2026,
+      recurring: true,
+      identityId,
+    });
+    await insertGift(s, {
+      donorName: "Monthly Backer",
+      amountCents: 2000,
+      receivedAt: Date.UTC(2026, 7, 20, 16),
+      identityId,
+    });
+    await insertGift(s, {
+      donorName: "One Off",
+      amountCents: 1000,
+      receivedAt: AUG_2026,
+    });
+    await publishMonth(s);
+
+    const statement = (await statementOf(s))!;
+    expect(statement.giverCount).toBe(2);
+    expect(statement.backerCount).toBe(1);
+  });
+
+  test("giver identities are never returned to a public caller", async () => {
+    const s = await asPublisher();
+    await insertGift(s, {
+      donorName: "Private Person",
+      amountCents: 5000,
+      receivedAt: AUG_2026,
+    });
+    await publishMonth(s);
+    // The keys table exists and holds an identity — and no public payload
+    // anywhere carries it.
+    const keys = await run(s.t, (ctx) =>
+      ctx.db.query("financePublicationGiverKeys").collect(),
+    );
+    expect(keys).toHaveLength(1);
+    const statement = (await statementOf(s))!;
+    expect(JSON.stringify(statement)).not.toContain(keys[0].key);
+    expect(JSON.stringify(statement)).not.toContain("Private Person");
+  });
+});
+
+describe("the year rollup", () => {
+  test("adds the published months and says which they were", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, { amountCents: 1000, postedAt: AUG_2026 });
+    await insertTxn(s, { amountCents: 2500, postedAt: SEP_2026 });
+    await publishMonth(s, AUG_KEY);
+    await publishMonth(s, SEP_KEY);
+
+    const year = await s.as.query(api.publicLedger.publicYearStatement, {
+      year: "2026",
+    });
+    expect(year).not.toBeNull();
+    expect(year!.expenseCents).toBe(3500);
+    // A year missing ten months must never read like a whole one.
+    expect(year!.months).toEqual([AUG_KEY, SEP_KEY]);
+  });
+
+  test("distinct givers are UNIONED across months, never summed", async () => {
+    const s = await asPublisher();
+    const identityId = await run(s.t, (ctx) =>
+      ctx.db.insert("donorIdentities", {
+        key: "e:faithful@example.com",
+        email: "faithful@example.com",
+        name: "Faithful",
+        lifetimeCents: 0,
+        giftCount: 0,
+        scopes: [s.chapterId],
+        createdAt: Date.now(),
+      }),
+    );
+    // Same person gives in both months; a second person gives in one.
+    await insertGift(s, {
+      donorName: "Faithful",
+      amountCents: 5000,
+      receivedAt: AUG_2026,
+      identityId,
+    });
+    await insertGift(s, {
+      donorName: "Faithful",
+      amountCents: 5000,
+      receivedAt: SEP_2026,
+      identityId,
+    });
+    await insertGift(s, {
+      donorName: "August Only",
+      amountCents: 1000,
+      receivedAt: AUG_2026,
+    });
+    await publishMonth(s, AUG_KEY);
+    await publishMonth(s, SEP_KEY);
+
+    const aug = (await statementOf(s, AUG_KEY))!;
+    const sep = (await statementOf(s, SEP_KEY))!;
+    expect(aug.giverCount).toBe(2);
+    expect(sep.giverCount).toBe(1);
+
+    const year = await s.as.query(api.publicLedger.publicYearStatement, {
+      year: "2026",
+    });
+    // Adding the monthly counts would say 3. There are 2 people.
+    expect(year!.giverCount).toBe(2);
+  });
+
+  test("carries no lines by default, and says so", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, { amountCents: 1000, postedAt: AUG_2026 });
+    await publishMonth(s, AUG_KEY);
+
+    const year = (await s.as.query(api.publicLedger.publicYearStatement, {
+      year: "2026",
+    }))!;
+    // A year is thousands of rows; the page is summary-level and points at
+    // the months and the CSV rather than rendering them.
+    expect(year.entries).toHaveLength(0);
+    expect(year.entriesTruncated).toBe(true);
+    expect(year.entryCount).toBe(1);
+
+    // ...and the CSV path asks for them explicitly.
+    const forCsv = (await s.as.query(api.publicLedger.publicYearStatement, {
+      year: "2026",
+      entryLimit: 5000,
+    }))!;
+    expect(forCsv.entries).toHaveLength(1);
+    expect(forCsv.entriesTruncated).toBe(false);
+  });
+
+  test("an unpublished year reads as null, and a malformed one is refused", async () => {
+    const s = await asPublisher();
+    expect(
+      await s.as.query(api.publicLedger.publicYearStatement, { year: "2019" }),
+    ).toBeNull();
+    for (const bad of ["20260", "26", "twenty-twenty-six", "2026-08"]) {
+      await expect(
+        s.as.query(api.publicLedger.publicYearStatement, { year: bad }),
+      ).rejects.toThrow(ConvexError);
+    }
+  });
+
+  test("published years drive the dropdown, newest first", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, { postedAt: AUG_2026 });
+    await insertTxn(s, { postedAt: Date.UTC(2025, 4, 14, 16) });
+    await publishMonth(s, AUG_KEY);
+    await publishMonth(s, "2025-05");
+
+    expect(await s.as.query(api.publicLedger.publishedYears, {})).toEqual([
+      { year: "2026", monthCount: 1 },
+      { year: "2025", monthCount: 1 },
+    ]);
+  });
+});
+
+describe("spend against the plan", () => {
+  /** A budget with an approved cap — what the public page compares against. */
+  async function insertBudget(
+    s: ChapterSetup,
+    label: string,
+    amountCents: number,
+  ): Promise<Id<"budgets">> {
+    return run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents,
+        label,
+        type: "recurring",
+        cadence: "monthly",
+        year: 2026,
+        month: 8,
+        approvalStatus: "approved",
+        approvedCents: amountCents,
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("publishes what each budget was allowed and what it used", async () => {
+    const s = await asPublisher();
+    const budgetId = await insertBudget(s, "Production gear", 100_000);
+    const txnId = await insertTxn(s, { amountCents: 89_900 });
+    await run(s.t, (ctx) => ctx.db.patch(txnId, { budgetId }));
+    await publishMonth(s);
+
+    const statement = (await statementOf(s))!;
+    expect(statement.spendByBudget).toEqual([
+      {
+        label: "Production gear",
+        allocatedCents: 100_000,
+        spentCents: 89_900,
+        count: 1,
+      },
+    ]);
+  });
+
+  test("unbudgeted spend is published plainly, with no allocation", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, { amountCents: 6_500 });
+    await publishMonth(s);
+
+    const row = (await statementOf(s))!.spendByBudget[0];
+    // "We did not budget this" and "we budgeted $0 for this" are different
+    // statements; only the first is being made.
+    expect(row.label).toBe("Not attached to a budget");
+    expect(row.allocatedCents).toBeNull();
+    expect(row.spentCents).toBe(6_500);
+  });
+
+  test("a year sums spend per budget, and drops allocations it can't add", async () => {
+    const s = await asPublisher();
+    const budgetId = await insertBudget(s, "Production gear", 100_000);
+    const aug = await insertTxn(s, { amountCents: 40_000, postedAt: AUG_2026 });
+    await run(s.t, (ctx) => ctx.db.patch(aug, { budgetId }));
+    // September's charge hits the same budget by label but carries no budget
+    // link, so the year has one row with spend from both and NO allocation —
+    // adding a known cap to an unknown one would publish a wrong plan figure.
+    await insertTxn(s, { amountCents: 15_000, postedAt: SEP_2026 });
+    await publishMonth(s, AUG_KEY);
+    await publishMonth(s, SEP_KEY);
+
+    const year = (await s.as.query(api.publicLedger.publicYearStatement, {
+      year: "2026",
+    }))!;
+    const gear = year.spendByBudget.find((b) => b.label === "Production gear");
+    expect(gear).toMatchObject({ allocatedCents: 100_000, spentCents: 40_000 });
+    const unbudgeted = year.spendByBudget.find(
+      (b) => b.label === "Not attached to a budget",
+    );
+    expect(unbudgeted).toMatchObject({ allocatedCents: null, spentCents: 15_000 });
+  });
+});
