@@ -22,10 +22,12 @@ interface Env {
   // Static-assets binding, configured in wrangler.jsonc, pointing at the
   // Astro landing build (apps/landing/dist).
   ASSETS: Fetcher;
-  // Shared password for unpublished blog posts, set out-of-band with
-  // `wrangler secret put DRAFT_PASSWORD`. Optional on purpose: when it is
-  // missing the draft prefix fails CLOSED (see draftGate.ts), so a Worker
-  // deployed before the secret exists doesn't quietly publish drafts.
+  // Shared password for unpublished blog posts. Supplied today as a
+  // plaintext var in wrangler.jsonc (and therefore public — see that file
+  // and draftGate.ts); upgradeable to a real Worker secret without touching
+  // this code. Optional on purpose: when it is missing the draft prefix
+  // fails CLOSED (see draftGate.ts), so a Worker deployed with neither a var
+  // nor a secret doesn't quietly publish drafts.
   DRAFT_PASSWORD?: string;
 }
 
