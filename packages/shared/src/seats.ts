@@ -106,6 +106,27 @@ export const SEAT_CAPABILITIES = [
   "finance.accounts",
   "finance.approve",
   "finance.record",
+  /** Approve a month's statement and PUBLISH it to the public finances page
+   *  (`apps/convex/lib/publicLedgerAccess.ts`). Deliberately its own leaf
+   *  power that nothing else implies — not a rung of the finance ladder, and
+   *  not granted by `finance.manager`.
+   *
+   *  The reason is the audience. Every other finance power acts on the org's
+   *  own books, where a mistake is caught at the next close. This one puts a
+   *  number in front of the whole city, and a published number cannot be
+   *  un-seen — only amended in public. So "who may reconcile" and "who may
+   *  speak for the org's finances" are separated at the seat chart, exactly
+   *  as `campaigns.approve` separates "who may draft an email" from "who may
+   *  mail the list."
+   *
+   *  A CENTRAL-scope holder may publish any book; a chapter-scope holder may
+   *  publish only their own chapter's. Default holders: the Executive
+   *  Director and the Financial Manager centrally (the two people who already
+   *  sign off on the close), and the Chapter Director for their own chapter's
+   *  book. Notably NOT the chapter Treasurer — they PREPARE the statement,
+   *  and the separation-of-duties check would refuse their own publish
+   *  anyway. */
+  "finance.publish",
   "nav.finances",
   "org.editChart",
   "giving.manage",
@@ -231,6 +252,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "campaigns.compose",
       "campaigns.design",
       "data.export",
+      // The ED speaks for the org, so the ED may publish its books — any
+      // book, this being a central seat. See `finance.publish`'s doc.
+      "finance.publish",
     ],
     legacyTitle: "executive_director",
   },
@@ -267,6 +291,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "campaigns.compose",
       "campaigns.design",
       "data.export",
+      // The FM closes the books monthly (see the duties above), so the FM
+      // publishes them. Central seat → any book.
+      "finance.publish",
     ],
     legacyTitle: "finance_manager",
   },
@@ -516,6 +543,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // 2026-08-06: door check-in access for the QR scanner — the CD is one
       // of the "signed-in people we've given access to" by default.
       "events.checkin",
+      // Publishes their OWN chapter's month (a chapter-scope seat reaches
+      // only its own book). Pairs with the Treasurer PREPARING it — the two
+      // seats are the two parties, which is exactly why the Treasurer does
+      // not carry this one.
+      "finance.publish",
     ],
     legacyTitle: "president",
   },

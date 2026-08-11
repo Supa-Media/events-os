@@ -2276,3 +2276,6 @@ export * from "./receiptFile";
 
 // ── Project registrations: what "collected" means, said once for both apps ──
 export * from "./registrations";
+
+// ── The public ledger: publication lifecycle, period keys, published columns ─
+export * from "./publicLedger";

@@ -145,6 +145,9 @@ describe("setSeatGivingPower — capability transitions", () => {
     // giving-power rewrite must leave it alone — that is exactly what this
     // fixture asserts.
     "data.export",
+    // 2026-08-11: `finance.publish` is likewise a NON-giving cap the rewrite
+    // must leave alone.
+    "finance.publish",
   ];
 
   test("manage → view → none rewrites only giving caps, never finance caps", async () => {

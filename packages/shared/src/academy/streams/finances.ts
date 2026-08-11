@@ -1465,6 +1465,115 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
+  // ── 36b · Publishing the books ─────────────────────────────────────────────
+  // Added 2026-08-11 with the public finances page. It sits immediately after
+  // the monthly close because it IS the step after it: close the month, then
+  // decide whether it is ready to be read by strangers. Taught in the
+  // Treasurer course (they prepare it) and the ED course (they publish it),
+  // which is the same two-party split the feature enforces.
+  {
+    slug: "finance-publishing-the-books",
+    title: "Publishing the books",
+    subtitle: "What we say in public, and how we correct it",
+    minutes: 5,
+    blocks: [
+      {
+        kind: "p",
+        text: "Once a month is closed, it goes on publicworship.life — not a summary, every transaction. What we bought, who we bought it from, what it was for, and whether we can produce the receipt. A giver reading \"$3.9M staff cost\" feels like a drop in a bucket. A giver reading \"$47.83, Costco, water and cups for the Sunday setup team\" can see their own $5 in it.",
+      },
+      {
+        kind: "rule",
+        title: "Published means frozen",
+        text: "The public page does **not** read the live books. When a month is published, it is FROZEN — a copy is stored and that copy is what the world sees, forever. Editing a transaction next week changes our books and changes nothing public. That is the whole design: a live page would let an edit silently rewrite what we already said, and nobody outside could tell.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**One person prepares, a different person publishes.** Preparing needs a finance manager seat; publishing needs the separate *Publish finances* power on the seat chart. The system refuses a self-approval and records which way every month went.",
+          "**Everything publishes — but not everything counts.** Internal transfers and the bank deposits carrying gifts you already counted are shown, marked \"not counted.\" Hiding them would leave gaps; counting them would count the same dollar twice.",
+          "**An intentionally excluded row does not publish.** Excluding a duplicate or a bank error is us saying it was never a transaction. Publishing it as one would be the opposite of clarifying.",
+          "**No names, ever.** Not givers, not the people at a meal. A meal publishes as \"12 people — 5 team members, 7 community members.\" That answers who it was for without publishing a person, and some of the people we feed are minors.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "We publish our gaps, not around them",
+        text: "A month with three receiptless rows publishes with a note saying there are three receiptless rows. Rows rebuilt from old spreadsheets are marked **Rebuilt** rather than presented as though we watched them happen. Waiting for a perfect month would mean publishing nothing for a year; presenting an incomplete month as complete is the one thing the system refuses outright, because it is the only failure a reader cannot detect for themselves.",
+      },
+      {
+        kind: "tip",
+        text: "**Corrections are the feature, not the embarrassment.** A published month can never be taken down — only amended. You start a correction, say what changed and why, and it publishes as revision 2 with the earlier version still readable beside it. An organization that shows its corrections is more believable than one that has never appeared to make any.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You publish August. In September you notice a Costco charge was entered as $47.83 when the receipt says $52.10. What do you do?",
+        answer: "Fix the transaction in Reconcile, then start a correction on August: pick \"Amount corrected\" and write the sentence that explains it. Send it for review; the publisher approves it and August republishes as revision 2. The public page shows the corrected figure, a dated correction notice, and your explanation. What you must NOT do is assume fixing the ledger fixed the page — it doesn't, by design.",
+      },
+      {
+        kind: "try_ready",
+        criteria: [
+          "The month is closed — Reconcile at Ready, receipts chased, queue clear",
+          "You have read the preview's disclosure lines and can defend each one out loud",
+          "Someone other than you is available to review and publish it",
+          "Any correction you are making has a sentence a stranger could understand",
+        ],
+      },
+    ],
+    quiz: [
+      {
+        prompt:
+          "You publish August, then next week you edit one of August's transactions in Reconcile. What does the public page show?",
+        options: [
+          "The edited version — the page reads the live books",
+          "The version that was published. The month is frozen; the edit changes nothing public until a correction is published",
+          "Nothing — the month is pulled until it's re-approved",
+          "Both versions, side by side, automatically",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Publishing freezes a copy, and that copy is what the world sees. It's the property that stops an after-the-fact edit from silently rewriting what we already said — which is exactly why fixing the ledger is only half of making a correction.",
+      },
+      {
+        prompt: "A month has four charges with no receipt and no approved exception. What happens?",
+        options: [
+          "Publishing is blocked until all four are documented",
+          "Those four rows are left out of the published ledger",
+          "It publishes, with the four rows marked undocumented and a note saying how many there are",
+          "It publishes and the rows look identical to receipted ones",
+        ],
+        answerIndex: 2,
+        explanation:
+          "We publish gaps rather than around them. Blocking would mean publishing nothing for a year; hiding the rows or letting them look documented would be a claim we can't back. The only thing refused outright is an incomplete ledger presented as complete.",
+      },
+      {
+        prompt: "Who can publish a month you prepared?",
+        options: [
+          "You, as long as you hold a finance manager seat",
+          "Anyone on the chapter roster",
+          "Someone else holding the Publish finances power — the system refuses a self-approval and records which way each month went",
+          "Only the Executive Director, never anyone else",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Publishing is a separate seat power from reconciling, because its audience is outside the org and a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book — notably not the Treasurer, who prepares it.",
+      },
+      {
+        prompt:
+          "A team dinner for 12 is published. What does the public page say about who was there?",
+        options: [
+          "The twelve names",
+          "Nothing about the people at all",
+          "The headcount and the mix — \"12 people — 5 team members, 7 community members\"",
+          "Only the person whose card was charged",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Names are internal forever — members and guests never consented to a public financial record, and some are minors. The headcount and affiliation mix answer the accountability question without publishing a person.",
+      },
+    ],
+  },
+
   // ── 37 · Chapter Director: raise vs. manage ────────────────────────────────
   {
     slug: "finance-raise-vs-manage",
@@ -2534,13 +2643,22 @@ export const FINANCES_COURSES: Course[] = [
     description:
       "The shared foundation every finance leader builds on: what backer " +
       "tiers unlock and where the skim goes, how a budget moves from draft " +
-      "to a real spending cap, and why every dollar has exactly one home. " +
-      "Treasurer and Chapter Director both start here.",
+      "to a real spending cap, why every dollar has exactly one home, and " +
+      "what happens when a closed month goes public. Treasurer and Chapter " +
+      "Director both start here.",
     icon: "layers",
     moduleSlugs: [
       "finance-tiers-and-skim",
       "finance-budget-lifecycle",
       "finance-one-home-per-dollar",
+      // Publishing the books lands HERE rather than in the Treasurer or ED
+      // course because it has two audiences and a module belongs to exactly
+      // one course (the catalog's keystone invariant). The Treasurer prepares
+      // a month and the ED / FM / Chapter Director publishes it — the
+      // two-party split `finance.publish` enforces — and all four paths carry
+      // this shared-foundation course, so one authoring of the rules reaches
+      // both sides of that split.
+      "finance-publishing-the-books",
     ],
   },
   {

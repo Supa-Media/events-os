@@ -179,6 +179,11 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // design; every implied rung is listed explicitly on the def so the
     // seat chart, not a resolver's implication map, is the honest answer to
     // "who can edit a shared template/theme/image?").
+    // 2026-08-11: + finance.publish (the public ledger). The ED speaks for
+    // the org, so the ED may publish its books — and being a CENTRAL seat,
+    // any book. Deliberately NOT implied by any finance rung: reconciling
+    // and speaking to the whole city are different powers. See
+    // seats.ts's `finance.publish` doc.
     executive_director: [
       "finance.central",
       "finance.accounts",
@@ -192,6 +197,7 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "campaigns.compose",
       "campaigns.design",
       "data.export",
+      "finance.publish",
     ],
     // 2026-07-19: added giving.view + nav.giving (owner decision — FM gets
     // central-lens donor READ as an assignable power default). 2026-07-24:
@@ -211,6 +217,9 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "campaigns.compose",
       "campaigns.design",
       "data.export",
+      // 2026-08-11: the FM closes the books monthly, so the FM publishes
+      // them.
+      "finance.publish",
     ],
     // 2026-07-31: + data.export on the six seats the founder granted bulk
     // extraction to (ED, FM, Development Director, Expansion Director,
@@ -266,6 +275,11 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "nav.giving",
       "data.export",
       "events.checkin",
+      // 2026-08-11: publishes their OWN chapter's month (a chapter-scope
+      // seat reaches only its own book). Pairs with the Treasurer preparing
+      // it — which is exactly why the Treasurer below does NOT carry it: the
+      // separation-of-duties check would refuse their own publish anyway.
+      "finance.publish",
     ],
     treasurer: [
       "finance.manager",

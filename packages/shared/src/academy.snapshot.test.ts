@@ -476,6 +476,9 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "finance-transfers-and-payouts",
   "finance-chasing-receipts",
   "finance-monthly-close",
+  // 2026-08-11: the public finances page. Publishing is the step after the
+  // close, so the lesson sits immediately after it in the curriculum.
+  "finance-publishing-the-books",
   "finance-raise-vs-manage",
   "finance-approving-budgets",
   "finance-tiers-and-skim",
@@ -1053,6 +1056,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "finance-publishing-the-books",
+    title: "Publishing the books",
+    minutes: 5,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "finance-raise-vs-manage",
     title: "Raise vs. manage",
     minutes: 3,
@@ -1511,7 +1522,17 @@ const EXPECTED_COURSES: {
   {
     slug: "chapter-money-model",
     themeKey: "finances",
-    moduleSlugs: ["finance-tiers-and-skim", "finance-budget-lifecycle", "finance-one-home-per-dollar"],
+    // `finance-publishing-the-books` (2026-08-11) lands in the SHARED
+    // foundation course rather than Treasurer or ED: a module belongs to
+    // exactly one course, and this lesson has both audiences — the Treasurer
+    // prepares a month, the ED / FM / Chapter Director publishes it. All four
+    // finance paths carry this course.
+    moduleSlugs: [
+      "finance-tiers-and-skim",
+      "finance-budget-lifecycle",
+      "finance-one-home-per-dollar",
+      "finance-publishing-the-books",
+    ],
   },
   {
     slug: "treasurer",

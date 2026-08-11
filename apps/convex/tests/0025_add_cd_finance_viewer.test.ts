@@ -109,6 +109,9 @@ describe("0025_add_cd_finance_viewer", () => {
       "data.export",
       // 2026-08-06: door check-in access (see seats.ts's `events.checkin` doc).
       "events.checkin",
+      // 2026-08-11: publishes their own chapter's month to the public
+      // finances page (see seats.ts's `finance.publish` doc).
+      "finance.publish",
     ]);
 
     const result = await run(t, (ctx) => runAddCdFinanceViewer(ctx));
@@ -160,6 +163,9 @@ describe("0025_add_cd_finance_viewer", () => {
       "data.export",
       // 2026-08-06: door check-in access (see seats.ts's `events.checkin` doc).
       "events.checkin",
+      // 2026-08-11: publishes their own chapter's month to the public
+      // finances page (see seats.ts's `finance.publish` doc).
+      "finance.publish",
     ]);
   });
 });

@@ -210,12 +210,21 @@ describe("curriculum content", () => {
     // uncoded charge into money you owe back. Placed one past
     // `finance-card-and-receipts` so it can lean on the exception vocabulary
     // rather than re-teach it. See `docs/plans/transaction-coding.md` phase 2.)
-    expect(ACADEMY_SECTION_COUNT).toBe(107);
+    // + 1 (finance-publishing-the-books, 2026-08-11, appended to the shared
+    // chapter-money-model course — required, not a capstone. The public
+    // finances page: published means FROZEN (fixing a transaction afterwards
+    // does not fix the page), corrections publish as dated revisions beside
+    // the original, gaps are disclosed rather than hidden, and publishing is
+    // a separate seat power from reconciling. Lands in the shared foundation
+    // course because it has two audiences — the Treasurer who prepares a
+    // month and the ED/FM/CD who publishes it. See
+    // `docs/plans/public-ledger.md`.)
+    expect(ACADEMY_SECTION_COUNT).toBe(108);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 107 }, (_v, i) => i + 1),
+      Array.from({ length: 108 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(106);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(107);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

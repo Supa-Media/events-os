@@ -10,7 +10,7 @@
  * `/api/reimburse/*`, `/api/give/*`); the server-rendered public pages
  * (`/rsvp/` — the guest RSVP page, with `/event/`, `/e/`, and `/r/` kept as
  * back-compat aliases, see the comment at its route below — `/t/`, `/give`,
- * `/p/`, `/reimburse/`); the payment-provider webhook receivers
+ * `/finances`, `/p/`, `/reimburse/`); the payment-provider webhook receivers
  * (`/stripe/webhook`, `/increase/webhook`, `/twilio/webhook`,
  * `/twilio/receipts`); and the email-campaign surfaces (`/unsubscribe/`,
  * `/resend/webhook`) alongside the pre-existing `/resend/inbound` receipt-OCR
@@ -52,6 +52,12 @@ import {
   renderProjectActionPage,
   renderProjectActionResult,
 } from "./lib/projectActionPage";
+import {
+  LEDGER_PATH,
+  renderLedgerEmpty,
+  renderLedgerPage,
+} from "./lib/publicLedgerPage";
+import { givingCsv, ledgerCsv } from "./lib/publicLedgerCsv";
 import { EMAIL_ACTION_STATUSES, type EmailActionStatus } from "./projectActions";
 import { appUrl, rsvpPath, siteUrl } from "./lib/siteUrl";
 import { verifyStripeSignature } from "./stripe";
@@ -327,6 +333,122 @@ http.route({
         feeRates,
       ),
     );
+  }),
+});
+
+// ── Public finances: /finances (latest), /finances/<YYYY-MM>, + CSVs ────────
+// The published ledger (docs/plans/public-ledger.md). Anonymous by design —
+// that IS the feature — and safe to be, because every route below reads only
+// FROZEN, human-approved rows out of `financePublicationEntries`; none of them
+// can reach the live books, and a published gift entry never carried a donor
+// field to leak (see schema/publicLedger.ts).
+//
+// `/finances` with no month redirects to the newest published one rather than
+// rendering it in place, so the URL a reader shares always names the month
+// they were looking at instead of silently meaning something else next month.
+//
+// Cache-Control is short and PUBLIC: a published month is immutable until it
+// is amended, but an amendment has to reach readers quickly — a correction
+// nobody sees is not a correction. Sixty seconds is the same figure
+// `/api/events/upcoming` settled on for the same reason.
+
+const LEDGER_CACHE = "public, max-age=60";
+
+/** The published months, newest first. Every ledger route needs them (the
+ *  month picker, and the "which month is latest" redirect), so they are read
+ *  through one helper rather than four copies of the same query call. */
+async function publishedMonths(ctx: ActionCtx) {
+  return ctx.runQuery(api.publicLedger.publishedMonths, {});
+}
+
+function csv(body: string, filename: string): Response {
+  return new Response(body, {
+    status: 200,
+    headers: {
+      "Content-Type": "text/csv; charset=utf-8",
+      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Cache-Control": LEDGER_CACHE,
+    },
+  });
+}
+
+http.route({
+  path: `/${LEDGER_PATH}`,
+  method: "GET",
+  handler: httpAction(async (ctx) => {
+    const months = await publishedMonths(ctx);
+    if (months.length === 0) return html(renderLedgerEmpty(months));
+    return new Response(null, {
+      status: 302,
+      headers: {
+        Location: `/${LEDGER_PATH}/${months[0].periodKey}`,
+        "Cache-Control": LEDGER_CACHE,
+      },
+    });
+  }),
+});
+
+http.route({
+  pathPrefix: `/${LEDGER_PATH}/`,
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    // ["finances", "2026-08"] | ["finances", "2026-08.csv"]
+    //                         | ["finances", "2026-08", "giving.csv"]
+    const segments = url.pathname.split("/").filter(Boolean);
+    const raw = decodeURIComponent(segments[1] ?? "");
+    const sub = segments[2];
+    if (!raw || segments.length > 3) {
+      return html(renderLedgerEmpty(await publishedMonths(ctx)), 404);
+    }
+
+    const wantsLedgerCsv = raw.endsWith(".csv");
+    const periodKey = wantsLedgerCsv ? raw.slice(0, -".csv".length) : raw;
+    const wantsGivingCsv = sub === "giving.csv";
+    if (sub != null && !wantsGivingCsv) {
+      return html(renderLedgerEmpty(await publishedMonths(ctx)), 404);
+    }
+    // A malformed month reaches the query, which rejects it — catching here
+    // keeps a typo'd URL a 404 page instead of a 500.
+    if (!/^\d{4}-(0[1-9]|1[0-2])$/.test(periodKey)) {
+      return html(renderLedgerEmpty(await publishedMonths(ctx)), 404);
+    }
+
+    // The CSV is the COMPLETE month (see lib/publicLedgerCsv.ts) — the page's
+    // row cap exists so a shared link paints fast, and must not silently
+    // become the cap on the download somebody audits us with.
+    const statement = await ctx.runQuery(api.publicLedger.publicStatement, {
+      periodKey,
+      ...(wantsLedgerCsv || wantsGivingCsv ? { entryLimit: 5000 } : {}),
+    });
+
+    if (!statement) {
+      if (wantsLedgerCsv || wantsGivingCsv) {
+        return new Response("Not found", { status: 404 });
+      }
+      return html(renderLedgerEmpty(await publishedMonths(ctx), periodKey), 404);
+    }
+    if (wantsGivingCsv) {
+      return csv(givingCsv(statement.gifts), `public-worship-giving-${periodKey}.csv`);
+    }
+    if (wantsLedgerCsv) {
+      return csv(
+        ledgerCsv(statement.entries),
+        `public-worship-ledger-${periodKey}.csv`,
+      );
+    }
+
+    const [months, totalBooks] = await Promise.all([
+      publishedMonths(ctx),
+      ctx.runQuery(api.publicLedger.publicBookCount, {}),
+    ]);
+    return new Response(renderLedgerPage(statement, months, totalBooks), {
+      status: 200,
+      headers: {
+        "Content-Type": "text/html; charset=utf-8",
+        "Cache-Control": LEDGER_CACHE,
+      },
+    });
   }),
 });
 

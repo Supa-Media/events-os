@@ -142,6 +142,9 @@ describe("setSeatCampaignPower — capability transitions", () => {
     // 2026-07-31: `data.export` is a NON-campaign cap on this seat, so the
     // campaign-power rewrite must leave it alone — what this fixture asserts.
     "data.export",
+    // 2026-08-11: `finance.publish` is likewise a NON-campaign cap the rewrite
+    // must leave alone.
+    "finance.publish",
   ];
 
   test("approve → compose → none rewrites only campaign caps, never finance caps", async () => {
