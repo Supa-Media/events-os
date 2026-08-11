@@ -185,6 +185,51 @@ export const financePublicationRevisions = defineTable({
   entryCount: v.number(),
   giftCount: v.number(),
 
+  /**
+   * How many DISTINCT PEOPLE gave in this month, and how many of them gave
+   * through a recurring pledge.
+   *
+   * A count, never a list — see `financePublicationGiverKeys` for where the
+   * identities live and why they live somewhere else. `giftCount` above is a
+   * different question (one person giving weekly is four gifts and one
+   * giver), and a transparency page that showed only the larger of the two
+   * would be flattering itself.
+   *
+   * OPTIONAL because a revision published before this shipped has neither;
+   * every reader treats absent as 0 and the page omits the tile rather than
+   * printing a zero it can't stand behind. Same grandfathering posture as
+   * `budgets.approvalStatus`.
+   */
+  giverCount: v.optional(v.number()),
+  backerCount: v.optional(v.number()),
+
+  /**
+   * SPEND AGAINST THE PLAN — what each budget was allowed and what it
+   * actually used, frozen as labels.
+   *
+   * The one place this page shows ESTIMATED money beside ACTUAL money. The
+   * schema-wide rule is that the two are never SUMMED (invariant #3 in
+   * `schema/finances.ts`), and they are not summed here — they sit in two
+   * columns of one row, which is the entire question a reader is asking
+   * ("you said $2,000; what did you spend?").
+   *
+   * `allocatedCents` is `effectiveBudgetCapCents` at publish time — the cap
+   * actually in force, not `amountCents`, so a budget mid-increase shows what
+   * it was approved to spend rather than what someone has asked for. Absent
+   * on the catch-all row for spend that carried no budget at all, which is
+   * NOT the same as a budget of zero and must not render as one.
+   */
+  spendByBudget: v.optional(
+    v.array(
+      v.object({
+        label: v.string(),
+        allocatedCents: v.optional(v.number()),
+        spentCents: v.number(),
+        count: v.number(),
+      }),
+    ),
+  ),
+
   // ── Disclosures published WITH the numbers ────────────────────────────────
   // Not caveats hidden in a footnote: these travel with the statement because
   // a ledger that presents reconstructed history and live-captured history as
@@ -353,3 +398,48 @@ export const financePublicationEntries = defineTable({
   .index("by_revision", ["publicationId", "revision", "occurredAt"])
   // The kind-filtered read (the ledger tab vs the giving roll tab).
   .index("by_revision_and_kind", ["publicationId", "revision", "kind"]);
+
+// ── Giver keys: INTERNAL ONLY, never served ──────────────────────────────────
+/**
+ * ⚠ THIS TABLE IS NEVER RETURNED BY ANY PUBLIC QUERY, IN WHOLE OR IN PART. ⚠
+ *
+ * One row per (revision, distinct giver). It exists for exactly one reason:
+ * so a YEAR can report how many distinct people gave, rather than adding up
+ * twelve monthly giver counts and reporting a person who gave every month as
+ * twelve people.
+ *
+ * ── WHY A TABLE AND NOT A NUMBER ─────────────────────────────────────────────
+ * `financePublicationRevisions.giverCount` already answers the question for
+ * ONE month. Distinct counts do not add: unioning is the only correct way to
+ * roll them up, and unioning needs identities. So the identities are stored —
+ * frozen at publish time alongside everything else, so a year total is as
+ * stable as the months under it — and only ever counted.
+ *
+ * ── WHY IT IS SEPARATE FROM `financePublicationEntries` ──────────────────────
+ * Because that table IS served to anonymous callers, and this data must never
+ * be one forgotten projection away from going out. `financePublicationEntries`
+ * carries `sourceTransactionId` under exactly that discipline and it is a
+ * transaction id — this is a person. The rule the giving roll follows (see
+ * that table's doc: a donor field is never WRITTEN, not merely omitted) can't
+ * apply here because the identity is the point, so the next-best structural
+ * protection is used instead: a different table, in no public query's reach.
+ *
+ * `key` is the `donorIdentities` id where the donor has one, else the
+ * `donors` id — the same grouping rule `listOrgDonorsByIdentity` uses, so one
+ * human giving to two books counts once. A plain string rather than a union
+ * of two id types because it is only ever compared for equality and counted;
+ * nothing dereferences it, and nothing should start.
+ */
+export const financePublicationGiverKeys = defineTable({
+  publicationId: v.id("financePublications"),
+  revision: v.number(),
+  /** The `YYYY` of the parent period, denormalized so a year rollup can find
+   *  every relevant row without first loading twelve publications. */
+  year: v.string(),
+  key: v.string(),
+  /** Whether this person gave through a recurring pledge in the period —
+   *  what the public "backers" figure counts. */
+  isBacker: v.boolean(),
+})
+  .index("by_revision", ["publicationId", "revision"])
+  .index("by_year", ["year"]);

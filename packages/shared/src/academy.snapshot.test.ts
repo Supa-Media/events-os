@@ -1059,7 +1059,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-publishing-the-books",
     title: "Publishing the books",
     minutes: 5,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

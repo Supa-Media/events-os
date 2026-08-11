@@ -71,6 +71,37 @@ export function periodLabel(key: string): string {
   return `${name} ${parsed.year}`;
 }
 
+// ── Year keys ────────────────────────────────────────────────────────────────
+// The public page also rolls a whole YEAR up (`/finances/2026`), which is the
+// shape an annual report takes. A year is NOT its own publication — it is the
+// published months of that year, added together, and the page says which
+// months those were. Nothing is ever published at year granularity, so there
+// is no way for a year total to claim more than the months behind it.
+
+/** The 4-digit year a key names, or `null`. Strict, for the same reason
+ *  `parsePeriodKey` is: this parses public URL input. The window is
+ *  deliberately narrow — a "year" outside it is a typo or a probe, not a
+ *  period anyone is asking about. */
+export function parseYearKey(key: string): number | null {
+  if (!/^\d{4}$/.test(key)) return null;
+  const year = Number(key);
+  return year >= 2000 && year <= 2200 ? year : null;
+}
+
+/** The `YYYY-MM` keys of a year, January first. Drives the month dropdown. */
+export function monthsOfYear(year: number): string[] {
+  return Array.from({ length: 12 }, (_v, i) => periodKey(year, i + 1));
+}
+
+/** "August" — the month name alone, for the month dropdown (the year is
+ *  already chosen in the dropdown beside it). */
+export function monthName(month: number): string {
+  return new Date(Date.UTC(2000, month - 1, 1)).toLocaleString("en-US", {
+    month: "long",
+    timeZone: "UTC",
+  });
+}
+
 /** The period key immediately before `key`, or `null` if unparseable. Used to
  *  find the prior published month for the opening-balance line. */
 export function previousPeriodKey(key: string): string | null {

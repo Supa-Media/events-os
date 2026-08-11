@@ -59,6 +59,7 @@ import {
   type IncomeStream,
 } from "@events-os/shared";
 import {
+  effectiveCapCents,
   isUndocumented,
   requiresCoding,
   txnMatchesMode,
@@ -76,6 +77,10 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const UNCATEGORIZED = "Uncategorized";
 /** Ditto for spend that attached to no project or event. */
 const UNASSIGNED_PROJECT = "General operations";
+/** The catch-all bucket for spend carrying no budget. A sentinel key rather
+ *  than `undefined` so it participates in the same Map as real budget ids. */
+const NO_BUDGET_KEY = "__no_budget__";
+const NO_BUDGET_LABEL = "Not attached to a budget";
 
 // ── Draft shapes (what `publicLedger.ts` inserts) ────────────────────────────
 
@@ -117,8 +122,26 @@ export type Snapshot = {
   incomeByStream: { stream: IncomeStream; cents: number; count: number }[];
   expenseByCategory: { label: string; cents: number; count: number }[];
   expenseByProject: { label: string; cents: number; count: number }[];
+  /** What each budget was allowed and what it used. `allocatedCents` is
+   *  absent on the catch-all row for spend that carried no budget — which is
+   *  not a budget of zero and must never render as one. */
+  spendByBudget: {
+    label: string;
+    allocatedCents?: number;
+    spentCents: number;
+    count: number;
+  }[];
   entryCount: number;
   giftCount: number;
+  /** DISTINCT people who gave, and how many of them gave through a recurring
+   *  pledge. Counts here; the identities behind them are in `giverKeys`. */
+  giverCount: number;
+  backerCount: number;
+  /** One entry per distinct giver — written to `financePublicationGiverKeys`,
+   *  which NO public query reads. The only reason it exists is so a YEAR can
+   *  union twelve months instead of adding twelve distinct counts together.
+   *  See that table's doc comment. */
+  giverKeys: { key: string; isBacker: boolean }[];
   reconstructedCount: number;
   reconstructedCents: number;
   undocumentedCount: number;
@@ -147,6 +170,7 @@ export type Snapshot = {
  */
 class Labels {
   private cache = new Map<string, string | undefined>();
+  private capCache = new Map<string, number | undefined>();
   constructor(private ctx: QueryCtx) {}
 
   private async memo(
@@ -187,6 +211,19 @@ class Labels {
         `Budget · ${formatCents(doc.amountCents, { showCents: false })}`
       );
     });
+  }
+
+  /** The budget's cap IN FORCE — `effectiveCapCents`, not `amountCents`, so a
+   *  budget mid-increase publishes what it was approved to spend rather than
+   *  what somebody has asked for. Cached separately from the label because
+   *  the two are looked up on different rows of the same read. */
+  async budgetCap(id: Id<"budgets">): Promise<number | undefined> {
+    const cacheKey = `cap:${id}`;
+    if (this.capCache.has(cacheKey)) return this.capCache.get(cacheKey);
+    const doc = await this.ctx.db.get(id);
+    const cap = doc ? effectiveCapCents(doc) : undefined;
+    this.capCache.set(cacheKey, cap);
+    return cap;
   }
 }
 
@@ -267,6 +304,13 @@ export async function buildSnapshot(
   const incomeByStream = new Map<IncomeStream, Bucket>();
   const expenseByCategory = new Map<string, Bucket>();
   const expenseByProject = new Map<string, Bucket>();
+  // Keyed by budget id so two budgets that happen to share a label stay
+  // distinct rows; the label is carried alongside for the frozen output. The
+  // no-budget catch-all uses a sentinel key and carries no allocation.
+  const byBudget = new Map<
+    string,
+    { label: string; allocatedCents?: number; spentCents: number; count: number }
+  >();
   let expenseCents = 0;
   let reconstructedCount = 0;
   let reconstructedCents = 0;
@@ -328,6 +372,7 @@ export async function buildSnapshot(
     const categoryLabel = (await labels.category(tr.categoryId)) ?? UNCATEGORIZED;
     const projectLabel = await labels.project(tr.projectId);
     const eventLabel = await labels.event(tr.eventId);
+    const budgetLabel = await labels.budget(tr.budgetId);
 
     entries.push({
       kind: "ledger",
@@ -346,7 +391,7 @@ export async function buildSnapshot(
         : undefined,
       categoryLabel,
       fundLabel: await labels.fund(tr.fundId),
-      budgetLabel: await labels.budget(tr.budgetId),
+      budgetLabel,
       projectLabel,
       eventLabel,
       expenseType: approved?.expenseType,
@@ -371,6 +416,28 @@ export async function buildSnapshot(
         projectLabel ?? eventLabel ?? UNASSIGNED_PROJECT,
         magnitude,
       );
+
+      // ── Spend against the plan ────────────────────────────────────────────
+      // Keyed by id, so a rename between now and next month can't merge two
+      // budgets into one published row. `NO_BUDGET_KEY` collects spend that
+      // carried no budget at all — published plainly rather than dropped,
+      // because "we spent this and it wasn't budgeted" is exactly the kind of
+      // thing a reader is entitled to see.
+      const budgetKey = tr.budgetId ?? NO_BUDGET_KEY;
+      const existing = byBudget.get(budgetKey);
+      if (existing) {
+        existing.spentCents += magnitude;
+        existing.count += 1;
+      } else {
+        byBudget.set(budgetKey, {
+          label: budgetLabel ?? NO_BUDGET_LABEL,
+          allocatedCents: tr.budgetId
+            ? await labels.budgetCap(tr.budgetId)
+            : undefined,
+          spentCents: magnitude,
+          count: 1,
+        });
+      }
     } else if (direction === "in" && countsInTotals) {
       // A ledger inflow that is NOT the arrival of already-counted revenue —
       // interest, a refund of earlier spend, a miscellaneous credit.
@@ -398,7 +465,17 @@ export async function buildSnapshot(
   }
 
   // ── Gifts (the anonymous roll + the giving total) ──────────────────────────
+  // DISTINCT givers, keyed by the person BEHIND the donor row: a
+  // `donorIdentities` id where one exists, else the `donors` id. Same grouping
+  // rule `listOrgDonorsByIdentity` uses, so one human giving to two books is
+  // one giver — a public "744 givers" that double-counted anyone across books
+  // would be inflating the most quotable number on the page.
+  //
+  // A giver counts as a BACKER when any of their gifts in the period came
+  // through a recurring pledge (`gifts.pledgeId`). Per-giver, not per-gift:
+  // somebody with a monthly pledge who also gave a one-off is one backer.
   let giftCount = 0;
+  const giverKeys = new Map<string, boolean>();
   if (!sandboxMode) {
     const rawGifts = await ctx.db
       .query("gifts")
@@ -411,6 +488,15 @@ export async function buildSnapshot(
       if (!inPeriod(gift.receivedAt, year, month)) continue;
       giftCount += 1;
       addIncome("giving", gift.amountCents);
+      const donor = await ctx.db.get(gift.donorId);
+      // A gift whose donor row has vanished still counts as money and still
+      // counts as A giver — keyed by the gift's own donor id, which is stable
+      // even when the row is gone. Dropping it would understate the count.
+      const giverKey = donor?.identityId ?? gift.donorId;
+      giverKeys.set(
+        giverKey,
+        (giverKeys.get(giverKey) ?? false) || gift.pledgeId != null,
+      );
       entries.push({
         kind: "gift",
         occurredAt: gift.receivedAt,
@@ -497,8 +583,26 @@ export async function buildSnapshot(
     incomeByStream: incomeRows,
     expenseByCategory: toSortedRows(expenseByCategory),
     expenseByProject: toSortedRows(expenseByProject),
+    // Biggest spender first, and the unbudgeted catch-all always LAST
+    // regardless of size — it is a different kind of row from the others, and
+    // sorting it into the middle of a plan-vs-actual table reads as though it
+    // were a plan.
+    spendByBudget: [...byBudget.entries()]
+      .map(([key, b]) => ({ ...b, isCatchAll: key === NO_BUDGET_KEY }))
+      .sort((a, b) =>
+        a.isCatchAll !== b.isCatchAll
+          ? Number(a.isCatchAll) - Number(b.isCatchAll)
+          : b.spentCents - a.spentCents,
+      )
+      .map(({ isCatchAll: _isCatchAll, ...row }) => row),
     entryCount: entries.length,
     giftCount,
+    giverCount: giverKeys.size,
+    backerCount: [...giverKeys.values()].filter(Boolean).length,
+    giverKeys: [...giverKeys.entries()].map(([key, isBacker]) => ({
+      key,
+      isBacker,
+    })),
     reconstructedCount,
     reconstructedCents,
     undocumentedCount,

@@ -1,6 +1,6 @@
 # The public ledger
 
-**Status:** shipped (v1, 2026-08-11)
+**Status:** shipped (v1 2026-08-11; year rollup + budgets + the four numbers, 2026-08-11)
 **Surfaces:** `publicworship.life/finances` (anonymous) · Finances → Publish (in-app)
 **Code:** `apps/convex/publicLedger.ts`, `apps/convex/lib/publicLedger*.ts`,
 `apps/convex/schema/publicLedger.ts`, `packages/shared/src/publicLedger.ts`,
@@ -148,24 +148,69 @@ not retroactively rewrite a statement the org already published.
 
 | Route | What |
 |---|---|
-| `/finances` | 302 → newest published month (so a shared link names its month) |
-| `/finances/<YYYY-MM>` | The statement: stats, income, spend by category and by project, every line, the giving roll, corrections, "how to read this" |
-| `/finances/<YYYY-MM>.csv` | The complete ledger — never truncated |
+| `/finances` | 302 → newest published month. Also the target of the period picker's GET form (`?year=&month=`), which it redirects to a canonical path |
+| `/finances/<YYYY-MM>` | One month: the four numbers, income, spend by category and by project, budgets, every line, the giving roll, corrections, "how to read this" |
+| `/finances/<YYYY>` | The year rollup — the same sections, summary-level, plus the list of contributing months |
+| `/finances/<YYYY-MM>.csv`, `/finances/<YYYY>.csv` | The complete ledger — never truncated |
 | `/finances/<YYYY-MM>/giving.csv` | The anonymous giving roll |
 
 The HTML caps rendered lines (`PUBLIC_PAGE_ENTRY_LIMIT`) so a shared link
 paints fast; the CSV has no cap and the page says so. If the two ever
 disagree, the CSV is the authority.
 
+### The period picker
+
+A year dropdown and a month dropdown whose first option is "All months" — the
+year rollup. It is a plain `<form method="get">` posting to `/finances`, which
+redirects to the canonical path, because that gets three things a JS
+navigation doesn't: it works with JavaScript off, the URL a reader shares
+names the period, and the back button behaves. An inline script auto-submits
+on change so it still feels immediate.
+
+Unpublished months are **listed and disabled**, not omitted. "September isn't
+in the dropdown" and "September hasn't been published" are different facts.
+
+### The year rollup
+
+A year is NOT its own publication and never becomes one — it is the published
+months of that year, added up, and the page states how many of the twelve it
+covers. Nothing estimates or fills in a month nobody closed.
+
+It is deliberately summary-level: a year is thousands of lines, and putting
+them in the most-shared URL on the site would make it the slowest page for a
+table nobody scrolls. The lines are one click away per month, and complete in
+the year CSV.
+
+**Distinct givers are unioned, never summed.** Adding twelve monthly giver
+counts reports somebody who gives every month as twelve people. The union runs
+over `financePublicationGiverKeys` — an internal-only table, read and counted
+server-side, never returned. See its doc comment for why it is a separate
+table from `financePublicationEntries` rather than a column on it.
+
+### The four numbers
+
+Total raised, total spent, givers, backers. Two about the money and two about
+the people, because "we spent $377,000" and "412 people made that possible"
+are different claims. "Difference" rides under Total spent rather than taking
+a fifth tile. The people tiles are omitted entirely — never printed as 0 — on
+a statement published before those figures existed.
+
+### Budgets
+
+`spendByBudget` publishes what each budget was allowed (`effectiveCapCents` at
+publish time, so a budget mid-increase shows the approved cap, not the ask)
+and what it used. Estimated and actual sit side by side and are never summed —
+the schema's third invariant holds. Over-budget rows are allowed to render
+past 100% because clamping them would hide the most interesting row.
+
+A missing allocation renders "—", never "$0.00": spend that carried no budget,
+and year rows whose months didn't all carry one, are not budgets of zero.
+
 ## Not in v1 — deliberately
 
 - **Salaries.** Nobody is paid today. The owner's stated intent is to publish
   compensation **by position**, not by person, the way public offices do. When
   there is a salary, that is its own decision and its own PR.
-- **A cross-month or annual view.** The annual-report shape (Church of the
-  City's) is a good future addition, but the month is the unit the close
-  already runs on, and inventing a second period concept before the first one
-  has shipped a single month would be building on nothing.
 - **Per-project drill-down pages.** The spend-by-project breakdown exists; a
   project's own public page does not. Worth doing once there are published
   months to link into it.
