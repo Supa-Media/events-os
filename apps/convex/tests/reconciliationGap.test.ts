@@ -578,6 +578,87 @@ describe("reconciliationSummary — assembling the two sides", () => {
 
 // ── The obsolete "Failed" badge ──────────────────────────────────────────────
 
+describe("in-flight gifts — the gap that explains itself", () => {
+  /** Charisma's exact case (owner report, 2026-08-11): an ACH gift is
+   *  authorised, the donor has the receipt email, Stripe counts the money in
+   *  pending, and the books deliberately book nothing until it settles. The
+   *  panel must NAME that instead of reporting "unaccounted for" money the
+   *  org itself receipted two days earlier. */
+  async function seedInFlightGift(
+    s: ChapterSetup,
+    amountCents: number,
+    opts: { status?: "in_flight" | "failed"; ageMs?: number } = {},
+  ): Promise<void> {
+    await run(s.t, (ctx) =>
+      ctx.db.insert("pendingGifts", {
+        sessionId: `cs_test_${Math.floor(amountCents)}_${opts.status ?? "in_flight"}`,
+        status: opts.status ?? "in_flight",
+        scope: s.chapterId,
+        amountCents,
+        currency: "usd",
+        submittedAt: Date.now() - (opts.ageMs ?? 24 * 60 * 60 * 1000),
+        donorName: "Charisma",
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("an in-flight ACH is named, and its total matches the gap it opens", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    // The exact production shape: Stripe's pending balance carries the
+    // incoming ACH, and no gift row exists yet — so cash exceeds books by
+    // precisely the in-flight amount.
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        stripePendingCents: 30_927,
+        updatedAt: Date.now(),
+      }),
+    );
+    await seedInFlightGift(s, 30_927);
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.verdict).toBe("cash_exceeds_books");
+    expect(summary.differenceCents).toBe(30_927);
+    // The panel's equality check — lead total === gap — is what upgrades the
+    // wording from a hint to "that is this entire difference".
+    expect(summary.inFlightGiftCount).toBe(1);
+    expect(summary.inFlightGiftCents).toBe(30_927);
+    expect(summary.inFlightGifts).toEqual([
+      expect.objectContaining({ donorName: "Charisma", amountCents: 30_927 }),
+    ]);
+  });
+
+  test("a failed tombstone is not in-flight money", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    // The bank refused it: no money is coming, and counting the tombstone
+    // would explain a gap with cash that will never exist.
+    await seedInFlightGift(s, 30_927, { status: "failed" });
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.inFlightGiftCount).toBe(0);
+    expect(summary.inFlightGiftCents).toBe(0);
+  });
+
+  test("settled gifts don't linger: outside the sweep window nothing reports", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    // Older than the 21-day pendingGifts sweep horizon — whatever this row
+    // is, it is not money on its way anymore.
+    await seedInFlightGift(s, 30_927, { ageMs: 30 * 24 * 60 * 60 * 1000 });
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.inFlightGiftCount).toBe(0);
+  });
+});
+
 describe("detected payouts — an obsolete allocation failure is not a problem", () => {
   test("re-detecting a failed payout heals it and drops the stale error", async () => {
     // po_1U1qk8Qv9S5xW6eKsjkeLJvv, in production: a MANUALLY-initiated payout,

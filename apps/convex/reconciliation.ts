@@ -3587,6 +3587,29 @@ export const reconciliationSummary = query({
      *  over (owner report, 2026-08-11: a $309.27 ACH did precisely this). */
     unrecordedInflowCount: v.number(),
     unrecordedInflowCents: v.number(),
+    /** Bank-transfer gifts AUTHORISED but not yet settled (`pendingGifts`,
+     *  `in_flight`) — the donor got the "your gift is on its way" email, Stripe
+     *  counts the money in its pending balance, and the books deliberately
+     *  book nothing until it clears (a failed ACH must not need a reversal).
+     *  So for the 2–4 days an ACH is in flight, the cash side legitimately
+     *  exceeds the books by exactly this much. The one lead in this panel
+     *  that resolves ITSELF — nothing to confirm, nothing to code; the gap
+     *  closes the day the bank moves the money (owner report, 2026-08-11:
+     *  a $309.27 in-flight ACH sat here as "unaccounted for" while the org's
+     *  own receipt email for it was in the donor's inbox). */
+    inFlightGiftCount: v.number(),
+    inFlightGiftCents: v.number(),
+    /** The rows behind the total, biggest first, capped — this panel is
+     *  internal (`requireReconciliationAudit`), so the donor's name belongs
+     *  here even though it never publishes. `donorName` is public-form input;
+     *  the client renders it as text, never markup. */
+    inFlightGifts: v.array(
+      v.object({
+        donorName: v.string(),
+        amountCents: v.number(),
+        submittedAt: v.number(),
+      }),
+    ),
     /** A book's scan hit the read limit, so its figure is approximate and the
      *  gap cannot be trusted to the cent. */
     truncated: v.boolean(),
@@ -3759,6 +3782,38 @@ export const reconciliationSummary = query({
       }
     }
 
+    // In-flight gifts: authorised, unsettled, and entirely self-resolving.
+    // Window = the pendingGifts sweep horizon (21 days) — a row older than
+    // that is gone; an ACH normally clears in 2–4 business days. Skipped in
+    // sandbox for the same reason `computeBookBalances` zeroes revenue there:
+    // these are real Stripe checkouts, and a demo reconciliation must not
+    // borrow production money to explain itself.
+    let inFlightGiftCount = 0;
+    let inFlightGiftCents = 0;
+    const inFlightRows: {
+      donorName: string;
+      amountCents: number;
+      submittedAt: number;
+    }[] = [];
+    if (!sandboxMode) {
+      const pendingCutoff = Date.now() - 21 * 24 * 60 * 60 * 1000;
+      const pendingRows = await ctx.db
+        .query("pendingGifts")
+        .withIndex("by_submitted", (q) => q.gte("submittedAt", pendingCutoff))
+        .take(ROLLUP_SCAN_LIMIT);
+      for (const row of pendingRows) {
+        if (row.status !== "in_flight") continue;
+        inFlightGiftCount += 1;
+        inFlightGiftCents += row.amountCents;
+        inFlightRows.push({
+          donorName: row.donorName,
+          amountCents: row.amountCents,
+          submittedAt: row.submittedAt,
+        });
+      }
+      inFlightRows.sort((a, b) => b.amountCents - a.amountCents);
+    }
+
     return {
       bookValueCents,
       bankAvailableCents,
@@ -3789,6 +3844,11 @@ export const reconciliationSummary = query({
       unmatchedPayoutCents: unmatched.reduce((s, p) => s + p.amountCents, 0),
       unrecordedInflowCount,
       unrecordedInflowCents,
+      inFlightGiftCount,
+      inFlightGiftCents,
+      // Capped so one viral giving day can't ship hundreds of rows to a
+      // panel that renders a sentence; the count/total above stay complete.
+      inFlightGifts: inFlightRows.slice(0, 6),
       truncated: books.some((b) => b.truncated),
     };
   },
