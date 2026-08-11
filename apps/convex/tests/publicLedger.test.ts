@@ -1069,3 +1069,94 @@ describe("a pre-policy month discloses what a reader can see", () => {
     expect(statement.entries[0].direction).toBe("internal");
   });
 });
+
+// ── The month coding worklist (the backfill workbench's data) ────────────────
+
+describe("explaining a month", () => {
+  const worklist = (s: ChapterSetup, periodKey: string) =>
+    s.as.query(api.finances.monthCodingWorklist, { periodKey });
+
+  test("surfaces pre-policy rows the other coding surfaces cannot reach", async () => {
+    const s = await asPublisher();
+    // A genesis-backfilled row: no `personId` (so `personTransactions` can
+    // never show it), reconciled and pre-policy (so the reconcile grid's
+    // `uncoded` facet and `chargeTodo` both call it settled). It still
+    // publishes blank, which is the only thing this worklist cares about.
+    await insertTxn(s, {
+      amountCents: 4_000,
+      postedAt: Date.UTC(2024, 5, 14, 16),
+      status: "reconciled",
+      historicalImportBatch: "genesis-2024",
+      merchantName: "U-Haul",
+    });
+
+    const list = (await worklist(s, "2024-06"))!;
+    expect(list.rows).toHaveLength(1);
+    expect(list.rows[0].merchantName).toBe("U-Haul");
+    expect(list.totalCount).toBe(1);
+    expect(list.explainedCount).toBe(0);
+  });
+
+  test("orders biggest first — the top of the list is most of the money", async () => {
+    const s = await asPublisher();
+    for (const amount of [500, 89_900, 4_000]) {
+      await insertTxn(s, { amountCents: amount, postedAt: Date.UTC(2024, 5, 14, 16) });
+    }
+    const list = (await worklist(s, "2024-06"))!;
+    expect(list.rows.map((r) => r.amountCents)).toEqual([89_900, 4_000, 500]);
+  });
+
+  test("an approved coding leaves the list and lands in the progress figure", async () => {
+    const s = await asPublisher();
+    const done = await insertTxn(s, {
+      amountCents: 10_000,
+      postedAt: Date.UTC(2024, 5, 14, 16),
+    });
+    await insertTxn(s, { amountCents: 2_000, postedAt: Date.UTC(2024, 5, 15, 16) });
+    await approveCoding(s, done, { businessPurpose: "Van to move gear in June" });
+
+    const list = (await worklist(s, "2024-06"))!;
+    expect(list.rows).toHaveLength(1);
+    expect(list.rows[0].amountCents).toBe(2_000);
+    expect(list.explainedCount).toBe(1);
+    expect(list.explainedCents).toBe(10_000);
+    expect(list.totalCount).toBe(2);
+    expect(list.totalCents).toBe(12_000);
+  });
+
+  test("internal movements and excluded rows are never asked about", async () => {
+    const s = await asPublisher();
+    // A payout deposit: real, published, and with no business purpose to give.
+    await insertTxn(s, {
+      flow: "inflow",
+      amountCents: 50_000,
+      payoutProcessor: "stripe",
+      postedAt: Date.UTC(2024, 5, 14, 16),
+    });
+    // An intentional exclusion never publishes at all.
+    await insertTxn(s, {
+      amountCents: 9_999,
+      status: "excluded",
+      postedAt: Date.UTC(2024, 5, 15, 16),
+    });
+    const list = (await worklist(s, "2024-06"))!;
+    expect(list.rows).toHaveLength(0);
+    expect(list.totalCount).toBe(0);
+  });
+
+  test("only the requested month, and a malformed one is refused", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
+    await insertTxn(s, { amountCents: 2_000, postedAt: Date.UTC(2024, 6, 14, 16) });
+    expect((await worklist(s, "2024-06"))!.rows).toHaveLength(1);
+    expect((await worklist(s, "2024-07"))!.rows).toHaveLength(1);
+    await expect(worklist(s, "2024-6")).rejects.toThrow(ConvexError);
+  });
+
+  test("a caller with no finance grant cannot read a book's month", async () => {
+    const s = await setupChapter(newT(), { email: "nobody@publicworship.life" });
+    await seedPerson(s, "No Grant");
+    await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
+    await expect(worklist(s, "2024-06")).rejects.toThrow(ConvexError);
+  });
+});

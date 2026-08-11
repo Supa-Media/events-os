@@ -74,6 +74,11 @@ const SEAT_TABS: { label: string; path: string }[] = [
   // the publish button itself needs the `finance.publish` seat capability
   // (`lib/publicLedgerAccess.ts`), which the screen resolves for itself.
   { label: "Publish", path: "/finances/publish" },
+  // Explain — the month-scoped coding workbench behind the publish console's
+  // "N lines will publish with no explanation" disclosure. Its own tab as well
+  // as a link from there, because the backfill is hours of work somebody
+  // returns to rather than a step inside one publish.
+  { label: "Explain", path: "/finances/explain" },
 ];
 
 const MEMBER_TABS: { label: string; path: string }[] = [

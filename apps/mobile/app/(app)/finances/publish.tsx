@@ -36,7 +36,7 @@
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
-import { useLocalSearchParams } from "expo-router";
+import { useLocalSearchParams, useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
@@ -242,6 +242,7 @@ function MonthDetail({
   const requestChanges = useMutation(api.publicLedger.requestChanges);
   const startAmendment = useMutation(api.publicLedger.startAmendment);
 
+  const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
@@ -303,9 +304,24 @@ function MonthDetail({
               historical month was clean when it is about to publish a page of
               blanks. */}
           {preview.unexplainedCount > 0 ? (
-            <Disclosure
-              text={`${preview.unexplainedCount} lines (${formatCents(preview.unexplainedCents)}) will publish with no written explanation of what they were for.`}
-            />
+            <>
+              <Disclosure
+                text={`${preview.unexplainedCount} lines (${formatCents(preview.unexplainedCents)}) will publish with no written explanation of what they were for.`}
+              />
+              {/* The disclosure and the fix, one tap apart. Reading "61 lines
+                  will publish blank" and having nowhere to go from it is how a
+                  warning becomes wallpaper. */}
+              <Button
+                variant="secondary"
+                size="sm"
+                title="Explain them now"
+                onPress={() =>
+                  router.push(
+                    `/finances/explain?period=${month.periodKey}&scope=${scope}` as never,
+                  )
+                }
+              />
+            </>
           ) : null}
           {preview.uncodedCount > 0 ? (
             <Disclosure
