@@ -12,5 +12,14 @@ export default defineConfig({
     "/links": "/#links",
     "/faq": "/#faq",
   },
-  integrations: [tailwind({ applyBaseStyles: false }), sitemap()],
+  integrations: [
+    tailwind({ applyBaseStyles: false }),
+    sitemap({
+      // Unpublished posts build to /blog/drafts/* so pw-router can hold them
+      // behind a password (infra/router/src/draftGate.ts). Handing their URLs
+      // to search engines in the sitemap would defeat the point of gating
+      // them — the gate would hold, but the URL would be public knowledge.
+      filter: (page) => !page.includes("/blog/drafts"),
+    }),
+  ],
 });

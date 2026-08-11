@@ -157,6 +157,7 @@ import { serviceOptions } from "./schema/services";
 import { formSubmissions, formDefinitions } from "./schema/forms";
 import { identityDecisions } from "./schema/identity";
 import { exportJobs } from "./schema/dataExports";
+import { blogReactions } from "./schema/blog";
 
 /**
  * Database schema for Chapter OS.
@@ -623,6 +624,12 @@ const schema = defineSchema({
   // schema/dataExports.ts's module doc + lib/dataExportAccess.ts (the
   // `data.export` gate) + dataExports.ts (job lifecycle + paginated runner).
   exportJobs,
+
+  // Marketing blog reactions — the anonymous emoji bar under each post on
+  // publicworship.life. The posts themselves are markdown in apps/landing,
+  // not rows here; this is only the counter. See schema/blog.ts's module doc
+  // + lib/blogReactions.ts (rules) + blog.ts + lib/blogApiRoutes.ts.
+  blogReactions,
 });
 
 export default schema;

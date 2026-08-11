@@ -1,0 +1,94 @@
+---
+/**
+ * The emoji bar under a post.
+ *
+ * Progressive enhancement, in this order:
+ *  1. The server renders the full bar with zeroed counts, so the row is
+ *     there on first paint and never pops in or shifts the page.
+ *  2. src/scripts/blog-reactions.ts fetches the real counts and marks the
+ *     ones this browser already left.
+ *  3. If the backend is unreachable (local dev with no Convex, an outage),
+ *     the bar stays at its rendered state and disables itself rather than
+ *     lying about a tap that never landed.
+ *
+ * The emoji list is HAND-SYNCED with the server's allowlist in
+ * apps/convex/lib/blogReactions.ts, which is the authority — it rejects
+ * anything not on its own list. The duplication buys first-paint rendering
+ * without making this app depend on the Convex workspace (a lockfile change
+ * for five strings). If the two drift, a tap on the extra emoji fails with a
+ * message and nothing else breaks.
+ */
+export interface Props {
+  /** The post's collection slug — the key reactions are stored under. */
+  slug: string;
+}
+
+const { slug } = Astro.props;
+
+const EMOJIS = ["🙏", "🙌", "❤️", "🔥", "💡"];
+
+// Paired with each emoji so the button has a real accessible name — a screen
+// reader announcing "🙏 button" tells nobody anything.
+const LABELS: Record<string, string> = {
+  "🙏": "Amen",
+  "🙌": "Praise",
+  "❤️": "Love",
+  "🔥": "Fire",
+  "💡": "This helped",
+};
+---
+
+<section
+  class="mt-14 border-t border-red-100 pt-8"
+  data-blog-reactions
+  data-slug={slug}
+  aria-labelledby={`reactions-heading-${slug}`}
+>
+  <h2
+    id={`reactions-heading-${slug}`}
+    class="font-display text-lg font-normal text-ink/70"
+  >
+    Did this land?
+  </h2>
+  <p class="mt-1 text-sm text-ink/60">
+    No sign-in, no comment box — just tap. You can tap again to take it back.
+  </p>
+
+  <div class="mt-4 flex flex-wrap gap-2.5" data-reaction-list>
+    {
+      EMOJIS.map((emoji) => (
+        <button
+          type="button"
+          data-emoji={emoji}
+          aria-pressed="false"
+          aria-label={LABELS[emoji] ?? emoji}
+          title={LABELS[emoji] ?? emoji}
+          class="pw-reaction"
+        >
+          <span aria-hidden="true" class="text-lg leading-none">
+            {emoji}
+          </span>
+          <span
+            class="text-sm font-medium tabular-nums text-ink/70"
+            data-count
+            >0</span
+          >
+        </button>
+      ))
+    }
+  </div>
+
+  {/* Reserved line for "couldn't save that" — kept in the DOM (empty) so an
+      error never shifts the layout, and polite so it doesn't interrupt. */}
+  <p
+    class="mt-3 min-h-[1.25rem] text-sm text-red-600"
+    data-reaction-error
+    role="status"
+    aria-live="polite"
+  >
+  </p>
+</section>
+
+<script>
+  import "../../scripts/blog-reactions.ts";
+</script>

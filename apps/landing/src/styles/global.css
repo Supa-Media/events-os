@@ -62,6 +62,122 @@
   .pw-prose p + p {
     @apply mt-4;
   }
+
+  /* =================================================================
+     Blog post body (.pw-post)
+     Hand-rolled rather than @tailwindcss/typography: the plugin would be a
+     new dependency (and a lockfile change CI installs with
+     --frozen-lockfile) to style a dozen elements against tokens we'd have
+     to override anyway. Applied by PostLayout.astro around <Content />.
+     ================================================================= */
+  .pw-post {
+    @apply text-lg leading-relaxed text-ink/85;
+  }
+
+  .pw-post > * + * {
+    @apply mt-5;
+  }
+
+  .pw-post h2 {
+    @apply mt-12 font-display text-2xl font-normal leading-snug text-ink;
+    /* Clear the sticky-free header when jumped to from the table of contents. */
+    scroll-margin-top: 2rem;
+  }
+
+  .pw-post h3 {
+    @apply mt-9 font-display text-xl font-normal text-ink;
+    scroll-margin-top: 2rem;
+  }
+
+  .pw-post h4 {
+    @apply mt-7 font-body text-lg font-semibold text-ink;
+  }
+
+  .pw-post a {
+    @apply text-red-500 underline decoration-red-200 underline-offset-2 hover:decoration-red-500;
+  }
+
+  .pw-post strong {
+    @apply font-semibold text-ink;
+  }
+
+  .pw-post ul {
+    @apply list-disc space-y-2 pl-6;
+  }
+
+  .pw-post ol {
+    @apply list-decimal space-y-2 pl-6;
+  }
+
+  .pw-post li::marker {
+    @apply text-red-300;
+  }
+
+  /* Pull quote / scripture. */
+  .pw-post blockquote {
+    @apply rounded-r-xl border-l-4 border-red-200 bg-cream-soft py-3 pl-5 pr-4 italic text-ink/80;
+  }
+
+  .pw-post blockquote p + p {
+    @apply mt-3;
+  }
+
+  .pw-post hr {
+    @apply my-10 border-red-100;
+  }
+
+  .pw-post code {
+    @apply rounded bg-cream-soft px-1.5 py-0.5 text-[0.9em];
+  }
+
+  /* Wraps a wide table in the markdown source. The page body must never
+     scroll sideways, so the overflow is contained here. */
+  .pw-post .pw-scroll {
+    @apply -mx-5 overflow-x-auto px-5 sm:mx-0 sm:px-0;
+  }
+
+  .pw-post table {
+    @apply w-full min-w-[36rem] border-collapse text-left text-base;
+  }
+
+  .pw-post th {
+    @apply border-b border-red-200 pb-2 pr-4 align-bottom font-body text-sm font-semibold uppercase tracking-wide text-ink/60;
+  }
+
+  .pw-post td {
+    @apply border-b border-red-100 py-3 pr-4 align-top text-base;
+  }
+
+  /* An aside — the callout boxes in a long post. */
+  .pw-post .pw-note {
+    @apply rounded-2xl bg-pink-softer px-5 py-4 text-base;
+  }
+
+  .pw-post .pw-note > * + * {
+    @apply mt-3;
+  }
+
+  /* =================================================================
+     Blog reaction buttons (src/components/blog/Reactions.astro)
+     ================================================================= */
+  .pw-reaction {
+    @apply inline-flex items-center gap-2 rounded-pill border border-red-100 bg-white
+           px-3.5 py-2 transition-colors;
+  }
+
+  .pw-reaction:hover:not(:disabled) {
+    @apply border-red-300 bg-pink-softer;
+  }
+
+  /* Pressed = this browser left this reaction. Not a color-only signal: the
+     button also carries aria-pressed for anyone not seeing the fill. */
+  .pw-reaction[aria-pressed="true"] {
+    @apply border-red-400 bg-pink-soft;
+  }
+
+  .pw-reaction:disabled {
+    @apply cursor-default opacity-50;
+  }
 }
 
 /* =================================================================

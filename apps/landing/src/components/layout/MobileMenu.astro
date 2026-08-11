@@ -3,6 +3,7 @@ import CloseIcon from "../icons/CloseIcon.astro";
 import Logo from "../icons/Logo.astro";
 import Button from "../ui/Button.astro";
 import { asset } from "../../lib/asset";
+import { hasPublishedPosts } from "../../lib/blog";
 
 export interface Props {
   brand?: "public-worship" | "global-echo";
@@ -11,11 +12,15 @@ export interface Props {
 const { brand = "public-worship" } = Astro.props;
 const home = asset(brand === "global-echo" ? "/ge" : "/");
 
+// Mirrors Header.astro: the blog appears only once a post is published.
+const showBlog = await hasPublishedPosts();
+
 const navLinks = [
   { label: "About", href: `${home}#about` },
   { label: "Impact", href: `${home}#impact` },
   { label: "Links", href: `${home}#links` },
   { label: "FAQ", href: `${home}#faq` },
+  ...(showBlog ? [{ label: "Blog", href: asset("/blog") }] : []),
   { label: "Statement of Beliefs", href: asset("/beliefs") },
   { label: "Volunteer", href: asset("/serve") },
   { label: "Collaborate", href: asset("/collaborate") },

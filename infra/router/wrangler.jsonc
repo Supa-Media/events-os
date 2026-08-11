@@ -11,6 +11,14 @@
   //   - events.publicworship.life -> 301 to https://publicworship.life/os<path>
   //   - rsvp.publicworship.life -> 301 to https://publicworship.life<path>
   //
+  // Secrets (set out-of-band, NEVER in this file):
+  //   DRAFT_PASSWORD — the shared password in front of /blog/drafts/*, the
+  //   unpublished blog posts (see src/draftGate.ts). Set it with
+  //   `npx wrangler secret put DRAFT_PASSWORD` from this directory, and
+  //   rotate it the same way — rotating invalidates every outstanding
+  //   cookie. Until it is set, the drafts prefix fails CLOSED (503), which
+  //   is why it is deliberately absent from any "vars" block here.
+  //
   // Custom domains: this Worker is NOT attached to any route here. The four
   // hostnames above (publicworship.life, www., events., rsvp.) are attached
   // as Custom Domains / Routes in the Cloudflare dashboard by the account

@@ -179,3 +179,26 @@ describe("route: legacy subdomain redirects", () => {
     });
   });
 });
+
+describe("route: unpublished blog posts are gated", () => {
+  it.each([
+    "/blog/drafts",
+    "/blog/drafts/",
+    "/blog/drafts/some-post",
+    "/blog/drafts/some-post/",
+  ])("%s serves assets behind the draft gate", (path) => {
+    expect(route(u(`https://publicworship.life${path}`))).toEqual({
+      kind: "assets",
+      gate: "draft",
+    });
+  });
+
+  it.each(["/blog", "/blog/some-post", "/blog/draftsy", "/blogs/drafts"])(
+    "%s is a published path — no gate",
+    (path) => {
+      expect(route(u(`https://publicworship.life${path}`))).toEqual({
+        kind: "assets",
+      });
+    },
+  );
+});

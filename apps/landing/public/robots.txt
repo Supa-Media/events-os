@@ -1,0 +1,11 @@
+# publicworship.life
+#
+# Unpublished blog posts live under /blog/drafts/ and are password-protected
+# by pw-router (infra/router/src/draftGate.ts) — a crawler could not read one
+# anyway. This rule is belt-and-braces so a shared draft link never turns up
+# in a search result, alongside each draft page's own noindex meta tag and
+# X-Robots-Tag header.
+User-agent: *
+Disallow: /blog/drafts/
+
+Sitemap: https://publicworship.life/sitemap-index.xml
