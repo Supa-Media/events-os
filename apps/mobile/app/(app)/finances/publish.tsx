@@ -36,11 +36,13 @@
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
+import { useLocalSearchParams } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
   AMENDMENT_REASONS,
   AMENDMENT_REASON_LABELS,
+  COMPENSATION_DISCLOSURE,
   formatCents,
   INCOME_STREAM_LABELS,
   MIN_AMENDMENT_NOTE_LENGTH,
@@ -61,6 +63,7 @@ import {
   type BadgeTone,
 } from "../../../components/ui";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
+import { useChapterContext } from "../../../lib/ChapterContext";
 
 function NoAccess() {
   return (
@@ -92,7 +95,29 @@ export default function PublishScreen() {
 }
 
 function Body() {
-  const data = useQuery(api.publicLedger.console_, {});
+  const params = useLocalSearchParams<{ scope?: string }>();
+  const { context } = useChapterContext();
+  // WHICH BOOK ARE WE PUBLISHING? Resolved the same way every other finance
+  // screen resolves it (`book-value.tsx`): `?scope=` wins so a shared link is
+  // explicit, otherwise whichever desk the caller is standing at.
+  //
+  // This is NOT cosmetic. Passing nothing makes the backend fall back to the
+  // caller's own chapter, which means CENTRAL'S BOOK CAN NEVER BE PUBLISHED —
+  // and central is where the org's own money lives. It also means a central
+  // holder peeking at a chapter would work their own queue while believing
+  // they were working that chapter's.
+  const scope =
+    params.scope ??
+    (context?.kind === "peek"
+      ? context.chapterId
+      : context?.kind === "seat"
+        ? context.scope
+        : null);
+
+  const data = useQuery(
+    api.publicLedger.console_,
+    scope ? ({ scope } as never) : {},
+  );
   const [open, setOpen] = useState<string | null>(null);
 
   if (data === undefined) return <Screen loading />;
@@ -123,6 +148,7 @@ function Body() {
           <MonthRow
             key={m.periodKey}
             month={m}
+            scope={data.scope}
             canPublish={data.canPublish}
             expanded={open === m.periodKey}
             onToggle={() => setOpen(open === m.periodKey ? null : m.periodKey)}
@@ -133,17 +159,24 @@ function Body() {
   );
 }
 
+/** A real chapter's book, or central's. */
+type BookScope = NonNullable<
+  ReturnType<typeof useQuery<typeof api.publicLedger.console_>>
+>["scope"];
+
 type MonthSummary = NonNullable<
   ReturnType<typeof useQuery<typeof api.publicLedger.console_>>
 >["months"][number];
 
 function MonthRow({
   month,
+  scope,
   canPublish,
   expanded,
   onToggle,
 }: {
   month: MonthSummary;
+  scope: BookScope;
   canPublish: boolean;
   expanded: boolean;
   onToggle: () => void;
@@ -180,19 +213,30 @@ function MonthRow({
           {month.amendmentNote}
         </Text>
       ) : null}
-      {expanded ? <MonthDetail month={month} canPublish={canPublish} /> : null}
+      {expanded ? (
+        <MonthDetail month={month} scope={scope} canPublish={canPublish} />
+      ) : null}
     </Card>
   );
 }
 
 function MonthDetail({
   month,
+  scope,
   canPublish,
 }: {
   month: MonthSummary;
+  scope: BookScope;
   canPublish: boolean;
 }) {
-  const preview = useQuery(api.publicLedger.preview, { periodKey: month.periodKey });
+  // EVERY call below carries the scope the console resolved. A preview or a
+  // publish that silently retargeted the caller's own chapter would be the
+  // worst possible bug on this screen: it would publish one book's money under
+  // another book's name.
+  const preview = useQuery(api.publicLedger.preview, {
+    scope,
+    periodKey: month.periodKey,
+  } as never);
   const submit = useMutation(api.publicLedger.submit);
   const publish = useMutation(api.publicLedger.publish);
   const requestChanges = useMutation(api.publicLedger.requestChanges);
@@ -253,15 +297,37 @@ function MonthDetail({
               text={`${preview.undocumentedCount} lines (${formatCents(preview.undocumentedCents)}) will publish with no receipt and no approved exception.`}
             />
           ) : null}
+          {/* What a READER will see. On a pre-policy month (2024/2025) the
+              policy gap below is zero while every line is unexplained, so
+              showing only the policy number would tell a publisher their
+              historical month was clean when it is about to publish a page of
+              blanks. */}
+          {preview.unexplainedCount > 0 ? (
+            <Disclosure
+              text={`${preview.unexplainedCount} lines (${formatCents(preview.unexplainedCents)}) will publish with no written explanation of what they were for.`}
+            />
+          ) : null}
           {preview.uncodedCount > 0 ? (
             <Disclosure
-              text={`${preview.uncodedCount} lines (${formatCents(preview.uncodedCents)}) will publish with no approved explanation of what they were for.`}
+              text={`${preview.uncodedCount} of those are charges the coding policy covers — they owe an explanation and don't have an approved one.`}
             />
           ) : null}
           {preview.reconstructedCount > 0 ? (
             <Disclosure
               text={`${preview.reconstructedCount} lines (${formatCents(preview.reconstructedCents)}) were rebuilt from records rather than captured live, and will say so.`}
             />
+          ) : null}
+          {/* The compensation claim is the one disclosure the ledger cannot
+              check for itself — there is no notion of payroll in the schema,
+              so it is a stated fact with a human behind it. Showing it back
+              here every month is what keeps "nobody is paid" from quietly
+              becoming false on a public page. */}
+          {COMPENSATION_DISCLOSURE.allVolunteer ? (
+            <Text className="mt-2 text-sm text-muted">
+              This month will publish “{COMPENSATION_DISCLOSURE.headline}” — is
+              that still true? If anyone is now paid, that line has to change
+              before you publish.
+            </Text>
           ) : null}
           {preview.truncated || preview.overCap ? (
             <Text className="mt-2 text-sm font-semibold text-danger">
@@ -282,7 +348,7 @@ function MonthDetail({
           <Button
             title="Send for review"
             loading={busy}
-            onPress={() => void act(() => submit({ periodKey: month.periodKey }))}
+            onPress={() => void act(() => submit({ scope, periodKey: month.periodKey } as never))}
           />
         )}
 
@@ -295,7 +361,7 @@ function MonthDetail({
                   : "Publish to the public page"
               }
               loading={busy}
-              onPress={() => void act(() => publish({ periodKey: month.periodKey }))}
+              onPress={() => void act(() => publish({ scope, periodKey: month.periodKey } as never))}
             />
             <TextField
               label="Or send it back"
@@ -310,7 +376,7 @@ function MonthDetail({
               disabled={busy || noteTooShort}
               onPress={() =>
                 void act(() =>
-                  requestChanges({ periodKey: month.periodKey, note: note.trim() }),
+                  requestChanges({ scope, periodKey: month.periodKey, note: note.trim() } as never),
                 )
               }
             />
@@ -353,10 +419,11 @@ function MonthDetail({
               onPress={() =>
                 void act(() =>
                   startAmendment({
+                    scope,
                     periodKey: month.periodKey,
                     reason,
                     note: note.trim(),
-                  }),
+                  } as never),
                 )
               }
             />

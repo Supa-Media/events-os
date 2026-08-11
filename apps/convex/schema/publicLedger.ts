@@ -247,6 +247,13 @@ export const financePublicationRevisions = defineTable({
    *  receipt and no explanation, or the explanation and no receipt. */
   uncodedCount: v.number(),
   uncodedCents: v.number(),
+  /** Lines that publish with NO explanation at all — what a reader sees, as
+   *  opposed to `uncodedCount` above, which is what our policy required. The
+   *  two are wildly different on pre-policy history, where every row is
+   *  grandfathered (uncoded 0) and unexplained (this, large). OPTIONAL for
+   *  revisions published before the distinction existed. */
+  unexplainedCount: v.optional(v.number()),
+  unexplainedCents: v.optional(v.number()),
 
   /** A source scan hit `ROLLUP_SCAN_LIMIT` while this revision was built, so
    *  its figures may be incomplete. `publish` REFUSES to publish a truncated

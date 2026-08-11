@@ -41,6 +41,7 @@ import { siteUrl } from "./siteUrl";
 import {
   AMENDMENT_REASON_LABELS,
   ATTENDEE_AFFILIATION_LABELS,
+  COMPENSATION_DISCLOSURE,
   DOCUMENTATION_STATE_LABELS,
   EXPENSE_TYPE_LABELS,
   formatAffiliationMix,
@@ -123,6 +124,8 @@ export type StatementCore = {
   undocumentedCents: number;
   uncodedCount: number;
   uncodedCents: number;
+  unexplainedCount: number;
+  unexplainedCents: number;
   entryCount: number;
   giftCount: number;
   giverCount: number;
@@ -338,6 +341,37 @@ function statsHtml(s: StatementCore): string {
 </div>`;
 }
 
+/**
+ * WHO GETS PAID — stated up front, not buried in an accordion.
+ *
+ * This sat inside the "Why are there no names?" FAQ, which is exactly the
+ * wrong place for it: "nobody here is paid" is one of the strongest things
+ * this organization can say about itself, and it was three clicks deep behind
+ * a question about something else.
+ *
+ * It renders immediately under the stat tiles because that is where the
+ * question arises — a reader who has just seen "Total spent" is entitled to
+ * know how much of it went to the people spending it, and the answer is
+ * currently none.
+ *
+ * The forward-looking half publishes even though there is nothing yet to
+ * disclose. A compensation policy announced the year it first costs something
+ * reads as a defence; announced before, it reads as a commitment. See
+ * `COMPENSATION_DISCLOSURE`'s doc for the staleness hazard this carries.
+ */
+function compensationHtml(): string {
+  const c = COMPENSATION_DISCLOSURE;
+  if (!c.allVolunteer) {
+    // Once somebody IS paid, the honest render is the policy alone — the
+    // numbers themselves are in the lines, where they belong.
+    return `<div class="note pay"><p>${esc(c.policy)}</p></div>`;
+  }
+  return `<div class="note pay">
+  <strong>${esc(c.headline)}</strong> ${esc(c.present)}
+  <p class="paypolicy">${esc(c.policy)}</p>
+</div>`;
+}
+
 function barRowsHtml(
   rows: { label: string; cents: number; count: number; blurb?: string }[],
   inflow: boolean,
@@ -534,7 +568,12 @@ function ledgerHtml(s: PublicStatement): string {
   <td class="purpose">${
     e.purpose
       ? esc(e.purpose)
-      : `<span class="nopurpose">No published explanation for this line</span>`
+      : e.direction === "internal"
+        ? // Not a documentation gap: money moving between our own accounts, or
+          // income already counted above arriving in the bank. Rendering the
+          // accusatory placeholder here made complete rows look broken.
+          `<span class="nopurpose">Money moved between our own accounts — nothing earned or spent</span>`
+        : `<span class="nopurpose">No published explanation for this line</span>`
   }${contextHtml(e)}</td>
   <td>${esc(e.categoryLabel ?? "—")}${
     e.projectLabel || e.eventLabel
@@ -703,15 +742,25 @@ function disclosuresHtml(s: StatementCore, totalBooks: number): string {
       `<div class="note"><strong>${lines(s.undocumentedCount)} (${esc(money(s.undocumentedCents))}) ${one ? "has" : "have"} no receipt on file</strong> and no approved written explanation of why not. We're publishing ${one ? "it" : "them"} anyway. Hiding ${one ? "it" : "them"} until the paperwork caught up would mean publishing a version of the month that wasn't true.</div>`,
     );
   }
-  if (s.uncodedCount > 0) {
-    const one = s.uncodedCount === 1;
+  // Reports `unexplainedCount`, NOT `uncodedCount`. The second is what our
+  // policy required; the first is what a reader can see. On a pre-policy month
+  // they differ completely — every row is grandfathered (uncoded 0) and every
+  // row is unexplained — and reporting the policy number there would leave the
+  // page silent about its most visible property.
+  if (s.unexplainedCount > 0) {
+    const one = s.unexplainedCount === 1;
+    const most = s.entryCount > 0 && s.unexplainedCount / s.entryCount >= 0.5;
     notes.push(
-      `<div class="note"><strong>${lines(s.uncodedCount)} (${esc(money(s.uncodedCents))}) ${one ? "has" : "have"} no approved explanation of what ${one ? "it was" : "they were"} for.</strong> ${one ? "That row shows" : "Those rows show"} the vendor and the amount and ${one ? "says" : "say"} so plainly rather than guessing. Every charge from here on is required to carry an explanation before it can be closed.</div>`,
+      `<div class="note"><strong>${lines(s.unexplainedCount)} (${esc(money(s.unexplainedCents))}) publish${one ? "es" : ""} with no written explanation of what ${one ? "it was" : "they were"} for.</strong> ${one ? "That row shows" : "Those rows show"} the vendor, the amount and the category, and ${one ? "says" : "say"} so plainly rather than guessing at a reason after the fact.${
+        most
+          ? " That's most of this month, and it's because this period predates the rule: every charge is now required to carry a written purpose — who it was for and why — before it can be closed. Older months are the honest record of how we used to work."
+          : " Every charge is now required to carry one before it can be closed."
+      }</div>`,
     );
   }
   if (s.books.length < totalBooks) {
     notes.push(
-      `<div class="note"><strong>${s.books.length} of our ${totalBooks} books have published this month</strong> (${esc(s.books.map((b) => b.bookLabel).join(", "))}). The totals above cover those books only.</div>`,
+      `<div class="note"><strong>${s.books.length} of our ${totalBooks} books ${s.books.length === 1 ? "has" : "have"} published</strong> (${esc([...new Set(s.books.map((b) => b.bookLabel))].join(", "))}). The totals above cover those books only.</div>`,
     );
   }
   return notes.join("");
@@ -732,7 +781,7 @@ function howToReadHtml(): string {
 
   <details class="faq"><summary>Why are there no names?</summary>
   <p>Nobody is named on this page — not givers, not the people at a meal we paid for. Givers didn't sign up for a public financial record, and some of the people we feed are minors. So a meal publishes as "12 people — 5 team members, 7 community members," which answers who it was for without publishing a person.</p>
-  <p>Salaries are a different question, and the answer is that we intend to publish them by position rather than by person — the same way public offices publish theirs. Today nobody at Public Worship is paid.</p></details>
+  <p>Compensation is the one place we'd name a role rather than hide behind the rule — see the note near the top of this page.</p></details>
 
   <details class="faq"><summary>What has to be true before a line publishes?</summary>
   <p>For anything spent from here on: a receipt, and a written explanation of what it was for — who was at the meal and how many, where a trip went from and to. That's the IRS substantiation standard, and we hold ourselves to it because it's also just the answer a giver deserves.</p>
@@ -768,6 +817,7 @@ ${periodPickerHtml({
   selectedMonth: statement.periodKey.slice(5, 7),
 })}
 ${statsHtml(statement)}
+${compensationHtml()}
 ${disclosuresHtml(statement, totalBooks)}
 ${amendmentsHtml(statement, false)}
 ${incomeHtml(statement)}
@@ -827,6 +877,7 @@ export function renderLedgerYearPage(
 </div>
 ${periodPickerHtml({ years, months, selectedYear: statement.year, selectedMonth: "" })}
 ${statsHtml(statement)}
+${compensationHtml()}
 <div class="note"><strong>${statement.months.length} of 12 months published for ${esc(statement.label)}.</strong> ${
     complete
       ? "This is the complete year."
