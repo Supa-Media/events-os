@@ -64,8 +64,11 @@ export function isoDate(date: Date): string {
 }
 
 /** Rough read time, at 220 wpm — close enough to set expectations, which is
- *  all it is for. Minimum 1 so a short post never reads "0 min". */
+ *  all it is for. HTML tags are stripped first: posts may embed raw HTML
+ *  (tables, callouts), and counting `<td>` as a word inflates the estimate.
+ *  Minimum 1 so a short post never reads "0 min". */
 export function readingMinutes(body: string | undefined): number {
-  const words = (body ?? "").trim().split(/\s+/).filter(Boolean).length;
+  const prose = (body ?? "").replace(/<[^>]+>/g, " ");
+  const words = prose.trim().split(/\s+/).filter(Boolean).length;
   return Math.max(1, Math.round(words / 220));
 }
