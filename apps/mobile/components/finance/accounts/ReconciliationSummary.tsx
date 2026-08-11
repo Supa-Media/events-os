@@ -481,9 +481,17 @@ export function ReconciliationSummary() {
                 {formatCents(verdict.amountCents)} unaccounted for
               </Text>
               <Text className="mt-0.5 text-sm text-muted">
-                {cashHigh
-                  ? "Something came in that was never recorded, or an expense was recorded that never actually left."
-                  : "Something is counted twice, or was recorded as spent when it wasn't."}
+                {/* When a known in-flight gift IS the whole gap, the panel
+                    knows the answer and must not phrase it as a mystery —
+                    "never recorded" is an accusation, and here it would be a
+                    false one aimed at money the org already receipted. */}
+                {cashHigh &&
+                summary.inFlightGiftCents === verdict.amountCents &&
+                summary.inFlightGiftCount > 0
+                  ? "This is a gift still clearing the bank — details under Where to look. It books itself when it settles."
+                  : cashHigh
+                    ? "Something came in that was never recorded, or an expense was recorded that never actually left."
+                    : "Something is counted twice, or was recorded as spent when it wasn't."}
               </Text>
             </>
           )}
@@ -760,6 +768,71 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
               first line is the one worth reading. Suppressed when there is no
               direction to reason from — with Stripe unread, "the books claim
               more than we can find" would be pointing at the wrong culprit. */}
+          {/* In-flight gifts lead the list: the one explanation that is
+              already fully known and fully self-resolving. A reader sent
+              hunting through Reconcile for money the org itself receipted
+              two days ago has been failed by this panel, not helped. */}
+          {summary.inFlightGiftCount > 0 ? (
+            <Text className="text-2xs text-muted">
+              • {summary.inFlightGiftCount === 1 ? "A gift" : "Gifts"} totalling{" "}
+              {formatCents(summary.inFlightGiftCents)}{" "}
+              {summary.inFlightGiftCount === 1 ? "is" : "are"} still clearing
+              the bank
+              {summary.inFlightGifts.length > 0
+                ? ` (${summary.inFlightGifts
+                    .map(
+                      (g) =>
+                        `${g.donorName}, ${formatCents(g.amountCents)}, ${new Date(
+                          g.submittedAt,
+                        ).toLocaleDateString("en-US", {
+                          timeZone: "America/New_York",
+                          month: "short",
+                          day: "numeric",
+                        })}`,
+                    )
+                    .join("; ")})`
+                : ""}
+              . The donor already has the receipt email; Stripe holds it in
+              pending while the transfer clears, and it books as a gift the
+              moment it settles.
+              {/* Two sources, printed together when both exist: our receipts
+                  and Stripe's own bank_account-pending slice. Agreement is
+                  corroboration a reader can check; silence about a second
+                  source we hold would make this lead weaker than the data
+                  behind it. */}
+              {summary.stripePendingBankAccountCents != null &&
+              summary.stripePendingBankAccountCents ===
+                summary.inFlightGiftCents
+                ? " Stripe's own balance confirms it — its bank-transfer pending slice matches to the cent."
+                : ""}
+              {summary.inFlightGiftCents === summary.differenceCents
+                ? " That is this entire difference — nothing for you to do."
+                : " Nothing for you to do on these."}
+            </Text>
+          ) : null}
+          {/* The divergence case: Stripe says bank-transfer money is in
+              transit and our receipts don't fully cover it. That remainder is
+              an ACH moving through Stripe that the giving flow never saw —
+              exactly the shape that deserves a name before it lands as a
+              mystery credit. */}
+          {summary.stripePendingBankAccountCents != null &&
+          summary.stripePendingBankAccountCents >
+            summary.inFlightGiftCents ? (
+            <Text className="text-2xs text-warn">
+              • Stripe reports{" "}
+              {formatCents(summary.stripePendingBankAccountCents)} of
+              bank-transfer money still clearing, but our gift receipts only
+              account for {formatCents(summary.inFlightGiftCents)} of it. The
+              remaining{" "}
+              {formatCents(
+                summary.stripePendingBankAccountCents -
+                  summary.inFlightGiftCents,
+              )}{" "}
+              is an ACH moving through Stripe that the giving flow never saw —
+              expect it to surface as a bank credit that needs recording when
+              it lands.
+            </Text>
+          ) : null}
           {unknowable ? null : cashHigh ? (
             <Text className="text-2xs text-muted">
               • Income that never made it onto a book — a deposit sitting in

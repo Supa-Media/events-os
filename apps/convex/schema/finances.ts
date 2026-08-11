@@ -2264,6 +2264,15 @@ export const financeSettings = defineTable({
   // charges Stripe hasn't released yet.
   stripeAvailableCents: v.optional(v.number()),
   stripePendingCents: v.optional(v.number()),
+  /** The `bank_account` slice of Stripe's pending balance (`source_types`) —
+   *  ACH debits still clearing, as STRIPE reports them. Captured so the gap
+   *  panel's in-flight-gifts lead has a second, independent source: our
+   *  `pendingGifts` rows say what we receipted; this says what Stripe is
+   *  actually holding in transit. When the two agree the explanation is
+   *  corroborated; when they diverge, that divergence is itself the finding
+   *  (an ACH initiated outside the giving flow, or a receipt Stripe has
+   *  already failed). Absent until the first snapshot after this shipped. */
+  stripePendingBankAccountCents: v.optional(v.number()),
   stripeBalanceAsOf: v.optional(v.number()),
   // ── The two winding-down piles (see `lib/reconciliationGap.ts`) ─────────────
   // Givebutter and Relay are both slated for deprecation ("we plan to deprecate
