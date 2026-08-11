@@ -248,6 +248,7 @@ export const recordPendingGift = internalMutation({
         status: "in_flight",
         scope: donor.scope,
         amountCents: giftCents,
+        chargeTotalCents: args.amountTotalCents,
         currency: "usd",
         submittedAt: now,
         donorName: donor.name,
@@ -275,6 +276,7 @@ export const recordPendingGift = internalMutation({
         status: "in_flight",
         scope: donation.chapterId,
         amountCents: donation.amountCents,
+        chargeTotalCents: args.amountTotalCents,
         currency: donation.currency,
         submittedAt: now,
         donorName: donation.name,
@@ -302,8 +304,11 @@ export const recordPendingGift = internalMutation({
         status: "in_flight",
         scope: order.chapterId,
         // ONLY the upsell. `order.totalCents` is ticket revenue, which never
-        // becomes a gift and has no business in a giving digest.
+        // becomes a gift and has no business in a giving digest. The charge
+        // total, by contrast, is the WHOLE session — tickets included — since
+        // that is what Stripe holds in pending while the debit clears.
         amountCents: addOnCents,
+        chargeTotalCents: args.amountTotalCents,
         currency: order.currency,
         submittedAt: now,
         donorName: order.name,

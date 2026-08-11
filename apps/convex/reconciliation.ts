@@ -114,6 +114,7 @@ import {
 } from "./transfers";
 import { readSandbox } from "./financeSettings";
 import { isCandidateShaped } from "./givingCandidates";
+import { MAX_PENDING_AGE_MS } from "./givingPending";
 import { requireUserId } from "./lib/context";
 import {
   getChapterAccountForMode,
@@ -2221,6 +2222,14 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
             : 0),
         0,
       );
+      // Diagnostic, deliberately kept: on 2026-08-11 this slice read 0 in
+      // production while a $309.27 ACH visibly sat in the pending total, so
+      // either `source_types` was absent or the debit was attributed to
+      // another key. Amounts and type keys only — no PII.
+      console.log(
+        "[reconciliation] stripe pending breakdown:",
+        JSON.stringify(bal.pending),
+      );
       await ctx.runMutation(internal.reconciliation.saveStripeBalance, {
         availableCents: sumUsd(bal.available),
         pendingCents: sumUsd(bal.pending),
@@ -2228,6 +2237,79 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
       });
     } catch (err) {
       console.error("[reconciliation] Stripe balance snapshot failed", err);
+    }
+
+    // ── Backfill in-flight ACH records the webhook never got to write ──────
+    // `checkout.session.completed` delivers ONCE. A gift authorised while the
+    // pendingGifts writer wasn't deployed (2026-08-09 → 2026-08-10: the
+    // owner's $309.27) or while the webhook endpoint was down leaves no row,
+    // and no later event ever will — so the panel's in-flight lead and the
+    // gap netting were blind to it forever. Stripe still knows: a session
+    // that is `complete` + `unpaid` whose PaymentIntent is `processing` IS an
+    // ACH in transit (a failed debit flips the intent to
+    // `requires_payment_method`, so tombstone-less failures are never
+    // resurrected as phantoms). Replayed through the SAME mutation the
+    // webhook calls — `recordPendingGift` refuses on any existing row and on
+    // an already-settled gift, so this is a no-op sweep whenever the webhook
+    // did its job. Windowed to the table's own 21-day horizon and stamped
+    // with the session's true creation time, so a reconstructed row ages and
+    // sweeps exactly like a webhook-written one.
+    try {
+      const since = Math.floor((Date.now() - MAX_PENDING_AGE_MS) / 1000);
+      const list = await stripeGet(
+        key,
+        `/checkout/sessions?limit=100&created[gte]=${since}&expand[]=data.payment_intent`,
+      );
+      const sessions = Array.isArray(list.data) ? list.data : [];
+      for (const raw of sessions) {
+        const s = raw as {
+          id?: string;
+          status?: string;
+          payment_status?: string;
+          amount_total?: number | null;
+          created?: number;
+          metadata?: Record<string, string> | null;
+          payment_intent?: { status?: string } | string | null;
+        };
+        if (typeof s.id !== "string") continue;
+        if (s.status !== "complete" || s.payment_status !== "unpaid") continue;
+        const intent = s.payment_intent;
+        if (
+          typeof intent !== "object" ||
+          intent == null ||
+          intent.status !== "processing"
+        ) {
+          continue;
+        }
+        const intended = Number(s.metadata?.giveIntendedCents);
+        const wrote = await ctx.runMutation(
+          internal.givingPending.recordPendingGift,
+          {
+            sessionId: s.id,
+            amountTotalCents: s.amount_total ?? 0,
+            isGiveDonation: s.metadata?.giveDonation === "1",
+            ...(s.metadata?.giveDonorId
+              ? { giveDonorId: s.metadata.giveDonorId }
+              : {}),
+            ...(Number.isFinite(intended)
+              ? { giveIntendedCents: intended }
+              : {}),
+            ...(typeof s.created === "number"
+              ? { submittedAt: s.created * 1000 }
+              : {}),
+          },
+        );
+        if (wrote) {
+          // The breadcrumb that says the webhook missed one — worth a line,
+          // because a backfill that fires regularly means deliveries are
+          // being lost, and this is the only place that would ever notice.
+          console.log(
+            `[reconciliation] reconstructed in-flight ACH record for ${s.id}`,
+          );
+        }
+      }
+    } catch (err) {
+      console.error("[reconciliation] in-flight ACH backfill failed", err);
     }
   }
 
@@ -3733,13 +3815,20 @@ export const reconciliationSummary = query({
     // borrow production money to explain itself.
     let inFlightGiftCount = 0;
     let inFlightGiftCents = 0;
+    // The CHARGE basis — what Stripe is actually holding while each debit
+    // clears (gift + fee coverage + any bundled tickets). This is the figure
+    // the netting needs, because the cash side counts the charge; using the
+    // gift figure would leave a coverage-sized sliver "unaccounted for" on
+    // every fee-covered ACH gift. Falls back to `amountCents` for rows
+    // written before `chargeTotalCents` existed.
+    let inFlightChargeCents = 0;
     const inFlightRows: {
       donorName: string;
       amountCents: number;
       submittedAt: number;
     }[] = [];
     if (!sandboxMode) {
-      const pendingCutoff = Date.now() - 21 * 24 * 60 * 60 * 1000;
+      const pendingCutoff = Date.now() - MAX_PENDING_AGE_MS;
       const pendingRows = await ctx.db
         .query("pendingGifts")
         .withIndex("by_submitted", (q) => q.gte("submittedAt", pendingCutoff))
@@ -3748,6 +3837,7 @@ export const reconciliationSummary = query({
         if (row.status !== "in_flight") continue;
         inFlightGiftCount += 1;
         inFlightGiftCents += row.amountCents;
+        inFlightChargeCents += row.chargeTotalCents ?? row.amountCents;
         inFlightRows.push({
           donorName: row.donorName,
           amountCents: row.amountCents,
@@ -3768,19 +3858,19 @@ export const reconciliationSummary = query({
       relayBalanceCents,
       // The LARGER of two independent statements of ACH in transit, because
       // either can be missing on its own:
-      //  · our `pendingGifts` receipts miss any gift whose `completed` event
-      //    fired before the tracker shipped (2026-08-10) — the exact hole the
-      //    owner's $309.27 fell through, since `completed` never redelivers —
-      //    and they price the GIFT (fee coverage excluded), not the charge;
+      //  · our `pendingGifts` rows (charge basis, `chargeTotalCents`) can miss
+      //    a gift whose `completed` event fired while the tracker wasn't
+      //    deployed — `completed` never redelivers — until the snapshot's
+      //    backfill reconstructs the row from Stripe's session list;
       //  · Stripe's own `bank_account` pending slice is the processor's
-      //    statement on the charge basis the cash side counts, but is null
-      //    until a snapshot lands and can lag a settlement by one refresh.
+      //    statement of the same money, but is null until a snapshot lands,
+      //    can lag a settlement by one refresh, and was observed reading 0 in
+      //    production on 2026-08-11 while a $309.27 ACH sat in pending — so
+      //    it corroborates but must never be the only evidence.
       // Over-evidence is safe — the arithmetic clamps the term to the positive
-      // part of the raw difference (see `reconciliationGap.ts`). Counted from
-      // the same settings row as `stripePendingCents`, so the two Stripe terms
-      // always describe the same snapshot.
+      // part of the raw difference (see `reconciliationGap.ts`).
       inFlightCents: Math.max(
-        inFlightGiftCents,
+        inFlightChargeCents,
         settings?.stripePendingBankAccountCents ?? 0,
       ),
     });
