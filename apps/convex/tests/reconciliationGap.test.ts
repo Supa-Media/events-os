@@ -633,6 +633,28 @@ describe("in-flight gifts — the gap that explains itself", () => {
     ]);
   });
 
+  test("Stripe's bank_account-pending slice passes through for corroboration", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        stripePendingCents: 30_927,
+        stripePendingBankAccountCents: 30_927,
+        updatedAt: Date.now(),
+      }),
+    );
+    await seedInFlightGift(s, 30_927);
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    // Two independent sources of the same figure: our receipts and Stripe's
+    // own statement of ACH in transit. The panel prints the agreement.
+    expect(summary.stripePendingBankAccountCents).toBe(30_927);
+    expect(summary.inFlightGiftCents).toBe(30_927);
+  });
+
   test("a failed tombstone is not in-flight money", async () => {
     const t = newT();
     const s = await setupChapter(t);

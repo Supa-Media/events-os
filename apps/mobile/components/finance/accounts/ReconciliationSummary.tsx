@@ -795,9 +795,42 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
               . The donor already has the receipt email; Stripe holds it in
               pending while the transfer clears, and it books as a gift the
               moment it settles.
+              {/* Two sources, printed together when both exist: our receipts
+                  and Stripe's own bank_account-pending slice. Agreement is
+                  corroboration a reader can check; silence about a second
+                  source we hold would make this lead weaker than the data
+                  behind it. */}
+              {summary.stripePendingBankAccountCents != null &&
+              summary.stripePendingBankAccountCents ===
+                summary.inFlightGiftCents
+                ? " Stripe's own balance confirms it — its bank-transfer pending slice matches to the cent."
+                : ""}
               {summary.inFlightGiftCents === summary.differenceCents
                 ? " That is this entire difference — nothing for you to do."
                 : " Nothing for you to do on these."}
+            </Text>
+          ) : null}
+          {/* The divergence case: Stripe says bank-transfer money is in
+              transit and our receipts don't fully cover it. That remainder is
+              an ACH moving through Stripe that the giving flow never saw —
+              exactly the shape that deserves a name before it lands as a
+              mystery credit. */}
+          {summary.stripePendingBankAccountCents != null &&
+          summary.stripePendingBankAccountCents >
+            summary.inFlightGiftCents ? (
+            <Text className="text-2xs text-warn">
+              • Stripe reports{" "}
+              {formatCents(summary.stripePendingBankAccountCents)} of
+              bank-transfer money still clearing, but our gift receipts only
+              account for {formatCents(summary.inFlightGiftCents)} of it. The
+              remaining{" "}
+              {formatCents(
+                summary.stripePendingBankAccountCents -
+                  summary.inFlightGiftCents,
+              )}{" "}
+              is an ACH moving through Stripe that the giving flow never saw —
+              expect it to surface as a bank credit that needs recording when
+              it lands.
             </Text>
           ) : null}
           {unknowable ? null : cashHigh ? (

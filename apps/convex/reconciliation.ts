@@ -1535,13 +1535,20 @@ export const finishBalanceSnapshot = internalMutation({
 
 /** Org-level Stripe balance snapshot — one Stripe account, so not per-book. */
 export const saveStripeBalance = internalMutation({
-  args: { availableCents: v.number(), pendingCents: v.number() },
+  args: {
+    availableCents: v.number(),
+    pendingCents: v.number(),
+    /** The `bank_account` slice of pending — see the schema field's doc.
+     *  Optional so an older in-flight scheduler call still validates. */
+    pendingBankAccountCents: v.optional(v.number()),
+  },
   returns: v.null(),
-  handler: async (ctx, { availableCents, pendingCents }) => {
+  handler: async (ctx, { availableCents, pendingCents, pendingBankAccountCents }) => {
     const row = await ctx.db.query("financeSettings").first();
     const patch = {
       stripeAvailableCents: availableCents,
       stripePendingCents: pendingCents,
+      stripePendingBankAccountCents: pendingBankAccountCents,
       stripeBalanceAsOf: Date.now(),
       updatedAt: Date.now(),
     };
@@ -2186,19 +2193,38 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
   if (key) {
     try {
       const bal = await stripeGet(key, "/balance");
-      const sumUsd = (arr: unknown): number =>
+      const usdEntries = (arr: unknown) =>
         Array.isArray(arr)
-          ? arr
-              .filter(
-                (b): b is { amount: number; currency: string } =>
-                  typeof (b as { amount?: unknown })?.amount === "number" &&
-                  (b as { currency?: unknown })?.currency === "usd",
-              )
-              .reduce((sum, b) => sum + b.amount, 0)
-          : 0;
+          ? arr.filter(
+              (
+                b,
+              ): b is {
+                amount: number;
+                currency: string;
+                source_types?: Record<string, number>;
+              } =>
+                typeof (b as { amount?: unknown })?.amount === "number" &&
+                (b as { currency?: unknown })?.currency === "usd",
+            )
+          : [];
+      const sumUsd = (arr: unknown): number =>
+        usdEntries(arr).reduce((sum, b) => sum + b.amount, 0);
+      // The `bank_account` slice of pending is ACH debits still clearing —
+      // Stripe's own statement of the money the in-flight-gifts lead is
+      // explaining. Summed defensively: `source_types` is documented but a
+      // missing key must read as zero, never crash a best-effort snapshot.
+      const pendingBankAccountCents = usdEntries(bal.pending).reduce(
+        (sum, b) =>
+          sum +
+          (typeof b.source_types?.bank_account === "number"
+            ? b.source_types.bank_account
+            : 0),
+        0,
+      );
       await ctx.runMutation(internal.reconciliation.saveStripeBalance, {
         availableCents: sumUsd(bal.available),
         pendingCents: sumUsd(bal.pending),
+        pendingBankAccountCents,
       });
     } catch (err) {
       console.error("[reconciliation] Stripe balance snapshot failed", err);
@@ -3599,6 +3625,12 @@ export const reconciliationSummary = query({
      *  own receipt email for it was in the donor's inbox). */
     inFlightGiftCount: v.number(),
     inFlightGiftCents: v.number(),
+    /** Stripe's own `bank_account` pending slice — the processor's statement
+     *  of ACH money in transit, beside OUR statement above. Null until the
+     *  first snapshot since the field shipped. The panel prints both when it
+     *  has both: two sources agreeing is corroboration; two sources
+     *  diverging is a finding. */
+    stripePendingBankAccountCents: v.union(v.number(), v.null()),
     /** The rows behind the total, biggest first, capped — this panel is
      *  internal (`requireReconciliationAudit`), so the donor's name belongs
      *  here even though it never publishes. `donorName` is public-form input;
@@ -3846,6 +3878,8 @@ export const reconciliationSummary = query({
       unrecordedInflowCents,
       inFlightGiftCount,
       inFlightGiftCents,
+      stripePendingBankAccountCents:
+        settings?.stripePendingBankAccountCents ?? null,
       // Capped so one viral giving day can't ship hundreds of rows to a
       // panel that renders a sentence; the count/total above stay complete.
       inFlightGifts: inFlightRows.slice(0, 6),
