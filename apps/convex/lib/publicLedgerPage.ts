@@ -124,6 +124,8 @@ export type StatementCore = {
   undocumentedCents: number;
   uncodedCount: number;
   uncodedCents: number;
+  unexplainedCount: number;
+  unexplainedCents: number;
   entryCount: number;
   giftCount: number;
   giverCount: number;
@@ -566,7 +568,12 @@ function ledgerHtml(s: PublicStatement): string {
   <td class="purpose">${
     e.purpose
       ? esc(e.purpose)
-      : `<span class="nopurpose">No published explanation for this line</span>`
+      : e.direction === "internal"
+        ? // Not a documentation gap: money moving between our own accounts, or
+          // income already counted above arriving in the bank. Rendering the
+          // accusatory placeholder here made complete rows look broken.
+          `<span class="nopurpose">Money moved between our own accounts — nothing earned or spent</span>`
+        : `<span class="nopurpose">No published explanation for this line</span>`
   }${contextHtml(e)}</td>
   <td>${esc(e.categoryLabel ?? "—")}${
     e.projectLabel || e.eventLabel
@@ -735,10 +742,20 @@ function disclosuresHtml(s: StatementCore, totalBooks: number): string {
       `<div class="note"><strong>${lines(s.undocumentedCount)} (${esc(money(s.undocumentedCents))}) ${one ? "has" : "have"} no receipt on file</strong> and no approved written explanation of why not. We're publishing ${one ? "it" : "them"} anyway. Hiding ${one ? "it" : "them"} until the paperwork caught up would mean publishing a version of the month that wasn't true.</div>`,
     );
   }
-  if (s.uncodedCount > 0) {
-    const one = s.uncodedCount === 1;
+  // Reports `unexplainedCount`, NOT `uncodedCount`. The second is what our
+  // policy required; the first is what a reader can see. On a pre-policy month
+  // they differ completely — every row is grandfathered (uncoded 0) and every
+  // row is unexplained — and reporting the policy number there would leave the
+  // page silent about its most visible property.
+  if (s.unexplainedCount > 0) {
+    const one = s.unexplainedCount === 1;
+    const most = s.entryCount > 0 && s.unexplainedCount / s.entryCount >= 0.5;
     notes.push(
-      `<div class="note"><strong>${lines(s.uncodedCount)} (${esc(money(s.uncodedCents))}) ${one ? "has" : "have"} no approved explanation of what ${one ? "it was" : "they were"} for.</strong> ${one ? "That row shows" : "Those rows show"} the vendor and the amount and ${one ? "says" : "say"} so plainly rather than guessing. Every charge from here on is required to carry an explanation before it can be closed.</div>`,
+      `<div class="note"><strong>${lines(s.unexplainedCount)} (${esc(money(s.unexplainedCents))}) publish${one ? "es" : ""} with no written explanation of what ${one ? "it was" : "they were"} for.</strong> ${one ? "That row shows" : "Those rows show"} the vendor, the amount and the category, and ${one ? "says" : "say"} so plainly rather than guessing at a reason after the fact.${
+        most
+          ? " That's most of this month, and it's because this period predates the rule: every charge is now required to carry a written purpose — who it was for and why — before it can be closed. Older months are the honest record of how we used to work."
+          : " Every charge is now required to carry one before it can be closed."
+      }</div>`,
     );
   }
   if (s.books.length < totalBooks) {

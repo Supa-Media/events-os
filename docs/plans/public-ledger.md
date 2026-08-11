@@ -206,6 +206,35 @@ past 100% because clamping them would hide the most interesting row.
 A missing allocation renders "—", never "$0.00": spend that carried no budget,
 and year rows whose months didn't all carry one, are not budgets of zero.
 
+## Publishing history (2024 / 2025)
+
+The backfilled months are a different animal from a freshly-closed one, and
+the page has to say so rather than let a reader work it out:
+
+- **Nearly every row is reconstructed** (`historicalImportBatch` / a `genesis-`
+  external id), so the "rebuilt from records" disclosure dominates. Correct,
+  and the point.
+- **Nearly every row has no receipt.** Also correct. Filing a receipt exception
+  per row is available (`predates_policy`, `bank_record_only`) but is not
+  required to publish.
+- **`uncodedCount` is ZERO and means nothing there.** `requiresCoding`
+  grandfathers everything posted before `codingRequiredSinceMs`, so the policy
+  asks nothing of pre-policy spend. Reporting that number on a 2024 page would
+  have left it silent while every line read "No published explanation."
+
+Hence `unexplainedCount` — lines that publish with no explanation at all,
+policy irrelevant, internal movements excluded. **The public disclosure reports
+that one**; `uncodedCount` stays for the internal console, where "what does the
+policy still owe me?" is the useful question. When unexplained lines are more
+than half the month, the note adds that the period predates the rule, so a
+reader understands why an old month looks different from a recent one.
+
+The highest-leverage work on a historical month is not receipts — it is
+**coding the biggest lines**. Coding a pre-policy row is allowed even though
+nothing requires it, and an approved coding publishes its explanation. Ten
+codings on the ten largest charges changes a month more than a hundred receipt
+exceptions would.
+
 ## Not in v1 — deliberately
 
 - **Salaries.** Nobody is paid today. The owner's stated intent is to publish

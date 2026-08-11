@@ -509,6 +509,8 @@ export const publish = mutation({
       undocumentedCents: snapshot.undocumentedCents,
       uncodedCount: snapshot.uncodedCount,
       uncodedCents: snapshot.uncodedCents,
+      unexplainedCount: snapshot.unexplainedCount,
+      unexplainedCents: snapshot.unexplainedCents,
       truncated: snapshot.truncated,
       amendmentReason: revision > 1 ? pub.amendmentReason : undefined,
       note: revision > 1 ? pub.amendmentNote?.trim() : undefined,
@@ -810,6 +812,8 @@ const statementShape = {
   undocumentedCents: v.number(),
   uncodedCount: v.number(),
   uncodedCents: v.number(),
+  unexplainedCount: v.number(),
+  unexplainedCents: v.number(),
   entryCount: v.number(),
   giftCount: v.number(),
   /** DISTINCT people, unioned across everything being merged. */
@@ -858,6 +862,8 @@ async function mergeLive(
   let undocumentedCents = 0;
   let uncodedCount = 0;
   let uncodedCents = 0;
+  let unexplainedCount = 0;
+  let unexplainedCents = 0;
   let entryCount = 0;
   let giftCount = 0;
   const incomeByStream = new Map<string, { cents: number; count: number }>();
@@ -907,6 +913,9 @@ async function mergeLive(
     undocumentedCents += current.undocumentedCents;
     uncodedCount += current.uncodedCount;
     uncodedCents += current.uncodedCents;
+    // ABSENT on a revision published before the distinction existed.
+    unexplainedCount += current.unexplainedCount ?? 0;
+    unexplainedCents += current.unexplainedCents ?? 0;
     entryCount += current.entryCount;
     giftCount += current.giftCount;
     for (const r of current.incomeByStream) {
@@ -1022,6 +1031,8 @@ async function mergeLive(
     undocumentedCents,
     uncodedCount,
     uncodedCents,
+    unexplainedCount,
+    unexplainedCents,
     entryCount,
     giftCount,
     giverCount: giverKeys.size,

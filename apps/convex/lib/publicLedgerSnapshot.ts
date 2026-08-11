@@ -148,6 +148,26 @@ export type Snapshot = {
   undocumentedCents: number;
   uncodedCount: number;
   uncodedCents: number;
+  /**
+   * Lines that PUBLISH WITHOUT AN EXPLANATION — what a reader can actually
+   * see, as distinct from `uncodedCount` above, which is what our own policy
+   * required.
+   *
+   * The two diverge violently on historical months and that is exactly why
+   * this exists. `requiresCoding` grandfathers everything posted before the
+   * coding policy date, so a 2024 month has an uncoded count of ZERO while
+   * every row on the page reads "No published explanation for this line." A
+   * disclosure block that reported the policy number would have been silent
+   * about the single most visible characteristic of the page — under-
+   * disclosure by technicality, which is the same failure as overclaiming,
+   * pointed the other way.
+   *
+   * Internal movements are excluded: a transfer between our own accounts has
+   * no business purpose to give, and counting it as a missing explanation
+   * would inflate the number with rows that are complete.
+   */
+  unexplainedCount: number;
+  unexplainedCents: number;
   /** A source scan hit `ROLLUP_SCAN_LIMIT`, so these figures may be
    *  incomplete. `publish` refuses to publish a snapshot carrying this — see
    *  `publicLedger.ts`. */
@@ -318,6 +338,8 @@ export async function buildSnapshot(
   let undocumentedCents = 0;
   let uncodedCount = 0;
   let uncodedCents = 0;
+  let unexplainedCount = 0;
+  let unexplainedCents = 0;
 
   const addIncome = (stream: IncomeStream, cents: number) => {
     const b = incomeByStream.get(stream) ?? { cents: 0, count: 0 };
@@ -461,6 +483,12 @@ export async function buildSnapshot(
     if (requiresCoding(tr, codingSinceMs) && tr.codingState !== "approved") {
       uncodedCount += 1;
       uncodedCents += tr.amountCents;
+    }
+    // What the READER sees, policy irrelevant. An internal movement has no
+    // purpose to give, so it is not a gap.
+    if (!approved && direction !== "internal") {
+      unexplainedCount += 1;
+      unexplainedCents += tr.amountCents;
     }
   }
 
@@ -609,6 +637,8 @@ export async function buildSnapshot(
     undocumentedCents,
     uncodedCount,
     uncodedCents,
+    unexplainedCount,
+    unexplainedCents,
     truncated,
     overCap: entries.length > MAX_PUBLISHED_ENTRIES,
   };

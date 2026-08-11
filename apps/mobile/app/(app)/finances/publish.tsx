@@ -297,9 +297,19 @@ function MonthDetail({
               text={`${preview.undocumentedCount} lines (${formatCents(preview.undocumentedCents)}) will publish with no receipt and no approved exception.`}
             />
           ) : null}
+          {/* What a READER will see. On a pre-policy month (2024/2025) the
+              policy gap below is zero while every line is unexplained, so
+              showing only the policy number would tell a publisher their
+              historical month was clean when it is about to publish a page of
+              blanks. */}
+          {preview.unexplainedCount > 0 ? (
+            <Disclosure
+              text={`${preview.unexplainedCount} lines (${formatCents(preview.unexplainedCents)}) will publish with no written explanation of what they were for.`}
+            />
+          ) : null}
           {preview.uncodedCount > 0 ? (
             <Disclosure
-              text={`${preview.uncodedCount} lines (${formatCents(preview.uncodedCents)}) will publish with no approved explanation of what they were for.`}
+              text={`${preview.uncodedCount} of those are charges the coding policy covers — they owe an explanation and don't have an approved one.`}
             />
           ) : null}
           {preview.reconstructedCount > 0 ? (

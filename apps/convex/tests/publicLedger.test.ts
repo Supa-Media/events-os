@@ -981,3 +981,91 @@ describe("spend against the plan", () => {
     expect(unbudgeted).toMatchObject({ allocatedCents: null, spentCents: 15_000 });
   });
 });
+
+// ── Publishing history (2024/2025 backfill) ─────────────────────────────────
+
+describe("a pre-policy month discloses what a reader can see", () => {
+  /** Pin the coding policy to its real default so pre-policy history behaves
+   *  here the way it will in production. */
+  async function pinPolicy(s: ChapterSetup): Promise<void> {
+    await run(s.t, async (ctx) => {
+      const existing = await ctx.db.query("financeSettings").first();
+      const sinceMs = Date.UTC(2026, 7, 8);
+      if (existing) {
+        await ctx.db.patch(existing._id, { codingRequiredSinceMs: sinceMs });
+        return;
+      }
+      await ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        updatedAt: Date.now(),
+        codingRequiredSinceMs: sinceMs,
+      });
+    });
+  }
+
+  test("grandfathered rows report ZERO uncoded and every line unexplained", async () => {
+    const s = await asPublisher();
+    await pinPolicy(s);
+    // Three reconstructed 2024 charges, the shape the genesis backfill leaves.
+    for (const amount of [4_000, 2_500, 1_200]) {
+      await insertTxn(s, {
+        amountCents: amount,
+        postedAt: Date.UTC(2024, 5, 14, 16),
+        historicalImportBatch: "genesis-2024",
+      });
+    }
+    await publishMonth(s, "2024-06");
+
+    const statement = (await statementOf(s, "2024-06"))!;
+    // The policy asks nothing of pre-policy spend, so the POLICY gap is zero...
+    expect(statement.uncodedCount).toBe(0);
+    // ...but every row on the page reads "no published explanation", and the
+    // disclosure has to say so. Reporting the policy number here would leave
+    // the page silent about its single most visible property.
+    expect(statement.unexplainedCount).toBe(3);
+    expect(statement.unexplainedCents).toBe(7_700);
+    expect(statement.reconstructedCount).toBe(3);
+    expect(statement.entries.every((e) => e.purpose === null)).toBe(true);
+  });
+
+  test("a coded historical row publishes its explanation and leaves the gap", async () => {
+    const s = await asPublisher();
+    await pinPolicy(s);
+    const explained = await insertTxn(s, {
+      amountCents: 4_000,
+      postedAt: Date.UTC(2024, 5, 14, 16),
+      merchantName: "U-Haul",
+    });
+    // Coding a pre-policy row is allowed even though nothing requires it —
+    // and it is the highest-leverage thing anyone can do to a historical
+    // month, because the explanation publishes.
+    await approveCoding(s, explained, {
+      businessPurpose: "Van to move gear for the June outdoor night",
+    });
+    await insertTxn(s, { amountCents: 2_500, postedAt: Date.UTC(2024, 5, 20, 16) });
+    await publishMonth(s, "2024-06");
+
+    const statement = (await statementOf(s, "2024-06"))!;
+    expect(statement.unexplainedCount).toBe(1);
+    const coded = statement.entries.find((e) => e.counterparty === "U-Haul");
+    expect(coded!.purpose).toBe("Van to move gear for the June outdoor night");
+  });
+
+  test("an internal movement is not counted as a missing explanation", async () => {
+    const s = await asPublisher();
+    await pinPolicy(s);
+    await insertTxn(s, {
+      flow: "inflow",
+      amountCents: 50_000,
+      payoutProcessor: "stripe",
+      postedAt: Date.UTC(2024, 5, 14, 16),
+    });
+    await publishMonth(s, "2024-06");
+
+    const statement = (await statementOf(s, "2024-06"))!;
+    // A transfer between our own accounts has no business purpose to give.
+    // Counting it would inflate the gap with rows that are complete.
+    expect(statement.unexplainedCount).toBe(0);
+    expect(statement.entries[0].direction).toBe("internal");
+  });
+});
