@@ -427,20 +427,53 @@ export function ReconciliationSummary() {
           }`}
         >
           {balanced ? (
-            <>
-              <View className="flex-row items-center gap-2">
-                <Icon name={verdict.icon} size={16} color={toneColor} />
-                <Text className="font-display text-base text-ink">
-                  It adds up. The books match the money to the cent.
+            summary.inFlightExplainedCents > 0 ? (
+              <>
+                {/* Balanced BECAUSE money is in transit. The netting lives in
+                    the arithmetic (`reconciliationGap.ts`), so this branch's
+                    only job is to say why the answer is zero: a bank transfer
+                    the org has already receipted is still clearing, Stripe
+                    counts it, the books deliberately don't yet. This is the
+                    one balanced case that DOES print "$0.00 unaccounted for"
+                    — the owner asked for that figure in as many words
+                    (2026-08-11), and in a success tone beside the in-transit
+                    amount it is an answer, not an alarm about nothing. */}
+                <View className="flex-row items-center gap-1.5">
+                  <Icon name="clock" size={13} color={toneColor} />
+                  <Text className="min-w-0 flex-1 text-[11px] font-bold uppercase tracking-wide text-success">
+                    Money is on its way to the bank
+                  </Text>
+                </View>
+                <Text
+                  className="font-display text-xl text-ink"
+                  style={{ fontVariant: ["tabular-nums"] }}
+                >
+                  $0.00 unaccounted for
                 </Text>
-              </View>
-              {/* No figure, deliberately. "$0.00 unaccounted for" is an alarm
-                  about nothing, and a reader who sees one learns to discount
-                  the colour on the day it means something. */}
-              <Text className="mt-0.5 text-sm text-muted">
-                Nothing to reconcile right now.
-              </Text>
-            </>
+                <Text className="mt-0.5 text-sm text-muted">
+                  {formatCents(summary.inFlightExplainedCents)} of bank
+                  transfers is still clearing — counted in the money side,
+                  deliberately not booked until it lands. It settles on its
+                  own; details under Show the working.
+                </Text>
+              </>
+            ) : (
+              <>
+                <View className="flex-row items-center gap-2">
+                  <Icon name={verdict.icon} size={16} color={toneColor} />
+                  <Text className="font-display text-base text-ink">
+                    It adds up. The books match the money to the cent.
+                  </Text>
+                </View>
+                {/* No figure, deliberately. With nothing in transit, "$0.00
+                    unaccounted for" is an alarm about nothing, and a reader
+                    who sees one learns to discount the colour on the day it
+                    means something. */}
+                <Text className="mt-0.5 text-sm text-muted">
+                  Nothing to reconcile right now.
+                </Text>
+              </>
+            )
           ) : unknowable ? (
             <>
               <View className="flex-row items-start gap-2">
@@ -466,57 +499,38 @@ export function ReconciliationSummary() {
                   card this short it is most of the message. The magnitude below
                   stays positive — a minus sign is an accounting convention, not
                   a diagnosis. */}
-              {/* THE FULLY-EXPLAINED CASE GETS ITS OWN HEADLINE, not just its
-                  own subtitle. "unaccounted for" is a claim, and the moment
-                  this panel accounts for the whole difference — a known gift,
-                  receipted by us, in transit at the processor — the claim is
-                  false. Softening the sentence underneath while the banner
-                  still shouted the false thing was this panel's second miss
-                  on the same $309.27 (owner report, 2026-08-11): the first
-                  was not knowing the answer; the second was knowing it and
-                  keeping the alarm on. */}
-              {(() => {
-                const fullyInFlight =
-                  cashHigh &&
-                  summary.inFlightGiftCount > 0 &&
-                  summary.inFlightGiftCents === verdict.amountCents;
-                return (
-                  <>
-                    <View className="flex-row items-center gap-1.5">
-                      <Icon
-                        name={fullyInFlight ? "clock" : verdict.icon}
-                        size={13}
-                        color={fullyInFlight ? colors.muted : toneColor}
-                      />
-                      <Text
-                        className={`min-w-0 flex-1 text-[11px] font-bold uppercase tracking-wide ${
-                          fullyInFlight ? "text-muted" : "text-warn"
-                        }`}
-                      >
-                        {fullyInFlight
-                          ? "A gift is on its way to the bank"
-                          : cashHigh
-                            ? "More money than the books explain"
-                            : "The books claim more than we can find"}
-                      </Text>
-                    </View>
-                    <Text
-                      className="font-display text-xl text-ink"
-                      style={{ fontVariant: ["tabular-nums"] }}
-                    >
-                      {formatCents(verdict.amountCents)}{" "}
-                      {fullyInFlight ? "in transit" : "unaccounted for"}
-                    </Text>
-                    <Text className="mt-0.5 text-sm text-muted">
-                      {fullyInFlight
-                        ? "A bank-transfer gift we've already receipted is still clearing — details under Where to look. It books itself when it settles, and this line goes back to zero."
-                        : cashHigh
-                          ? "Something came in that was never recorded, or an expense was recorded that never actually left."
-                          : "Something is counted twice, or was recorded as spent when it wasn't."}
-                    </Text>
-                  </>
-                );
-              })()}
+              {/* A gap that reaches this branch is the RESIDUAL — anything
+                  explained by money visibly in transit was already netted out
+                  in the arithmetic (`reconciliationGap.ts`), and a fully
+                  explained difference renders as the balanced case above.
+                  This replaced #648's relabel-the-alarm special case: the
+                  owner's third report on the same $309.27 (2026-08-11) was
+                  that softening the wording wasn't enough — "it should read
+                  0 unaccounted for" — so in-flight money became a term in the
+                  subtraction rather than a caption on the warning. What is
+                  left here is genuinely unexplained and keeps the alarm. */}
+              <View className="flex-row items-center gap-1.5">
+                <Icon name={verdict.icon} size={13} color={toneColor} />
+                <Text className="min-w-0 flex-1 text-[11px] font-bold uppercase tracking-wide text-warn">
+                  {cashHigh
+                    ? "More money than the books explain"
+                    : "The books claim more than we can find"}
+                </Text>
+              </View>
+              <Text
+                className="font-display text-xl text-ink"
+                style={{ fontVariant: ["tabular-nums"] }}
+              >
+                {formatCents(verdict.amountCents)} unaccounted for
+              </Text>
+              <Text className="mt-0.5 text-sm text-muted">
+                {cashHigh
+                  ? "Something came in that was never recorded, or an expense was recorded that never actually left."
+                  : "Something is counted twice, or was recorded as spent when it wasn't."}
+                {summary.inFlightExplainedCents > 0
+                  ? ` Another ${formatCents(summary.inFlightExplainedCents)} of bank transfers is still clearing and already netted out of this figure.`
+                  : ""}
+              </Text>
             </>
           )}
         </View>
@@ -783,7 +797,28 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
         </View>
       </View>
 
-      {!balanced ? (
+      {/* The subtraction itself, when in-flight money is a term in it. The
+          headline up top already shows the residual; without these two rows
+          the working would list piles that visibly DON'T net to that figure,
+          and a working that doesn't reproduce its own answer is worse than
+          none. Rendered only when the term is non-zero — for everyone else
+          the classic two-pile comparison IS the whole subtraction. */}
+      {summary.inFlightExplainedCents > 0 ? (
+        <View className="mt-2 border-t border-border pt-1">
+          <Row
+            label="Minus: still clearing the bank"
+            hint="Bank transfers authorised but deliberately not booked until they land — counted in the Stripe pile above, so they explain that much of the difference"
+            value={`− ${formatCents(summary.inFlightExplainedCents)}`}
+          />
+          <Row
+            label="Unaccounted for"
+            value={formatCents(Math.abs(summary.differenceCents))}
+            strong
+          />
+        </View>
+      ) : null}
+
+      {!balanced || summary.inFlightExplainedCents > 0 ? (
         <View className="mt-3 gap-1">
           <Text className="text-[11px] font-semibold uppercase tracking-wide text-faint">
             Where to look
@@ -829,35 +864,36 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
                 summary.inFlightGiftCents
                 ? " Stripe's own balance confirms it — its bank-transfer pending slice matches to the cent."
                 : ""}
-              {summary.inFlightGiftCents === summary.differenceCents
-                ? " That is this entire difference — nothing for you to do."
+              {summary.inFlightGiftCents === summary.rawDifferenceCents
+                ? " That was this entire difference — it's already netted out of the headline, and there is nothing for you to do."
                 : " Nothing for you to do on these."}
             </Text>
           ) : null}
-          {/* The divergence case: Stripe says bank-transfer money is in
-              transit and our receipts don't fully cover it. That remainder is
-              an ACH moving through Stripe that the giving flow never saw —
-              exactly the shape that deserves a name before it lands as a
-              mystery credit. */}
+          {/* Stripe reports MORE ACH in transit than our own in-flight
+              receipts cover. Not an alarm: the likeliest cause is a transfer
+              authorised before in-flight tracking shipped (2026-08-10) —
+              `checkout.session.completed` never redelivers, so those gifts
+              have no `pendingGifts` row and Stripe's balance is the only
+              record we hold (the owner's $309.27 was exactly this). It still
+              books itself at settlement through the same webhook fan-out, so
+              the remainder is money in a known place on a known schedule —
+              which is why it counts toward the netting and prints muted. */}
           {summary.stripePendingBankAccountCents != null &&
           summary.stripePendingBankAccountCents >
             summary.inFlightGiftCents ? (
-            <Text className="text-2xs text-warn">
+            <Text className="text-2xs text-muted">
               • Stripe reports{" "}
-              {formatCents(summary.stripePendingBankAccountCents)} of
-              bank-transfer money still clearing, but our gift receipts only
-              account for {formatCents(summary.inFlightGiftCents)} of it. The
-              remaining{" "}
-              {formatCents(
-                summary.stripePendingBankAccountCents -
-                  summary.inFlightGiftCents,
-              )}{" "}
-              is an ACH moving through Stripe that the giving flow never saw —
-              expect it to surface as a bank credit that needs recording when
-              it lands.
+              {formatCents(summary.stripePendingBankAccountCents)} of bank
+              transfers still clearing
+              {summary.inFlightGiftCount > 0
+                ? `, ${formatCents(summary.inFlightGiftCents)} of which matches our own in-flight receipts. The rest was likely authorised before in-flight tracking shipped (Aug 10)`
+                : " that our own in-flight records don't cover — most likely authorised before in-flight tracking shipped (Aug 10)"}
+              . It&apos;s counted in the Stripe pile above and books itself as
+              a gift when it settles; if it somehow never does, it will
+              surface as a bank credit to record when it lands.
             </Text>
           ) : null}
-          {unknowable ? null : cashHigh ? (
+          {balanced || unknowable ? null : cashHigh ? (
             <Text className="text-2xs text-muted">
               • Income that never made it onto a book — a deposit sitting in
               Reconcile uncoded, or money collected somewhere the app
@@ -870,7 +906,13 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
               its breakdown scans for exactly this pair and offers to link them.
             </Text>
           )}
-          {summary.unmatchedPayoutCount > 0 ? (
+          {/* Everything below is an INVESTIGATION lead — a place a residual
+              gap might be hiding. With the difference at zero and only
+              in-transit money to report, sending the reader hunting would
+              re-create the exact alarm-about-nothing this netting removed. */}
+          {balanced ? null : (
+            <>
+              {summary.unmatchedPayoutCount > 0 ? (
             <Text className="text-2xs text-muted">
               • {summary.unmatchedPayoutCount} payout
               {summary.unmatchedPayoutCount === 1 ? "" : "s"} worth{" "}
@@ -935,13 +977,15 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
               money, but nothing on the books is holding it.
             </Text>
           ) : null}
-          {unknowable ? null : (
-            <Text className="mt-1 text-2xs text-faint">
-              Tap any book in Account balances above to open its breakdown — the
-              duplicate scan and the &ldquo;counted as zero&rdquo; list are
-              where a wrong number usually hides. &ldquo;See every line&rdquo;
-              from there gives you the individual rows.
-            </Text>
+              {unknowable ? null : (
+                <Text className="mt-1 text-2xs text-faint">
+                  Tap any book in Account balances above to open its breakdown
+                  — the duplicate scan and the &ldquo;counted as zero&rdquo;
+                  list are where a wrong number usually hides. &ldquo;See every
+                  line&rdquo; from there gives you the individual rows.
+                </Text>
+              )}
+            </>
           )}
         </View>
       ) : null}

@@ -3576,6 +3576,16 @@ export const reconciliationSummary = query({
      *  is not evidence for an old balance. */
     relayFeedSyncedAt: v.union(v.number(), v.null()),
     locatedCents: v.number(),
+    /** located − books before the in-flight netting — the raw subtraction,
+     *  returned so the working can show its steps. */
+    rawDifferenceCents: v.number(),
+    /** The slice of a positive raw difference explained by ACH in transit
+     *  (clamped — see `reconciliationGap.ts`). When this covers the whole raw
+     *  difference, `differenceCents` is 0 and the verdict is `balanced`: money
+     *  visibly on its way is not unaccounted for (owner directive,
+     *  2026-08-11: "it should read 0 unaccounted for"). */
+    inFlightExplainedCents: v.number(),
+    /** rawDifference − inFlightExplained: what is actually unaccounted for. */
     differenceCents: v.number(),
     verdict: v.union(
       v.literal("balanced"),
@@ -3715,6 +3725,38 @@ export const reconciliationSummary = query({
       (integrations?.givebutterApiKey ?? "").length > 0 ||
       (process.env.GIVEBUTTER_API_KEY ?? "").length > 0;
 
+    // In-flight gifts: authorised, unsettled, and entirely self-resolving.
+    // Window = the pendingGifts sweep horizon (21 days) — a row older than
+    // that is gone; an ACH normally clears in 2–4 business days. Skipped in
+    // sandbox for the same reason `computeBookBalances` zeroes revenue there:
+    // these are real Stripe checkouts, and a demo reconciliation must not
+    // borrow production money to explain itself.
+    let inFlightGiftCount = 0;
+    let inFlightGiftCents = 0;
+    const inFlightRows: {
+      donorName: string;
+      amountCents: number;
+      submittedAt: number;
+    }[] = [];
+    if (!sandboxMode) {
+      const pendingCutoff = Date.now() - 21 * 24 * 60 * 60 * 1000;
+      const pendingRows = await ctx.db
+        .query("pendingGifts")
+        .withIndex("by_submitted", (q) => q.gte("submittedAt", pendingCutoff))
+        .take(ROLLUP_SCAN_LIMIT);
+      for (const row of pendingRows) {
+        if (row.status !== "in_flight") continue;
+        inFlightGiftCount += 1;
+        inFlightGiftCents += row.amountCents;
+        inFlightRows.push({
+          donorName: row.donorName,
+          amountCents: row.amountCents,
+          submittedAt: row.submittedAt,
+        });
+      }
+      inFlightRows.sort((a, b) => b.amountCents - a.amountCents);
+    }
+
     const gap = reconcileOrgMoney({
       bookValueCents,
       bankAvailableCents,
@@ -3724,6 +3766,23 @@ export const reconciliationSummary = query({
       givebutterUndepositedCents,
       givebutterConfigured,
       relayBalanceCents,
+      // The LARGER of two independent statements of ACH in transit, because
+      // either can be missing on its own:
+      //  · our `pendingGifts` receipts miss any gift whose `completed` event
+      //    fired before the tracker shipped (2026-08-10) — the exact hole the
+      //    owner's $309.27 fell through, since `completed` never redelivers —
+      //    and they price the GIFT (fee coverage excluded), not the charge;
+      //  · Stripe's own `bank_account` pending slice is the processor's
+      //    statement on the charge basis the cash side counts, but is null
+      //    until a snapshot lands and can lag a settlement by one refresh.
+      // Over-evidence is safe — the arithmetic clamps the term to the positive
+      // part of the raw difference (see `reconciliationGap.ts`). Counted from
+      // the same settings row as `stripePendingCents`, so the two Stripe terms
+      // always describe the same snapshot.
+      inFlightCents: Math.max(
+        inFlightGiftCents,
+        settings?.stripePendingBankAccountCents ?? 0,
+      ),
     });
 
     // Who last stated the Relay figure. `people` is where display names live;
@@ -3814,38 +3873,6 @@ export const reconciliationSummary = query({
       }
     }
 
-    // In-flight gifts: authorised, unsettled, and entirely self-resolving.
-    // Window = the pendingGifts sweep horizon (21 days) — a row older than
-    // that is gone; an ACH normally clears in 2–4 business days. Skipped in
-    // sandbox for the same reason `computeBookBalances` zeroes revenue there:
-    // these are real Stripe checkouts, and a demo reconciliation must not
-    // borrow production money to explain itself.
-    let inFlightGiftCount = 0;
-    let inFlightGiftCents = 0;
-    const inFlightRows: {
-      donorName: string;
-      amountCents: number;
-      submittedAt: number;
-    }[] = [];
-    if (!sandboxMode) {
-      const pendingCutoff = Date.now() - 21 * 24 * 60 * 60 * 1000;
-      const pendingRows = await ctx.db
-        .query("pendingGifts")
-        .withIndex("by_submitted", (q) => q.gte("submittedAt", pendingCutoff))
-        .take(ROLLUP_SCAN_LIMIT);
-      for (const row of pendingRows) {
-        if (row.status !== "in_flight") continue;
-        inFlightGiftCount += 1;
-        inFlightGiftCents += row.amountCents;
-        inFlightRows.push({
-          donorName: row.donorName,
-          amountCents: row.amountCents,
-          submittedAt: row.submittedAt,
-        });
-      }
-      inFlightRows.sort((a, b) => b.amountCents - a.amountCents);
-    }
-
     return {
       bookValueCents,
       bankAvailableCents,
@@ -3861,6 +3888,8 @@ export const reconciliationSummary = query({
       relayBalanceSetByName,
       relayFeedSyncedAt,
       locatedCents: gap.locatedCents,
+      rawDifferenceCents: gap.rawDifferenceCents,
+      inFlightExplainedCents: gap.inFlightExplainedCents,
       differenceCents: gap.differenceCents,
       verdict: gap.verdict,
       missingTerms: gap.missingTerms,
