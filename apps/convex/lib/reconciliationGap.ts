@@ -123,6 +123,42 @@
  * reconciliation panel is for. The deprecation is stated in the panel itself,
  * not only here, so the person reading the number knows it is temporary.
  *
+ * ── MONEY VISIBLY ON ITS WAY IS EXPLAINED, NOT ALARMED ABOUT ─────────────────
+ * An ACH gift spends 2–4 business days authorised-but-unsettled: Stripe already
+ * counts it in its pending balance (so it is in MONEY WE CAN POINT AT), while
+ * the books deliberately record nothing until it clears — a refused debit must
+ * never need a reversal. For those days the cash side legitimately exceeds the
+ * books by exactly the in-flight amount, and the org has usually already
+ * emailed the donor a receipt for it.
+ *
+ * The owner's directive (2026-08-11, after a $309.27 in-flight ACH spent two
+ * days headlined as "unaccounted for"): "an ACH transfer waiting to deliver is
+ * not a cause for alarm … it should read 0 unaccounted for." So known in-flight
+ * money is a TERM in the arithmetic, not a caption on the alarm: `inFlightCents`
+ * is subtracted from a positive raw difference before the verdict is computed,
+ * and the headline figure is the residual.
+ *
+ * Two safety properties, both load-bearing:
+ *
+ *   · IT ONLY EXPLAINS, NEVER FLIPS. The term is clamped to the positive part
+ *     of the raw difference, so in-flight evidence can reduce a cash-high gap
+ *     to zero but can never manufacture a `books_exceed_cash` verdict or mask
+ *     one that exists. In the brief window after a debit settles (gift booked,
+ *     Stripe's pending slice not yet refreshed) the raw difference has already
+ *     closed, the clamp bottoms out at zero, and stale evidence explains
+ *     nothing.
+ *   · THE RAW ARITHMETIC STAYS VISIBLE. `rawDifferenceCents` and
+ *     `inFlightExplainedCents` are both returned, so the panel can show the
+ *     subtraction — located − in transit − books = residual — instead of a
+ *     figure that quietly disagrees with the piles above it.
+ *
+ * The caller supplies the evidence; see `reconciliationSummary` for why it is
+ * the LARGER of our own `pendingGifts` receipts and Stripe's `bank_account`
+ * pending slice (our rows can be missing — any gift authorised before the
+ * in-flight tracker shipped on 2026-08-10 never got one, and `completed`
+ * events don't redeliver — while Stripe's own statement of ACH in transit
+ * doesn't depend on our webhook history).
+ *
  * ── WHAT IS DELIBERATELY *NOT* ADJUSTED FOR ──────────────────────────────────
  *
  * IN-KIND GIFTS. Someone buying $500 of gear for the org is $500 of revenue and
@@ -289,6 +325,13 @@ export type ReconciliationInput = {
    * note on `missingTerms`.
    */
   relayBalanceCents: number | null;
+  /**
+   * ACH money in transit — authorised, counted in Stripe's pending balance,
+   * and deliberately not yet booked. Subtracted from a POSITIVE raw difference
+   * (clamped, see the module doc) so money the panel can fully explain never
+   * headlines as "unaccounted for". Absent/0 = no evidence, old behavior.
+   */
+  inFlightCents?: number;
 };
 
 /** A machine-fetched pile whose absence means we haven't looked, not that it's
@@ -306,7 +349,16 @@ export type ReconciliationVerdict =
 export type ReconciliationResult = {
   /** bank available + pending held + everything at Stripe. */
   locatedCents: number;
-  /** `locatedCents − bookValueCents`. Sign carries the diagnosis. */
+  /** `locatedCents − bookValueCents`, BEFORE the in-flight netting — the raw
+   *  subtraction of the two piles, kept so the working can show its steps. */
+  rawDifferenceCents: number;
+  /** The slice of a positive raw difference explained by in-flight money:
+   *  `min(inFlightCents, max(rawDifferenceCents, 0))`. Zero whenever the raw
+   *  difference isn't positive — in-flight evidence only ever EXPLAINS a
+   *  cash-high gap, it never flips or masks a verdict. */
+  inFlightExplainedCents: number;
+  /** `rawDifferenceCents − inFlightExplainedCents` — what is actually
+   *  unaccounted for. Sign carries the diagnosis. This is the headline. */
   differenceCents: number;
   verdict: ReconciliationVerdict;
   /** Stripe's two balances added, or null when no snapshot has ever landed. */
@@ -347,6 +399,8 @@ export function reconcileOrgMoney(
     givebutterConfigured,
     relayBalanceCents,
   } = input;
+  // Evidence, not a balance: a negative or absent figure means "none known".
+  const inFlightCents = Math.max(0, input.inFlightCents ?? 0);
 
   // Null means "never fetched", which is NOT the same as zero and must not be
   // silently coerced to it — a zero would quietly manufacture a gap the size of
@@ -367,7 +421,16 @@ export function reconcileOrgMoney(
     (stripeTotalCents ?? 0) +
     (givebutterUndepositedCents ?? 0) +
     (relayBalanceCents ?? 0);
-  const differenceCents = locatedCents - bookValueCents;
+  const rawDifferenceCents = locatedCents - bookValueCents;
+  // The clamp IS the safety: in-flight money may only explain a cash-high gap,
+  // up to the gap itself. A books-exceed-cash difference passes through
+  // untouched, and stale evidence (a debit that settled since the snapshot)
+  // bottoms out at zero instead of inventing a shortfall.
+  const inFlightExplainedCents = Math.min(
+    inFlightCents,
+    Math.max(rawDifferenceCents, 0),
+  );
+  const differenceCents = rawDifferenceCents - inFlightExplainedCents;
 
   const missingTerms: ReconciliationTerm[] = [];
   if (stripeTotalCents == null) missingTerms.push("stripe");
@@ -379,6 +442,8 @@ export function reconcileOrgMoney(
 
   return {
     locatedCents,
+    rawDifferenceCents,
+    inFlightExplainedCents,
     differenceCents,
     verdict:
       differenceCents === 0

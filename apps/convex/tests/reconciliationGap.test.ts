@@ -382,6 +382,115 @@ describe("reconcileOrgMoney — the arithmetic", () => {
     expect(r.locatedCents).toBe(100_000);
   });
 
+  // ── Money visibly on its way (the in-flight term) ─────────────────────────
+
+  test("in-flight ACH that explains the whole gap nets the headline to zero", () => {
+    // The owner's directive verbatim (2026-08-11, third report on the same
+    // $309.27): "an ACH transfer waiting to deliver is not a cause for alarm
+    // … it should read 0 unaccounted for." Stripe's pending balance carries
+    // the incoming debit, the books deliberately book nothing until it
+    // settles — so the raw difference is exactly the in-flight amount, and
+    // the VERDICT, not just the caption, must say balanced.
+    const r = reconcileOrgMoney({
+      bookValueCents: 0,
+      bankAvailableCents: 0,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 30_927,
+      ...NO_LEGACY_PILES,
+      inFlightCents: 30_927,
+    });
+    expect(r.rawDifferenceCents).toBe(30_927);
+    expect(r.inFlightExplainedCents).toBe(30_927);
+    expect(r.differenceCents).toBe(0);
+    expect(r.verdict).toBe("balanced");
+  });
+
+  test("in-flight money explains only its share — the residual stays an alarm", () => {
+    // A $500 Zelle nobody recorded on top of the $309.27 in transit: the
+    // netting must not let the known transfer absolve the unknown credit.
+    const r = reconcileOrgMoney({
+      bookValueCents: 0,
+      bankAvailableCents: 50_000,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 30_927,
+      ...NO_LEGACY_PILES,
+      inFlightCents: 30_927,
+    });
+    expect(r.rawDifferenceCents).toBe(80_927);
+    expect(r.inFlightExplainedCents).toBe(30_927);
+    expect(r.differenceCents).toBe(50_000);
+    expect(r.verdict).toBe("cash_exceeds_books");
+  });
+
+  test("the clamp: in-flight evidence can zero a gap but never flip the verdict", () => {
+    // Stale evidence — the debit settled (gift booked, both sides level) but
+    // the Stripe snapshot still carries the pending slice. Without the clamp
+    // this would report books_exceed_cash on money that is fine.
+    const settled = reconcileOrgMoney({
+      bookValueCents: 30_927,
+      bankAvailableCents: 0,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 30_927,
+      ...NO_LEGACY_PILES,
+      inFlightCents: 30_927,
+    });
+    expect(settled.rawDifferenceCents).toBe(0);
+    expect(settled.inFlightExplainedCents).toBe(0);
+    expect(settled.differenceCents).toBe(0);
+    expect(settled.verdict).toBe("balanced");
+
+    // Evidence larger than the gap explains exactly the gap, no more.
+    const overEvidence = reconcileOrgMoney({
+      bookValueCents: 0,
+      bankAvailableCents: 0,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 10_000,
+      ...NO_LEGACY_PILES,
+      inFlightCents: 30_927,
+    });
+    expect(overEvidence.inFlightExplainedCents).toBe(10_000);
+    expect(overEvidence.differenceCents).toBe(0);
+    expect(overEvidence.verdict).toBe("balanced");
+  });
+
+  test("a books-exceed-cash gap passes through the in-flight term untouched", () => {
+    // The term only ever EXPLAINS a cash-high gap. A shortfall — the books
+    // claiming money that is nowhere — is a different diagnosis, and money on
+    // its way IN cannot paper over it.
+    const r = reconcileOrgMoney({
+      bookValueCents: 100_000,
+      bankAvailableCents: 95_000,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 0,
+      ...NO_LEGACY_PILES,
+      inFlightCents: 30_927,
+    });
+    expect(r.rawDifferenceCents).toBe(-5_000);
+    expect(r.inFlightExplainedCents).toBe(0);
+    expect(r.differenceCents).toBe(-5_000);
+    expect(r.verdict).toBe("books_exceed_cash");
+  });
+
+  test("no in-flight evidence means the old arithmetic, exactly", () => {
+    const r = reconcileOrgMoney({
+      bookValueCents: 100_000,
+      bankAvailableCents: 105_000,
+      bankPendingCents: 0,
+      stripeAvailableCents: 0,
+      stripePendingCents: 0,
+      ...NO_LEGACY_PILES,
+    });
+    expect(r.rawDifferenceCents).toBe(5_000);
+    expect(r.inFlightExplainedCents).toBe(0);
+    expect(r.differenceCents).toBe(5_000);
+    expect(r.verdict).toBe("cash_exceeds_books");
+  });
+
   test("both winding-down piles add on top of the bank and Stripe, not instead", () => {
     // Guards the plain arithmetic slip of overwriting a term rather than summing
     // it — every pile is a separate real place money sits.
@@ -622,15 +731,52 @@ describe("in-flight gifts — the gap that explains itself", () => {
     await seedInFlightGift(s, 30_927);
 
     const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
-    expect(summary.verdict).toBe("cash_exceeds_books");
-    expect(summary.differenceCents).toBe(30_927);
-    // The panel's equality check — lead total === gap — is what upgrades the
-    // wording from a hint to "that is this entire difference".
+    // The raw arithmetic still shows cash exceeding books by the transfer —
+    // and the VERDICT nets it out, because money the org itself receipted and
+    // can point at inside Stripe's pending balance is not unaccounted for
+    // (owner directive, 2026-08-11: "it should read 0 unaccounted for").
+    expect(summary.rawDifferenceCents).toBe(30_927);
+    expect(summary.inFlightExplainedCents).toBe(30_927);
+    expect(summary.differenceCents).toBe(0);
+    expect(summary.verdict).toBe("balanced");
+    // The rows behind the figure, for the panel's lead.
     expect(summary.inFlightGiftCount).toBe(1);
     expect(summary.inFlightGiftCents).toBe(30_927);
     expect(summary.inFlightGifts).toEqual([
       expect.objectContaining({ donorName: "Charisma", amountCents: 30_927 }),
     ]);
+  });
+
+  test("no pendingGifts row, but Stripe's own slice says ACH is in transit — still zero", async () => {
+    // THE PRODUCTION SHAPE THAT ACTUALLY BIT (2026-08-11). Charisma's gift was
+    // authorised in the window between the "on its way" email shipping
+    // (2026-08-09, #591) and the pendingGifts tracker shipping (2026-08-10,
+    // #639) — so her `checkout.session.completed` event, which never
+    // redelivers, wrote NO in-flight row, and every panel feature keyed on
+    // `inFlightGiftCount` stayed invisible while the headline alarmed about
+    // her $309.27. Stripe's `bank_account` pending slice is the processor's
+    // own statement of ACH in transit and does not depend on our webhook
+    // history, so it must be able to carry the netting alone.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        stripePendingCents: 30_927,
+        stripePendingBankAccountCents: 30_927,
+        updatedAt: Date.now(),
+      }),
+    );
+    // Deliberately NO seedInFlightGift call.
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.inFlightGiftCount).toBe(0);
+    expect(summary.rawDifferenceCents).toBe(30_927);
+    expect(summary.inFlightExplainedCents).toBe(30_927);
+    expect(summary.differenceCents).toBe(0);
+    expect(summary.verdict).toBe("balanced");
   });
 
   test("Stripe's bank_account-pending slice passes through for corroboration", async () => {
