@@ -464,11 +464,18 @@ export const gifts = defineTable({
  *    deliberately PII-free. It is an echo of giving, not a record of it.
  *
  * ── WRITTEN AT THE ONE INSTANT WE KNOW THE MONEY IS REAL-BUT-NOT-HERE ──────
- * Exactly one writer: `givingPending.recordPendingGift`, from the
- * `checkout.session.completed`-but-unsettled branch of the Stripe webhook.
- * That instant is the whole point — it is later than checkout-start (so an
- * abandoned checkout never appears) and earlier than settlement (so there is
- * still something to report). Resolved — DELETED — by
+ * Exactly one writer MUTATION: `givingPending.recordPendingGift`, with two
+ * callers. The primary is the `checkout.session.completed`-but-unsettled
+ * branch of the Stripe webhook — later than checkout-start (so an abandoned
+ * checkout never appears) and earlier than settlement (so there is still
+ * something to report). The second is the balance snapshot's backfill
+ * (`reconciliation.ts#snapshotBalances`), which re-lists Stripe's recent
+ * complete-but-unpaid sessions with a `processing` payment intent and replays
+ * them through the same mutation — because a `completed` event delivers ONCE,
+ * and any gift authorised while this table's writer wasn't deployed yet
+ * (2026-08-09 → 2026-08-10, the owner's $309.27) or while the webhook was
+ * down would otherwise be invisible forever. Idempotent either way: the
+ * mutation refuses on any existing row and on an already-settled gift. Resolved — DELETED — by
  * `givingPending.resolvePendingGift` from both `settleCheckoutSession` and
  * `cancelCheckoutSession`, so a debit that clears and a debit the bank refuses
  * both leave nothing behind.
@@ -531,6 +538,17 @@ export const pendingGifts = defineTable({
   /** What the donor MEANT to give, fee coverage excluded — `gifts.amountCents`'
    *  definition, so a pending figure and the gift it becomes are comparable. */
   amountCents: v.number(), // int > 0
+  /**
+   * The session's whole `amount_total` — what Stripe is actually holding in its
+   * pending balance while the debit clears: gift + fee coverage, and for a
+   * ticket order's add-on gift the tickets too. A DIFFERENT basis from
+   * `amountCents` on purpose: the digest reports what was GIVEN, but the
+   * reconciliation nets what is IN TRANSIT, and using the gift figure there
+   * would leave a fee-coverage-sized "unaccounted for" sliver on every covered
+   * ACH gift. Optional because rows written before 2026-08-11 predate it;
+   * readers fall back to `amountCents`.
+   */
+  chargeTotalCents: v.optional(v.number()),
   currency: v.string(), // "usd"
   /**
    * When the donor AUTHORISED the debit — the instant Stripe told us the

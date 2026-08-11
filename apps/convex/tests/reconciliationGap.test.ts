@@ -825,6 +825,251 @@ describe("in-flight gifts — the gap that explains itself", () => {
     const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
     expect(summary.inFlightGiftCount).toBe(0);
   });
+
+  test("a fee-covered ACH nets on the CHARGE basis, not the gift figure", async () => {
+    // The donor gave $309.27 and ticked "cover the fees", so Stripe holds
+    // $319.47 in pending while the debit clears. The digest reports the gift;
+    // the netting must use the charge — or every covered ACH gift would leave
+    // a fee-sized sliver headlined "unaccounted for".
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        stripePendingCents: 31_947,
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("pendingGifts", {
+        sessionId: "cs_test_fee_covered",
+        status: "in_flight",
+        scope: s.chapterId,
+        amountCents: 30_927,
+        chargeTotalCents: 31_947,
+        currency: "usd",
+        submittedAt: Date.now() - 24 * 60 * 60 * 1000,
+        donorName: "Charisma",
+        createdAt: Date.now(),
+      }),
+    );
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.rawDifferenceCents).toBe(31_947);
+    expect(summary.inFlightExplainedCents).toBe(31_947);
+    expect(summary.differenceCents).toBe(0);
+    expect(summary.verdict).toBe("balanced");
+    // The DISPLAY figure stays the gift — what the donor meant to give.
+    expect(summary.inFlightGiftCents).toBe(30_927);
+  });
+});
+
+// ── The backfill: reconstructing rows the webhook never wrote ────────────────
+
+describe("snapshot backfill — in-flight ACH the webhook missed", () => {
+  /**
+   * The production hole this closes (2026-08-11): Charisma's gift was
+   * authorised between the "on its way" email shipping (#591, Aug 9) and the
+   * pendingGifts writer shipping (#639, Aug 10). Her
+   * `checkout.session.completed` fired once, got a 200, and will never
+   * redeliver — so no row exists and no event will ever write one. Stripe's
+   * session list is the durable record: `complete` + `unpaid` with a
+   * `processing` PaymentIntent IS an ACH in transit, and the snapshot replays
+   * it through the same idempotent mutation the webhook uses.
+   */
+  const originalFetch = globalThis.fetch;
+  const originalStripeKey = process.env.STRIPE_SECRET_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (originalStripeKey === undefined) delete process.env.STRIPE_SECRET_KEY;
+    else process.env.STRIPE_SECRET_KEY = originalStripeKey;
+  });
+
+  type MockSession = {
+    id: string;
+    status: string;
+    payment_status: string;
+    amount_total?: number;
+    created?: number;
+    metadata?: Record<string, string>;
+    payment_intent?: { status?: string } | string | null;
+  };
+
+  /** Stripe's `/balance` + `/checkout/sessions`, the two calls the snapshot
+   *  makes. No Increase account is seeded, so nothing else fetches. */
+  function mockStripe(
+    balance: { available: number; pending: number },
+    sessions: MockSession[],
+  ) {
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      const path = String(input);
+      if (path.includes("/v1/balance")) {
+        return new Response(
+          JSON.stringify({
+            available: [{ amount: balance.available, currency: "usd" }],
+            pending: [{ amount: balance.pending, currency: "usd" }],
+          }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        );
+      }
+      if (path.includes("/v1/checkout/sessions")) {
+        return new Response(JSON.stringify({ data: sessions }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+  }
+
+  /** Run the snapshot and drain what it schedules — same discipline as the
+   *  snapshotBalances describe below, for the same CI-only-red reason. */
+  async function snapshot(s: ChapterSetup): Promise<void> {
+    vi.useFakeTimers();
+    try {
+      await s.as.action(api.reconciliation.refreshBalancesNow, { force: true });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  }
+
+  test("reconstructs the missing row, and the headline reads zero", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const donorId = await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: CENTRAL,
+        kind: "individual",
+        name: "Charisma",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        updatedAt: Date.now(),
+      }),
+    );
+
+    const authorisedAt = Date.now() - 2 * 24 * 60 * 60 * 1000;
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    mockStripe({ available: 0, pending: 30_927 }, [
+      // The gift the webhook never recorded — must be reconstructed.
+      {
+        id: "cs_charisma",
+        status: "complete",
+        payment_status: "unpaid",
+        amount_total: 30_927,
+        created: Math.floor(authorisedAt / 1000),
+        metadata: { giveDonation: "1", giveDonorId: donorId },
+        payment_intent: { status: "processing" },
+      },
+      // A debit the bank already refused — its intent is no longer
+      // `processing`, and resurrecting it would announce money that is gone.
+      {
+        id: "cs_refused",
+        status: "complete",
+        payment_status: "unpaid",
+        amount_total: 5_000,
+        metadata: { giveDonation: "1", giveDonorId: donorId },
+        payment_intent: { status: "requires_payment_method" },
+      },
+      // An ordinary settled card session — nothing in flight.
+      {
+        id: "cs_card",
+        status: "complete",
+        payment_status: "paid",
+        amount_total: 2_000,
+        payment_intent: { status: "succeeded" },
+      },
+    ]);
+    await snapshot(s);
+
+    const rows = await run(s.t, (ctx) => ctx.db.query("pendingGifts").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({
+      sessionId: "cs_charisma",
+      status: "in_flight",
+      amountCents: 30_927,
+      chargeTotalCents: 30_927,
+      donorName: "Charisma",
+      // Stamped with the session's TRUE creation time, so the row ages and
+      // sweeps exactly like a webhook-written one.
+      submittedAt: Math.floor(authorisedAt / 1000) * 1000,
+    });
+
+    // And the whole point: the panel now nets it out.
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.inFlightGiftCount).toBe(1);
+    expect(summary.rawDifferenceCents).toBe(30_927);
+    expect(summary.inFlightExplainedCents).toBe(30_927);
+    expect(summary.differenceCents).toBe(0);
+    expect(summary.verdict).toBe("balanced");
+    expect(summary.inFlightGifts).toEqual([
+      expect.objectContaining({ donorName: "Charisma", amountCents: 30_927 }),
+    ]);
+  });
+
+  test("the backfill is idempotent against a row the webhook DID write", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    const donorId = await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: CENTRAL,
+        kind: "individual",
+        name: "Charisma",
+        status: "active",
+        lifetimeCents: 0,
+        giftCount: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        updatedAt: Date.now(),
+      }),
+    );
+    // The webhook already recorded it.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("pendingGifts", {
+        sessionId: "cs_charisma",
+        status: "in_flight",
+        scope: CENTRAL,
+        amountCents: 30_927,
+        chargeTotalCents: 30_927,
+        currency: "usd",
+        submittedAt: Date.now() - 24 * 60 * 60 * 1000,
+        donorName: "Charisma",
+        donorId,
+        createdAt: Date.now(),
+      }),
+    );
+    process.env.STRIPE_SECRET_KEY = "sk_test_x";
+    mockStripe({ available: 0, pending: 30_927 }, [
+      {
+        id: "cs_charisma",
+        status: "complete",
+        payment_status: "unpaid",
+        amount_total: 30_927,
+        created: Math.floor(Date.now() / 1000),
+        metadata: { giveDonation: "1", giveDonorId: donorId },
+        payment_intent: { status: "processing" },
+      },
+    ]);
+    await snapshot(s);
+    const rows = await run(s.t, (ctx) => ctx.db.query("pendingGifts").collect());
+    expect(rows).toHaveLength(1);
+  });
 });
 
 describe("detected payouts — an obsolete allocation failure is not a problem", () => {
