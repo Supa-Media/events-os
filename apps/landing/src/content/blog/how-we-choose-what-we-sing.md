@@ -9,28 +9,20 @@ tags: ["Songwriting", "Song Selection", "Worship"]
 draft: true
 ---
 
-A subway platform in Queens on a Tuesday night. A park in the Bronx in July.
-The back half of a train car, where nobody chose to be at a worship service.
+At Public Worship, we center our catalog on **doxological worship** — songs
+whose only content is the glory of God, with the worshiper present only as an
+instrument of that declaration.
 
-That's where most of our sets happen, and it changes the first question we ask
-about a song. In a sanctuary you can assume the room. Out here you can't
-assume anything — so whatever we sing has to be true without a preamble.
+That's a curatorial focus, not a verdict on anyone else's catalog. Scripture
+models many registers — lament, testimony, confession, petition — and we honor
+them all. We're specializing in the one we believe contemporary worship most
+lacks: the song that simply declares God Himself, from the first line to the
+last.
 
-So before you lead with us — on a platform, or at Eden or Love Thy Neighbor
-— here's how we choose what we sing, and why.
-
-## Who this is for, and what it isn't
-
-This is written for worship leaders and songwriters we're inviting into the
-work. It describes one catalog's center of gravity, not a verdict on anyone
-else's. We center ours on **doxological worship** — songs whose only content
-is the glory of God, with the worshiper present only as an instrument of that
-declaration. Scripture models many registers — lament, testimony, confession,
-petition — and we honor them all. We're specializing in the one we believe is
-most lacking.
-
-You don't have to agree with every line of this. You do have to know what
-we're aiming at, because it will shape the set list you're handed.
+If you're going to lead with us — on a subway platform, in a park, or on a
+stage at Eden or Love Thy Neighbor — you don't have to agree with every line
+of this. You do have to know what we're aiming at, because it shapes every set
+list we'll hand you.
 
 ## What doxology means
 
@@ -50,8 +42,8 @@ declaration, never as its subject.
 
 Worship, in Hebrew, is **shâchâh** — to bow down. Jesus says the Father seeks
 worship in spirit and in truth (Jn 4). Hebrews 13:15 calls it *a sacrifice of
-praise*. A bow, offered in truth, as a
-sacrifice: something *given*, laid at God's feet.
+praise*. A bow, offered in truth, as a sacrifice: something *given*, laid at
+God's feet.
 
 Here's the conviction this catalog rests on:
 
@@ -184,32 +176,15 @@ story pulling the line back home.
 
 ## What we sing but don't center
 
-The songs outside the welcome zone aren't bad — they're **anthropological**:
-their content is the human experience of God. Lament (Ps 13), testimony
-(Ps 23), confession (Ps 51), petition (Ps 40). We sing them. We just don't
-build our identity on them; the church already has them in abundance.
-
-Many beloved songs are **mixed** — a doxological chorus wrapped in verses
-that narrate the worshiper's journey to it. We'll sing some. But the shape
-we're trying to write more of is doxological *throughout*: the offering
-starts on the altar and stays there. That shape is rare, and its rareness is
-what we're addressing.
-
-The biblical "blessed be God" and thanksgiving forms (Eph 1:3–14; 1 Pet 1:3–5)
-sit on the boundary: they pass while their focus stays on God's character and
-Christ's acts, and drift when they dwell on what we received. Apply the test
-line by line.
-
-## How we practice it
-
-- **Theological soundness, non-negotiable.** Every release is checked
-  against Scripture and our [Statement of Beliefs](/beliefs).
-- **Writers as stewards of the test.** Every writing room has someone applying
-  it before the song leaves the room.
-- **The same standard for covers.** Popularity doesn't exempt a song.
-- **Singability.** Written so a platform full of strangers can actually sing it.
-- **Fear of God in the room.** We approach the work as people who will give an
-  account.
+- **Anthropological songs** — lament (Ps 13), testimony (Ps 23), confession
+  (Ps 51), petition (Ps 40). Their content is the human experience of God. We
+  sing them; we don't build our identity on them.
+- **Mixed songs** — a doxological chorus wrapped in journey-narrating verses.
+  We'll sing some, but the shape we're writing toward is doxological
+  *throughout*: the offering starts on the altar and stays there.
+- **"Blessed be God" and thanksgiving forms** (Eph 1:3–14; 1 Pet 1:3–5) — on
+  the boundary. They pass while the focus stays on God's acts, and drift when
+  they dwell on what we received. Test them line by line.
 
 ## An invitation
 
