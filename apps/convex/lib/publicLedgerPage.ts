@@ -44,12 +44,14 @@ import {
   DOCUMENTATION_STATE_LABELS,
   EXPENSE_TYPE_LABELS,
   formatAffiliationMix,
+  contactMailto,
   formatCents,
   INCOME_STREAM_BLURBS,
   INCOME_STREAM_LABELS,
   monthName,
   monthsOfYear,
   periodLabel,
+  PUBLIC_CONTACT_EMAIL,
   type AmendmentReason,
   type DocumentationState,
   type ExpenseType,
@@ -585,6 +587,24 @@ function ledgerHtml(s: PublicStatement): string {
 </section>`;
 }
 
+/**
+ * THE GIVING ROLL — "find the minute you gave."
+ *
+ * The owner's ask, and the thing that makes the page personal rather than
+ * institutional: a giver should be able to locate their own gift in the
+ * public record and see it counted, without any giver being named.
+ *
+ * ── AND A WAY TO SAY "MINE ISN'T HERE" ───────────────────────────────────────
+ * An invitation to look yourself up is also an invitation to fail to find
+ * yourself, and that is a much worse experience than never having looked —
+ * it turns "they're transparent" into "they lost my money." So the roll ends
+ * with the three benign explanations (wrong month, unpublished month, a
+ * pledge that settles on its own date) and a real address to write to.
+ *
+ * The benign reasons come FIRST, deliberately. Most people who can't find a
+ * gift are looking in the wrong month, and telling them that costs nothing
+ * and resolves it instantly. The email is for whoever it doesn't resolve.
+ */
 function givingRollHtml(s: PublicStatement): string {
   if (s.gifts.length === 0) return "";
   const rows = s.gifts
@@ -598,9 +618,30 @@ function givingRollHtml(s: PublicStatement): string {
     .join("");
   return `<section>
   <h2 class="sectionhead">The giving roll</h2>
-  <p class="sectionsub">Every gift received this month, by the minute it arrived — and nothing else. No names, no amounts tied to a person, no way to work backwards to one. If you gave, you can find your gift here and see it counted.</p>
+  <p class="sectionsub">Every gift received in ${esc(s.label)}, by the minute it arrived — and nothing else. No names, no amounts tied to a person, no way to work backwards to one. If you gave, you can find your gift here and see it counted.</p>
   <div class="roll">${rows}</div>
+  ${missingGiftHtml(s.label)}
 </section>`;
+}
+
+/**
+ * "Don't see your gift?" — the recovery path.
+ *
+ * Written to be actionable rather than reassuring. It names the specific
+ * month being viewed, because "check another month" is useless advice without
+ * saying which month you are currently in.
+ */
+function missingGiftHtml(periodLabelText: string): string {
+  const mailto = contactMailto(`Gift missing from the ${periodLabelText} finances page`);
+  return `<div class="note missing">
+  <strong>Don't see your gift?</strong> Three things usually explain it, and they're worth checking first:
+  <ul class="misslist">
+    <li><strong>It landed in a different month.</strong> A gift counts in the month it was received. One given in the last days of a month — or a card that took a day to settle — can sit in the month either side of ${esc(periodLabelText)}.</li>
+    <li><strong>That month isn't published yet.</strong> We publish a month only after it's closed and reviewed, so the most recent weeks are usually not up here yet.</li>
+    <li><strong>Recurring gifts charge on their own date</strong>, which may not be the day you first set them up.</li>
+  </ul>
+  <p class="missfoot">Still can't find it? Email <a href="${esc(mailto)}">${esc(PUBLIC_CONTACT_EMAIL)}</a> with the date and amount and we'll go looking — a real person reads it, and if we got something wrong we'll publish the correction. We'd genuinely rather hear from you than have the record be quietly wrong.</p>
+</div>`;
 }
 
 /**
@@ -699,6 +740,10 @@ function howToReadHtml(): string {
 
   <details class="faq"><summary>Who decides what gets published?</summary>
   <p>One person prepares the month; a different person reviews and publishes it. The system refuses a self-approval unless a single named operator is running the org, and it records which of the two happened for every month published.</p></details>
+
+  <details class="faq"><summary>I think something here is wrong. What do I do?</summary>
+  <p>Tell us. Email <a href="${esc(contactMailto("Something looks wrong on the finances page"))}">${esc(PUBLIC_CONTACT_EMAIL)}</a> with what you're looking at and what looks off — a missing gift, a line that doesn't make sense, a number that doesn't add up.</p>
+  <p>A real person reads it. If we got something wrong, the fix is a published correction with our explanation attached, not a quiet edit — so reporting it puts the record right in public, where the mistake was.</p></details>
 </section>`;
 }
 
@@ -737,7 +782,7 @@ ${howToReadHtml()}
       .map((b) => `${b.bookLabel} on ${longDate(b.publishedAt)}`)
       .join(" · "),
   )}.</p>
-  <p style="margin-top:8px">Something here look wrong? Tell us — <a href="/give">get in touch</a>. We'd rather publish a correction than be right by accident.</p>
+  <p style="margin-top:8px">Something here look wrong? Email <a href="${esc(contactMailto(`Question about the ${statement.label} finances page`))}">${esc(PUBLIC_CONTACT_EMAIL)}</a>. We'd rather publish a correction than be right by accident.</p>
 </footer>`;
 
   return shell({
@@ -803,7 +848,7 @@ ${budgetsHtml(statement, true)}
 ${howToReadHtml()}
 <footer>
   <p>Built from ${statement.months.length} published month${statement.months.length === 1 ? "" : "s"}. Each one was reviewed and frozen on its own; this page only adds them up.</p>
-  <p style="margin-top:8px">Something here look wrong? Tell us — <a href="/give">get in touch</a>. We'd rather publish a correction than be right by accident.</p>
+  <p style="margin-top:8px">Something here look wrong? Email <a href="${esc(contactMailto(`Question about the ${statement.label} finances page`))}">${esc(PUBLIC_CONTACT_EMAIL)}</a>. We'd rather publish a correction than be right by accident.</p>
 </footer>`;
 
   return shell({

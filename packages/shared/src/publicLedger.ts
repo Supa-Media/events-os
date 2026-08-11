@@ -347,6 +347,31 @@ export function publicGiftMethodLabel(method: string): string {
   );
 }
 
+// ── Where a reader goes when the page is wrong ───────────────────────────────
+/**
+ * The address the public finances page tells people to write to.
+ *
+ * `hello@publicworship.life` because that is already the org's public contact
+ * everywhere else — the site header, the collaborate page, the songs page,
+ * the newsletter footer. Inventing a `giving@` or `finance@` alias for this
+ * one page would create an address that has to be monitored by someone, and
+ * an unmonitored address on a "tell us if this is wrong" prompt is worse than
+ * no prompt at all: it converts a person willing to help into a person who
+ * was ignored.
+ *
+ * (The marketing site — `apps/landing`, a separate Astro build — hardcodes
+ * the same address in about ten places. Consolidating those is a cleanup
+ * worth doing on its own; this constant is the server-rendered side's single
+ * source, so at least the pages Convex renders move together.)
+ */
+export const PUBLIC_CONTACT_EMAIL = "hello@publicworship.life";
+
+/** A `mailto:` with the subject pre-filled, so a report arrives already
+ *  triaged instead of as an untitled email somebody has to categorize. */
+export function contactMailto(subject: string): string {
+  return `mailto:${PUBLIC_CONTACT_EMAIL}?subject=${encodeURIComponent(subject)}`;
+}
+
 // ── Amendment reasons ────────────────────────────────────────────────────────
 /**
  * Why a published month was revised. A free-text note is required alongside

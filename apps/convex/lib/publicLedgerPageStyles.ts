@@ -136,6 +136,11 @@ td.purpose{color:var(--muted);min-width:260px}
 .note{background:var(--raised);border:1px solid var(--border);border-left:3px solid var(--accent);
   border-radius:12px;padding:14px 18px;margin-top:16px;font-size:14.5px;color:var(--muted);box-shadow:var(--shadow)}
 .note strong{color:var(--ink)}
+.note.missing{border-left-color:var(--success);margin-top:14px}
+.misslist{margin:10px 0 0;padding-left:20px}
+.misslist li{margin-bottom:6px;max-width:72ch}
+.misslist strong{color:var(--ink)}
+.missfoot{margin-top:12px;max-width:72ch}
 .notegrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px;margin-top:16px}
 details.faq{background:var(--raised);border:1px solid var(--border);border-radius:12px;padding:14px 18px;
   margin-top:10px;box-shadow:var(--shadow)}

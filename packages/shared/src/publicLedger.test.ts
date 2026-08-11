@@ -1,11 +1,13 @@
 import { describe, expect, test } from "vitest";
 import {
+  contactMailto,
   formatAffiliationMix,
   parsePeriodKey,
   periodKey,
   periodLabel,
   previousPeriodKey,
   publicGiftMethodLabel,
+  PUBLIC_CONTACT_EMAIL,
   PUBLIC_GIFT_COLUMNS,
   PUBLIC_LEDGER_COLUMNS,
   REBUILDABLE_STATUSES,
@@ -140,5 +142,29 @@ describe("published columns", () => {
     for (const forbidden of ["name", "donor", "attendee", "email", "giver"]) {
       expect(columns.some((c) => c.includes(forbidden))).toBe(false);
     }
+  });
+});
+
+describe("the way a reader reports a problem", () => {
+  test("points at the org's real, already-monitored address", () => {
+    // Not a `giving@` or `finance@` alias invented for this one page: an
+    // unmonitored address on a "tell us if this is wrong" prompt converts a
+    // person willing to help into a person who was ignored.
+    expect(PUBLIC_CONTACT_EMAIL).toBe("hello@publicworship.life");
+  });
+
+  test("pre-fills a subject so a report arrives already triaged", () => {
+    expect(contactMailto("Gift missing from the August 2026 finances page")).toBe(
+      "mailto:hello@publicworship.life?subject=Gift%20missing%20from%20the%20August%202026%20finances%20page",
+    );
+  });
+
+  test("escapes a subject that would otherwise break the URL", () => {
+    // Period labels are interpolated into these, and a label is not a
+    // guaranteed-safe string.
+    const link = contactMailto("Q&A: what's this? #2");
+    expect(link).not.toContain("&subject");
+    expect(link).not.toContain("#2");
+    expect(decodeURIComponent(link.split("subject=")[1])).toBe("Q&A: what's this? #2");
   });
 });
