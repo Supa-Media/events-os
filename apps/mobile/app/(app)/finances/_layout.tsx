@@ -13,12 +13,14 @@ import { ScopeBadge } from "../../../components/finance/ScopeBadge";
  * agents own disjoint screen files.
  *
  * The tab SET itself branches on the caller's REAL finance seats
- * (`financeRoles.mySeats`, WP-0.2): a seat holder gets the manager tab bar
- * (Dashboard · Reconcile · Receipts · Cards · Reimbursements) — the desk each of those
- * renders (central / chapter) still resolves INSIDE the screen. A caller with
- * NO finance seat (the member/cardholder case, D3) gets the reduced member
- * set instead — My Card · My Transactions · Reimbursements — so they never
- * land on a tab that only ever shows them a permission wall.
+ * (`financeRoles.mySeats`, WP-0.2): a seat holder gets the manager bar
+ * (Dashboard · Reconcile · Coding · Receipts · Sales · Budgets · Cards) — the
+ * desk each renders (central / chapter) still resolves INSIDE the screen. A
+ * caller with NO finance seat (the member/cardholder case, D3) gets the
+ * reduced member set — My Card · Coding · Budgets — so they never land on a
+ * tab that only ever shows them a permission wall. Two of the chips are
+ * GROUPS (see below): Coding carries Explain and Publish as a sub-row, Cards
+ * carries Reimbursements.
  *
  * Accounts is its OWN gate on top of that (WP-1.2): the tab only appears for
  * the Executive Director / Financial Manager seats (`financeRoles.
@@ -29,63 +31,83 @@ import { ScopeBadge } from "../../../components/finance/ScopeBadge";
  * Orchestrator-owned (shared across the finance screens); screens render their
  * own <Screen>/content into the <Slot/> below.
  */
-const ACCOUNTS_TAB = { label: "Accounts", path: "/finances/accounts" };
+const ACCOUNTS_TAB: Tab = { label: "Accounts", path: "/finances/accounts" };
 
-// Budgets — "budgets at a glance" — is the one tab BOTH sets carry: read-only
-// spent-vs-room-left visibility is deliberately open to every team member
-// (the FM's top ask — cardholders shouldn't have to ask her), and seat
-// holders get the same tab so both personas are looking at one shared page
-// when a cardholder asks about it. Backed by the ungated-by-design
-// `finances.budgetsGlance` (see its doc comment).
-const BUDGETS_TAB = { label: "Budgets", path: "/finances/budgets" };
-
-// Sales — merch, snacks and drinks sold in person — is seat-only. It's the
-// third revenue stream (alongside gifts and ticket orders) and the last one to
-// get a surface; before this its money reached Stripe and stopped there. Gated
-// with the rest of the seat tabs rather than added to MEMBER_TABS: a cardholder
-// has no reason to read chapter revenue detail.
-// Coding — your own charges to explain, AND the codings you can decide — is
-// the other tab both sets carry, and it is the reason this comment exists.
-// Its cardholder half used to live at `/finances/my-transactions`, which
-// appeared ONLY in MEMBER_TABS: every seat holder could reach it by URL and no
-// other way, which is exactly why the owner had never seen it. It's one tab
-// now, in both sets, and `/finances/my-transactions` redirects to it.
+// ── Grouped tabs (owner directive, 2026-08-11) ───────────────────────────────
+// "This is just way too much... coding, publish, and explain can be one thing.
+// Cards and reimbursements can be one thing." The bar had grown to eleven
+// chips by accretion — every workstream added one — and eleven chips is a
+// navigation problem pretending to be a feature list.
 //
-// Gated on `transactionCodings.workload` rather than on seats, because the two
-// halves have different audiences: a cardholder with no seat at all still owns
-// charges to code, and a reviewer with no charges of their own still has a
-// queue. Somebody with NEITHER gets no tab instead of a dead one.
-const CODING_TAB = { label: "Coding", path: "/finances/coding" };
+// A GROUP is one primary chip; its members appear as a second, smaller pill
+// row only while you're inside the group. The routes themselves are unchanged
+// (deep links, the Academy's screenshots, and the publish console's
+// cross-links all keep working) — only the bar is consolidated.
+//
+// The three primary finance activities, per the owner's own requirements:
+//   overview it (Dashboard / Reconcile / Accounts) · explain it (Coding) ·
+//   spend it (Cards). Receipts, Sales and Budgets stay their own chips —
+//   no directive on them, and merging beyond the ask invents an information
+//   architecture nobody requested.
+type Tab = {
+  label: string;
+  path: string;
+  /** Sub-destinations shown as a second pill row while this tab is active.
+   *  The first member is the tab's own landing path. */
+  children?: { label: string; path: string }[];
+};
 
-const SEAT_TABS: { label: string; path: string }[] = [
+// Coding, Explain and Publish are one activity read in one direction: explain
+// the transactions, then publish the month they belong to. Kept under the
+// "Coding" label because the Academy teaches that word for the §274(d) work
+// and a tab rename ripples into lessons (CLAUDE.md's Academy rule).
+const CODING_GROUP: Tab = {
+  label: "Coding",
+  path: "/finances/coding",
+  children: [
+    { label: "Code", path: "/finances/coding" },
+    { label: "By month", path: "/finances/explain" },
+    { label: "Publish", path: "/finances/publish" },
+  ],
+};
+
+// Cards and reimbursements are both "money a person spends and the org makes
+// right" — one chip, two sub-views.
+const CARDS_GROUP: Tab = {
+  label: "Cards",
+  path: "/finances/cards",
+  children: [
+    { label: "Cards", path: "/finances/cards" },
+    { label: "Reimbursements", path: "/finances/reimbursements" },
+  ],
+};
+
+const BUDGETS_TAB: Tab = { label: "Budgets", path: "/finances/budgets" };
+
+const SEAT_TABS: Tab[] = [
   { label: "Dashboard", path: "/finances" },
   { label: "Reconcile", path: "/finances/reconcile" },
-  { label: "Coding", path: "/finances/coding" },
+  CODING_GROUP,
   { label: "Receipts", path: "/finances/receipts" },
   { label: "Sales", path: "/finances/sales" },
   BUDGETS_TAB,
-  { label: "Cards", path: "/finances/cards" },
-  { label: "Reimbursements", path: "/finances/reimbursements" },
-  // Publish — the last step of the close: a month is prepared here, reviewed
-  // by a second person, and frozen onto the public finances page. Seat-only
-  // and LAST in the bar, both deliberately: it's the one finance surface
-  // whose audience is outside the org, and it's the step that only makes
-  // sense once everything to its left is done. Reading the queue is viewer+;
-  // the publish button itself needs the `finance.publish` seat capability
-  // (`lib/publicLedgerAccess.ts`), which the screen resolves for itself.
-  { label: "Publish", path: "/finances/publish" },
-  // Explain — the month-scoped coding workbench behind the publish console's
-  // "N lines will publish with no explanation" disclosure. Its own tab as well
-  // as a link from there, because the backfill is hours of work somebody
-  // returns to rather than a step inside one publish.
-  { label: "Explain", path: "/finances/explain" },
+  CARDS_GROUP,
 ];
 
-const MEMBER_TABS: { label: string; path: string }[] = [
-  { label: "My Card", path: "/finances/cards" },
-  CODING_TAB,
+// The member (no-seat) set: their card + reimbursements under one chip, their
+// own charges to code, and the read-only budgets view. Three chips.
+const MEMBER_CODING_TAB: Tab = { label: "Coding", path: "/finances/coding" };
+const MEMBER_TABS: Tab[] = [
+  {
+    label: "My Card",
+    path: "/finances/cards",
+    children: [
+      { label: "My Card", path: "/finances/cards" },
+      { label: "Reimbursements", path: "/finances/reimbursements" },
+    ],
+  },
+  MEMBER_CODING_TAB,
   BUDGETS_TAB,
-  { label: "Reimbursements", path: "/finances/reimbursements" },
 ];
 
 /** Active when the pathname is the tab's route (exact for the index, prefix for
@@ -95,6 +117,13 @@ function isActive(pathname: string, path: string): boolean {
     return pathname === "/finances" || pathname === "/finances/index";
   }
   return pathname === path || pathname.startsWith(`${path}/`);
+}
+
+/** A grouped tab lights up when ANY of its members is the active route, so
+ *  standing on /finances/publish still highlights "Coding" in the bar. */
+function isTabActive(pathname: string, tab: Tab): boolean {
+  if (tab.children) return tab.children.some((c) => isActive(pathname, c.path));
+  return isActive(pathname, tab.path);
 }
 
 export default function FinancesLayout() {
@@ -124,7 +153,16 @@ export default function FinancesLayout() {
         : canViewAccounts === true
           ? [...SEAT_TABS, ACCOUNTS_TAB]
           : SEAT_TABS
-  ).filter((t) => t.path !== CODING_TAB.path || hasCodingWork);
+  ).filter(
+    // The member set drops Coding when there is genuinely nothing behind it
+    // (same rule as before the grouping). Seat holders always keep the group:
+    // Explain and Publish are inside it, and those exist independent of the
+    // caller's personal coding workload.
+    (t) => seats?.length !== 0 || t.path !== MEMBER_CODING_TAB.path || hasCodingWork,
+  );
+
+  // The active group's second row, when there is one.
+  const activeGroup = tabs.find((t) => t.children && isTabActive(pathname, t));
 
   return (
     <View className="flex-1">
@@ -143,12 +181,33 @@ export default function FinancesLayout() {
             <Pill
               key={t.path}
               label={t.label}
-              selected={isActive(pathname, t.path)}
+              selected={isTabActive(pathname, t)}
               onPress={() => router.navigate(t.path as never)}
             />
           ))}
         </ScrollView>
       </View>
+      {/* The group's members — a second, quieter row that exists only while
+          you're inside the group, so the primary bar stays seven chips
+          instead of eleven. */}
+      {activeGroup?.children ? (
+        <View className="border-b border-border bg-sunken px-4 py-2">
+          <ScrollView
+            horizontal
+            showsHorizontalScrollIndicator={false}
+            contentContainerStyle={{ gap: 8 }}
+          >
+            {activeGroup.children.map((c) => (
+              <Pill
+                key={c.path}
+                label={c.label}
+                selected={isActive(pathname, c.path)}
+                onPress={() => router.navigate(c.path as never)}
+              />
+            ))}
+          </ScrollView>
+        </View>
+      ) : null}
       {/* Founder directive: finance scope must be unmistakable, even from a
           bare screenshot of just this content column — see `ScopeBadge`'s
           doc for the three distinct treatments (Central / chapter desk /

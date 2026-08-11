@@ -117,8 +117,11 @@ function looksLikeProviderPayout(txn: Doc<"transactions">): boolean {
 /** True iff a transaction still qualifies as an external-gift candidate on its
  *  own merits (rules #1–#3) — NOT the linked/dismissed checks (#4–#5), which
  *  need a DB read per candidate and are applied separately. Shared by the list
- *  query and `confirmExternalGift`'s revalidation. */
-function isCandidateShaped(txn: Doc<"transactions">): boolean {
+ *  query, `confirmExternalGift`'s revalidation, AND the reconciliation
+ *  summary's unrecorded-inflow lead (`reconciliation.ts`) — one definition of
+ *  "looks like a gift that isn't booked yet", so the gap panel and this desk
+ *  can never disagree about which rows they mean. */
+export function isCandidateShaped(txn: Doc<"transactions">): boolean {
   if (txn.flow !== "inflow") return false;
   if (txn.cardId !== undefined) return false;
   if (TRANSFER_LEG_SOURCES.has(txn.source)) return false;

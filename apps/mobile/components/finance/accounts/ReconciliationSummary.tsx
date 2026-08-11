@@ -782,6 +782,25 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
               ordinary income on top of the revenue it was already paying for.
             </Text>
           ) : null}
+          {/* The single most common explanation for a positive gap, so it
+              leads with the strongest possible phrasing: when the lead's total
+              EQUALS the gap, the mystery is solved and the panel should say
+              so instead of presenting a number and a hint side by side. */}
+          {summary.unrecordedInflowCount > 0 ? (
+            <Text className="text-2xs text-muted">
+              • {summary.unrecordedInflowCount} recent bank credit
+              {summary.unrecordedInflowCount === 1 ? "" : "s"} worth{" "}
+              {formatCents(summary.unrecordedInflowCents)} that look
+              {summary.unrecordedInflowCount === 1 ? "s" : ""} like giving but
+              {summary.unrecordedInflowCount === 1 ? " is" : " are"} recorded
+              as nothing — an ACH or Zelle that landed without a gift entry.
+              {summary.unrecordedInflowCents === summary.differenceCents
+                ? " That is this entire difference."
+                : ""}{" "}
+              Confirm or dismiss them under Giving → possible gifts, and this
+              number moves the moment you do.
+            </Text>
+          ) : null}
           {summary.inKindRevenueCents > 0 ? (
             <Text className="text-2xs text-muted">
               • {formatCents(summary.inKindRevenueCents)} of book value is
