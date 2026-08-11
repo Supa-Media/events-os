@@ -136,6 +136,9 @@ td.purpose{color:var(--muted);min-width:260px}
 .note{background:var(--raised);border:1px solid var(--border);border-left:3px solid var(--accent);
   border-radius:12px;padding:14px 18px;margin-top:16px;font-size:14.5px;color:var(--muted);box-shadow:var(--shadow)}
 .note strong{color:var(--ink)}
+.note.pay{border-left-color:var(--lavender);margin-top:18px;font-size:15.5px}
+.note.pay strong{font-size:16.5px}
+.paypolicy{margin-top:10px;max-width:74ch}
 .note.missing{border-left-color:var(--success);margin-top:14px}
 .misslist{margin:10px 0 0;padding-left:20px}
 .misslist li{margin-bottom:6px;max-width:72ch}

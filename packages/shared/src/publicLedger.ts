@@ -347,6 +347,41 @@ export function publicGiftMethodLabel(method: string): string {
   );
 }
 
+// ── Compensation ─────────────────────────────────────────────────────────────
+/**
+ * What the page says about who gets paid.
+ *
+ * ⚠ THIS IS A CLAIM ABOUT THE PRESENT AND IT CAN GO STALE. ⚠ The moment one
+ * person at Public Worship draws a salary, an honorarium, or a fee, the first
+ * sentence below becomes false — on a public page whose entire argument is
+ * that it does not say false things. There is no way to derive this from the
+ * ledger (the schema has no notion of compensation, and matching on category
+ * names would be a guess), so it is a stated fact with a human behind it.
+ *
+ * Two guards, since a constant can't check reality:
+ *  - The publish console shows this line back to the publisher every month,
+ *    beside the other disclosures, BEFORE the button. Re-affirming it is part
+ *    of publishing a month.
+ *  - The Academy lesson lists it in the pre-publish checklist.
+ *
+ * The FORWARD-LOOKING half is the org's stated policy, not a status, so it
+ * does not go stale: compensation publishes by POSITION, never by person, and
+ * positions at the same level are paid the same (the founder's model,
+ * explicitly modelled on how public offices publish theirs). Keeping that
+ * promise here — visible before there is anything to disclose — is the point.
+ * Announcing it later, once there is a salary to explain, would read as a
+ * defence rather than a commitment.
+ */
+export const COMPENSATION_DISCLOSURE = {
+  /** Set to `false` the day anybody starts being paid, and say so here. */
+  allVolunteer: true,
+  headline: "Everyone here is a volunteer.",
+  present:
+    "Nobody at Public Worship draws a salary today — not the leadership, not the team. None of the money above was paid to any of us.",
+  policy:
+    "When that changes, we'll publish what people are paid by position rather than by person — the way public offices publish theirs — and positions at the same level will be paid the same. Like everything else here, it will show up in the lines.",
+} as const;
+
 // ── Where a reader goes when the page is wrong ───────────────────────────────
 /**
  * The address the public finances page tells people to write to.
