@@ -104,11 +104,14 @@ describe("0028_reaward_course_completions", () => {
     expect(await badges(s)).toEqual([]);
   });
 
-  test("a person who passes all three chapter-money-model modules earns that badge too, independent of chapter-director", async () => {
+  test("a person who passes every chapter-money-model module earns that badge too, independent of chapter-director", async () => {
     const s = await setupLearner();
     await pass(s, "finance-tiers-and-skim", 100);
     await pass(s, "finance-budget-lifecycle", 200);
     await pass(s, "finance-one-home-per-dollar", 300);
+    // 2026-08-11: the course gained a fourth module (the public ledger), so
+    // the badge needs all four — which is the point of this assertion.
+    await pass(s, "finance-publishing-the-books", 400);
 
     const result = await run(s.t, (ctx) => runReawardCourseCompletions(ctx));
     expect(result.awarded).toBe(1);
@@ -122,6 +125,7 @@ describe("0028_reaward_course_completions", () => {
     await pass(s, "finance-tiers-and-skim", 300);
     await pass(s, "finance-budget-lifecycle", 400);
     await pass(s, "finance-one-home-per-dollar", 500);
+    await pass(s, "finance-publishing-the-books", 600);
 
     const first = await run(s.t, (ctx) => runReawardCourseCompletions(ctx));
     expect(first.awarded).toBe(2); // chapter-director + chapter-money-model

@@ -66,6 +66,14 @@ const SEAT_TABS: { label: string; path: string }[] = [
   BUDGETS_TAB,
   { label: "Cards", path: "/finances/cards" },
   { label: "Reimbursements", path: "/finances/reimbursements" },
+  // Publish — the last step of the close: a month is prepared here, reviewed
+  // by a second person, and frozen onto the public finances page. Seat-only
+  // and LAST in the bar, both deliberately: it's the one finance surface
+  // whose audience is outside the org, and it's the step that only makes
+  // sense once everything to its left is done. Reading the queue is viewer+;
+  // the publish button itself needs the `finance.publish` seat capability
+  // (`lib/publicLedgerAccess.ts`), which the screen resolves for itself.
+  { label: "Publish", path: "/finances/publish" },
 ];
 
 const MEMBER_TABS: { label: string; path: string }[] = [

@@ -114,6 +114,11 @@ import {
   givingNotificationRules,
 } from "./schema/givingNotifications";
 import { givingActivity } from "./schema/givingActivity";
+import {
+  financePublications,
+  financePublicationRevisions,
+  financePublicationEntries,
+} from "./schema/publicLedger";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
 import { seatProposals } from "./schema/seatProposals";
@@ -481,6 +486,14 @@ const schema = defineSchema({
   // row required a real Stripe payment (spam deterrent), flipped visible on
   // settle. See schema/givingActivity.ts + givingActivity.ts.
   givingActivity,
+
+  // The public ledger (schema/publicLedger.ts) — a book's month, prepared,
+  // reviewed, and FROZEN at publish. The public page reads the frozen copy,
+  // never the live books, so a correction has to be published as a dated
+  // revision beside the old one instead of silently rewriting it.
+  financePublications,
+  financePublicationRevisions,
+  financePublicationEntries,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see
