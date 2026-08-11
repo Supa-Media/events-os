@@ -466,33 +466,57 @@ export function ReconciliationSummary() {
                   card this short it is most of the message. The magnitude below
                   stays positive — a minus sign is an accounting convention, not
                   a diagnosis. */}
-              <View className="flex-row items-center gap-1.5">
-                <Icon name={verdict.icon} size={13} color={toneColor} />
-                <Text className="min-w-0 flex-1 text-[11px] font-bold uppercase tracking-wide text-warn">
-                  {cashHigh
-                    ? "More money than the books explain"
-                    : "The books claim more than we can find"}
-                </Text>
-              </View>
-              <Text
-                className="font-display text-xl text-ink"
-                style={{ fontVariant: ["tabular-nums"] }}
-              >
-                {formatCents(verdict.amountCents)} unaccounted for
-              </Text>
-              <Text className="mt-0.5 text-sm text-muted">
-                {/* When a known in-flight gift IS the whole gap, the panel
-                    knows the answer and must not phrase it as a mystery —
-                    "never recorded" is an accusation, and here it would be a
-                    false one aimed at money the org already receipted. */}
-                {cashHigh &&
-                summary.inFlightGiftCents === verdict.amountCents &&
-                summary.inFlightGiftCount > 0
-                  ? "This is a gift still clearing the bank — details under Where to look. It books itself when it settles."
-                  : cashHigh
-                    ? "Something came in that was never recorded, or an expense was recorded that never actually left."
-                    : "Something is counted twice, or was recorded as spent when it wasn't."}
-              </Text>
+              {/* THE FULLY-EXPLAINED CASE GETS ITS OWN HEADLINE, not just its
+                  own subtitle. "unaccounted for" is a claim, and the moment
+                  this panel accounts for the whole difference — a known gift,
+                  receipted by us, in transit at the processor — the claim is
+                  false. Softening the sentence underneath while the banner
+                  still shouted the false thing was this panel's second miss
+                  on the same $309.27 (owner report, 2026-08-11): the first
+                  was not knowing the answer; the second was knowing it and
+                  keeping the alarm on. */}
+              {(() => {
+                const fullyInFlight =
+                  cashHigh &&
+                  summary.inFlightGiftCount > 0 &&
+                  summary.inFlightGiftCents === verdict.amountCents;
+                return (
+                  <>
+                    <View className="flex-row items-center gap-1.5">
+                      <Icon
+                        name={fullyInFlight ? "clock" : verdict.icon}
+                        size={13}
+                        color={fullyInFlight ? colors.muted : toneColor}
+                      />
+                      <Text
+                        className={`min-w-0 flex-1 text-[11px] font-bold uppercase tracking-wide ${
+                          fullyInFlight ? "text-muted" : "text-warn"
+                        }`}
+                      >
+                        {fullyInFlight
+                          ? "A gift is on its way to the bank"
+                          : cashHigh
+                            ? "More money than the books explain"
+                            : "The books claim more than we can find"}
+                      </Text>
+                    </View>
+                    <Text
+                      className="font-display text-xl text-ink"
+                      style={{ fontVariant: ["tabular-nums"] }}
+                    >
+                      {formatCents(verdict.amountCents)}{" "}
+                      {fullyInFlight ? "in transit" : "unaccounted for"}
+                    </Text>
+                    <Text className="mt-0.5 text-sm text-muted">
+                      {fullyInFlight
+                        ? "A bank-transfer gift we've already receipted is still clearing — details under Where to look. It books itself when it settles, and this line goes back to zero."
+                        : cashHigh
+                          ? "Something came in that was never recorded, or an expense was recorded that never actually left."
+                          : "Something is counted twice, or was recorded as spent when it wasn't."}
+                    </Text>
+                  </>
+                );
+              })()}
             </>
           )}
         </View>
