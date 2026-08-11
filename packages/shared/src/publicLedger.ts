@@ -172,17 +172,27 @@ export const INCOME_STREAMS = [
 ] as const;
 export type IncomeStream = (typeof INCOME_STREAMS)[number];
 
+/**
+ * PUBLIC WORSHIP IS NOT A CHURCH, and these labels are the place that is
+ * easiest to get wrong (owner correction, 2026-08-11). No "tithes," no
+ * "offerings," no "congregation" — money that was given is a GIFT, and money
+ * that was paid for something is a SALE. The distinction the streams draw is
+ * what was sold, not who we are.
+ */
 export const INCOME_STREAM_LABELS: Record<IncomeStream, string> = {
-  giving: "Tithes, offerings & gifts",
+  giving: "Gifts",
   tickets: "Ticket sales",
-  sales: "In-person sales",
+  // The `sales` table holds merch alongside snacks, drinks and books, so the
+  // label has to cover all of it — "Merch sales" alone would silently
+  // misattribute the rest.
+  sales: "Merch & other sales",
   registrations: "Program registrations",
   other: "Other income",
 };
 
 export const INCOME_STREAM_BLURBS: Record<IncomeStream, string> = {
   giving:
-    "Every gift given to the church — recurring, one-time, and in-kind. Counted when the gift is received, not when the money reaches the bank.",
+    "Money given to support the work — recurring, one-time, and in-kind. Counted when the gift is received, not when the money reaches the bank.",
   tickets: "Paid tickets to events we hosted.",
   sales: "Merch, books, coffee — anything sold in person.",
   registrations: "Fees for classes, cohorts and courses.",
@@ -281,9 +291,9 @@ function pluralizeAffiliation(label: string): string {
  * instead of an empty cell — and a published row keeps rendering forever
  * regardless of what that tuple does later.
  *
- * The labels are the DONOR's-eye view, not the processor's: "Card" rather
- * than "stripe", because a reader of a church's public books is being told how
- * the money came in, not which vendor cleared it.
+ * The labels are the GIVER's-eye view, not the processor's: "Card" rather
+ * than "stripe", because a reader of these books is being told how the money
+ * came in, not which vendor cleared it.
  */
 export const PUBLIC_GIFT_METHOD_LABELS: Record<string, string> = {
   stripe: "Card",
@@ -336,8 +346,8 @@ export const AMENDMENT_REASON_LABELS: Record<AmendmentReason, string> = {
  *  explanation. Mirrors `MIN_PURPOSE_LENGTH`'s reasoning on codings. */
 export const MIN_AMENDMENT_NOTE_LENGTH = 12;
 
-/** The most rows one published revision may carry. A month of a church this
- *  size runs in the hundreds; this is a guardrail against a mis-scoped period
+/** The most rows one published revision may carry. A month at this size runs
+ *  in the hundreds; this is a guardrail against a mis-scoped period
  *  freezing tens of thousands of rows in one mutation, not a product limit.
  *  A period that exceeds it fails loudly at publish time rather than
  *  publishing a silently truncated ledger — an incomplete ledger presented as

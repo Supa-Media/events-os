@@ -12,7 +12,7 @@
  * a shared link can't take thirty seconds to paint. The CSV has no cap. If
  * those two ever disagree about what a month contained, the CSV is the
  * authority and the page says so — which is why the page's truncation notice
- * points here rather than offering pagination.
+ * points here rather than paginating.
  *
  * Serialization goes through `@events-os/shared/csv`, which is
  * formula-injection-safe (a purpose beginning `=` is a real possibility in

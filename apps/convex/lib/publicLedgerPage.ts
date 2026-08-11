@@ -8,7 +8,8 @@
  * The owner's framing, and the thing every layout decision here answers to: a
  * giver reading an annual report sees "$3.9M staff cost" and feels like a drop
  * in a bucket. A giver reading a LINE — "$47.83, Costco, water and cups for
- * the Sunday setup team, 12 people" — can see their own $5 in it. So the page
+ * the setup team at a Worship With Strangers night, 12 people" — can see
+ * their own $5 in it. So the page
  * is built to get from the headline to the individual line in as few moves as
  * possible, and the line is the point, not the summary.
  *
@@ -221,10 +222,9 @@ function monthPickerHtml(months: PublishedMonth[], current: string): string {
 
 function statsHtml(s: PublicStatement): string {
   // The third figure is called "Difference," not "Surplus" or "Profit." A
-  // church running a deliberate deficit out of reserves in a given month has
-  // not lost anything, and a month that happens to end up ahead has not
-  // earned a profit. "Difference" is the only word that is true in both
-  // directions without editorializing.
+  // deliberate month of spending down reserves has not lost anything, and a
+  // month that happens to end up ahead has not earned a profit. "Difference"
+  // is the only word that is true in both directions without editorializing.
   const netLabel = s.netCents >= 0 ? "More in than out" : "More out than in";
   return `<div class="stats">
   <div class="stat in"><div class="k">Money in</div><div class="v">${esc(money(s.incomeCents))}</div>
@@ -266,7 +266,7 @@ function incomeHtml(s: PublicStatement): string {
   }));
   return `<section>
   <h2 class="sectionhead">Where it came from</h2>
-  <p class="sectionsub">Counted when the money was given, not when it reached the bank — so a gift on the last Sunday of the month belongs to that month even if the deposit lands the following week.</p>
+  <p class="sectionsub">Counted when the money was given, not when it reached the bank — so a gift on the last day of the month belongs to that month even if the deposit lands the following week.</p>
   <div class="bars">${barRowsHtml(rows, true)}</div>
 </section>`;
 }

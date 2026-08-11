@@ -1479,7 +1479,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Once a month is closed, it goes on publicworship.life — not a summary, every transaction. What we bought, who we bought it from, what it was for, and whether we can produce the receipt. A giver reading \"$3.9M staff cost\" feels like a drop in a bucket. A giver reading \"$47.83, Costco, water and cups for the Sunday setup team\" can see their own $5 in it.",
+        text: "Once a month is closed, it goes on publicworship.life — not a summary, every transaction. What we bought, who we bought it from, what it was for, and whether we can produce the receipt. A giver reading \"$3.9M staff cost\" feels like a drop in a bucket. A giver reading \"$47.83, Costco, water and cups for the setup team at a Worship With Strangers night\" can see their own $5 in it.",
       },
       {
         kind: "rule",

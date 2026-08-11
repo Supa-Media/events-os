@@ -197,7 +197,7 @@ describe("what is published is frozen", () => {
     const s = await asPublisher();
     const txnId = await insertTxn(s, { amountCents: 4783, merchantName: "Costco" });
     await approveCoding(s, txnId, {
-      businessPurpose: "Water and cups for the Sunday setup team",
+      businessPurpose: "Water and cups for the WWS setup team",
     });
     await publishMonth(s);
 
@@ -327,7 +327,7 @@ describe("privacy holds at the storage layer", () => {
     const s = await asPublisher();
     const txnId = await insertTxn(s, { amountCents: 18_000, merchantName: "Chipotle" });
     await approveCoding(s, txnId, {
-      businessPurpose: "Dinner with the Sunday volunteer team",
+      businessPurpose: "Dinner with the volunteer team",
       headcount: 12,
       attendees: [
         { name: "Michael Reid", affiliation: "team" },
