@@ -229,11 +229,38 @@ policy still owe me?" is the useful question. When unexplained lines are more
 than half the month, the note adds that the period predates the rule, so a
 reader understands why an old month looks different from a recent one.
 
-The highest-leverage work on a historical month is not receipts — it is
-**coding the biggest lines**. Coding a pre-policy row is allowed even though
-nothing requires it, and an approved coding publishes its explanation. Ten
-codings on the ten largest charges changes a month more than a hundred receipt
-exceptions would.
+The highest-leverage work on a historical month is **coding the biggest
+lines**. Coding a pre-policy row is allowed even though nothing requires it,
+and an approved coding publishes its explanation. Ten codings on the ten
+largest charges changes a month more than a hundred receipt exceptions would.
+
+### Explain a month (the backfill workbench)
+
+`/finances/explain` — the surface that work happens on, reached from its own
+tab or from the publish console's "N lines will publish with no explanation"
+disclosure, one tap away from the warning that motivates it.
+
+It exists because **no existing coding surface can reach a historical row**,
+and not by oversight — two correct decisions combined to hide them:
+
+| Surface | Why it can't see them |
+|---|---|
+| Coding tab, "yours to code" | `personTransactions` is indexed `by_person`; a genesis row has no `personId` |
+| Reconcile `uncoded` facet | keys off `requiresCoding`, which grandfathers everything pre-policy |
+| `chargeTodo` (row state) | chase semantics — a `reconciled` row reads "settled", and historical rows are reconciled |
+
+All three answer "what does policy demand of whom." The workbench answers
+"what will a stranger see a blank next to," so `finances.monthCodingWorklist`
+uses the publishing predicate and policy dates never enter into it.
+
+Ordered **by amount descending**, not by date: eighteen months of history is a
+grind that won't always be finished, so whatever gets done first should be
+what changes the page most. The progress line reports counts AND dollars,
+because a month can be 20% of the lines and 80% of the money.
+
+Tapping a row opens `FinishChargeSheet` — the same component the cardholder
+flow uses. A second coding form here would have been two forms drifting on the
+one surface where §274(d) substantiation is authored.
 
 ## Not in v1 — deliberately
 

@@ -62,6 +62,8 @@ import {
   PAYOUT_PROCESSORS,
   PAYOUT_PROCESSOR_LABELS,
   easternParts,
+  parsePeriodKey,
+  periodLabel,
   quarterOfMonth,
   formatCents,
   matchesMode,
@@ -81,6 +83,13 @@ import {
   type RepaymentStatus,
 } from "@events-os/shared";
 import { readSandbox } from "./financeSettings";
+// The publishing predicate for "is this row income or spending at all?" — a
+// worklist that padded itself with internal movements would be asking people
+// to explain transfers between the org's own accounts.
+import { signedBookCents } from "./lib/bookBalance";
+// Same gate as the publish console: this worklist reads exactly the rows that
+// console is about to publish.
+import { requireLedgerConsole } from "./lib/publicLedgerAccess";
 import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import {
@@ -4641,6 +4650,141 @@ export const projectActuals = query({
  * member-facing endpoint (that path still sees notes in full via
  * `listReconcile`, the bookkeeper surface).
  */
+/**
+ * EXPLAIN A MONTH — every row in one book-month that would publish with NO
+ * explanation, biggest first.
+ *
+ * Built for the backfill. The owner is publishing 2024 and 2025, and the
+ * existing coding surfaces cannot reach those rows at all:
+ *
+ *  - `personTransactions` is indexed `by_person`, and a genesis-backfilled
+ *    row has no `personId` — nobody's card, nobody's queue. It would never
+ *    appear under "yours to code" for anyone.
+ *  - The reconcile grid's `uncoded` facet keys off `requiresCoding`, which
+ *    GRANDFATHERS everything posted before the coding policy date. Every
+ *    historical row is exempt, so that facet is empty too.
+ *
+ * Both are correct about obligation and useless for the actual job, which is
+ * not "what does policy demand" but "what will a stranger see a blank next
+ * to." So this worklist uses the PUBLISHING predicate — the same population
+ * `lib/publicLedgerSnapshot.ts` counts as `unexplainedCount` — and nothing
+ * about policy dates enters into it.
+ *
+ * ── ORDERED BY AMOUNT, DESCENDING ────────────────────────────────────────────
+ * Not by date. A month of history is a long grind and it will not always be
+ * finished; ordering by size means the work that gets done first is the work
+ * that changes the page most. Ten explanations on the ten largest charges do
+ * more for a reader than fifty on the small ones, because the big numbers are
+ * the ones people ask about.
+ *
+ * Rows come back in the SAME shape `personTransactions` returns, so the mobile
+ * `FinishChargeSheet` — which already does coding, receipt attach, exception
+ * filing, category and note in one place — mounts against them unchanged.
+ * Building a second coding form for this would have been two forms drifting.
+ */
+export const monthCodingWorklist = query({
+  args: {
+    scope: v.optional(v.union(v.id("chapters"), v.literal(CENTRAL))),
+    periodKey: v.string(),
+  },
+  returns: v.union(
+    v.null(),
+    v.object({
+      scope: v.union(v.id("chapters"), v.literal(CENTRAL)),
+      scopeName: v.string(),
+      periodKey: v.string(),
+      label: v.string(),
+      /** Every row the month would publish and that COULD carry an
+       *  explanation — internal movements excluded, since they have none to
+       *  give. The denominator of the progress line. */
+      totalCount: v.number(),
+      totalCents: v.number(),
+      /** How many of those already have an approved coding. */
+      explainedCount: v.number(),
+      explainedCents: v.number(),
+      /** The remainder, biggest first. */
+      rows: v.array(txnSummary),
+      /** The scan hit its cap — the list is a prefix, not the whole month. */
+      truncated: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, args) => {
+    const parsed = parsePeriodKey(args.periodKey);
+    if (!parsed) {
+      throw new ConvexError({
+        code: "BAD_PERIOD",
+        message: `"${args.periodKey}" is not a month. Expected YYYY-MM.`,
+      });
+    }
+    const homeChapterId = await readChapterId(ctx);
+    if (!homeChapterId) return null;
+    const scope: FinanceScope = args.scope ?? homeChapterId;
+    // The same gate as the publish console: this worklist exists to prepare a
+    // month for publication, and it reads exactly the rows that console is
+    // about to publish. Never an inline role check (CLAUDE.md).
+    await requireLedgerConsole(ctx, homeChapterId, scope);
+
+    const { year, month } = parsed;
+    const startUtc = Date.UTC(year, month - 1, 1) - DAY_MS;
+    const endUtc = Date.UTC(year, month, 1) + DAY_MS;
+    const raw = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (q) =>
+        q.eq("chapterId", scope).gte("postedAt", startUtc).lt("postedAt", endUtc),
+      )
+      .take(ROLLUP_SCAN_LIMIT);
+    const truncated = raw.length === ROLLUP_SCAN_LIMIT;
+    const sandboxMode = await readSandbox(ctx);
+
+    let totalCount = 0;
+    let totalCents = 0;
+    let explainedCount = 0;
+    let explainedCents = 0;
+    const pending: Doc<"transactions">[] = [];
+
+    for (const tr of raw) {
+      if (!txnMatchesMode(tr, sandboxMode)) continue;
+      // An excluded row never publishes, so it never needs explaining.
+      if (tr.status === "excluded") continue;
+      const p = easternParts(tr.postedAt);
+      if (p.year !== year || p.month !== month) continue;
+      // An internal movement — a transfer between our own accounts, or the
+      // bank arrival of income already counted at the giving layer — has no
+      // business purpose to give. Counting it here would pad the worklist
+      // with rows that are already complete.
+      if (signedBookCents(tr) === 0) continue;
+
+      totalCount += 1;
+      totalCents += tr.amountCents;
+      if (tr.codingState === "approved") {
+        explainedCount += 1;
+        explainedCents += tr.amountCents;
+      } else {
+        pending.push(tr);
+      }
+    }
+
+    pending.sort((a, b) => b.amountCents - a.amountCents);
+    const scopeName =
+      scope === CENTRAL
+        ? "Central"
+        : ((await ctx.db.get(scope))?.name ?? "Chapter");
+
+    return {
+      scope,
+      scopeName,
+      periodKey: args.periodKey,
+      label: periodLabel(args.periodKey),
+      totalCount,
+      totalCents,
+      explainedCount,
+      explainedCents,
+      rows: pending.map((tr) => toTxnSummary(tr)),
+      truncated,
+    };
+  },
+});
+
 export const personTransactions = query({
   args: { personId: v.optional(v.id("people")) },
   returns: v.array(txnSummary),
