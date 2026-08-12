@@ -210,7 +210,16 @@ export function TransactionCodingSection({
             <PublicPurposeNotice state={coding} />
           )}
 
-          {coding.travelFrom || coding.travelTo ? (
+          {/* FINDING 2 (UX audit, 2026-08-12): lodging is ONE place, not a
+              route — "Route: — → Chicago" would misread a stay as a
+              half-known trip. */}
+          {coding.expenseType === "lodging" ? (
+            coding.travelTo ? (
+              <Text className="mt-1 text-2xs text-muted">
+                Stayed in {coding.travelTo}
+              </Text>
+            ) : null
+          ) : coding.travelFrom || coding.travelTo ? (
             <Text className="mt-1 text-2xs text-muted">
               Route: {coding.travelFrom ?? "—"} → {coding.travelTo ?? "—"}
             </Text>

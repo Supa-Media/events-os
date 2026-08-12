@@ -67,6 +67,10 @@ type Payout = FunctionReturnType<typeof api.increasePayouts.listPayouts>[number]
  *  substantiation block rides in the same shape for the same reason. */
 type ReimbursementLineWithDate = ReimbursementLine & {
   transactionDate?: number;
+  /** FINDING 2 (UX audit, 2026-08-12): distinguishes lodging (one place,
+   *  `travelTo` only) from travel (a route) — `expenseTypeLabel` alone can't,
+   *  since both read as ordinary strings. */
+  expenseType?: string | null;
   expenseTypeLabel?: string | null;
   businessPurpose?: string | null;
   travelFrom?: string | null;
@@ -584,10 +588,17 @@ function LineTable({
  */
 function LineSubstantiation({ line }: { line: ReimbursementLineWithDate }) {
   if (!line.businessPurpose && !line.expenseTypeLabel) return null;
+  // FINDING 2: lodging is ONE place (`travelTo` only) — a route needs both
+  // legs, which lodging never has, so its own branch renders "Stayed in
+  // City" instead of silently showing nothing.
   const route =
-    line.travelFrom && line.travelTo
-      ? `${line.travelFrom} → ${line.travelTo}`
-      : null;
+    line.expenseType === "lodging"
+      ? line.travelTo
+        ? `Stayed in ${line.travelTo}`
+        : null
+      : line.travelFrom && line.travelTo
+        ? `${line.travelFrom} → ${line.travelTo}`
+        : null;
   const who = line.attendees?.length
     ? line.attendees.map((a) => a.name).join(", ")
     : line.groupDescription;

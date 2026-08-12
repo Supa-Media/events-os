@@ -640,7 +640,16 @@ export function FinishChargeSheetBody({
                             author's memory of it silently disagreeing. Their own
                             words are still the ones above, untouched. */}
                         <PublicPurposeNotice state={coding} />
-                        {coding.travelFrom || coding.travelTo ? (
+                        {/* FINDING 2: lodging is ONE place, not a route —
+                            "Route: — → Chicago" would misread a stay as a
+                            half-known trip. */}
+                        {coding.expenseType === "lodging" ? (
+                          coding.travelTo ? (
+                            <Text className="mt-1 text-2xs text-muted">
+                              Stayed in {coding.travelTo}
+                            </Text>
+                          ) : null
+                        ) : coding.travelFrom || coding.travelTo ? (
                           <Text className="mt-1 text-2xs text-muted">
                             Route: {coding.travelFrom ?? "—"} →{" "}
                             {coding.travelTo ?? "—"}
