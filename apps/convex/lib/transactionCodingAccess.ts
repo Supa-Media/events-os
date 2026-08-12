@@ -52,6 +52,29 @@ import {
 } from "./finance";
 import { getSeatDerivedCapabilities, holdsApprovalSeatAt } from "./seats";
 import { requireChapterId } from "./context";
+import { isSuperuser } from "./superuser";
+
+/**
+ * May this caller decide (approve / send back / redact) a coding THEY
+ * THEMSELVES authored?
+ *
+ * Normally never — separation of duties is absolute across all four review
+ * seats (`transactionCodings.approve` compares the decider against
+ * `codedByPersonId`). This is the ONE relaxation, and it is the same
+ * solo-operator relaxation `budgets.approvalParty` documents: while the owner
+ * is a one-person finance team, a SUPERUSER may self-decide, and every
+ * approval that takes this path is recorded as `approvalParty: "single"` so
+ * it stays re-reviewable when the org grows past one person (owner,
+ * 2026-08-11: "as super admin, I need the ability to just approve my own
+ * coding things").
+ *
+ * A named resolver rather than an inline `isSuperuser` at the call sites, per
+ * the house rule: when this graduates to a real capability (or is retired),
+ * it is one body to change.
+ */
+export async function maySelfDecideCoding(ctx: QueryCtx): Promise<boolean> {
+  return isSuperuser(ctx);
+}
 
 /** The resolved right to act on one transaction's coding. */
 export interface TransactionCodingAccess {

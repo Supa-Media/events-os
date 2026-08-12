@@ -44,6 +44,7 @@ import { logFinanceAudit } from "./lib/financeAuditLog";
 import {
   hasCodingNamesView,
   hasReviewCoding,
+  maySelfDecideCoding,
   requireReviewCoding,
   requireSubmitCoding,
   requireViewCoding,
@@ -241,11 +242,16 @@ export const getForTransaction = query({
       txn.isPersonal !== true;
     // The same two conditions `approve` enforces, asked in the same order.
     // A superuser with no roster row (`actorPersonId == null`) skips the SoD
-    // half exactly as the mutation does — see `approve`'s own comment.
+    // half exactly as the mutation does — see `approve`'s own comment — and
+    // the solo-operator relaxation (`maySelfDecideCoding`) mirrors the
+    // mutation's own-coding bypass so this flag never promises less than the
+    // server allows.
     const canReview =
       row != null &&
       (await hasReviewCoding(ctx, args.transactionId)) &&
-      (actorPersonId == null || actorPersonId !== row.codedByPersonId);
+      (actorPersonId == null ||
+        actorPersonId !== row.codedByPersonId ||
+        (await maySelfDecideCoding(ctx)));
     return {
       coding: row ? await projectCoding(ctx, row, canSeeNames) : null,
       requiresCoding,
@@ -377,9 +383,15 @@ export const approve = mutation({
         message: "This transaction has no coding to approve.",
       });
     }
-    if (actorPersonId != null) {
-      // Same superuser-with-no-roster-row escape hatch as every other finance
-      // approval (see `receiptExceptions.approve`'s comment).
+    // Self-decision: allowed ONLY through the solo-operator relaxation
+    // (`maySelfDecideCoding` — superuser while the owner is a one-person
+    // finance team), and recorded as `approvalParty: "single"` so the bypass
+    // leaves a durable, re-reviewable trace. Everyone else keeps the absolute
+    // SoD block. The no-roster-row superuser (`actorPersonId == null`) skips
+    // the compare exactly as before.
+    const selfDecision =
+      actorPersonId != null && actorPersonId === coding.codedByPersonId;
+    if (selfDecision && !(await maySelfDecideCoding(ctx))) {
       assertSeparationOfDuties(actorPersonId, coding.codedByPersonId);
     }
     const userId = (await requireUserId(ctx)) as Id<"users">;
@@ -388,6 +400,7 @@ export const approve = mutation({
       approve: true,
       decidedByPersonId: actorPersonId,
       decidedByUserId: userId,
+      selfApproved: selfDecision,
     });
     await logFinanceAudit(ctx, {
       chapterId: scope,
@@ -442,8 +455,14 @@ export const requestChanges = mutation({
         message: "This transaction has no coding to send back.",
       });
     }
-    if (actorPersonId != null) {
-      // Same superuser-with-no-roster-row escape hatch as `approve` above.
+    if (
+      actorPersonId != null &&
+      actorPersonId === coding.codedByPersonId &&
+      !(await maySelfDecideCoding(ctx))
+    ) {
+      // Same no-roster-row escape hatch as `approve` above, plus the same
+      // solo-operator self-decision relaxation — sending your own coding back
+      // is the harmless half of the power that approving it is.
       assertSeparationOfDuties(actorPersonId, coding.codedByPersonId);
     }
     const userId = (await requireUserId(ctx)) as Id<"users">;
@@ -616,7 +635,15 @@ export const setPublicPurpose = mutation({
         message: "This transaction has no coding to edit.",
       });
     }
-    if (actorPersonId != null) {
+    if (
+      actorPersonId != null &&
+      actorPersonId === coding.codedByPersonId &&
+      !(await maySelfDecideCoding(ctx))
+    ) {
+      // Redaction is part of the deciding power, so it takes the same
+      // solo-operator relaxation as `approve` — a solo operator approving
+      // their own coding must also be able to strip a name from its public
+      // wording first.
       assertSeparationOfDuties(actorPersonId, coding.codedByPersonId);
     }
     const next = args.publicPurpose?.trim() ?? null;
@@ -757,6 +784,12 @@ export const reviewQueue = query({
       books = [reach.homeChapterId];
     }
 
+    // Computed once for the whole queue, not per row — it is a fact about the
+    // caller. See `maySelfDecideCoding`: the solo-operator relaxation that
+    // lets a superuser's own submissions carry live Approve buttons instead
+    // of "waiting on somebody else".
+    const selfDecide = await maySelfDecideCoding(ctx);
+
     const bookNames = new Map<string, string>([[CENTRAL, "Central"]]);
     for (const b of books) {
       if (b === CENTRAL) continue;
@@ -805,7 +838,8 @@ export const reviewQueue = query({
       const canReview =
         hasAuthority &&
         (reach.actorPersonId == null ||
-          reach.actorPersonId !== coding.codedByPersonId);
+          reach.actorPersonId !== coding.codedByPersonId ||
+          selfDecide);
       rows.push({
         transactionId: coding.transactionId,
         book: {
