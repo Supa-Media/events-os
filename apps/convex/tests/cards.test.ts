@@ -2580,6 +2580,25 @@ describe("freezeCard / unfreezeCard", () => {
     expect(frozen.frozenByHolder).toBe(true);
   });
 
+  test("a legacy (Relay) card is refused, not silently 'frozen'", async () => {
+    // The most dangerous false claim in the app: a holder who believes a lost
+    // card is frozen stops treating it as lost. We can't freeze it, so we say
+    // so and point at the bank that can.
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
+    const cardId = await seedCard(s, {
+      cardholderPersonId: holder,
+      source: "legacy",
+      last4: "4242",
+    });
+
+    await expect(s.as.action(api.cards.freezeCard, { cardId })).rejects.toThrow(
+      /Relay/,
+    );
+    expect((await run(s.t, (ctx) => ctx.db.get(cardId)))?.status).toBe("active");
+  });
+
   test("a non-holder (no relation to the card) cannot freeze it", async () => {
     const t = newT();
     const s = await setupChapter(t);

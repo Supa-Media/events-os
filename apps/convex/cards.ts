@@ -1306,6 +1306,21 @@ export const beginFreezeCard = internalMutation({
         message: "A canceled card can't be frozen.",
       });
     }
+    // A legacy (Relay) card can't be frozen for the same reason it can't be
+    // auto-locked (`canEnforceCardLock`) — and here the false claim would be
+    // the most dangerous one in the app: a holder who thinks a lost card is
+    // frozen stops treating it as lost. Refuse, and say where the real freeze
+    // button is. `MyCardSection` never surfaces a legacy row as the freezable
+    // card, so this is a backstop rather than a reachable path — but it also
+    // closes the receipt re-lock branch in `finishUnfreezeCard`, which can only
+    // be reached through a freeze.
+    if (!canEnforceCardLock(card)) {
+      throw new ConvexError({
+        code: "CARD_NOT_LOCKABLE",
+        message:
+          "This is a linked Relay card — Public Worship doesn't issue it and can't freeze it. If it's lost or stolen, freeze it in Relay and tell your finance manager now.",
+      });
+    }
     if (card.status === "active") {
       await ctx.db.patch(card._id, { status: "locked", frozenByHolder: true });
     }
