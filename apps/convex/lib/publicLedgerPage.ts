@@ -579,8 +579,9 @@ function ledgerHtml(s: PublicStatement): string {
       const sign = e.direction === "out" ? "−" : e.direction === "in" ? "+" : "";
       return `<tr data-row data-dir="${e.direction}" data-doc="${esc(e.documentation ?? "")}" data-search="${esc(search)}">
   <td class="date">${esc(shortDate(e.occurredAt))}</td>
+  <td class="chapter">${esc(e.bookLabel)}</td>
   <td class="amt ${e.direction}">${sign}${esc(money(e.amountCents))}</td>
-  <td class="who">${esc(e.counterparty ?? "—")}<span class="detail">${esc(e.bookLabel)}</span></td>
+  <td class="who">${esc(e.counterparty ?? "—")}</td>
   <td class="purpose">${
     e.purpose
       ? esc(e.purpose)
@@ -623,7 +624,7 @@ function ledgerHtml(s: PublicStatement): string {
   <div class="ledgerwrap">
     <table class="ledger">
       <thead><tr>
-        <th class="date">Date</th><th class="amt">Amount</th><th>Paid to / from</th>
+        <th class="date">Date</th><th class="chapter">Chapter</th><th class="amt">Amount</th><th>Paid to / from</th>
         <th>What it was for</th><th>Category</th><th>Record</th>
       </tr></thead>
       <tbody id="ledgerbody">${rows}</tbody>
@@ -775,8 +776,13 @@ function disclosuresHtml(s: StatementCore, totalBooks: number): string {
     );
   }
   if (s.books.length < totalBooks) {
+    // "Chapter," not "book" — a stranger doesn't know the accounting term
+    // for what they're reading (founder directive, 2026-08-12). The value
+    // (`bookLabel`) is unchanged; only the sentence around it is.
+    const one = s.books.length === 1;
+    const chapterNames = [...new Set(s.books.map((b) => b.bookLabel))].join(", ");
     notes.push(
-      `<div class="note"><strong>${s.books.length} of our ${totalBooks} books ${s.books.length === 1 ? "has" : "have"} published</strong> (${esc([...new Set(s.books.map((b) => b.bookLabel))].join(", "))}). The totals above cover those books only.</div>`,
+      `<div class="note"><strong>${s.books.length} of our ${totalBooks} chapters ${one ? "has" : "have"} published</strong> (${esc(chapterNames)}) — the totals above cover ${one ? "that chapter" : "those chapters"} only.</div>`,
     );
   }
   return notes.join("");
@@ -957,7 +963,7 @@ export function renderLedgerEmpty(
   const body = `
 <div class="hero">
   <h1 class="title serif">Where the money goes</h1>
-  <p class="lede">We publish our books month by month — every transaction, what it was for, and whether we can produce the receipt.</p>
+  <p class="lede">We publish our finances month by month — every transaction, across every chapter, what it was for, and whether we can produce the receipt.</p>
 </div>
 ${
   years.length > 0
@@ -981,7 +987,7 @@ ${howToReadHtml()}`;
   return shell({
     title: "Finances · Public Worship",
     description:
-      "Public Worship publishes its books month by month — every transaction, what it was for, and whether there's a receipt.",
+      "Public Worship publishes its finances month by month — every transaction, across every chapter, what it was for, and whether there's a receipt.",
     canonicalPath: requested ? ledgerPath(requested) : ledgerPath(),
     body,
   });
