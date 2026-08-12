@@ -97,6 +97,17 @@ export const budgetCategories = defineTable({
   kind: v.union(...BUDGET_CATEGORY_KINDS.map((k) => v.literal(k))),
   sortOrder: v.optional(v.number()),
   isActive: v.optional(v.boolean()),
+  // Which §274(d) proof-question branch (`EXPENSE_TYPES`) spend in this
+  // category defaults to when someone codes a charge — a QUESTION-SET hint,
+  // NEVER AN ANSWER. It tells the coding form which extra fields to ask for
+  // (travel wants a route, a meal wants who ate); it never fills in the
+  // purpose/attendees/headcount themselves, which stay the spender's own
+  // words always (owner decision, 2026-08-08: no machine ever authors that
+  // testimony — see `TransactionCodingModal`'s module doc). Optional: a
+  // category with no hint leaves the coding form's expense-type picker
+  // unselected, exactly as it always has. Org-editable, same as `name` — a
+  // chapter may retarget or clear a category's hint at will.
+  expenseType: v.optional(v.union(...EXPENSE_TYPES.map((t) => v.literal(t)))),
   createdAt: v.number(),
 })
   .index("by_chapter", ["chapterId"])

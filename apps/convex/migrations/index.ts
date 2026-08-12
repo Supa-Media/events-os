@@ -83,6 +83,7 @@ import { stampDigestWatermarkProvenance } from "./0061_stamp_digest_watermark_pr
 import { standardizePowers } from "./0062_standardize_powers";
 import { fixGenesisUtcMidnight } from "./0063_fix_genesis_utc_midnight";
 import { releaseLegacyCardAutolocks } from "./0064_release_legacy_card_autolocks";
+import { stampDefaultCategoryExpenseHints } from "./0065_stamp_default_category_expense_hints";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -365,4 +366,12 @@ export const MIGRATIONS: Migration[] = [
   // surface keeps reporting an enforcement that never happened. The receipts
   // stay owed. See 0064.
   releaseLegacyCardAutolocks,
+  // Coding categories vs. proof-question categories looked unrelated because
+  // they WERE unrelated — `budgetCategories.expenseType` links a chapter's
+  // spend categories to the §274(d) branch their coding form should default
+  // to. New chapters get the hint from `insertDefaultExpenseCategories`
+  // itself; this backfills it onto every already-seeded chapter's existing
+  // default-named rows (exact name match, additive-only, idempotent). See
+  // 0065's own doc.
+  stampDefaultCategoryExpenseHints,
 ];
