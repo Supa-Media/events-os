@@ -1237,6 +1237,33 @@ describe("the full-page draft preview", () => {
     expect(await expired.text()).not.toContain("Costco");
   });
 
+  test("a preview token never reaches a publicly-cacheable 404, even off an early-reject branch", async () => {
+    // Regression for a MEDIUM finding: four early-reject branches (empty/
+    // too-many path segments, an unrecognized sub-path, a malformed period,
+    // giving.csv on a year) used to 404 through the PUBLIC `notFound`
+    // (`Cache-Control: public, max-age=60`) before the handler ever looked
+    // at `?preview=` — putting a live preview token's URL into a
+    // publicly-cacheable response. Both proven URLs, pinned here.
+    const s = await asPublisher();
+    const { token } = await s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+      periodKey: AUG_KEY,
+    });
+
+    // An unrecognized sub-path — `sub != null && !wantsGivingCsv`.
+    const bogusSub = await s.t.fetch(
+      `/finances/${AUG_KEY}/bogus?preview=${token}`,
+      {},
+    );
+    expect(bogusSub.status).toBe(404);
+    expect(bogusSub.headers.get("cache-control")).toBe("no-store, private");
+
+    // The bare `/finances/` (trailing slash, no period at all) — the
+    // "empty raw" early-reject branch.
+    const bare = await s.t.fetch(`/finances/?preview=${token}`, {});
+    expect(bare.status).toBe(404);
+    expect(bare.headers.get("cache-control")).toBe("no-store, private");
+  });
+
   test("the public published route is unaffected — no banner, and the public cache header", async () => {
     const s = await asPublisher();
     const txnId = await insertTxn(s, { merchantName: "Costco" });

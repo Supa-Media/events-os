@@ -433,6 +433,17 @@ http.route({
   method: "GET",
   handler: httpAction(async (ctx, req) => {
     const params = new URL(req.url).searchParams;
+    // A preview token only ever names a MONTH (`/finances/<YYYY-MM>?preview=…`)
+    // — there is no month in this bare URL to preview, so it can never be a
+    // legitimate preview request. Refuse it here, uncached, rather than
+    // falling into the redirect/empty-state logic below, which is publicly
+    // cacheable (`LEDGER_CACHE`) and would otherwise hand out a `public,
+    // max-age=60` response for a URL carrying a live secret in its query
+    // string (same class of leak as the pathPrefix route below — see its
+    // `notFound` comment).
+    if (params.get("preview") != null) {
+      return previewHtml(renderNotFound(), 404);
+    }
     const year = params.get("year");
     const month = params.get("month");
     if (year && /^\d{4}$/.test(year)) {
@@ -464,10 +475,27 @@ http.route({
     const segments = url.pathname.split("/").filter(Boolean);
     const raw = decodeURIComponent(segments[1] ?? "");
     const sub = segments[2];
-    const notFound = async (requested?: string) => {
-      const { months, years } = await ledgerPeriods(ctx);
-      return ledgerHtml(renderLedgerEmpty(months, years, requested), 404);
-    };
+
+    // `?preview=<token>` must NEVER end up in a cacheable response, on ANY
+    // branch below — including a malformed-URL 404. A shared/CDN cache keys
+    // on the full URL (query string included), so a `public, max-age=60`
+    // 404 for a URL carrying a live secret is a leak surface — the cache
+    // ENTRY itself, not the 404 body, which never differs — even though the
+    // request never resolves to draft data. So the one thing that decides
+    // which `notFound` a request gets is whether it carries a preview token,
+    // decided HERE, before any of the early-reject checks below run, so
+    // none of them can hand a preview request a publicly-cacheable
+    // response. (Confirmed gap: `GET /finances/<month>/bogus?preview=…` and
+    // `GET /finances/?preview=…` both used to 404 through the OTHER
+    // branch below, `public, max-age=60`, before this token check moved up.)
+    const previewToken = url.searchParams.get("preview");
+    const notFound: (requested?: string) => Promise<Response> =
+      previewToken != null
+        ? async () => previewHtml(renderNotFound(), 404)
+        : async (requested) => {
+            const { months, years } = await ledgerPeriods(ctx);
+            return ledgerHtml(renderLedgerEmpty(months, years, requested), 404);
+          };
     if (!raw || segments.length > 3) return notFound();
 
     const wantsCsv = raw.endsWith(".csv");
@@ -491,20 +519,18 @@ http.route({
     // `financePublicationEntries` — see `publicLedger.previewByToken`. Same
     // mechanism as the RSVP admin preview (`?preview=<token>` on
     // `/rsvp/<slug>`), narrowed to a plain month URL: no CSV, no giving
-    // roll, no year rollup, because those combinations don't need to exist
-    // for this to do its job. An invalid, expired, or period-mismatched
-    // token 404s exactly like a garbage slug does there — no information
-    // leak about which case it was.
-    const previewToken = url.searchParams.get("preview");
+    // roll, no year rollup — those combinations 404 through the SAME
+    // `notFound` selected above, so every preview-path 404 (malformed URL,
+    // wrong shape, invalid token, expired token, period mismatch) is byte-
+    // and header-identical to every other one — no oracle for which case it
+    // was, and every one of them is `no-store, private`.
     if (previewToken != null) {
-      if (!isMonth || wantsCsv || wantsGivingCsv) {
-        return previewHtml(renderNotFound(), 404);
-      }
+      if (!isMonth || wantsCsv || wantsGivingCsv) return notFound();
       const preview = await ctx.runQuery(internal.publicLedger.previewByToken, {
         token: previewToken,
         periodKey: key,
       });
-      if (!preview) return previewHtml(renderNotFound(), 404);
+      if (!preview) return notFound();
       const { totalBooks, ...statement } = preview;
       return previewHtml(
         renderLedgerPage(statement, [], [], totalBooks, { preview: true }),
