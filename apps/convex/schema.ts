@@ -119,6 +119,7 @@ import {
   financePublicationRevisions,
   financePublicationEntries,
   financePublicationGiverKeys,
+  financePublicationPreviewTokens,
 } from "./schema/publicLedger";
 import { seatDefs, seatAssignments } from "./schema/seats";
 import { seatStructureLog } from "./schema/seatStructureLog";
@@ -500,6 +501,10 @@ const schema = defineSchema({
   // identities per published revision, so a YEAR can report how many people
   // gave without adding twelve monthly counts together. See its doc comment.
   financePublicationGiverKeys,
+  // Short-lived console-minted tokens behind the publish screen's "Preview
+  // the page" — the full public render of a month's LIVE (unpublished)
+  // books. See its doc comment.
+  financePublicationPreviewTokens,
 
   // Org chart (seats) — a tree of seats shared by the central chart + every
   // chapter's identical chapter chart; occupancy is per-scope (see
