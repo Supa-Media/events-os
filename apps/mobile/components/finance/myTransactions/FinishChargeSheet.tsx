@@ -132,11 +132,28 @@ function RequirementHeader({
   );
 }
 
-export function FinishChargeSheet({
+/** What `getForTransaction` resolves to, once loaded — `FinishChargeSheetBody`
+ *  hands this to `renderReview` so a host (the workbench panel) can put
+ *  Approve/Send back next to the exact coding it read to decide. */
+type CodingData = NonNullable<
+  ReturnType<typeof useQuery<typeof api.transactionCodings.getForTransaction>>
+>;
+
+/**
+ * THE CONTENT — everything `FinishChargeSheet` used to render inside its own
+ * `Modal`, now free of that frame. One form, two frames: the modal below
+ * mounts this unchanged for the narrow/sheet experience, and
+ * `CodingWorkbenchPanel` (the wide-screen side panel, `explain.tsx`) mounts
+ * the exact same component beside a big receipt instead of behind a click.
+ * Neither host re-derives anything about the coding — both get it from this
+ * one place, so they cannot drift the way a forked form would.
+ */
+export function FinishChargeSheetBody({
   txn,
   todo,
   categoryOptions,
   onClose,
+  renderReview,
 }: {
   txn: MyTxnRow;
   /** `chargeTodo`'s own verdict on this row — the SAME facts that picked the
@@ -146,19 +163,36 @@ export function FinishChargeSheet({
    *  actionable" is exactly how the row and the sheet drifted apart before.
    *
    *  OPTIONAL, and that's deliberate too: `explain.tsx` (the backfill
-   *  workbench) mounts this same sheet over `finances.monthCodingWorklist`
+   *  workbench) mounts this same content over `finances.monthCodingWorklist`
    *  rows, which are the PUBLISHING population, not the chase state
    *  machine — most of them are `reconciled`, which `chargeTodo` calls
    *  settled/non-actionable. Passing a `chargeTodo`-derived verdict there
    *  would silently drop every historical row into summary mode with the
    *  intake form hidden, defeating the screen's whole purpose (see its own
    *  module doc on why `chargeTodo` is the wrong lens for that surface).
-   *  So `explain.tsx` passes nothing on purpose, and the sheet falls back to
-   *  exactly its pre-`todo` behavior: always the full intake, as if every
+   *  So `explain.tsx` passes nothing on purpose, and the content falls back
+   *  to exactly its pre-`todo` behavior: always the full intake, as if every
    *  row were actionable. */
   todo?: ChargeTodo;
   categoryOptions: { value: string; label: string }[];
-  onClose: () => void;
+  /** Called after an action that used to dismiss the whole sheet (flagging a
+   *  charge personal). The Modal wrapper passes its own `onClose`; the panel
+   *  host passes nothing — there is no sheet to close, so the row just stays
+   *  selected and shows its new state (the "quick flow" contract: no
+   *  auto-advance, ever). */
+  onClose?: () => void;
+  /** The reviewer's Approve / Send back, rendered by the HOST (only the
+   *  workbench panel passes this) right where the coding it decides is
+   *  shown — same `approve`/`requestChanges` mutations `ReviewQueue` uses,
+   *  same busy/toast plumbing as every other action on this form. Omitted
+   *  entirely on the Modal path and inside `coding.tsx`'s own sheet: that
+   *  reviewer's job stays `ReviewQueue`'s "scan many" flow. */
+  renderReview?: (args: {
+    transactionId: Id<"transactions">;
+    coding: NonNullable<CodingData["coding"]>;
+    canReview: boolean;
+    runAction: (fn: () => Promise<unknown>, errorTitle: string) => Promise<unknown>;
+  }) => React.ReactNode;
 }) {
   // Absent `todo` (explain.tsx) reads as "actionable" — the sheet's original,
   // always-intake behavior. Every other read of "is this actionable" in this
@@ -230,35 +264,8 @@ export function FinishChargeSheet({
   }
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      <Pressable
-        onPress={onClose}
-        className="flex-1 items-center justify-center bg-ink/30 p-6"
-      >
-        <Pressable
-          onPress={() => {}}
-          className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
-        >
-          <View className="flex-row items-start justify-between border-b border-border px-5 py-4">
-            <View className="flex-1 pr-3">
-              <Text className="font-display text-lg text-ink">
-                {actionable
-                  ? "Finish this charge"
-                  : ((todo && SUMMARY_TITLE[todo.kind]) ??
-                    "This charge is squared away")}
-              </Text>
-              <Text className="text-2xs text-muted" numberOfLines={1}>
-                {merchantLine} · {formatCents(Math.abs(txn.amountCents))}
-                {txn.cardLast4 ? ` · card ••${txn.cardLast4}` : ""}
-              </Text>
-            </View>
-            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
-              <Icon name="x" size={18} color={colors.muted} />
-            </Pressable>
-          </View>
-
-          <ScrollView className="max-h-[520px]">
-            <View className="gap-5 px-5 py-4">
+    <>
+      <View className="gap-5">
               {/* THE SEND-BACK, FIRST. For the person who has to act on it,
                   this is the single most important thing on the screen — a
                   reviewer already told them exactly what would make this
@@ -405,6 +412,19 @@ export function FinishChargeSheet({
                     </View>
                   )}
                 </View>
+
+                {/* THE REVIEWER'S DECISION — only when the host asked for it
+                    (the workbench panel) AND there is a submitted coding to
+                    decide. Right below what it decides, same as
+                    `ReviewQueue`'s own ordering (purpose, then the verdict). */}
+                {renderReview && coding && coding.status === "submitted"
+                  ? renderReview({
+                      transactionId,
+                      coding,
+                      canReview: data?.canReview ?? false,
+                      runAction: guard,
+                    })
+                  : null}
 
                 {/* THE OTHER HALF. Same component the editor mounts, so the
                     upload / "is this the one?" / "there is no receipt" paths
@@ -608,14 +628,7 @@ export function FinishChargeSheet({
               ) : null}
 
               {toast ? <ToastView toast={toast} onDismiss={dismiss} /> : null}
-            </View>
-          </ScrollView>
-
-          <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
-            <Button title="Done" variant="secondary" onPress={onClose} />
-          </View>
-        </Pressable>
-      </Pressable>
+      </View>
 
       {editing && data != null ? (
         <TransactionCodingModal
@@ -668,7 +681,10 @@ export function FinishChargeSheet({
                   flagPersonal: true,
                 });
                 setEditing(false);
-                onClose();
+                // Closes the sheet on the Modal host; a no-op in the panel,
+                // where there is no sheet to close — the row stays selected
+                // and shows the new state (see this prop's own doc above).
+                onClose?.();
               }, "Couldn't flag this as a personal charge"),
           }}
           submitLabel={
@@ -723,6 +739,74 @@ export function FinishChargeSheet({
           }
         />
       ) : null}
+    </>
+  );
+}
+
+/**
+ * THE MODAL FRAME — narrow/mobile, and `coding.tsx`'s sheet (both keep the
+ * exact pre-panel behavior: a click-in, click-out overlay). Wraps
+ * `FinishChargeSheetBody` with the header/backdrop/footer chrome that used to
+ * be inlined here; nothing about the content below changed.
+ */
+export function FinishChargeSheet({
+  txn,
+  todo,
+  categoryOptions,
+  onClose,
+}: {
+  txn: MyTxnRow;
+  todo?: ChargeTodo;
+  categoryOptions: { value: string; label: string }[];
+  onClose: () => void;
+}) {
+  const actionable = todo === undefined ? true : todo.actionable;
+  const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
+
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      <Pressable
+        onPress={onClose}
+        className="flex-1 items-center justify-center bg-ink/30 p-6"
+      >
+        <Pressable
+          onPress={() => {}}
+          className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
+        >
+          <View className="flex-row items-start justify-between border-b border-border px-5 py-4">
+            <View className="flex-1 pr-3">
+              <Text className="font-display text-lg text-ink">
+                {actionable
+                  ? "Finish this charge"
+                  : ((todo && SUMMARY_TITLE[todo.kind]) ??
+                    "This charge is squared away")}
+              </Text>
+              <Text className="text-2xs text-muted" numberOfLines={1}>
+                {merchantLine} · {formatCents(Math.abs(txn.amountCents))}
+                {txn.cardLast4 ? ` · card ••${txn.cardLast4}` : ""}
+              </Text>
+            </View>
+            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+              <Icon name="x" size={18} color={colors.muted} />
+            </Pressable>
+          </View>
+
+          <ScrollView className="max-h-[520px]">
+            <View className="px-5 py-4">
+              <FinishChargeSheetBody
+                txn={txn}
+                todo={todo}
+                categoryOptions={categoryOptions}
+                onClose={onClose}
+              />
+            </View>
+          </ScrollView>
+
+          <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
+            <Button title="Done" variant="secondary" onPress={onClose} />
+          </View>
+        </Pressable>
+      </Pressable>
     </Modal>
   );
 }
