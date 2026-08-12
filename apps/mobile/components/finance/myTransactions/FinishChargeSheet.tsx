@@ -57,12 +57,18 @@
  * emailed in, or saying there is no receipt — lives in `CodingDocumentation`,
  * mounted both here and via the section below, so the two can't drift.
  *
- * NOTHING IS PRE-FILLED (owner decision, 2026-08-08: no AI anywhere in
- * coding). Merchant, amount and date are shown as context because a person
- * can't substantiate what they can't see — but every answer is typed by the
- * human whose testimony it is.
+ * NO MACHINE EVER WRITES AN ANSWER (owner decision, 2026-08-08: no AI
+ * anywhere in coding). Merchant, amount and date are shown as context because
+ * a person can't substantiate what they can't see. ONE deliberate carve-out
+ * (owner directive, 2026-08-12: "auto populate with request purpose notes
+ * that we already have… remove a copy and paste step"): a reimbursement
+ * payout's PRISTINE form starts from the claimant's own request words — a
+ * human's existing testimony carried forward with a provenance line, never a
+ * machine's composition. `reimbursementPrefill.ts` decides what carries; the
+ * fill-once effect below applies it exactly once per row, never over an
+ * existing coding or anything already typed.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -99,6 +105,7 @@ import {
   type CodingFormValue,
 } from "../coding/CodingFieldSet";
 import { planCategoryEdit } from "../coding/categoryEditPlan";
+import { reimbursementPrefillPlan } from "../coding/reimbursementPrefill";
 import { TransactionHistoryCompact } from "../coding/TransactionHistoryCompact";
 import { ReimbursementContextBlock } from "../coding/ReimbursementContextBlock";
 import { CodingDocumentation } from "./CodingDocumentation";
@@ -296,6 +303,12 @@ export function FinishChargeSheetBody({
     txn.hasReceipt ? "skip" : { transactionId },
   );
   const submitCoding = useMutation(api.transactionCodings.submit);
+  // The one-tap second half of "Submit & approve" (founder, 2026-08-12: "as
+  // super admin, I can 1 party approve coding, right now I only see 'Submit
+  // for review' nothing else"). Only ever called when the server said
+  // `canSelfApprove` — the solo-operator relaxation, which `approve` records
+  // as `approvalParty: "single"` so the bypass stays re-reviewable.
+  const approveCoding = useMutation(api.transactionCodings.approve);
   const submitOwnCharge = useMutation(api.finances.submitOwnCharge);
   // The bookkeeper-gated twin of `submitOwnCharge`'s category write — same
   // field, different access rule (`requireTxnNoteReceiptCategoryAccess`:
@@ -425,6 +438,30 @@ export function FinishChargeSheetBody({
     category,
   });
 
+  // OWNER DIRECTIVE (2026-08-12): auto-populate the PRISTINE form from the
+  // claimant's own request words — once per row, the first time the query
+  // lands, and only when there's no existing coding and nothing typed yet.
+  // The attempt is recorded up front (even when it fills nothing) so a later
+  // data refresh can never surprise-fill a form someone is mid-thought in.
+  const prefillAttemptedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (data === undefined) return;
+    if (prefillAttemptedFor.current === transactionId) return;
+    prefillAttemptedFor.current = transactionId;
+    // THE BUDGET IS ALREADY ANSWERED for most rows (founder, 2026-08-12: "I
+    // already put most transactions into budgets in reconcile but it still
+    // asks me") — `transactions.budgetId` is the same column Reconcile's
+    // "For" picker writes, so the picker starts on that answer instead of
+    // "Not sure yet". Seeded (not `applyPrefill`) because it applies with an
+    // existing coding too, and never over a pick already made this open.
+    if (data.currentBudgetId && form.budgetId === "") {
+      form.setBudgetId(data.currentBudgetId);
+    }
+    if (data.coding != null || form.touched) return;
+    form.applyPrefill(reimbursementPrefillPlan(data.reimbursementContext));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, transactionId]);
+
   // ALWAYS INLINE the moment there's nothing coded yet AND the cardholder is
   // on the hook for it — no button, no modal (founder's own complaint). Any
   // OTHER state (an existing coding, or a charge nobody's chasing) keeps the
@@ -490,6 +527,20 @@ export function FinishChargeSheetBody({
             `The explanation didn't submit — nothing was lost, just try again. ${errorMessage(err)}`,
           );
         }
+        // ONE TAP, BOTH DECISIONS, when the server allows it: the coding just
+        // submitted is immediately approved (solo-operator relaxation,
+        // recorded single-party server-side). A failure here is ITS OWN
+        // failure — the submission above already landed and must never read
+        // as lost; a retry re-submits idempotently and approves again.
+        if (data?.canSelfApprove) {
+          try {
+            await approveCoding({ transactionId });
+          } catch (err) {
+            throw new Error(
+              `Submitted for review — but the one-tap approval didn't land. Approve it from the review queue, or try again. ${errorMessage(err)}`,
+            );
+          }
+        }
       }
 
       const plan = planCategoryEdit({
@@ -530,7 +581,9 @@ export function FinishChargeSheetBody({
                 <View className="flex-row items-center gap-2 rounded-lg border border-success/40 bg-success-bg px-3 py-2.5">
                   <Icon name="check-circle" size={16} color={colors.success} />
                   <Text className="text-sm font-semibold text-success">
-                    Submitted for review ✓
+                    {data?.canSelfApprove
+                      ? "Submitted and approved ✓"
+                      : "Submitted for review ✓"}
                   </Text>
                 </View>
               ) : null}
@@ -729,6 +782,22 @@ export function FinishChargeSheetBody({
                         }
                       />
 
+                      {/* PROVENANCE, said out loud: when the form started
+                          from the claimant's words (the prefill above), the
+                          person coding needs to know these answers came from
+                          the request — not from a machine, and not from a
+                          previous coder. */}
+                      {form.prefilled ? (
+                        <View className="flex-row items-start gap-1.5">
+                          <Icon name="file-text" size={12} color={colors.muted} />
+                          <Text className="flex-1 text-2xs italic text-muted">
+                            The form below started from the claimant&apos;s own
+                            words on the request — edit anything before you
+                            submit.
+                          </Text>
+                        </View>
+                      ) : null}
+
                       <ExpenseTypeChips form={form} category={category} />
                       <CodingFieldSet
                         form={form}
@@ -753,15 +822,28 @@ export function FinishChargeSheetBody({
                           ) : null
                         }
                       />
+                      {/* A prefilled-but-incomplete form shows its problems
+                          even before a touch — otherwise the disabled submit
+                          would have no visible reason. */}
                       <CodingProblemsList
-                        problems={form.touched ? form.fieldProblems : []}
+                        problems={
+                          form.touched || form.prefilled ? form.fieldProblems : []
+                        }
                       />
                       <View className="flex-row gap-2">
                         <Button
+                          // "Submit & approve" says out loud that one tap is
+                          // both decisions — shown only when the server's
+                          // `canSelfApprove` says this caller may single-party
+                          // decide (founder, 2026-08-12).
                           title={
                             coding?.status === "changes_requested"
-                              ? "Resubmit for review"
-                              : "Submit for review"
+                              ? data?.canSelfApprove
+                                ? "Resubmit & approve"
+                                : "Resubmit for review"
+                              : data?.canSelfApprove
+                                ? "Submit & approve"
+                                : "Submit for review"
                           }
                           size="sm"
                           icon="check"

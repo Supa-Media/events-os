@@ -25,9 +25,15 @@
  * `category: null` and the chips start unselected, exactly as the old radio
  * did.
  *
- * NOTHING HERE IS PRE-FILLED (owner decision, 2026-08-08: no AI in coding).
- * Every answer is typed by the human — the derivation above decides which
- * QUESTIONS appear, never what fills them in.
+ * NO MACHINE EVER WRITES AN ANSWER (owner decision, 2026-08-08: no AI in
+ * coding). The derivation above decides which QUESTIONS appear, never what
+ * fills them in. One deliberate carve-out (owner directive, 2026-08-12:
+ * "auto populate with request purpose notes that we already have… remove a
+ * copy and paste step"): a reimbursement payout's pristine form may start
+ * from the CLAIMANT'S OWN words off the request — a human's existing
+ * testimony carried forward, never composed — via `applyPrefill` below,
+ * labeled with its provenance and fully editable. See
+ * `reimbursementPrefill.ts` for the rule.
  */
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "convex/react";
@@ -52,6 +58,7 @@ import {
   overrideExpenseType,
   type ExpenseTypeChipState,
 } from "./deriveExpenseType";
+import type { ReimbursementPrefillPlan } from "./reimbursementPrefill";
 
 /** The category context a host offers the chip row, if any:
  *  - `undefined` — this host has no category concept nearby at all.
@@ -143,10 +150,28 @@ export interface CodingFormState {
   /** `null` while `expenseType` is unset — nothing to submit yet. */
   value: CodingFormValue | null;
   fieldProblems: CodingProblem[];
-  /** Has the person touched ANY field yet — gates whether problems show (a
-   *  form covered in red before anything was typed teaches people to ignore
-   *  red). */
+  /** Has the person typed into ANY content field yet — gates whether
+   *  problems show (a form covered in red before anything was typed teaches
+   *  people to ignore red) and whether closing warns about unsent input.
+   *  EVENT-based, not content-based: a prefill (`applyPrefill`) puts words
+   *  in the fields without setting this, so an untouched prefilled form
+   *  neither shouts red nor guilt-trips a close. */
   touched: boolean;
+  /** Did `applyPrefill` put the claimant's own words in — drives the
+   *  provenance line ("started from the reimbursement request") and lets
+   *  hosts show field problems for a prefilled-but-incomplete form even
+   *  before a touch (otherwise a disabled submit would have no visible
+   *  reason). */
+  prefilled: boolean;
+  /** OWNER DIRECTIVE (2026-08-12): apply a `reimbursementPrefillPlan` to a
+   *  PRISTINE form — the auto-populate that replaced the copy-and-paste
+   *  step. Hosts guard the pristine-ness (no existing coding, nothing
+   *  typed, once per open); this just writes the values. A `null` plan is a
+   *  no-op. Does NOT mark the form touched — nothing was typed — but a
+   *  "line" plan does mark the expense-type chip overridden, exactly like
+   *  `applyExternalLine`, so a later category change can't clobber the
+   *  claimant's declared type. */
+  applyPrefill: (plan: ReimbursementPrefillPlan) => void;
   /** FINDING 1 (UX audit, 2026-08-12): bulk-apply an externally-authored
    *  line — the ONE write path for "Use these answers" on a reimbursement
    *  payout's already-written substantiation (`reimbursementCodingContext`).
@@ -264,13 +289,11 @@ export function useCodingFormState({
 
   const fieldProblems =
     value == null ? [] : codingFieldProblems(value, namesMaxHeadcount);
-  const touched =
-    businessPurpose.trim().length > 0 ||
-    travelFrom.trim().length > 0 ||
-    travelTo.trim().length > 0 ||
-    headcountRaw.trim().length > 0 ||
-    attendees.length > 0 ||
-    groupDescription.trim().length > 0;
+  // Event-based, seeded true when revising an existing coding (its content
+  // was the old content-derived signal's answer there too). A prefill
+  // deliberately does NOT set this — see the interface doc.
+  const [touched, setTouched] = useState(initial != null);
+  const [prefilled, setPrefilled] = useState(false);
 
   function applyExternalLine(line: {
     expenseType: ExpenseType;
@@ -288,24 +311,62 @@ export function useCodingFormState({
     setHeadcountRaw(line.headcount != null ? String(line.headcount) : "");
     setAttendees(line.attendees ?? []);
     setGroupDescription(line.groupDescription ?? "");
+    // An explicit tap is the person putting content in — it counts.
+    setTouched(true);
+  }
+
+  function applyPrefill(plan: ReimbursementPrefillPlan) {
+    if (!plan) return;
+    if (plan.kind === "purpose") {
+      setBusinessPurpose(plan.purpose);
+    } else {
+      setChip((s) => overrideExpenseType(s, plan.line.expenseType));
+      setBusinessPurpose(plan.line.businessPurpose);
+      setTravelFrom(plan.line.travelFrom ?? "");
+      setTravelTo(plan.line.travelTo ?? "");
+      setHeadcountRaw(
+        plan.line.headcount != null ? String(plan.line.headcount) : "",
+      );
+      setAttendees(plan.line.attendees ?? []);
+      setGroupDescription(plan.line.groupDescription ?? "");
+    }
+    setPrefilled(true);
   }
 
   return {
     expenseType,
     setExpenseType: (t) => setChip((s) => overrideExpenseType(s, t)),
     businessPurpose,
-    setBusinessPurpose,
+    setBusinessPurpose: (s) => {
+      setTouched(true);
+      setBusinessPurpose(s);
+    },
     travelFrom,
-    setTravelFrom,
+    setTravelFrom: (s) => {
+      setTouched(true);
+      setTravelFrom(s);
+    },
     travelTo,
-    setTravelTo,
+    setTravelTo: (s) => {
+      setTouched(true);
+      setTravelTo(s);
+    },
     headcountRaw,
-    setHeadcountRaw,
+    setHeadcountRaw: (s) => {
+      setTouched(true);
+      setHeadcountRaw(s);
+    },
     attendees,
     rows,
-    setRow,
+    setRow: (index, patch) => {
+      setTouched(true);
+      setRow(index, patch);
+    },
     groupDescription,
-    setGroupDescription,
+    setGroupDescription: (s) => {
+      setTouched(true);
+      setGroupDescription(s);
+    },
     budgetId,
     setBudgetId,
     headcount,
@@ -313,7 +374,9 @@ export function useCodingFormState({
     value,
     fieldProblems,
     touched,
+    prefilled,
     applyExternalLine,
+    applyPrefill,
   };
 }
 

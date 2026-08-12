@@ -264,6 +264,47 @@ describe("a coding carries its own documentation", () => {
     expect(without.categoryName).toBeNull();
     expect(without.categoryExpenseTypeHint).toBeUndefined();
   });
+
+  test("getForTransaction carries the budget Reconcile already set, so the form's picker doesn't re-ask", async () => {
+    // Founder report, 2026-08-12: "I already put most transactions into
+    // budgets in reconcile but it still asks me" — `transactions.budgetId`
+    // is the one column both Reconcile's "For" picker and the coding form's
+    // budget picker write, but the form never read it back.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const budgetId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 100_000,
+        label: "Operating",
+        type: "recurring",
+        cadence: "yearly",
+        year: 2026,
+        approvalStatus: "approved",
+        approvedCents: 100_000,
+        createdAt: Date.now(),
+      }),
+    );
+    const attributed = await seedTxn(s);
+    await run(s.t, (ctx) => ctx.db.patch(attributed, { budgetId }));
+    const unattributed = await seedTxn(s);
+
+    expect(
+      (
+        await s.as.query(api.transactionCodings.getForTransaction, {
+          transactionId: attributed,
+        })
+      ).currentBudgetId,
+    ).toBe(budgetId);
+    expect(
+      (
+        await s.as.query(api.transactionCodings.getForTransaction, {
+          transactionId: unattributed,
+        })
+      ).currentBudgetId,
+    ).toBeNull();
+  });
 });
 
 describe("submitting", () => {

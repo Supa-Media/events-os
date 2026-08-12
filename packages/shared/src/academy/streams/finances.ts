@@ -95,7 +95,8 @@
  * relationship at or below it, headcount + an identifiable group above it —
  * never a dollar trigger), that names never publish (the ledger prints the
  * affiliation breakdown instead), the lodging itemized-receipt exception to
- * the exception flow, why nothing is pre-filled and no AI drafts a coding,
+ * the exception flow, why no AI ever drafts a coding (though your own words
+ * from a reimbursement request follow you into the form, labeled),
  * and the clock — one digest, day-3 escalation, the existing day-7 lock, and
  * the 60-day auto-convert to a personal repayment, explained in plain words
  * (unsubstantiated spending is legally taxable income to the spender under
@@ -257,6 +258,25 @@
  * had already falsely stamped). The lesson says so plainly and says what does
  * still apply, which is everything else. Its swapped-in question tests exactly
  * that distinction: the lock is one enforcement mechanism, not the rule.
+ *
+ * Reimbursement-prefill touch-up (owner directive, 2026-08-12 — "auto
+ * populate with request purpose notes that we already have… remove a copy
+ * and paste step"): a reimbursement payout's PRISTINE coding form now starts
+ * from the claimant's own request words (`reimbursementPrefill.ts`), with a
+ * provenance line and everything editable. `finance-coding-your-charges`'s
+ * "never pre-filled" rule was retitled ("No AI ever writes your words — but
+ * your own words follow you") and rewritten to teach the carve-out honestly:
+ * machine-GENERATED text stays banned; a human's existing testimony carried
+ * forward, labeled, is not that. The reconcile lesson's "nothing is
+ * pre-filled" clause gained the same parenthetical. The Transportation quiz
+ * question is scoped to a card charge — where nothing prefills — so it stays
+ * true as written. Titles, minutes, and quiz lengths unchanged.
+ *
+ * Same day, the reconcile lesson's "Never your own, either way" gained the
+ * solo-operator parenthetical: "Submit & approve" now exists in the product
+ * (superuser-only single-party approval, recorded as such — shipped
+ * 2026-08-11/12), and teaching the separation as absolute with no stated
+ * exception would have the lesson contradict a button the founder can see.
  */
 
 import type {
@@ -941,8 +961,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
-        title: "Your words are never pre-filled, and no AI writes them for you",
-        text: "Your category can pick which QUESTIONS the sheet asks (the rule above) — it never answers them. The purpose, the route, who was there, the headcount: every one of those stays blank until you type it, no matter what the branch is. That's deliberate, and it's the single decision this whole feature rests on: **a pre-filled field gets rubber-stamped; a blank field with a good prompt gets answered.**\n\nWhat we publish has to be the testimony of the person who was actually there. An AI's plausible sentence about a charge it didn't witness is worth nothing to a backer, an auditor, or you.",
+        title: "No AI ever writes your words — but your own words follow you",
+        text: "Your category can pick which QUESTIONS the sheet asks (the rule above) — it never answers them. And no machine ever composes an answer: **an AI's plausible sentence about a charge it didn't witness is worth nothing to a backer, an auditor, or you.** What we publish has to be the testimony of a person who was actually there.\n\nThere is exactly one way a field starts filled in, and it isn't a machine writing: when a charge is a **reimbursement payout**, the coding form starts from what the claimant already wrote on their request — their purpose, and on a single-line request the route, headcount, or place too. That's a real person's real words about this exact expense, moved one screen over so nobody retypes them. The form says so (\"started from the claimant's own words on the request\"), everything stays editable, and nothing submits itself — you still read it, fix it, and own the submission.",
       },
       {
         kind: "table",
@@ -1335,7 +1355,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Reconciled means coded, too",
-        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, and the whole queue on the Coding tab. Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is pre-filled and nothing is AI-suggested — the record is the spender\'s own testimony, which is exactly what makes it worth publishing. Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.',
+        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, and the whole queue on the Coding tab. Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.',
       },
       {
         kind: "try_status",

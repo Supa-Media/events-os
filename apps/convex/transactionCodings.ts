@@ -6,11 +6,15 @@
  * `docs/plans/transaction-coding.md`.
  *
  * HUMAN-AUTHORED, end to end (owner decision, 2026-08-08): nothing here
- * pre-fills, drafts, or AI-suggests any field — every answer is the author's
- * own words, which is what makes the record the spender's testimony rather
- * than a rubber-stamped guess. The reviewer-side AI budget/category hints that
- * once sat beside this in the Reconcile grid were a separate feature, never
+ * drafts or AI-suggests any field — every answer is a human's own words,
+ * which is what makes the record the spender's testimony rather than a
+ * rubber-stamped guess. The reviewer-side AI budget/category hints that once
+ * sat beside this in the Reconcile grid were a separate feature, never
  * touched these rows, and were removed outright shortly after this shipped.
+ * ONE deliberate carve-out (owner directive, 2026-08-12): a reimbursement
+ * payout's coding form may START from the claimant's own request text
+ * (`reimbursementContext` below) — existing human testimony carried forward,
+ * editable, never machine-composed. Machine-GENERATED text stays forbidden.
  *
  * Authored by the transaction's own person or a bookkeeper
  * (`lib/transactionCodingAccess.ts`), decided by a finance manager who is NOT
@@ -302,6 +306,15 @@ export const getForTransaction = query({
      *  have to reconstruct, and splitting the check across two places is how
      *  the two drift. False when there's no coding to decide on. */
     canReview: v.boolean(),
+    /** True iff the caller could approve a coding THEY submit, in the same
+     *  act — review reach on this transaction (`hasReviewCoding`) plus the
+     *  solo-operator relaxation (`maySelfDecideCoding`, recorded as
+     *  `approvalParty: "single"` by `approve`). Founder, 2026-08-12: "as
+     *  super admin, I can 1 party approve coding, right now I only see
+     *  'Submit for review' nothing else" — the two-step (submit, then hunt
+     *  for the approve button on a review surface) collapses into the
+     *  form's one "Submit & approve" tap when this is true. */
+    canSelfApprove: v.boolean(),
     namesMaxHeadcount: v.number(),
     minPurposeLength: v.number(),
     /** The charge's OWN category name, or `null` when uncategorized — what
@@ -311,6 +324,13 @@ export const getForTransaction = query({
     categoryExpenseTypeHint: v.optional(
       v.union(...EXPENSE_TYPES.map((t) => v.literal(t))),
     ),
+    /** The budget the charge is ALREADY attributed to (`transactions.budgetId`
+     *  — the same column Reconcile's "For" picker and this form's own budget
+     *  picker both land on), or `null`. Founder report, 2026-08-12: "I
+     *  already put most transactions into budgets in reconcile but it still
+     *  asks me" — the form's picker started at "Not sure yet" because nothing
+     *  carried this answer in, so work done in Reconcile looked ignored. */
+    currentBudgetId: v.union(v.id("budgets"), v.null()),
     /** "What the claimant already wrote" — see `reimbursementCodingContext`'s
      *  own doc (Finding 1, UX audit 2026-08-12). `null` unless this txn is a
      *  reimbursement payout. */
@@ -368,21 +388,25 @@ export const getForTransaction = query({
     // the solo-operator relaxation (`maySelfDecideCoding`) mirrors the
     // mutation's own-coding bypass so this flag never promises less than the
     // server allows.
+    const reviewer = await hasReviewCoding(ctx, args.transactionId);
+    const canSelfApprove = reviewer && (await maySelfDecideCoding(ctx));
     const canReview =
       row != null &&
-      (await hasReviewCoding(ctx, args.transactionId)) &&
+      reviewer &&
       (actorPersonId == null ||
         actorPersonId !== row.codedByPersonId ||
-        (await maySelfDecideCoding(ctx)));
+        canSelfApprove);
     return {
       coding: row ? await projectCoding(ctx, row, canSeeNames) : null,
       requiresCoding,
       hasDocumentation,
       canReview,
+      canSelfApprove,
       namesMaxHeadcount,
       minPurposeLength: MIN_PURPOSE_LENGTH,
       categoryName: category?.name ?? null,
       ...(category?.expenseType ? { categoryExpenseTypeHint: category.expenseType } : {}),
+      currentBudgetId: txn.budgetId ?? null,
       reimbursementContext,
     };
   },

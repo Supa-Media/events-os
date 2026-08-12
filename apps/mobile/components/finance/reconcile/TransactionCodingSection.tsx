@@ -372,16 +372,27 @@ export function TransactionCodingSection({
             />
           }
           category={category}
+          // The budget Reconcile's "For" picker already set — the picker
+          // opens on the existing answer instead of re-asking (founder,
+          // 2026-08-12; same column, `transactions.budgetId`).
+          initialBudgetId={data.currentBudgetId}
           // A revision is a conversation: the note that sent it back belongs
           // next to the fields it's about, not one panel away behind the
           // editor that's covering it.
           reviewNote={
             coding?.status === "changes_requested" ? coding.reviewNote : null
           }
+          // "Submit & approve": one tap is both decisions when the server's
+          // `canSelfApprove` allows single-party deciding (founder,
+          // 2026-08-12; recorded as `approvalParty: "single"` server-side).
           submitLabel={
             coding?.status === "changes_requested"
-              ? "Resubmit for review"
-              : "Submit for review"
+              ? data.canSelfApprove
+                ? "Resubmit & approve"
+                : "Resubmit for review"
+              : data.canSelfApprove
+                ? "Submit & approve"
+                : "Submit for review"
           }
           initial={
             coding
@@ -420,6 +431,11 @@ export function TransactionCodingSection({
                 ...value,
                 ...(budgetId ? { budgetId: budgetId as Id<"budgets"> } : {}),
               });
+              // The approve half of "Submit & approve" — same one-tap rule
+              // as `FinishChargeSheetBody.submitBoth`, same server gate.
+              if (data.canSelfApprove) {
+                await approve({ transactionId });
+              }
               setEditing(false);
             })
           }

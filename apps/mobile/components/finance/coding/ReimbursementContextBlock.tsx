@@ -18,17 +18,25 @@
  * THE PRINCIPLE THIS GUARDS: this is the CLAIMANT'S OWN authored testimony
  * about THIS EXACT EXPENSE — the same person, the same charge, already
  * substantiated once on the request form. Carrying it into the coding form
- * is not machine authorship and not a guess; it is showing a human their own
- * prior words and letting THEM decide, with an explicit tap, whether today's
- * coding should say the same thing. Nothing here writes into the coding form
- * on its own — see `applyExternalLine` in `CodingFieldSet.tsx`, which only
- * ever fires from `onUseLine` below, itself only ever fired by a press.
- * Silent pre-fill stays forbidden (owner decision, 2026-08-08: no AI, no
- * autofill, anywhere in coding) — this is a different thing: a
- * bookkeeper-triggered copy of a real person's real words, not a machine's
- * best guess.
+ * is not machine authorship and not a guess; it is a human's existing words
+ * about this exact spend, moved one screen over.
+ *
+ * OWNER DIRECTIVE (2026-08-12): "what was it for should auto populate with
+ * request purpose notes that we already have, and then I can edit when
+ * coding — remove a copy and paste step." So a PRISTINE coding form now
+ * STARTS from these words (`reimbursementPrefill.ts` decides exactly what
+ * carries; the hosts' fill-once effects apply it, with a provenance line,
+ * everything editable, nothing auto-submitted). Machine-GENERATED text stays
+ * forbidden everywhere in coding — the 2026-08-08 "no AI, no autofill" rule
+ * still bans composing an answer; what changed is that the claimant's own
+ * authored text is no longer treated as if a machine had written it.
+ *
+ * The per-line "Use these answers" button remains the explicit path for the
+ * cases prefill deliberately won't touch: a multi-line request (the machine
+ * must not guess which line this coding is about) and a form that already
+ * has content. It fires `onUseLine` → `applyExternalLine`.
  */
-import { Pressable, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import {
   ATTENDEE_AFFILIATION_LABELS,
   EXPENSE_TYPE_LABELS,
@@ -38,7 +46,7 @@ import {
 } from "@events-os/shared";
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@events-os/convex/_generated/api";
-import { Icon } from "../../ui";
+import { Button, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 
 type ReimbursementContext = NonNullable<
@@ -96,8 +104,10 @@ export function ReimbursementContextBlock({
       </View>
       <Text className="text-2xs text-muted">
         {context.reference} · {context.payeeName} already answered these
-        questions on the reimbursement request. Review and tap to reuse — this
-        never fills in on its own.
+        questions on the reimbursement request, so the form below starts from
+        their words where it can. Everything stays editable, and nothing
+        submits on its own — &quot;Use these answers&quot; copies a line in
+        when the form didn&apos;t start from it.
       </Text>
       {context.purpose ? (
         <View className="rounded-md border border-border bg-raised px-2.5 py-2">
@@ -139,17 +149,28 @@ export function ReimbursementContextBlock({
                   Names not shown to you on this transaction.
                 </Text>
               ) : null}
-              {line.expenseType && line.businessPurpose ? (
-                <Pressable
-                  onPress={() => onUseLine(line)}
-                  accessibilityRole="button"
-                  accessibilityLabel={`Use ${line.description}'s answers`}
-                  className="mt-2 self-start active:opacity-70"
-                >
-                  <Text className="text-2xs font-semibold text-accent underline">
-                    Use these answers
-                  </Text>
-                </Pressable>
+              {/* A REAL BUTTON (founder, 2026-08-12: "I see there is a tap
+                  but I don't see an actual button to tap") — this shipped as
+                  a 2xs underlined text link and didn't read as tappable.
+                  Shown whenever the line has ANYTHING copyable, not only
+                  when both type and purpose are present: a partial line is
+                  still a head start, and the host fills sensible fallbacks
+                  (`onUseLine`'s mapping). */}
+              {line.businessPurpose ||
+              line.expenseType ||
+              line.travelFrom ||
+              line.travelTo ||
+              line.headcount != null ||
+              line.groupDescription ? (
+                <View className="mt-2 flex-row">
+                  <Button
+                    title="Use these answers"
+                    variant="secondary"
+                    size="sm"
+                    icon="copy"
+                    onPress={() => onUseLine(line)}
+                  />
+                </View>
               ) : null}
             </View>
           );

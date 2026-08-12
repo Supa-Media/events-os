@@ -661,6 +661,30 @@ describe("the lifecycle refuses shortcuts", () => {
     expect(august!.status).toBe("changes_requested");
     expect(august!.reviewNote).toContain("receipt");
   });
+
+  test("the console's default span reaches the book's earliest transaction, not a fixed 18 months", async () => {
+    const s = await asPublisher();
+    // Founder report, 2026-08-12: "coding publish only goes back March
+    // 2025" — the old fixed 18-month default silently cut the calendar
+    // while the genesis backfill reaches into 2024. The fixture sits 25
+    // months back — outside that old window, inside the 60-month ceiling —
+    // computed relative to the real clock so this can never rot into a
+    // date-rollover flake (cards.test.ts's lesson), and mid-month so the
+    // Eastern offset can't drift it into a neighbouring month.
+    const now = new Date();
+    const old = Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - 25, 14, 16);
+    const d = new Date(old);
+    const oldKey = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+    await insertTxn(s, { postedAt: old });
+
+    const c = await s.as.query(api.publicLedger.console_, {});
+    expect(c!.months.some((m) => m.periodKey === oldKey)).toBe(true);
+    expect(c!.months.length).toBeGreaterThan(18);
+
+    // An explicit `months` arg still wins over the derived default.
+    const explicit = await s.as.query(api.publicLedger.console_, { months: 3 });
+    expect(explicit!.months).toHaveLength(3);
+  });
 });
 
 // ── FIX 1: the ED/FM console+prepare widening ───────────────────────────────
