@@ -214,7 +214,11 @@ export default function CodingScreen() {
 
   const categoryOptions = [
     { value: "", label: "No category" },
-    ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
+    ...(categories ?? []).map((c) => ({
+      value: c.id,
+      label: c.name,
+      expenseTypeHint: c.expenseTypeHint,
+    })),
   ];
   // `openRow` is looked up in `rows` — the caller's WHOLE ledger — not
   // `visible`, which a filter chip can narrow at any moment. A submit inside

@@ -54,7 +54,10 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { displayMerchantName, formatCents } from "@events-os/shared";
 import { Button, TextField } from "../../ui";
-import { FinishChargeSheetBody } from "../myTransactions/FinishChargeSheet";
+import {
+  FinishChargeSheetBody,
+  type CategoryOption,
+} from "../myTransactions/FinishChargeSheet";
 import type { ChargeTodo, MyTxnRow } from "../myTransactions/chargeTodo";
 import { PublicPurposeEditor } from "./PublicPurposeEditor";
 import { ReceiptPane } from "./ReceiptPane";
@@ -200,7 +203,7 @@ export function CodingWorkbenchPanel({
    *  the panel and the modal it replaces on a wide screen never disagree
    *  about what a row still owes. */
   todo?: ChargeTodo;
-  categoryOptions: { value: string; label: string }[];
+  categoryOptions: CategoryOption[];
   /** Clears the selection — collapses the panel, nothing left to close in a
    *  modal sense. */
   onDeselect: () => void;

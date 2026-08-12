@@ -141,7 +141,11 @@ function Body() {
   const categoryOptions = useMemo(
     () => [
       { value: "", label: "No category" },
-      ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
+      ...(categories ?? []).map((c) => ({
+        value: c.id,
+        label: c.name,
+        expenseTypeHint: c.expenseTypeHint,
+      })),
     ],
     [categories],
   );
