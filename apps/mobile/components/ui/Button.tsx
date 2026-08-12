@@ -3,7 +3,7 @@ import { Pressable, Text, View, ActivityIndicator } from "react-native";
 import { Icon, type IconName } from "./Icon";
 import { colors } from "../../lib/theme";
 
-type Variant = "primary" | "secondary" | "ghost" | "danger";
+type Variant = "primary" | "secondary" | "ghost" | "danger" | "muted";
 type Size = "md" | "sm";
 
 type Props = {
@@ -112,6 +112,19 @@ const VARIANTS: Record<
     border: "border border-transparent",
     text: "text-accent",
     iconColor: colors.accent,
+  },
+  // Same shape as `ghost` (no fill, no border) but neutral text instead of
+  // the brand-red accent — for an action on a row that isn't asking for
+  // attention (a settled charge's "View", say). `ghost`'s accent red reads
+  // as urgent no matter what it labels, which is exactly the confusion this
+  // variant exists to avoid: see ChargeRow's "every row looked alarmed" fix.
+  muted: {
+    bg: "bg-transparent",
+    bgHover: "bg-sunken",
+    bgPressed: "bg-sunken",
+    border: "border border-transparent",
+    text: "text-muted",
+    iconColor: colors.muted,
   },
   danger: {
     bg: "bg-danger-bg",

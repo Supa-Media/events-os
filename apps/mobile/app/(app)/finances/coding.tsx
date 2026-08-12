@@ -43,6 +43,7 @@ import {
   EmptyState,
   HeaderCell,
   Icon,
+  InfoTooltip,
   Narrow,
   Pill,
   RadioGroup,
@@ -77,6 +78,14 @@ import {
  *  words, because it is the same choice about the same books. */
 type BookScope = "all" | "central" | "chapter";
 const BOOK_SCOPES: BookScope[] = ["all", "central", "chapter"];
+
+/** Jargon relief for a screen that leans on two terms it never defines
+ *  inline. Same vocabulary the Academy teaches
+ *  (`finance-coding-your-charges`): coding is the spender's own testimony,
+ *  Reconcile is the finance team's book. Kept to two sentences on purpose —
+ *  this is an affordance, not a lesson. */
+const CODING_VS_RECONCILE_TEXT =
+  "Coding is your own words on what a charge bought and who it served, plus the receipt that proves it — together, the record that publishes. Reconcile is the finance team's whole-book view, where categories, budgets, and status live.";
 
 export default function CodingScreen() {
   const router = useRouter();
@@ -189,6 +198,7 @@ export default function CodingScreen() {
         <SectionHeader
           title="Yours to code"
           count={actionableCount > 0 ? actionableCount : undefined}
+          titleAccessory={<InfoTooltip text={CODING_VS_RECONCILE_TEXT} />}
         />
         <Text className="mb-3 text-sm text-muted">
           Charges attributed to you, and what each still needs. Coding one means
@@ -221,10 +231,16 @@ export default function CodingScreen() {
               />
             </RadioGroup>
             {actionableCount === 0 ? (
+              // Has to read true under "All" too, where every finished row is
+              // sitting right below it — "Nothing outstanding" used to claim
+              // an empty list that wasn't empty. This says what's actually
+              // true regardless of which chip is selected: nothing below
+              // needs YOU, whatever state it's actually in.
               <View className="flex-row items-center gap-1.5">
                 <Icon name="check-circle" size={13} color={colors.success} />
                 <Text className="text-xs text-muted">
-                  Nothing outstanding — you&apos;re square.
+                  Nothing needs you — what&apos;s below is done, or someone
+                  else&apos;s turn.
                 </Text>
               </View>
             ) : null}
@@ -382,6 +398,7 @@ export default function CodingScreen() {
       {openRow ? (
         <FinishChargeSheet
           txn={openRow.txn}
+          todo={openRow.todo}
           categoryOptions={categoryOptions}
           onClose={() => setOpenId(null)}
         />

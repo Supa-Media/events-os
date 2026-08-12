@@ -60,12 +60,29 @@ import {
 import { CodingDocumentation } from "./CodingDocumentation";
 import { PublicPurposeNotice } from "../coding/PublicPurposeEditor";
 import { parseAmountToCents, receiptAmountMismatch } from "./receiptAmountCheck";
-import type { MyTxnRow } from "./chargeTodo";
+import type { ChargeTodo, ChargeTodoKind, MyTxnRow } from "./chargeTodo";
 
 const CODING_TONE: Record<string, BadgeTone> = {
   submitted: "warn",
   changes_requested: "danger",
   approved: "success",
+};
+
+/**
+ * The header for a NON-actionable row (`!todo.actionable` — `in_review` or
+ * `settled`, the only two `ChargeTodoKind`s that ever are). Founder feedback:
+ * "it says receipt attached, but then Open — what is it for?" — the sheet
+ * used to say "Finish this charge" and show the intake form no matter what
+ * state the charge was actually in, which reads as a demand to re-do
+ * something that's already done. `todo.kind` is `chargeTodo`'s own state, not
+ * re-derived here, so this can never disagree with the badge the row itself
+ * showed a second ago. Keyed by `kind` rather than a plain boolean because
+ * "waiting on a reviewer" and "nothing left to do" are different enough
+ * states to say differently, even though both are equally non-actionable.
+ */
+const SUMMARY_TITLE: Partial<Record<ChargeTodoKind, string>> = {
+  in_review: "Submitted — waiting on a reviewer",
+  settled: "This charge is squared away",
 };
 
 /** `YYYY-MM-DD` in the finance timezone (the screen's own `dateStr`). */
@@ -117,13 +134,37 @@ function RequirementHeader({
 
 export function FinishChargeSheet({
   txn,
+  todo,
   categoryOptions,
   onClose,
 }: {
   txn: MyTxnRow;
+  /** `chargeTodo`'s own verdict on this row — the SAME facts that picked the
+   *  row's badge and its "Finish"/"View" button, so the sheet that opens
+   *  never disagrees with what the row just said. Deliberately not
+   *  re-derived from `txn` in here: two independent readings of "is this
+   *  actionable" is exactly how the row and the sheet drifted apart before.
+   *
+   *  OPTIONAL, and that's deliberate too: `explain.tsx` (the backfill
+   *  workbench) mounts this same sheet over `finances.monthCodingWorklist`
+   *  rows, which are the PUBLISHING population, not the chase state
+   *  machine — most of them are `reconciled`, which `chargeTodo` calls
+   *  settled/non-actionable. Passing a `chargeTodo`-derived verdict there
+   *  would silently drop every historical row into summary mode with the
+   *  intake form hidden, defeating the screen's whole purpose (see its own
+   *  module doc on why `chargeTodo` is the wrong lens for that surface).
+   *  So `explain.tsx` passes nothing on purpose, and the sheet falls back to
+   *  exactly its pre-`todo` behavior: always the full intake, as if every
+   *  row were actionable. */
+  todo?: ChargeTodo;
   categoryOptions: { value: string; label: string }[];
   onClose: () => void;
 }) {
+  // Absent `todo` (explain.tsx) reads as "actionable" — the sheet's original,
+  // always-intake behavior. Every other read of "is this actionable" in this
+  // file goes through this one local, never `todo.actionable` directly, so
+  // there's exactly one place that encodes the fallback.
+  const actionable = todo === undefined ? true : todo.actionable;
   const transactionId = txn.id as Id<"transactions">;
   const data = useQuery(api.transactionCodings.getForTransaction, {
     transactionId,
@@ -141,6 +182,10 @@ export function FinishChargeSheet({
   // The attach-time amount check (see `receiptAmountCheck.ts` for why the
   // human types the number instead of OCR handing it to us).
   const [receiptTotal, setReceiptTotal] = useState("");
+  // On a non-actionable row, the amount-check question starts collapsed
+  // behind an "Update receipt total" affordance rather than showing by
+  // default — see the sheet's module doc and `SUMMARY_TITLE` above.
+  const [showReceiptCheck, setShowReceiptCheck] = useState(false);
   const [catDraft, setCatDraft] = useState<string | null>(txn.categoryId);
   const [noteDraft, setNoteDraft] = useState(txn.note ?? "");
   const [personalDraft, setPersonalDraft] = useState(txn.isPersonal);
@@ -197,7 +242,10 @@ export function FinishChargeSheet({
           <View className="flex-row items-start justify-between border-b border-border px-5 py-4">
             <View className="flex-1 pr-3">
               <Text className="font-display text-lg text-ink">
-                Finish this charge
+                {actionable
+                  ? "Finish this charge"
+                  : ((todo && SUMMARY_TITLE[todo.kind]) ??
+                    "This charge is squared away")}
               </Text>
               <Text className="text-2xs text-muted" numberOfLines={1}>
                 {merchantLine} · {formatCents(Math.abs(txn.amountCents))}
@@ -239,18 +287,24 @@ export function FinishChargeSheet({
                   read as "do the words now, chase the paper later"; the
                   server stopped allowing that (see the module doc). */}
               <View className="gap-3">
-                <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
-                  <Text className="text-xs font-semibold text-ink">
-                    Coding a charge is one act, not two errands.
-                  </Text>
-                  <Text className="mt-0.5 text-2xs text-muted">
-                    What the money was for, and the receipt that proves it, go
-                    in together — a coding can&apos;t be submitted without
-                    both. If there is genuinely no receipt, say so in the same
-                    place and that counts. This is what keeps what you spent
-                    from becoming taxable income to you.
-                  </Text>
-                </View>
+                {/* This rule matters while you're doing the work; a settled
+                    row already did it, so restating "can't be submitted
+                    without both" there would read as a fresh demand rather
+                    than as the summary the module doc promises. */}
+                {actionable ? (
+                  <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
+                    <Text className="text-xs font-semibold text-ink">
+                      Coding a charge is one act, not two errands.
+                    </Text>
+                    <Text className="mt-0.5 text-2xs text-muted">
+                      What the money was for, and the receipt that proves it,
+                      go in together — a coding can&apos;t be submitted
+                      without both. If there is genuinely no receipt, say so
+                      in the same place and that counts. This is what keeps
+                      what you spent from becoming taxable income to you.
+                    </Text>
+                  </View>
+                ) : null}
 
                 <View>
                   <RequirementHeader
@@ -264,12 +318,23 @@ export function FinishChargeSheet({
                   />
                   {coding == null ? (
                     <View className="gap-2">
+                      {/* SUMMARY MODE, NO CODING: this row is already
+                          squared away without one (`chargeTodo` only calls a
+                          row settled-and-uncoded when nothing required it —
+                          otherwise it would have ranked "needs coding" and
+                          `actionable` would be true). Saying "not coded yet"
+                          under a header that just said "squared away" is the
+                          exact contradiction the founder called out, so the
+                          copy and the button both read as optional here
+                          instead of as a live ask. */}
                       <Text className="text-xs text-muted">
-                        Not coded yet. This is the part only you can do — you were
-                        there. The receipt goes in with it, in the same editor.
+                        {actionable
+                          ? "Not coded yet. This is the part only you can do — you were there. The receipt goes in with it, in the same editor."
+                          : "Coding is optional for this charge — add one if it needs explaining."}
                       </Text>
                       <Button
-                        title="Code this charge"
+                        title={actionable ? "Code this charge" : "Add a coding (optional)"}
+                        variant={actionable ? "primary" : "muted"}
                         size="sm"
                         icon="edit-3"
                         disabled={data === undefined}
@@ -371,32 +436,67 @@ export function FinishChargeSheet({
                       amount" is the send-back this replaces — asking the
                       question here costs one glance and saves a whole review
                       round trip. See `receiptAmountCheck.ts` on why the number
-                      is typed rather than read from OCR. */}
+                      is typed rather than read from OCR.
+
+                      On an ACTIONABLE row this is still asked outright — it's
+                      part of finishing the charge. On a row that's already
+                      settled, asking it by default is the exact bug this
+                      sheet shipped with (founder: "it says receipt attached,
+                      but then Open — what is it for?"): a question posed to
+                      someone who has nothing left to answer. So there it
+                      starts as a STATEMENT (`CodingDocumentation`'s own
+                      settled line, just above, already says "Receipt
+                      attached") with an explicit "Update receipt total"
+                      affordance that reopens the same question on request —
+                      no capability lost, just not demanded up front. */}
                   {txn.hasReceipt ? (
-                    <View className="mt-2">
-                      <TextField
-                        label="What total does the receipt show?"
-                        hint={`Check it against the charge — ${formatCents(Math.abs(txn.amountCents))}. A receipt for a different amount is the most common reason a charge gets sent back.`}
-                        value={receiptTotal}
-                        onChangeText={setReceiptTotal}
-                        placeholder={formatCents(Math.abs(txn.amountCents))}
-                        keyboardType="decimal-pad"
-                      />
-                      {mismatch ? (
-                        <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-warn/40 bg-warn-bg px-3 py-2">
-                          <Icon
-                            name="alert-triangle"
-                            size={13}
-                            color={colors.warn}
-                          />
-                          <Text className="flex-1 text-2xs text-ink">
-                            {mismatch} Attach the receipt that shows the whole
-                            charge, or say in the business purpose why this one
-                            doesn&apos;t.
-                          </Text>
-                        </View>
-                      ) : null}
-                    </View>
+                    actionable || showReceiptCheck ? (
+                      <View className="mt-2">
+                        <TextField
+                          label="What total does the receipt show?"
+                          hint={`Check it against the charge — ${formatCents(Math.abs(txn.amountCents))}. A receipt for a different amount is the most common reason a charge gets sent back.`}
+                          value={receiptTotal}
+                          onChangeText={setReceiptTotal}
+                          placeholder={formatCents(Math.abs(txn.amountCents))}
+                          keyboardType="decimal-pad"
+                        />
+                        {mismatch ? (
+                          <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-warn/40 bg-warn-bg px-3 py-2">
+                            <Icon
+                              name="alert-triangle"
+                              size={13}
+                              color={colors.warn}
+                            />
+                            <Text className="flex-1 text-2xs text-ink">
+                              {mismatch} Attach the receipt that shows the
+                              whole charge, or say in the business purpose why
+                              this one doesn&apos;t.
+                            </Text>
+                          </View>
+                        ) : null}
+                        {!actionable ? (
+                          <Pressable
+                            onPress={() => setShowReceiptCheck(false)}
+                            accessibilityRole="button"
+                            className="mt-1.5 self-start active:opacity-70"
+                          >
+                            <Text className="text-2xs font-medium text-muted">
+                              Done checking
+                            </Text>
+                          </Pressable>
+                        ) : null}
+                      </View>
+                    ) : (
+                      <Pressable
+                        onPress={() => setShowReceiptCheck(true)}
+                        accessibilityRole="button"
+                        className="mt-2 self-start active:opacity-70"
+                      >
+                        <Text className="text-xs font-medium text-accent">
+                          Update receipt total
+                        </Text>
+                      </Pressable>
+                    )
                   ) : null}
                 </View>
               </View>

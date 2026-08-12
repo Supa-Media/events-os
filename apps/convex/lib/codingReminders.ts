@@ -12,10 +12,42 @@
  */
 import {
   DEFAULT_CODING_OVERDUE_DAYS,
+  RECEIPT_ESCALATE_DAYS,
   type TransactionCodingStatus,
 } from "@events-os/shared";
 import type { Doc } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+
+// Mirrors the same local constant every other file in `apps/convex` defines
+// for itself (`cards.ts`, `finances.ts`, ...) rather than importing — one
+// number, not worth a cross-module dependency.
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * The reminder stage a charge's AGE alone implies as of `now` — day-1
+ * "flagged", day-`RECEIPT_ESCALATE_DAYS` "escalated", the same two
+ * thresholds `cards.ts#advanceReceiptReminders` transitions on (and now
+ * reads THIS function for, rather than each keeping its own copy of the cutoffs).
+ *
+ * Pure and age-only: it doesn't know or care whether the charge is currently
+ * chase-eligible (`chargeOutstanding`) — that's the caller's job. Exists so a
+ * caller that needs to RE-STAMP a stage without sending an email (e.g.
+ * `unflagPersonalCharge` undoing a mistaken personal flag) can ask "what
+ * would the sweep have set this to" without duplicating its day-threshold
+ * arithmetic — which is exactly how a flag→unflag round-trip used to produce
+ * a duplicate escalation email: clearing the stage on flag left the sweep
+ * unable to tell "already escalated, about to be re-flagged" apart from
+ * "brand new," so it re-transitioned (and re-emailed) on the very next run.
+ */
+export function stageForAge(
+  postedAt: number,
+  now: number,
+): "none" | "flagged" | "escalated" {
+  const ageMs = now - postedAt;
+  if (ageMs > RECEIPT_ESCALATE_DAYS * DAY_MS) return "escalated";
+  if (ageMs > DAY_MS) return "flagged";
+  return "none";
+}
 
 /** The org's substantiation deadline in ms, falling back to the IRS safe
  *  harbor (`DEFAULT_CODING_OVERDUE_DAYS`, 60 days). */

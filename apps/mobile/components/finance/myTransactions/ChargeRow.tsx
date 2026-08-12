@@ -89,15 +89,23 @@ export function ChargeRow({
           <ReceiptCell
             hasReceipt={txn.hasReceipt}
             reminderStage={txn.reminderStage}
+            isPersonal={txn.isPersonal}
             transactionId={txn.id as Id<"transactions">}
             onUpload={onUpload}
             generateUploadUrl={generateUploadUrl}
           />
         </Cell>
         <Cell width={110} align="right">
+          {/* Actionable rows get the primary "Finish" — they're asking for
+              something. Everything else gets a quiet "View": `ghost`'s text
+              is brand-red (`text-accent`), so every settled/in-review row
+              used to render in the same alarmed color as a row that
+              genuinely needed you (#founder feedback: "it says receipt
+              attached, but then Open — what is it for?"). `muted` is the
+              same shape with neutral text instead. */}
           <Button
-            title={todo.actionable ? "Finish" : "Open"}
-            variant={todo.actionable ? "primary" : "ghost"}
+            title={todo.actionable ? "Finish" : "View"}
+            variant={todo.actionable ? "primary" : "muted"}
             size="sm"
             onPress={onOpen}
           />
