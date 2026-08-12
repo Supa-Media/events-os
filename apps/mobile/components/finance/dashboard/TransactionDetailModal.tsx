@@ -542,6 +542,7 @@ function TransactionDetailBody({
           <ReceiptCell
             hasReceipt={hasReceipt}
             reminderStage={txn.reminderStage}
+            isPersonal={isPersonal === true}
             transactionId={txn.id}
             onUpload={async (storageId, filename) => {
               await editReceipt(storageId, filename);
