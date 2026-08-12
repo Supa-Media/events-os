@@ -1088,6 +1088,45 @@ async function assertNotRateLimited(
   }
 }
 
+/**
+ * Sanitize a PUBLIC-page-supplied `categoryId`: keep it only if it's a real,
+ * ACTIVE category belonging to THIS chapter; anything else — another
+ * chapter's id, an inactive category, or a string that isn't even a valid id
+ * — is dropped SILENTLY, never thrown.
+ *
+ * Founder decision (verbatim, 2026-08-1x): "i don't see an issue with
+ * allowing them to see the buckets and then we can correct it on our end" —
+ * the public form now offers a category picker (`chapterForReimburse`'s new
+ * `categories` field) and the claimant's pick rides along. But it's a
+ * SUGGESTION from an unauthenticated caller, not a decision: a finance
+ * manager still corrects it at review if wrong (see `reimbursements.ts#get`'s
+ * line projection, unchanged), and this function is what keeps a malformed or
+ * out-of-chapter id from ever reaching a write — SILENTLY, because an
+ * unauthenticated form throwing a distinct error for "wrong chapter" vs
+ * "inactive" vs "not a real id" would make it an oracle for probing category
+ * ids that don't belong to it. `createReimbursement`'s own per-line check
+ * (shared with the AUTHENTICATED path, which SHOULD throw on a bad id — see
+ * its own doc) never sees an unsanitized id from this path, because this
+ * runs first.
+ */
+async function sanitizePublicCategoryId(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  categoryId: Id<"budgetCategories"> | undefined,
+): Promise<Id<"budgetCategories"> | undefined> {
+  if (!categoryId) return undefined;
+  try {
+    const cat = await ctx.db.get(categoryId);
+    if (!cat || cat.chapterId !== chapterId || cat.isActive === false) {
+      return undefined;
+    }
+    return categoryId;
+  } catch {
+    // Not even a well-formed id for this deployment — same silent drop.
+    return undefined;
+  }
+}
+
 /** Record one successful attempt against a rate-limit key. */
 async function recordAttempt(ctx: MutationCtx, key: string): Promise<void> {
   // Swept daily by maintenance.sweepRateLimitAttempts (crons.ts) once older
@@ -1160,10 +1199,16 @@ async function createExternalAccountRaw(
  * (`clientIp`, forwarded from the public httpAction — undefined for the
  * authenticated in-app `submitReimbursement` twin, which never calls this
  * limiter) and by normalized email, BEFORE any write. A successful submission
- * records one attempt per key that was checked. Strips any client-supplied
- * `categoryId`/`fundId` off every line — the public form no longer collects
- * either (categorization is a finance manager's review-time job), so a public
- * line is NEVER allowed to self-categorize even if a raw API call tries.
+ * records one attempt per key that was checked.
+ *
+ * `categoryId` per line is now a SANITIZED SUGGESTION, not a stripped field
+ * (founder reversal, 2026-08-1x — see `sanitizePublicCategoryId`'s own doc):
+ * `chapterForReimburse` hands the public form the chapter's active
+ * categories, and whichever one the claimant picks rides here, but only
+ * survives if it's real, active, and belongs to THIS chapter — anything else
+ * (another chapter's id, an inactive category, a raw API call trying to
+ * smuggle something bogus through) is dropped SILENTLY. `fundId` is still
+ * always stripped: there's still no fund picker on this page.
  */
 export const submitPublicReimbursement = mutation({
   args: {
@@ -1223,6 +1268,18 @@ export const submitPublicReimbursement = mutation({
       capOptional(args.payeePhone, 40),
     );
 
+    // THE CATEGORY, SANITIZED — the founder's suggestion-not-decision call
+    // (see `sanitizePublicCategoryId`'s own doc). `fundId` stays stripped
+    // unconditionally: there's still no fund picker on this page, and funds
+    // are backend-only regardless (WP-1.4).
+    const sanitizedLines = await Promise.all(
+      args.lines.map(async (l) => ({
+        ...l,
+        categoryId: await sanitizePublicCategoryId(ctx, chapterId, l.categoryId),
+        fundId: undefined,
+      })),
+    );
+
     const { token, reference } = await createReimbursement(ctx, {
       chapterId,
       payeeName: args.payeeName,
@@ -1234,13 +1291,7 @@ export const submitPublicReimbursement = mutation({
       requestPreApproval: args.requestPreApproval,
       plannedPurchaseDate: args.plannedPurchaseDate,
       personId,
-      // Public-page privacy: never let a line self-categorize, even if a raw
-      // API call tries to smuggle a categoryId/fundId through.
-      lines: args.lines.map((l) => ({
-        ...l,
-        categoryId: undefined,
-        fundId: undefined,
-      })),
+      lines: sanitizedLines,
     });
 
     // Only record a key that was actually checked above.

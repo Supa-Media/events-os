@@ -23,17 +23,22 @@ import { FONTS, FAVICON } from "./landingPageStyles";
 //    results straight through) ────────────────────────────────────────────────
 
 /** Chapter display data for the form (from api.lib.reimburseApiRoutes.chapterForReimburse).
- *  Deliberately just name + slug — NO funds/categories (owner mandate,
- *  public-page privacy): categorizing a line is a finance manager's
- *  review-time job, not something a logged-out claimant sees or picks. The
- *  two policy numbers are the RULE the server enforces, not chapter data:
- *  the form asks for attendee names at exactly the headcount the server
- *  requires them at. */
+ *  `categories` is the chapter's ACTIVE budget categories — id, name, and
+ *  the §274(d) `expenseTypeHint` (founder decision, 2026-08-1x, reversing
+ *  the earlier public-page privacy posture: "i don't see an issue with
+ *  allowing them to see the buckets and then we can correct it on our end").
+ *  Category names are already public via the published ledger, so handing
+ *  them to the form discloses nothing new; what the claimant picks is a
+ *  SUGGESTION a finance manager can correct at review, not a decision — see
+ *  `submitPublicReimbursement`'s `sanitizePublicCategoryId`. The two policy
+ *  numbers are the RULE the server enforces, not chapter data: the form asks
+ *  for attendee names at exactly the headcount the server requires them at. */
 export type ReimburseChapterView = {
   slug: string;
   name: string;
   namesMaxHeadcount: number;
   minPurposeLength: number;
+  categories: Array<{ id: string; name: string; expenseTypeHint?: string }>;
 };
 
 /** One line's §274(d) substantiation as the claimant wrote it — null on a
@@ -232,9 +237,14 @@ function pubbar(chapterName: string): string {
  * the required bank destination (routing + account + type). An optional
  * planned purchase date (in the pre-approval callout) rides along ONLY when
  * the claimant taps "Ask for pre-approval" — it tells the approver when the
- * spend is coming and drives the post-date receipt follow-up email. No
- * category picker here — categorization is a finance manager's review-time
- * job.
+ * spend is coming and drives the post-date receipt follow-up email. EACH
+ * LINE now opens with a category picker too (founder decision, 2026-08-1x
+ * — see `ReimburseChapterView`'s own doc): picking one pre-selects the
+ * expense-type control from its `expenseTypeHint`, mirroring
+ * `deriveExpenseType.ts`'s rule in the page's own vanilla JS
+ * (`REIMBURSE_CODING_SCRIPT`) — a manual expense-type change still sticks.
+ * It's a suggestion, correctable at review; categorization isn't a decision
+ * this page makes on the org's behalf.
  */
 export function renderReimburseForm(chapter: ReimburseChapterView): string {
   const init = JSON.stringify({
@@ -244,6 +254,8 @@ export function renderReimburseForm(chapter: ReimburseChapterView): string {
     // exactly the headcount the server requires them at.
     namesMax: chapter.namesMaxHeadcount,
     minPurpose: chapter.minPurposeLength,
+    // Active categories + their §274(d) hint, for the per-line picker.
+    categories: chapter.categories,
   }).replace(/</g, "\\u003c");
 
   return `<!doctype html>
@@ -512,6 +524,19 @@ ${SYMBOLS}
  * HEADCOUNT (and only at/below the org's names threshold), so "4 people means
  * 4 names" is structural rather than an error message someone has to read.
  *
+ * `buildCoding`'s 4th arg, `categories`, is OPT-IN: the submission form
+ * passes the chapter's active categories (`R.categories`) and gets a Category
+ * picker at the top of the block, whose pick derives the expense-type control
+ * from its hint — DERIVE-UNLESS-OVERRIDDEN, a trivially small MIRROR of
+ * `apps/mobile/components/finance/coding/deriveExpenseType.ts`'s rule (kept
+ * this small on purpose so the two copies can't drift far: a picked category
+ * sets the type unless the person has already changed the type themselves,
+ * and a manual type change is what sets that flag). The revise form omits
+ * `categories` (passes nothing) and gets no picker and no `categoryId` in
+ * `read()`'s output — a resubmission is substantiation-only, mirroring the
+ * in-app `ReviseForm`'s same call (its own comment explains why:
+ * `resubmitMyReimbursement`'s line shape has no `categoryId` slot).
+ *
  * Deliberately NO client-side copy of the completeness rules: the shared
  * `codingFieldProblems` (behind the submit/resubmit mutations) is the single
  * authority, and its message — already prefixed with which line it's about —
@@ -533,16 +558,53 @@ function csel(pairs,value,cls){
   return s;
 }
 /* Build the substantiation block into 'host'. 'cfg' = {namesMax,minPurpose};
-   'init' = the line's current values (revise form) or null (fresh line).
+   'init' = the line's current values (revise form) or null (fresh line);
+   'categories' = the chapter's active categories ([{id,name,expenseTypeHint}])
+   for a FRESH line on the submission form, or omitted/null for the revise
+   form (no picker, no categoryId in read()'s output — see this function's
+   module doc on why revise stays substantiation-only).
    Returns a read() that yields exactly the fields the server expects. */
-function buildCoding(host,cfg,init){
+function buildCoding(host,cfg,init,categories){
   init=init||{};
 
-  var typeField=cel('div','field');
+  /* THE CATEGORY PICKER, opt-in. A trivially small MIRROR of
+     deriveExpenseType.ts's derive-unless-overridden rule: 'overridden'
+     starts true for a REVISING line (its expense type is already a
+     considered choice — same posture as that file's own
+     initialExpenseTypeChipState), false for a fresh one; only a manual type
+     change ever sets it, and once set a category pick no longer touches the
+     type. Kept this small on purpose so the two implementations can't drift
+     far apart — if the rule ever needs to change, change deriveExpenseType.ts
+     first and mirror the same three lines here. */
+  var overridden=!!(init&&init.expenseType);
+  var catHints={};
+  var catField=null,cat=null;
+  if(categories&&categories.length){
+    var catPairs=[['','No category']];
+    for(var ci=0;ci<categories.length;ci++){
+      catPairs.push([categories[ci].id,categories[ci].name]);
+      if(categories[ci].expenseTypeHint)catHints[categories[ci].id]=categories[ci].expenseTypeHint;
+    }
+    catField=cel('div','field');
+    cat=csel(catPairs,init.categoryId||'');
+    catField.appendChild(clabel('Category'));
+    catField.appendChild(cat);
+    catField.appendChild(chint('What kind of spend was this? Picking one fills in the right questions below — a finance manager can still correct it.'));
+  }
+
+  var typeField=cel('div','field mt8');
   var type=csel(C_TYPES,init.expenseType||'general');
   typeField.appendChild(clabel('What kind of expense?'));
   typeField.appendChild(type);
   typeField.appendChild(chint('This decides what the IRS requires us to record — a route for travel, who was there for a meal.'));
+
+  if(cat){
+    cat.addEventListener('change',function(){
+      if(overridden)return;
+      type.value=catHints[cat.value]||'general';
+      syncType();
+    });
+  }
 
   var purposeField=cel('div','field mt8');
   var purpose=cel('textarea','forminput');purpose.rows=2;
@@ -621,9 +683,14 @@ function buildCoding(host,cfg,init){
     mealBox.classList.toggle('hide',t!=='meal');
     if(t==='meal')renderNames();
   }
-  type.addEventListener('change',syncType);
+  /* A manual pick on the type control is what sets 'overridden' — sticky
+     from here on, even across further category changes. Mirrors
+     overrideExpenseType's rule: intent is what makes it stick, not whether
+     the value actually changed. */
+  type.addEventListener('change',function(){overridden=true;syncType();});
   head.addEventListener('input',renderNames);
 
+  if(catField)host.appendChild(catField);
   host.appendChild(typeField);host.appendChild(purposeField);
   host.appendChild(travelBox);host.appendChild(mealBox);
   syncType();
@@ -631,6 +698,7 @@ function buildCoding(host,cfg,init){
   return function read(){
     var t=type.value;
     var out={expenseType:t,businessPurpose:purpose.value};
+    if(cat)out.categoryId=cat.value||undefined;
     if(t==='travel'||t==='lodging'){out.travelFrom=from.value;out.travelTo=to.value;}
     if(t==='meal'){
       var n=parseInt(head.value,10);
@@ -693,7 +761,7 @@ function addLine(){
      on the row so collect() can pull the answers back out. */
   var coding=el('div','col');
   line.appendChild(coding);
-  line.__coding=buildCoding(coding,{namesMax:R.namesMax,minPurpose:R.minPurpose},null);
+  line.__coding=buildCoding(coding,{namesMax:R.namesMax,minPurpose:R.minPurpose},null,R.categories);
   box.appendChild(line);
   recalc();
 }
@@ -804,6 +872,7 @@ function submit(preApproval){
       plannedPurchaseDate:planned==null?undefined:planned,
       lines:c.lines.map(function(l){
         return {description:l.description,amountCents:l.amountCents,transactionDate:l.transactionDate,receiptStorageId:l.receiptStorageId,
+          categoryId:l.categoryId,
           expenseType:l.expenseType,businessPurpose:l.businessPurpose,travelFrom:l.travelFrom,travelTo:l.travelTo,
           headcount:l.headcount,attendees:l.attendees,groupDescription:l.groupDescription};
       }),

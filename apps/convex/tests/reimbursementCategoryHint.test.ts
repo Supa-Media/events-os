@@ -195,25 +195,23 @@ describe("submitReimbursement (authed, in-app) persists a line's categoryId", ()
   });
 });
 
-describe("submitPublicReimbursement strips a smuggled categoryId (pinned)", () => {
-  test("a categoryId on a public-path line is dropped even though the validator accepts it", async () => {
-    const s = await setupChapter(newT());
-    await setSlug(s, "nyc");
-    const categoryId = await seedCategory(s, "Transportation");
+describe("submitPublicReimbursement's category — a suggestion, sanitized server-side (founder decision, 2026-08-1x)", () => {
+  /** `submitPublicReimbursement`'s own token+categoryId round-trip, so each
+   *  case below is just "what categoryId, then what did it persist as". */
+  async function submitAndReadCategoryId(
+    s: ChapterSetup,
+    categoryId: Id<"budgetCategories"> | undefined,
+  ): Promise<string | undefined> {
     const bank = await publicBank(s);
-
     const { token } = await s.t.mutation(api.reimbursements.submitPublicReimbursement, {
       chapterSlug: "nyc",
       payeeName: "Vera Volunteer",
-      payeeEmail: "vera@example.com",
+      payeeEmail: `vera+${crypto.randomUUID()}@example.com`,
       purpose: "Event supplies",
       externalAccountId: bank.externalAccountId,
       bankAccountLast4: bank.last4,
-      // A raw API call TRYING to smuggle a categoryId through — the public
-      // form itself never renders a picker, but the server is the real gate.
       lines: [await line(s, { categoryId })] as never,
     });
-
     const req = await run(s.t, (ctx) =>
       ctx.db
         .query("reimbursementRequests")
@@ -221,7 +219,75 @@ describe("submitPublicReimbursement strips a smuggled categoryId (pinned)", () =
         .unique(),
     );
     const [stored] = await linesOf(s, req!._id);
-    expect(stored.categoryId).toBeUndefined();
+    return stored.categoryId;
+  }
+
+  test("a VALID, same-chapter, ACTIVE category PERSISTS — the reversal itself", async () => {
+    const s = await setupChapter(newT());
+    await setSlug(s, "nyc");
+    const categoryId = await seedCategory(s, "Transportation");
+
+    const persisted = await submitAndReadCategoryId(s, categoryId);
+    expect(persisted).toBe(categoryId);
+  });
+
+  test("a FOREIGN-CHAPTER category id is dropped, silently (no throw)", async () => {
+    const s = await setupChapter(newT());
+    await setSlug(s, "nyc");
+    const otherChapterId = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", { name: "Other", isActive: true, createdAt: Date.now() }),
+    );
+    const otherFundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: otherChapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const foreignCategoryId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        chapterId: otherChapterId,
+        fundId: otherFundId,
+        name: "Not Yours",
+        kind: "category",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await expect(submitAndReadCategoryId(s, foreignCategoryId)).resolves.toBeUndefined();
+  });
+
+  test("an INACTIVE same-chapter category is dropped, silently (no throw)", async () => {
+    const s = await setupChapter(newT());
+    await setSlug(s, "nyc");
+    const inactiveCategoryId = await seedCategory(s, "Retired Category");
+    await run(s.t, (ctx) => ctx.db.patch(inactiveCategoryId, { isActive: false }));
+
+    await expect(submitAndReadCategoryId(s, inactiveCategoryId)).resolves.toBeUndefined();
+  });
+
+  test("a BOGUS id — well-formed, but no row behind it — is dropped, silently (no throw)", async () => {
+    const s = await setupChapter(newT());
+    await setSlug(s, "nyc");
+    // A real budgetCategories id that no longer points at anything —
+    // well-formed for the table (passes Convex's own arg validator), just
+    // nonexistent, which is exactly the shape `sanitizePublicCategoryId`
+    // exists to absorb without throwing. (A literal malformed string, e.g.
+    // "not-an-id", is a DIFFERENT failure mode — Convex's own argument
+    // validator rejects a value that isn't even a well-formed id for the
+    // right table before any handler code runs, same as it would for a
+    // malformed `amountCents`. That's framework-level argument validation,
+    // not something `sanitizePublicCategoryId` — or any application code —
+    // gets a say in, and the real form's own `<select>` never sends
+    // anything but a real id or `undefined`, so it's not a case this
+    // suite needs to pin.)
+    const deletedCategoryId = await seedCategory(s, "Soon Gone");
+    await run(s.t, (ctx) => ctx.db.delete(deletedCategoryId));
+
+    await expect(submitAndReadCategoryId(s, deletedCategoryId)).resolves.toBeUndefined();
   });
 });
 
