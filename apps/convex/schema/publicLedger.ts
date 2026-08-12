@@ -450,3 +450,40 @@ export const financePublicationGiverKeys = defineTable({
 })
   .index("by_revision", ["publicationId", "revision"])
   .index("by_year", ["year"]);
+
+// ── Preview tokens: short-lived, single-scope+period, console-only ───────────
+/**
+ * Lets the publish console show EXACTLY what publishing right now would
+ * produce — the full public page, built from the LIVE books — before a human
+ * commits to freezing it.
+ *
+ * Modelled on `eventPages.previewToken` (the RSVP admin draft-preview token,
+ * `ticketing.ts#ensurePreviewToken`), with one deliberate difference: an RSVP
+ * token is a permanent secret stamped once on the page and reused forever. A
+ * finance preview token is minted fresh on every tap of "Preview the page"
+ * (`publicLedger.ts#mintLedgerPreviewToken`), so there is no reuse to
+ * protect, and `expiresAt` (~1 hour, `LEDGER_PREVIEW_TOKEN_TTL_MS`) shrinks
+ * what a copied/forwarded preview link is worth.
+ *
+ * `requireLedgerConsole` gates minting — nothing here is reachable without
+ * console access to the book being previewed. The row carries no draft data
+ * itself, only the coordinates (`scope`, `periodKey`) the HTTP route needs to
+ * rebuild the SAME live snapshot `buildSnapshot` would freeze at publish
+ * time. Resolving one never touches `financePublicationEntries` — a preview
+ * is read-only and writes nothing, anywhere.
+ *
+ * An expired row is left in place rather than swept — the route treats
+ * "expired" and "never existed" identically (404, no information leak about
+ * which), so there is nothing an eager cleanup would buy, and the table is
+ * as cheap to leave as `eventPages.previewToken` already is.
+ */
+export const financePublicationPreviewTokens = defineTable({
+  /** Crypto-random, unguessable (`newGuestToken`, `ticketing.ts`). The only
+   *  thing the HTTP route looks up by — see `by_token`. */
+  token: v.string(),
+  scope: scopeValidator,
+  periodKey: v.string(),
+  expiresAt: v.number(),
+  createdAt: v.number(),
+  createdByPersonId: v.optional(v.id("people")),
+}).index("by_token", ["token"]);
