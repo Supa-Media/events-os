@@ -25,7 +25,7 @@ export interface Props {
 
 const { slug } = Astro.props;
 
-const EMOJIS = ["🙏", "🙌", "❤️", "🔥", "💡"];
+const EMOJIS = ["🙏", "🙌", "❤️", "🔥", "💡", "🤔"];
 
 // Paired with each emoji so the button has a real accessible name — a screen
 // reader announcing "🙏 button" tells nobody anything.
@@ -35,6 +35,9 @@ const LABELS: Record<string, string> = {
   "❤️": "Love",
   "🔥": "Fire",
   "💡": "This helped",
+  // The disagreement slot — see lib/blogReactions.ts (Convex) on why the
+  // bar carries one on purpose.
+  "🤔": "Not so sure",
 };
 ---
 
