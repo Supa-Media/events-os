@@ -1637,10 +1637,21 @@ describe("setTransactionStatus clearing the reminder timeline", () => {
       // DIRECTLY rather than via `attachReceipt`, which would clear the
       // reminder timeline itself and so hide the very clear this test is
       // asserting `setTransactionStatus` performs.
+      //
+      // Same story for the CODING_REQUIRED guard, and this one is a calendar
+      // trap worth naming: the fixture's `ageDays: 4` is RELATIVE while the
+      // coding policy epoch (`DEFAULT_CODING_REQUIRED_SINCE_MS`, 2026-08-08)
+      // is FIXED — so this exact test passed until 2026-08-11 and started
+      // failing on 2026-08-12, the first day a 4-day-old charge no longer
+      // predated the policy. Patch `codingState` directly: this test is about
+      // the reminder-timeline clear, not about earning an approval.
       if (status === "reconciled") {
         const storageId = await storeBlob(s.t);
         await run(s.t, (ctx) =>
-          ctx.db.patch(txn, { receiptStorageId: storageId }),
+          ctx.db.patch(txn, {
+            receiptStorageId: storageId,
+            codingState: "approved",
+          }),
         );
       }
 
