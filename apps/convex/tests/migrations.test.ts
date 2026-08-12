@@ -342,6 +342,7 @@ const REGISTRY_NAMES = [
   "0060_add_events_checkin_defaults",
   "0061_stamp_digest_watermark_provenance",
   "0062_standardize_powers",
+  "0063_fix_genesis_utc_midnight",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

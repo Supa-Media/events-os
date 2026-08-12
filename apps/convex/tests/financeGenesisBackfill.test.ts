@@ -6,6 +6,7 @@ import { GENESIS_BANK_ROWS } from "../lib/seed/historical/genesisBank";
 import { GENESIS_LTN_ROWS } from "../lib/seed/historical/genesisLtn";
 import { GENESIS_INKIND_EXPENSE_ROWS } from "../lib/seed/historical/genesisInkindExpenses";
 import { parseGenesisDate } from "../financeGenesisBackfill";
+import { runFixGenesisUtcMidnightPage } from "../migrations/0062_fix_genesis_utc_midnight";
 
 /**
  * Finance genesis backfill: the ops-only runner that loads the org's full
@@ -27,6 +28,10 @@ import { parseGenesisDate } from "../financeGenesisBackfill";
 
 const NY_SLUG = "new-york";
 const utc = (ymd: string) => Date.parse(`${ymd}T00:00:00Z`);
+// `parseGenesisDate` stamps NOON UTC (see its doc: the one hour of day that
+// reads as the same calendar date in both UTC and US Eastern, winter or
+// summer) — not UTC-midnight, which is the previous ET calendar day.
+const utcNoon = (ymd: string) => Date.parse(`${ymd}T12:00:00Z`);
 
 type NySetup = {
   t: TestConvex;
@@ -183,9 +188,12 @@ describe("genesis dataset integrity", () => {
     expect(inkindTotal).toBe(-954794);
   });
 
-  test("parseGenesisDate is deterministic UTC midnight", () => {
-    expect(parseGenesisDate("Jun 9, 2025")).toBe(utc("2025-06-09"));
-    expect(parseGenesisDate("Aug 24, 2025")).toBe(utc("2025-08-24"));
+  test("parseGenesisDate is deterministic NOON UTC — same ET calendar date year-round, never the previous day", () => {
+    expect(parseGenesisDate("Jun 9, 2025")).toBe(utcNoon("2025-06-09"));
+    expect(parseGenesisDate("Aug 24, 2025")).toBe(utcNoon("2025-08-24"));
+    // Explicitly NOT UTC-midnight — that was the bug (ET is always behind
+    // UTC, so 00:00 UTC on the 1st is the last ET hour of the PRIOR day).
+    expect(parseGenesisDate("Jun 9, 2025")).not.toBe(utc("2025-06-09"));
     expect(() => parseGenesisDate("garbage")).toThrow();
   });
 });
@@ -424,5 +432,109 @@ describe("genesis backfill runner", () => {
         execute: false,
       }),
     ).rejects.toMatchObject({ data: { code: "NO_CHAPTER" } });
+  });
+});
+
+// ── Migration 0062: the genesis UTC-midnight fix ────────────────────────────
+describe("migration 0062 — genesis rows shift off the UTC-midnight boundary", () => {
+  test("a genesis row dated the 1st lands in ITS OWN month's worklist after the migration, not the prior month's", async () => {
+    const s = await setupNy();
+    // The bug, reproduced directly: a genesis row for Jun 1, 2024 written the
+    // OLD way (UTC-midnight) — `Date.UTC(2024, 5, 1)`. In US Eastern (EDT,
+    // UTC-4 in June) that instant is May 31, 2024 20:00 ET — the PRIOR month.
+    const juneFirstUtcMidnight = Date.UTC(2024, 5, 1);
+    const txnId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 5_000,
+        postedAt: juneFirstUtcMidnight,
+        status: "reconciled",
+        merchantName: "Genesis Row",
+        historicalImportBatch: "genesis",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const worklist = (periodKey: string) =>
+      s.as.query(api.finances.monthCodingWorklist, { periodKey });
+
+    // BEFORE the migration: the bug — it shows up in MAY, not June.
+    expect((await worklist("2024-05"))!.totalCount).toBe(1);
+    expect((await worklist("2024-06"))!.totalCount).toBe(0);
+
+    const result = await run(s.t, (ctx) => runFixGenesisUtcMidnightPage(ctx, null));
+    expect(result.shifted).toBe(1);
+    expect(result.isDone).toBe(true);
+
+    // AFTER the migration: the fix — it's in JUNE, its own month, and OUT of May.
+    expect((await worklist("2024-05"))!.totalCount).toBe(0);
+    const june = (await worklist("2024-06"))!;
+    expect(june.totalCount).toBe(1);
+    expect(june.rows[0]?.id).toBe(txnId);
+
+    const patched = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(patched!.postedAt).toBe(juneFirstUtcMidnight + 12 * 60 * 60 * 1000);
+  });
+
+  test("idempotent — a second run shifts nothing further, and non-genesis / non-midnight rows are left alone", async () => {
+    const s = await setupNy();
+    const genesisMidnight = Date.UTC(2024, 5, 1);
+    await run(s.t, async (ctx) => {
+      // A genesis row at the exact midnight boundary — should shift.
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 1_000,
+        postedAt: genesisMidnight,
+        status: "reconciled",
+        merchantName: "Genesis Midnight",
+        externalId: "genesis-bank:0",
+        createdAt: Date.now(),
+      });
+      // A genesis row NOT at a midnight boundary — already correct, must
+      // not move.
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 2_000,
+        postedAt: genesisMidnight + 12 * 60 * 60 * 1000,
+        status: "reconciled",
+        merchantName: "Genesis Already Noon",
+        externalId: "genesis-bank:1",
+        createdAt: Date.now(),
+      });
+      // A REAL (non-genesis) row at UTC-midnight — must never move; only
+      // reconstructed-history rows are in scope.
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 3_000,
+        postedAt: genesisMidnight,
+        status: "reconciled",
+        merchantName: "Real Row, Not Genesis",
+        createdAt: Date.now(),
+      });
+    });
+
+    const first = await run(s.t, (ctx) => runFixGenesisUtcMidnightPage(ctx, null));
+    expect(first.shifted).toBe(1);
+    expect(first.skippedNotMidnight).toBe(1);
+    expect(first.skippedNotGenesis).toBe(1);
+
+    const second = await run(s.t, (ctx) => runFixGenesisUtcMidnightPage(ctx, null));
+    expect(second.shifted).toBe(0);
+
+    const txns = await chapterTxns(s);
+    const real = txns.find((t) => t.merchantName === "Real Row, Not Genesis");
+    expect(real!.postedAt).toBe(genesisMidnight); // untouched
+    const shifted = txns.find((t) => t.merchantName === "Genesis Midnight");
+    expect(shifted!.postedAt).toBe(genesisMidnight + 12 * 60 * 60 * 1000);
+    const alreadyNoon = txns.find((t) => t.merchantName === "Genesis Already Noon");
+    expect(alreadyNoon!.postedAt).toBe(genesisMidnight + 12 * 60 * 60 * 1000); // unchanged
   });
 });
