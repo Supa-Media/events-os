@@ -730,6 +730,7 @@ function ReconcileRow({
           amountCents={row.amountCents}
           readOnly={readOnly}
           reminderStage={row.reminderStage}
+          isPersonal={row.isPersonal === true}
           transactionId={id}
           onUpload={async (storageId, filename) => {
             await guard(
@@ -1358,6 +1359,7 @@ function ForPickerCell({
 export function ReceiptCell({
   hasReceipt,
   reminderStage,
+  isPersonal,
   transactionId,
   onUpload,
   generateUploadUrl,
@@ -1373,6 +1375,17 @@ export function ReceiptCell({
    *  member-facing surfaces — the picker's queries are bookkeeper-gated. */
   libraryPicker?: boolean;
   reminderStage: "none" | "flagged" | "escalated";
+  /** BELT, not the primary fix: `convertChargeToPersonalRepayment` now clears
+   *  `receiptReminderStage` the moment a charge is flagged personal, so a
+   *  freshly-flagged row never carries a stale stage going forward. This prop
+   *  guards the DISPLAY too, for rows that were already escalated before that
+   *  fix shipped — nobody is ever going to attach a receipt to a charge that
+   *  isn't the org's, so "Day N overdue" on a personal row is always wrong,
+   *  no matter what the field says. No migration needed to backfill those
+   *  rows; this suppresses the symptom at read time instead. Optional and
+   *  defaults to `false` so call sites that don't carry `isPersonal` on their
+   *  row (MoneyView) keep their current — pre-existing — behavior unchanged. */
+  isPersonal?: boolean;
   /** Which transaction this cell's receipt(s) belong to — powers the
    *  "Attached" chip's tap-to-view (`ReceiptViewerModal`, below). Optional so
    *  an existing call site outside this PR's file boundary (`money/MoneyView.tsx`)
@@ -1508,8 +1521,11 @@ export function ReceiptCell({
     );
   }
 
-  const escalated = reminderStage === "escalated";
-  const flagged = reminderStage === "flagged";
+  // A personal charge never shows the overdue/flagged badge — see the prop
+  // doc above. Treated as `reminderStage: "none"` regardless of what the row
+  // actually carries.
+  const escalated = !isPersonal && reminderStage === "escalated";
+  const flagged = !isPersonal && reminderStage === "flagged";
   const tint = escalated ? colors.danger : flagged ? colors.warn : colors.muted;
   const label = busy
     ? "Uploading…"
