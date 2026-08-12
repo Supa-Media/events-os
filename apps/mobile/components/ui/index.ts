@@ -36,7 +36,7 @@ export { Calendar } from "./Calendar";
 // The ONE file viewer (photos, PDFs, emailed bodies — zoom, pan, paging) and
 // its list-row companion. `ImageLightbox` was the previous half of this and is
 // gone: it had no zoom and delegated documents to a browser iframe.
-export { FileViewer } from "./FileViewer";
+export { FileViewer, FileViewerFrame } from "./FileViewer";
 export { FileThumbnail } from "./FileThumbnail";
 export { DateTimeField } from "./DateTimeField";
 export {
