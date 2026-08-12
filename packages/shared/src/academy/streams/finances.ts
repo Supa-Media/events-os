@@ -894,8 +894,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "The business purpose is the sentence a stranger reads on Public Worship's public ledger, under our name, forever. So write it for them.\n\n**\"Bus to NY\"** is what the bank already told us. **\"Travel to NY to film the Eden event\"** is a reason. The test: could someone who wasn't there tell what happened and why it was worth backers' money?",
       },
       {
+        kind: "rule",
+        title: "Pick your category — the proof questions follow it",
+        text: "You already pick a **category** on every charge (Food & Meals, Transportation, Travel & Lodging, and so on) — that's what the budget rollups read. The coding sheet now reads it too: your category quietly picks which of the four proof-question branches below applies, so a **Transportation** charge lands straight on the route questions without a second decision, and a **Food & Meals** charge lands on the headcount question.\n\nThat's a QUESTION SET, not an answer — it decides which fields the sheet shows you, never what goes in them. It's also correctable, always: the branch shows as a small, editable control right there on the sheet, and picking a different one yourself sticks — a later category change won't quietly swap it back. A category with no obvious branch (Supplies, Office & Admin, and most others) simply leaves it unpicked, exactly like coding a charge always has.",
+      },
+      {
         kind: "table",
-        headers: ["If the charge is…", "What it asks for on top of the purpose"],
+        headers: ["If the branch is…", "What it asks for on top of the purpose"],
         rows: [
           [
             "**General**",
@@ -903,11 +908,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
           [
             "**Travel**",
-            "A route: where from, where to. City level is enough (\"Kansas City → New York\"), plus who travelled.",
+            "A route: where from, where to. City level is enough (\"Kansas City → New York\"), plus who travelled. This is also where a **Transportation** category charge lands — fares, gas, parking, tolls are getting-somewhere spending, same branch, same questions. \"Travel\" and \"Transportation\" aren't two different things; they're the coding branch and the category that defaults to it.",
           ],
           [
-            "**Lodging**",
-            "The same route — **plus an itemized receipt, at any amount**. This is the one place a bank-record-only exception is refused outright; the IRS wants the itemized folio for lodging, full stop.",
+            "**Overnight stay (lodging)**",
+            "The same route — **plus an itemized receipt, at any amount**. This is the one place a bank-record-only exception is refused outright; the IRS wants the itemized folio for lodging, full stop. A Travel & Lodging charge defaults to the Travel branch, not this one — an overnight stay is one tap away on the sheet whenever the trip actually included a room.",
           ],
           [
             "**A meal**",
@@ -936,8 +941,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
-        title: "Nothing is pre-filled, and no AI writes it for you",
-        text: "There is no suggested purpose, no drafted description, no guessed expense type. That's deliberate, and it's the single decision this whole feature rests on: **a pre-filled field gets rubber-stamped; a blank field with a good prompt gets answered.**\n\nWhat we publish has to be the testimony of the person who was actually there. An AI's plausible sentence about a charge it didn't witness is worth nothing to a backer, an auditor, or you.",
+        title: "Your words are never pre-filled, and no AI writes them for you",
+        text: "Your category can pick which QUESTIONS the sheet asks (the rule above) — it never answers them. The purpose, the route, who was there, the headcount: every one of those stays blank until you type it, no matter what the branch is. That's deliberate, and it's the single decision this whole feature rests on: **a pre-filled field gets rubber-stamped; a blank field with a good prompt gets answered.**\n\nWhat we publish has to be the testimony of the person who was actually there. An AI's plausible sentence about a charge it didn't witness is worth nothing to a backer, an auditor, or you.",
       },
       {
         kind: "table",
@@ -1070,16 +1075,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "Why does the app leave the purpose blank instead of pre-filling it or letting AI draft it?",
+          "You code a Transportation charge and the sheet already shows the travel branch's route questions. You then leave the purpose blank instead of letting AI draft it. What's actually going on?",
         options: [
           "The feature just isn't built yet",
-          "AI is banned everywhere in the app",
-          "Because the record has to be the testimony of the person who was there — a pre-filled field gets rubber-stamped, a blank one with a good prompt gets answered",
+          "Your category picked which QUESTIONS to ask (a route, in this case) — it never answers them; the purpose, route and who-was-there stay blank until you type them",
+          "AI drafted the route from the merchant name, but you still have to write the purpose yourself",
           "To keep the app cheap to run",
         ],
-        answerIndex: 2,
+        answerIndex: 1,
         explanation:
-          "Nothing is pre-filled and no AI suggests an expense type or a purpose. A plausible sentence about a charge nobody witnessed is worth nothing to a backer or an auditor — the first-hand account is the whole reason the ledger is worth publishing.",
+          "A category can pick the QUESTION SET — it's why Transportation lands on travel's route questions without a second decision — but it never answers a question. The purpose, the route, who was there: all of it stays blank until you type it, and you can always correct the branch yourself if the category guessed wrong. A plausible sentence about a charge nobody witnessed is worth nothing to a backer or an auditor — the first-hand account is the whole reason the ledger is worth publishing.",
       },
     ],
   },
@@ -1110,7 +1115,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Every line answers for itself",
-        text: "One request routinely mixes a $38 fare, a hotel night and a team dinner — three kinds of spending that owe three different answers. So the substantiation is per LINE, not per request: the expense type, a real business purpose, the route on travel, the people at a meal.\n\nSame questions, same rules as the coding you write on your own card charges — the 15-head names threshold and all (see *Coding your charges*). The difference is that here you answer them line by line, at submission, before anyone has seen the request. The same checker runs in the in-app form, in the emailed link an accountless payee uses, and on the server, so no door into this is easier than another.\n\nReceipts stay hard here too: one per line, and **no exception path**. A card charge already happened, and some real spending genuinely never produces a receipt. A reimbursement is a claim you're choosing to make — so \"no receipt\" is a reason not to claim it, not a form to file.",
+        text: "One request routinely mixes a $38 fare, a hotel night and a team dinner — three kinds of spending that owe three different answers. So the substantiation is per LINE, not per request: a category, the expense type, a real business purpose, the route on travel, the people at a meal.\n\nSame questions, same rules as the coding you write on your own card charges — the 15-head names threshold, and the category-picks-the-branch rule too (see *Coding your charges*) — and now on BOTH surfaces: logged in or not, each line opens with a category picker, and it defaults the expense-type branch the same way, correctable with one more tap. What differs is what the pick MEANS: your card-charge coding's category is the real one — the app already knows which category the charge is under. A reimbursement line's category is a SUGGESTION — you're telling us where you think it belongs before anyone's reviewed it, and the finance manager who approves the request can recode it if you guessed wrong. Nothing about that is a privacy loophole: category names are already public on the ledger, so seeing the list before you submit doesn't tell you anything the ledger wouldn't already. Either way, you answer everything line by line, at submission, before anyone has seen the request, and the same checker runs in the in-app form, the accountless emailed link, and the server, so no door into this is easier than another.\n\nReceipts stay hard here too: one per line, and **no exception path**. A card charge already happened, and some real spending genuinely never produces a receipt. A reimbursement is a claim you're choosing to make — so \"no receipt\" is a reason not to claim it, not a form to file.",
       },
       {
         kind: "rule",

@@ -214,7 +214,11 @@ export default function CodingScreen() {
 
   const categoryOptions = [
     { value: "", label: "No category" },
-    ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
+    ...(categories ?? []).map((c) => ({
+      value: c.id,
+      label: c.name,
+      expenseTypeHint: c.expenseTypeHint,
+    })),
   ];
   // `openRow` is looked up in `rows` — the caller's WHOLE ledger — not
   // `visible`, which a filter chip can narrow at any moment. A submit inside
@@ -508,6 +512,8 @@ export default function CodingScreen() {
               txn={openRow.txn}
               todo={openRow.todo}
               categoryOptions={categoryOptions}
+              // `personTransactions` rows — the caller's own ledger, always.
+              ownCharge
               onClose={() => setOpenId(null)}
             />
           ) : null}
@@ -521,6 +527,8 @@ export default function CodingScreen() {
             txn={openRow.txn}
             todo={openRow.todo}
             categoryOptions={categoryOptions}
+            // `personTransactions` rows — the caller's own ledger, always.
+            ownCharge
             onDeselect={() => setOpenId(null)}
             onPrev={() => stepRow(-1)}
             onNext={() => stepRow(1)}

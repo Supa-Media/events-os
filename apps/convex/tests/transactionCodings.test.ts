@@ -223,6 +223,47 @@ describe("a coding carries its own documentation", () => {
       ).hasDocumentation,
     ).toBe(true);
   });
+
+  test("getForTransaction surfaces the charge's OWN category + its hint, so Reconcile's editor can follow it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const fundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General Fund",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const categoryId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Transportation",
+        kind: "category",
+        sortOrder: 0,
+        expenseType: "travel",
+        createdAt: Date.now(),
+      }),
+    );
+    const categorized = await seedTxn(s);
+    await run(s.t, (ctx) => ctx.db.patch(categorized, { categoryId }));
+    const uncategorized = await seedTxn(s);
+
+    const withCategory = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: categorized,
+    });
+    expect(withCategory.categoryName).toBe("Transportation");
+    expect(withCategory.categoryExpenseTypeHint).toBe("travel");
+
+    const without = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: uncategorized,
+    });
+    expect(without.categoryName).toBeNull();
+    expect(without.categoryExpenseTypeHint).toBeUndefined();
+  });
 });
 
 describe("submitting", () => {

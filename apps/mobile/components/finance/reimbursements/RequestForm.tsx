@@ -85,6 +85,7 @@ import {
   codingArgs,
   codingProblems,
   emptyCoding,
+  type CodingCategoryOption,
   type LineCoding,
 } from "./CodingFields";
 
@@ -286,6 +287,20 @@ export function ReimbursementRequestForm({
   subtitle = "Tell us what you spent and we'll pay you back by direct deposit once a finance manager approves.",
 }: Props) {
   const options = useQuery(api.reimbursements.newRequestOptions as unknown as NewRequestOptionsFn, {});
+  // Member-visible (no finance seat required — same posture as the sheet's
+  // own category picker, `finances.myChargeCategories`): a claimant needs a
+  // category list to say what they bought, whether or not they hold a
+  // finance grant. `newRequestOptions` doesn't carry this on purpose — it's
+  // the general "new request" scaffolding, categories are per-LINE.
+  const categories = useQuery(api.finances.myChargeCategories, {});
+  const categoryOptions = [
+    { value: "", label: "No category" },
+    ...(categories ?? []).map((c) => ({
+      value: c.id,
+      label: c.name,
+      expenseTypeHint: c.expenseTypeHint,
+    })),
+  ];
   const submit = useMutation(api.reimbursements.submitReimbursement as unknown as SubmitReimbursementFn);
   const linkBankAccount = useAction(api.reimbursements.linkBankAccount as unknown as LinkBankAccountFn);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
@@ -670,6 +685,7 @@ export function ReimbursementRequestForm({
                   canRemove={lines.length > 1}
                   namesMaxHeadcount={namesMaxHeadcount}
                   minPurposeLength={minPurposeLength}
+                  categoryOptions={categoryOptions}
                   onChange={(patch) => updateLine(line.key, patch)}
                   onRemove={() => removeLine(line.key)}
                   onPickReceipt={() => pickReceipt(line.key)}
@@ -753,6 +769,7 @@ function LineRow({
   canRemove,
   namesMaxHeadcount,
   minPurposeLength,
+  categoryOptions,
   onChange,
   onRemove,
   onPickReceipt,
@@ -762,6 +779,7 @@ function LineRow({
   canRemove: boolean;
   namesMaxHeadcount: number;
   minPurposeLength: number;
+  categoryOptions: CodingCategoryOption[];
   onChange: (patch: Partial<DraftLine>) => void;
   onRemove: () => void;
   onPickReceipt: () => void;
@@ -850,6 +868,7 @@ function LineRow({
         value={line.coding}
         namesMaxHeadcount={namesMaxHeadcount}
         minPurposeLength={minPurposeLength}
+        categoryOptions={categoryOptions}
         onChange={(patch) => onChange({ coding: { ...line.coding, ...patch } })}
       />
     </View>

@@ -77,6 +77,7 @@ import {
   effectiveBudgetApprovalStatus,
   TRANSACTION_STATUS_LABELS,
   FINANCE_AUDIT_ACTIONS,
+  EXPENSE_TYPES,
   type BudgetType,
   type BudgetRefKind,
   type BudgetApprovalStatus,
@@ -4941,15 +4942,30 @@ export const personTransactions = query({
  * DELIBERATELY NOT finance-role gated (same posture as `budgetsGlance`): a
  * cardholder with no finance seat still needs a category list to pre-fill the
  * bookkeeper's review, and membership (`readChapterId`) is the only gate.
- * Returns id + name only (active categories, sorted) — no spend/attribution
- * detail; `listCategories` (viewer-gated, richer) stays the reconcile surface.
+ * Returns id + name + `expenseTypeHint` (active categories, sorted) — no
+ * spend/attribution detail; `listCategories` (viewer-gated, richer) stays the
+ * reconcile surface.
+ *
+ * `expenseTypeHint` is `budgetCategories.expenseType` verbatim: which §274(d)
+ * proof-question branch this category's coding form should default to when
+ * the picker chooses it — a QUESTION-SET hint, never an answer (see that
+ * field's own schema doc). The client derives which extra fields to ASK for
+ * from this; it never pre-fills what goes IN them.
  */
 export const myChargeCategories = query({
   args: {},
-  returns: v.array(v.object({ id: v.id("budgetCategories"), name: v.string() })),
+  returns: v.array(
+    v.object({
+      id: v.id("budgetCategories"),
+      name: v.string(),
+      expenseTypeHint: v.optional(v.union(...EXPENSE_TYPES.map((t) => v.literal(t)))),
+    }),
+  ),
   handler: async (
     ctx,
-  ): Promise<{ id: Id<"budgetCategories">; name: string }[]> => {
+  ): Promise<
+    { id: Id<"budgetCategories">; name: string; expenseTypeHint?: (typeof EXPENSE_TYPES)[number] }[]
+  > => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     const cats = await ctx.db
@@ -4959,7 +4975,11 @@ export const myChargeCategories = query({
     return cats
       .filter((c) => c.isActive !== false)
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
-      .map((c) => ({ id: c._id, name: c.name }));
+      .map((c) => ({
+        id: c._id,
+        name: c.name,
+        ...(c.expenseType ? { expenseTypeHint: c.expenseType } : {}),
+      }));
   },
 });
 

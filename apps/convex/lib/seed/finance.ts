@@ -17,6 +17,7 @@
  * admin doesn't have one yet.
  */
 import { Id } from "../../_generated/dataModel";
+import type { ExpenseType } from "@events-os/shared";
 
 /**
  * The out-of-the-box use-case categories every chapter gets under its General
@@ -40,6 +41,28 @@ export const DEFAULT_EXPENSE_CATEGORIES = [
   "Bank & Fees",
   "Other",
 ] as const;
+
+/**
+ * The §274(d) proof-question hint each default category starts with — a
+ * QUESTION-SET default, never an answer (see `budgetCategories.expenseType`'s
+ * own doc). Only the categories whose spend is obviously one branch get a
+ * hint; everything else (Software, Supplies, Equipment, Office, Marketing,
+ * Professional Services, Facilities, Utilities, Bank & Fees, Other) falls
+ * through to `undefined`, which leaves the coding form's picker unselected
+ * exactly as it does today.
+ *
+ * "Travel & Lodging" hints `travel`, not `lodging` — an overnight stay is one
+ * chip-tap away from there (the itemized-receipt rule only bites once
+ * somebody actually taps "Overnight stay"), and most Travel & Lodging spend
+ * is the travel leg (fares, gas, parking), not the room.
+ */
+export const DEFAULT_EXPENSE_CATEGORY_HINTS: Partial<
+  Record<(typeof DEFAULT_EXPENSE_CATEGORIES)[number], ExpenseType>
+> = {
+  "Food & Meals": "meal",
+  Transportation: "travel",
+  "Travel & Lodging": "travel",
+};
 
 // A generous bound on a single chapter's categories (they number in the dozens);
 // mirrors the reads elsewhere in the finance layer.
@@ -74,6 +97,9 @@ export async function insertDefaultExpenseCategories(
       sortOrder: sortOrder++,
       isActive: true,
       createdAt: now,
+      ...(DEFAULT_EXPENSE_CATEGORY_HINTS[name]
+        ? { expenseType: DEFAULT_EXPENSE_CATEGORY_HINTS[name] }
+        : {}),
     });
     inserted++;
   }

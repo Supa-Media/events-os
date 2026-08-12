@@ -8,21 +8,54 @@
  *   1. What the reviewer said, if they sent it back — first, biggest, and
  *      quoted verbatim. It is the only thing on this screen that already
  *      tells them exactly what to do.
- *   2. THE ONE REQUIRED ACT: the substantiation record and the receipt that
- *      proves it. Not two steps — one. `submitCoding` now refuses a coding on
- *      a charge that can't prove itself (`DOCUMENTATION_REQUIRED`, owner:
- *      "they should just upload the receipt when coding"), so the two are
- *      presented as halves of a single record, and the receipt is reachable
- *      from inside `TransactionCodingModal` itself (`documentationSlot`) as
- *      well as from here. The editor is the same one the treasurer uses in
- *      Reconcile, not a second one that could drift.
- *   3. The optional extras the member could already set (category, a note for
- *      the finance team, "this was personal") — kept, but demoted below the
- *      things the accountable plan actually requires.
+ *   2. THE ONE REQUIRED ACT: category, then the substantiation record, then
+ *      the receipt that proves it — one form, not three errands (see below).
+ *   3. The optional extras (a note for the finance team, "this was personal")
+ *      — kept, but demoted below the things the accountable plan requires.
+ *
+ * CATEGORY FIRST, INLINE, NO MODAL (founder, 2026-08-1x: "when I click to
+ * view a transaction it shows category but it still shows 'Add coding
+ * (optional)' when it should be an inline thing that already knows the
+ * category and just asks for more information"). The Category picker now
+ * opens "What it was for" — moved up from "Anything else (optional)" — and
+ * the coding fields (`../coding/CodingFieldSet`, shared with
+ * `TransactionCodingModal` so Reconcile and this sheet can never render two
+ * different forms) sit directly beneath it, always visible once there's
+ * something left to code. The expense-type chips FOLLOW whichever category is
+ * picked (`categoryOptions[].expenseTypeHint` → `CodingCategoryContext`) —
+ * "Transportation" lands on the travel questions with no second decision —
+ * until the person taps a chip themselves, which sticks for good
+ * (`deriveExpenseType.ts` owns that rule, tested on its own). A category with
+ * no hint leaves the chips unselected exactly as the old standalone picker
+ * did. DERIVING THE QUESTIONS is not the same act as ANSWERING them: purpose,
+ * attendees, and headcount stay empty until the person types them, always —
+ * see `CodingFieldSet`'s own module doc.
+ *
+ * ONE PRIMARY SUBMIT for the actionable case: CODING FIRST, ALWAYS
+ * (`transactionCodings.submit`), then the category ONLY IF IT CHANGED
+ * (`planCategoryEdit` — `submitOwnCharge` for the caller's own charge,
+ * `finances.setTransactionCategory` for a bookkeeper reviewing someone
+ * else's), off one button (`submitBoth`). Coding goes first on purpose: it's
+ * the testimony, the actual point of the screen, and a category hiccup must
+ * never block it (HIGH review finding, fixed 2026-08-1x — the old
+ * category-then-coding order meant a bookkeeper coding a historical
+ * Stripe-FC/Relay-CSV row from the Explain workbench, who doesn't own that
+ * card, never got past `submitOwnCharge`'s `NOT_A_CARD_CHARGE`/`FORBIDDEN`,
+ * so the coding never submitted at all). Both mutations stay independently
+ * idempotent, so a retry after a partial failure never double-books
+ * anything; the toast names exactly which half didn't land, and a category
+ * failure after a successful coding reads as exactly that — the explanation
+ * already saved — never as "nothing saved".
+ *
+ * SETTLED/SUMMARY ROWS (`todo.actionable === false`) keep the pre-existing
+ * posture: a read-only summary card with an explicit "Edit" (or "Add a coding
+ * (optional)") affordance — clicking it reveals this SAME inline field set,
+ * never a modal. Only the "nothing coded yet, and the cardholder is on the
+ * hook for it" case shows the fields with no click required at all.
  *
  * Everything about the receipt half — upload, confirming a receipt that was
  * emailed in, or saying there is no receipt — lives in `CodingDocumentation`,
- * mounted both here and inside the editor, so the two can't drift either.
+ * mounted both here and via the section below, so the two can't drift.
  *
  * NOTHING IS PRE-FILLED (owner decision, 2026-08-08: no AI anywhere in
  * coding). Merchant, amount and date are shown as context because a person
@@ -38,6 +71,7 @@ import {
   documentationState,
   formatCents,
   type AttendeeAffiliation,
+  type ExpenseType,
 } from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -50,17 +84,33 @@ import {
   ToastView,
   type BadgeTone,
 } from "../../ui";
-import { spaceToggleProps } from "../../ui/spaceToggle";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { errorMessage } from "../../../lib/errors";
 import {
-  TransactionCodingModal,
+  CodingFieldSet,
+  CodingProblemsList,
+  ExpenseTypeChips,
+  PersonalChargeEscape,
+  useCodingFormState,
+  type CodingCategoryContext,
   type CodingFormValue,
-} from "../modals/TransactionCodingModal";
+} from "../coding/CodingFieldSet";
+import { planCategoryEdit } from "../coding/categoryEditPlan";
 import { CodingDocumentation } from "./CodingDocumentation";
 import { PublicPurposeNotice } from "../coding/PublicPurposeEditor";
 import { parseAmountToCents, receiptAmountMismatch } from "./receiptAmountCheck";
 import type { ChargeTodo, ChargeTodoKind, MyTxnRow } from "./chargeTodo";
+
+/** The category picker's own option shape — `myChargeCategories`' id/name
+ *  plus the §274(d) hint the chips follow. Both hosts (`coding.tsx`,
+ *  `explain.tsx`) build this from the same query; exported so they don't
+ *  have to redeclare it. */
+export type CategoryOption = {
+  value: string;
+  label: string;
+  expenseTypeHint?: ExpenseType;
+};
 
 const CODING_TONE: Record<string, BadgeTone> = {
   submitted: "warn",
@@ -152,10 +202,24 @@ export function FinishChargeSheetBody({
   txn,
   todo,
   categoryOptions,
+  ownCharge,
   onClose,
   renderReview,
 }: {
   txn: MyTxnRow;
+  /** Does the CALLER own this row (they're its cardholder-of-record), or are
+   *  they reaching it as a bookkeeper/finance-manager reviewing someone
+   *  else's charge? Decides which mutation the category half calls
+   *  (`planCategoryEdit` — `submitOwnCharge` vs the bookkeeper-gated
+   *  `finances.setTransactionCategory`), because the server enforces the
+   *  difference and guessing wrong throws.
+   *
+   *  THE HOST DECIDES, never a per-row guess: `personTransactions` rows (My
+   *  Transactions, and `coding.tsx`'s "Yours to code" panel) are
+   *  own-by-construction — pass `true`. `monthCodingWorklist` rows (the
+   *  Explain workbench, `explain.tsx`) are the whole chapter's publishing
+   *  population, not just the caller's own — pass `false`. */
+  ownCharge: boolean;
   /** `chargeTodo`'s own verdict on this row — the SAME facts that picked the
    *  row's badge and its "Finish"/"View" button, so the sheet that opens
    *  never disagrees with what the row just said. Deliberately not
@@ -174,7 +238,7 @@ export function FinishChargeSheetBody({
    *  to exactly its pre-`todo` behavior: always the full intake, as if every
    *  row were actionable. */
   todo?: ChargeTodo;
-  categoryOptions: { value: string; label: string }[];
+  categoryOptions: CategoryOption[];
   /** Called after an action that used to dismiss the whole sheet (flagging a
    *  charge personal). The Modal wrapper passes its own `onClose`; the panel
    *  host passes nothing — there is no sheet to close, so the row just stays
@@ -209,6 +273,12 @@ export function FinishChargeSheetBody({
   );
   const submitCoding = useMutation(api.transactionCodings.submit);
   const submitOwnCharge = useMutation(api.finances.submitOwnCharge);
+  // The bookkeeper-gated twin of `submitOwnCharge`'s category write — same
+  // field, different access rule (`requireTxnNoteReceiptCategoryAccess`:
+  // bookkeeper+, or event-edit rights), reachable on ANY chapter transaction
+  // rather than only the caller's own card. See `planCategoryEdit`.
+  const setTransactionCategory = useMutation(api.finances.setTransactionCategory);
+  const setTransactionNote = useMutation(api.finances.setTransactionNote);
   const { run, toast, dismiss } = useActionRunner();
 
   const [editing, setEditing] = useState(false);
@@ -222,7 +292,6 @@ export function FinishChargeSheetBody({
   const [showReceiptCheck, setShowReceiptCheck] = useState(false);
   const [catDraft, setCatDraft] = useState<string | null>(txn.categoryId);
   const [noteDraft, setNoteDraft] = useState(txn.note ?? "");
-  const [personalDraft, setPersonalDraft] = useState(txn.isPersonal);
 
   const coding = data?.coding ?? null;
   const pendingException =
@@ -261,6 +330,116 @@ export function FinishChargeSheetBody({
     const res = await run(fn, { errorTitle });
     setBusy(false);
     return res;
+  }
+
+  // THE CATEGORY-DRIVEN CHIP CONTEXT. Only card charges reach `submitOwnCharge`
+  // at all (server-enforced — see that mutation's own `NOT_A_CARD_CHARGE`
+  // guard), so a non-card charge gets `undefined` here — "no category context
+  // nearby" (`CodingCategoryContext`), which is exactly the old
+  // standalone-picker copy. A card charge with nothing picked yet gets `null`
+  // — "there IS a category, nothing chosen" — and a card charge WITH a pick
+  // carries that option's `expenseTypeHint`, live, so switching categories
+  // re-derives the chips (unless the person has already overridden them).
+  const selectedCategoryOption = categoryOptions.find(
+    (o) => o.value === (catDraft ?? ""),
+  );
+  const category: CodingCategoryContext = !isCardCharge
+    ? undefined
+    : catDraft
+      ? { name: selectedCategoryOption?.label ?? "", expenseTypeHint: selectedCategoryOption?.expenseTypeHint }
+      : null;
+
+  const initialCodingValue: CodingFormValue | null = coding
+    ? {
+        expenseType: coding.expenseType,
+        businessPurpose: coding.businessPurpose,
+        ...(coding.travelFrom != null ? { travelFrom: coding.travelFrom } : {}),
+        ...(coding.travelTo != null ? { travelTo: coding.travelTo } : {}),
+        ...(coding.headcount != null ? { headcount: coding.headcount } : {}),
+        ...(coding.attendees != null
+          ? {
+              attendees: coding.attendees.map((a) => ({
+                name: a.name,
+                affiliation: a.affiliation as AttendeeAffiliation,
+              })),
+            }
+          : {}),
+        ...(coding.groupDescription != null
+          ? { groupDescription: coding.groupDescription }
+          : {}),
+      }
+    : null;
+
+  const form = useCodingFormState({
+    initial: initialCodingValue,
+    namesMaxHeadcount: data?.namesMaxHeadcount ?? 15,
+    category,
+  });
+
+  // ALWAYS INLINE the moment there's nothing coded yet AND the cardholder is
+  // on the hook for it — no button, no modal (founder's own complaint). Any
+  // OTHER state (an existing coding, or a charge nobody's chasing) keeps the
+  // pre-existing "click to reveal" posture; `editing` is that click.
+  const alwaysInline = actionable && coding == null;
+  const showForm = alwaysInline || editing;
+
+  const blocking = form.value == null || form.fieldProblems.length > 0;
+
+  /** ONE PRIMARY SUBMIT — CODING FIRST, ALWAYS, then the category if it
+   *  changed (HIGH review finding, fixed 2026-08-1x). The old order tried the
+   *  category first and only reached the coding on success; for the Explain
+   *  workbench's core population — a historical Stripe-FC/Relay-CSV card row
+   *  the finance manager reviewing it doesn't personally own —
+   *  `submitOwnCharge` throws `NOT_A_CARD_CHARGE`/`FORBIDDEN` every time, so
+   *  the coding (the actual point of that screen) never submitted at all.
+   *  The testimony is the point; a category hiccup must never block it.
+   *
+   *  The category half now: (a) runs only when `planCategoryEdit` says the
+   *  category actually changed, never a same-value no-op write, and (b)
+   *  calls `submitOwnCharge` or the bookkeeper-gated `setTransactionCategory`
+   *  by OWNERSHIP (`ownCharge`, host-supplied), not by guessing. Both halves
+   *  stay independently idempotent, so a retry after a partial failure never
+   *  double-books anything, and a category failure AFTER a successful coding
+   *  reports itself as exactly that — the explanation already saved. */
+  async function submitBoth() {
+    await guard(async () => {
+      if (form.value != null) {
+        const { budgetId, ...codingValue } = form.value;
+        try {
+          await submitCoding({
+            transactionId,
+            ...codingValue,
+            ...(budgetId ? { budgetId: budgetId as Id<"budgets"> } : {}),
+          });
+        } catch (err) {
+          throw new Error(
+            `The explanation didn't submit — nothing was lost, just try again. ${errorMessage(err)}`,
+          );
+        }
+      }
+
+      const plan = planCategoryEdit({
+        isCardCharge,
+        ownCharge,
+        draftCategoryId: (catDraft ? catDraft : null) as Id<"budgetCategories"> | null,
+        currentCategoryId: (txn.categoryId ?? null) as Id<"budgetCategories"> | null,
+      });
+      if (plan.kind !== "none") {
+        try {
+          if (plan.kind === "own") {
+            await submitOwnCharge({ transactionId, categoryId: plan.categoryId });
+          } else {
+            await setTransactionCategory({ transactionId, categoryId: plan.categoryId });
+          }
+        } catch (err) {
+          // The explanation above already saved — this is a SEPARATE
+          // failure, and must never read as "nothing saved".
+          throw new Error(`Explanation saved. Couldn't set the category: ${errorMessage(err)}`);
+        }
+      }
+
+      setEditing(false);
+    }, "Couldn't save this charge");
   }
 
   return (
@@ -323,92 +502,158 @@ export function FinishChargeSheetBody({
                         : "The IRS calls this substantiation: what the money bought, which org work it served, and who was involved."
                     }
                   />
-                  {coding == null ? (
-                    <View className="gap-2">
-                      {/* SUMMARY MODE, NO CODING: this row is already
-                          squared away without one (`chargeTodo` only calls a
-                          row settled-and-uncoded when nothing required it —
-                          otherwise it would have ranked "needs coding" and
-                          `actionable` would be true). Saying "not coded yet"
-                          under a header that just said "squared away" is the
-                          exact contradiction the founder called out, so the
-                          copy and the button both read as optional here
-                          instead of as a live ask. */}
-                      <Text className="text-xs text-muted">
-                        {actionable
-                          ? "Not coded yet. This is the part only you can do — you were there. The receipt goes in with it, in the same editor."
-                          : "Coding is optional for this charge — add one if it needs explaining."}
-                      </Text>
-                      <Button
-                        title={actionable ? "Code this charge" : "Add a coding (optional)"}
-                        variant={actionable ? "primary" : "muted"}
-                        size="sm"
-                        icon="edit-3"
-                        disabled={data === undefined}
-                        onPress={() => setEditing(true)}
-                      />
-                    </View>
-                  ) : (
-                    <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
-                      <View className="mb-1 flex-row items-center gap-2">
-                        <Badge
-                          label={coding.statusLabel}
-                          tone={CODING_TONE[coding.status] ?? "neutral"}
+                  {!showForm ? (
+                    coding == null ? (
+                      <View className="gap-2">
+                        {/* SUMMARY MODE, NO CODING: this row is already
+                            squared away without one (`chargeTodo` only calls a
+                            row settled-and-uncoded when nothing required it —
+                            otherwise it would have ranked "needs coding" and
+                            `actionable` would be true, and `alwaysInline`
+                            would have shown the form instead of this button). */}
+                        <Text className="text-xs text-muted">
+                          Coding is optional for this charge — add one if it
+                          needs explaining.
+                        </Text>
+                        <Button
+                          title="Add a coding (optional)"
+                          variant="muted"
+                          size="sm"
+                          icon="edit-3"
+                          disabled={data === undefined}
+                          onPress={() => setEditing(true)}
                         />
-                        <Text className="text-xs font-medium text-ink">
-                          {coding.expenseTypeLabel}
-                        </Text>
                       </View>
-                      <Text className="text-xs text-ink">
-                        {coding.businessPurpose}
-                      </Text>
-                      {/* THE AUTHOR HAS TO SEE IT. If a reviewer rewrote the
-                          sentence that publishes — usually to take a name out
-                          — saying nothing would leave the public record and the
-                          author's memory of it silently disagreeing. Their own
-                          words are still the ones above, untouched. */}
-                      <PublicPurposeNotice state={coding} />
-                      {coding.travelFrom || coding.travelTo ? (
-                        <Text className="mt-1 text-2xs text-muted">
-                          Route: {coding.travelFrom ?? "—"} →{" "}
-                          {coding.travelTo ?? "—"}
+                    ) : (
+                      <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
+                        <View className="mb-1 flex-row items-center gap-2">
+                          <Badge
+                            label={coding.statusLabel}
+                            tone={CODING_TONE[coding.status] ?? "neutral"}
+                          />
+                          <Text className="text-xs font-medium text-ink">
+                            {coding.expenseTypeLabel}
+                          </Text>
+                          {selectedCategoryOption ? (
+                            <Text className="text-2xs text-muted">
+                              · {selectedCategoryOption.label}
+                            </Text>
+                          ) : null}
+                        </View>
+                        <Text className="text-xs text-ink">
+                          {coding.businessPurpose}
                         </Text>
+                        {/* THE AUTHOR HAS TO SEE IT. If a reviewer rewrote the
+                            sentence that publishes — usually to take a name out
+                            — saying nothing would leave the public record and the
+                            author's memory of it silently disagreeing. Their own
+                            words are still the ones above, untouched. */}
+                        <PublicPurposeNotice state={coding} />
+                        {coding.travelFrom || coding.travelTo ? (
+                          <Text className="mt-1 text-2xs text-muted">
+                            Route: {coding.travelFrom ?? "—"} →{" "}
+                            {coding.travelTo ?? "—"}
+                          </Text>
+                        ) : null}
+                        {coding.headcount != null ? (
+                          <Text className="mt-1 text-2xs text-muted">
+                            {coding.headcount}{" "}
+                            {coding.headcount === 1 ? "person" : "people"}
+                            {coding.groupDescription
+                              ? ` — ${coding.groupDescription}`
+                              : ""}
+                          </Text>
+                        ) : null}
+                        {coding.attendees != null && coding.attendees.length > 0 ? (
+                          <Text className="mt-1 text-2xs text-muted">
+                            {coding.attendees
+                              .map(
+                                (a) =>
+                                  `${a.name} (${ATTENDEE_AFFILIATION_LABELS[
+                                    a.affiliation as AttendeeAffiliation
+                                  ].toLowerCase()})`,
+                              )
+                              .join(", ")}
+                          </Text>
+                        ) : null}
+                        {coding.status !== "approved" ? (
+                          <View className="mt-2 flex-row">
+                            <Button
+                              title={
+                                coding.status === "changes_requested"
+                                  ? "Edit and resubmit"
+                                  : "Edit"
+                              }
+                              variant="secondary"
+                              size="sm"
+                              onPress={() => setEditing(true)}
+                            />
+                          </View>
+                        ) : null}
+                      </View>
+                    )
+                  ) : (
+                    <View className="gap-3">
+                      {isCardCharge ? (
+                        <Select
+                          label="Category"
+                          hint="What kind of spend was this? Picking one gets you the right proof questions below — the finance team can still change it later."
+                          value={catDraft ?? ""}
+                          options={categoryOptions}
+                          onChange={(v) => setCatDraft(v || null)}
+                          placeholder="No category"
+                        />
                       ) : null}
-                      {coding.headcount != null ? (
-                        <Text className="mt-1 text-2xs text-muted">
-                          {coding.headcount}{" "}
-                          {coding.headcount === 1 ? "person" : "people"}
-                          {coding.groupDescription
-                            ? ` — ${coding.groupDescription}`
-                            : ""}
-                        </Text>
-                      ) : null}
-                      {coding.attendees != null && coding.attendees.length > 0 ? (
-                        <Text className="mt-1 text-2xs text-muted">
-                          {coding.attendees
-                            .map(
-                              (a) =>
-                                `${a.name} (${ATTENDEE_AFFILIATION_LABELS[
-                                  a.affiliation as AttendeeAffiliation
-                                ].toLowerCase()})`,
-                            )
-                            .join(", ")}
-                        </Text>
-                      ) : null}
-                      {coding.status !== "approved" ? (
-                        <View className="mt-2 flex-row">
+
+                      <ExpenseTypeChips form={form} category={category} />
+                      <CodingFieldSet
+                        form={form}
+                        minPurposeLength={data?.minPurposeLength ?? 20}
+                        personalChargeSlot={
+                          isCardCharge ? (
+                            <PersonalChargeEscape
+                              alreadyFlagged={txn.isPersonal === true}
+                              onFlag={() =>
+                                guard(async () => {
+                                  await submitOwnCharge({
+                                    transactionId,
+                                    categoryId: null,
+                                    note: null,
+                                    flagPersonal: true,
+                                  });
+                                  setEditing(false);
+                                  onClose?.();
+                                }, "Couldn't flag this as a personal charge")
+                              }
+                            />
+                          ) : null
+                        }
+                      />
+                      <CodingProblemsList
+                        problems={form.touched ? form.fieldProblems : []}
+                      />
+                      <View className="flex-row gap-2">
+                        <Button
+                          title={
+                            coding?.status === "changes_requested"
+                              ? "Resubmit for review"
+                              : "Submit for review"
+                          }
+                          size="sm"
+                          icon="check"
+                          loading={busy}
+                          disabled={blocking}
+                          onPress={() => void submitBoth()}
+                        />
+                        {!alwaysInline ? (
                           <Button
-                            title={
-                              coding.status === "changes_requested"
-                                ? "Edit and resubmit"
-                                : "Edit"
-                            }
+                            title="Cancel"
                             variant="secondary"
                             size="sm"
-                            onPress={() => setEditing(true)}
+                            onPress={() => setEditing(false)}
                           />
-                        </View>
-                      ) : null}
+                        ) : null}
+                      </View>
                     </View>
                   )}
                 </View>
@@ -521,9 +766,10 @@ export function FinishChargeSheetBody({
                 </View>
               </View>
 
-              {/* THE OPTIONAL EXTRAS — the pre-existing member affordances,
-                  kept but demoted: none of this is required by the accountable
-                  plan, it just saves the bookkeeper a guess. */}
+              {/* THE OPTIONAL EXTRAS — note + personal flag. Category moved up
+                  into "What it was for" (2026-08-1x) since it now drives the
+                  coding questions directly; what's left here is genuinely
+                  optional either way. */}
               {isCardCharge ? (
                 <View>
                   <RequirementHeader
@@ -532,14 +778,6 @@ export function FinishChargeSheetBody({
                     hint="Helps the finance team file it. The business purpose above is the one that publishes."
                   />
                   <View className="gap-3">
-                    <Select
-                      label="Category"
-                      hint="What kind of spend was this? The finance team can change it later."
-                      value={catDraft ?? ""}
-                      options={categoryOptions}
-                      onChange={(v) => setCatDraft(v || null)}
-                      placeholder="No category"
-                    />
                     <TextField
                       label="A note for the finance team"
                       hint="Internal — unlike the business purpose, this never publishes."
@@ -549,76 +787,33 @@ export function FinishChargeSheetBody({
                       multiline
                       numberOfLines={2}
                     />
-                    {txn.isPersonal ? (
-                      <View className="flex-row items-center gap-2">
-                        <Icon
-                          name="check-circle"
-                          size={14}
-                          color={colors.accent}
-                        />
-                        <Text className="text-xs text-muted">
-                          Already flagged as a personal charge — pay it back
-                          from the Cards tab.
-                        </Text>
-                      </View>
-                    ) : (
-                      <Pressable
-                        {...spaceToggleProps(() => setPersonalDraft((p) => !p))}
-                        onPress={() => setPersonalDraft((p) => !p)}
-                        className="flex-row items-center gap-2 active:opacity-70"
-                        accessibilityRole="checkbox"
-                        aria-checked={personalDraft}
-                        accessibilityState={{ checked: personalDraft }}
-                        accessibilityLabel="This was a personal charge"
-                      >
-                        <View
-                          className={`h-5 w-5 items-center justify-center rounded border ${
-                            personalDraft
-                              ? "border-accent bg-accent"
-                              : "border-border-strong bg-raised"
-                          }`}
-                        >
-                          {personalDraft ? (
-                            <Icon
-                              name="check"
-                              size={13}
-                              color={colors.accentText}
-                            />
-                          ) : null}
-                        </View>
-                        <Text className="text-sm text-ink">
-                          This was a personal charge — I&apos;ll pay it back
-                        </Text>
-                      </Pressable>
-                    )}
                     <View className="flex-row">
                       <Button
-                        title="Save these"
+                        title="Save note"
                         variant="secondary"
                         size="sm"
                         icon="check"
                         loading={busy}
                         onPress={() =>
                           void guard(
+                            // Same ownership split as the category half
+                            // (`planCategoryEdit`'s reasoning): the
+                            // cardholder writes their own note via
+                            // `submitOwnCharge`; a bookkeeper reviewing
+                            // someone else's row (the Explain workbench)
+                            // needs the bookkeeper-gated twin instead, or
+                            // this throws exactly like the category bug did.
                             () =>
-                              submitOwnCharge({
-                                transactionId,
-                                categoryId: (catDraft
-                                  ? catDraft
-                                  : null) as Id<"budgetCategories"> | null,
-                                note: noteDraft.trim()
-                                  ? noteDraft.trim()
-                                  : null,
-                                // The personal flag is one-way (it creates the
-                                // repayment record and emails the payee), so
-                                // only ever flag ON, and only when it wasn't
-                                // already — same rule as the old inline editor.
-                                flagPersonal:
-                                  personalDraft && !txn.isPersonal
-                                    ? true
-                                    : undefined,
-                              }),
-                            "Couldn't save charge details",
+                              ownCharge
+                                ? submitOwnCharge({
+                                    transactionId,
+                                    note: noteDraft.trim() ? noteDraft.trim() : null,
+                                  })
+                                : setTransactionNote({
+                                    transactionId,
+                                    note: noteDraft.trim() ? noteDraft.trim() : null,
+                                  }),
+                            "Couldn't save that note",
                           )
                         }
                       />
@@ -629,116 +824,6 @@ export function FinishChargeSheetBody({
 
               {toast ? <ToastView toast={toast} onDismiss={dismiss} /> : null}
       </View>
-
-      {editing && data != null ? (
-        <TransactionCodingModal
-          merchantLine={merchantLine}
-          amountCents={txn.amountCents}
-          namesMaxHeadcount={data.namesMaxHeadcount}
-          minPurposeLength={data.minPurposeLength}
-          // THE RECEIPT, INSIDE THE EDITOR. Submit stays disabled until this
-          // charge can prove itself, and the slot is how it gets proved
-          // without closing what's half-typed — the same component the sheet
-          // shows behind this modal, sharing nothing but the transaction, so
-          // whichever one somebody uses, the other reflects it.
-          hasDocumentation={hasDocumentation}
-          documentationSlot={
-            <CodingDocumentation
-              transactionId={transactionId}
-              amountCents={txn.amountCents}
-              hasDocumentation={hasDocumentation}
-              detail={{
-                hasReceipt: txn.hasReceipt,
-                hasApprovedException: txn.hasApprovedException,
-                approvedReasonLabel: approvedException?.reasonLabel ?? null,
-                pendingReasonLabel: pendingException?.reasonLabel ?? null,
-                reminderStage: txn.reminderStage,
-              }}
-              runAction={guard}
-              busy={busy}
-            />
-          }
-          reviewNote={
-            coding?.status === "changes_requested" ? coding.reviewNote : null
-          }
-          // THE PERSONAL-CHARGE FLAG, WHERE THE SENTENCE GETS WRITTEN.
-          // Same `submitOwnCharge({ flagPersonal: true })` the checkbox in
-          // "Anything else (optional)" below has always called — not a second
-          // mechanism. It's passed in here because that checkbox is on the
-          // sheet this modal is covering, so the moment somebody realises a
-          // charge was personal is the moment they can't see it, and what
-          // they do instead is write it into the business purpose. One
-          // production charge is sitting in Operating Expenses right now
-          // saying "Charged in error, ride from home to work".
-          personalCharge={{
-            alreadyFlagged: txn.isPersonal === true,
-            onFlag: () =>
-              guard(async () => {
-                await submitOwnCharge({
-                  transactionId,
-                  categoryId: null,
-                  note: null,
-                  flagPersonal: true,
-                });
-                setEditing(false);
-                // Closes the sheet on the Modal host; a no-op in the panel,
-                // where there is no sheet to close — the row stays selected
-                // and shows the new state (see this prop's own doc above).
-                onClose?.();
-              }, "Couldn't flag this as a personal charge"),
-          }}
-          submitLabel={
-            coding?.status === "changes_requested"
-              ? "Resubmit for review"
-              : "Submit for review"
-          }
-          initial={
-            coding
-              ? {
-                  expenseType: coding.expenseType,
-                  businessPurpose: coding.businessPurpose,
-                  ...(coding.travelFrom != null
-                    ? { travelFrom: coding.travelFrom }
-                    : {}),
-                  ...(coding.travelTo != null
-                    ? { travelTo: coding.travelTo }
-                    : {}),
-                  ...(coding.headcount != null
-                    ? { headcount: coding.headcount }
-                    : {}),
-                  ...(coding.attendees != null
-                    ? {
-                        attendees: coding.attendees.map((a) => ({
-                          name: a.name,
-                          affiliation: a.affiliation as AttendeeAffiliation,
-                        })),
-                      }
-                    : {}),
-                  ...(coding.groupDescription != null
-                    ? { groupDescription: coding.groupDescription }
-                    : {}),
-                }
-              : null
-          }
-          submitting={busy}
-          onCancel={() => setEditing(false)}
-          onConfirm={({ budgetId, ...value }: CodingFormValue) =>
-            void guard(async () => {
-              await submitCoding({
-                transactionId,
-                ...value,
-                // The picker deals in plain strings; the mutation validates
-                // the id for real (book rule + approved-budget rule), so this
-                // cast is the only thing standing between them.
-                ...(budgetId
-                  ? { budgetId: budgetId as Id<"budgets"> }
-                  : {}),
-              });
-              setEditing(false);
-            }, "Couldn't submit this coding")
-          }
-        />
-      ) : null}
     </>
   );
 }
@@ -753,11 +838,19 @@ export function FinishChargeSheet({
   txn,
   todo,
   categoryOptions,
+  ownCharge,
   onClose,
 }: {
   txn: MyTxnRow;
   todo?: ChargeTodo;
-  categoryOptions: { value: string; label: string }[];
+  categoryOptions: CategoryOption[];
+  /** Forwarded verbatim to `FinishChargeSheetBody` — see that prop's own
+   *  doc, and `planCategoryEdit` for why it matters. `coding.tsx`'s
+   *  narrow-screen sheet (`finances.personTransactions` rows) passes `true`;
+   *  `explain.tsx`'s narrow-screen sheet (`finances.monthCodingWorklist`
+   *  rows — the whole chapter's publishing population, not the caller's
+   *  own) passes `false`. */
+  ownCharge: boolean;
   onClose: () => void;
 }) {
   const actionable = todo === undefined ? true : todo.actionable;
@@ -797,6 +890,7 @@ export function FinishChargeSheet({
                 txn={txn}
                 todo={todo}
                 categoryOptions={categoryOptions}
+                ownCharge={ownCharge}
                 onClose={onClose}
               />
             </View>

@@ -344,6 +344,7 @@ const REGISTRY_NAMES = [
   "0062_standardize_powers",
   "0063_fix_genesis_utc_midnight",
   "0064_release_legacy_card_autolocks",
+  "0065_stamp_default_category_expense_hints",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

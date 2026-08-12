@@ -8,6 +8,25 @@
  * SHARED `codingFieldProblems` — so no surface can hold a claimant to a
  * different standard than another, or than the server.
  *
+ * CATEGORY FIRST, IN-APP ONLY (founder scope expansion; design call,
+ * 2026-08-1x): a claimant with an in-app session can read
+ * `finances.myChargeCategories` (member-visible, no finance seat needed —
+ * same posture as the cardholder's own sheet), so THIS surface now opens with
+ * a Category picker, and the expense-type picker below FOLLOWS its hint via
+ * the SAME pure derive/override rule the sheet and Reconcile use
+ * (`../coding/deriveExpenseType`) — pick "Transportation" and travel's route
+ * questions are already showing. A manual pick on "What kind of expense?"
+ * still overrides it for good.
+ *
+ * THE PUBLIC (accountless) `/reimburse/<slug>` PAGE DELIBERATELY DOES NOT GET
+ * A CATEGORY PICKER — a stranger claimant can't know the org's bookkeeping
+ * buckets, `submitPublicReimbursement` strips any smuggled `categoryId`
+ * server-side (a security/privacy posture, not just missing UI), and
+ * categorization stays a finance manager's review-time job there. For that
+ * surface, "what kind of expense?" remains the honest FIRST question — see
+ * `reimbursePage.ts`'s own `REIMBURSE_CODING_SCRIPT`, intentionally
+ * unchanged by this file.
+ *
  * ONE QUESTION AT A TIME, driven by the expense type: pick "meal" and you get
  * the meal questions, "travel" and you get a route. Nobody sees a blank
  * 20-field form. Attendee rows are RENDERED FROM THE HEADCOUNT (and only
@@ -17,6 +36,8 @@
  * NOTHING IS PRE-FILLED and nothing is AI-drafted (owner decision,
  * 2026-08-08): the substantiation is the spender's own testimony, which is
  * exactly what an accountable plan — and a public ledger — needs it to be.
+ * The category → expense-type derivation only ever picks which QUESTIONS
+ * show, never an answer inside them.
  */
 import { View, Text } from "react-native";
 import {
@@ -29,12 +50,34 @@ import {
   type CodingProblem,
   type ExpenseType,
 } from "@events-os/shared";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Select, TextField } from "../../ui";
+import {
+  deriveExpenseTypeFromCategory,
+  overrideExpenseType,
+} from "../coding/deriveExpenseType";
+
+/** The category picker's own option shape — id/name + the §274(d) hint the
+ *  expense-type picker follows. Built by the host from
+ *  `finances.myChargeCategories`. */
+export type CodingCategoryOption = {
+  value: string;
+  label: string;
+  expenseTypeHint?: ExpenseType;
+};
 
 /** One line's substantiation as the form holds it — headcount stays a raw
  *  string so a half-typed number isn't read as 0. */
 export type LineCoding = {
+  /** `""` = no category picked. Purely a QUESTION-SET hint source for
+   *  `expenseType` below — never itself pre-filled or inferred from anything
+   *  the claimant typed. */
+  categoryId: string;
   expenseType: ExpenseType;
+  /** Sticky once the person picks "What kind of expense?" themselves — a
+   *  later category change must not silently overwrite it. Mirrors the
+   *  sheet/Reconcile chips' own `ExpenseTypeChipState.overridden`. */
+  expenseTypeOverridden: boolean;
   businessPurpose: string;
   travelFrom: string;
   travelTo: string;
@@ -45,7 +88,9 @@ export type LineCoding = {
 
 export function emptyCoding(): LineCoding {
   return {
+    categoryId: "",
     expenseType: "general",
+    expenseTypeOverridden: false,
     businessPurpose: "",
     travelFrom: "",
     travelTo: "",
@@ -55,8 +100,13 @@ export function emptyCoding(): LineCoding {
   };
 }
 
-/** Rebuild the form state from a line already on record (the revise path). */
+/** Rebuild the form state from a line already on record (the revise path).
+ *  An EXISTING line's expense type is treated as already-considered
+ *  (`expenseTypeOverridden: true`) — the same "revising is sticky" rule
+ *  `initialExpenseTypeChipState` applies elsewhere, so re-opening this line
+ *  never gets its type silently reset by whatever the category hints today. */
 export function codingFromLine(line: {
+  categoryId?: string | null;
   expenseType?: string | null;
   businessPurpose?: string | null;
   travelFrom?: string | null;
@@ -66,7 +116,9 @@ export function codingFromLine(line: {
   groupDescription?: string | null;
 }): LineCoding {
   return {
+    categoryId: line.categoryId ?? "",
     expenseType: (line.expenseType as ExpenseType | null) ?? "general",
+    expenseTypeOverridden: line.expenseType != null,
     businessPurpose: line.businessPurpose ?? "",
     travelFrom: line.travelFrom ?? "",
     travelTo: line.travelTo ?? "",
@@ -93,6 +145,9 @@ export function codingArgs(coding: LineCoding) {
   const isMeal = coding.expenseType === "meal";
   const headcount = headcountOf(coding);
   return {
+    categoryId: coding.categoryId
+      ? (coding.categoryId as Id<"budgetCategories">)
+      : undefined,
     expenseType: coding.expenseType,
     businessPurpose: coding.businessPurpose.trim(),
     travelFrom: isTravelish ? coding.travelFrom.trim() : undefined,
@@ -146,17 +201,51 @@ export function CodingFields({
   value,
   namesMaxHeadcount,
   minPurposeLength,
+  categoryOptions,
   onChange,
 }: {
   value: LineCoding;
   namesMaxHeadcount: number;
   minPurposeLength: number;
+  /** The category picker + its per-option §274(d) hint. Omitted entirely by
+   *  the public (accountless) page's own render path — this component isn't
+   *  reused there (that page is vanilla JS, see `reimbursePage.ts`), but a
+   *  future in-app host with no category context can still pass `undefined`
+   *  and the picker simply doesn't render. */
+  categoryOptions?: CodingCategoryOption[];
   onChange: (patch: Partial<LineCoding>) => void;
 }) {
   const isTravelish =
     value.expenseType === "travel" || value.expenseType === "lodging";
   const isMeal = value.expenseType === "meal";
   const headcount = headcountOf(value);
+
+  /** CATEGORY FIRST: picking a category re-derives the expense type via the
+   *  SAME pure rule the sheet/Reconcile chips use — follows the hint unless
+   *  the person has already overridden "What kind of expense?" themselves. */
+  function setCategory(categoryId: string) {
+    const hint = categoryOptions?.find((o) => o.value === categoryId)?.expenseTypeHint;
+    const derived = deriveExpenseTypeFromCategory(
+      { expenseType: value.expenseType, overridden: value.expenseTypeOverridden },
+      hint ?? null,
+    );
+    onChange({
+      categoryId,
+      expenseType: derived.expenseType ?? "general",
+      expenseTypeOverridden: derived.overridden,
+    });
+  }
+
+  function setExpenseTypeManually(t: ExpenseType) {
+    const next = overrideExpenseType(
+      { expenseType: value.expenseType, overridden: value.expenseTypeOverridden },
+      t,
+    );
+    onChange({
+      expenseType: next.expenseType ?? "general",
+      expenseTypeOverridden: next.overridden,
+    });
+  }
   // Names at/below the threshold, an identifiable group description above it
   // (owner decision, 2026-08-08: a HEADCOUNT threshold, not a dollar one — a
   // $40 pizza for 16 volunteers gets a headcount, a $400 dinner for 4 gets
@@ -194,12 +283,23 @@ export function CodingFields({
 
   return (
     <View className="mt-2 border-t border-border pt-2">
+      {categoryOptions ? (
+        <Select
+          label="Category"
+          hint="What kind of spend was this? Picking one fills in the right questions below — a finance manager can still change it later."
+          value={value.categoryId}
+          options={categoryOptions}
+          onChange={setCategory}
+          placeholder="No category"
+        />
+      ) : null}
+
       <Select
         label="What kind of expense?"
         hint="This decides what the IRS requires us to record — a route for travel, who was there for a meal."
         value={value.expenseType}
         options={EXPENSE_TYPE_OPTIONS}
-        onChange={(v) => onChange({ expenseType: v as ExpenseType })}
+        onChange={(v) => setExpenseTypeManually((v || "general") as ExpenseType)}
       />
 
       <TextField

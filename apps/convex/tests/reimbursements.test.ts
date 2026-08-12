@@ -23,8 +23,12 @@ import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
  * queue.
  *
  * Owner-mandated overhaul covered here:
- *  - the public page's `chapterForReimburse` payload carries NO funds/budget
- *    categories (categorization is a finance manager's review-time job);
+ *  - the public page's `chapterForReimburse` payload carries the chapter's
+ *    ACTIVE budget categories (id, name, §274(d) hint) — founder reversal,
+ *    2026-08-1x: "i don't see an issue with allowing them to see the buckets
+ *    and then we can correct it on our end". Still NO funds (that half of
+ *    the original privacy posture is unchanged; there's still no fund
+ *    picker anywhere on this page);
  *  - `purpose`, every line's `description`/`receiptStorageId`/
  *    `transactionDate` are REQUIRED (server-enforced, one invariant owner:
  *    `createReimbursement`) — as is every line's §274(d) substantiation, whose
@@ -569,8 +573,8 @@ describe("public submission + status view", () => {
   });
 });
 
-describe("public-page privacy: no funds/categories in the payload", () => {
-  test("chapterForReimburse returns only slug + name — no funds or budget categories", async () => {
+describe("public-page payload: categories ride along now, funds still don't (founder reversal, 2026-08-1x)", () => {
+  test("chapterForReimburse returns slug + name + ACTIVE categories (with their hint) — still no funds", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await setSlug(s, "nyc");
@@ -583,20 +587,66 @@ describe("public-page privacy: no funds/categories in the payload", () => {
         createdAt: Date.now(),
       }),
     );
+    const fundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "Second Fund",
+        restriction: "unrestricted",
+        sortOrder: 1,
+        createdAt: Date.now(),
+      }),
+    );
+    const activeHinted = await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Transportation",
+        kind: "category",
+        sortOrder: 0,
+        expenseType: "travel",
+        createdAt: Date.now(),
+      }),
+    );
+    const activeUnhinted = await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Supplies",
+        kind: "category",
+        sortOrder: 1,
+        createdAt: Date.now(),
+      }),
+    );
+    // An INACTIVE category must not ride along — the public page shouldn't
+    // offer a bucket the chapter has retired.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Retired",
+        kind: "category",
+        sortOrder: 2,
+        isActive: false,
+        createdAt: Date.now(),
+      }),
+    );
     const chapter = await run(s.t, (ctx) => ctx.db.get(s.chapterId));
     const view = await t.query(api.lib.reimburseApiRoutes.chapterForReimburse, {
       slug: "nyc",
     });
-    // Slug + name + the org's coding POLICY numbers (a rule the form has to
-    // ask by, not chapter data) — and still no funds/categories.
     expect(view).toEqual({
       slug: "nyc",
       name: chapter!.name,
       namesMaxHeadcount: DEFAULT_MEAL_ATTENDEE_NAMES_MAX_HEADCOUNT,
       minPurposeLength: MIN_PURPOSE_LENGTH,
+      categories: [
+        { id: activeHinted, name: "Transportation", expenseTypeHint: "travel" },
+        { id: activeUnhinted, name: "Supplies" },
+      ],
     });
+    // Funds are STILL never disclosed — that half of the old privacy
+    // posture is unchanged, only categories reversed.
     expect(view as Record<string, unknown>).not.toHaveProperty("funds");
-    expect(view as Record<string, unknown>).not.toHaveProperty("categories");
   });
 
   test("an unknown slug returns null", async () => {

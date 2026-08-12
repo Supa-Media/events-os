@@ -114,7 +114,14 @@ export function TransactionCodingSection({
     canReview,
     namesMaxHeadcount,
     minPurposeLength,
+    categoryName,
+    categoryExpenseTypeHint,
   } = data;
+  // The chip row's category context — `null` (not `undefined`) when the
+  // charge is simply uncategorized, so the chips still get the "nothing
+  // picks it for you" copy rather than the "no category context at all"
+  // wording (see `CodingCategoryContext`).
+  const category = categoryName ? { name: categoryName, expenseTypeHint: categoryExpenseTypeHint } : null;
 
   async function run(fn: () => Promise<unknown>) {
     setSubmitting(true);
@@ -353,6 +360,7 @@ export function TransactionCodingSection({
               busy={submitting}
             />
           }
+          category={category}
           // A revision is a conversation: the note that sent it back belongs
           // next to the fields it's about, not one panel away behind the
           // editor that's covering it.

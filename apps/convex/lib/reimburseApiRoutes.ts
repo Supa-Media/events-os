@@ -96,8 +96,11 @@ function optStr(value: unknown): string | undefined {
  *  opaque 400, and "pick one of these" is a fixable answer.
  *
  *  Attendee `personId` is deliberately NOT accepted: the public page never
- *  sees the chapter's roster (same privacy rule that keeps funds/categories
- *  off it), so a public attendee is always free text. */
+ *  sees the chapter's roster (unlike categories, reversed 2026-08-1x — see
+ *  `chapterForReimburse`'s doc — the roster stays off this page: naming a
+ *  real person by id is a different kind of disclosure than a category
+ *  name, which is already public via the ledger), so a public attendee is
+ *  always free text. */
 type LineCodingPayload = {
   expenseType?: ExpenseType;
   businessPurpose?: string;
@@ -149,17 +152,22 @@ function toCoding(it: Record<string, unknown>): LineCodingPayload {
  *  Money + `transactionDate` are sanity-checked server-side; the receipt id is
  *  verified to belong to the chapter's storage; the substantiation block goes
  *  through `toCoding` above and is validated by the shared
- *  `codingFieldProblems` server-side. NO `categoryId`/`fundId` here
- *  on purpose — the public form no longer collects either (categorization is
- *  a finance manager's review-time job); `submitPublicReimbursement`
- *  additionally strips those fields server-side even if a raw API call tries
- *  to smuggle them through. */
+ *  `codingFieldProblems` server-side.
+ *
+ *  `categoryId` rides along now (founder decision, 2026-08-1x — see
+ *  `chapterForReimburse`'s doc) as a bare string, unvalidated HERE: the real
+ *  gate is `sanitizePublicCategoryId` in `submitPublicReimbursement`, which
+ *  drops anything that isn't a real, active, same-chapter category —
+ *  SILENTLY, so this coercion step never has to distinguish "malformed" from
+ *  "not ours" (an unauthenticated caller gets no signal either way). `fundId`
+ *  stays UNCOLLECTED — there's still no fund picker on this page. */
 function toLines(raw: unknown): Array<
   {
     description: string;
     amountCents: number;
     receiptStorageId?: Id<"_storage">;
     transactionDate?: number;
+    categoryId?: Id<"budgetCategories">;
   } & LineCodingPayload
 > {
   if (!Array.isArray(raw)) return [];
@@ -175,6 +183,9 @@ function toLines(raw: unknown): Array<
         it.transactionDate != null && it.transactionDate !== ""
           ? Math.round(Number(it.transactionDate))
           : undefined,
+      categoryId: it.categoryId
+        ? (String(it.categoryId) as Id<"budgetCategories">)
+        : undefined,
       ...toCoding(it),
     };
   });
@@ -361,19 +372,33 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
 
 // ── Public read queries backing the page (registered as api functions) ────────
 
+// A generous bound on a public-facing category list (mirrors
+// `insertDefaultExpenseCategories`'s own scan limit, but small — a chapter's
+// categories number in the dozens, and this rides on every form load).
+const PUBLIC_CATEGORY_LIMIT = 500;
+
 /**
  * Chapter display data for the public reimburse form, by slug. Public (no auth)
- * — ONLY non-secret display fields: the chapter's name + its own slug. NO
- * funds or budget categories here (owner mandate, public-page privacy): a
- * logged-out visitor never sees the chapter's internal fund/category
- * structure — categorizing a line is a finance manager's review-time job,
- * done in their own tooling after the request lands. Null when the slug is
- * unknown.
+ * — the chapter's name + its own slug, PLUS its active budget categories
+ * (id, name, `expenseType` hint).
+ *
+ * Category names ride here (founder decision, verbatim: "i don't see an
+ * issue with allowing them to see the buckets and then we can correct it on
+ * our end") — REVERSING the earlier privacy posture, on the reasoning that
+ * category names are already public via the published ledger (every
+ * transaction prints its category), so handing them to the form ahead of
+ * time discloses nothing new. What a claimant picks here is a SUGGESTION,
+ * not a decision: `submitPublicReimbursement` re-validates the id belongs to
+ * THIS chapter and is active before persisting it, and a finance manager can
+ * always correct it at review (see that mutation's own doc, and
+ * `reimbursements.ts#get`'s line projection).
  *
  * It DOES carry the org's coding policy numbers (the meal-names threshold and
  * the business-purpose floor) — not chapter data, just the rule the server
  * will enforce, so the form asks for names at exactly the headcount the
  * server requires them at instead of hard-coding a copy of the threshold.
+ *
+ * Null when the slug is unknown.
  */
 export const chapterForReimburse = query({
   args: { slug: v.string() },
@@ -384,12 +409,25 @@ export const chapterForReimburse = query({
       .unique();
     if (!chapter) return null;
     const { namesMaxHeadcount } = await codingPolicy(ctx);
+    const categoryRows = await ctx.db
+      .query("budgetCategories")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
+      .take(PUBLIC_CATEGORY_LIMIT);
+    const categories = categoryRows
+      .filter((c) => c.isActive !== false)
+      .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
+      .map((c) => ({
+        id: String(c._id),
+        name: c.name,
+        ...(c.expenseType ? { expenseTypeHint: c.expenseType } : {}),
+      }));
 
     return {
       slug: chapter.slug ?? slug,
       name: chapter.name,
       namesMaxHeadcount,
       minPurposeLength: MIN_PURPOSE_LENGTH,
+      categories,
     };
   },
 });

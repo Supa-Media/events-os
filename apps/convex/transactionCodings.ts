@@ -212,6 +212,13 @@ export const getForTransaction = query({
     canReview: v.boolean(),
     namesMaxHeadcount: v.number(),
     minPurposeLength: v.number(),
+    /** The charge's OWN category name, or `null` when uncategorized — what
+     *  the editor's expense-type chips follow (`categoryExpenseTypeHint`)
+     *  until the person overrides them. See `CodingCategoryContext`. */
+    categoryName: v.union(v.string(), v.null()),
+    categoryExpenseTypeHint: v.optional(
+      v.union(...EXPENSE_TYPES.map((t) => v.literal(t))),
+    ),
   }),
   handler: async (ctx, args) => {
     const { txn, actorPersonId } = await requireViewCoding(
@@ -219,6 +226,7 @@ export const getForTransaction = query({
       args.transactionId,
     );
     const { sinceMs, namesMaxHeadcount } = await codingPolicy(ctx);
+    const category = txn.categoryId ? await ctx.db.get(txn.categoryId) : null;
     const row = await codingForTransaction(ctx, args.transactionId);
     const exceptions = await ctx.db
       .query("receiptExceptions")
@@ -259,6 +267,8 @@ export const getForTransaction = query({
       canReview,
       namesMaxHeadcount,
       minPurposeLength: MIN_PURPOSE_LENGTH,
+      categoryName: category?.name ?? null,
+      ...(category?.expenseType ? { categoryExpenseTypeHint: category.expenseType } : {}),
     };
   },
 });

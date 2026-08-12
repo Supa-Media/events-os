@@ -296,4 +296,35 @@ describe("finances.submitOwnCharge", () => {
     expect(cats.map((c) => c.id)).toContain(categoryId);
     expect(cats.find((c) => c.id === categoryId)?.name).toBe("Supplies");
   });
+
+  test("myChargeCategories surfaces expenseTypeHint verbatim, and omits it when unset", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedCaller(s);
+    const hinted = await seedCategory(s);
+    await run(s.t, (ctx) => ctx.db.patch(hinted, { expenseType: "travel" }));
+    // A second, hint-less category — the common case — must NOT surface a
+    // stray `expenseTypeHint` key (the client reads its absence as "nothing
+    // picks it for you").
+    const unhinted = await run(s.t, async (ctx) => {
+      const cat = await ctx.db.get(hinted);
+      return await ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId: cat!.fundId,
+        name: "Other",
+        kind: "category",
+        sortOrder: 1,
+        createdAt: Date.now(),
+      });
+    });
+
+    const cats = await s.as.query(api.finances.myChargeCategories, {});
+    expect(cats.find((c) => c.id === hinted)?.expenseTypeHint).toBe("travel");
+    expect(
+      Object.prototype.hasOwnProperty.call(
+        cats.find((c) => c.id === unhinted) ?? {},
+        "expenseTypeHint",
+      ),
+    ).toBe(false);
+  });
 });

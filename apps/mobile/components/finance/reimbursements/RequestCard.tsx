@@ -517,7 +517,25 @@ function LineTable({
                   {line.description}
                 </Text>
                 {line.category ? (
-                  <Text className="text-xs text-muted">{line.category}</Text>
+                  <Text className="text-xs text-muted">
+                    {line.category}
+                    {/* THE CLAIMANT'S OWN PICK, NOT A DECISION (founder,
+                        2026-08-1x: both submission surfaces now offer a
+                        category picker — see reimbursePage.ts / CodingFields.tsx
+                        — but categorization stays a finance manager's call). A
+                        category on a line always comes from whoever submitted
+                        it; nothing else sets one before review, so this is
+                        never wrong to show. There's no inline edit control
+                        HERE — it recodes the normal way, in Reconcile, once
+                        the paid line's transaction is on the ledger — so the
+                        copy points there rather than implying a button on
+                        this card. */}
+                    <Text className="italic text-faint">
+                      {" "}
+                      · claimant-suggested, not yet reviewed — recode it in
+                      Reconcile if it's wrong
+                    </Text>
+                  </Text>
                 ) : null}
                 {/* The §274(d) substantiation this line carries — what a
                     reviewer is actually approving. Absent on a legacy line

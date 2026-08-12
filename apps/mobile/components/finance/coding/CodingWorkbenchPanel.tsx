@@ -54,7 +54,10 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { displayMerchantName, formatCents } from "@events-os/shared";
 import { Button, TextField } from "../../ui";
-import { FinishChargeSheetBody } from "../myTransactions/FinishChargeSheet";
+import {
+  FinishChargeSheetBody,
+  type CategoryOption,
+} from "../myTransactions/FinishChargeSheet";
 import type { ChargeTodo, MyTxnRow } from "../myTransactions/chargeTodo";
 import { PublicPurposeEditor } from "./PublicPurposeEditor";
 import { ReceiptPane } from "./ReceiptPane";
@@ -183,6 +186,7 @@ export function CodingWorkbenchPanel({
   txn,
   todo,
   categoryOptions,
+  ownCharge,
   onDeselect,
   onPrev,
   onNext,
@@ -200,7 +204,16 @@ export function CodingWorkbenchPanel({
    *  the panel and the modal it replaces on a wide screen never disagree
    *  about what a row still owes. */
   todo?: ChargeTodo;
-  categoryOptions: { value: string; label: string }[];
+  categoryOptions: CategoryOption[];
+  /** Forwarded verbatim to `FinishChargeSheetBody` — see that prop's own
+   *  doc, and `planCategoryEdit` for why it matters. `coding.tsx` passes
+   *  `true` (`finances.personTransactions` rows, own-by-construction);
+   *  `explain.tsx` passes `false` (`finances.monthCodingWorklist` rows are
+   *  the whole chapter's publishing population, not just the caller's own —
+   *  the HIGH review finding this prop exists to fix). REQUIRED, not
+   *  defaulted: a silent default here is exactly the kind of per-row guess
+   *  that broke the Explain workbench in the first place. */
+  ownCharge: boolean;
   /** Clears the selection — collapses the panel, nothing left to close in a
    *  modal sense. */
   onDeselect: () => void;
@@ -268,6 +281,7 @@ export function CodingWorkbenchPanel({
             txn={txn}
             todo={todo}
             categoryOptions={categoryOptions}
+            ownCharge={ownCharge}
             renderReview={({ transactionId: tid, coding, canReview, runAction }) => (
               <ReviewActions
                 transactionId={tid}
