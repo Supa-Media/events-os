@@ -1,14 +1,24 @@
 /**
- * THE SIDE PANEL — `explain.tsx`'s wide-screen host for one row's whole job.
+ * THE SIDE PANEL — a wide-screen host for one row's whole job. Shipped for
+ * `explain.tsx`, then reused (not forked) by `coding.tsx`'s "Yours to code"
+ * list — both mount the exact same component, list to the left, panel to the
+ * right.
  *
  * Founder, verbatim: "if I'm seeing a database view when I'm coding, I'm
  * gonna have to be able to like see the receipts really well, like maybe in a
  * side panel"; "information that helps me quickly click in and click out,
  * rather than a modal that's in the middle of the screen that blocks your
  * ability to see other things and click quickly on other things." This is
- * that side panel: the list stays visible and scrollable to its left
- * (`explain.tsx` renders it), this renders beside it, and clicking another
- * row swaps this panel's content in place — never a modal, never an overlay.
+ * that side panel: the list stays visible and scrollable to its left (the
+ * host route renders it), this renders beside it, and clicking another row
+ * swaps this panel's content in place — never a modal, never an overlay.
+ *
+ * THE TWO HOSTS DIFFER ON `todo` AND `canViewReceiptList` — both optional,
+ * both default to `explain.tsx`'s original behavior (see each prop's own
+ * doc): `todo` because `explain.tsx`'s rows are the publishing population,
+ * not the chase state machine; `canViewReceiptList` because `coding.tsx`'s
+ * caller can be a cardholder with no finance seat at all, unlike
+ * `explain.tsx`'s (gated behind ledger-console access).
  *
  * Composition, top to bottom — deliberately in this order, receipt first:
  *   1. Header — merchant/amount, position in the list ("3 of 42"), Prev/Next.
@@ -45,7 +55,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { displayMerchantName, formatCents } from "@events-os/shared";
 import { Button, TextField } from "../../ui";
 import { FinishChargeSheetBody } from "../myTransactions/FinishChargeSheet";
-import type { MyTxnRow } from "../myTransactions/chargeTodo";
+import type { ChargeTodo, MyTxnRow } from "../myTransactions/chargeTodo";
 import { PublicPurposeEditor } from "./PublicPurposeEditor";
 import { ReceiptPane } from "./ReceiptPane";
 
@@ -171,6 +181,7 @@ function ReviewActions({
 
 export function CodingWorkbenchPanel({
   txn,
+  todo,
   categoryOptions,
   onDeselect,
   onPrev,
@@ -178,8 +189,17 @@ export function CodingWorkbenchPanel({
   hasPrev,
   hasNext,
   position,
+  canViewReceiptList,
 }: {
   txn: MyTxnRow;
+  /** Forwarded verbatim to `FinishChargeSheetBody` — see that prop's own
+   *  doc. Omitted by `explain.tsx` (whose rows are the publishing
+   *  population, not the chase state machine — `chargeTodo` is the wrong
+   *  lens there, see its own module doc); `coding.tsx` passes the SAME
+   *  `chargeTodo` verdict its modal (`FinishChargeSheet`) passes today, so
+   *  the panel and the modal it replaces on a wide screen never disagree
+   *  about what a row still owes. */
+  todo?: ChargeTodo;
   categoryOptions: { value: string; label: string }[];
   /** Clears the selection — collapses the panel, nothing left to close in a
    *  modal sense. */
@@ -191,6 +211,13 @@ export function CodingWorkbenchPanel({
   /** "3 of 42" — `null` when the row somehow isn't in the visible list
    *  (shouldn't happen; the header just omits the count if so). */
   position: { index: number; total: number } | null;
+  /** Threaded straight to `ReceiptPane`'s own `canViewList` — see that
+   *  file's module doc. Omitted (→ `undefined` → `ReceiptPane`'s own
+   *  `true` default) by `explain.tsx`, which never needs to probe this;
+   *  `coding.tsx` probes `receipts.canViewList` once per screen and passes
+   *  the answer here, because ITS caller can be a cardholder with no
+   *  finance seat at all. */
+  canViewReceiptList?: boolean;
 }) {
   const transactionId = txn.id as Id<"transactions">;
   const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
@@ -235,9 +262,11 @@ export function CodingWorkbenchPanel({
             transactionId={transactionId}
             hasReceipt={txn.hasReceipt}
             hasApprovedException={txn.hasApprovedException}
+            canViewList={canViewReceiptList}
           />
           <FinishChargeSheetBody
             txn={txn}
+            todo={todo}
             categoryOptions={categoryOptions}
             renderReview={({ transactionId: tid, coding, canReview, runAction }) => (
               <ReviewActions
