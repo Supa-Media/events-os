@@ -398,8 +398,12 @@ function assertTransition(
 // ── Small helpers ────────────────────────────────────────────────────────────
 
 /** A short, human-facing reference derived from the request id (no schema
- *  column needed — the id is stable and unguessable enough for a label). */
-function referenceFor(id: Id<"reimbursementRequests">): string {
+ *  column needed — the id is stable and unguessable enough for a label).
+ *  Exported for `transactionCodings.ts#getForTransaction`'s reimbursement
+ *  context block (Finding 1, UX audit 2026-08-12) — the payout txn's own
+ *  coding surface needs the SAME reference wording the reimbursement's own
+ *  screens already use. */
+export function referenceFor(id: Id<"reimbursementRequests">): string {
   return `RB-${String(id).slice(-6).toUpperCase()}`;
 }
 

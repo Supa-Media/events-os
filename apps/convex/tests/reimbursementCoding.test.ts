@@ -255,15 +255,32 @@ describe("per-line substantiation is required at submit (public path)", () => {
     }
   });
 
-  test("travel and lodging need a route", async () => {
+  test("travel needs a route", async () => {
     const s = await setupChapter(newT());
     await setSlug(s, "nyc");
-    for (const expenseType of ["travel", "lodging"]) {
-      const l = await line(s, { expenseType, travelFrom: "Boston" });
-      expect(await codeOf(() => submitPublic(s, { lines: [l] }))).toBe(
-        "TRAVEL_ROUTE_REQUIRED",
-      );
-    }
+    const l = await line(s, { expenseType: "travel", travelFrom: "Boston" });
+    expect(await codeOf(() => submitPublic(s, { lines: [l] }))).toBe(
+      "TRAVEL_ROUTE_REQUIRED",
+    );
+  });
+
+  // FINDING 2 (UX audit, 2026-08-12, founder-flagged): lodging now needs ONE
+  // place (persisted in `travelTo`), not a route — deliberately updated
+  // rather than pinning the old "route" requirement.
+  test("lodging needs one place, not a route", async () => {
+    const s = await setupChapter(newT());
+    await setSlug(s, "nyc");
+    const noPlace = await line(s, { expenseType: "lodging" });
+    expect(await codeOf(() => submitPublic(s, { lines: [noPlace] }))).toBe(
+      "LODGING_PLACE_REQUIRED",
+    );
+    const withPlace = await line(s, {
+      expenseType: "lodging",
+      travelTo: "Chicago",
+    });
+    // No LODGING_PLACE_REQUIRED problem once `travelTo` is set alone (no
+    // `travelFrom` at all) — the public submit succeeds outright.
+    await expect(submitPublic(s, { lines: [withPlace] })).resolves.toBeDefined();
   });
 
   test("a meal needs a headcount, and names that match it at/below the threshold", async () => {
