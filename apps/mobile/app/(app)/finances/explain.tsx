@@ -161,8 +161,10 @@ function Body() {
 
   const openRow = data.rows.find((r) => r.id === openId) ?? null;
   const done = data.explainedCount;
-  const pct =
-    data.totalCount > 0 ? Math.round((done / data.totalCount) * 100) : 100;
+  // Only meaningful when the book actually has lines this month — a 0/0
+  // month is EMPTY, not 100% done, so it gets its own branch below rather
+  // than a percentage that implies a completion that never happened.
+  const pct = data.totalCount > 0 ? Math.round((done / data.totalCount) * 100) : 0;
 
   return (
     <Screen>
@@ -178,48 +180,81 @@ function Body() {
           <Button variant="secondary" size="sm" title="→" onPress={() => step(1)} />
         </View>
 
-        <Card>
-          <Text className="text-sm text-muted">
-            {done} of {data.totalCount} lines explained ({pct}%) —{" "}
-            {formatCents(data.explainedCents)} of {formatCents(data.totalCents)}.
-          </Text>
-          {/* Dollars beside counts, deliberately. A month can be 20% of the
-              lines and 80% of the money, and on a page strangers read, the
-              money is the part that gets asked about. */}
-          <View className="mt-2 h-2 overflow-hidden rounded-full bg-sunken">
-            <View
-              className="h-full rounded-full bg-success"
-              style={{ width: `${pct}%` }}
-            />
-          </View>
-          <Text className="mt-2 text-2xs text-muted">
-            Biggest first — the top of this list is most of the money.
-          </Text>
-        </Card>
-
-        {data.truncated ? (
-          <Text className="mt-2 text-sm text-danger">
-            This month is larger than one read returns; the list below is a
-            prefix. Explain these, then reopen for the rest.
-          </Text>
-        ) : null}
-
-        {data.rows.length === 0 ? (
+        {data.totalCount === 0 ? (
+          // A ZERO-ROW resolved book is never "fully explained" — that copy
+          // is indistinguishable from a genuinely finished month. Name the
+          // book that's empty, and — when the caller can see other books —
+          // say where the actual rows are instead of celebrating nothing.
           <View className="mt-4">
             <EmptyState
-              icon="check-circle"
-              title={`${data.label} is fully explained`}
+              icon="book-open"
+              title={`${data.scopeName} has nothing to explain in ${data.label}`}
               message={
-                data.totalCount === 0
-                  ? "There's nothing in this month that needs an explanation."
-                  : "Every line that will publish carries a written purpose. Move to another month, or go publish this one."
+                data.otherBooks && data.otherBooks.length > 0
+                  ? `${data.scopeName}'s book is empty for this month — that's not the same as complete. Other books have unexplained lines for ${data.label}:`
+                  : `${data.scopeName}'s book has no lines at all for ${data.label} — an empty book, not a finished one.`
+              }
+              action={
+                data.otherBooks && data.otherBooks.length > 0 ? (
+                  <View className="gap-2">
+                    {data.otherBooks.map((book) => (
+                      <Button
+                        key={String(book.scope)}
+                        variant="secondary"
+                        size="sm"
+                        title={`Switch to ${book.scopeName} — ${book.totalCount} unexplained`}
+                        onPress={() =>
+                          router.setParams({ scope: String(book.scope) })
+                        }
+                      />
+                    ))}
+                  </View>
+                ) : undefined
               }
             />
           </View>
         ) : (
-          data.rows.map((row) => (
-            <ExplainRow key={row.id} row={row} onOpen={() => setOpenId(row.id)} />
-          ))
+          <>
+            <Card>
+              <Text className="text-sm text-muted">
+                {done} of {data.totalCount} lines explained ({pct}%) —{" "}
+                {formatCents(data.explainedCents)} of {formatCents(data.totalCents)}.
+              </Text>
+              {/* Dollars beside counts, deliberately. A month can be 20% of
+                  the lines and 80% of the money, and on a page strangers
+                  read, the money is the part that gets asked about. */}
+              <View className="mt-2 h-2 overflow-hidden rounded-full bg-sunken">
+                <View
+                  className="h-full rounded-full bg-success"
+                  style={{ width: `${pct}%` }}
+                />
+              </View>
+              <Text className="mt-2 text-2xs text-muted">
+                Biggest first — the top of this list is most of the money.
+              </Text>
+            </Card>
+
+            {data.truncated ? (
+              <Text className="mt-2 text-sm text-danger">
+                This month is larger than one read returns; the list below is
+                a prefix. Explain these, then reopen for the rest.
+              </Text>
+            ) : null}
+
+            {data.rows.length === 0 ? (
+              <View className="mt-4">
+                <EmptyState
+                  icon="check-circle"
+                  title={`${data.label} is fully explained`}
+                  message="Every line that will publish carries a written purpose. Move to another month, or go publish this one."
+                />
+              </View>
+            ) : (
+              data.rows.map((row) => (
+                <ExplainRow key={row.id} row={row} onOpen={() => setOpenId(row.id)} />
+              ))
+            )}
+          </>
         )}
       </Narrow>
 

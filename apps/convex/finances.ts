@@ -4706,6 +4706,24 @@ export const monthCodingWorklist = query({
       rows: v.array(txnSummary),
       /** The scan hit its cap — the list is a prefix, not the whole month. */
       truncated: v.boolean(),
+      /** OTHER active books' unexplained-line counts for this SAME month —
+       *  present only for a central-reach caller (`undefined` otherwise, never
+       *  an empty array standing in for "no reach"). Exists so a zero-row
+       *  resolved book never reads as a genuinely complete month: a central
+       *  caller defaults to the central desk (`mergeDesks` sorts central
+       *  first), but historical data can live entirely on a chapter's book
+       *  (see `financeGenesisBackfill.ts`) — this is how the screen tells them
+       *  where the actual rows are instead of just saying "done." Sorted
+       *  biggest-first, zero-count books omitted (nothing to point at). */
+      otherBooks: v.optional(
+        v.array(
+          v.object({
+            scope: v.union(v.id("chapters"), v.literal(CENTRAL)),
+            scopeName: v.string(),
+            totalCount: v.number(),
+          }),
+        ),
+      ),
     }),
   ),
   handler: async (ctx, args) => {
@@ -4722,7 +4740,7 @@ export const monthCodingWorklist = query({
     // The same gate as the publish console: this worklist exists to prepare a
     // month for publication, and it reads exactly the rows that console is
     // about to publish. Never an inline role check (CLAUDE.md).
-    await requireLedgerConsole(ctx, homeChapterId, scope);
+    const access = await requireLedgerConsole(ctx, homeChapterId, scope);
 
     const { year, month } = parsed;
     const startUtc = Date.UTC(year, month - 1, 1) - DAY_MS;
@@ -4770,6 +4788,33 @@ export const monthCodingWorklist = query({
         ? "Central"
         : ((await ctx.db.get(scope))?.name ?? "Chapter");
 
+    // Only a central-reach caller gets the "where the rows actually are"
+    // nudge — a chapter-only caller has nowhere else to switch TO, and
+    // scanning every book for someone who can't act on any of them but their
+    // own would be pure waste.
+    let otherBooks: { scope: FinanceScope; scopeName: string; totalCount: number }[] | undefined;
+    if (access.isCentral) {
+      const chapters = await listActiveChapters(ctx);
+      const candidates: { scope: FinanceScope; scopeName: string }[] = [
+        { scope: CENTRAL, scopeName: "Central" },
+        ...chapters.map((c) => ({ scope: c._id as FinanceScope, scopeName: c.name })),
+      ].filter((c) => c.scope !== scope);
+
+      const results: { scope: FinanceScope; scopeName: string; totalCount: number }[] = [];
+      for (const candidate of candidates) {
+        const count = await unexplainedCountForBook(
+          ctx,
+          candidate.scope,
+          year,
+          month,
+          sandboxMode,
+        );
+        if (count > 0) results.push({ ...candidate, totalCount: count });
+      }
+      results.sort((a, b) => b.totalCount - a.totalCount);
+      otherBooks = results;
+    }
+
     return {
       scope,
       scopeName,
@@ -4781,9 +4826,49 @@ export const monthCodingWorklist = query({
       explainedCents,
       rows: pending.map((tr) => toTxnSummary(tr)),
       truncated,
+      otherBooks,
     };
   },
 });
+
+/**
+ * How many rows a BOOK would publish this month that still need an
+ * explanation — the same publishing predicate `monthCodingWorklist` applies
+ * to its own scope (excluded rows never publish; internal movements have no
+ * purpose to give; an approved coding already has one), run against a
+ * DIFFERENT book. Bounded by the same `ROLLUP_SCAN_LIMIT` cap on the same
+ * `by_chapter_and_postedAt` index the primary scan uses — this is a nudge
+ * ("switch desks"), not an audited total, so a capped undercount on a
+ * pathologically large foreign month is an acceptable miss.
+ */
+async function unexplainedCountForBook(
+  ctx: QueryCtx,
+  scope: FinanceScope,
+  year: number,
+  month: number,
+  sandboxMode: boolean,
+): Promise<number> {
+  const startUtc = Date.UTC(year, month - 1, 1) - DAY_MS;
+  const endUtc = Date.UTC(year, month, 1) + DAY_MS;
+  const raw = await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter_and_postedAt", (q) =>
+      q.eq("chapterId", scope).gte("postedAt", startUtc).lt("postedAt", endUtc),
+    )
+    .take(ROLLUP_SCAN_LIMIT);
+
+  let count = 0;
+  for (const tr of raw) {
+    if (!txnMatchesMode(tr, sandboxMode)) continue;
+    if (tr.status === "excluded") continue;
+    const p = easternParts(tr.postedAt);
+    if (p.year !== year || p.month !== month) continue;
+    if (signedBookCents(tr) === 0) continue;
+    if (tr.codingState === "approved") continue;
+    count += 1;
+  }
+  return count;
+}
 
 export const personTransactions = query({
   args: { personId: v.optional(v.id("people")) },

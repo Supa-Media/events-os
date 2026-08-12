@@ -6,6 +6,7 @@ import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { PREVIEW_BANNER_TEXT } from "../lib/publicLedgerPage";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
+import { CENTRAL } from "@events-os/shared";
 
 /**
  * THE PUBLIC LEDGER — publishing the books, and being held to them.
@@ -1283,6 +1284,109 @@ describe("explaining a month", () => {
     await seedPerson(s, "No Grant");
     await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
     await expect(worklist(s, "2024-06")).rejects.toThrow(ConvexError);
+  });
+
+  // ── FIX 2: a zero-row resolved book must never read as "fully explained" ──
+  // The founder-confirmed bug: a central-reach caller defaults to the central
+  // desk, but ALL of 2024/2025's genesis-imported history lives on the New
+  // York chapter's book (`financeGenesisBackfill.ts`, deliberately not
+  // "central"). Central's book is genuinely empty for those months, which
+  // this suite pins as `totalCount === 0` and — the fix — a populated
+  // `otherBooks` list saying where the real rows are.
+  describe("otherBooks — the 'switch desks' nudge for a central-reach caller", () => {
+    test("a central-reach caller resolving to an EMPTY central book sees where the unexplained rows actually are", async () => {
+      const s = await asPublisher(); // superuser: central reach, home chapter "New York"
+      await insertTxn(s, {
+        amountCents: 4_000,
+        postedAt: Date.UTC(2024, 5, 14, 16),
+        historicalImportBatch: "genesis-2024",
+        merchantName: "U-Haul",
+      });
+
+      // The central book itself has nothing — exactly the false-positive
+      // scenario: this must read as "central has nothing", not "done".
+      const central = (await s.as.query(api.finances.monthCodingWorklist, {
+        periodKey: "2024-06",
+        scope: CENTRAL,
+      }))!;
+      expect(central.totalCount).toBe(0);
+      expect(central.rows).toHaveLength(0);
+
+      expect(central.otherBooks).toBeDefined();
+      const nyRow = central.otherBooks!.find((b) => b.scopeName === "New York");
+      expect(nyRow).toBeDefined();
+      expect(nyRow!.totalCount).toBe(1);
+      expect(nyRow!.scope).toBe(s.chapterId);
+    });
+
+    test("a chapter-only caller (no central reach) never gets an otherBooks list", async () => {
+      const s = await setupChapter(newT(), { email: "treasurer2@publicworship.life" });
+      const personId = await seedPerson(s, "Chapter Treasurer");
+      await grantRole(s, personId, "manager"); // chapter-scoped only, no central grant
+      await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
+
+      const list = (await worklist(s, "2024-06"))!;
+      expect(list.otherBooks).toBeUndefined();
+    });
+
+    test("otherBooks omits books with nothing unexplained this month and sorts the rest biggest-first", async () => {
+      const s = await asPublisher(); // home chapter "New York"
+      const austinId = await run(s.t, (ctx) =>
+        ctx.db.insert("chapters", {
+          name: "Austin",
+          isActive: true,
+          createdAt: Date.now(),
+        }),
+      );
+      // Chicago exists (an active book) but gets no transactions this month —
+      // it must be OMITTED from `otherBooks`, not listed at zero.
+      await run(s.t, (ctx) =>
+        ctx.db.insert("chapters", {
+          name: "Chicago",
+          isActive: true,
+          createdAt: Date.now(),
+        }),
+      );
+      // New York: one unexplained line.
+      await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
+      // Austin: two unexplained lines — should sort ABOVE New York.
+      await run(s.t, (ctx) =>
+        ctx.db.insert("transactions", {
+          chapterId: austinId,
+          source: "manual",
+          flow: "outflow",
+          amountCents: 2_000,
+          postedAt: Date.UTC(2024, 5, 15, 16),
+          status: "reconciled",
+          merchantName: "Austin Vendor A",
+          createdAt: Date.now(),
+        }),
+      );
+      await run(s.t, (ctx) =>
+        ctx.db.insert("transactions", {
+          chapterId: austinId,
+          source: "manual",
+          flow: "outflow",
+          amountCents: 3_000,
+          postedAt: Date.UTC(2024, 5, 16, 16),
+          status: "reconciled",
+          merchantName: "Austin Vendor B",
+          createdAt: Date.now(),
+        }),
+      );
+      const central = (await s.as.query(api.finances.monthCodingWorklist, {
+        periodKey: "2024-06",
+        scope: CENTRAL,
+      }))!;
+      expect(central.otherBooks).toBeDefined();
+      const names = central.otherBooks!.map((b) => b.scopeName);
+      expect(names).toContain("Austin");
+      expect(names).toContain("New York");
+      expect(names).not.toContain("Chicago");
+      expect(central.otherBooks!.findIndex((b) => b.scopeName === "Austin")).toBeLessThan(
+        central.otherBooks!.findIndex((b) => b.scopeName === "New York"),
+      );
+    });
   });
 });
 
