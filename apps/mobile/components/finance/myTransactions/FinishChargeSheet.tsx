@@ -442,6 +442,15 @@ export function FinishChargeSheetBody({
     if (data === undefined) return;
     if (prefillAttemptedFor.current === transactionId) return;
     prefillAttemptedFor.current = transactionId;
+    // THE BUDGET IS ALREADY ANSWERED for most rows (founder, 2026-08-12: "I
+    // already put most transactions into budgets in reconcile but it still
+    // asks me") — `transactions.budgetId` is the same column Reconcile's
+    // "For" picker writes, so the picker starts on that answer instead of
+    // "Not sure yet". Seeded (not `applyPrefill`) because it applies with an
+    // existing coding too, and never over a pick already made this open.
+    if (data.currentBudgetId && form.budgetId === "") {
+      form.setBudgetId(data.currentBudgetId);
+    }
     if (data.coding != null || form.touched) return;
     form.applyPrefill(reimbursementPrefillPlan(data.reimbursementContext));
     // eslint-disable-next-line react-hooks/exhaustive-deps

@@ -372,6 +372,10 @@ export function TransactionCodingSection({
             />
           }
           category={category}
+          // The budget Reconcile's "For" picker already set — the picker
+          // opens on the existing answer instead of re-asking (founder,
+          // 2026-08-12; same column, `transactions.budgetId`).
+          initialBudgetId={data.currentBudgetId}
           // A revision is a conversation: the note that sent it back belongs
           // next to the fields it's about, not one panel away behind the
           // editor that's covering it.

@@ -43,6 +43,7 @@ import {
   AMENDMENT_REASONS,
   CENTRAL,
   DOCUMENTATION_STATES,
+  easternParts,
   EXPENSE_TYPES,
   INCOME_STREAMS,
   MAX_PUBLISHED_ENTRIES,
@@ -330,8 +331,41 @@ export const console_ = query({
       .take(ROLLUP_SCAN_LIMIT);
     const byPeriod = new Map(rows.map((r) => [r.periodKey, r]));
 
-    const count = Math.max(1, Math.min(args.months ?? 18, 60));
+    // HOW FAR BACK. This used to default to a fixed 18 months, which
+    // silently cut the calendar at (now − 17) — founder report, 2026-08-12:
+    // "coding publish only goes back March 2025", when the genesis backfill
+    // reaches into 2024. Nothing was wrong with the data; the cap was. The
+    // default now reaches the book's own beginning — its earliest
+    // transaction (Eastern-bucketed, the same `easternParts` the snapshot
+    // builder buckets rows with) or its earliest publication row, whichever
+    // is older — so the console's calendar is the book's real calendar. An
+    // explicit `months` arg still wins, and the hard ceiling stays 60; if
+    // that ceiling ever bites, widen it out loud rather than let it become
+    // this same silent cut five years in.
     const now = new Date();
+    const nowIndex = now.getUTCFullYear() * 12 + now.getUTCMonth();
+    const monthsBackTo = (year: number, month: number) =>
+      nowIndex - (year * 12 + (month - 1)) + 1;
+    let defaultCount = 18;
+    const earliestTxn = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
+      .order("asc")
+      .first();
+    if (earliestTxn) {
+      const p = easternParts(earliestTxn.postedAt);
+      defaultCount = Math.max(defaultCount, monthsBackTo(p.year, p.month));
+    }
+    for (const key of byPeriod.keys()) {
+      const parsed = parsePeriodKey(key);
+      if (parsed) {
+        defaultCount = Math.max(
+          defaultCount,
+          monthsBackTo(parsed.year, parsed.month),
+        );
+      }
+    }
+    const count = Math.max(1, Math.min(args.months ?? defaultCount, 60));
     const months: string[] = [];
     for (let i = 0; i < count; i += 1) {
       const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));

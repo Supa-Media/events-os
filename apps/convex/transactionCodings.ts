@@ -315,6 +315,13 @@ export const getForTransaction = query({
     categoryExpenseTypeHint: v.optional(
       v.union(...EXPENSE_TYPES.map((t) => v.literal(t))),
     ),
+    /** The budget the charge is ALREADY attributed to (`transactions.budgetId`
+     *  — the same column Reconcile's "For" picker and this form's own budget
+     *  picker both land on), or `null`. Founder report, 2026-08-12: "I
+     *  already put most transactions into budgets in reconcile but it still
+     *  asks me" — the form's picker started at "Not sure yet" because nothing
+     *  carried this answer in, so work done in Reconcile looked ignored. */
+    currentBudgetId: v.union(v.id("budgets"), v.null()),
     /** "What the claimant already wrote" — see `reimbursementCodingContext`'s
      *  own doc (Finding 1, UX audit 2026-08-12). `null` unless this txn is a
      *  reimbursement payout. */
@@ -387,6 +394,7 @@ export const getForTransaction = query({
       minPurposeLength: MIN_PURPOSE_LENGTH,
       categoryName: category?.name ?? null,
       ...(category?.expenseType ? { categoryExpenseTypeHint: category.expenseType } : {}),
+      currentBudgetId: txn.budgetId ?? null,
       reimbursementContext,
     };
   },
