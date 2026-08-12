@@ -52,11 +52,14 @@ import {
   Text,
   View,
 } from "react-native";
+import { Gesture, GestureDetector } from "react-native-gesture-handler";
+import { runOnJS, useSharedValue } from "react-native-reanimated";
 import { receiptFileKind } from "@events-os/shared";
 import { Icon, type IconName } from "./Icon";
 import { colors } from "../../lib/theme";
 import { renderPdfPage, supportsInlinePdf, type PdfPage } from "../../lib/pdfPages";
 import { sniffFileKind, type SniffedKind } from "../../lib/sniffFile";
+import { NativePdfPane } from "./NativePdfPane";
 import {
   clampPage,
   clampZoom,
@@ -313,19 +316,32 @@ function ToolbarButton({
 }
 
 /**
- * The zoom/pan surface — deliberately built from a nested pair of plain
- * `ScrollView`s and an explicitly-sized child, with NO gesture library.
+ * The zoom/pan surface — a nested pair of plain `ScrollView`s and an
+ * explicitly-sized child, PLUS a real two-finger pinch on native.
  *
- * `react-native-gesture-handler` and `reanimated` are both in this package, so
- * a pinch-to-zoom worklet was available; this doesn't use one. Scroll-to-pan
- * behaves identically on web and native, is driveable by a trackpad, a
- * touchscreen, a scroll wheel and a keyboard alike, and — the deciding factor
- * — is testable in a browser, which an RNGH pan gesture is not. The zoom
- * controls in the toolbar are the primary affordance; wheel and double-press
- * are accelerants on top of them, never the only way in.
+ * Scroll-to-pan (the original design here) behaves identically on web and
+ * native, is driveable by a trackpad, a touchscreen, a scroll wheel and a
+ * keyboard alike, and is testable in a browser — which is why it stays the
+ * base layer and why the zoom controls in the toolbar remain the primary,
+ * always-present affordance. Wheel, double-press, AND pinch are accelerants
+ * on top of it, never the only way in.
  *
- * Sizes are explicit NUMBERS from `onLayout`, never percentages: a percentage
- * child inside a nested RN-Web ScrollView resolves against the wrong box.
+ * PINCH (`Gesture.Pinch()`, `react-native-gesture-handler` — already used
+ * elsewhere in this package for exactly this kind of gesture, e.g.
+ * `OrgChartCanvas.native.tsx`): founder, verbatim, on reviewing a receipt —
+ * "even the ability to just pinch on my screen to be able to zoom into a
+ * particular section." Drives the SAME `zoom` state the toolbar buttons and
+ * wheel do — `runOnJS` because a plain `useState` setter isn't itself a
+ * worklet — so nothing downstream needs to know which input moved it.
+ * `GestureDetector` wraps the ScrollView pair rather than replacing them, so
+ * one-finger scroll-to-pan keeps working through RN's own responder system;
+ * a two-finger touch is what a pinch recognizer wins by default on both iOS
+ * and Android. NEEDS DEVICE VERIFICATION (same caveat
+ * `OrgChartCanvas.native.tsx` carries): RNGH gestures aren't exercisable by
+ * any automation available here — confirm the scroll/pinch interplay on a
+ * real touch device, and add `.simultaneousWithExternalGesture` (a
+ * ScrollView ref) if a two-finger touch turns out to get eaten by the
+ * ScrollView's own pan responder before the pinch recognizer sees it.
  */
 function ZoomPane({
   zoom,
@@ -358,6 +374,24 @@ function ZoomPane({
     return () => node.removeEventListener("wheel", onWheel as EventListener);
   }, [zoom, onZoom]);
 
+  // `zoom` at the moment a pinch STARTS, read on the UI thread. A ref (not a
+  // shared value fed by `zoom` itself) because `onZoom` moves `zoom` through
+  // plain React state — this just needs the latest committed value at pinch
+  // start, not a continuously-synced UI-thread mirror of it.
+  const zoomAtPinchStart = useSharedValue(MIN_ZOOM);
+  const zoomRef = useRef(zoom);
+  useEffect(() => {
+    zoomRef.current = zoom;
+  }, [zoom]);
+
+  const pinch = Gesture.Pinch()
+    .onStart(() => {
+      zoomAtPinchStart.value = zoomRef.current;
+    })
+    .onUpdate((e) => {
+      runOnJS(onZoom)(clampZoom(zoomAtPinchStart.value * e.scale));
+    });
+
   function handlePress() {
     const now = Date.now();
     const isDouble = now - lastPressAt.current < DOUBLE_PRESS_MS;
@@ -377,6 +411,7 @@ function ZoomPane({
       }
     >
       {box ? (
+        <GestureDetector gesture={pinch}>
         <ScrollView
           style={{ width: box.w, height: box.h }}
           contentContainerStyle={{
@@ -406,6 +441,7 @@ function ZoomPane({
             </Pressable>
           </ScrollView>
         </ScrollView>
+        </GestureDetector>
       ) : null}
     </View>
   );
@@ -510,13 +546,11 @@ function PdfPane({
   }, [uri, page, zoom, onPageCount]);
 
   if (!supportsInlinePdf) {
-    return (
-      <Unrenderable
-        uri={uri}
-        title="PDFs open outside the app here"
-        detail={`${filename ?? "This PDF"} can be read inline on the web app; on a phone it opens in your PDF reader.`}
-      />
-    );
+    // Native: no canvas to raster pages into, but a WebView renders the PDF
+    // inline anyway (see `NativePdfPane`'s own module doc for the iOS/Android
+    // split) — no more "opens outside the app" for the one file kind the
+    // founder named by name.
+    return <NativePdfPane uri={uri} filename={filename} />;
   }
 
   if (error) {
