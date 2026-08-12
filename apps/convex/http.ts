@@ -399,6 +399,25 @@ function redirectTo(path: string): Response {
 }
 
 /**
+ * The console's draft-preview response (`?preview=<token>`, below) — deliberately
+ * NOT `ledgerHtml`. That helper stamps the public `LEDGER_CACHE` header, and a
+ * preview must never be cached or handed to a second viewer of the same
+ * link: it renders the books as they stand at THIS instant, and a CDN or
+ * browser cache holding onto that instant would silently go stale the
+ * moment the preparer's next edit lands. `no-store` on the 404 too — an
+ * invalid/expired token shouldn't get remembered as "not found" either.
+ */
+function previewHtml(body: string, status = 200): Response {
+  return new Response(body, {
+    status,
+    headers: {
+      "Content-Type": "text/html; charset=utf-8",
+      "Cache-Control": "no-store, private",
+    },
+  });
+}
+
+/**
  * `/finances` — the entry point, and the target of the period picker's form.
  *
  * With `?year=&month=` (what the picker submits) it redirects to the canonical
@@ -464,6 +483,33 @@ http.route({
     // There is no year-level giving roll: the giving CSV is per month, where
     // its rows are small enough to be worth reading one at a time.
     if (wantsGivingCsv && !isMonth) return notFound();
+
+    // ── Draft preview: `?preview=<token>` ───────────────────────────────────
+    // The publish console's "Preview the page" button
+    // (`apps/mobile/…/finances/publish.tsx`, `publicLedger.mintLedgerPreviewToken`).
+    // Renders THIS month from the LIVE books rather than
+    // `financePublicationEntries` — see `publicLedger.previewByToken`. Same
+    // mechanism as the RSVP admin preview (`?preview=<token>` on
+    // `/rsvp/<slug>`), narrowed to a plain month URL: no CSV, no giving
+    // roll, no year rollup, because those combinations don't need to exist
+    // for this to do its job. An invalid, expired, or period-mismatched
+    // token 404s exactly like a garbage slug does there — no information
+    // leak about which case it was.
+    const previewToken = url.searchParams.get("preview");
+    if (previewToken != null) {
+      if (!isMonth || wantsCsv || wantsGivingCsv) {
+        return previewHtml(renderNotFound(), 404);
+      }
+      const preview = await ctx.runQuery(internal.publicLedger.previewByToken, {
+        token: previewToken,
+        periodKey: key,
+      });
+      if (!preview) return previewHtml(renderNotFound(), 404);
+      const { totalBooks, ...statement } = preview;
+      return previewHtml(
+        renderLedgerPage(statement, [], [], totalBooks, { preview: true }),
+      );
+    }
 
     // ── The year rollup ─────────────────────────────────────────────────────
     if (isYear) {
