@@ -94,6 +94,7 @@ import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import {
   isMissingReceiptCharge,
+  canEnforceCardLock,
   unlockCardIfReceiptsResolved,
   convertChargeToPersonalRepayment,
 } from "./cards";
@@ -2732,6 +2733,12 @@ function makeCardholderResolver(ctx: QueryCtx) {
  *  manager", so the two queues never drift on what counts as approvable. */
 const APPROVABLE_REIMBURSEMENT_STATUSES = ["submitted", "preapproved"] as const;
 
+/** How many cardholder names the "nearing receipt lock" row spells out before
+ *  it summarizes the tail as "+N more". Three fits the row on a phone; past
+ *  that the list stops being scannable and the badge count is the better
+ *  summary anyway. */
+const NEARING_LOCK_NAMES_SHOWN = 3;
+
 /**
  * The chapter "Needs attention" queue: (a) reimbursements awaiting a manager
  * decision (submitted / preapproved — NOT pre-approval-pending, approved, or
@@ -2795,6 +2802,11 @@ async function chapterAttentionQueue(
     // Only ACTIVE cards can still be "nearing" — a locked card already tipped
     // over (the auto-lock cron caught it) or was manually locked/canceled.
     if (card.status !== "active") continue;
+    // A legacy (Relay) card is never "nearing a lock" because it can never be
+    // locked (`canEnforceCardLock`) — promising one here would be the same
+    // false claim the sweep used to make. Its missing receipts stay visible in
+    // Receipt Chase, which scans transactions rather than cards.
+    if (!canEnforceCardLock(card)) continue;
     const charges = await ctx.db
       .query("transactions")
       .withIndex("by_card", (q) => q.eq("cardId", card._id))
@@ -2810,14 +2822,37 @@ async function chapterAttentionQueue(
     if (nearing) nearingCardholders.add(card.cardholderPersonId);
   }
   if (nearingCardholders.size > 0) {
+    // NAME THEM. A bare count ("2 cardholders have a receipt due") is a
+    // notification you can't act on without opening another screen to find out
+    // who — and the whole point of this row is that a nudge is one message
+    // away. The ids are already in hand; resolving them costs one read each.
+    const getPerson = nameCache(ctx, "people");
+    const names: string[] = [];
+    for (const personId of nearingCardholders) {
+      const person = await getPerson(personId);
+      if (person) names.push(person.name);
+    }
+    names.sort((a, b) => a.localeCompare(b));
+    // Past a few, the list stops being scannable and becomes the count again
+    // — so spell out the first `NEARING_LOCK_NAMES_SHOWN` and summarize the
+    // tail rather than letting one bad week produce a wall of names.
+    const shown = names.slice(0, NEARING_LOCK_NAMES_SHOWN);
+    const rest = names.length - shown.length;
+    const nameList =
+      rest > 0 ? `${shown.join(", ")} +${rest} more` : shown.join(", ");
     items.push({
       kind: "cards",
       title: "Cards nearing receipt lock",
       badgeCount: nearingCardholders.size,
       detail:
-        nearingCardholders.size === 1
-          ? "1 cardholder has a receipt due before the auto-lock"
-          : `${nearingCardholders.size} cardholders have a receipt due before the auto-lock`,
+        // A person whose row we couldn't resolve leaves `names` short of the
+        // badge count; fall back to the old wording rather than print a list
+        // that silently omits someone.
+        names.length === 0
+          ? nearingCardholders.size === 1
+            ? "1 cardholder has a receipt due before the auto-lock"
+            : `${nearingCardholders.size} cardholders have a receipt due before the auto-lock`
+          : `${nameList} — receipt due before the auto-lock`,
       actionLabel: "Review",
     });
   }
@@ -8415,6 +8450,31 @@ export const listReconcile = query({
     matchedCount: v.number(),
     // Whether `matchedCount` exceeds what `rows` carries.
     hasMore: v.boolean(),
+    // WHAT THE SELECTION ADDS UP TO — founder ask 2026-08-12 ("I want to see
+    // the total figure on the reconcile", not only on the dashboard). Summed
+    // over the SAME whole-scope match set `matchedCount` counts, never over
+    // the page, so filtering to 346 rows and paging 100 of them still reports
+    // all 346 — a total that silently meant "this page" would be worse than
+    // no total at all.
+    //
+    // Arithmetic is `signedBookCents`, the one authority the book-value model
+    // already uses, rather than a second summation invented here. So the same
+    // rows it treats as valueless are valueless in this total too: an excluded
+    // duplicate, a marked internal transfer, a payout deposit whose revenue was
+    // already counted at the gifts/tickets layer. A selection made entirely of
+    // those legitimately totals $0, and the grid says which rows counted.
+    selectionTotals: v.object({
+      /** Money in, over the selection. */
+      inCents: v.number(),
+      /** Money out, over the selection, as a POSITIVE number. */
+      outCents: v.number(),
+      /** `inCents - outCents` — what the selection did to the book. */
+      netCents: v.number(),
+      /** Matched rows contributing zero by design (excluded / marked transfer
+       *  / already-counted payout deposit). Lets the grid explain a $0 total
+       *  over a non-empty selection instead of looking broken. */
+      neutralCount: v.number(),
+    }),
     // True when a non-empty `search` caused the State/roll-up groups to be
     // dropped for this request. The grid shows this; a filter that silently
     // stops applying is the defect this whole change exists to remove.
@@ -8509,6 +8569,7 @@ export const listReconcile = query({
         counts: zero,
         matchedCount: 0,
         hasMore: false,
+        selectionTotals: { inCents: 0, outCents: 0, netCents: 0, neutralCount: 0 },
         searchIgnoredState: false,
         codingArmed: false,
         toClearCount: 0,
@@ -8870,6 +8931,17 @@ export const listReconcile = query({
     const page = selected.slice(0, pageSize);
     const hasMore = matchedCount > page.length;
 
+    // Totals over the WHOLE match set, before paging — see `selectionTotals`
+    // in the returns validator for why this uses `signedBookCents`.
+    const selectionTotals = { inCents: 0, outCents: 0, netCents: 0, neutralCount: 0 };
+    for (const tr of selected) {
+      const signed = signedBookCents(tr);
+      if (signed > 0) selectionTotals.inCents += signed;
+      else if (signed < 0) selectionTotals.outCents += -signed;
+      else selectionTotals.neutralCount += 1;
+    }
+    selectionTotals.netCents = selectionTotals.inCents - selectionTotals.outCents;
+
     // The linked personal repayment's live status (`repaymentId` →
     // `personalRepayments.status`) — the grid's Personal badge reads "Repaid"
     // once it settles. Every returned row is a member of `all`
@@ -8974,6 +9046,7 @@ export const listReconcile = query({
       counts,
       matchedCount,
       hasMore,
+      selectionTotals,
       searchIgnoredState,
       codingArmed: codingSinceMs <= Date.now(),
       toClearCount,

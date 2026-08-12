@@ -561,6 +561,49 @@ describe("reconcileSuggest.rankForPicker: unbudgeted/unapproved refs never rank"
     expect(result.rows.some((r) => r.refId === (budgetlessProjectId as string))).toBe(false);
   });
 
+  test("a budget that plans $0 does not rank — it's a summon artifact, not a destination", async () => {
+    // `ensureBudgetForRef` summons project budgets at $0, and a legacy row with
+    // no `approvalStatus` reads as approved, so without this filter every task
+    // anyone ever created is offered beside the events that have a real plan.
+    // That is what made this list read as "the whole thing".
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const plannedId = await seedProject(s, "Zebra Project");
+    await seedOneTimeBudget(s, s.chapterId, "project", plannedId);
+    const summonedId = await seedProject(s, "Aardvark Project");
+    await seedOneTimeBudget(s, s.chapterId, "project", summonedId, {
+      amountCents: 0,
+    });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    expect(result.rows.some((r) => r.refId === (plannedId as string))).toBe(true);
+    expect(result.rows.some((r) => r.refId === (summonedId as string))).toBe(false);
+  });
+
+  test("the $0 budget a charge is ALREADY on still ranks — its own picker must be able to show it", async () => {
+    // The one exception, and it's load-bearing: filter the current value out of
+    // its own picker and the row would offer no way back to where it already
+    // is.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterViewer(s);
+    const projectId = await seedProject(s, "Aardvark Project");
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "project", projectId, {
+      amountCents: 0,
+    });
+    const txnId = await seedSubjectTxn(s, s.chapterId);
+    await run(s.t, (ctx) => ctx.db.patch(txnId, { budgetId }));
+
+    const result = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    expect(result.rows.some((r) => r.refId === (projectId as string))).toBe(true);
+  });
+
   test("an event whose budget is still DRAFT does not rank", async () => {
     const t = newT();
     const s = await setupChapter(t);

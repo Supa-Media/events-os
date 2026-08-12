@@ -244,4 +244,50 @@ describe("forPickerOptions and rankForPicker candidate-set parity", () => {
     expect(rankedBudgetIds.has(trainingBudgetId)).toBe(false);
     expect(fromOptions.some((c) => c.budgetId === trainingBudgetId)).toBe(false);
   });
+
+  test("a $0 budget is the ONE deliberate divergence: offered by neither picker, still resolvable by the grid", async () => {
+    // Parity above is about the shared SCAN. This is the one place the two
+    // surfaces are meant to differ, and it's asserted here so the difference
+    // stays deliberate rather than becoming an accident nobody noticed.
+    //
+    // `rankForPicker` is the per-row OFFER list, so a $0 summon artifact is
+    // filtered out of it. `forPickerOptions` keeps it, because the Reconcile
+    // grid resolves a row's CURRENT "For" label out of that payload — drop it
+    // there and a charge already attributed to a $0 budget would render as
+    // "None" and read as lost.
+    const t = newT();
+    const s = await setupChapter(t, { email: SUPER });
+    const NOW = Date.now();
+
+    const projectId = await seedProject(s, "Zero Budget Task");
+    const zeroBudgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 0,
+      type: "one_time",
+      refKind: "project",
+      cadence: "per_instance",
+      year: 2026,
+      scopeRefId: projectId,
+    });
+    await approveBudgetDirect(s, zeroBudgetId);
+
+    const txnId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 1234,
+        postedAt: NOW,
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const options = await s.as.query(api.finances.forPickerOptions, {});
+    expect(options.projects.some((p) => p.budgetId === zeroBudgetId)).toBe(true);
+
+    const ranked = await s.as.query(api.reconcileSuggest.rankForPicker, {
+      transactionId: txnId,
+    });
+    expect(ranked.rows.some((r) => r.budgetId === zeroBudgetId)).toBe(false);
+  });
 });

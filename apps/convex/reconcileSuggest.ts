@@ -364,7 +364,25 @@ export const rankForPicker = query({
         `[reconcileSuggest] rankForPicker hit TOP_LEVEL_SCAN_LIMIT (${TOP_LEVEL_SCAN_LIMIT}) gathering candidates for chapter ${homeChapterId}; ranked list may be truncated.`,
       );
     }
-    const allCandidates = gathered.candidates.filter((c) => isAttributableBudget(c.budget));
+    // A budget that plans NO money is not a real destination — it's an
+    // artifact. `ensureBudgetForRef` summons project budgets at $0, and a
+    // legacy row with no `approvalStatus` reads as approved
+    // (`effectiveBudgetApprovalStatus`), so every task anyone ever created
+    // ends up offered here beside the events that actually have a plan. That's
+    // what makes this list read as "the whole thing" instead of a shortlist.
+    //
+    // Filtered HERE — the per-row offer list — and nowhere else on purpose.
+    // `forPickerOptions` still returns them, because the grid resolves a row's
+    // CURRENT "For" label out of that payload; drop them there and a charge
+    // already attributed to a $0 budget would render as "None" and read as
+    // lost. For the same reason the budget this transaction is already on is
+    // never filtered out of its own picker, whatever it's planned at.
+    const currentBudgetId = txn.budgetId ?? null;
+    const allCandidates = gathered.candidates.filter(
+      (c) =>
+        isAttributableBudget(c.budget) &&
+        (c.budget.amountCents > 0 || c.budget._id === currentBudgetId),
+    );
     // A CENTRAL-owned txn can only ever attribute to a central budget
     // (`categorizeTransaction`'s own gate) — mirrors the Reconcile grid's
     // existing client-side restriction (`reconcile.tsx`'s `centralScope`

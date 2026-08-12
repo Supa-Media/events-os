@@ -1077,7 +1077,11 @@ async function requireOwnedCard(
   return card!;
 }
 
-/** Lock a card (manager). No new authorizations approve while locked. */
+/** Lock a card (manager). No new authorizations approve while locked.
+ *  Rejects a legacy (Relay) card: we have no way to stop its authorizations,
+ *  so "locked" there would be a claim rather than a control
+ *  (`canEnforceCardLock`). The manager card list already hides these rows, so
+ *  this is a server-side backstop, not a reachable UI path. */
 export const lockCard = mutation({
   args: { cardId: v.id("cards") },
   returns: cardSummaryValidator,
@@ -1085,6 +1089,13 @@ export const lockCard = mutation({
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
     const card = await requireOwnedCard(ctx, chapterId, cardId);
+    if (!canEnforceCardLock(card)) {
+      throw new ConvexError({
+        code: "CARD_NOT_LOCKABLE",
+        message:
+          "This is a linked Relay card — Public Worship doesn't issue it, so it can't be locked from here. Lock it in Relay instead.",
+      });
+    }
     await ctx.db.patch(card._id, { status: "locked" });
     return buildCardSummary(ctx, (await ctx.db.get(card._id))!);
   },
@@ -3953,6 +3964,35 @@ export function isOverdueReceiptCharge(
 }
 
 /**
+ * Whether a `status:"locked"` row on this card would actually STOP A SWIPE.
+ *
+ * A lock in this app is not a property of the card row — it is a decision
+ * `decideCardAuthorization` makes when Increase asks us, in real time, whether
+ * to approve an authorization. Increase finds the row by `increaseCardId`
+ * (`by_increase_card`), so the whole mechanism only reaches cards Increase
+ * issued.
+ *
+ * A `source:"legacy"` card is a Relay card linked to this chapter by its
+ * last-4 (`legacyCards.linkRelayCard`). It has no Increase object and no
+ * controls — nobody asks us anything before it authorizes. Patching such a row
+ * to `"locked"` therefore changes nothing except what the app CLAIMS: the
+ * cardholder is told they're locked out, the manager is told the receipt rule
+ * was enforced, and the card keeps working. A control that reports enforcement
+ * it cannot deliver is worse than an absent one, so every lock path checks
+ * this first and legacy cards are simply left alone — their overdue charges
+ * still escalate, via the reminders and the 60-day accountable-plan conversion
+ * in `autoConvertOverdueReceipts`, both of which act on the CHARGE and need no
+ * cooperation from the issuer.
+ *
+ * The mirror of `ManagerCardsView`/`MyCardSection`'s `source !== "legacy"`
+ * filters, which have always hidden the controls UI for these rows — this is
+ * the same rule, finally applied on the server too.
+ */
+export function canEnforceCardLock(card: Doc<"cards">): boolean {
+  return card.source !== "legacy";
+}
+
+/**
  * Re-run the receipt lock-eligibility check for ONE card and unlock it right
  * away if no overdue missing-receipt charge remains — called synchronously by
  * `attachReceipt` (finances.ts) immediately after a receipt attaches, so the
@@ -4015,6 +4055,11 @@ export const autoLockOverdueCards = internalMutation({
     let unlockedCount = 0;
     for (const card of cards) {
       if (card.status === "canceled") continue;
+      // A legacy (Relay) card cannot be locked at all — see
+      // `canEnforceCardLock`. Skipping it here is what keeps the app from
+      // reporting an enforcement it can't perform; the charge-level
+      // escalations still run.
+      if (!canEnforceCardLock(card)) continue;
       // A manual lock (no grace stamp) is left untouched.
       const isAutoLocked =
         card.status === "locked" && card.receiptGraceEndsAt != null;

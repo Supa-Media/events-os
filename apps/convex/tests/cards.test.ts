@@ -116,6 +116,7 @@ async function seedCard(
     last4?: string;
     receiptGraceEndsAt?: number;
     chapterId?: Id<"chapters">;
+    source?: "increase" | "legacy";
   },
 ): Promise<Id<"cards">> {
   return await run(s.t, (ctx) =>
@@ -130,6 +131,7 @@ async function seedCard(
       increaseCardId: opts.increaseCardId,
       last4: opts.last4,
       receiptGraceEndsAt: opts.receiptGraceEndsAt,
+      source: opts.source,
       createdAt: Date.now(),
     }),
   );
@@ -1519,6 +1521,33 @@ describe("autoLockOverdueCards", () => {
     expect(a2?.receiptGraceEndsAt).toBeUndefined();
     // The manual lock is untouched.
     expect((await run(s.t, (ctx) => ctx.db.get(cardC)))?.status).toBe("locked");
+  });
+
+  // A lock is only ever ENFORCED by `decideCardAuthorization`, which Increase
+  // reaches by `increaseCardId`. A legacy (Relay) row has none, so locking it
+  // stops nothing and only makes the app claim an enforcement it can't perform.
+  test("never locks a legacy (Relay) card, however overdue its receipts", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const holder = await seedPerson(s, { name: "Relay Holder" });
+
+    const legacy = await seedCard(s, {
+      cardholderPersonId: holder,
+      source: "legacy",
+      last4: "4242",
+    });
+    // An identical charge on an Increase card, as the control — same age, same
+    // missing receipt, so the ONLY difference between the two is `source`.
+    const increase = await seedCard(s, { cardholderPersonId: holder });
+    await seedCardTxn(s, { cardId: legacy, amountCents: 5000, ageDays: 30 });
+    await seedCardTxn(s, { cardId: increase, amountCents: 5000, ageDays: 30 });
+
+    const r = await s.t.mutation(internal.cards.autoLockOverdueCards, {});
+    expect(r.lockedCount).toBe(1);
+    const legacyAfter = await run(s.t, (ctx) => ctx.db.get(legacy));
+    expect(legacyAfter?.status).toBe("active");
+    expect(legacyAfter?.receiptGraceEndsAt).toBeUndefined();
+    expect((await run(s.t, (ctx) => ctx.db.get(increase)))?.status).toBe("locked");
   });
 });
 
