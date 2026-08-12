@@ -1558,3 +1558,125 @@ describe("the full-page draft preview", () => {
     expect(entries).toHaveLength(0);
   });
 });
+
+// ── "Chapter," not "Book" ────────────────────────────────────────────────────
+// Founder directive (2026-08-12): the public page should read in chapter
+// language — "Central / New York / Chicago" as a plain column — not the
+// internal accounting term "book." Recon confirmed every
+// `financePublicationEntries` row already carries a frozen `bookLabel`, and
+// the month/year pages already merge every published book into one
+// statement, so this is a render + copy sweep, not a data change: the tests
+// below pin the RENDER (one merged table, a dedicated Chapter column, no
+// double-printed name) and the COPY (the partial-coverage disclosure and the
+// CSV header) rather than anything about the underlying data model.
+
+/** Publish an explicit `scope`'s book for `periodKey` — `publishMonth`'s
+ *  sibling for tests that need to publish a NON-home-chapter book (Central,
+ *  or a second chapter) on the same caller. */
+async function publishScope(
+  s: ChapterSetup,
+  scope: "central" | Id<"chapters">,
+  periodKey = AUG_KEY,
+): Promise<{ revision: number }> {
+  await s.as.mutation(api.publicLedger.submit, { scope, periodKey });
+  return s.as.mutation(api.publicLedger.publish, { scope, periodKey });
+}
+
+describe("the public page speaks in chapters", () => {
+  test("a two-book published month renders ONE table, both books' rows each carrying their own Chapter cell", async () => {
+    const s = await asPublisher(); // superuser: reaches every book; home chapter "New York"
+
+    // New York's own book.
+    const nyTxnId = await insertTxn(s, {
+      amountCents: 1200,
+      merchantName: "NY Hardware Co",
+    });
+    await approveCoding(s, nyTxnId, { businessPurpose: "Chairs for the Sunday setup" });
+    await publishScope(s, s.chapterId, AUG_KEY);
+
+    // Central's book, same month.
+    const centralTxnId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 3400,
+        postedAt: AUG_2026,
+        status: "reconciled",
+        merchantName: "Central Ops Supply",
+        createdAt: Date.now(),
+      }),
+    );
+    await approveCoding(s, centralTxnId, { businessPurpose: "Printer paper for HQ" });
+    await publishScope(s, CENTRAL, AUG_KEY);
+
+    const res = await s.t.fetch(`/finances/${AUG_KEY}`, {});
+    expect(res.status).toBe(200);
+    const body = await res.text();
+
+    // ONE ledger table merges both books — not one table per book.
+    expect(body.split('<table class="ledger">')).toHaveLength(2);
+    expect(body).toContain('<th class="chapter">Chapter</th>');
+
+    // Both books' lines are present, each carrying its own Chapter cell.
+    expect(body).toContain("NY Hardware Co");
+    expect(body).toContain("Central Ops Supply");
+    expect(body).toContain('<td class="chapter">New York</td>');
+    expect(body).toContain('<td class="chapter">Central</td>');
+
+    // The old nested-span duplicate (bookLabel printed a second time inside
+    // the "who" cell) is gone.
+    expect(body).not.toContain('<span class="detail">New York</span>');
+    expect(body).not.toContain('<span class="detail">Central</span>');
+
+    // Both books published this month (2 of our 2 active books), so the
+    // partial-coverage disclosure has nothing to say.
+    expect(body).not.toContain("chapters have published");
+    expect(body).not.toContain("chapter has published");
+  });
+
+  test("the partial-coverage disclosure reads in chapter language, singular and plural", async () => {
+    const s = await asPublisher(); // home chapter "New York"; only Central publishes below
+
+    const txnId = await insertTxn(s, { amountCents: 500, merchantName: "HQ Vendor" });
+    await approveCoding(s, txnId, { businessPurpose: "Office supplies" });
+    // `asPublisher` seeds exactly one chapter ("New York") + central, so
+    // `totalBooks` is 2 — publishing only Central's book makes this
+    // genuinely partial without inserting a third chapter.
+    await publishScope(s, CENTRAL, AUG_KEY);
+
+    const body = await (await s.t.fetch(`/finances/${AUG_KEY}`, {})).text();
+    expect(body).toContain(
+      "1 of our 2 chapters has published</strong> (Central) — the totals above cover that chapter only.",
+    );
+    // The old "books" phrasing must not survive anywhere on the page.
+    expect(body).not.toMatch(/\bbooks?\b/i);
+  });
+
+  test("the ledger CSV header reads \"Chapter,\" not \"Book\"", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, { amountCents: 500, merchantName: "HQ Vendor" });
+    await approveCoding(s, txnId, { businessPurpose: "Office supplies" });
+    await publishMonth(s);
+
+    const csvBody = await (await s.t.fetch(`/finances/${AUG_KEY}.csv`, {})).text();
+    const header = csvBody.split("\n")[0];
+    expect(header).toContain("Chapter");
+    expect(header).not.toMatch(/\bBook\b/);
+
+    const givingCsvBody = await (
+      await s.t.fetch(`/finances/${AUG_KEY}/giving.csv`, {})
+    ).text();
+    const givingHeader = givingCsvBody.split("\n")[0];
+    expect(givingHeader).toContain("Chapter");
+    expect(givingHeader).not.toMatch(/\bBook\b/);
+  });
+
+  test("the empty-page hero and meta description speak in chapters, not books", async () => {
+    const body = await (await newT().fetch("/finances", {})).text();
+    expect(body).toContain(
+      "We publish our finances month by month — every transaction, across every chapter",
+    );
+    expect(body).not.toMatch(/\bbooks?\b/i);
+  });
+});

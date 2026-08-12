@@ -115,12 +115,13 @@ h2.sectionhead{font-size:clamp(22px,3vw,28px);font-weight:700;letter-spacing:-.0
 .count{font-size:13px;color:var(--muted);font-weight:600}
 .ledgerwrap{background:var(--raised);border:1px solid var(--border);border-radius:16px;box-shadow:var(--shadow);
   overflow-x:auto;-webkit-overflow-scrolling:touch}
-table.ledger{border-collapse:separate;border-spacing:0;width:100%;min-width:900px;font-size:13.5px}
+table.ledger{border-collapse:separate;border-spacing:0;width:100%;min-width:980px;font-size:13.5px}
 table.ledger th{position:sticky;top:0;background:var(--sunken);text-align:left;font-size:11.5px;font-weight:700;
   letter-spacing:.06em;text-transform:uppercase;color:var(--muted);padding:11px 12px;white-space:nowrap;z-index:2}
 table.ledger td{padding:11px 12px;border-top:1px solid var(--border);vertical-align:top}
 table.ledger tbody tr:hover td{background:var(--accent-soft)}
 td.date,th.date{white-space:nowrap;font-variant-numeric:tabular-nums;color:var(--muted)}
+td.chapter,th.chapter{white-space:nowrap;color:var(--muted)}
 td.amt,th.amt{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums;font-weight:700}
 td.amt.out{color:var(--accent)}
 td.amt.in{color:var(--success)}
