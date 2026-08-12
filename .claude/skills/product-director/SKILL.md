@@ -388,6 +388,49 @@ Before finishing a run of this skill, you MUST:
   category suggestions are removed for good, not paused ("it was just bad");
   Stripe fees stay one monthly line item, not per-transaction.
 
+### 2026-08-12 — Run 15 continuation (the "Restricted" that wasn't, and the validator that lied all night)
+- **A screen that renders one fallback for every failure will send you
+  chasing the wrong bug for a night.** The founder's "Restricted" publish
+  console survived a real gate fix (#655), a boundary-latch fix (#657), and
+  a hard refresh — because the actual failure was `preview` failing its OWN
+  returns validator on every call (fields added to the snapshot in #642,
+  never to the second validator in the same file), and FinanceBoundary
+  rendered the same denial copy for a crash as for a denial. TWO standing
+  rules out of this: (a) an error fallback must print what it caught — a
+  ConvexError gets denial copy + the server's message, anything else gets
+  crash copy; ship that DIAGNOSTIC first when a symptom survives its fix,
+  because it converts the user's next screenshot into the root cause. (b)
+  When one file defines a type and TWO validators over it, adding a field
+  is a three-site change — grep for sibling validators (`v.object`) over
+  the same spread source before calling a field addition done.
+- **"The suite is green" says nothing about a query nobody calls.** 60+
+  publicLedger tests coexisted with a console that could not open, because
+  no test ever simply CALLED `preview`. For every client-facing query a
+  screen mounts on load, there must exist at least one test that calls it
+  and asserts non-null — shallow on purpose; its job is validator drift.
+- **Contradiction analysis beats symptom-matching for access reports.** The
+  decisive observation was the founder's own screenshot: the Accounts tab
+  (gated by `isCentralEdOrFm`) rendering in the SAME frame as a "you lack a
+  seat" denial for a gate that now passes `isCentralEdOrFm` first. When a
+  user reports a denial, first find a visible surface gated by the same
+  resolver — agreement between the two falsifies the denial theory in one
+  look, no server access needed.
+- **90 minutes of active-but-writing-nothing is a stuck agent; one concrete
+  nudge un-sticks it.** The workbench builder explored for ~87 min with a
+  clean tree; a SendMessage with a numbered commit-by-commit plan ("stop
+  exploring; ship in this order, commit each") produced the first commit in
+  ~5 min and a finished feature in ~40. Liveness timestamps alone are not
+  progress — check `git log` in the worktree on every tick, and nudge at
+  the first tick past ~30 min with zero commits.
+- **The founder's UX directives are standing, not per-surface.** "No
+  blocking modal" shipped on By-month; the founder immediately hit the
+  modal on the Code tab and reported it as a bug. When a directive names an
+  interaction pattern, sweep every surface with that pattern and either
+  convert it or state why not in the PR — a persona-based exception
+  (cardholders can't fetch receipts) is an implementation constraint to
+  design around (capability probe + degraded pane), not a reason to keep
+  the old interaction.
+
 ### 2026-08-12 — Run 15 (founder voice-note: coding/reconcile confusion, ED lockout, false "fully explained", publish preview, self-approve)
 - **A fixed-date policy epoch plus relative-date fixtures is a scheduled CI
   outage.** `DEFAULT_CODING_REQUIRED_SINCE_MS` (2026-08-08) armed while
