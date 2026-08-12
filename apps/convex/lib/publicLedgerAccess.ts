@@ -16,7 +16,12 @@
  *    reconcile it. Manager rather than the bookkeeper floor `listReconcile`
  *    uses, deliberately: assembling the artifact that will be published is a
  *    step beyond working the queue, even though every number in it came from
- *    that queue.
+ *    that queue. WIDENED (bug #confirmed 2026-08-11) for a central
+ *    `executive_director`/`financial_manager` seat holder, who passes for
+ *    ANY book — including their OWN chapter's — with no `financeRoles` row
+ *    needed. See the CONSOLE bullet below for why the ladder alone leaves
+ *    them locked out of their own book, and `isCentralEdOrFm` for the
+ *    widening itself.
  *
  *  - PUBLISH (`requireLedgerPublish`) — approve a submitted snapshot and make
  *    it (or an amendment to it) public. Gated on the `finance.publish` seat
@@ -30,7 +35,46 @@
  *  - CONSOLE (`requireLedgerConsole`) — read the publish console: statuses,
  *    working snapshots, the amendment log. Finance VIEWER+ at the book, so
  *    the treasurer and the bookkeeper doing the close can see what's about to
- *    be said about their work without being able to say it.
+ *    be said about their work without being able to say it. Same ED/FM
+ *    widening as PREPARE, for the same reason.
+ *
+ * ## The ED/FM widening (own-book gap, confirmed founder bug)
+ *
+ * `getFinanceRole`'s B10 seat-derived union (see `lib/finance.ts`'s module
+ * doc) only credits a graded ladder rank (`role`) to a seat capability at the
+ * SPECIFIC scope key that assignment lives at. `executive_director` is a
+ * CENTRAL-chart seat that carries `finance.central`/`finance.approve` but
+ * deliberately never `finance.manager`/`finance.viewer` (see `SEAT_DEFS`), so
+ * it never derives a graded role anywhere, at any scope — `access.role` stays
+ * `null` even in the ED's own chapter. `financial_manager` DOES carry
+ * `finance.manager`, but only at the `"central"` scope key its assignment
+ * lives at; that grants `access.isCentral` everywhere (which is why PREPARE/
+ * CONSOLE already worked for an FM on the CENTRAL book and on every FOREIGN
+ * chapter's book — the `book === CENTRAL || book !== homeChapterId` branch
+ * below only ever asks for `isCentral`) but does nothing for `access.role` at
+ * the FM's own home chapter, which is a DIFFERENT scope key. So both seats hit
+ * the exact same hole: the one branch of PREPARE/CONSOLE that checks a graded
+ * role instead of `isCentral` — the caller's OWN book — is the one branch a
+ * central-only seat can never clear, which is backwards (a seat that already
+ * opens every OTHER book should not be the one book it's refused).
+ *
+ * `isCentralEdOrFm` (`lib/finance.ts`) is reused here rather than
+ * hand-rolling a narrower `holdsApprovalSeatAt`-based check
+ * (`requireCentralFinanceRoleOrEdSeat`'s pattern,
+ * `lib/finance.ts:500-516`): `holdsApprovalSeatAt` only reads
+ * `finance.approve`, which `executive_director` carries but
+ * `financial_manager` does NOT (see `SEAT_DEFS` — the FM's ladder is
+ * `finance.manager`, not `finance.approve`), so it would silently miss half
+ * of "central ED or FM." `isCentralEdOrFm` instead reads `finance.accounts`
+ * (carried by BOTH seats) and already UNIONS the seat-derived side with the
+ * legacy `specializedRoles`-title-only fallback (the drift case where an ED
+ * was assigned before the seat chart existed and has no `seatAssignments`
+ * mirror) — exactly the fallback this widening needs, already built,
+ * already tested (`financeGatesSeatUnion.test.ts`), and already the
+ * established pattern for "ED-or-FM, full stop" elsewhere in this codebase
+ * (`lib/reconciliationAccess.ts`, `lib/campaignsAccess.ts#hasCampaignsAccess`).
+ * ALL of this logic lives in `hasLedgerConsole`/`hasLedgerPrepare` below —
+ * `publicLedger.ts` calls only the `require*` pair, unchanged.
  *
  * SEPARATION OF DUTIES is enforced in `publicLedger.ts` (via
  * `lib/finance.ts#assertSeparationOfDuties`), not here — same division as the
@@ -50,6 +94,7 @@ import type { QueryCtx } from "../_generated/server";
 import { CENTRAL, expandPowers } from "@events-os/shared";
 import {
   getFinanceRole,
+  isCentralEdOrFm,
   requireFinanceCentral,
   requireFinanceRole,
   type FinanceAccess,
@@ -72,12 +117,18 @@ const PERSON_SEAT_ASSIGNMENT_LIMIT = 200;
 
 // ── Prepare ──────────────────────────────────────────────────────────────────
 
-/** Whether the caller may build/submit a book's working statement. */
+/** Whether the caller may build/submit a book's working statement.
+ *
+ * A central ED/FM seat (see the module doc's "ED/FM widening") passes for
+ * ANY book unconditionally — checked FIRST, before the book/homeChapterId
+ * branching below, since that widening is precisely "the graded ladder
+ * doesn't apply to this caller at all." */
 export async function hasLedgerPrepare(
   ctx: QueryCtx,
   homeChapterId: Id<"chapters">,
   book: FinanceScope,
 ): Promise<boolean> {
+  if (await isCentralEdOrFm(ctx)) return true;
   const access = await getFinanceRole(ctx, homeChapterId);
   if (book === CENTRAL || book !== homeChapterId) return access.isCentral;
   return access.isManager;
@@ -90,6 +141,7 @@ export async function requireLedgerPrepare(
   homeChapterId: Id<"chapters">,
   book: FinanceScope,
 ): Promise<FinanceAccess> {
+  if (await isCentralEdOrFm(ctx)) return getFinanceRole(ctx, homeChapterId);
   if (book === CENTRAL || book !== homeChapterId) {
     return requireFinanceCentral(ctx, homeChapterId);
   }
@@ -182,12 +234,14 @@ export async function requireLedgerPublish(
 
 // ── Console ──────────────────────────────────────────────────────────────────
 
-/** Whether the caller may read the publish console for a book. */
+/** Whether the caller may read the publish console for a book. Same ED/FM
+ *  widening as {@link hasLedgerPrepare} — see the module doc. */
 export async function hasLedgerConsole(
   ctx: QueryCtx,
   homeChapterId: Id<"chapters">,
   book: FinanceScope,
 ): Promise<boolean> {
+  if (await isCentralEdOrFm(ctx)) return true;
   const access = await getFinanceRole(ctx, homeChapterId);
   if (book === CENTRAL || book !== homeChapterId) return access.isCentral;
   return access.role != null;
@@ -199,6 +253,7 @@ export async function requireLedgerConsole(
   homeChapterId: Id<"chapters">,
   book: FinanceScope,
 ): Promise<FinanceAccess> {
+  if (await isCentralEdOrFm(ctx)) return getFinanceRole(ctx, homeChapterId);
   if (book === CENTRAL || book !== homeChapterId) {
     return requireFinanceCentral(ctx, homeChapterId);
   }

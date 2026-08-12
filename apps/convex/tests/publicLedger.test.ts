@@ -5,6 +5,7 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { PREVIEW_BANNER_TEXT } from "../lib/publicLedgerPage";
+import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 
 /**
  * THE PUBLIC LEDGER — publishing the books, and being held to them.
@@ -190,6 +191,40 @@ async function publishMonth(
 
 const statementOf = (s: ChapterSetup, periodKey = AUG_KEY) =>
   s.as.query(api.publicLedger.publicStatement, { periodKey });
+
+/** The seatDef row seeded for a template `slug` — mirrors
+ *  `financeGatesSeatUnion.test.ts#defBySlug`. */
+async function defBySlug(s: ChapterSetup, slug: string) {
+  const def = await run(s.t, (ctx) =>
+    ctx.db
+      .query("seatDefs")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique(),
+  );
+  if (!def) throw new Error(`${slug} not seeded`);
+  return def;
+}
+
+/** Insert a `seatAssignments` row directly (bypassing `assignSeat`'s
+ *  write-through, so no bridged `financeRoles` row comes along for free) —
+ *  same shape as `financeGatesSeatUnion.test.ts#assignSeatDirect`. Used to
+ *  prove the FIX-1 widening comes from the seat alone, not a stored grant. */
+async function assignSeatDirect(
+  s: ChapterSetup,
+  personId: Id<"people">,
+  slug: string,
+  scope: Id<"chapters"> | "central",
+): Promise<void> {
+  const def = await defBySlug(s, slug);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("seatAssignments", {
+      seatDefId: def._id,
+      scope,
+      personId,
+      createdAt: Date.now(),
+    }),
+  );
+}
 
 // ── 1. Frozen ────────────────────────────────────────────────────────────────
 
@@ -624,6 +659,95 @@ describe("the lifecycle refuses shortcuts", () => {
     const august = console_!.months.find((m) => m.periodKey === AUG_KEY);
     expect(august!.status).toBe("changes_requested");
     expect(august!.reviewNote).toContain("receipt");
+  });
+});
+
+// ── FIX 1: the ED/FM console+prepare widening ───────────────────────────────
+// A founder-confirmed bug: the ED's (and, on their own book, the FM's) seat
+// carries central reach and `finance.publish` but never a graded
+// `financeRoles` ladder rank, so the pre-widening `requireLedgerConsole`/
+// `requireLedgerPrepare` (which check `access.role`/`access.isManager` for
+// the caller's OWN book — see `lib/publicLedgerAccess.ts`'s module doc)
+// locked them out of the very console the design hands them. Every scenario
+// below exercises the caller's OWN chapter book (`scope` omitted, so it
+// defaults to `homeChapterId`) — the one branch that was broken; the CENTRAL/
+// foreign-book branch already worked via `access.isCentral` and is unchanged.
+describe("ED/FM console + prepare widening (own book, no financeRoles row)", () => {
+  const consoleOf = (s: ChapterSetup) => s.as.query(api.publicLedger.console_, {});
+  const prepare = (s: ChapterSetup) =>
+    s.as.mutation(api.publicLedger.submit, { periodKey: AUG_KEY });
+
+  test("a central executive_director seat (real seatAssignments row) reaches the console and can prepare their own chapter's book", async () => {
+    const s = await setupChapter(newT(), { email: "ed@publicworship.life" });
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const personId = await seedPerson(s, "ED");
+    await assignSeatDirect(s, personId, "executive_director", "central");
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).resolves.toBeNull();
+    const status = (await consoleOf(s))!.months.find((m) => m.periodKey === AUG_KEY);
+    expect(status!.status).toBe("in_review");
+  });
+
+  test("an executive_director who exists only as a legacy specializedRoles row (no seatAssignments mirror) still reaches the console and can prepare — the drift `isCentralEdOrFm` covers", async () => {
+    const s = await setupChapter(newT(), { email: "legacy-ed@publicworship.life" });
+    const personId = await seedPerson(s, "Legacy ED");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("specializedRoles", {
+        personId,
+        scope: "central",
+        title: "executive_director",
+        roleKind: "leadership",
+        createdAt: Date.now(),
+      }),
+    );
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).resolves.toBeNull();
+  });
+
+  test("a central financial_manager seat reaches the console and can prepare their own chapter's book, with NO bridged central financeRoles grant", async () => {
+    const s = await setupChapter(newT(), { email: "fm@publicworship.life" });
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const personId = await seedPerson(s, "FM");
+    // Direct insert bypasses `assignSeat`'s write-through — no bridged
+    // `financeRoles` grant comes along, unlike a real assignment. Proves the
+    // widening comes from the seat itself, not the bridge.
+    await assignSeatDirect(s, personId, "financial_manager", "central");
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).resolves.toBeNull();
+  });
+
+  test("a chapter_director seat still sees the console (pre-existing viewer widening, unaffected) but still cannot prepare — not manager rank, and not ED/FM", async () => {
+    const s = await setupChapter(newT(), { email: "cd@publicworship.life" });
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const personId = await seedPerson(s, "CD");
+    await assignSeatDirect(s, personId, "chapter_director", s.chapterId);
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).rejects.toThrow(ConvexError);
+  });
+
+  test("a plain member with no seat and no grant is denied both the console and prepare", async () => {
+    const s = await setupChapter(newT(), { email: "nobody@publicworship.life" });
+    await seedPerson(s, "No Grant");
+
+    await expect(consoleOf(s)).rejects.toThrow(ConvexError);
+    await expect(prepare(s)).rejects.toThrow(ConvexError);
+  });
+
+  test("a superuser reaches the console and can prepare with no seat and no grant at all — unchanged by the widening", async () => {
+    const s = await setupChapter(newT(), { email: SUPERUSER_EMAIL });
+    await seedPerson(s, "Superuser");
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).resolves.toBeNull();
   });
 });
 
