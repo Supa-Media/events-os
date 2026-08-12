@@ -375,11 +375,12 @@ export function FinishChargeSheetBody({
         }
       }
       if (form.value == null) return;
+      const { budgetId, ...codingValue } = form.value;
       try {
         await submitCoding({
           transactionId,
-          ...form.value,
-          ...(form.budgetId ? { budgetId: form.budgetId as Id<"budgets"> } : {}),
+          ...codingValue,
+          ...(budgetId ? { budgetId: budgetId as Id<"budgets"> } : {}),
         });
       } catch (err) {
         throw new Error(
