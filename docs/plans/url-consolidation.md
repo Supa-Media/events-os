@@ -34,8 +34,8 @@ routes by path prefix:
 https://publicworship.life
 ├── /os/*                                   → Expo web app (prefix stripped)
 │                                              origin: events-os.expo.app
-├── /event, /e, /t, /give, /p, /reimburse,
-│   /api, /stripe, /increase                → Convex HTTP actions
+├── /event, /e, /t, /give, /finances, /p,
+│   /reimburse, /api, /stripe, /increase    → Convex HTTP actions
 │                                              origin: <deployment>.convex.site
 └── everything else                         → static landing
                                                (apps/landing, Worker assets)
@@ -67,6 +67,7 @@ Legacy subdomains 301-redirect to the new paths:
 | `/p/<token>` | Convex | Project email-action landing page (reminder-email links) |
 | `/reimburse/<chapterSlug>` | Convex | Accountless reimbursement claimant form/status page |
 | `/api/*` | Convex | JSON endpoints the above pages' client scripts call (`/api/tickets/*`, `/api/give/*`, `/api/reimburse/*`) |
+| `/finances`, `/finances/<YYYY-MM>`, `/finances/<YYYY>`, `*.csv`, `?preview=<token>` | Convex | The public financial ledger (published statements, CSVs, authed draft previews) |
 | `/stripe/webhook` | Convex | Stripe webhook receiver |
 | `/increase/webhook` | Convex | Increase webhook receiver (services both prod and sandbox) |
 
@@ -86,6 +87,7 @@ routed to Convex or the Expo app, not the landing origin:
 /e
 /t
 /give
+/finances
 /p
 /reimburse
 /api

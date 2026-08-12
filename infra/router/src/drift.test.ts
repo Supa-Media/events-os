@@ -31,13 +31,51 @@ describe("drift guard: apps/convex/http.ts public routes are all proxied", () =>
   // Simple on purpose: pathPrefix/path literals only ever appear in http.ts
   // as `pathPrefix: "..."` / `path: "..."` inside an `http.route({...})`
   // call, so a plain regex is enough — no need to parse the AST.
+  //
+  // …EXCEPT that "only ever" broke, silently, in the exact way this guard
+  // exists to catch: the public-ledger routes are registered as TEMPLATE
+  // literals (`/${LEDGER_PATH}` / `/${LEDGER_PATH}/`) and the double-quote
+  // regex never saw them — so the guard stayed green while every
+  // publicworship.life/finances URL 404'd at the edge (2026-08-12). The
+  // template-literal pass below resolves the one interpolation http.ts uses
+  // (${LEDGER_PATH}) against its exported constant, and the count assertion
+  // beneath pins that at least one template route was actually resolved, so
+  // a new interpolated name can't slip back into the blind spot.
   const pathPrefixes = [...httpTs.matchAll(/pathPrefix:\s*"([^"]+)"/g)].map(
     (m) => m[1],
   );
   const exactPaths = [...httpTs.matchAll(/\bpath:\s*"([^"]+)"/g)].map(
     (m) => m[1],
   );
-  const literals = [...pathPrefixes, ...exactPaths];
+  // Template-literal routes: `path: `/${NAME}`` / `pathPrefix: `/${NAME}/``.
+  // Resolve ${NAME} from the constant's definition (exported from
+  // apps/convex — LEDGER_PATH lives in lib/publicLedgerPage.ts).
+  const constantSources = [
+    httpTs,
+    read("apps/convex/lib/publicLedgerPage.ts"),
+  ].join("\n");
+  const resolveConst = (name: string): string => {
+    const m = constantSources.match(
+      new RegExp(`const ${name}\\s*=\\s*"([^"]+)"`),
+    );
+    if (!m) {
+      throw new Error(
+        `drift guard can't resolve \${${name}} in an http.ts route template — ` +
+          "add its defining file to constantSources above.",
+      );
+    }
+    return m[1];
+  };
+  const templateRoutes = [
+    ...httpTs.matchAll(/(?:pathPrefix|path):\s*`([^`]+)`/g),
+  ].map((m) =>
+    m[1].replace(/\$\{(\w+)\}/g, (_, name: string) => resolveConst(name)),
+  );
+  const literals = [...pathPrefixes, ...exactPaths, ...templateRoutes];
+
+  it("resolved at least one template-literal route (the /finances blind spot stays closed)", () => {
+    expect(templateRoutes.length).toBeGreaterThan(0);
+  });
 
   it("found at least one route literal to check (regex didn't silently break)", () => {
     expect(literals.length).toBeGreaterThan(0);

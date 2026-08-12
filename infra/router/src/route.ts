@@ -77,10 +77,21 @@ export const CONVEX_PREFIXES = [
   // shape as `/unsubscribe/`: a link inside a sent email, resolved per
   // recipient, so it must reach Convex rather than the static site.
   "/poll/",
+  // The public financial ledger (`publicworship.life/finances`,
+  // `/finances/<YYYY-MM>`, CSVs, `?preview=` drafts). Registered in http.ts
+  // via a `/${LEDGER_PATH}` TEMPLATE LITERAL, which is why the drift guard
+  // stayed green while this entry was missing and the whole transparency
+  // site 404'd at the edge from the day it shipped (2026-08-12, confirmed
+  // with live curls: the Worker served an empty static-asset 404 and Convex
+  // was never consulted). drift.test.ts now resolves template literals too.
+  "/finances/",
 ] as const;
 
 function isConvexPath(pathname: string): boolean {
   if (pathname === "/give" || pathname.startsWith("/give/")) return true;
+  // Same exact-path + prefix pair as /give: `/finances` (no slash) is the
+  // redirect-to-newest-month route, `/finances/...` the statement pages.
+  if (pathname === "/finances") return true;
   return CONVEX_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
