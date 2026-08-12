@@ -4,8 +4,9 @@
   // See ../../CLAUDE.md's URL-consolidation notes and src/route.ts's module
   // doc comment for the full routing table. In short:
   //   - publicworship.life (apex): /os/* -> Expo web app (prefix stripped),
-  //     Convex prefixes (/event/, /e/, /t/, /give, /give/*, /p/, /reimburse/,
-  //     /api/, /stripe/, /increase/) -> Convex HTTP actions (unchanged),
+  //     Convex prefixes (/event/, /e/, /t/, /give, /give/*, /finances,
+  //     /finances/*, /p/, /reimburse/, /api/, /stripe/, /increase/) ->
+  //     Convex HTTP actions (unchanged),
   //     everything else -> static assets (the Astro landing build).
   //   - www.publicworship.life -> 301 to https://publicworship.life<path>
   //   - events.publicworship.life -> 301 to https://publicworship.life/os<path>
