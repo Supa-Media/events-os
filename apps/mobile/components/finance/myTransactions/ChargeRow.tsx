@@ -55,7 +55,14 @@ export function ChargeRow({
       <Row last={last && !sentBack}>
         <Cell flex={2}>
           <View className="flex-row items-center gap-2">
-            <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
+            {/* `shrink min-w-0` is what makes numberOfLines actually truncate
+                on web — without it the nowrap text keeps its intrinsic width
+                and the fixed-width cells to the right paint straight over it
+                (the founder's "amounts on top of the merchant" screenshot). */}
+            <Text
+              className="shrink min-w-0 text-sm font-semibold text-ink"
+              numberOfLines={1}
+            >
               {displayMerchantName(txn, "—")}
             </Text>
             {txn.isPersonal ? <Badge label="Personal" tone="accent" /> : null}

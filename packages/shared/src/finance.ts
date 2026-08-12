@@ -1453,13 +1453,37 @@ export interface MerchantNameSource {
  * new thing in front of it is the override. Centralized so "renamed rows show
  * their new name" is one decision rather than one decision per screen.
  */
+/**
+ * Strip the STRUCTURAL noise a card descriptor carries without touching the
+ * merchant's identity: "Purchase from GIVEBUTTER | Address: GIVEBUTTER.CO,
+ * DE, US | **9370" is one merchant and two pieces of metadata the row already
+ * shows elsewhere (the address is noise, the card suffix renders in the
+ * subtitle). Only the recognized structured shapes are cleaned — a plain
+ * bank string like "IC* COSTCO BY IN CAR" passes through verbatim, because
+ * rewriting free-form provider text is what renames are for (owner report,
+ * 2026-08-11: rows reading "Purchase from X | Address: …" made the coding
+ * list "look so bad").
+ */
+function cleanCardDescriptor(name: string): string {
+  let out = name.trim();
+  const purchase = /^purchase from\s+(.+)$/i.exec(out);
+  if (purchase) out = purchase[1];
+  const parts = out.split("|").map((p) => p.trim());
+  const kept = parts.filter(
+    (p, i) =>
+      i === 0 || !(/^address:/i.test(p) || /^\*+\s*\d{2,4}$/.test(p)),
+  );
+  const cleaned = kept.join(" | ").trim();
+  return cleaned || name;
+}
+
 export function displayMerchantName(
   row: MerchantNameSource,
   fallback = "Unlabeled charge",
 ): string {
-  return (
-    row.merchantNameOverride ?? row.merchantName ?? row.description ?? fallback
-  );
+  if (row.merchantNameOverride != null) return row.merchantNameOverride;
+  if (row.merchantName != null) return cleanCardDescriptor(row.merchantName);
+  return row.description ?? fallback;
 }
 
 /**
