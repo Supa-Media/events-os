@@ -3,11 +3,14 @@
  * what it was, why it served the org's work, and who was involved. See
  * `docs/plans/transaction-coding.md`.
  *
- * NOTHING HERE IS PRE-FILLED (owner decision, 2026-08-08: no AI in coding).
- * The transaction's merchant/amount/date are DISPLAYED as context, and every
- * answer is typed by the human — a pre-filled purpose gets rubber-stamped; a
- * blank field with a good prompt gets answered, and the answer is the
- * author's own testimony, which is what an accountable plan needs.
+ * NO MACHINE EVER WRITES AN ANSWER (owner decision, 2026-08-08: no AI in
+ * coding). The transaction's merchant/amount/date are DISPLAYED as context,
+ * and the answers are a human's own words — which is what an accountable
+ * plan needs. ONE deliberate carve-out (owner directive, 2026-08-12): a
+ * reimbursement payout's PRISTINE form starts from the CLAIMANT's own words
+ * off the request (`reimbursementPrefill.ts` — existing human testimony
+ * carried forward with a provenance line, fully editable, never composed by
+ * a machine and never auto-submitted).
  *
  * THE FIELDS THEMSELVES live in `../coding/CodingFieldSet` — purpose, the
  * type-driven extras, and the budget picker — shared verbatim with
@@ -37,7 +40,7 @@
  * or say there is no receipt — all reachable without closing this editor.
  * Nobody may fill in three fields and only then be told no.
  */
-import type { ReactNode } from "react";
+import { useEffect, useRef, type ReactNode } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { formatCents, type AttendeeAffiliation, type ExpenseType } from "@events-os/shared";
 import type { FunctionReturnType } from "convex/server";
@@ -55,6 +58,7 @@ import {
   type CodingFormValue,
 } from "../coding/CodingFieldSet";
 import { ReimbursementContextBlock } from "../coding/ReimbursementContextBlock";
+import { reimbursementPrefillPlan } from "../coding/reimbursementPrefill";
 
 export type { CodingFormValue };
 
@@ -163,12 +167,31 @@ export function TransactionCodingModal({
     category,
   });
 
+  // OWNER DIRECTIVE (2026-08-12): auto-populate the PRISTINE form from the
+  // claimant's own request words — once, at most, per open of this modal
+  // (the modal mounts fresh each open), and only when it's a first coding
+  // with nothing typed. `undefined` context means the host is still loading
+  // it, so hold the attempt; `null` means there's genuinely none.
+  const prefillAttempted = useRef(false);
+  useEffect(() => {
+    if (prefillAttempted.current || reimbursementContext === undefined) return;
+    prefillAttempted.current = true;
+    if (initial != null || form.touched) return;
+    form.applyPrefill(reimbursementPrefillPlan(reimbursementContext));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [reimbursementContext]);
+
   // The missing receipt is the ONE problem shown before anything is touched:
   // it isn't a field somebody hasn't reached yet, it's a precondition they
-  // need to know about while they still have the receipt in their hand.
+  // need to know about while they still have the receipt in their hand. A
+  // prefilled form also shows its field problems untouched — a disabled
+  // submit needs a visible reason.
   const missingDocumentation = hasDocumentation ? [] : [DOCUMENTATION_PROBLEM];
   const blocking = [...missingDocumentation, ...form.fieldProblems];
-  const shown = [...missingDocumentation, ...(form.touched ? form.fieldProblems : [])];
+  const shown = [
+    ...missingDocumentation,
+    ...(form.touched || form.prefilled ? form.fieldProblems : []),
+  ];
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onCancel}>
@@ -245,6 +268,19 @@ export function TransactionCodingModal({
                   })
                 }
               />
+
+              {/* PROVENANCE, said out loud — same line as
+                  `FinishChargeSheetBody`'s: these answers came from the
+                  request, not from a machine. */}
+              {form.prefilled ? (
+                <View className="mb-3 flex-row items-start gap-1.5">
+                  <Icon name="file-text" size={12} color={colors.muted} />
+                  <Text className="flex-1 text-2xs italic text-muted">
+                    The form below started from the claimant&apos;s own words
+                    on the request — edit anything before you submit.
+                  </Text>
+                </View>
+              ) : null}
 
               <ExpenseTypeChips form={form} category={category} />
 

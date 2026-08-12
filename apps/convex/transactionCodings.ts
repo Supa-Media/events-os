@@ -6,11 +6,15 @@
  * `docs/plans/transaction-coding.md`.
  *
  * HUMAN-AUTHORED, end to end (owner decision, 2026-08-08): nothing here
- * pre-fills, drafts, or AI-suggests any field — every answer is the author's
- * own words, which is what makes the record the spender's testimony rather
- * than a rubber-stamped guess. The reviewer-side AI budget/category hints that
- * once sat beside this in the Reconcile grid were a separate feature, never
+ * drafts or AI-suggests any field — every answer is a human's own words,
+ * which is what makes the record the spender's testimony rather than a
+ * rubber-stamped guess. The reviewer-side AI budget/category hints that once
+ * sat beside this in the Reconcile grid were a separate feature, never
  * touched these rows, and were removed outright shortly after this shipped.
+ * ONE deliberate carve-out (owner directive, 2026-08-12): a reimbursement
+ * payout's coding form may START from the claimant's own request text
+ * (`reimbursementContext` below) — existing human testimony carried forward,
+ * editable, never machine-composed. Machine-GENERATED text stays forbidden.
  *
  * Authored by the transaction's own person or a bookkeeper
  * (`lib/transactionCodingAccess.ts`), decided by a finance manager who is NOT

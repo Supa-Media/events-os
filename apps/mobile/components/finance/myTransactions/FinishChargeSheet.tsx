@@ -57,12 +57,18 @@
  * emailed in, or saying there is no receipt — lives in `CodingDocumentation`,
  * mounted both here and via the section below, so the two can't drift.
  *
- * NOTHING IS PRE-FILLED (owner decision, 2026-08-08: no AI anywhere in
- * coding). Merchant, amount and date are shown as context because a person
- * can't substantiate what they can't see — but every answer is typed by the
- * human whose testimony it is.
+ * NO MACHINE EVER WRITES AN ANSWER (owner decision, 2026-08-08: no AI
+ * anywhere in coding). Merchant, amount and date are shown as context because
+ * a person can't substantiate what they can't see. ONE deliberate carve-out
+ * (owner directive, 2026-08-12: "auto populate with request purpose notes
+ * that we already have… remove a copy and paste step"): a reimbursement
+ * payout's PRISTINE form starts from the claimant's own request words — a
+ * human's existing testimony carried forward with a provenance line, never a
+ * machine's composition. `reimbursementPrefill.ts` decides what carries; the
+ * fill-once effect below applies it exactly once per row, never over an
+ * existing coding or anything already typed.
  */
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -99,6 +105,7 @@ import {
   type CodingFormValue,
 } from "../coding/CodingFieldSet";
 import { planCategoryEdit } from "../coding/categoryEditPlan";
+import { reimbursementPrefillPlan } from "../coding/reimbursementPrefill";
 import { TransactionHistoryCompact } from "../coding/TransactionHistoryCompact";
 import { ReimbursementContextBlock } from "../coding/ReimbursementContextBlock";
 import { CodingDocumentation } from "./CodingDocumentation";
@@ -425,6 +432,21 @@ export function FinishChargeSheetBody({
     category,
   });
 
+  // OWNER DIRECTIVE (2026-08-12): auto-populate the PRISTINE form from the
+  // claimant's own request words — once per row, the first time the query
+  // lands, and only when there's no existing coding and nothing typed yet.
+  // The attempt is recorded up front (even when it fills nothing) so a later
+  // data refresh can never surprise-fill a form someone is mid-thought in.
+  const prefillAttemptedFor = useRef<string | null>(null);
+  useEffect(() => {
+    if (data === undefined) return;
+    if (prefillAttemptedFor.current === transactionId) return;
+    prefillAttemptedFor.current = transactionId;
+    if (data.coding != null || form.touched) return;
+    form.applyPrefill(reimbursementPrefillPlan(data.reimbursementContext));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [data, transactionId]);
+
   // ALWAYS INLINE the moment there's nothing coded yet AND the cardholder is
   // on the hook for it — no button, no modal (founder's own complaint). Any
   // OTHER state (an existing coding, or a charge nobody's chasing) keeps the
@@ -729,6 +751,22 @@ export function FinishChargeSheetBody({
                         }
                       />
 
+                      {/* PROVENANCE, said out loud: when the form started
+                          from the claimant's words (the prefill above), the
+                          person coding needs to know these answers came from
+                          the request — not from a machine, and not from a
+                          previous coder. */}
+                      {form.prefilled ? (
+                        <View className="flex-row items-start gap-1.5">
+                          <Icon name="file-text" size={12} color={colors.muted} />
+                          <Text className="flex-1 text-2xs italic text-muted">
+                            The form below started from the claimant&apos;s own
+                            words on the request — edit anything before you
+                            submit.
+                          </Text>
+                        </View>
+                      ) : null}
+
                       <ExpenseTypeChips form={form} category={category} />
                       <CodingFieldSet
                         form={form}
@@ -753,8 +791,13 @@ export function FinishChargeSheetBody({
                           ) : null
                         }
                       />
+                      {/* A prefilled-but-incomplete form shows its problems
+                          even before a touch — otherwise the disabled submit
+                          would have no visible reason. */}
                       <CodingProblemsList
-                        problems={form.touched ? form.fieldProblems : []}
+                        problems={
+                          form.touched || form.prefilled ? form.fieldProblems : []
+                        }
                       />
                       <View className="flex-row gap-2">
                         <Button
