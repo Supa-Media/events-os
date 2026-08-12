@@ -14,10 +14,9 @@ whose only content is the glory of God, with the worshiper present only as an
 instrument of that declaration.
 
 That's a curatorial focus, not a verdict on anyone else's catalog. Scripture
-models many registers — lament, testimony, confession, petition — and we honor
-them all. We're specializing in the one we believe contemporary worship most
-lacks: the song that simply declares God Himself, from the first line to the
-last.
+models many registers — lament, testimony, confession, petition — and we
+honor them all. We're specializing in the one contemporary worship most
+lacks: the song that simply declares God Himself, first line to last.
 
 This is what you should expect to hear when you worship with us — on a subway
 platform, in a park, or at Eden or Love Thy Neighbor. And if you lead worship
@@ -36,15 +35,14 @@ mid-argument: *"To him be the glory forever"* (Rom 11:36).
 
 The common thread: **the content is God, not us.** A doxology doesn't report
 what God did for me, or how I feel about Him. It declares who He *is* — and
-stops there. The worshiper may be present, but only as the voice carrying the
-declaration, never as its subject.
+stops there. The worshiper is only the voice carrying the declaration, never
+its subject.
 
 ## The conviction
 
 Worship, in Hebrew, is **shâchâh** — to bow down. Jesus says the Father seeks
-worship in spirit and in truth (Jn 4). Hebrews 13:15 calls it *a sacrifice of
-praise*. A bow, offered in truth, as a sacrifice: something *given*, laid at
-God's feet.
+worship in spirit and in truth (Jn 4); Hebrews 13:15 calls it *a sacrifice of
+praise*. A bow, offered in truth, as a sacrifice — something *given*.
 
 Here's the conviction this catalog rests on:
 
@@ -61,9 +59,9 @@ brought nothing to God at all.
 The room may have wept. The altar is still empty.
 
 We believe this drift has already happened at scale: many of the most-sung
-songs of the last twenty years put the worshiper at the center, and as the
-staple of a church's worship life they form worshipers who turn inward the
-moment they begin to sing.
+songs of the last twenty years put the worshiper at the center, and as a
+church's staple they form worshipers who turn inward the moment they begin
+to sing.
 
 So, two convictions. First: **doxology is the form in which it is hardest
 for the self to drift to the center** — when the song's entire content is who
@@ -139,8 +137,8 @@ does.
 </table>
 </div>
 
-The welcome zone has four shapes — *self appears only to make God greater, or
-not at all*. The other five — *self carries the song*.
+The welcome zone's four shapes: *self appears only to make God greater, or
+not at all*. The other five: *self carries the song*.
 
 <div class="pw-note">
 <p><strong>💡 Pronouns are not the test.</strong> Swapping "I" for "we" moves nothing: <em>"We'll never be more loved…"</em> is still self-as-recipient, just collective. And <em>"my King, my Rock"</em> is ascription — "my" marks covenant, not experience — while <em>"my story, my journey"</em> is testimony. Same pronoun, opposite function.</p>
@@ -173,7 +171,7 @@ Each shape slides toward its closest anthropological cousin, usually mid-line:
   go"* — the worshiper's own resolve takes over.
 
 The drift is rarely deliberate — it's the gravity of the worshiper's own
-story pulling the line back home.
+story pulling the line home.
 
 ## What we sing but don't center
 
@@ -201,10 +199,16 @@ sing them."
 
 ## An invitation
 
-If you write worship music, we invite you into the same standard: the song
-that is doxological from the first line to the last, nothing taken back off
-the altar. Hold yourself to Scripture before you hold yourself to the
-algorithm. We'd be glad to hear what you write.
+This is the part we care about most. We want the next generation of
+worshipers to write and lead songs shaped not by how crowds respond, but by
+what moves God: the song that is doxological from the first line to the
+last, nothing taken back off the altar — held to Scripture before it's held
+to the algorithm.
+
+We don't claim to have this finished. We expect to keep working out what it
+looks like — in writing rooms, on platforms, and in ongoing dialogue with
+anyone who will hold us to Scripture while we do. If that's you, we'd be
+glad to hear what you write, and gladder still to have the conversation.
 
 > "The fear of the LORD is the beginning of wisdom." (Proverbs 9:10)
 
@@ -216,14 +220,23 @@ tell us, with Scripture in hand.
 ## Further reading
 
 We're testing as many worship songs as we can and will publish that catalog
-when it's ready. Until then, the sources most worth your time:
+when it's ready. Until then — read both columns.
+
+**Voices that shaped us:**
 
 - **Augustine, *Confessions* X.33** (c. 400) — "more moved by the singing than
   by what is sung… I confess myself to have sinned." Still load-bearing.
-- **Isaac Watts, Preface to *Hymns and Spiritual Songs*** (1707) — the defense
-  of worship in the worshiper's voice; a check on overcorrecting.
+- **A.W. Tozer, *Worship: The Missing Jewel*** (1961) — the recovery of
+  God-centered adoration as the thing we were made for.
+- **Marva Dawn** (Christianity Today tribute, 2021) — "too much music being
+  used today is narcissistic — it's about us and how we feel about God."
 - **Bob Kauflin, "Evaluating Worship Song Lyrics"** (2006) — a working worship
   pastor's checklist.
+
+**Voices that check us:**
+
+- **Isaac Watts, Preface to *Hymns and Spiritual Songs*** (1707) — the defense
+  of worship in the worshiper's voice; a check on overcorrecting.
 - **Justin Taylor, "Don't Neglect the Horizontal Dimension of Singing and
   Worship"** (TGC, 2017) — the strongest counter-voice to our framing; read it
   before you trust us too much.
