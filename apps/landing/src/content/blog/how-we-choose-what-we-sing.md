@@ -58,10 +58,9 @@ brought nothing to God at all.
 
 The room may have wept. The altar is still empty.
 
-We believe this drift has already happened at scale: many of the most-sung
-songs of the last twenty years put the worshiper at the center, and as a
-church's staple they form worshipers who turn inward the moment they begin
-to sing.
+We believe this drift has already happened at scale: so many of today's
+most-sung worship songs put the worshiper at the center, and as a church's
+staple they form worshipers who turn inward the moment they begin to sing.
 
 So, two convictions. First: **doxology is the form in which it is hardest
 for the self to drift to the center** — when the song's entire content is who
