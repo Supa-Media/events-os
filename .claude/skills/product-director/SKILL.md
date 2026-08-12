@@ -192,11 +192,15 @@ on green).
    come from the same scope + same predicate, or be labeled differently.
    Thread scope through navigation; never let a target page silently resolve
    its own scope.
-4. **AI assist earns trust before it scales.** No "accept all" until
-   suggestion precision is measured and high; accepted suggestions must
-   visibly clear; feed human categorization history back into prompts before
-   adding bulk affordances. "Most of it is wrong" feedback = quality work
-   first, affordance second.
+4. **AI assist earns trust before it scales — and this one didn't.** The
+   founder REMOVED AI category suggestions from coding entirely (2026-08-12:
+   "I did take that out… it was just bad"), and the removal is now doctrine,
+   not a pause: coding is a human writing what the money was for, subject to
+   a minimum length and a second person's review. Do not propose
+   re-introducing suggestions here without being asked. The general rule
+   still stands elsewhere: no "accept all" until precision is measured and
+   high, accepted suggestions must visibly clear, and "most of it is wrong"
+   means quality work first, affordance second.
 5. **No unexplained jargon.** Domain terms (skim, floor, tier, unattributed,
    uncoded, under water) get inline explanation (tooltip/info popover) using
    the same vocabulary the Academy teaches.
@@ -216,6 +220,18 @@ on green).
    "Rhythm before metrics" is a fine cultural rule (founder-endorsed:
    consistency for the first months beats dashboard-watching), but the
    system records metrics from send #1 regardless — collecting ≠ watching.
+9. **A control must never report enforcement it cannot deliver.** If a
+   status says "locked", "approved", "sent", "verified", trace it to the
+   thing that ACTS on it and prove that thing is reachable for the row in
+   question. A control that is a no-op for some subset is worse than an
+   absent one: the absent one gets noticed. When a mechanism only covers
+   part of a population (one issuer, one provider, one card source), the
+   product must say which part, and the lesson teaching it must say so too.
+   Found live 2026-08-12: the 7-day card auto-lock patched every `cards`
+   row, but enforcement runs through Increase's real-time authorization
+   webhook, which only ever asks about cards Increase issued — so linked
+   Relay cards were marked locked and kept working, and both founders had
+   concluded the whole ladder was decorative.
 
 ## Repo-specific invariants (verify, they drift)
 
@@ -307,6 +323,70 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-08-12 — Run 16 (founder call transcript: reconcile totals, spending policy, card-lock reality, money model)
+- **The headline finding came from disbelieving the founders, not the code.**
+  Both of them stated on the call that the 7-day card lock "doesn't actually
+  happen… it just made a bunch of rules that it actually doesn't enforce."
+  The ladder turned out to be entirely real — cron-wired, and enforced in
+  real time by `decideCardAuthorization` off Increase's webhook. But tracing
+  it to prove them wrong is what surfaced the actual defect: the sweep scans
+  `ctx.db.query("cards")` with no `source` filter, and enforcement can only
+  reach rows Increase issued, so `source:"legacy"` Relay cards were being
+  stamped `"locked"` while continuing to work. **Both halves of the founders'
+  belief were wrong in opposite directions, and only reading the enforcement
+  path found it.** Generalized into standing principle #9. When a user says a
+  rule "doesn't fire", the answer is never just yes or no — ask *for which
+  rows*.
+- **Ask "what ACTS on this status?" for every status the product displays.**
+  The whole finding reduces to one question `lockCard` couldn't answer:
+  patching `status:"locked"` is not locking anything; something has to
+  consult that field at authorization time. Same shape as Run 8's
+  "`ensureBuiltInTemplates` has no production caller" and Run 10's "reachable
+  only from a screen that throws" — third occurrence of the class, now
+  promoted out of the log into the principles.
+- **A pinned cap you didn't know about is cheaper to hit than to guess at.**
+  `apps/convex/tests/academy.test.ts` enforces a hard 3–5 quiz-question range;
+  I wrote 6- and 8-question quizzes, and the suite caught all three. The
+  repo's own convention (stated in the snapshot test's header) is that a
+  lesson at the cap SWAPS questions rather than grows — which forced a genuinely
+  better edit: dropping "why does the app lock instead of reminding forever"
+  (motivation, not a rule) and the past-due-pledge edge case (taught properly
+  in the Development stream) to make room for the material the founder
+  actually asked for. Read the pinned-constants tests BEFORE authoring
+  Academy content, not after.
+- **A "filter the noisy list" ask can be a display regression in disguise.**
+  Founder wanted $0 budgets out of the "For" picker. The obvious edit —
+  filtering `isAttributableBudget` or `forPickerOptions` — would have broken
+  label RESOLUTION, because `ForPickerCell` derives a row's current "For"
+  label from that same payload: any charge already attributed to a $0 budget
+  would silently render "None". Correct seam was `rankForPicker` (the per-row
+  OFFER list) plus an explicit carve-out for the transaction's current
+  budgetId. **When filtering a list, check whether anything reads it as a
+  lookup table.** Also: the pre-existing `forPickerScanParity` suite asserts
+  both surfaces return identical candidate sets; my change made that
+  legitimately false, and it passed only because the fixture had no $0 budget
+  — so I added the divergence as an explicit test rather than leave the
+  invariant accidentally true.
+- **Totals over a paged list belong on the server, over the match set.**
+  `listReconcile` already computed `matchedCount` across the whole scope
+  before paging; `selectionTotals` rides the same `selected` array. A
+  client-side sum of loaded rows would have changed after every "Load more".
+  Reused `signedBookCents` rather than writing a second summation, which
+  bought agreement with the book-value model for free — and surfaced that a
+  selection of transfers/excluded rows legitimately totals $0, hence the
+  `neutralCount` field so the UI can explain it instead of looking broken.
+- **Founder decisions this run, quoted, now standing:** spending policy is
+  green/yellow/red with a three-question pre-check ("know what budget you're
+  going to be spending out of… and know that there is enough money in that
+  budget for it… get approval if it's yellow track. Never red"); it is
+  DELIBERATELY not a product feature ("there's not really a way you can
+  enforce it… it'll just be training"); each event/project has one budget
+  owner and spending within an approved budget is a heads-up, not a fresh
+  approval ("less about getting a formal approval and more so saying, hey,
+  I'm about to buy this thing, can I put it on your event budget?"); AI
+  category suggestions are removed for good, not paused ("it was just bad");
+  Stripe fees stay one monthly line item, not per-transaction.
 
 ### 2026-08-12 — Run 15 (founder voice-note: coding/reconcile confusion, ED lockout, false "fully explained", publish preview, self-approve)
 - **A fixed-date policy epoch plus relative-date fixtures is a scheduled CI
@@ -781,41 +861,3 @@ Before finishing a run of this skill, you MUST:
   merged: `git checkout -B <designated> origin/main` → cherry-pick the
   worktree branch's commits → `push --force-with-lease` (the branch held
   only already-merged history, so the force was safe).
-
-### 2026-07-26 — Run 6 (People CRM UX: person record completeness + People→email bridge + has_service)
-- Founder ask was thematic, not a bug report ("improve linking people /
-  maintaining the database for volunteers, guests, donors"). Run shape: 3
-  recon lanes → orchestrator spot-verified every load-bearing claim (grep
-  for callers, index names, condition unions) → TWO parallel sonnet
-  implementation agents on disjoint file sets — one in the main checkout on
-  the run branch, one in a WORKTREE on a temp branch (`isolation:
-  "worktree"`), merged cleanly after both landed. Both first-try-green on
-  the full local suite; adversarial verifier found zero confirmed issues.
-  Worktree isolation is the right tool for a second same-repo implementation
-  agent: no interleaved commits, no tree contention, one clean merge.
-- Recon mislabel to watch (now an invariant): the meta lane called five
-  squash-merged source branches "in-flight collision risks." Tip dates +
-  commit subjects vs the merged-PR list settled it in one git command.
-- The spec'd-but-unwired class keeps paying: `setDonorPerson` (built for a
-  founder complaint, zero callers), `personEmails` ledger (write-side only,
-  no read query), `rsvps.by_person` guest history (indexed, never displayed).
-  Grep "export const" against mobile callers early — recon found all three
-  in one pass.
-- Cross-feature hash check paid again (#399 class): approval snapshot
-  already hashed includePersonIds AND the whole `targeting` object, so both
-  new features were auto-covered — but only a code-read + a new
-  CONTENT_DRIFT test proved it; the verifier confirmed post-approval
-  `send()`-time recheck too.
-- Stop-hook noise profile this run: repeated "commit and push" while a
-  subagent had half-done edits (refused, per standing rule) and repeated
-  "unverified commit" warnings on unpushed branch commits whose emails were
-  already correct — that flag is the missing GPG signature, unfixable in
-  sandbox and moot under squash-merge; set `git config user.email
-  noreply@anthropic.com` once and move on, don't rebase mid-flight while
-  agents/tests hold the tree.
-- Roadmap intentionally left for future runs (say so in the PR): volunteer
-  aggregation from `engagements` (+ a `volunteered_event/any` condition),
-  unifying the two divergent person-merge repoint paths (dataHygiene vs
-  login-time lib/people — different coverage, correctness risk), dedup UI
-  consolidation, people export (no backend exists).
-

@@ -611,6 +611,80 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
     // inflow row (t4).
     const spend = await s.as.query(api.finances.listReconcile, { filter: "spend" });
     expect(spend.rows.map((r) => r.id).sort()).toEqual([t1, t2].sort());
+
+    // The header's totals follow the SELECTION, not the page — see
+    // `selectionTotals`. Under "all": t4 in ($4.00), t1+t2 out ($3.00).
+    expect(all.selectionTotals).toEqual({
+      inCents: 400,
+      outCents: 300,
+      netCents: 100,
+      neutralCount: 0,
+    });
+    // Narrowing the filter narrows the total with it, which is the whole ask.
+    expect(spend.selectionTotals).toEqual({
+      inCents: 0,
+      outCents: 300,
+      netCents: -300,
+      neutralCount: 0,
+    });
+  });
+
+  test("selection totals cover the WHOLE match set, not just the returned page", async () => {
+    // The defect this guards against: summing the rows the query happens to
+    // ship would report a different number after every "Load more" — a total
+    // that quietly means "this page" is worse than no total at all.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    for (let i = 0; i < 5; i++) await insertTxn(s, { amountCents: 1000 });
+
+    const paged = await s.as.query(api.finances.listReconcile, {
+      filter: "all",
+      limit: 2,
+    });
+    expect(paged.rows).toHaveLength(2);
+    expect(paged.hasMore).toBe(true);
+    expect(paged.matchedCount).toBe(5);
+    // All five, not the two on the page.
+    expect(paged.selectionTotals.outCents).toBe(5000);
+    expect(paged.selectionTotals.netCents).toBe(-5000);
+  });
+
+  test("a marked internal transfer counts toward no total, and says so via neutralCount", async () => {
+    // `signedBookCents` is the one authority on what a row contributes, so the
+    // rows it zeroes are zero here too — a marked transfer moves cash between
+    // accounts the org already owns, which is neither earning nor spending. A
+    // selection made only of those totals $0 legitimately, and `neutralCount`
+    // is what lets the grid explain that instead of looking broken.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    await insertTxn(s, { amountCents: 700 });
+    const moved = await insertTxn(s, { amountCents: 999 });
+    // The signature `finances.markAsTransfer` writes, and nothing else does.
+    await run(s.t, (ctx) =>
+      ctx.db.patch(moved, { flow: "transfer", preMarkFlow: "outflow" }),
+    );
+
+    const transfersOnly = await s.as.query(api.finances.listReconcile, {
+      filters: ["transfers"],
+    });
+    expect(transfersOnly.matchedCount).toBe(1);
+    expect(transfersOnly.selectionTotals).toEqual({
+      inCents: 0,
+      outCents: 0,
+      netCents: 0,
+      neutralCount: 1,
+    });
+
+    // And the ordinary spend row is unaffected by its neighbour.
+    const spendOnly = await s.as.query(api.finances.listReconcile, {
+      filters: ["spend"],
+    });
+    expect(spendOnly.selectionTotals.outCents).toBe(700);
+    expect(spendOnly.selectionTotals.neutralCount).toBe(0);
   });
 
   test("missing_receipt excludes a reconciled-but-receiptless row — matches receiptChase's predicate", async () => {

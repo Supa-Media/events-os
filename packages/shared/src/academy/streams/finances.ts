@@ -205,6 +205,58 @@
  * tip names both halves instead of the single old filter. Titles, minutes and
  * quiz lengths are unchanged everywhere (both rewritten quizzes are at the
  * 5-question cap, so the questions were swapped, not added).
+ *
+ * FOUNDER CALL, 2026-08-12 — three changes, one new section.
+ *
+ * `finance-three-tracks` ("Green, yellow, red") is NEW, inserted between
+ * `finance-stewardship` and `finance-card-and-receipts`. It teaches the
+ * spending policy in the founder's own frame: name the budget it comes out of,
+ * check there's enough left in it, then decide the track — green (spend, and
+ * tell the budget's owner it's landing there), yellow (get a yes BEFORE
+ * spending, not after), red (don't; no budget or approval makes it green, and
+ * it comes back as a personal charge). "What exactly is red" is spelled out
+ * because the founder asked for precisely that — the honest test being whether
+ * you'd want a backer to see the receipt.
+ *
+ * It sits BEFORE the card lesson because that is the real sequence: whose
+ * money it is → the check you run before you spend → closing the loop
+ * afterwards. Every other finance lesson in this course starts after the money
+ * has already left, which is the point at which none of it is cheap to change.
+ * It also carries the budget-owner rule from the same call: one person owns
+ * each event/project budget, and spending WITHIN an approved budget is a
+ * heads-up to them, not a fresh approval.
+ *
+ * Deliberately no product mechanism: there is no track field and no gate that
+ * reads one. The founders were explicit that this is enforced by training and
+ * meetings rather than software ("there's not really a way you can enforce
+ * it… it'll just be training"). What the product does enforce — approved
+ * budgets capping spend, coding review, an unaccounted charge becoming
+ * personal — is taught in the lessons that own those mechanisms.
+ *
+ * `finance-tiers-and-skim` now DERIVES the operating formula instead of
+ * asserting it. The founder asked "where does 570 come from?" and the honest
+ * answer already existed in `finance.ts`'s constants but had never reached the
+ * lesson: film $200 · event food $160 · equipment transport $100 · storage $60
+ * · software $50 = the $570 fixed base, plus $20/teammate for the monthly team
+ * meal. Added with it: an explicit rule that adding a teammate costs real
+ * recurring money (her ask — "let chapter directors know that it's not free to
+ * add people to the team") framed as a reason to grow deliberately rather than
+ * a reason to stay small; and the conference sinking fund both EXPLAINED (so
+ * teammates don't personally bear the cost of the network getting in one room,
+ * and so central isn't asked to fund a 50-person team's seats) and flagged as
+ * the model's one forward-looking line, since no conference is scheduled. Two
+ * questions swapped in at the 5-cap — see the snapshot test's header for which
+ * two came out and why.
+ *
+ * `finance-card-and-receipts` gained the one caveat that makes its day-7 table
+ * true: the auto-lock works by Increase asking us to approve each
+ * authorization in real time, which only happens for cards Increase issued. A
+ * legacy Relay card linked by last-4 has no Increase object, so it cannot be
+ * locked — and the sweep no longer pretends otherwise (see
+ * `cards.ts#canEnforceCardLock` and migration 0064, which releases the rows it
+ * had already falsely stamped). The lesson says so plainly and says what does
+ * still apply, which is everything else. Its swapped-in question tests exactly
+ * that distinction: the lock is one enforcement mechanism, not the rule.
  */
 
 import type {
@@ -337,6 +389,214 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
+  // ── 31b · Finances for everyone: the three tracks ──────────────────────────
+  // Founder policy, 2026-08-12 call: "when spending, it's green, yellow, red…
+  // know what budget you're going to be spending out of, and know that there
+  // is enough money in that budget for it… get approval if it's yellow track.
+  // Never red. And just making sure that everybody knows what exactly is red."
+  //
+  // Placed BETWEEN stewardship and the card lesson because that's the real
+  // sequence: whose money it is → the check you run BEFORE you spend → closing
+  // the loop after. Every other finance lesson in this course is about what
+  // happens once the money has already left; this is the only one that runs
+  // beforehand, which is the only moment any of it is still cheap to change.
+  //
+  // The tracks are DELIBERATELY not a product feature. There is no track field
+  // on a transaction and no gate that reads one — enforcement is a person
+  // deciding before they tap, and the founders were explicit that this is
+  // taught and reinforced in meetings rather than enforced by software ("there's
+  // not really a way you can enforce it… it'll just be training"). What the
+  // product does enforce lives elsewhere and is already taught elsewhere:
+  // approved budgets cap spending, coding is reviewed, an unaccounted-for
+  // charge becomes personal. This lesson is the judgment those mechanisms
+  // assume.
+  {
+    slug: "finance-three-tracks",
+    title: "Green, yellow, red",
+    subtitle: "The thirty seconds before you tap the card",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Almost every money problem a chapter has starts in the same place: someone spent first and worked out the details afterwards. Not dishonestly — they were at a store, the event was Saturday, it seemed obviously fine. The fix isn't more paperwork afterwards. It's about thirty seconds of thinking before.",
+      },
+      {
+        kind: "heading",
+        text: "Three questions, in order",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Which budget does this come out of?** Not \"the chapter's money\" — a specific, named, approved budget. If you can't name one, you've already found your answer: this isn't green.",
+          "**Is there enough left in it?** Not what the budget started at — what's left after everything already charged to it. Open it and look; the app knows.",
+          "**Which track is this on — green, yellow, or red?** The rest of this lesson.",
+        ],
+      },
+      {
+        kind: "table",
+        headers: ["Track", "What it means", "What you do"],
+        rows: [
+          [
+            "🟢 **Green**",
+            "An approved budget covers it, there's room, and it's the ordinary kind of thing that budget is for",
+            "Spend. Tell the budget's owner it's landing on their budget.",
+          ],
+          [
+            "🟡 **Yellow**",
+            "Real mission spending, but something is off-pattern — no budget quite covers it, the room is thin, it's unusually large, or it's a category that budget has never carried",
+            "Get a yes BEFORE you spend. Not after.",
+          ],
+          [
+            "🔴 **Red**",
+            "Spending Public Worship should not be making at all",
+            "Don't. No budget and no approval turns a red purchase green.",
+          ],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Yellow means ask first — that's the entire rule",
+        text: "A yellow purchase made without asking doesn't become green because it turned out fine, and asking afterwards isn't asking. The whole value of the yellow track is that the conversation happens while the answer can still be no. Approval after the fact is just a report, and it puts the person you're telling in the position of either rubber-stamping something they'd have questioned or making you eat the cost — which is a bad position to put a teammate in, and the reason this rule exists at all.",
+      },
+      {
+        kind: "heading",
+        text: "What exactly is red",
+      },
+      {
+        kind: "p",
+        text: "Red isn't \"expensive\" and it isn't \"unbudgeted\" — a $4,000 sound system can be green and a $12 purchase can be red. Red is about the KIND of spending, which is why no approval fixes it. Concretely:",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Anything personal.** Groceries, your own clothes, a gift for your own family — even on a trip you're on for Public Worship, even when you intend to pay it back.",
+          "**Anything you'd be uncomfortable a backer seeing the receipt for.** This is the honest test, and it catches things no list can enumerate. Somebody gave $50 a month for the mission; would you want to show them this line?",
+          "**Anything that uses Public Worship's name or money for private benefit.** Booking through the org to get a discount for yourself, putting a friend's invoice through as a vendor, spending to do someone a favor.",
+          "**Anything you'd rather nobody found out about.** If the plan involves the charge not being noticed, or a description that's technically true but designed not to raise questions, that IS the red flag. There is no version of this that's fine.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "A red charge becomes yours",
+        text: "This isn't a warning about a hypothetical process. A charge judged red in coding review gets sent back as a **personal charge** — money you owe Public Worship, repaid out of your own pocket, recorded under your name. It happens at the review step, not at some tribunal, and the person doing the review is a teammate who has to look at a line and decide whether the org is comfortable standing behind it. Nobody enjoys that conversation. Not having it is worth thirty seconds of thought at the counter.",
+      },
+      {
+        kind: "heading",
+        text: "Who you ask, and what you're actually asking",
+      },
+      {
+        kind: "p",
+        text: "Every event and project has **one person who owns its budget** — the person who planned it and got it approved. That's who a purchase against that budget goes through. But notice what green actually asks of you: not a formal approval, just a heads-up. \"I'm about to buy the speakers — can I put that on the Worship With Strangers budget?\" Most of the time the answer is yes and it takes ten seconds.",
+      },
+      {
+        kind: "p",
+        text: "That ten seconds is doing real work, though. The owner is the only person who knows what else is still coming out of that budget, and plenty of purchases could legitimately land in two places — general operating or this specific event. Which one it lands on changes whether either has room later. Guessing silently is how a budget that looked fine all month is suddenly over at close, with no single purchase to blame.",
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "You're running errands for Saturday's event. The approved event budget has $300 left. At the store you grab $80 of supplies that are clearly on the plan — and you notice the extension cords the chapter has needed for months, another $45. Same trip, same card. What do you do?",
+        options: [
+          {
+            text: "Buy both — it's all chapter spending and the budget has room",
+            feedback:
+              "The $80 is green. The cords aren't — they're not what this event's budget was approved for, they're a chapter-wide purchase riding along because you happened to be standing there. That's textbook yellow: real, sensible, mission spending that belongs to a different pot. Buy the supplies, then text whoever owns general operating about the cords.",
+          },
+          {
+            text: "Buy the $80 of supplies; ask about the cords before buying them",
+            correct: true,
+            feedback:
+              "Right on both halves. The supplies are green — approved budget, room in it, exactly the kind of thing it's for. The cords are yellow, not because $45 is a lot but because they belong to a different budget than the one you're standing in. One message settles it, and it takes less time than the return trip would.",
+          },
+          {
+            text: "Buy neither until someone approves the whole trip",
+            feedback:
+              "Too cautious, and it doesn't scale — if green spending needed approval, having budgets approved in advance would mean nothing. The supplies are exactly what that budget was approved for. Go ahead.",
+          },
+          {
+            text: "Buy both, then split them correctly in coding afterwards",
+            feedback:
+              "Coding it correctly afterwards is necessary but it isn't the same thing. Whoever owns general operating still hasn't been told $45 left their budget, and they find out at close — which is exactly the surprise this rule exists to prevent. Coding records a decision; it doesn't make it.",
+          },
+        ],
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You're travelling for Public Worship and buy a $9 airport sandwich on the card. Green, yellow, or red?",
+        answer:
+          "Green, in almost every chapter — eating on a trip you're on for the mission is ordinary travel spending, and travel budgets exist for exactly this. What would make it red isn't the amount: it's buying a second sandwich for tomorrow, or picking up something for home in the same transaction. The line isn't cost, it's whether the money was spent on the mission or on you.",
+      },
+      {
+        kind: "tip",
+        text: "**When you genuinely can't tell, it's yellow.** \"I couldn't decide, so I asked\" is a completely respectable outcome and costs one message. \"I couldn't decide, so I bought it\" is how a charge ends up in review with no good answer available. Uncertainty is itself the signal — a green purchase doesn't feel uncertain.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What are the three things to check before you spend?",
+        options: [
+          "The price, the vendor, and whether you have the receipt",
+          "Which budget it comes out of, whether there's enough left in it, and which track it's on",
+          "Whether it's under $100, whether it's urgent, and who else knows",
+          "Your card balance, the month, and the chapter's tier",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Budget, room, track — in that order. The first two are facts you can look up in the app; the third is the judgment those facts feed.",
+      },
+      {
+        prompt: "A purchase is yellow. When do you get approval?",
+        options: [
+          "Before you spend",
+          "Afterwards, when you code the charge",
+          "At the monthly close",
+          "Only if someone questions it",
+        ],
+        answerIndex: 0,
+        explanation:
+          "Before — that's the whole of the yellow track. Asking afterwards isn't asking; it hands someone a decision that's already been made and forces them to either rubber-stamp it or make you pay for it.",
+      },
+      {
+        prompt: "Which of these makes a purchase RED?",
+        options: [
+          "It costs more than $500",
+          "No budget has been approved for it yet",
+          "It's personal, or it's something you'd be uncomfortable a backer seeing the receipt for",
+          "It was bought on a weekend",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Red is about the kind of spending, not the size or the paperwork. A large purchase with an approved budget is green; an unbudgeted one is yellow and needs a yes. Red is spending the org shouldn't be making at all — which is why no budget and no approval turns it green.",
+      },
+      {
+        prompt: "What actually happens to a charge judged red?",
+        options: [
+          "It's absorbed into the chapter's general budget",
+          "It becomes a personal charge — money you owe Public Worship and repay yourself",
+          "Nothing, as long as you attached a receipt",
+          "The budget owner is asked to approve it retroactively",
+        ],
+        answerIndex: 1,
+        explanation:
+          "It's sent back to you as a personal charge, recorded under your name and repaid out of your own pocket. A receipt doesn't help — proving you made the purchase was never the question.",
+      },
+      {
+        prompt:
+          "You're about to buy something clearly covered by an event's approved budget, with plenty of room. What do you owe the budget's owner?",
+        options: [
+          "A formal approval request before buying",
+          "Nothing at all — it's green",
+          "A quick heads-up that it's landing on their budget",
+          "A written justification at the monthly close",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Green doesn't need permission — that's what having an approved budget means. It does need a heads-up: the owner is the only person tracking everything else still to come out of that budget, and a purchase that arrives silently is one they can't plan around.",
+      },
+    ],
+  },
+
   // ── 32 · Finances for everyone: card + 7-day rule ──────────────────────────
   {
     slug: "finance-card-and-receipts",
@@ -367,6 +627,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "The lock is a self-service problem",
         text: "Nobody has to ask permission to fix it: the moment you upload the missing receipt, the auto-lock lifts on its own. The rule exists so the Treasurer's monthly close is never blocked on a receipt nobody remembers.",
+      },
+      {
+        kind: "tip",
+        text: "**One exception, and it's about the card, not about you.** The lock works by Public Worship being asked to approve each purchase as you make it — which only happens on cards Public Worship issues. A few people still carry an OLDER card from our previous bank, linked here by its last four digits; nobody asks us before those authorize, so they can't be locked and the app won't pretend otherwise. If that's your card, the day-7 line in the table above simply doesn't fire. **Everything else on this page still does**: the reminders, the Treasurer seeing the flag, and — past 60 days with no account of the spending — the charge becoming money you owe back. The deadline is the same; only the enforcement is quieter. Ask your Treasurer which kind you're carrying if you don't know.",
       },
       {
         kind: "p",
@@ -419,18 +683,6 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The unlock is self-service and instant: uploading the missing receipt clears the auto-lock the moment it lands, at any stage.",
       },
       {
-        prompt: "Why does the app lock the card instead of just sending more reminders forever?",
-        options: [
-          "To punish cardholders",
-          "An unresolved missing receipt would otherwise block the Treasurer's monthly close — the lock is what finally forces the loop closed",
-          "The bank requires it",
-          "It's a random security measure",
-        ],
-        answerIndex: 1,
-        explanation:
-          "The lock protects the close, not the cardholder's behavior for its own sake — an open loop at month-end is exactly what the Treasurer course teaches you to avoid.",
-      },
-      {
         prompt:
           "You emailed a receipt in on Monday. On Friday the charge still reads as missing its receipt. What's happening?",
         options: [
@@ -455,6 +707,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 2,
         explanation:
           "The rule is absolute: a receipt (or a clear photo of one) is required no matter the amount or the method. Skip it on either one and you risk being personally responsible — a card charge can be flagged personal, a reimbursement claim can simply be denied.",
+      },
+      {
+        prompt:
+          "You carry one of the older cards from our previous bank, which can't be auto-locked. What does that change about the 7-day rule?",
+        options: [
+          "Nothing about what you owe — the reminders, the Treasurer's flag, and eventually being billed for unaccounted spending all still apply; only the lock itself can't fire",
+          "The receipt deadline no longer applies to you",
+          "You get 30 days instead of 7",
+          "You have to hand the card back",
+        ],
+        answerIndex: 0,
+        explanation:
+          "The lock is one enforcement mechanism, not the rule. It works by Public Worship being asked to approve each purchase as it happens, which only cards Public Worship issues do — so on an older linked card it simply doesn't fire. Every other consequence is unchanged, including the charge becoming money you owe back once the spending has gone long enough without an account of it.",
       },
     ],
   },
@@ -1787,7 +2052,36 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "The chapter operating formula is $570 fixed + $20 per teammate, plus a conference sinking fund per funded seat (~$275÷12 for a driving city, ~$500÷12 for a flight). For a 5-person team that floor lands around $670/month — film, food, transport, storage, software, the ordinary costs of running the mission.",
+        text: "The other half of the covenant is what a chapter COSTS to run. That number isn't a guess or a target — it's the ordinary monthly cost of doing the work, added up line by line. Chapters commit to raising against it, so it's worth knowing where every dollar of it comes from.",
+      },
+      {
+        kind: "table",
+        headers: ["Every month, whatever the team size", "Cost"],
+        rows: [
+          ["Worship With Strangers — filming", "$200"],
+          ["Worship With Strangers — event food", "$160"],
+          ["Getting equipment to and from events", "$100"],
+          ["Storing that equipment", "$60"],
+          ["Software the chapter runs on", "$50"],
+          ["**Fixed base**", "**$570**"],
+        ],
+      },
+      {
+        kind: "p",
+        text: "Those five lines are the same whether the team is three people or ten — hence *fixed*. One line does scale: **$20 per teammate per month**, the meal at the monthly team meeting. So the floor is **$570 + $20 × team size**. A 5-person team: $570 + $100 = **$670/month**. Six people: $690. Seven: $710.",
+      },
+      {
+        kind: "rule",
+        title: "Adding someone to the team costs money",
+        text: "It's a real $20/month, every month, for as long as they're on the team — plus their seat in the conference fund below. That is NOT a reason to keep a chapter small; a bigger team is how a chapter does more, and the model expects it. It's a reason to add people **on purpose**, knowing the chapter's floor just moved and the raising has to move with it. Nobody joins a team for free, and a Chapter Director who adds four people without adjusting the plan has quietly raised the floor $80/month and told no one.",
+      },
+      {
+        kind: "p",
+        text: "On top of the floor sits a **conference sinking fund** — a per-teammate amount set aside monthly so that when the whole network gets in one room, the chapter can send its people. Budget roughly a twelfth of the trip per seat per month: about **$275÷12** for a city close enough to drive, **$500÷12** for one that needs a flight.",
+      },
+      {
+        kind: "tip",
+        text: "**Why we save for this instead of billing people, and why it isn't on your calendar yet.** No conference is scheduled — this is the one forward-looking line in the model, and it's here on purpose rather than being added the month a date gets announced. Two reasons. The first is that saving twelve months ahead is the only version a chapter can actually afford; asked for in one month it becomes a bill nobody planned for. The second is who'd end up paying it: without a fund, going means each teammate covering their own travel, which quietly turns a gathering into something only the people who can afford it attend. Central doesn't blanket-fund it either — a 50-person team would make that arithmetic impossible, and the seats would get rationed. So each chapter saves for its own, per seat, from now.",
       },
       {
         kind: "rule",
@@ -1836,18 +2130,6 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The skim is flat 15% for every chapter, modeled as an actual transfer, not just a number on a report.",
       },
       {
-        prompt: "Is the monthly 15% skim transfer automated today?",
-        options: [
-          "Yes, it moves automatically every month with no human involved",
-          "No — central's bookkeeper records it as a deliberate manual transfer; automating it would be complexity the network doesn't need with one chapter",
-          "It was automated, then removed after a bug",
-          "It's automated, but only above the 30-backer tier",
-        ],
-        answerIndex: 1,
-        explanation:
-          "The 15% is still real and still owed — recording it is just a deliberate manual step for now, not a gap waiting to be automated on any particular timeline.",
-      },
-      {
         prompt: "Where does a chapter's backer count actually come from today?",
         options: [
           "The Treasurer types it in by hand every month",
@@ -1860,17 +2142,29 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The count is derived, live, from real pledge activity. Nobody can set it by hand — the old manual-entry seam was removed after a typed-in number contradicted the real one on a public page.",
       },
       {
-        prompt:
-          "A donor's imported recurring gift sits in \"past due\" because their card couldn't be ported over. Does it count toward the chapter's backer number?",
+        prompt: "Your chapter has 6 teammates. What's its monthly operating floor?",
         options: [
-          "Yes — they committed, so they're a backer",
-          "No — the count only includes ACTIVE pledges, because it's a promise that money is arriving",
-          "Yes, but only until the end of the migration window",
-          "Only if their pledge is $100/month or more",
+          "$570 — the fixed base is the floor",
+          "$690 — the $570 fixed base plus $20 for each of the 6 teammates",
+          "$120 — $20 per teammate",
+          "It depends on the tier, not the team size",
         ],
         answerIndex: 1,
         explanation:
-          "Past due means a payment FAILED — no money is arriving. Counting it would tell the public a city is funded when it isn't, and could unlock a tier commitment on money that isn't coming. It counts again the moment that donor re-signs and the pledge goes active.",
+          "$570 + 6 × $20 = $690. The fixed base (film, event food, equipment transport, storage, software) doesn't move with team size; the $20 does — it's the monthly team meal, one per teammate.",
+      },
+      {
+        prompt:
+          "A Chapter Director adds four people to the team this month. What happened to the chapter's costs?",
+        options: [
+          "Nothing — people are free; only programs cost money",
+          "The monthly floor rose $80, plus four more seats in the conference fund — real recurring cost the plan has to account for",
+          "Costs fell, because more people share the work",
+          "Only the conference fund changes; the monthly floor is fixed",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Every teammate carries a real recurring cost. Growing the team is expected and good — the point is to do it deliberately, knowing the floor moved and the raising has to move with it, rather than discovering it at close.",
       },
     ],
   },
@@ -2651,6 +2945,9 @@ export const FINANCES_COURSES: Course[] = [
     icon: "dollar-sign",
     moduleSlugs: [
       "finance-stewardship",
+      // The BEFORE-you-spend lesson sits between whose-money-it-is and the
+      // card mechanics, because that's the real sequence a purchase follows.
+      "finance-three-tracks",
       "finance-card-and-receipts",
       "finance-receipt-exceptions",
       "finance-coding-your-charges",

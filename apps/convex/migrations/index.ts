@@ -82,6 +82,7 @@ import { addEventsCheckinDefaults } from "./0060_add_events_checkin_defaults";
 import { stampDigestWatermarkProvenance } from "./0061_stamp_digest_watermark_provenance";
 import { standardizePowers } from "./0062_standardize_powers";
 import { fixGenesisUtcMidnight } from "./0063_fix_genesis_utc_midnight";
+import { releaseLegacyCardAutolocks } from "./0064_release_legacy_card_autolocks";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -357,4 +358,11 @@ export const MIGRATIONS: Migration[] = [
   // (the shift moves a row off the exact-midnight boundary it's keyed on).
   // See 0063.
   fixGenesisUtcMidnight,
+  // A lock only stops a swipe when Increase asks us about the authorization,
+  // and it only asks about cards it issued — so the receipt auto-lock sweep was
+  // stamping `status:"locked"` on linked Relay rows that went on working. The
+  // sweep now skips them; this releases the ones it already marked, so no
+  // surface keeps reporting an enforcement that never happened. The receipts
+  // stay owed. See 0064.
+  releaseLegacyCardAutolocks,
 ];

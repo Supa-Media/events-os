@@ -343,6 +343,7 @@ const REGISTRY_NAMES = [
   "0061_stamp_digest_watermark_provenance",
   "0062_standardize_powers",
   "0063_fix_genesis_utc_midnight",
+  "0064_release_legacy_card_autolocks",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

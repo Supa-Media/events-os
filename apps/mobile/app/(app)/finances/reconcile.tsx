@@ -78,6 +78,7 @@ import {
   RECONCILE_HEADER_CHIPS,
   RECONCILE_FILTER_LABELS,
   displayMerchantName,
+  formatCents,
   parseReconcileFilters,
   serializeReconcileFilters,
   type PayoutProcessor,
@@ -492,6 +493,12 @@ function ReconcileGrid() {
   // 100 of 346" is a statement about the book, not about the page.
   const matchedCount = reconcile?.matchedCount ?? 0;
   const hasMore = reconcile?.hasMore ?? false;
+  const selectionTotals = reconcile?.selectionTotals ?? {
+    inCents: 0,
+    outCents: 0,
+    netCents: 0,
+    neutralCount: 0,
+  };
   // The server stood the State/roll-up filters down to run this search. Said
   // out loud below: a filter that silently stops applying is the whole defect.
   const searchIgnoredState = reconcile?.searchIgnoredState ?? false;
@@ -1144,6 +1151,67 @@ function ReconcileGrid() {
                 Searching the whole book — state filters don’t apply while you
                 search.
               </Text>
+            </View>
+          ) : null}
+
+          {/* WHAT THIS SELECTION ADDS UP TO (founder ask 2026-08-12: "I want
+              to see the total figure on the reconcile," not only on the
+              dashboard). Server-computed over the WHOLE match set — the same
+              population `matchedCount` reports — so it keeps telling the truth
+              while the grid pages 100 rows of 346. A client-side sum of loaded
+              rows would say something different after every "Load more", which
+              is exactly the kind of number that teaches people not to trust
+              the screen.
+
+              Money in / money out / net rather than one figure, because the
+              queue routinely holds both directions at once and a lone net of
+              "$40" over a filtered month answers nothing. */}
+          {matchedCount > 0 ? (
+            <View className="mb-3 flex-row flex-wrap items-center gap-x-4 gap-y-1 rounded-lg border border-border/60 bg-sunken px-3 py-2">
+              <View className="flex-row items-baseline gap-1.5">
+                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                  In
+                </Text>
+                <Text className="text-sm text-ink">
+                  {formatCents(selectionTotals.inCents)}
+                </Text>
+              </View>
+              <View className="flex-row items-baseline gap-1.5">
+                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                  Out
+                </Text>
+                <Text className="text-sm text-ink">
+                  {formatCents(selectionTotals.outCents)}
+                </Text>
+              </View>
+              <View className="flex-row items-baseline gap-1.5">
+                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                  Net
+                </Text>
+                <Text
+                  className={`text-sm font-semibold ${
+                    selectionTotals.netCents < 0 ? "text-warn" : "text-ink"
+                  }`}
+                >
+                  {formatCents(selectionTotals.netCents)}
+                </Text>
+              </View>
+              <Text className="text-2xs text-faint">
+                {`across ${matchedCount} ${matchedCount === 1 ? "row" : "rows"}`}
+              </Text>
+              {/* Say why a non-empty selection can still total nothing, rather
+                  than letting it read as a broken number. */}
+              {selectionTotals.neutralCount > 0 ? (
+                <View className="flex-row items-center gap-1">
+                  <Text className="text-2xs text-faint">
+                    {`${selectionTotals.neutralCount} not counted`}
+                  </Text>
+                  <InfoTooltip
+                    text="Some rows contribute nothing to a book's value by design, so they're left out of these totals: excluded duplicates and bank errors, transfers you've marked as money moving between your own accounts, and processor payout deposits (that revenue is already counted when the gift, ticket or sale was recorded — counting the deposit too would double it)."
+                    size={12}
+                  />
+                </View>
+              ) : null}
             </View>
           ) : null}
         </Narrow>

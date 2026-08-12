@@ -205,6 +205,46 @@ describe("dashboardChapter: Needs-attention queue", () => {
     const item = dash.attention.find((a) => a.kind === "cards");
     expect(item).toBeDefined();
     expect(item?.badgeCount).toBe(1);
+    // NAME the cardholder — a bare count is a notification you can't act on
+    // without opening another screen to find out who it's about.
+    const holder = await run(s.t, (ctx) => ctx.db.get(personId));
+    expect(item?.detail).toContain(holder!.name);
+  });
+
+  test("a legacy (Relay) card is never 'nearing a lock' — it can't be locked", async () => {
+    // The lock is enforced by `decideCardAuthorization`, which Increase
+    // reaches by `increaseCardId`. A linked Relay row has none, so promising a
+    // lock here would be the same false claim the auto-lock sweep used to
+    // make. Its missing receipts stay visible in Receipt Chase, which scans
+    // transactions rather than cards.
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await asChapterManager(s);
+
+    await run(s.t, async (ctx) => {
+      const cardId = await ctx.db.insert("cards", {
+        chapterId: s.chapterId,
+        cardholderPersonId: personId,
+        type: "physical",
+        source: "legacy",
+        last4: "4242",
+        status: "active",
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "relay_csv",
+        flow: "outflow",
+        amountCents: 4200,
+        postedAt: Date.now() - 1 * DAY_MS,
+        status: "unreviewed",
+        cardId,
+        createdAt: Date.now(),
+      });
+    });
+
+    const dash = await s.as.query(api.finances.dashboardChapter, {});
+    expect(dash.attention.find((a) => a.kind === "cards")).toBeUndefined();
   });
 
   test("a charge already PAST the grace window is not 'nearing' (it auto-locks)", async () => {
