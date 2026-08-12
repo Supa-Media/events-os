@@ -87,7 +87,7 @@ export function ReimbursementContextBlock({
   if (!context) return null;
 
   return (
-    <View className="gap-2.5 rounded-lg border border-accent/30 bg-accent/5 px-3 py-3">
+    <View className="mb-4 gap-2.5 rounded-lg border border-accent/30 bg-accent/5 px-3 py-3">
       <View className="flex-row items-center gap-2">
         <Icon name="file-text" size={14} color={colors.accent} />
         <Text className="text-2xs font-bold uppercase tracking-wider text-accent">

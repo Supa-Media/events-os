@@ -116,6 +116,7 @@ export function TransactionCodingSection({
     minPurposeLength,
     categoryName,
     categoryExpenseTypeHint,
+    reimbursementContext,
   } = data;
   // The chip row's category context — `null` (not `undefined`) when the
   // charge is simply uncategorized, so the chips still get the "nothing
@@ -360,6 +361,7 @@ export function TransactionCodingSection({
           // block says what it knows for certain (`hasDocumentation`) rather
           // than guessing which of a receipt or an exception documents it.
           hasDocumentation={hasDocumentation}
+          reimbursementContext={reimbursementContext}
           documentationSlot={
             <CodingDocumentation
               transactionId={transactionId}
