@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { PREVIEW_BANNER_TEXT } from "../lib/publicLedgerPage";
 
 /**
  * THE PUBLIC LEDGER — publishing the books, and being held to them.
@@ -1158,5 +1159,115 @@ describe("explaining a month", () => {
     await seedPerson(s, "No Grant");
     await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
     await expect(worklist(s, "2024-06")).rejects.toThrow(ConvexError);
+  });
+});
+
+// ── The full-page draft preview ──────────────────────────────────────────────
+// `?preview=<token>` (`http.ts`) — the publish console's "see the full page
+// before you publish" button. Everything here is about the one property that
+// matters: a stranger with the URL but no token learns nothing, and a
+// publisher with a token sees EXACTLY what publishing right now would put in
+// front of that stranger — built from the live books, never written anywhere.
+
+describe("the full-page draft preview", () => {
+  test("minting a preview token requires console access", async () => {
+    // A plain chapter member — no finance role, no finance seat, nothing
+    // `requireLedgerConsole` recognizes.
+    const s = await setupChapter(newT(), { email: "nobody@publicworship.life" });
+    await expect(
+      s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+        periodKey: AUG_KEY,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a valid token renders the live, unpublished month — including a draft-only line", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, {
+      amountCents: 4783,
+      merchantName: "Costco Wholesale",
+    });
+    await approveCoding(s, txnId, {
+      businessPurpose: "Water and cups for the WWS setup team",
+    });
+    // Never submitted, never published — this line exists only in the live
+    // books. A preview built from `financePublicationEntries` (there are
+    // none) would render an empty month instead.
+    const { token } = await s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+      periodKey: AUG_KEY,
+    });
+
+    const res = await s.t.fetch(`/finances/${AUG_KEY}?preview=${token}`, {});
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Costco Wholesale");
+    expect(body).toContain(PREVIEW_BANNER_TEXT);
+    expect(body).toContain('<meta name="robots" content="noindex">');
+    // Never cached — a draft preview must not be served stale to a second
+    // viewer of the same link.
+    expect(res.headers.get("cache-control")).toContain("no-store");
+  });
+
+  test("a garbage token, and a real token past its expiry, both 404 with no page", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, { merchantName: "Costco" });
+    await approveCoding(s, txnId, { businessPurpose: "Supplies" });
+    const { token } = await s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+      periodKey: AUG_KEY,
+    });
+
+    const garbage = await s.t.fetch(
+      `/finances/${AUG_KEY}?preview=not-a-real-token`,
+      {},
+    );
+    expect(garbage.status).toBe(404);
+    expect(await garbage.text()).not.toContain("Costco");
+
+    // A token minted for August must not render September, or vice versa —
+    // a token is single-scope+period, not a general bypass.
+    const wrongPeriod = await s.t.fetch(`/finances/2026-09?preview=${token}`, {});
+    expect(wrongPeriod.status).toBe(404);
+
+    await run(s.t, async (ctx) => {
+      const row = await ctx.db.query("financePublicationPreviewTokens").first();
+      await ctx.db.patch(row!._id, { expiresAt: Date.now() - 1 });
+    });
+    const expired = await s.t.fetch(`/finances/${AUG_KEY}?preview=${token}`, {});
+    expect(expired.status).toBe(404);
+    expect(await expired.text()).not.toContain("Costco");
+  });
+
+  test("the public published route is unaffected — no banner, and the public cache header", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, { merchantName: "Costco" });
+    await approveCoding(s, txnId, { businessPurpose: "Supplies for the team" });
+    await publishMonth(s);
+
+    const res = await s.t.fetch(`/finances/${AUG_KEY}`, {});
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain(PREVIEW_BANNER_TEXT);
+    expect(body).not.toContain('name="robots"');
+    expect(res.headers.get("cache-control")).toBe("public, max-age=60");
+  });
+
+  test("minting and viewing a preview writes no publication, revision, or entry row", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, { amountCents: 4783 });
+    await approveCoding(s, txnId, { businessPurpose: "Snacks for the team" });
+
+    const { token } = await s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+      periodKey: AUG_KEY,
+    });
+    await s.t.fetch(`/finances/${AUG_KEY}?preview=${token}`, {});
+
+    const [pubs, revisions, entries] = await Promise.all([
+      run(s.t, (ctx) => ctx.db.query("financePublications").collect()),
+      run(s.t, (ctx) => ctx.db.query("financePublicationRevisions").collect()),
+      run(s.t, (ctx) => ctx.db.query("financePublicationEntries").collect()),
+    ]);
+    expect(pubs).toHaveLength(0);
+    expect(revisions).toHaveLength(0);
+    expect(entries).toHaveLength(0);
   });
 });
