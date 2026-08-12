@@ -2279,3 +2279,6 @@ export * from "./registrations";
 
 // ── The public ledger: publication lifecycle, period keys, published columns ─
 export * from "./publicLedger";
+
+// ── Powers: the standardized permission vocabulary (grammar + implication) ───
+export * from "./powers";

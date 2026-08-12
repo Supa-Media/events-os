@@ -160,139 +160,95 @@ describe("chapter ↔ central rollup", () => {
 });
 
 describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director finance.viewer added 2026-07-17 per owner decision — see seats.ts's chapter_director doc comment)", () => {
-  // Pins the exact set of seats + which ones carry capabilities, so a future
-  // edit to SEAT_DEFS trips a loud, specific failure here instead of silently
-  // drifting from the approved org-chart flowchart. The finance trio + the
-  // F-6 P1 giving trio (giving.manage/giving.view/nav.giving) are the
-  // capability-carrying seats. 2026-07-19 (owner decision, Seyi): giving became
-  // an assignable per-role POWER (apps/convex/seats.ts#setSeatGivingPower) —
-  // `financial_manager` and `expansion_director` gained the default
-  // `giving.view` + `nav.giving` (central-lens READ) as part of the owner's
-  // default-access list. These are TEMPLATE defaults; the ED retunes them at
-  // runtime, so this pin tracks what a fresh org is STAMPED with, not the live
-  // per-org state.
+  // Pins the exact set of seats + which ones carry powers, so a future edit to
+  // SEAT_DEFS trips a loud, specific failure here instead of silently drifting
+  // from the approved org-chart flowchart. These are TEMPLATE defaults; the ED
+  // retunes them at runtime, so this pin tracks what a fresh org is STAMPED
+  // with, not the live per-org state.
+  //
+  // 2026-08-12 — REPINNED for the standardized power vocabulary
+  // (`powers.ts`). Two things changed about how to read this list:
+  //
+  //  1. Every entry is now the MINIMAL set. A seat lists only what it is
+  //     GRANTED, never what those grants imply — the ED carries
+  //     `email.campaigns.approve` alone, where it used to also spell out the
+  //     compose and design rungs beneath it. `expandPowers` derives the rest,
+  //     and `powers.test.ts` pins the expansions.
+  //  2. Three strings vanished org-wide, and none of them cost anyone access:
+  //     `finance.central` was a SCOPE (central-held powers reach every chapter
+  //     by rule now), `finance.record` was read by nothing, and `nav.*` is
+  //     derived from holding any power in the domain.
   const EXPECTED_CAPABILITIES_BY_SEAT: Record<SeatId, readonly string[]> = {
-    // 2026-07-24: added campaigns.approve + campaigns.compose (founder
-    // requirement — two-party campaign approval; the ED can compose/send,
-    // but every send needs a DIFFERENT approval-power holder's sign-off).
-    // 2026-07-28: + campaigns.design (approve implies compose implies
-    // design; every implied rung is listed explicitly on the def so the
-    // seat chart, not a resolver's implication map, is the honest answer to
-    // "who can edit a shared template/theme/image?").
-    // 2026-08-11: + finance.publish (the public ledger). The ED speaks for
-    // the org, so the ED may publish its books — and being a CENTRAL seat,
-    // any book. Deliberately NOT implied by any finance rung: reconciling
-    // and speaking to the whole city are different powers. See
-    // seats.ts's `finance.publish` doc.
+    // The ED approves and publishes; they deliberately do NOT keep the books
+    // (no `finance.edit` — that is the Financial Manager's desk). Being a
+    // CENTRAL seat, each of these reaches every chapter as well as central.
     executive_director: [
-      "finance.central",
-      "finance.accounts",
-      "finance.approve",
-      "nav.finances",
-      "org.editChart",
-      "giving.manage",
-      "giving.view",
-      "nav.giving",
-      "campaigns.approve",
-      "campaigns.compose",
-      "campaigns.design",
+      "finance.accounts.view",
+      "finance.budgets.approve",
+      "finance.ledger.publish",
+      "org.chart.edit",
+      "giving.edit",
+      "email.campaigns.approve",
       "data.export",
-      "finance.publish",
     ],
-    // 2026-07-19: added giving.view + nav.giving (owner decision — FM gets
-    // central-lens donor READ as an assignable power default). 2026-07-24:
-    // added campaigns.approve + campaigns.compose (founder requirement — the
-    // FM is one of the org's valid campaign approvers alongside the ED and
-    // Marketing Director). 2026-07-28: + campaigns.design (implied by
-    // approve, listed explicitly — see the ED's note above).
+    // `finance.edit` at central replaces what took four strings before
+    // (`finance.manager` + `finance.central` + `finance.accounts` +
+    // `finance.record`). `finance.ledger.publish` stays separate: the FM
+    // closes the books monthly, and publishing them is its own leaf that no
+    // finance rung implies.
     financial_manager: [
-      "finance.manager",
-      "finance.central",
-      "finance.accounts",
-      "finance.record",
-      "nav.finances",
+      "finance.edit",
+      "finance.ledger.publish",
       "giving.view",
-      "nav.giving",
-      "campaigns.approve",
-      "campaigns.compose",
-      "campaigns.design",
+      "email.campaigns.approve",
       "data.export",
-      // 2026-08-11: the FM closes the books monthly, so the FM publishes
-      // them.
-      "finance.publish",
     ],
-    // 2026-07-31: + data.export on the six seats the founder granted bulk
+    // 2026-07-31: data.export on the six seats the founder granted bulk
     // extraction to (ED, FM, Development Director, Expansion Director,
-    // Marketing Director, Chapter Director). See seats.ts's `data.export` doc.
-    development_director: [
-      "giving.manage",
-      "giving.view",
-      "nav.giving",
-      "data.export",
-    ],
-    partnership_associate: ["giving.view", "nav.giving"],
-    fundraising_associate: ["giving.view", "nav.giving"],
+    // Marketing Director, Chapter Director).
+    development_director: ["giving.edit", "data.export"],
+    partnership_associate: ["giving.view"],
+    fundraising_associate: ["giving.view"],
     music_director: [],
     a_and_r: [],
     artists: [],
     musicians: [],
     songwriters: [],
-    // 2026-07-24: added campaigns.approve + campaigns.compose (founder
-    // requirement, verbatim: "ED approved by Marketing Director" — named as
-    // a valid second party for two-party campaign approval). 2026-07-28:
-    // + campaigns.design (implied by approve; the MD owns the brand).
-    marketing_director: [
-      "campaigns.approve",
-      "campaigns.compose",
-      "campaigns.design",
-      "data.export",
-    ],
-    // 2026-07-28: campaigns.design ONLY — the two seats that actually build
-    // the newsletter own themes/templates/the image library, but a mass send
-    // stays a two-party decision above them. The ED can promote either seat
-    // to Compose/Approve at runtime (`seats.ts#setSeatCampaignPower`).
-    social_media_manager: ["campaigns.design"],
-    graphic_designer: ["campaigns.design"],
+    // 2026-07-24 (founder, verbatim: "ED approved by Marketing Director") —
+    // a valid second party for two-party campaign approval.
+    marketing_director: ["email.campaigns.approve", "data.export"],
+    // The two seats that actually build the newsletter own themes, templates
+    // and the image library, but a mass send stays a two-party decision above
+    // them. The ED can promote either to Compose/Approve at runtime
+    // (`seats.ts#setSeatCampaignPower`).
+    social_media_manager: ["email.assets.edit"],
+    graphic_designer: ["email.assets.edit"],
     marketing_associate: [],
-    // 2026-07-19: added giving.view + nav.giving (owner decision — Expansion
-    // Director stewards the launch pipeline giving funds; central-lens READ as
-    // an assignable power default).
-    expansion_director: ["giving.view", "nav.giving", "data.export"],
+    expansion_director: ["giving.view", "data.export"],
     chapter_directors: [],
     recruiting_associate: [],
     training_associate: [],
-    // 2026-07-17: added finance.viewer (owner decision — CD sees chapter
-    // spending, but reconcile/record stays the Treasurer's job).
-    // F-6 P1: chapter-lens giving.view + nav.giving (development desk read).
-    // 2026-08-06: added events.checkin — door check-in access for the QR
-    // scanner (the chapter director is one of "signed-in people we've given
-    // access to" by default — see seats.ts's `events.checkin` doc).
+    // A CHAPTER seat: `finance.view` is read of the whole finance domain at
+    // THIS chapter. It needs no carve-out for the org's bank accounts because
+    // those live at central, which a chapter grant never reaches.
+    // `finance.ledger.publish` publishes their own chapter's month — paired
+    // with the Treasurer PREPARING it, which is exactly why the Treasurer
+    // below does not carry it.
     chapter_director: [
-      "finance.approve",
-      "finance.viewer",
-      "nav.finances",
+      "finance.view",
+      "finance.budgets.approve",
+      "finance.ledger.publish",
       "giving.view",
-      "nav.giving",
       "data.export",
       "events.checkin",
-      // 2026-08-11: publishes their OWN chapter's month (a chapter-scope
-      // seat reaches only its own book). Pairs with the Treasurer preparing
-      // it — which is exactly why the Treasurer below does NOT carry it: the
-      // separation-of-duties check would refuse their own publish anyway.
-      "finance.publish",
     ],
-    treasurer: [
-      "finance.manager",
-      "finance.record",
-      "nav.finances",
-      "giving.view",
-      "nav.giving",
-    ],
+    // `finance.edit` at CHAPTER scope — the whole finance domain for this
+    // chapter and nothing beyond it.
+    treasurer: ["finance.edit", "giving.view"],
     music_lead: [],
     vocal_lead: [],
     band_lead: [],
-    // 2026-08-06: added events.checkin — the door check-in gate for the QR
-    // scanner (see seats.ts's `events.checkin` doc for the full default list).
+    // 2026-08-06: the door check-in gate for the QR scanner.
     event_lead: ["events.checkin"],
     event_organizers: ["events.checkin"],
     production_coordinator: ["events.checkin"],

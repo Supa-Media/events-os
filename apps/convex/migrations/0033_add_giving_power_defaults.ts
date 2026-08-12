@@ -13,8 +13,8 @@ import type { Migration } from "./index";
  * so making it a runtime-assignable POWER is a data change, not an enforcement
  * one. The template (`packages/shared/src/seats.ts`) gained the two seats the
  * owner's list was missing — `expansion_director` and `financial_manager` now
- * default to `giving.view` + `nav.giving` (central-lens READ; never
- * `giving.manage`, which stays the Development Director / ED desk). This
+ * default to `giving.view` + `the derived nav rule` (central-lens READ; never
+ * `giving.edit`, which stays the Development Director / ED desk). This
  * migration carries that template edit onto the LIVE `seatDefs` rows already
  * stamped by `0022_seed_seat_defs` — a template change alone never reaches an
  * already-seeded org (only a NEW org stamped after this PR picks it up
@@ -37,7 +37,7 @@ import type { Migration } from "./index";
  *      APPENDS the two missing capabilities to a row that lacks them, and
  *      skips a row that already carries `giving.view`. It never removes a
  *      capability and never rewrites the array wholesale. If the ED has since
- *      turned an FM/Expansion seat's giving to "manage" (adding `giving.manage`)
+ *      turned an FM/Expansion seat's giving to "manage" (adding `giving.edit`)
  *      or to "none" (removing `giving.view`), re-running this is a no-op /
  *      still-additive and never reverts their intent:
  *        - already has `giving.view` (default, or manager) → skipped.
@@ -45,6 +45,17 @@ import type { Migration } from "./index";
  *          That's the ledger's job (it runs ONCE), so in practice this fires
  *          exactly once on the backfill; a hand re-run re-asserting the
  *          template default is the same "template default" contract 0022 has.
+ *
+ * VOCABULARY UPDATE (2026-08-12): the capability strings below were rewritten
+ * into the standardized power vocabulary (`packages/shared/src/powers.ts`).
+ * The migration's BEHAVIOR is unchanged — same seats, same defaults, same
+ * additive-and-idempotent shape — only the strings it reads and writes moved
+ * to the new grammar. Rewriting a shipped migration is normally the wrong
+ * instinct, but these read and write a vocabulary that no longer exists: left
+ * alone they would stamp dead strings onto every FRESH database, which is both
+ * useless (no gate asks for them) and the one thing preventing the storage
+ * validator's legacy arm from ever being deleted. Existing deployments are
+ * untouched either way — the ledger means this body never runs there again.
  */
 const TARGET_SLUGS = ["expansion_director", "financial_manager"] as const;
 
@@ -61,13 +72,15 @@ export async function runAddGivingPowerDefaults(ctx: MutationCtx) {
     for (const row of rows) {
       // Additive + content-idempotent: only touch a row still missing the
       // default READ capability. A row already carrying `giving.view` (the
-      // default, or because the ED promoted it to giving.manage) is left
+      // default, or because the ED promoted it to giving.edit) is left
       // exactly as-is — never rewritten, never downgraded.
       if (row.capabilities.includes("giving.view")) {
         skipped++;
         continue;
       }
-      const next = [...row.capabilities, "giving.view", "nav.giving"] as const;
+      // `the derived nav rule` is gone — the desk's tab is DERIVED from holding any
+      // giving power now, so the read grant is the whole change.
+      const next = [...row.capabilities, "giving.view"] as const;
       await ctx.db.patch(row._id, {
         capabilities: [...next],
         updatedAt: Date.now(),

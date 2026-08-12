@@ -89,7 +89,7 @@ for (const ds of Object.values(EXPORT_DATASETS)) {
 
 function omissionReason(requires: string): string {
   if (requires === "giving.view") return "needs development-desk access";
-  if (requires === "finance.viewer") return "needs a finance role";
+  if (requires === "finance.view") return "needs a finance role";
   return "needs more access";
 }
 

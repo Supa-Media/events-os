@@ -385,7 +385,7 @@ describe("org.nav showFinances", () => {
       slug: "treasurer",
       title: "Treasurer",
       chart: "chapter",
-      capabilities: ["nav.finances"],
+      capabilities: ["finance.view"],
     });
     await addSeatAssignment(s, seatId, s.chapterId, person);
     const { as } = await addUser(s, "treasurer@publicworship.life", {
@@ -407,7 +407,7 @@ describe("org.nav showFinances", () => {
       slug: "financial_manager",
       title: "Financial Manager",
       chart: "central",
-      capabilities: ["nav.finances"],
+      capabilities: ["finance.view"],
     });
     await addSeatAssignment(s, seatId, "central", person);
     const { as } = await addUser(s, "fm@publicworship.life", {
@@ -435,7 +435,9 @@ describe("org.nav showFinances", () => {
       slug: "bookkeeper_seat",
       title: "Bookkeeper",
       chart: "chapter",
-      capabilities: ["finance.record"],
+      // A power in a DIFFERENT domain — the Finances tab is derived from
+      // holding any `finance.*` power, so this must not surface it.
+      capabilities: ["events.checkin"],
     });
     await addSeatAssignment(s, seatId, s.chapterId, person);
     const { as } = await addUser(s, "bookkeeper@publicworship.life", {
@@ -478,7 +480,7 @@ describe("org.nav showFinances", () => {
       slug: "treasurer2",
       title: "Treasurer",
       chart: "chapter",
-      capabilities: ["nav.finances"],
+      capabilities: ["finance.view"],
     });
     await addSeatAssignment(s, seatId, s.chapterId, person);
     const { as } = await addUser(s, "phantom@publicworship.life", {

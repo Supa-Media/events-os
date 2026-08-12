@@ -90,7 +90,7 @@ async function seedPublishSeat(
       parentSlug: "root",
       maxHolders: 1,
       duties: [],
-      capabilities: ["finance.publish"],
+      capabilities: ["finance.ledger.publish"],
       sortOrder: 0,
       createdAt: Date.now(),
       updatedAt: Date.now(),

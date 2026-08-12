@@ -1,11 +1,11 @@
 /**
  * Test suite for migration 0025: patching the live `chapter_director`
- * `seatDefs` row to add `finance.viewer` (owner decision, 2026-07-16 — CD
+ * `seatDefs` row to add `finance.view` (owner decision, 2026-07-16 — CD
  * sees chapter spending, but reconcile/record stays the Treasurer's job).
  *
  * `seatDefs` is a GLOBAL chart — `runSeedSeatDefs` (0022) seeds exactly one
  * row per `SEAT_IDS` entry, not one per chapter. As of THIS PR the shared
- * template (`SEAT_DEFS.chapter_director`) already carries `finance.viewer`,
+ * template (`SEAT_DEFS.chapter_director`) already carries `finance.view`,
  * so a FRESH `0022` seed (a brand-new deploy, or any org/chapter stamped
  * after this ships) already has it — 0025 is a no-op there. The migration
  * exists for the row that's ALREADY LIVE from before this PR: `0022` only
@@ -13,7 +13,7 @@
  * live row is never re-seeded from the updated template and needs this
  * explicit backfill. Tests below simulate that "pre-PR" live row by
  * inserting it directly with the OLD capability set, rather than going
- * through `runSeedSeatDefs` (which would already include `finance.viewer`).
+ * through `runSeedSeatDefs` (which would already include `finance.view`).
  */
 import { describe, expect, test } from "vitest";
 import { internal } from "../_generated/api";
@@ -32,7 +32,7 @@ async function chapterDirectorDef(t: ReturnType<typeof newT>) {
 
 /** Insert the `chapter_director` row exactly as it exists in a LIVE deploy
  *  seeded BEFORE this PR (capabilities from the old template, no
- *  `finance.viewer`) — bypassing `runSeedSeatDefs` so this stays independent
+ *  `finance.view`) — bypassing `runSeedSeatDefs` so this stays independent
  *  of the (now-updated) shared template. */
 async function seedPrePrChapterDirectorRow(t: ReturnType<typeof newT>) {
   const now = Date.now();
@@ -48,7 +48,7 @@ async function seedPrePrChapterDirectorRow(t: ReturnType<typeof newT>) {
         "Own chapter budget approval",
         "Report up to central",
       ],
-      capabilities: ["finance.approve", "nav.finances"],
+      capabilities: ["finance.budgets.approve"],
       sortOrder: 18,
       legacyTitle: "president",
       createdAt: now,
@@ -58,21 +58,20 @@ async function seedPrePrChapterDirectorRow(t: ReturnType<typeof newT>) {
 }
 
 describe("0025_add_cd_finance_viewer", () => {
-  test("adds finance.viewer to a pre-PR live chapter_director row, preserving its other capabilities", async () => {
+  test("adds finance.view to a pre-PR live chapter_director row, preserving its other capabilities", async () => {
     const t = newT();
     await seedPrePrChapterDirectorRow(t);
 
     const before = await chapterDirectorDef(t);
-    expect(before?.capabilities).toEqual(["finance.approve", "nav.finances"]);
+    expect(before?.capabilities).toEqual(["finance.budgets.approve"]);
 
     const result = await run(t, (ctx) => runAddCdFinanceViewer(ctx));
     expect(result).toEqual({ patched: 1, skipped: 0 });
 
     const after = await chapterDirectorDef(t);
     expect(after?.capabilities).toEqual([
-      "finance.approve",
-      "nav.finances",
-      "finance.viewer",
+      "finance.budgets.approve",
+      "finance.view",
     ]);
     expect(after?.updatedAt).toBeTypeOf("number");
   });
@@ -87,31 +86,28 @@ describe("0025_add_cd_finance_viewer", () => {
 
     const after = await chapterDirectorDef(t);
     expect(after?.capabilities).toEqual([
-      "finance.approve",
-      "nav.finances",
-      "finance.viewer",
+      "finance.budgets.approve",
+      "finance.view",
     ]);
   });
 
-  test("a fresh 0022 seed (post-PR template) already carries finance.viewer, so 0025 is a no-op", async () => {
+  test("a fresh 0022 seed (post-PR template) already carries finance.view, so 0025 is a no-op", async () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
 
     const seeded = await chapterDirectorDef(t);
     expect(seeded?.capabilities).toEqual([
-      "finance.approve",
-      "finance.viewer",
-      "nav.finances",
-      // F-6 P1: chapter-lens giving capabilities on the template.
-      "giving.view",
-      "nav.giving",
-      // 2026-07-31: bulk data export (see seats.ts's `data.export` doc).
-      "data.export",
-      // 2026-08-06: door check-in access (see seats.ts's `events.checkin` doc).
-      "events.checkin",
+      "finance.view",
+      "finance.budgets.approve",
       // 2026-08-11: publishes their own chapter's month to the public
-      // finances page (see seats.ts's `finance.publish` doc).
-      "finance.publish",
+      // finances page.
+      "finance.ledger.publish",
+      // F-6 P1: chapter-lens giving read on the template.
+      "giving.view",
+      // 2026-07-31: bulk data export.
+      "data.export",
+      // 2026-08-06: door check-in access.
+      "events.checkin",
     ]);
 
     const result = await run(t, (ctx) => runAddCdFinanceViewer(ctx));
@@ -147,25 +143,20 @@ describe("0025_add_cd_finance_viewer", () => {
     expect(result).toEqual({ patched: 0, skipped: 0 });
   });
 
-  test("via the real runPending registry (fresh DB, post-PR template): chapter_director ends up with finance.viewer", async () => {
+  test("via the real runPending registry (fresh DB, post-PR template): chapter_director ends up with finance.view", async () => {
     const t = newT();
     await t.mutation(internal.migrations.runPending, {});
 
+    // The template's own order, unchanged by 0025 (a no-op on a fresh seed)
+    // and by 0062 (already standardized).
     const def = await chapterDirectorDef(t);
     expect(def?.capabilities).toEqual([
-      "finance.approve",
-      "finance.viewer",
-      "nav.finances",
-      // F-6 P1: chapter-lens giving capabilities on the template.
+      "finance.view",
+      "finance.budgets.approve",
+      "finance.ledger.publish",
       "giving.view",
-      "nav.giving",
-      // 2026-07-31: bulk data export (see seats.ts's `data.export` doc).
       "data.export",
-      // 2026-08-06: door check-in access (see seats.ts's `events.checkin` doc).
       "events.checkin",
-      // 2026-08-11: publishes their own chapter's month to the public
-      // finances page (see seats.ts's `finance.publish` doc).
-      "finance.publish",
     ]);
   });
 });

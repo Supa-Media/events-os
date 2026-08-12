@@ -22,14 +22,18 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { colors } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
+import { expandPowers } from "@events-os/shared";
 
 export type GivingPower = "none" | "view" | "manage";
 
 /** The seat's current giving power, derived from its capabilities — `manage`
  *  wins over `view` (a manager can always see what they manage). */
 export function givingPowerOf(capabilities: readonly string[]): GivingPower {
-  if (capabilities.includes("giving.manage")) return "manage";
-  if (capabilities.includes("giving.view")) return "view";
+  // Expanded, so a row storing only `giving.edit` still reads as "manage"
+  // and a legacy/non-minimal row resolves to the same rung.
+  const powers = expandPowers(capabilities);
+  if (powers.has("giving.edit")) return "manage";
+  if (powers.has("giving.view")) return "view";
   return "none";
 }
 

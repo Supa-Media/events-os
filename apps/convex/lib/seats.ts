@@ -73,7 +73,7 @@
  *    `"central"` scopeKey — but the derivation itself is scope-agnostic, so
  *    a future chapter-chart seat granted `"finance.central"` would just work.
  *  - `accountsAccess`: true iff ANY seat at that scope carries
- *    `"finance.accounts"` (the Accounts tab / Relay-cards gate — the
+ *    `"finance.accounts.view"` (the Accounts tab / Relay-cards gate — the
  *    seat-derived equivalent of `lib/finance.ts#isCentralEdOrFm`, which today
  *    derives this from a CENTRAL `specializedRoles` row titled
  *    `executive_director` or `finance_manager` instead of a seat).
@@ -127,8 +127,12 @@
  * own `holdsApprovalSeatAt` is the pattern to follow: an additive, narrowly-
  * scoped reader, not a fold-in to the ladder above).
  */
+import { expandPowers, grantsAnyInDomain } from "@events-os/shared";
 import { Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
+
+/** The `"central"` scope sentinel, as it appears as an object key. */
+const CENTRAL_SCOPE_KEY = "central";
 
 /** Bound on how many seat assignments a single person can hold — generous
  *  (mirrors `seats.ts#personHoldsOtherGroupSeatInScope`'s `take(200)`); in
@@ -200,21 +204,25 @@ export async function getSeatDerivedCapabilities(
         accountsAccess: false,
       });
 
+    const powers = expandPowers(def.capabilities);
+
     // "manager" always wins — order-independent whether this assignment (or
     // an earlier one at the same scope) is the one that carries it, since a
-    // later `finance.viewer`-only assignment must never downgrade an
-    // already-set "manager" (capabilities only ever OR together, never
-    // subtract — see the module doc's closing paragraph).
-    if (def.capabilities.includes("finance.manager")) {
+    // later view-only assignment must never downgrade an already-set
+    // "manager" (powers only ever OR together, never subtract).
+    if (powers.has("finance.edit")) {
       entry.financeRole = "manager";
-    } else if (
-      def.capabilities.includes("finance.viewer") &&
-      entry.financeRole !== "manager"
-    ) {
+    } else if (powers.has("finance.view") && entry.financeRole !== "manager") {
       entry.financeRole = "viewer";
     }
-    if (def.capabilities.includes("finance.central")) entry.centralReach = true;
-    if (def.capabilities.includes("finance.accounts")) entry.accountsAccess = true;
+    // SCOPE RULE 2, replacing the deleted `finance.central` capability: reach
+    // beyond one's own books is what holding a finance power AT CENTRAL means,
+    // not a separate string a seat had to remember to also carry. Uniform with
+    // giving and campaigns, which never needed such a string.
+    if (scopeKey === CENTRAL_SCOPE_KEY && (powers.has("finance.view") || powers.has("finance.accounts.view"))) {
+      entry.centralReach = true;
+    }
+    if (powers.has("finance.accounts.view")) entry.accountsAccess = true;
   }
   return result;
 }
@@ -276,7 +284,7 @@ export async function holdsApprovalSeatAt(
     if (assignment.scope !== scope) continue;
     const def = await ctx.db.get(assignment.seatDefId);
     if (def?.derived) continue; // computed/rolled-up seats are never real occupancy — belt-and-suspenders, see doc above
-    if (def?.capabilities.includes("finance.approve")) return true;
+    if (def && expandPowers(def.capabilities).has("finance.budgets.approve")) return true;
   }
   return false;
 }
@@ -304,7 +312,7 @@ export async function holdsCheckInSeatAt(
     if (assignment.scope !== scope) continue;
     const def = await ctx.db.get(assignment.seatDefId);
     if (def?.derived) continue; // computed/rolled-up seats are never real occupancy
-    if (def?.capabilities.includes("events.checkin")) return true;
+    if (def && expandPowers(def.capabilities).has("events.checkin")) return true;
   }
   return false;
 }
@@ -363,13 +371,15 @@ export async function getSeatDerivedGivingCapabilities(
       result[scopeKey] ??
       (result[scopeKey] = { view: false, manage: false, nav: false });
 
-    // `giving.manage` implies read — a manager can always see what they manage.
-    if (def.capabilities.includes("giving.manage")) {
-      entry.manage = true;
-      entry.view = true;
-    }
-    if (def.capabilities.includes("giving.view")) entry.view = true;
-    if (def.capabilities.includes("nav.giving")) entry.nav = true;
+    // `giving.edit` implies `giving.view` via the ladder rule, so `expandPowers`
+    // has already added it — no manual "manage implies read" step here.
+    const powers = expandPowers(def.capabilities);
+    if (powers.has("giving.edit")) entry.manage = true;
+    if (powers.has("giving.view")) entry.view = true;
+    // NAV IS DERIVED, never granted: the desk's tab shows iff the holder can do
+    // something there. Replaces the deleted `nav.giving` capability, which every
+    // seat holding a giving power already carried anyway.
+    entry.nav = grantsAnyInDomain(def.capabilities, "giving");
   }
   return result;
 }
@@ -404,7 +414,7 @@ export async function getSeatDerivedExportScopes(
   for (const assignment of assignments) {
     const def = await ctx.db.get(assignment.seatDefId);
     if (!def) continue; // stale assignment on a deleted def — nothing to derive
-    if (def.capabilities.includes("data.export")) {
+    if (expandPowers(def.capabilities).has("data.export")) {
       scopes.add(String(assignment.scope));
     }
   }

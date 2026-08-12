@@ -82,13 +82,18 @@ So: **Template → Email → Send.** A series, if it is ever built, is a
 
 User-facing text — labels, copy, the Academy, these docs — says Email.
 
-Internal identifiers lag deliberately: the `campaigns` table, the
-`/campaign/[id]` routes, and the `campaigns.compose` / `campaigns.design` /
-`campaigns.approve` capability strings keep their names for now. The
-capability strings are **persisted in `seatDefs.capabilities` rows**, so
-renaming them is a migration, not a find-and-replace — and a half-renamed
-permission system is a genuinely dangerous object. Each carries a comment
-pointing here; the migration follows as its own reviewed change.
+Internal identifiers lag deliberately: the `campaigns` table and the
+`/campaign/[id]` routes keep their names for now.
+
+The permission strings no longer lag. They used to — `campaigns.compose` /
+`campaigns.design` / `campaigns.approve` kept the old prefix because they are
+**persisted in `seatDefs.capabilities` rows**, so renaming them is a migration
+rather than a find-and-replace, and a half-renamed permission system is a
+genuinely dangerous object. That migration has now happened as its own reviewed
+change (`migrations/0062_standardize_powers.ts`), as part of standardizing the
+whole power vocabulary. The three are now `email.campaigns.edit`,
+`email.assets.edit` and `email.campaigns.approve` — see
+[powers.md](./powers.md) for the grammar they follow.
 
 ## Opt-out: what we hold ourselves to
 

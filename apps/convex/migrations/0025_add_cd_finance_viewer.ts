@@ -6,7 +6,7 @@ import type { Migration } from "./index";
  * financial powers, they approve budgets, they can also see spending... they
  * should see how the money is spent as well. But they still need to get
  * their things reconciled by their treasurer or financial manager." —
- * `finance.viewer` was added to the `chapter_director` template seat
+ * `finance.view` was added to the `chapter_director` template seat
  * (`packages/shared/src/seats.ts`) to give this read-only "SEE" reach; this
  * migration is the backfill that carries that template edit onto the LIVE
  * `seatDefs` rows already stamped by `0022_seed_seat_defs` (seat defs are
@@ -24,11 +24,22 @@ import type { Migration } from "./index";
  *
  * Idempotent by CONTENT, not just the ledger: patches the `chapter_director`
  * `seatDefs` row only if its `capabilities` array is missing
- * `"finance.viewer"`, and skips it if already present — belt-and-suspenders
+ * `"finance.view"`, and skips it if already present — belt-and-suspenders
  * alongside the `runPending` ledger, exactly like `0022_seed_seat_defs`'s own
  * per-row `by_slug` guard. Never touches any OTHER seat's capabilities (in
  * particular, never touches `treasurer` — the record/reconcile-write side
  * stays exactly as-is).
+ *
+ * VOCABULARY UPDATE (2026-08-12): the capability strings below were rewritten
+ * into the standardized power vocabulary (`packages/shared/src/powers.ts`).
+ * The migration's BEHAVIOR is unchanged — same seats, same defaults, same
+ * additive-and-idempotent shape — only the strings it reads and writes moved
+ * to the new grammar. Rewriting a shipped migration is normally the wrong
+ * instinct, but these read and write a vocabulary that no longer exists: left
+ * alone they would stamp dead strings onto every FRESH database, which is both
+ * useless (no gate asks for them) and the one thing preventing the storage
+ * validator's legacy arm from ever being deleted. Existing deployments are
+ * untouched either way — the ledger means this body never runs there again.
  */
 export async function runAddCdFinanceViewer(ctx: MutationCtx) {
   let patched = 0;
@@ -40,12 +51,12 @@ export async function runAddCdFinanceViewer(ctx: MutationCtx) {
     .collect();
 
   for (const row of rows) {
-    if (row.capabilities.includes("finance.viewer")) {
+    if (row.capabilities.includes("finance.view")) {
       skipped++;
       continue;
     }
     await ctx.db.patch(row._id, {
-      capabilities: [...row.capabilities, "finance.viewer"],
+      capabilities: [...row.capabilities, "finance.view"],
       updatedAt: Date.now(),
     });
     patched++;

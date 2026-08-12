@@ -13,7 +13,17 @@
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { CHAPTER_ROLLUP_PARENT, SEAT_ROOT } from "@events-os/shared";
+import {
+  CHAPTER_ROLLUP_PARENT,
+  POWER_DEFS,
+  POWER_DOMAINS,
+  SEAT_ROOT,
+  expandPowers,
+  isPower,
+  powerDescription,
+  powerLabel,
+  type Power,
+} from "@events-os/shared";
 
 export type ChartResult = FunctionReturnType<typeof api.seats.chart>;
 export type FullChart = Extract<ChartResult, { kind: "full" }>;
@@ -307,32 +317,47 @@ export function computeReportsTo(
 }
 
 // ── Capabilities → plain language ───────────────────────────────────────────
-/** Owner-approved plain-language gloss for each seat capability id, shown as
- *  a "Powers" chip on the seat detail panel. */
-export const CAPABILITY_LABELS: Record<string, string> = {
-  "finance.approve": "Approve budgets",
-  "finance.record": "Record & reconcile money",
-  "finance.central": "See every chapter's money",
-  "finance.accounts": "Open the Accounts tab",
-  "finance.manager": "Manage chapter finances",
-  "nav.finances": "Finances tab",
-  "org.editChart": "Edit the org chart",
-  // Giving desk (F-6) — the assignable giving power's three capabilities.
-  "giving.view": "See donors & giving",
-  "giving.manage": "Manage donors & gifts",
-  "nav.giving": "Giving desk tab",
-  // Campaigns desk (two-party approval, 2026-07-24; design rung 2026-07-28)
-  // — the assignable campaign power's three capabilities.
-  // The capability STRINGS keep the older "campaigns." prefix (they are
-  // persisted on seat rows — see `docs/guides/email-terminology.md`); the
-  // descriptions beside them are what a reader actually sees.
-  "campaigns.design": "Edit email themes, templates & images",
-  "campaigns.compose": "Write and send emails",
-  "campaigns.approve": "Approve emails before they send",
-};
-
+/**
+ * Plain-language gloss for a power id, for the "Powers" chips on the seat
+ * detail panel.
+ *
+ * Reads the registry (`POWER_DEFS`), which is TOTAL over the power vocabulary
+ * — so, unlike the hand-maintained partial map this replaced, a raw id can no
+ * longer reach the screen. That map was missing four entries by the end
+ * (`data.export`, `finance.publish`, `finance.viewer`, `events.checkin`), and
+ * its fallback was to render the id verbatim, so the panel showed a literal
+ * "data.export" chip sitting next to plain-English ones.
+ *
+ * The fallback here is for a STALE stored string only (a row not yet touched
+ * by `0062`), and it says so rather than pretending the id is a label.
+ */
 export function capabilityLabel(id: string): string {
-  return CAPABILITY_LABELS[id] ?? id;
+  return isPower(id) ? powerLabel(id) : `Unrecognized power (${id})`;
+}
+
+/** The one-line explanation under a power chip, or `null` for a stale id. */
+export function capabilityDescription(id: string): string | null {
+  return isPower(id) ? powerDescription(id) : null;
+}
+
+/**
+ * The powers to SHOW for a seat: everything its stored list actually grants,
+ * expanded through the implication rules and sorted by domain so the chips
+ * group the way the taxonomy does.
+ *
+ * Seats store the MINIMAL set now (the ED carries `email.campaigns.approve`,
+ * not also the compose and design rungs beneath it), so rendering the stored
+ * array directly would UNDER-report what a seat can do. Expanding here is what
+ * lets the chart stay the honest answer to "who can do this?" without a
+ * hand-maintained list of implied rungs on every seat def.
+ */
+export function displayPowers(stored: readonly string[]): Power[] {
+  const expanded = [...expandPowers(stored)];
+  return expanded.sort((a, b) => {
+    const da = POWER_DOMAINS.indexOf(POWER_DEFS[a].domain);
+    const db = POWER_DOMAINS.indexOf(POWER_DEFS[b].domain);
+    return da !== db ? da - db : a.localeCompare(b);
+  });
 }
 
 /**

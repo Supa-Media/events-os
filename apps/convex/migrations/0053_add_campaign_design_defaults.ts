@@ -36,6 +36,17 @@ import type { Migration } from "./index";
  *
  * Idempotent: a row already carrying `campaigns.design` is skipped, so a
  * re-run touches nothing.
+ *
+ * VOCABULARY UPDATE (2026-08-12): the capability strings below were rewritten
+ * into the standardized power vocabulary (`packages/shared/src/powers.ts`).
+ * The migration's BEHAVIOR is unchanged — same seats, same defaults, same
+ * additive-and-idempotent shape — only the strings it reads and writes moved
+ * to the new grammar. Rewriting a shipped migration is normally the wrong
+ * instinct, but these read and write a vocabulary that no longer exists: left
+ * alone they would stamp dead strings onto every FRESH database, which is both
+ * useless (no gate asks for them) and the one thing preventing the storage
+ * validator's legacy arm from ever being deleted. Existing deployments are
+ * untouched either way — the ledger means this body never runs there again.
  */
 
 /** Seats that get `campaigns.design` even with no campaign capability today
@@ -53,19 +64,28 @@ export async function runAddCampaignDesignDefaults(ctx: MutationCtx) {
   const rows = await ctx.db.query("seatDefs").take(SEAT_DEF_SCAN_LIMIT);
 
   for (const row of rows) {
-    if (row.capabilities.includes("campaigns.design")) {
+    if (row.capabilities.includes("email.assets.edit")) {
       skipped++;
       continue;
     }
+    // A stronger rung now IMPLIES the design rung through `expandPowers`, so a
+    // row carrying compose/approve needs nothing written — storing an implied
+    // power would violate the minimal-storage rule. Those rows are skipped
+    // rather than topped up, which is the one behavioral difference the
+    // vocabulary change forces (and `0062` re-derives the same access).
     const impliedByStrongerRung =
-      row.capabilities.includes("campaigns.compose") ||
-      row.capabilities.includes("campaigns.approve");
+      row.capabilities.includes("email.campaigns.edit") ||
+      row.capabilities.includes("email.campaigns.approve");
+    if (impliedByStrongerRung) {
+      skipped++;
+      continue;
+    }
     if (!impliedByStrongerRung && !DESIGN_DEFAULT_SLUGS.has(row.slug)) {
       skipped++;
       continue;
     }
     await ctx.db.patch(row._id, {
-      capabilities: [...row.capabilities, "campaigns.design"],
+      capabilities: [...row.capabilities, "email.assets.edit"],
       updatedAt: Date.now(),
     });
     patched++;

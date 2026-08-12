@@ -155,6 +155,7 @@ import { CAMPAIGN_STATUSES } from "./schema/campaigns";
 import { assertSeparationOfDuties } from "./lib/finance";
 import { sha256Hex } from "./lib/sha256";
 import { hasEffectiveExcludeCriteria, resolveAudienceRecipients } from "./lib/audienceResolve";
+import { expandPowers } from "@events-os/shared";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
@@ -931,7 +932,8 @@ export const listCampaignApprovers = query({
     for (const a of assignments) {
       const def = await ctx.db.get(a.seatDefId);
       if (def?.derived) continue;
-      if (def?.capabilities.includes("campaigns.approve")) approverIds.add(a.personId);
+      if (def && expandPowers(def.capabilities).has("email.campaigns.approve"))
+        approverIds.add(a.personId);
     }
 
     const approvers: { personId: Id<"people">; name: string }[] = [];
@@ -1088,7 +1090,7 @@ export const submitForApproval = mutation({
       ctx,
       reviewerPersonId,
       "central",
-      "campaigns.approve",
+      "email.campaigns.approve",
     );
     if (!reviewerEligible) {
       throw new ConvexError({

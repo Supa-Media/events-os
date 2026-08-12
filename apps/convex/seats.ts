@@ -27,6 +27,8 @@ import type { QueryCtx, MutationCtx } from "./_generated/server";
 import {
   SEAT_CHARTS,
   SEAT_CAPABILITIES,
+  POWER_DEFS,
+  migrateLegacyPowers,
   SEAT_ROOT,
   MULTI_HOLDER_CAP,
   SEAT_IDS,
@@ -51,9 +53,12 @@ import {
 } from "./lib/seatStructure";
 
 const seatChartValidator = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
-const seatCapabilityValidator = v.union(
-  ...SEAT_CAPABILITIES.map((c) => v.literal(c)),
-);
+// Imported from the schema rather than rebuilt here, so this file and the table
+// definition can never disagree about which power strings are storable — they
+// briefly do accept a wider set than `POWERS`, for the one deploy in which
+// un-migrated rows still exist (see `schema/seats.ts` for why).
+import { seatCapabilityValidator } from "./schema/seats";
+export { seatCapabilityValidator };
 
 /** Bounded cap on how many seatDefs a chart read scans — well above the
  *  template's 27 rows, room for the later runtime editor to add more. */
@@ -1125,13 +1130,13 @@ export const unassignSeat = mutation({
 // a held `org.editChart` seat) and the SAME self-lockout guard
 // (`assertNoSelfLockout`) `updateSeat` uses.
 
-/** The three giving capabilities this editor owns — the ONLY caps it ever
- *  touches. Every other capability on the seat is preserved verbatim. */
-const GIVING_CAPS: readonly SeatCapability[] = [
-  "giving.view",
-  "giving.manage",
-  "nav.giving",
-];
+/** Every power in the `giving` domain — the ONLY caps this editor ever
+ *  touches. Every other capability on the seat is preserved verbatim.
+ *  DERIVED from the registry rather than hand-listed, so adding a giving power
+ *  can never leave a stale rung behind that this editor forgets to strip. */
+const GIVING_CAPS: readonly SeatCapability[] = SEAT_CAPABILITIES.filter(
+  (c) => POWER_DEFS[c].domain === "giving",
+);
 
 const givingPowerValidator = v.union(
   v.literal("none"),
@@ -1139,13 +1144,14 @@ const givingPowerValidator = v.union(
   v.literal("manage"),
 );
 
-/** The giving capabilities a given power level grants. `view` → read the CRM +
- *  surface the desk; `manage` → additionally write it; `none` → strip all
- *  three. `giving.manage` always implies `giving.view` (a manager can see what
- *  they manage — mirrors `getSeatDerivedGivingCapabilities`). */
+/** The giving power a rung grants, as the MINIMAL set — `manage` stores only
+ *  `giving.edit`, because the ladder rule already derives `giving.view` from
+ *  it, and the nav rule derives the desk's tab from either. Storing the
+ *  minimum is what keeps the stored row and the implication rules from ever
+ *  disagreeing. */
 function givingCapsForPower(power: "none" | "view" | "manage"): SeatCapability[] {
-  if (power === "manage") return ["giving.manage", "giving.view", "nav.giving"];
-  if (power === "view") return ["giving.view", "nav.giving"];
+  if (power === "manage") return ["giving.edit"];
+  if (power === "view") return ["giving.view"];
   return [];
 }
 
@@ -1192,7 +1198,13 @@ export const setSeatGivingPower = mutation({
     // Strip every giving cap, then re-add exactly the ones the target power
     // grants — so only the giving trio ever changes; all other caps (in their
     // original order) are preserved verbatim.
-    const preserved = def.capabilities.filter((c) => !GIVING_CAPS.includes(c));
+    // Normalize on the way out as well as filtering: a row still carrying
+    // pre-standardization strings (possible until `0062` has run everywhere)
+    // gets rewritten to the standardized vocabulary by the same touch, so this
+    // editor never writes back a mix of both.
+    const preserved = migrateLegacyPowers(def.capabilities).filter(
+      (c) => !GIVING_CAPS.includes(c),
+    );
     const next: SeatCapability[] = [...preserved, ...givingCapsForPower(power)];
 
     // Same self-lockout simulation `updateSeat` runs for a capabilities change:
@@ -1222,11 +1234,9 @@ export const setSeatGivingPower = mutation({
 
 /** The three campaign capabilities this editor owns — the ONLY caps it ever
  *  touches. */
-const CAMPAIGN_CAPS: readonly SeatCapability[] = [
-  "campaigns.compose",
-  "campaigns.approve",
-  "campaigns.design",
-];
+const CAMPAIGN_CAPS: readonly SeatCapability[] = SEAT_CAPABILITIES.filter(
+  (c) => POWER_DEFS[c].domain === "email",
+);
 
 const campaignPowerValidator = v.union(
   v.literal("none"),
@@ -1237,11 +1247,13 @@ const campaignPowerValidator = v.union(
 
 type CampaignPower = "none" | "design" | "compose" | "approve";
 
-/** The campaign capabilities a given power level grants — the NESTED ladder
- *  from `SEAT_CAPABILITIES`'s doc in `@events-os/shared`, materialized. Each
- *  rung lists every capability it implies EXPLICITLY (rather than relying on
- *  the resolver's implication map) so a seat def row is self-describing and
- *  the org chart's "Powers" chips read honestly.
+/** The email power a rung grants, as the MINIMAL set — each rung stores ONLY
+ *  its own power and lets `expandPowers` derive the rungs beneath it
+ *  (`approve` → `edit` → `assets.edit`). This inverts the previous convention,
+ *  which materialized every implied rung onto the row so the chart would read
+ *  honestly without an implication rule; there is one now, and the seat panel
+ *  renders the expanded set, so the honest reading survives without a stored
+ *  list that can drift from it.
  *
  *  `approve` → be a campaign's reviewer, and everything below.
  *  `compose` → draft/submit/send a campaign, and everything below.
@@ -1249,10 +1261,9 @@ type CampaignPower = "none" | "design" | "compose" | "approve";
  *              library) and open the desk — but never compose or send.
  *  `none`    → strip all three. */
 function campaignCapsForPower(power: CampaignPower): SeatCapability[] {
-  if (power === "approve")
-    return ["campaigns.approve", "campaigns.compose", "campaigns.design"];
-  if (power === "compose") return ["campaigns.compose", "campaigns.design"];
-  if (power === "design") return ["campaigns.design"];
+  if (power === "approve") return ["email.campaigns.approve"];
+  if (power === "compose") return ["email.campaigns.edit"];
+  if (power === "design") return ["email.assets.edit"];
   return [];
 }
 
@@ -1288,7 +1299,9 @@ export const setSeatCampaignPower = mutation({
       });
     }
 
-    const preserved = def.capabilities.filter((c) => !CAMPAIGN_CAPS.includes(c));
+    const preserved = migrateLegacyPowers(def.capabilities).filter(
+      (c) => !CAMPAIGN_CAPS.includes(c),
+    );
     const next: SeatCapability[] = [...preserved, ...campaignCapsForPower(power)];
 
     const overrides = new Map<Id<"seatDefs">, DefOverride>([

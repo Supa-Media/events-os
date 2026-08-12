@@ -26,6 +26,7 @@ import { CampaignPowerControl } from "./CampaignPowerControl";
 import {
   avatarNameFor,
   capabilityLabel,
+  displayPowers,
   type ReportsTo,
   type SeatDetail,
   type TreeNode,
@@ -255,12 +256,16 @@ export function SeatDetailPanel({
         </View>
       )}
 
+      {/* EXPANDED, not the stored array: seats store the minimal set (an
+          approver carries only `email.campaigns.approve`), so listing what is
+          stored would under-report what the seat can actually do. See
+          `displayPowers`. */}
       <SectionHeader title="Powers" />
-      {detail.capabilities.length === 0 ? (
+      {displayPowers(detail.capabilities).length === 0 ? (
         <Text className="text-sm text-muted">No special powers — standard member access.</Text>
       ) : (
         <View className="flex-row flex-wrap gap-1.5">
-          {detail.capabilities.map((c) => (
+          {displayPowers(detail.capabilities).map((c) => (
             <Badge key={c} label={capabilityLabel(c)} tone="accent" />
           ))}
         </View>

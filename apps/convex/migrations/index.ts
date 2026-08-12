@@ -80,6 +80,7 @@ import { addDataExportDefaults } from "./0058_add_data_export_defaults";
 import { splitLegacyIncreaseCards } from "./0059_split_legacy_increase_cards";
 import { addEventsCheckinDefaults } from "./0060_add_events_checkin_defaults";
 import { stampDigestWatermarkProvenance } from "./0061_stamp_digest_watermark_provenance";
+import { standardizePowers } from "./0062_standardize_powers";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -339,4 +340,12 @@ export const MIGRATIONS: Migration[] = [
   // gift — but one patch per rule is cheaper than one duplicate email to a
   // fundraising team. Additive-only, idempotent. See 0061.
   stampDigestWatermarkProvenance,
+  // Standardize the power vocabulary (2026-08-12) — rewrite every seatDefs
+  // row's capabilities into `<domain>[.<area>].<action>` and drop the three
+  // strings that were never powers (`finance.central` was a scope,
+  // `finance.record` was read by nothing, `nav.*` is derived now). Every gate
+  // asks the new names, and seatDefs rows are runtime data, so without this an
+  // already-seeded org loses every power at once. Access-preserving and
+  // idempotent — see 0062's doc for the per-deletion argument.
+  standardizePowers,
 ];

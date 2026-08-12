@@ -71,15 +71,16 @@ import type { QueryCtx } from "../_generated/server";
 import { isCentralEdOrFm } from "./finance";
 import { isSuperuser } from "./superuser";
 import { requireEvent, requireUserId } from "./context";
+import { expandPowers } from "@events-os/shared";
 
 /** Bound on how many seat assignments a single person can hold — mirrors
  *  `lib/seats.ts#PERSON_SEAT_ASSIGNMENT_LIMIT` / `holdsApprovalSeatAt`. */
 const PERSON_SEAT_ASSIGNMENT_LIMIT = 200;
 
 type CampaignCapability =
-  | "campaigns.design"
-  | "campaigns.compose"
-  | "campaigns.approve";
+  | "email.assets.edit"
+  | "email.campaigns.edit"
+  | "email.campaigns.approve";
 
 /**
  * Which capabilities SATISFY a requested rung — the ladder's implications,
@@ -95,9 +96,9 @@ const CAMPAIGN_CAPABILITY_SATISFIERS: Record<
   CampaignCapability,
   readonly CampaignCapability[]
 > = {
-  "campaigns.approve": ["campaigns.approve"],
-  "campaigns.compose": ["campaigns.compose", "campaigns.approve"],
-  "campaigns.design": ["campaigns.design", "campaigns.compose", "campaigns.approve"],
+  "email.campaigns.approve": ["email.campaigns.approve"],
+  "email.campaigns.edit": ["email.campaigns.edit", "email.campaigns.approve"],
+  "email.assets.edit": ["email.assets.edit", "email.campaigns.edit", "email.campaigns.approve"],
 };
 
 /**
@@ -124,7 +125,8 @@ export async function holdsCampaignCapabilityAt(
     const def = await ctx.db.get(assignment.seatDefId);
     if (!def) continue;
     if (def.derived) continue; // computed/rolled-up seats are never real occupancy
-    if (satisfiers.some((c) => def.capabilities.includes(c))) return true;
+    const powers = expandPowers(def.capabilities);
+    if (satisfiers.some((c) => powers.has(c))) return true;
   }
   return false;
 }
@@ -159,7 +161,7 @@ export async function hasCampaignsAccess(ctx: QueryCtx): Promise<boolean> {
   // ONE check, not three: `campaigns.design` is the ladder's bottom rung and
   // compose/approve both imply it (`CAMPAIGN_CAPABILITY_SATISFIERS`), so
   // "holds design-or-above" is exactly "holds any campaign capability".
-  return holdsCentralCampaignCapability(ctx, "campaigns.design");
+  return holdsCentralCampaignCapability(ctx, "email.assets.edit");
 }
 
 /** The throwing gate for every campaigns/audiences READ, and for desk
@@ -186,7 +188,7 @@ export async function requireCampaignsAccess(ctx: QueryCtx): Promise<void> {
  *  power (module doc, reason 2). */
 export async function hasCampaignDesign(ctx: QueryCtx): Promise<boolean> {
   if (await isSuperuser(ctx)) return true;
-  return holdsCentralCampaignCapability(ctx, "campaigns.design");
+  return holdsCentralCampaignCapability(ctx, "email.assets.edit");
 }
 
 /** Assert `hasCampaignDesign`, else throw. The gate on every write to the
@@ -213,7 +215,7 @@ export async function requireCampaignDesign(ctx: QueryCtx): Promise<void> {
  *  FALSE here: they own the design system, never a send. */
 export async function hasCampaignCompose(ctx: QueryCtx): Promise<boolean> {
   if (await isSuperuser(ctx)) return true;
-  return holdsCentralCampaignCapability(ctx, "campaigns.compose");
+  return holdsCentralCampaignCapability(ctx, "email.campaigns.edit");
 }
 
 /** Assert `hasCampaignCompose`, else throw. The gate on anything that brings
@@ -236,7 +238,7 @@ export async function requireCampaignCompose(ctx: QueryCtx): Promise<void> {
  *  submit, but can never be picked as (or act as) a campaign's reviewer. */
 export async function hasCampaignApprovalPower(ctx: QueryCtx): Promise<boolean> {
   if (await isSuperuser(ctx)) return true;
-  return holdsCentralCampaignCapability(ctx, "campaigns.approve");
+  return holdsCentralCampaignCapability(ctx, "email.campaigns.approve");
 }
 
 /** Assert `hasCampaignApprovalPower`, else throw. For a HARD gate on
@@ -369,7 +371,7 @@ export async function resolveCampaignCallerPersonId(
   const real = await ownPeopleRows(ctx);
 
   for (const person of real) {
-    if (await holdsCampaignCapabilityAt(ctx, person._id, "central", "campaigns.compose")) {
+    if (await holdsCampaignCapabilityAt(ctx, person._id, "central", "email.campaigns.edit")) {
       return person._id;
     }
   }

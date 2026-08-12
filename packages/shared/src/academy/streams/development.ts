@@ -11,8 +11,8 @@
  * pledges on our own Stripe rails, the derived backer count), `backerMilestones.ts`
  * (the editable ladder), `sponsorships.ts` + `schema/sponsorships.ts` (package
  * tiers + the agreement pipeline), the giving desk UI
- * (`apps/mobile/app/(app)/giving/`), and the `giving.manage`/`giving.view`/
- * `nav.giving` capabilities in `packages/shared/src/seats.ts`.
+ * (`apps/mobile/app/(app)/giving/`), and the `giving.view`/`giving.edit`
+ * powers in `packages/shared/src/powers.ts`.
  *
  * The public `/give` map and per-territory pages (`territories` +
  * `apps/convex/lib/givePage.ts`) are the live acquisition surface;

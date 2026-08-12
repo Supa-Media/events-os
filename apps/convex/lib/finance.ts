@@ -50,6 +50,7 @@ import { isSuperuser } from "./superuser";
 import { viewerPerson } from "./org";
 import { requireUserId } from "./context";
 import { getSeatDerivedCapabilities, holdsApprovalSeatAt } from "./seats";
+import { expandPowers } from "@events-os/shared";
 
 // A generous bound on a single chapter's funds (they number in the single
 // digits post-WP-1.4; this mirrors the scan limits used elsewhere in finance).
@@ -301,7 +302,7 @@ export async function listChapterFinanceManagerPersonIds(
       .take(SEAT_ASSIGNMENT_SCAN_LIMIT);
     for (const a of assignments) {
       const def = await ctx.db.get(a.seatDefId);
-      if (def?.capabilities.includes("finance.manager")) {
+      if (def && expandPowers(def.capabilities).has("finance.edit")) {
         personIds.add(a.personId);
       }
     }

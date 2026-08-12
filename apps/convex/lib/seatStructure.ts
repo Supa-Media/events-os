@@ -11,7 +11,7 @@
  * self-lockout guard below — a permission invariant, not just a UX nicety.
  */
 import { ConvexError } from "convex/values";
-import type { SeatCapability } from "@events-os/shared";
+import { expandPowers, type SeatCapability } from "@events-os/shared";
 import { Doc, Id } from "../_generated/dataModel";
 import type { MutationCtx, QueryCtx } from "../_generated/server";
 import { requireAccess, requireUserId } from "./context";
@@ -65,7 +65,11 @@ export async function effectiveCapabilities(
         ? overrides.get(a.seatDefId)!
         : await ctx.db.get(a.seatDefId);
       if (!def) continue;
-      for (const c of def.capabilities) caps.add(c);
+      // EXPANDED, not raw: a seat carrying only `finance.edit` really does
+      // grant `finance.cards.edit`, and comparing raw arrays would miss it —
+      // which matters most in `assertNoSelfLockout` below, where a raw compare
+      // would happily let an editor strip an implied power off their own seat.
+      for (const c of expandPowers(def.capabilities)) caps.add(c);
     }
   }
   return caps;
@@ -106,7 +110,7 @@ export async function requireChartEditor(
   }
 
   const caps = await effectiveCapabilities(ctx, personIds);
-  if (!caps.has("org.editChart")) {
+  if (!caps.has("org.chart.edit")) {
     throw new ConvexError({
       code: "FORBIDDEN",
       message:
@@ -138,7 +142,7 @@ export async function canEditChart(
   const userId = (await requireUserId(ctx)) as Id<"users">;
   const personIds = await callerPersonIds(ctx, userId);
   const caps = await effectiveCapabilities(ctx, personIds);
-  return caps.has("org.editChart");
+  return caps.has("org.chart.edit");
 }
 
 /**

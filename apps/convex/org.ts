@@ -34,7 +34,11 @@ import { query } from "./_generated/server";
 import type { QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
-import { isOperationalEvent, responsibilityAppliesTo } from "@events-os/shared";
+import {
+  grantsAnyInDomain,
+  isOperationalEvent,
+  responsibilityAppliesTo,
+} from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { orgWideCatalog } from "./responsibilities";
 import { collectOverdueEventTasksByChapter } from "./reminders";
@@ -89,8 +93,8 @@ const NAV_RETURNS = v.object({
    * Whether the Finances tab should show in the nav. True for the `admin`/
    * `lead` tiers (the transition grandfather — nobody loses the tab while
    * seats roll out, an explicit owner decision) OR when the caller holds ANY
-   * seat (any scope — central or a chapter) whose `capabilities` include
-   * `"nav.finances"`. This is nav VISIBILITY only, not access control: the
+   * seat (any scope — central or a chapter) carrying ANY power in the
+   * `finance` domain. This is nav VISIBILITY only, not access control: the
    * in-screen finance guards (already seat-aware) stay the real gate.
    */
   showFinances: v.boolean(),
@@ -125,10 +129,17 @@ const PERSON_SEAT_ASSIGNMENT_LIMIT = 200;
 
 /**
  * True iff `personId` holds ANY seat assignment — at ANY scope, central or
- * every chapter, unlike `selfSeatIds`'s chapter-scoped resolution — whose
- * seat def carries the `"nav.finances"` capability. This is a pure nav-
- * visibility check (see `showFinances`'s doc on `NAV_RETURNS`); it does not
- * gate money access anywhere.
+ * every chapter, unlike `selfSeatIds`'s chapter-scoped resolution — carrying
+ * ANY power in the `finance` domain. This is a pure nav-visibility check (see
+ * `showFinances`'s doc on `NAV_RETURNS`); it does not gate money access
+ * anywhere.
+ *
+ * DERIVED, not granted. There used to be a `nav.finances` capability a seat
+ * had to carry in addition to its real finance powers, which is one more thing
+ * to forget — and forgetting it produced the silent failure of a seat that can
+ * do finance work but has no tab to do it from. The tab now shows exactly when
+ * the holder can do something behind it. Every seat that carried
+ * `nav.finances` also held a real finance power, so nothing changes hands.
  *
  * PERSON-KEYED, not user-keyed like `lib/finance.ts#isCentralEdOrFm` — this
  * only ever gets called with `nav`'s own `self` (the caller's HOME-chapter
@@ -157,7 +168,7 @@ async function hasFinancesNavSeat(
     .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
   for (const assignment of assignments) {
     const def = await ctx.db.get(assignment.seatDefId);
-    if (def?.capabilities.includes("nav.finances")) return true;
+    if (def && grantsAnyInDomain(def.capabilities, "finance")) return true;
   }
   return false;
 }

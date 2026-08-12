@@ -2678,7 +2678,7 @@ export const FINANCES_COURSES: Course[] = [
       // course because it has two audiences and a module belongs to exactly
       // one course (the catalog's keystone invariant). The Treasurer prepares
       // a month and the ED / FM / Chapter Director publishes it — the
-      // two-party split `finance.publish` enforces — and all four paths carry
+      // two-party split `finance.ledger.publish` enforces — and all four paths carry
       // this shared-foundation course, so one authoring of the rules reaches
       // both sides of that split.
       "finance-publishing-the-books",

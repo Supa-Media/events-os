@@ -19,6 +19,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { colors } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
+import { expandPowers } from "@events-os/shared";
 
 export type CampaignPower = "none" | "design" | "compose" | "approve";
 
@@ -26,9 +27,13 @@ export type CampaignPower = "none" | "design" | "compose" | "approve";
  *  strongest rung wins (`approve` implies `compose` implies `design`, so a
  *  seat carrying all three reads as "approve"). */
 export function campaignPowerOf(capabilities: readonly string[]): CampaignPower {
-  if (capabilities.includes("campaigns.approve")) return "approve";
-  if (capabilities.includes("campaigns.compose")) return "compose";
-  if (capabilities.includes("campaigns.design")) return "design";
+  // Expanded, and checked strongest-rung-first: a row storing only
+  // `email.campaigns.approve` resolves to "approve", not the "design" rung it
+  // also implies.
+  const powers = expandPowers(capabilities);
+  if (powers.has("email.campaigns.approve")) return "approve";
+  if (powers.has("email.campaigns.edit")) return "compose";
+  if (powers.has("email.assets.edit")) return "design";
   return "none";
 }
 

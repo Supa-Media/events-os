@@ -262,7 +262,7 @@ export const ROLE_PATHS: RolePath[] = [
     // (the vocabulary + CRM basics they can see) and the-backer-model (the
     // $50 floor, the ladder, the Stripe lifecycle) are directly their raising
     // job. donor-stewardship and sponsorships-and-partnerships are
-    // deliberately left off this path: backfill/import needs `giving.manage`
+    // deliberately left off this path: backfill/import needs `giving.edit`
     // (central-only today, see the PR body's discrepancy note), and
     // sponsorships is a central-lens-only desk — see the PR body for the
     // explicit decision.
