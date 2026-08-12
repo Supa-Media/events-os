@@ -35,7 +35,7 @@
  * inline that a shared module already owns.
  */
 import { useState } from "react";
-import { Text, View } from "react-native";
+import { Linking, Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -64,6 +64,12 @@ import {
 } from "../../../components/ui";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { useChapterContext } from "../../../lib/ChapterContext";
+// `publicSiteUrl` — the one canonical resolver for the public-page base URL
+// (branded domain in prod, Convex .site fallback elsewhere). Lives with the
+// Tickets tab's helpers, not because this is ticket-specific, but because
+// that's where the org's first "open a preview link" button put it; finance
+// code already reuses this module for `formatMoney`/`parseDollars`.
+import { publicSiteUrl } from "../../../components/event/ticketing/helpers";
 
 function NoAccess() {
   return (
@@ -241,12 +247,14 @@ function MonthDetail({
   const publish = useMutation(api.publicLedger.publish);
   const requestChanges = useMutation(api.publicLedger.requestChanges);
   const startAmendment = useMutation(api.publicLedger.startAmendment);
+  const mintPreviewToken = useMutation(api.publicLedger.mintLedgerPreviewToken);
 
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [reason, setReason] = useState<AmendmentReason>("recategorized");
+  const [previewPageLoading, setPreviewPageLoading] = useState(false);
 
   /** Every action shares one runner so a refusal always reaches the screen.
    *  The backend's messages are written to be read by a human (see
@@ -263,6 +271,37 @@ function MonthDetail({
       setError(data?.message ?? "That didn't go through. Try again.");
     } finally {
       setBusy(false);
+    }
+  };
+
+  /**
+   * "Preview the page" — mint a short-lived token and open the FULL public
+   * render of this month, built from the live books, in a new tab. Works in
+   * every working status (draft, in review, sent back, mid-amendment): the
+   * mint only needs console access, never a publishable snapshot, because
+   * looking is not the same commitment publishing is.
+   *
+   * Mirrors `TicketingTab.tsx#openPreview`'s RSVP draft-preview pattern —
+   * mint, then `Linking.openURL` — with its own loading flag rather than
+   * `busy` so tapping it never looks like it queued behind a submit/publish
+   * that's mid-flight.
+   */
+  const openPreviewPage = async () => {
+    setPreviewPageLoading(true);
+    setError(null);
+    try {
+      const { token } = await mintPreviewToken({
+        scope,
+        periodKey: month.periodKey,
+      } as never);
+      void Linking.openURL(
+        `${publicSiteUrl()}/finances/${month.periodKey}?preview=${token}`,
+      );
+    } catch (e) {
+      const data = (e as { data?: { message?: string } })?.data;
+      setError(data?.message ?? "Couldn't open the preview. Try again.");
+    } finally {
+      setPreviewPageLoading(false);
     }
   };
 
@@ -354,6 +393,18 @@ function MonthDetail({
           ) : null}
         </>
       )}
+
+      {/* Full page, not just the figures above — works in EVERY working
+          status, because "see what this would look like" is a weaker ask
+          than "publish it" and shouldn't wait for the same readiness. */}
+      <Button
+        title="Preview the page"
+        icon="eye"
+        variant="secondary"
+        size="sm"
+        loading={previewPageLoading}
+        onPress={() => void openPreviewPage()}
+      />
 
       {error ? <Text className="mt-3 text-sm text-danger">{error}</Text> : null}
 
