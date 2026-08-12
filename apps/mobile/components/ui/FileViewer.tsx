@@ -89,6 +89,51 @@ export function FileViewer({
   /** The original filename. The fallback signal, and the download name. */
   filename?: string | null;
 }) {
+  if (!visible) return null;
+  return (
+    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+      {/* Near-opaque on purpose. A translucent backdrop let the list behind
+          show through the receipt, which is exactly the wrong thing when the
+          job is READING a document — and an explicit rgba beats a Tailwind
+          opacity modifier here, which resolved much lighter than /95 suggests. */}
+      <View className="flex-1" style={{ backgroundColor: "rgba(20, 6, 6, 0.985)" }}>
+        <FileViewerFrame
+          uri={uri}
+          onClose={onClose}
+          caption={caption}
+          contentType={contentType}
+          filename={filename}
+        />
+      </View>
+    </Modal>
+  );
+}
+
+/**
+ * THE FRAME — toolbar + zoomable pane, with no opinion about what hosts it.
+ * `FileViewer` above mounts this inside its full-screen `Modal`, unchanged
+ * from before this was split out. `ReceiptPane` (the coding workbench panel,
+ * `explain.tsx`) mounts the SAME frame inline, big, beside the coding form —
+ * no modal, so the list stays visible and clickable beside it (the founder's
+ * own words: "rather than a modal that... blocks your ability to... click
+ * quickly on other things"). One implementation of zoom/pan/paging/PDF/pinch,
+ * so a receipt behaves identically wherever it's opened from.
+ */
+export function FileViewerFrame({
+  uri,
+  onClose,
+  caption,
+  contentType,
+  filename,
+}: {
+  uri: string;
+  /** Omit for an inline/embedded host with no "this" to close — hides the ×
+   *  button and the Esc shortcut. `FileViewer`'s Modal always passes one. */
+  onClose?: () => void;
+  caption?: string;
+  contentType?: string | null;
+  filename?: string | null;
+}) {
   const declared = useMemo(
     () => receiptFileKind({ contentType, filename }),
     [contentType, filename],
@@ -106,14 +151,15 @@ export function FileViewer({
   const [page, setPage] = useState(1);
   const [pageCount, setPageCount] = useState(1);
 
-  // A different file (or a re-open) starts from fit, page one — a viewer that
-  // remembers the last receipt's zoom is disorienting on the next one.
+  // A different file (a new row selected in the panel, or a re-open of the
+  // modal) starts from fit, page one — a viewer that remembers the last
+  // receipt's zoom is disorienting on the next one.
   useEffect(() => {
     setZoom(MIN_ZOOM);
     setPage(1);
     setPageCount(1);
     setSniffed(null);
-  }, [uri, visible]);
+  }, [uri]);
 
   const zoomBy = useCallback((direction: 1 | -1) => {
     setZoom((z) => stepZoom(z, direction));
@@ -124,14 +170,23 @@ export function FileViewer({
     [pageCount],
   );
 
-  // ── Keyboard, on web. Esc closes, +/-/0 zoom, ←/→ page. RN-Web's `<Modal>`
-  // does not wire Esc itself, and a viewer a reviewer has to reach for the
-  // mouse to dismiss is exactly the friction this whole change is about. ──
+  // ── Keyboard, on web. Esc closes (modal host only), +/-/0 zoom, ←/→ page.
+  // RN-Web's `<Modal>` does not wire Esc itself, and a viewer a reviewer has
+  // to reach for the mouse to dismiss is exactly the friction this whole
+  // change is about. Guarded against a focused text input so the SAME
+  // shortcuts don't hijack typing in the coding form sitting right below this
+  // frame in the panel host (`-`/`0`/arrows are all things a person types
+  // into a note or a headcount field). ──
   useEffect(() => {
-    if (Platform.OS !== "web" || !visible) return;
+    if (Platform.OS !== "web") return;
     if (typeof document === "undefined") return;
     function onKey(e: KeyboardEvent) {
-      if (e.key === "Escape") return onClose();
+      const el = document.activeElement as HTMLElement | null;
+      const typing =
+        !!el &&
+        (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (typing) return;
+      if (e.key === "Escape") return onClose?.();
       if (e.key === "+" || e.key === "=") return zoomBy(1);
       if (e.key === "-" || e.key === "_") return zoomBy(-1);
       if (e.key === "0") return setZoom(MIN_ZOOM);
@@ -140,98 +195,92 @@ export function FileViewer({
     }
     document.addEventListener("keydown", onKey);
     return () => document.removeEventListener("keydown", onKey);
-  }, [visible, onClose, zoomBy, pageCount]);
-
-  if (!visible) return null;
+  }, [onClose, zoomBy, pageCount]);
 
   const multiPage = kind === "pdf" && pageCount > 1;
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
-      {/* Near-opaque on purpose. A translucent backdrop let the list behind
-          show through the receipt, which is exactly the wrong thing when the
-          job is READING a document — and an explicit rgba beats a Tailwind
-          opacity modifier here, which resolved much lighter than /95 suggests. */}
-      <View className="flex-1" style={{ backgroundColor: "rgba(20, 6, 6, 0.985)" }}>
-        {/* Toolbar. Always present, for every file kind — the reviewer should
-            not have to work out which controls this particular file got. */}
-        <View className="flex-row items-center gap-2 px-4 pb-3 pt-5">
-          <Text className="flex-1 text-sm text-raised/80" numberOfLines={1}>
-            {caption ?? filename ?? ""}
-          </Text>
+    <>
+      {/* Toolbar. Always present, for every file kind — the reviewer should
+          not have to work out which controls this particular file got. */}
+      <View className="flex-row items-center gap-2 px-4 pb-3 pt-5">
+        <Text className="flex-1 text-sm text-raised/80" numberOfLines={1}>
+          {caption ?? filename ?? ""}
+        </Text>
 
-          {multiPage ? (
-            <View className="mr-1 flex-row items-center gap-1">
-              <ToolbarButton
-                icon="chevron-left"
-                label="Previous page"
-                disabled={page <= 1}
-                onPress={() => goToPage(page - 1)}
-              />
-              <Text className="min-w-[68px] text-center text-xs text-raised/80">
-                Page {page} of {pageCount}
-              </Text>
-              <ToolbarButton
-                icon="chevron-right"
-                label="Next page"
-                disabled={page >= pageCount}
-                onPress={() => goToPage(page + 1)}
-              />
-            </View>
-          ) : null}
-
-          <ToolbarButton
-            icon="zoom-out"
-            label="Zoom out"
-            disabled={zoom <= MIN_ZOOM}
-            onPress={() => zoomBy(-1)}
-          />
-          <Pressable
-            onPress={() => setZoom(MIN_ZOOM)}
-            accessibilityRole="button"
-            accessibilityLabel="Reset zoom"
-            className="rounded-md px-1.5 py-1 active:opacity-70"
-          >
-            <Text className="min-w-[44px] text-center text-xs font-semibold text-raised">
-              {Math.round(zoom * 100)}%
+        {multiPage ? (
+          <View className="mr-1 flex-row items-center gap-1">
+            <ToolbarButton
+              icon="chevron-left"
+              label="Previous page"
+              disabled={page <= 1}
+              onPress={() => goToPage(page - 1)}
+            />
+            <Text className="min-w-[68px] text-center text-xs text-raised/80">
+              Page {page} of {pageCount}
             </Text>
-          </Pressable>
-          <ToolbarButton icon="zoom-in" label="Zoom in" onPress={() => zoomBy(1)} />
-          <ToolbarButton
-            icon="download"
-            label="Download original"
-            onPress={() => void Linking.openURL(uri)}
-          />
-          <ToolbarButton icon="x" label="Close" size={22} onPress={onClose} />
-        </View>
+            <ToolbarButton
+              icon="chevron-right"
+              label="Next page"
+              disabled={page >= pageCount}
+              onPress={() => goToPage(page + 1)}
+            />
+          </View>
+        ) : null}
 
-        <ZoomPane zoom={zoom} onZoom={setZoom}>
-          {kind === "pdf" ? (
-            <PdfPane
-              uri={uri}
-              page={page}
-              zoom={zoom}
-              onPageCount={setPageCount}
-              filename={filename}
-            />
-          ) : kind === "document" ? (
-            <DocumentPane uri={uri} caption={caption ?? filename ?? "Receipt"} />
-          ) : kind === "missing" ? (
-            <Unrenderable
-              uri={uri}
-              title="This file couldn't be loaded"
-              detail="It may have been deleted, or the connection dropped. The receipt record itself is unchanged."
-            />
-          ) : (
-            <ImagePane
-              uri={uri}
-              caption={caption ?? filename ?? "Receipt"}
-              onSniffed={setSniffed}
-            />
-          )}
-        </ZoomPane>
+        <ToolbarButton
+          icon="zoom-out"
+          label="Zoom out"
+          disabled={zoom <= MIN_ZOOM}
+          onPress={() => zoomBy(-1)}
+        />
+        <Pressable
+          onPress={() => setZoom(MIN_ZOOM)}
+          accessibilityRole="button"
+          accessibilityLabel="Reset zoom"
+          className="rounded-md px-1.5 py-1 active:opacity-70"
+        >
+          <Text className="min-w-[44px] text-center text-xs font-semibold text-raised">
+            {Math.round(zoom * 100)}%
+          </Text>
+        </Pressable>
+        <ToolbarButton icon="zoom-in" label="Zoom in" onPress={() => zoomBy(1)} />
+        <ToolbarButton
+          icon="download"
+          label="Download original"
+          onPress={() => void Linking.openURL(uri)}
+        />
+        {onClose ? (
+          <ToolbarButton icon="x" label="Close" size={22} onPress={onClose} />
+        ) : null}
       </View>
-    </Modal>
+
+      <ZoomPane zoom={zoom} onZoom={setZoom}>
+        {kind === "pdf" ? (
+          <PdfPane
+            uri={uri}
+            page={page}
+            zoom={zoom}
+            onPageCount={setPageCount}
+            filename={filename}
+          />
+        ) : kind === "document" ? (
+          <DocumentPane uri={uri} caption={caption ?? filename ?? "Receipt"} />
+        ) : kind === "missing" ? (
+          <Unrenderable
+            uri={uri}
+            title="This file couldn't be loaded"
+            detail="It may have been deleted, or the connection dropped. The receipt record itself is unchanged."
+          />
+        ) : (
+          <ImagePane
+            uri={uri}
+            caption={caption ?? filename ?? "Receipt"}
+            onSniffed={setSniffed}
+          />
+        )}
+      </ZoomPane>
+    </>
   );
 }
 

@@ -39,8 +39,8 @@
  * is reconciled. Correct for chasing a cardholder, wrong for this — the row
  * is closed and still publishes blank.
  */
-import { useMemo, useState } from "react";
-import { Text, View } from "react-native";
+import { useEffect, useMemo, useState } from "react";
+import { Platform, Text, useWindowDimensions, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -63,11 +63,20 @@ import {
 } from "../../../components/ui";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { FinishChargeSheet } from "../../../components/finance/myTransactions/FinishChargeSheet";
+import { CodingWorkbenchPanel } from "../../../components/finance/coding/CodingWorkbenchPanel";
+import { panelPosition, stepSelection } from "../../../components/finance/coding/panelNav";
 import { useChapterContext } from "../../../lib/ChapterContext";
+import { colors } from "../../../lib/theme";
 
 type WorklistRow = NonNullable<
   ReturnType<typeof useQuery<typeof api.finances.monthCodingWorklist>>
 >["rows"][number];
+
+/** Below this window width the side panel doesn't fit next to a readable
+ *  list — same threshold the finance dashboard's own two-column layouts use
+ *  (`CentralView.tsx`/`ChapterView.tsx`'s `STACK_WIDTH`), so "wide" means the
+ *  same thing everywhere in this module. */
+const WIDE_MIN_WIDTH = 900;
 
 function NoAccess() {
   return (
@@ -132,6 +141,41 @@ function Body() {
     [categories],
   );
 
+  // Same threshold as `CentralView`/`ChapterView`'s own two-column split
+  // (`WIDE_MIN_WIDTH`, above) — "wide" means the same window width everywhere
+  // in finance.
+  const isWide = useWindowDimensions().width >= WIDE_MIN_WIDTH;
+  const rows = data?.rows ?? [];
+  const stepRow = (delta: 1 | -1) =>
+    setOpenId((current) => stepSelection(rows, current, delta) ?? current);
+
+  // ── QUICK FLOW: ArrowUp/ArrowDown (and j/k) step the selection through the
+  // SAME biggest-first order the panel's own Prev/Next buttons use — only
+  // while the panel is actually open (wide screens, a row selected), and only
+  // when no text field has focus, so typing "j" into a note or a business
+  // purpose never gets eaten by row-stepping. ──
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isWide || openId == null) return;
+    if (typeof document === "undefined") return;
+    function onKey(e: KeyboardEvent) {
+      const el = document.activeElement as HTMLElement | null;
+      const typing =
+        !!el &&
+        (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (typing) return;
+      if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        stepRow(-1);
+      } else if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        stepRow(1);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWide, openId, rows]);
+
   const step = (delta: number) => {
     const parsed = parsePeriodKey(period);
     if (!parsed) return;
@@ -166,7 +210,17 @@ function Body() {
   // than a percentage that implies a completion that never happened.
   const pct = data.totalCount > 0 ? Math.round((done / data.totalCount) * 100) : 0;
 
+  // The persistent side panel only on a wide screen WITH a row selected —
+  // founder: "if I'm seeing a database view when I'm coding... maybe in a
+  // side panel." Narrow screens keep the pre-panel Modal sheet, untouched,
+  // regardless of width — this is the only branch point between the two.
+  const showPanel = isWide && openRow != null;
+
   return (
+    <View
+      style={{ flex: 1, flexDirection: showPanel ? "row" : "column" }}
+    >
+    <View style={{ flex: 1, minWidth: 0 }}>
     <Screen>
       <Narrow>
         <BackLink fallback="/finances/publish" label="Publish" />
@@ -251,14 +305,22 @@ function Body() {
               </View>
             ) : (
               data.rows.map((row) => (
-                <ExplainRow key={row.id} row={row} onOpen={() => setOpenId(row.id)} />
+                <ExplainRow
+                  key={row.id}
+                  row={row}
+                  selected={showPanel && row.id === openId}
+                  onOpen={() => setOpenId(row.id)}
+                />
               ))
             )}
           </>
         )}
       </Narrow>
 
-      {openRow ? (
+      {/* NARROW screens only — the pre-panel Modal sheet, unchanged. On a
+          wide screen with a row selected, the panel below is the whole
+          record instead; this never mounts alongside it. */}
+      {openRow && !showPanel ? (
         <FinishChargeSheet
           txn={openRow as never}
           categoryOptions={categoryOptions}
@@ -266,19 +328,53 @@ function Body() {
         />
       ) : null}
     </Screen>
+    </View>
+
+    {showPanel && openRow ? (
+      <View style={{ width: "44%", maxWidth: 640, minWidth: 380, padding: 16 }}>
+        <CodingWorkbenchPanel
+          txn={openRow as never}
+          categoryOptions={categoryOptions}
+          onDeselect={() => setOpenId(null)}
+          onPrev={() => stepRow(-1)}
+          onNext={() => stepRow(1)}
+          hasPrev={stepSelection(rows, openId, -1) != null}
+          hasNext={stepSelection(rows, openId, 1) != null}
+          position={panelPosition(rows, openId)}
+        />
+      </View>
+    ) : null}
+    </View>
   );
 }
 
 /** One line still owing an explanation. Amount leads, because the list is
- *  ordered by it and a reader scanning down is scanning amounts. */
-function ExplainRow({ row, onOpen }: { row: WorklistRow; onOpen: () => void }) {
+ *  ordered by it and a reader scanning down is scanning amounts.
+ *  `selected` (wide screens, panel open on this row) draws an accent border
+ *  so the row the panel is showing is never ambiguous while the list keeps
+ *  scrolling past it. */
+function ExplainRow({
+  row,
+  selected,
+  onOpen,
+}: {
+  row: WorklistRow;
+  selected: boolean;
+  onOpen: () => void;
+}) {
   const when = new Date(row.postedAt).toLocaleDateString("en-US", {
     timeZone: "America/New_York",
     month: "short",
     day: "numeric",
   });
   return (
-    <Card>
+    <Card
+      style={
+        selected
+          ? { borderColor: colors.accent, borderWidth: 2, backgroundColor: colors.accentBg }
+          : undefined
+      }
+    >
       <View className="flex-row items-center gap-3">
         <Text
           className="text-base font-semibold text-ink"
