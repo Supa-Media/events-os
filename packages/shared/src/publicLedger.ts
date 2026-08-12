@@ -266,7 +266,12 @@ export const PUBLIC_LEDGER_COLUMNS = [
   "Budget",
   "Project",
   "Event",
-  "Book",
+  // Renamed from "Book" 2026-08-12 (founder directive): a stranger reads
+  // "chapter," not the internal accounting term for a set of books. The
+  // value underneath is unchanged — every `financePublicationEntries` row
+  // has carried a frozen `bookLabel` ("Central" / chapter name) since the
+  // table's inception, so this is a header rename only, no data migration.
+  "Chapter",
   "Expense type",
   "Travel from",
   "Travel to",
@@ -284,7 +289,8 @@ export const PUBLIC_GIFT_COLUMNS = [
   "Amount",
   "Method",
   "Designation",
-  "Book",
+  // Renamed from "Book" 2026-08-12 — see `PUBLIC_LEDGER_COLUMNS` above.
+  "Chapter",
 ] as const;
 
 /** Render an affiliation mix as the sentence the public row prints:
