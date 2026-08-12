@@ -217,133 +217,131 @@ function Body() {
   const showPanel = isWide && openRow != null;
 
   return (
-    <View
-      style={{ flex: 1, flexDirection: showPanel ? "row" : "column" }}
-    >
-    <View style={{ flex: 1, minWidth: 0 }}>
-    <Screen>
-      <Narrow>
-        <BackLink fallback="/finances/publish" label="Publish" />
-        <SectionHeader title={`Explain — ${data.scopeName}`} />
+    <View style={{ flex: 1, flexDirection: showPanel ? "row" : "column" }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Screen>
+          <Narrow>
+            <BackLink fallback="/finances/publish" label="Publish" />
+            <SectionHeader title={`Explain — ${data.scopeName}`} />
 
-        <View className="mb-3 flex-row items-center gap-2">
-          <Button variant="secondary" size="sm" title="←" onPress={() => step(-1)} />
-          <Text className="flex-1 text-center text-base font-semibold text-ink">
-            {data.label}
-          </Text>
-          <Button variant="secondary" size="sm" title="→" onPress={() => step(1)} />
-        </View>
-
-        {data.totalCount === 0 ? (
-          // A ZERO-ROW resolved book is never "fully explained" — that copy
-          // is indistinguishable from a genuinely finished month. Name the
-          // book that's empty, and — when the caller can see other books —
-          // say where the actual rows are instead of celebrating nothing.
-          <View className="mt-4">
-            <EmptyState
-              icon="book-open"
-              title={`${data.scopeName} has nothing to explain in ${data.label}`}
-              message={
-                data.otherBooks && data.otherBooks.length > 0
-                  ? `${data.scopeName}'s book is empty for this month — that's not the same as complete. Other books have unexplained lines for ${data.label}:`
-                  : `${data.scopeName}'s book has no lines at all for ${data.label} — an empty book, not a finished one.`
-              }
-              action={
-                data.otherBooks && data.otherBooks.length > 0 ? (
-                  <View className="gap-2">
-                    {data.otherBooks.map((book) => (
-                      <Button
-                        key={String(book.scope)}
-                        variant="secondary"
-                        size="sm"
-                        title={`Switch to ${book.scopeName} — ${book.totalCount} unexplained`}
-                        onPress={() =>
-                          router.setParams({ scope: String(book.scope) })
-                        }
-                      />
-                    ))}
-                  </View>
-                ) : undefined
-              }
-            />
-          </View>
-        ) : (
-          <>
-            <Card>
-              <Text className="text-sm text-muted">
-                {done} of {data.totalCount} lines explained ({pct}%) —{" "}
-                {formatCents(data.explainedCents)} of {formatCents(data.totalCents)}.
+            <View className="mb-3 flex-row items-center gap-2">
+              <Button variant="secondary" size="sm" title="←" onPress={() => step(-1)} />
+              <Text className="flex-1 text-center text-base font-semibold text-ink">
+                {data.label}
               </Text>
-              {/* Dollars beside counts, deliberately. A month can be 20% of
-                  the lines and 80% of the money, and on a page strangers
-                  read, the money is the part that gets asked about. */}
-              <View className="mt-2 h-2 overflow-hidden rounded-full bg-sunken">
-                <View
-                  className="h-full rounded-full bg-success"
-                  style={{ width: `${pct}%` }}
-                />
-              </View>
-              <Text className="mt-2 text-2xs text-muted">
-                Biggest first — the top of this list is most of the money.
-              </Text>
-            </Card>
+              <Button variant="secondary" size="sm" title="→" onPress={() => step(1)} />
+            </View>
 
-            {data.truncated ? (
-              <Text className="mt-2 text-sm text-danger">
-                This month is larger than one read returns; the list below is
-                a prefix. Explain these, then reopen for the rest.
-              </Text>
-            ) : null}
-
-            {data.rows.length === 0 ? (
+            {data.totalCount === 0 ? (
+              // A ZERO-ROW resolved book is never "fully explained" — that copy
+              // is indistinguishable from a genuinely finished month. Name the
+              // book that's empty, and — when the caller can see other books —
+              // say where the actual rows are instead of celebrating nothing.
               <View className="mt-4">
                 <EmptyState
-                  icon="check-circle"
-                  title={`${data.label} is fully explained`}
-                  message="Every line that will publish carries a written purpose. Move to another month, or go publish this one."
+                  icon="book-open"
+                  title={`${data.scopeName} has nothing to explain in ${data.label}`}
+                  message={
+                    data.otherBooks && data.otherBooks.length > 0
+                      ? `${data.scopeName}'s book is empty for this month — that's not the same as complete. Other books have unexplained lines for ${data.label}:`
+                      : `${data.scopeName}'s book has no lines at all for ${data.label} — an empty book, not a finished one.`
+                  }
+                  action={
+                    data.otherBooks && data.otherBooks.length > 0 ? (
+                      <View className="gap-2">
+                        {data.otherBooks.map((book) => (
+                          <Button
+                            key={String(book.scope)}
+                            variant="secondary"
+                            size="sm"
+                            title={`Switch to ${book.scopeName} — ${book.totalCount} unexplained`}
+                            onPress={() =>
+                              router.setParams({ scope: String(book.scope) })
+                            }
+                          />
+                        ))}
+                      </View>
+                    ) : undefined
+                  }
                 />
               </View>
             ) : (
-              data.rows.map((row) => (
-                <ExplainRow
-                  key={row.id}
-                  row={row}
-                  selected={showPanel && row.id === openId}
-                  onOpen={() => setOpenId(row.id)}
-                />
-              ))
+              <>
+                <Card>
+                  <Text className="text-sm text-muted">
+                    {done} of {data.totalCount} lines explained ({pct}%) —{" "}
+                    {formatCents(data.explainedCents)} of {formatCents(data.totalCents)}.
+                  </Text>
+                  {/* Dollars beside counts, deliberately. A month can be 20% of
+                      the lines and 80% of the money, and on a page strangers
+                      read, the money is the part that gets asked about. */}
+                  <View className="mt-2 h-2 overflow-hidden rounded-full bg-sunken">
+                    <View
+                      className="h-full rounded-full bg-success"
+                      style={{ width: `${pct}%` }}
+                    />
+                  </View>
+                  <Text className="mt-2 text-2xs text-muted">
+                    Biggest first — the top of this list is most of the money.
+                  </Text>
+                </Card>
+
+                {data.truncated ? (
+                  <Text className="mt-2 text-sm text-danger">
+                    This month is larger than one read returns; the list below is
+                    a prefix. Explain these, then reopen for the rest.
+                  </Text>
+                ) : null}
+
+                {data.rows.length === 0 ? (
+                  <View className="mt-4">
+                    <EmptyState
+                      icon="check-circle"
+                      title={`${data.label} is fully explained`}
+                      message="Every line that will publish carries a written purpose. Move to another month, or go publish this one."
+                    />
+                  </View>
+                ) : (
+                  data.rows.map((row) => (
+                    <ExplainRow
+                      key={row.id}
+                      row={row}
+                      selected={showPanel && row.id === openId}
+                      onOpen={() => setOpenId(row.id)}
+                    />
+                  ))
+                )}
+              </>
             )}
-          </>
-        )}
-      </Narrow>
+          </Narrow>
 
-      {/* NARROW screens only — the pre-panel Modal sheet, unchanged. On a
-          wide screen with a row selected, the panel below is the whole
-          record instead; this never mounts alongside it. */}
-      {openRow && !showPanel ? (
-        <FinishChargeSheet
-          txn={openRow as never}
-          categoryOptions={categoryOptions}
-          onClose={() => setOpenId(null)}
-        />
-      ) : null}
-    </Screen>
-    </View>
-
-    {showPanel && openRow ? (
-      <View style={{ width: "44%", maxWidth: 640, minWidth: 380, padding: 16 }}>
-        <CodingWorkbenchPanel
-          txn={openRow as never}
-          categoryOptions={categoryOptions}
-          onDeselect={() => setOpenId(null)}
-          onPrev={() => stepRow(-1)}
-          onNext={() => stepRow(1)}
-          hasPrev={stepSelection(rows, openId, -1) != null}
-          hasNext={stepSelection(rows, openId, 1) != null}
-          position={panelPosition(rows, openId)}
-        />
+          {/* NARROW screens only — the pre-panel Modal sheet, unchanged. On a
+              wide screen with a row selected, the panel below is the whole
+              record instead; this never mounts alongside it. */}
+          {openRow && !showPanel ? (
+            <FinishChargeSheet
+              txn={openRow as never}
+              categoryOptions={categoryOptions}
+              onClose={() => setOpenId(null)}
+            />
+          ) : null}
+        </Screen>
       </View>
-    ) : null}
+
+      {showPanel && openRow ? (
+        <View style={{ width: "44%", maxWidth: 640, minWidth: 380, padding: 16 }}>
+          <CodingWorkbenchPanel
+            txn={openRow as never}
+            categoryOptions={categoryOptions}
+            onDeselect={() => setOpenId(null)}
+            onPrev={() => stepRow(-1)}
+            onNext={() => stepRow(1)}
+            hasPrev={stepSelection(rows, openId, -1) != null}
+            hasNext={stepSelection(rows, openId, 1) != null}
+            position={panelPosition(rows, openId)}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }
