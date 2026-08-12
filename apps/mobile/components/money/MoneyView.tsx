@@ -546,6 +546,7 @@ function TxnEditModal({ tr, onClose }: { tr: TxnRowData; onClose: () => void }) 
                 <ReceiptCell
                   hasReceipt={tr.hasReceipt}
                   reminderStage={tr.reminderStage}
+                  isPersonal={tr.isPersonal}
                   // Without this the "Attached" chip here was INERT — the only
                   // surface in the app where tapping an attached receipt did
                   // nothing at all (see `ReceiptCell`'s `transactionId` doc).

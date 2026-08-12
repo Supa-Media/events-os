@@ -1383,8 +1383,11 @@ export function ReceiptCell({
    *  isn't the org's, so "Day N overdue" on a personal row is always wrong,
    *  no matter what the field says. No migration needed to backfill those
    *  rows; this suppresses the symptom at read time instead. Optional and
-   *  defaults to `false` so call sites that don't carry `isPersonal` on their
-   *  row (MoneyView) keep their current — pre-existing — behavior unchanged. */
+   *  defaults to `false` so any future call site whose row projection
+   *  doesn't carry `isPersonal` keeps rendering the raw `reminderStage`
+   *  rather than the guard silently no-op'ing — every current caller
+   *  (Reconcile grid, ChargeRow, TransactionDetailModal, MoneyView) wires
+   *  it through. */
   isPersonal?: boolean;
   /** Which transaction this cell's receipt(s) belong to — powers the
    *  "Attached" chip's tap-to-view (`ReceiptViewerModal`, below). Optional so

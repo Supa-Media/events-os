@@ -221,6 +221,11 @@ const moneyTxnSummary = v.object({
   note: v.union(v.string(), v.null()),
   hasReceipt: v.boolean(),
   reminderStage: v.union(v.literal("none"), v.literal("flagged"), v.literal("escalated")),
+  // So the Money tab's `ReceiptCell` can suppress the overdue/flagged badge
+  // on a personal-flagged row exactly like Reconcile and the Coding tab
+  // already do — see `ReceiptCell`'s own `isPersonal` prop doc for why a
+  // personal charge should never show "Day N overdue".
+  isPersonal: v.boolean(),
 });
 
 function toMoneyTxnSummary(tr: Doc<"transactions">) {
@@ -236,6 +241,7 @@ function toMoneyTxnSummary(tr: Doc<"transactions">) {
     note: tr.note ?? null,
     hasReceipt: tr.receiptStorageId != null,
     reminderStage: tr.receiptReminderStage ?? ("none" as const),
+    isPersonal: tr.isPersonal === true,
   };
 }
 
