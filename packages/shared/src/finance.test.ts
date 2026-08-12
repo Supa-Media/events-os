@@ -257,6 +257,35 @@ describe("merchant display name", () => {
     ).toBe(BANK);
   });
 
+  test("a structured card descriptor is cleaned to the merchant alone", () => {
+    // The exact production shape that made the coding list unreadable (owner,
+    // 2026-08-11): the address is noise and the card suffix already renders
+    // in the row's subtitle. Only the STRUCTURE is stripped — the merchant's
+    // own text is untouched.
+    expect(
+      displayMerchantName({
+        merchantName:
+          "Purchase from GIVEBUTTER | Address: GIVEBUTTER.CO, DE, US | **9370",
+      }),
+    ).toBe("GIVEBUTTER");
+    expect(
+      displayMerchantName({
+        merchantName:
+          "Purchase from 9TH AVE ROYAL DELI INC | Address: 212-7656475, NY, US | **2702",
+      }),
+    ).toBe("9TH AVE ROYAL DELI INC");
+    // A free-form provider string is NOT rewritten — that's what renames are
+    // for (the BANK case above pins the same rule).
+    expect(displayMerchantName({ merchantName: "OLLAMA" })).toBe("OLLAMA");
+    // A rename still beats everything, cleaning included.
+    expect(
+      displayMerchantName({
+        merchantNameOverride: "Givebutter",
+        merchantName: "Purchase from GIVEBUTTER | Address: X | **9370",
+      }),
+    ).toBe("Givebutter");
+  });
+
   test("a merchant-less row falls back to its description, then to the fallback", () => {
     expect(displayMerchantName({ description: ENGINE })).toBe(ENGINE);
     expect(displayMerchantName({})).toBe("Unlabeled charge");

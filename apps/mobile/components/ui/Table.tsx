@@ -18,7 +18,7 @@ export function Table({ children, className = "" }: { children: ReactNode; class
 
 export function TableHeader({ children }: { children: ReactNode }) {
   return (
-    <View className="flex-row items-center border-b border-border bg-sunken px-4 py-2.5">
+    <View className="flex-row items-center gap-3 border-b border-border bg-sunken px-4 py-2.5">
       {children}
     </View>
   );
@@ -36,7 +36,7 @@ export function HeaderCell({
   align?: "left" | "right" | "center";
 }) {
   return (
-    <View style={width ? { width } : { flex }} className={alignClass(align)}>
+    <View style={width ? { width } : { flex, minWidth: 0 }} className={alignClass(align)}>
       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
         {children}
       </Text>
@@ -59,7 +59,7 @@ export function Row({
 
   if (!onPress) {
     return (
-      <View className={`flex-row items-center px-4 py-3 ${border}`}>{children}</View>
+      <View className={`flex-row items-center gap-3 px-4 py-3 ${border}`}>{children}</View>
     );
   }
 
@@ -68,7 +68,7 @@ export function Row({
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
-      className={`flex-row items-center px-4 py-3 ${border} ${hovered ? "bg-sunken" : "bg-raised"}`}
+      className={`flex-row items-center gap-3 px-4 py-3 ${border} ${hovered ? "bg-sunken" : "bg-raised"}`}
     >
       {children}
     </Pressable>
@@ -87,7 +87,7 @@ export function Cell({
   align?: "left" | "right" | "center";
 }) {
   return (
-    <View style={width ? { width } : { flex }} className={alignClass(align)}>
+    <View style={width ? { width } : { flex, minWidth: 0 }} className={alignClass(align)}>
       {children}
     </View>
   );
