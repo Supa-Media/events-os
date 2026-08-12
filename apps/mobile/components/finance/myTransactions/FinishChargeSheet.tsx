@@ -303,6 +303,12 @@ export function FinishChargeSheetBody({
     txn.hasReceipt ? "skip" : { transactionId },
   );
   const submitCoding = useMutation(api.transactionCodings.submit);
+  // The one-tap second half of "Submit & approve" (founder, 2026-08-12: "as
+  // super admin, I can 1 party approve coding, right now I only see 'Submit
+  // for review' nothing else"). Only ever called when the server said
+  // `canSelfApprove` — the solo-operator relaxation, which `approve` records
+  // as `approvalParty: "single"` so the bypass stays re-reviewable.
+  const approveCoding = useMutation(api.transactionCodings.approve);
   const submitOwnCharge = useMutation(api.finances.submitOwnCharge);
   // The bookkeeper-gated twin of `submitOwnCharge`'s category write — same
   // field, different access rule (`requireTxnNoteReceiptCategoryAccess`:
@@ -521,6 +527,20 @@ export function FinishChargeSheetBody({
             `The explanation didn't submit — nothing was lost, just try again. ${errorMessage(err)}`,
           );
         }
+        // ONE TAP, BOTH DECISIONS, when the server allows it: the coding just
+        // submitted is immediately approved (solo-operator relaxation,
+        // recorded single-party server-side). A failure here is ITS OWN
+        // failure — the submission above already landed and must never read
+        // as lost; a retry re-submits idempotently and approves again.
+        if (data?.canSelfApprove) {
+          try {
+            await approveCoding({ transactionId });
+          } catch (err) {
+            throw new Error(
+              `Submitted for review — but the one-tap approval didn't land. Approve it from the review queue, or try again. ${errorMessage(err)}`,
+            );
+          }
+        }
       }
 
       const plan = planCategoryEdit({
@@ -561,7 +581,9 @@ export function FinishChargeSheetBody({
                 <View className="flex-row items-center gap-2 rounded-lg border border-success/40 bg-success-bg px-3 py-2.5">
                   <Icon name="check-circle" size={16} color={colors.success} />
                   <Text className="text-sm font-semibold text-success">
-                    Submitted for review ✓
+                    {data?.canSelfApprove
+                      ? "Submitted and approved ✓"
+                      : "Submitted for review ✓"}
                   </Text>
                 </View>
               ) : null}
@@ -810,10 +832,18 @@ export function FinishChargeSheetBody({
                       />
                       <View className="flex-row gap-2">
                         <Button
+                          // "Submit & approve" says out loud that one tap is
+                          // both decisions — shown only when the server's
+                          // `canSelfApprove` says this caller may single-party
+                          // decide (founder, 2026-08-12).
                           title={
                             coding?.status === "changes_requested"
-                              ? "Resubmit for review"
-                              : "Submit for review"
+                              ? data?.canSelfApprove
+                                ? "Resubmit & approve"
+                                : "Resubmit for review"
+                              : data?.canSelfApprove
+                                ? "Submit & approve"
+                                : "Submit for review"
                           }
                           size="sm"
                           icon="check"

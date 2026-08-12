@@ -655,6 +655,33 @@ describe("solo-operator self-approval — superuser only, and it leaves a trace"
     expect(row?.decidedByPersonId).toBe(selfPersonId);
   });
 
+  test("canSelfApprove promises the one-tap BEFORE a coding exists — and only to the superuser", async () => {
+    // Founder, 2026-08-12: "as super admin, I can 1 party approve coding,
+    // right now I only see 'Submit for review' nothing else." The form needs
+    // to know PRE-submit that one tap will be both decisions — that's this
+    // flag, on a transaction with no coding row at all.
+    const s = await seatSetup({ email: "seyi@publicworship.life" });
+    await seedPerson(s, "Owner", { self: true });
+    const txnId = await seedTxn(s, s.chapterId);
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: txnId,
+    });
+    expect(data.canSelfApprove).toBe(true);
+    expect(data.coding).toBeNull();
+
+    // A non-superuser ED has full review reach and still doesn't get it —
+    // the label must never promise an approval the mutation would refuse.
+    const s2 = await seatSetup();
+    const ed = await addMember(s2, { email: "ed@publicworship.life", name: "ED" });
+    await assignSeatDirect(s2, ed.personId, "executive_director", "central");
+    const txn2 = await seedTxn(s2, s2.chapterId);
+    const edData = await ed.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: txn2,
+    });
+    expect(edData.canSelfApprove).toBe(false);
+  });
+
   test("a normal different-identity approval records 'two_party'", async () => {
     const s = await seatSetup();
     const ed = await addMember(s, { email: "ed@publicworship.life", name: "ED" });

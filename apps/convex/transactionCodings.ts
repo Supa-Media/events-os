@@ -306,6 +306,15 @@ export const getForTransaction = query({
      *  have to reconstruct, and splitting the check across two places is how
      *  the two drift. False when there's no coding to decide on. */
     canReview: v.boolean(),
+    /** True iff the caller could approve a coding THEY submit, in the same
+     *  act — review reach on this transaction (`hasReviewCoding`) plus the
+     *  solo-operator relaxation (`maySelfDecideCoding`, recorded as
+     *  `approvalParty: "single"` by `approve`). Founder, 2026-08-12: "as
+     *  super admin, I can 1 party approve coding, right now I only see
+     *  'Submit for review' nothing else" — the two-step (submit, then hunt
+     *  for the approve button on a review surface) collapses into the
+     *  form's one "Submit & approve" tap when this is true. */
+    canSelfApprove: v.boolean(),
     namesMaxHeadcount: v.number(),
     minPurposeLength: v.number(),
     /** The charge's OWN category name, or `null` when uncategorized — what
@@ -379,17 +388,20 @@ export const getForTransaction = query({
     // the solo-operator relaxation (`maySelfDecideCoding`) mirrors the
     // mutation's own-coding bypass so this flag never promises less than the
     // server allows.
+    const reviewer = await hasReviewCoding(ctx, args.transactionId);
+    const canSelfApprove = reviewer && (await maySelfDecideCoding(ctx));
     const canReview =
       row != null &&
-      (await hasReviewCoding(ctx, args.transactionId)) &&
+      reviewer &&
       (actorPersonId == null ||
         actorPersonId !== row.codedByPersonId ||
-        (await maySelfDecideCoding(ctx)));
+        canSelfApprove);
     return {
       coding: row ? await projectCoding(ctx, row, canSeeNames) : null,
       requiresCoding,
       hasDocumentation,
       canReview,
+      canSelfApprove,
       namesMaxHeadcount,
       minPurposeLength: MIN_PURPOSE_LENGTH,
       categoryName: category?.name ?? null,
