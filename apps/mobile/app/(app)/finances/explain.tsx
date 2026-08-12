@@ -39,7 +39,7 @@
  * is reconciled. Correct for chasing a cardholder, wrong for this — the row
  * is closed and still publishes blank.
  */
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Platform, Text, useWindowDimensions, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "convex/react";
@@ -64,7 +64,12 @@ import {
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { FinishChargeSheet } from "../../../components/finance/myTransactions/FinishChargeSheet";
 import { CodingWorkbenchPanel } from "../../../components/finance/coding/CodingWorkbenchPanel";
-import { panelPosition, stepSelection } from "../../../components/finance/coding/panelNav";
+import {
+  indexOfSelected,
+  panelPosition,
+  selectionAfterRowsShrink,
+  stepSelection,
+} from "../../../components/finance/coding/panelNav";
 import { useChapterContext } from "../../../lib/ChapterContext";
 import { colors } from "../../../lib/theme";
 
@@ -145,9 +150,37 @@ function Body() {
   // (`WIDE_MIN_WIDTH`, above) — "wide" means the same window width everywhere
   // in finance.
   const isWide = useWindowDimensions().width >= WIDE_MIN_WIDTH;
-  const rows = data?.rows ?? [];
+  // Memoized on `data?.rows` itself (Convex only produces a new array
+  // reference there when the query result actually changes) rather than
+  // recomputed inline — two effects below depend on `rows`, and a fresh `[]`
+  // reference every render would re-run both on every unrelated re-render.
+  const rows = useMemo(() => data?.rows ?? [], [data?.rows]);
   const stepRow = (delta: 1 | -1) =>
     setOpenId((current) => stepSelection(rows, current, delta) ?? current);
+
+  // ── SELECTION INTEGRITY: `rows` is `monthCodingWorklist`'s PENDING
+  // population, not a fixed list — approving a coding removes its row the
+  // instant the query refetches, out from under whatever panel had it open.
+  // (Submitting one does NOT: the row stays, just with a new state, which is
+  // why nothing special is needed for that case — see `stepRow`'s own
+  // callers and `CodingWorkbenchPanel`'s module doc.) `lastKnownIndexRef`
+  // tracks the selected row's own position for as long as it's actually
+  // still there; the moment it isn't, `selectionAfterRowsShrink` lands on
+  // whichever row now occupies that same position — the natural next item
+  // for someone clearing a biggest-first list — or closes the panel if the
+  // list emptied out, letting the "fully explained" state take over. ──
+  const lastKnownIndexRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (openId == null) return;
+    const idx = indexOfSelected(rows, openId);
+    if (idx !== -1) {
+      lastKnownIndexRef.current = idx;
+      return;
+    }
+    const next = selectionAfterRowsShrink(rows, lastKnownIndexRef.current);
+    lastKnownIndexRef.current = next == null ? null : indexOfSelected(rows, next);
+    setOpenId(next);
+  }, [rows, openId]);
 
   // ── QUICK FLOW: ArrowUp/ArrowDown (and j/k) step the selection through the
   // SAME biggest-first order the panel's own Prev/Next buttons use — only

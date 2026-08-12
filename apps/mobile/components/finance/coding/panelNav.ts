@@ -53,3 +53,32 @@ export function panelPosition(
   if (i === -1) return null;
   return { index: i + 1, total: rows.length };
 }
+
+/**
+ * What the selection becomes when the selected row DISAPPEARS from `rows`
+ * entirely — not "moved," gone. On the workbench panel this happens when
+ * approving a coding removes the row from `monthCodingWorklist`'s pending
+ * population out from under an open panel (submitting one does NOT — the
+ * row just changes state and stays put, which needs no reconciliation at
+ * all: the caller only reaches for this once it already knows the selected
+ * id is no longer anywhere in `rows`).
+ *
+ * The rule: land on whichever row now occupies the vanished row's OLD
+ * position — the natural "next" item for someone working biggest-first and
+ * clearing rows one at a time, not a jump to the top or the bottom.
+ * `lastKnownIndex` is that old position; the caller has to track it across
+ * renders (see `explain.tsx`), because once the row is gone there is no way
+ * to ask the NEW `rows` where it used to be.
+ *
+ * `null` means "close the panel": either the list is now empty, or the
+ * caller never had a known position to fall back to.
+ */
+export function selectionAfterRowsShrink(
+  rows: readonly { id: string }[],
+  lastKnownIndex: number | null,
+): string | null {
+  if (rows.length === 0) return null;
+  if (lastKnownIndex == null) return rows[0].id;
+  const clamped = Math.min(Math.max(lastKnownIndex, 0), rows.length - 1);
+  return rows[clamped].id;
+}

@@ -19,10 +19,23 @@
  *   4. `FinishChargeSheetBody` — THE SAME coding form the modal sheet shows.
  *      Not a second form: one form, two frames (see that file's module doc).
  *
- * "Mark coded" / submit does NOT auto-advance to the next row — the founder
- * decides when to move on. Nothing here calls `onNext` after a mutation
- * succeeds; the panel just stays on the same row and shows its new state,
- * because `FinishChargeSheetBody`'s own queries refetch reactively.
+ * SUBMITTING a coding does NOT auto-advance — the founder decides when to
+ * move on. Nothing here calls `onNext` after that mutation succeeds; the
+ * panel just stays on the same row and shows its new state, because
+ * `FinishChargeSheetBody`'s own queries refetch reactively, and the row
+ * itself stays right where it was in `rows` (a submitted-but-not-approved
+ * coding doesn't remove a row from `monthCodingWorklist`'s pending list).
+ *
+ * APPROVING one is different, and can't behave the same way: an approved
+ * coding DOES leave `monthCodingWorklist`'s pending population, so the row
+ * this panel had open simply isn't in `rows` anymore once that mutation's
+ * refetch lands — there is no "same row" left to stay on. `explain.tsx`
+ * detects that (its own selection-integrity effect, next to `stepRow`) and
+ * advances the selection to whichever row now occupies the approved row's
+ * old position (`panelNav.ts#selectionAfterRowsShrink`) — the natural next
+ * item for someone clearing a biggest-first list, not the auto-advance the
+ * founder ruled out for submit, which is a live decision about a coding still
+ * on the table, not the mechanical fact that a row physically left the list.
  */
 import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
