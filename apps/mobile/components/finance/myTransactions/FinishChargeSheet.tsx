@@ -143,11 +143,28 @@ export function FinishChargeSheet({
    *  row's badge and its "Finish"/"View" button, so the sheet that opens
    *  never disagrees with what the row just said. Deliberately not
    *  re-derived from `txn` in here: two independent readings of "is this
-   *  actionable" is exactly how the row and the sheet drifted apart before. */
-  todo: ChargeTodo;
+   *  actionable" is exactly how the row and the sheet drifted apart before.
+   *
+   *  OPTIONAL, and that's deliberate too: `explain.tsx` (the backfill
+   *  workbench) mounts this same sheet over `finances.monthCodingWorklist`
+   *  rows, which are the PUBLISHING population, not the chase state
+   *  machine — most of them are `reconciled`, which `chargeTodo` calls
+   *  settled/non-actionable. Passing a `chargeTodo`-derived verdict there
+   *  would silently drop every historical row into summary mode with the
+   *  intake form hidden, defeating the screen's whole purpose (see its own
+   *  module doc on why `chargeTodo` is the wrong lens for that surface).
+   *  So `explain.tsx` passes nothing on purpose, and the sheet falls back to
+   *  exactly its pre-`todo` behavior: always the full intake, as if every
+   *  row were actionable. */
+  todo?: ChargeTodo;
   categoryOptions: { value: string; label: string }[];
   onClose: () => void;
 }) {
+  // Absent `todo` (explain.tsx) reads as "actionable" — the sheet's original,
+  // always-intake behavior. Every other read of "is this actionable" in this
+  // file goes through this one local, never `todo.actionable` directly, so
+  // there's exactly one place that encodes the fallback.
+  const actionable = todo === undefined ? true : todo.actionable;
   const transactionId = txn.id as Id<"transactions">;
   const data = useQuery(api.transactionCodings.getForTransaction, {
     transactionId,
@@ -225,9 +242,10 @@ export function FinishChargeSheet({
           <View className="flex-row items-start justify-between border-b border-border px-5 py-4">
             <View className="flex-1 pr-3">
               <Text className="font-display text-lg text-ink">
-                {todo.actionable
+                {actionable
                   ? "Finish this charge"
-                  : (SUMMARY_TITLE[todo.kind] ?? "This charge is squared away")}
+                  : ((todo && SUMMARY_TITLE[todo.kind]) ??
+                    "This charge is squared away")}
               </Text>
               <Text className="text-2xs text-muted" numberOfLines={1}>
                 {merchantLine} · {formatCents(Math.abs(txn.amountCents))}
@@ -273,7 +291,7 @@ export function FinishChargeSheet({
                     row already did it, so restating "can't be submitted
                     without both" there would read as a fresh demand rather
                     than as the summary the module doc promises. */}
-                {todo.actionable ? (
+                {actionable ? (
                   <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
                     <Text className="text-xs font-semibold text-ink">
                       Coding a charge is one act, not two errands.
@@ -300,12 +318,23 @@ export function FinishChargeSheet({
                   />
                   {coding == null ? (
                     <View className="gap-2">
+                      {/* SUMMARY MODE, NO CODING: this row is already
+                          squared away without one (`chargeTodo` only calls a
+                          row settled-and-uncoded when nothing required it —
+                          otherwise it would have ranked "needs coding" and
+                          `actionable` would be true). Saying "not coded yet"
+                          under a header that just said "squared away" is the
+                          exact contradiction the founder called out, so the
+                          copy and the button both read as optional here
+                          instead of as a live ask. */}
                       <Text className="text-xs text-muted">
-                        Not coded yet. This is the part only you can do — you were
-                        there. The receipt goes in with it, in the same editor.
+                        {actionable
+                          ? "Not coded yet. This is the part only you can do — you were there. The receipt goes in with it, in the same editor."
+                          : "Coding is optional for this charge — add one if it needs explaining."}
                       </Text>
                       <Button
-                        title="Code this charge"
+                        title={actionable ? "Code this charge" : "Add a coding (optional)"}
+                        variant={actionable ? "primary" : "muted"}
                         size="sm"
                         icon="edit-3"
                         disabled={data === undefined}
@@ -421,7 +450,7 @@ export function FinishChargeSheet({
                       affordance that reopens the same question on request —
                       no capability lost, just not demanded up front. */}
                   {txn.hasReceipt ? (
-                    todo.actionable || showReceiptCheck ? (
+                    actionable || showReceiptCheck ? (
                       <View className="mt-2">
                         <TextField
                           label="What total does the receipt show?"
@@ -445,7 +474,7 @@ export function FinishChargeSheet({
                             </Text>
                           </View>
                         ) : null}
-                        {!todo.actionable ? (
+                        {!actionable ? (
                           <Pressable
                             onPress={() => setShowReceiptCheck(false)}
                             accessibilityRole="button"
