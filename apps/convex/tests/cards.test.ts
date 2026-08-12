@@ -634,6 +634,31 @@ describe("flagPersonalCharge", () => {
     }
   });
 
+  // Regression for the founder's screenshot: "[Personal] Nothing needed ·
+  // Day 3 overdue" — a charge escalated for its missing receipt BEFORE
+  // anybody realized it was personal used to keep that stale badge forever,
+  // because flagging only ever patched `isPersonal`/`repaymentId`.
+  test("flagging a charge that was already escalated clears the reminder timeline", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 4200, ageDays: 4 });
+
+    await s.t.mutation(internal.cards.advanceReceiptReminders, {});
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(txnId)))?.receiptReminderStage,
+    ).toBe("escalated");
+
+    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+
+    const after = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(after?.isPersonal).toBe(true);
+    expect(after?.receiptReminderStage).toBeUndefined();
+    expect(after?.lastReminderSentAt).toBeUndefined();
+  });
+
   test("a non-cardholder, non-manager cannot flag (FORBIDDEN)", async () => {
     const t = newT();
     const s = await setupChapter(t);

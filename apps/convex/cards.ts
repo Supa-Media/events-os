@@ -2591,6 +2591,14 @@ export async function convertChargeToPersonalRepayment(
       await ctx.db.patch(txn._id, {
         isPersonal: true,
         repaymentId: existing._id,
+        // The charge just left "cardholder must produce a receipt" territory —
+        // clear the reminder timeline too (mirrors `finances.ts#setTransactionStatus`'s
+        // reconciled/excluded clear, same reasoning). Otherwise a charge that
+        // was already flagged/escalated before somebody realized it was
+        // personal keeps rendering "Day N overdue" forever — nobody is ever
+        // going to attach a receipt to a charge that isn't ours.
+        receiptReminderStage: undefined,
+        lastReminderSentAt: undefined,
       });
     }
     return { repayment: existing, created: false };
@@ -2608,7 +2616,15 @@ export async function convertChargeToPersonalRepayment(
     createdAt: now,
     updatedAt: now,
   });
-  await ctx.db.patch(txn._id, { isPersonal: true, repaymentId });
+  await ctx.db.patch(txn._id, {
+    isPersonal: true,
+    repaymentId,
+    // Same clear as the healing branch above — see the comment there. This is
+    // the path a fresh flag actually takes, so it's the one the founder's
+    // "[Personal] Nothing needed · Day 3 overdue" screenshot came through.
+    receiptReminderStage: undefined,
+    lastReminderSentAt: undefined,
+  });
   return { repayment: (await ctx.db.get(repaymentId))!, created: true };
 }
 
