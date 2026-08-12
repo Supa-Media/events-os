@@ -17,6 +17,10 @@
  *  fully described by its purpose). */
 export function substantiationLine(
   coding: {
+    /** FINDING 2 (UX audit, 2026-08-12): lodging asks ONE place, not a
+     *  route — optional so every pre-existing travel-only caller/test keeps
+     *  working unchanged; only `"lodging"` takes the one-place branch. */
+    expenseType?: string | null;
     travelFrom: string | null;
     travelTo: string | null;
     headcount: number | null;
@@ -28,7 +32,14 @@ export function substantiationLine(
    *  shared package's import graph. */
   affiliationLabels: Record<string, string> = {},
 ): string | null {
-  // Travel/lodging: the route. A half-known route still renders — "?" is more
+  // Lodging: one place, not a route — "Boston → New York" reads as a route
+  // for a stay that never had a departure city. `null` (not "? → City") when
+  // the place is genuinely missing; "?" belongs to travel's half-known
+  // route, not to a field lodging never asked for.
+  if (coding.expenseType === "lodging") {
+    return coding.travelTo ? `Stayed in ${coding.travelTo}` : null;
+  }
+  // Travel: the route. A half-known route still renders — "?" is more
   // useful to a reviewer than silence, because a missing leg is exactly the
   // kind of thing they should send back.
   if (coding.travelFrom || coding.travelTo) {
