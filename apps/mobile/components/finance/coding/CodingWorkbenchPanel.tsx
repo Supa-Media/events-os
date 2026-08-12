@@ -24,7 +24,7 @@
  * succeeds; the panel just stays on the same row and shows its new state,
  * because `FinishChargeSheetBody`'s own queries refetch reactively.
  */
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -183,8 +183,6 @@ export function CodingWorkbenchPanel({
   const transactionId = txn.id as Id<"transactions">;
   const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
 
-  const categories = useMemo(() => categoryOptions, [categoryOptions]);
-
   return (
     <View className="flex-1 rounded-xl border border-border bg-raised">
       <View className="flex-row items-start justify-between gap-3 border-b border-border px-4 py-3">
@@ -228,7 +226,7 @@ export function CodingWorkbenchPanel({
           />
           <FinishChargeSheetBody
             txn={txn}
-            categoryOptions={categories}
+            categoryOptions={categoryOptions}
             renderReview={({ transactionId: tid, coding, canReview, runAction }) => (
               <ReviewActions
                 transactionId={tid}
