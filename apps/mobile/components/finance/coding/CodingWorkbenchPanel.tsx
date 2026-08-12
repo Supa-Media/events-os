@@ -286,6 +286,12 @@ export function CodingWorkbenchPanel({
             canViewList={canViewReceiptList}
           />
           <FinishChargeSheetBody
+            // KEYED PER ROW: this panel persists across Prev/Next, but the
+            // coding form's state must not — half-typed words, a prefill off
+            // row A's reimbursement request (`reimbursementPrefill.ts`), or
+            // a stale success banner following you to row B would all read
+            // as row B's own. A row change is a fresh form, always.
+            key={transactionId}
             txn={txn}
             todo={todo}
             categoryOptions={categoryOptions}
