@@ -33,19 +33,61 @@ import { Icon, type BadgeTone, InfoTooltip } from "../../ui";
  */
 export class FinanceBoundary extends Component<
   { children: ReactNode; fallback?: ReactNode },
-  { failed: boolean }
+  { failed: boolean; detail: string | null; wasAccessError: boolean }
 > {
-  state = { failed: false };
-  static getDerivedStateFromError() {
-    return { failed: true };
+  state = { failed: false, detail: null as string | null, wasAccessError: false };
+  static getDerivedStateFromError(error: unknown) {
+    // A ConvexError carries the server's own {code, message} in `data`; a
+    // plain render crash carries neither. THE DISTINCTION IS THE DIAGNOSIS
+    // (owner report, 2026-08-12): a TypeError in a screen's render used to
+    // wear the same "Restricted — only a finance seat…" costume as a real
+    // denial, and the founder spent a night being told they lacked a power
+    // the server was granting. Every fallback now prints what actually
+    // happened, so a screenshot of this state is self-diagnosing.
+    const data = (error as { data?: { code?: string; message?: string } })
+      ?.data;
+    if (data && (data.code || data.message)) {
+      return {
+        failed: true,
+        wasAccessError: true,
+        detail: `${data.code ?? "ERROR"}: ${data.message ?? ""}`.trim(),
+      };
+    }
+    const msg =
+      error instanceof Error ? `${error.name}: ${error.message}` : String(error);
+    return { failed: true, wasAccessError: false, detail: msg };
   }
   render() {
     if (this.state.failed) {
       return (
         <View>
-          {this.props.fallback ?? null}
+          {/* The screen's own denial copy only applies when the server
+              actually refused something. A crash gets crash copy — telling
+              someone they lack a seat because a component threw is worse
+              than a raw error. */}
+          {this.state.wasAccessError ? (
+            (this.props.fallback ?? null)
+          ) : (
+            <View className="items-center gap-1 py-8">
+              <Icon name="alert-triangle" size={20} color={colors.warn} />
+              <Text className="font-display text-base text-ink">
+                This screen hit an error
+              </Text>
+              <Text className="text-sm text-muted">
+                Not a permissions problem — something broke while drawing the
+                page.
+              </Text>
+            </View>
+          )}
+          {this.state.detail ? (
+            <Text className="mt-2 px-4 text-center text-2xs text-faint">
+              What happened: {this.state.detail}
+            </Text>
+          ) : null}
           <Pressable
-            onPress={() => this.setState({ failed: false })}
+            onPress={() =>
+              this.setState({ failed: false, detail: null, wasAccessError: false })
+            }
             accessibilityRole="button"
             className="mt-2 items-center py-2 active:opacity-70 web:hover:opacity-90"
           >
