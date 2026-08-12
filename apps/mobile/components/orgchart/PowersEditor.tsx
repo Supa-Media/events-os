@@ -53,6 +53,7 @@ import {
   type Power,
   type PowerDomain,
 } from "@events-os/shared";
+import { spaceToggleProps } from "../ui/spaceToggle";
 import { colors } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 
@@ -131,12 +132,27 @@ function PowerToggle({
 }) {
   const derived = state === "derived";
   const on = state !== "off";
+  const inert = derived || disabled;
+  // The accessible NAME has to carry the derived note too. A screen reader
+  // announcing "Manage cards, checkbox, checked" for a row the editor cannot
+  // uncheck is the same lie the chips told before they became scope-aware —
+  // the reason it can't be changed belongs in the name, not only on screen.
+  const label = derived
+    ? `${powerLabel(power)} — included with ${via ? powerLabel(via) : "another power"}`
+    : powerLabel(power);
   return (
     <Pressable
+      {...spaceToggleProps(onToggle, inert)}
       onPress={derived ? undefined : onToggle}
-      disabled={derived || disabled}
+      disabled={inert}
       accessibilityRole="checkbox"
-      accessibilityState={{ checked: on, disabled: derived || disabled }}
+      // `aria-checked` is the prop that survives to the DOM on web —
+      // `accessibilityState` alone is not forwarded by react-native-web, so a
+      // screen reader would announce every row as permanently off. See
+      // `components/ui/Checkbox.tsx` and `__tests__/toggleAria.test.js`.
+      aria-checked={on}
+      accessibilityLabel={label}
+      accessibilityState={{ checked: on, disabled: inert }}
       className={`flex-row items-start gap-2.5 rounded-md border px-3 py-2 ${
         on ? "border-accent bg-accent-soft" : "border-border bg-raised"
       } ${derived ? "opacity-70" : ""} ${disabled && !busy ? "opacity-50" : ""}`}
