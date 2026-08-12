@@ -186,6 +186,7 @@ export function CodingWorkbenchPanel({
   txn,
   todo,
   categoryOptions,
+  ownCharge,
   onDeselect,
   onPrev,
   onNext,
@@ -204,6 +205,15 @@ export function CodingWorkbenchPanel({
    *  about what a row still owes. */
   todo?: ChargeTodo;
   categoryOptions: CategoryOption[];
+  /** Forwarded verbatim to `FinishChargeSheetBody` — see that prop's own
+   *  doc, and `planCategoryEdit` for why it matters. `coding.tsx` passes
+   *  `true` (`finances.personTransactions` rows, own-by-construction);
+   *  `explain.tsx` passes `false` (`finances.monthCodingWorklist` rows are
+   *  the whole chapter's publishing population, not just the caller's own —
+   *  the HIGH review finding this prop exists to fix). REQUIRED, not
+   *  defaulted: a silent default here is exactly the kind of per-row guess
+   *  that broke the Explain workbench in the first place. */
+  ownCharge: boolean;
   /** Clears the selection — collapses the panel, nothing left to close in a
    *  modal sense. */
   onDeselect: () => void;
@@ -271,6 +281,7 @@ export function CodingWorkbenchPanel({
             txn={txn}
             todo={todo}
             categoryOptions={categoryOptions}
+            ownCharge={ownCharge}
             renderReview={({ transactionId: tid, coding, canReview, runAction }) => (
               <ReviewActions
                 transactionId={tid}

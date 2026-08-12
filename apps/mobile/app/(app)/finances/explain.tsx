@@ -359,6 +359,9 @@ function Body() {
             <FinishChargeSheet
               txn={openRow as never}
               categoryOptions={categoryOptions}
+              // Same as the panel below: `monthCodingWorklist` rows aren't
+              // the caller's own.
+              ownCharge={false}
               onClose={() => setOpenId(null)}
             />
           ) : null}
@@ -370,6 +373,10 @@ function Body() {
           <CodingWorkbenchPanel
             txn={openRow as never}
             categoryOptions={categoryOptions}
+            // `monthCodingWorklist` rows are the whole chapter's publishing
+            // population, not just the caller's own — the HIGH review
+            // finding (`planCategoryEdit`) this flag exists to fix.
+            ownCharge={false}
             onDeselect={() => setOpenId(null)}
             onPrev={() => stepRow(-1)}
             onNext={() => stepRow(1)}

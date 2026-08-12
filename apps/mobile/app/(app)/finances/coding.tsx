@@ -512,6 +512,8 @@ export default function CodingScreen() {
               txn={openRow.txn}
               todo={openRow.todo}
               categoryOptions={categoryOptions}
+              // `personTransactions` rows — the caller's own ledger, always.
+              ownCharge
               onClose={() => setOpenId(null)}
             />
           ) : null}
@@ -525,6 +527,8 @@ export default function CodingScreen() {
             txn={openRow.txn}
             todo={openRow.todo}
             categoryOptions={categoryOptions}
+            // `personTransactions` rows — the caller's own ledger, always.
+            ownCharge
             onDeselect={() => setOpenId(null)}
             onPrev={() => stepRow(-1)}
             onNext={() => stepRow(1)}

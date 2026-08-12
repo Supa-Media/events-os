@@ -31,12 +31,21 @@
  * attendees, and headcount stay empty until the person types them, always —
  * see `CodingFieldSet`'s own module doc.
  *
- * ONE PRIMARY SUBMIT for the actionable case: category (`submitOwnCharge`)
- * and coding (`transactionCodings.submit`) go in one call, in sequence, off
- * one button (`submitBoth`). Both mutations are individually idempotent, so a
- * retry after a partial failure never double-books anything; the toast names
- * exactly which half didn't land so nobody re-types a purpose that already
- * saved.
+ * ONE PRIMARY SUBMIT for the actionable case: CODING FIRST, ALWAYS
+ * (`transactionCodings.submit`), then the category ONLY IF IT CHANGED
+ * (`planCategoryEdit` — `submitOwnCharge` for the caller's own charge,
+ * `finances.setTransactionCategory` for a bookkeeper reviewing someone
+ * else's), off one button (`submitBoth`). Coding goes first on purpose: it's
+ * the testimony, the actual point of the screen, and a category hiccup must
+ * never block it (HIGH review finding, fixed 2026-08-1x — the old
+ * category-then-coding order meant a bookkeeper coding a historical
+ * Stripe-FC/Relay-CSV row from the Explain workbench, who doesn't own that
+ * card, never got past `submitOwnCharge`'s `NOT_A_CARD_CHARGE`/`FORBIDDEN`,
+ * so the coding never submitted at all). Both mutations stay independently
+ * idempotent, so a retry after a partial failure never double-books
+ * anything; the toast names exactly which half didn't land, and a category
+ * failure after a successful coding reads as exactly that — the explanation
+ * already saved — never as "nothing saved".
  *
  * SETTLED/SUMMARY ROWS (`todo.actionable === false`) keep the pre-existing
  * posture: a read-only summary card with an explicit "Edit" (or "Add a coding
@@ -87,6 +96,7 @@ import {
   type CodingCategoryContext,
   type CodingFormValue,
 } from "../coding/CodingFieldSet";
+import { planCategoryEdit } from "../coding/categoryEditPlan";
 import { CodingDocumentation } from "./CodingDocumentation";
 import { PublicPurposeNotice } from "../coding/PublicPurposeEditor";
 import { parseAmountToCents, receiptAmountMismatch } from "./receiptAmountCheck";
@@ -192,10 +202,24 @@ export function FinishChargeSheetBody({
   txn,
   todo,
   categoryOptions,
+  ownCharge,
   onClose,
   renderReview,
 }: {
   txn: MyTxnRow;
+  /** Does the CALLER own this row (they're its cardholder-of-record), or are
+   *  they reaching it as a bookkeeper/finance-manager reviewing someone
+   *  else's charge? Decides which mutation the category half calls
+   *  (`planCategoryEdit` — `submitOwnCharge` vs the bookkeeper-gated
+   *  `finances.setTransactionCategory`), because the server enforces the
+   *  difference and guessing wrong throws.
+   *
+   *  THE HOST DECIDES, never a per-row guess: `personTransactions` rows (My
+   *  Transactions, and `coding.tsx`'s "Yours to code" panel) are
+   *  own-by-construction — pass `true`. `monthCodingWorklist` rows (the
+   *  Explain workbench, `explain.tsx`) are the whole chapter's publishing
+   *  population, not just the caller's own — pass `false`. */
+  ownCharge: boolean;
   /** `chargeTodo`'s own verdict on this row — the SAME facts that picked the
    *  row's badge and its "Finish"/"View" button, so the sheet that opens
    *  never disagrees with what the row just said. Deliberately not
@@ -249,6 +273,12 @@ export function FinishChargeSheetBody({
   );
   const submitCoding = useMutation(api.transactionCodings.submit);
   const submitOwnCharge = useMutation(api.finances.submitOwnCharge);
+  // The bookkeeper-gated twin of `submitOwnCharge`'s category write — same
+  // field, different access rule (`requireTxnNoteReceiptCategoryAccess`:
+  // bookkeeper+, or event-edit rights), reachable on ANY chapter transaction
+  // rather than only the caller's own card. See `planCategoryEdit`.
+  const setTransactionCategory = useMutation(api.finances.setTransactionCategory);
+  const setTransactionNote = useMutation(api.finances.setTransactionNote);
   const { run, toast, dismiss } = useActionRunner();
 
   const [editing, setEditing] = useState(false);
@@ -355,38 +385,59 @@ export function FinishChargeSheetBody({
 
   const blocking = form.value == null || form.fieldProblems.length > 0;
 
-  /** ONE PRIMARY SUBMIT — category then coding, in sequence, off one button.
-   *  Each half is independently idempotent, so a retry after a partial
-   *  failure never double-books anything; the thrown message names exactly
-   *  which half didn't land so a retry doesn't re-ask for what already
-   *  saved. */
+  /** ONE PRIMARY SUBMIT — CODING FIRST, ALWAYS, then the category if it
+   *  changed (HIGH review finding, fixed 2026-08-1x). The old order tried the
+   *  category first and only reached the coding on success; for the Explain
+   *  workbench's core population — a historical Stripe-FC/Relay-CSV card row
+   *  the finance manager reviewing it doesn't personally own —
+   *  `submitOwnCharge` throws `NOT_A_CARD_CHARGE`/`FORBIDDEN` every time, so
+   *  the coding (the actual point of that screen) never submitted at all.
+   *  The testimony is the point; a category hiccup must never block it.
+   *
+   *  The category half now: (a) runs only when `planCategoryEdit` says the
+   *  category actually changed, never a same-value no-op write, and (b)
+   *  calls `submitOwnCharge` or the bookkeeper-gated `setTransactionCategory`
+   *  by OWNERSHIP (`ownCharge`, host-supplied), not by guessing. Both halves
+   *  stay independently idempotent, so a retry after a partial failure never
+   *  double-books anything, and a category failure AFTER a successful coding
+   *  reports itself as exactly that — the explanation already saved. */
   async function submitBoth() {
     await guard(async () => {
-      if (isCardCharge) {
+      if (form.value != null) {
+        const { budgetId, ...codingValue } = form.value;
         try {
-          await submitOwnCharge({
+          await submitCoding({
             transactionId,
-            categoryId: (catDraft ? catDraft : null) as Id<"budgetCategories"> | null,
+            ...codingValue,
+            ...(budgetId ? { budgetId: budgetId as Id<"budgets"> } : {}),
           });
         } catch (err) {
           throw new Error(
-            `The category didn't save, so the coding wasn't submitted either — nothing was lost, just try again. ${errorMessage(err)}`,
+            `The explanation didn't submit — nothing was lost, just try again. ${errorMessage(err)}`,
           );
         }
       }
-      if (form.value == null) return;
-      const { budgetId, ...codingValue } = form.value;
-      try {
-        await submitCoding({
-          transactionId,
-          ...codingValue,
-          ...(budgetId ? { budgetId: budgetId as Id<"budgets"> } : {}),
-        });
-      } catch (err) {
-        throw new Error(
-          `${isCardCharge ? "The category saved, but the coding" : "The coding"} didn't submit — your answers are still right here, just try again. ${errorMessage(err)}`,
-        );
+
+      const plan = planCategoryEdit({
+        isCardCharge,
+        ownCharge,
+        draftCategoryId: (catDraft ? catDraft : null) as Id<"budgetCategories"> | null,
+        currentCategoryId: (txn.categoryId ?? null) as Id<"budgetCategories"> | null,
+      });
+      if (plan.kind !== "none") {
+        try {
+          if (plan.kind === "own") {
+            await submitOwnCharge({ transactionId, categoryId: plan.categoryId });
+          } else {
+            await setTransactionCategory({ transactionId, categoryId: plan.categoryId });
+          }
+        } catch (err) {
+          // The explanation above already saved — this is a SEPARATE
+          // failure, and must never read as "nothing saved".
+          throw new Error(`Explanation saved. Couldn't set the category: ${errorMessage(err)}`);
+        }
       }
+
       setEditing(false);
     }, "Couldn't save this charge");
   }
@@ -745,11 +796,23 @@ export function FinishChargeSheetBody({
                         loading={busy}
                         onPress={() =>
                           void guard(
+                            // Same ownership split as the category half
+                            // (`planCategoryEdit`'s reasoning): the
+                            // cardholder writes their own note via
+                            // `submitOwnCharge`; a bookkeeper reviewing
+                            // someone else's row (the Explain workbench)
+                            // needs the bookkeeper-gated twin instead, or
+                            // this throws exactly like the category bug did.
                             () =>
-                              submitOwnCharge({
-                                transactionId,
-                                note: noteDraft.trim() ? noteDraft.trim() : null,
-                              }),
+                              ownCharge
+                                ? submitOwnCharge({
+                                    transactionId,
+                                    note: noteDraft.trim() ? noteDraft.trim() : null,
+                                  })
+                                : setTransactionNote({
+                                    transactionId,
+                                    note: noteDraft.trim() ? noteDraft.trim() : null,
+                                  }),
                             "Couldn't save that note",
                           )
                         }
@@ -775,11 +838,19 @@ export function FinishChargeSheet({
   txn,
   todo,
   categoryOptions,
+  ownCharge,
   onClose,
 }: {
   txn: MyTxnRow;
   todo?: ChargeTodo;
   categoryOptions: CategoryOption[];
+  /** Forwarded verbatim to `FinishChargeSheetBody` — see that prop's own
+   *  doc, and `planCategoryEdit` for why it matters. `coding.tsx`'s
+   *  narrow-screen sheet (`finances.personTransactions` rows) passes `true`;
+   *  `explain.tsx`'s narrow-screen sheet (`finances.monthCodingWorklist`
+   *  rows — the whole chapter's publishing population, not the caller's
+   *  own) passes `false`. */
+  ownCharge: boolean;
   onClose: () => void;
 }) {
   const actionable = todo === undefined ? true : todo.actionable;
@@ -819,6 +890,7 @@ export function FinishChargeSheet({
                 txn={txn}
                 todo={todo}
                 categoryOptions={categoryOptions}
+                ownCharge={ownCharge}
                 onClose={onClose}
               />
             </View>
