@@ -106,10 +106,15 @@ export function ReviseForm({
     try {
       await resubmit({
         reimbursementId: request._id,
-        lines: lines.map((l) => ({
-          lineId: l._id,
-          ...codingArgs(codingFor(l)),
-        })),
+        // `resubmitMyReimbursement`'s per-line shape is substantiation-only
+        // (`reviseLineValidator` — no `categoryId`; category isn't part of
+        // what a send-back is asking to fix, same posture as amounts/lines
+        // being frozen on a revision), so `categoryId` is dropped here even
+        // though `codingArgs` now returns one for the OTHER two hosts.
+        lines: lines.map((l) => {
+          const { categoryId: _categoryId, ...coding } = codingArgs(codingFor(l));
+          return { lineId: l._id, ...coding };
+        }),
       });
       // On success the list re-queries and this card disappears with the
       // status — no local "done" flag to drift out of sync with the server.

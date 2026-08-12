@@ -8,28 +8,24 @@ import {
 
 describe("initialExpenseTypeChipState", () => {
   test("a fresh coding with a hinted category starts following it, not overridden", () => {
-    expect(
-      initialExpenseTypeChipState({ categoryHint: "travel" }),
-    ).toEqual<ExpenseTypeChipState>({ expenseType: "travel", overridden: false });
+    const want: ExpenseTypeChipState = { expenseType: "travel", overridden: false };
+    expect(initialExpenseTypeChipState({ categoryHint: "travel" })).toEqual(want);
   });
 
   test("a fresh coding with no category (or a hint-less one) starts unselected", () => {
-    expect(initialExpenseTypeChipState({})).toEqual<ExpenseTypeChipState>({
-      expenseType: null,
-      overridden: false,
-    });
-    expect(
-      initialExpenseTypeChipState({ categoryHint: null }),
-    ).toEqual<ExpenseTypeChipState>({ expenseType: null, overridden: false });
+    const want: ExpenseTypeChipState = { expenseType: null, overridden: false };
+    expect(initialExpenseTypeChipState({})).toEqual(want);
+    expect(initialExpenseTypeChipState({ categoryHint: null })).toEqual(want);
   });
 
   test("revising an EXISTING coding is always sticky, regardless of the category's hint", () => {
+    const want: ExpenseTypeChipState = { expenseType: "meal", overridden: true };
     expect(
       initialExpenseTypeChipState({
         existingExpenseType: "meal",
         categoryHint: "travel",
       }),
-    ).toEqual<ExpenseTypeChipState>({ expenseType: "meal", overridden: true });
+    ).toEqual(want);
   });
 });
 
