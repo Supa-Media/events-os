@@ -30,9 +30,32 @@
  *
  * No screen title: the tab pill says "Coding" and the ScopeBadge above says
  * which desk you're at. See `cards.tsx` for the same posture.
+ *
+ * ── THE SIDE PANEL (wide screens) ────────────────────────────────────────────
+ * Founder, opening a charge from here on a wide desktop screen: "quickly
+ * click in and click out, rather than a modal in the middle of the screen."
+ * `CodingWorkbenchPanel` shipped for `explain.tsx` and is REUSED here
+ * verbatim — list left, panel right, ≥`WIDE_MIN_WIDTH`, narrow screens
+ * unchanged (the modal, `FinishChargeSheet`, byte-identical to before this
+ * PR). `todo` is passed through exactly as the modal already passes it — the
+ * chase state machine is the correct lens on THIS list (unlike `explain.tsx`,
+ * whose rows are the publishing population — see that screen's own doc).
+ *
+ * THE REASON THIS SCREEN WAS SKIPPED THE FIRST TIME: "Yours to code" is
+ * `finances.personTransactions` — reachable by a cardholder with NO finance
+ * seat at all, and `receipts.listForTransaction` (what the panel's
+ * `ReceiptPane` fetches) needs bookkeeper rank. Auto-fetching on every
+ * receipted row would 403 that audience every time the panel opened. So this
+ * screen probes ONCE PER SCREEN, not per row (`receipts.canViewList` — the
+ * non-throwing `has` form of the exact same `requireFinanceRole(bookkeeper)`
+ * gate `listForTransaction` itself runs) and threads the answer down as
+ * `canViewReceiptList`. A denied caller's panel still shows the row's own
+ * receipt state and its existing upload affordance (`ReceiptPane`'s own
+ * module doc) — nothing new is exposed, the fetched preview just isn't
+ * attempted.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Text, View } from "react-native";
+import { Platform, Text, useWindowDimensions, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -68,6 +91,11 @@ import {
   type MyTxnRow,
 } from "../../../components/finance/myTransactions/chargeTodo";
 import { ChapterWorkload } from "../../../components/finance/coding/ChapterWorkload";
+import { CodingWorkbenchPanel } from "../../../components/finance/coding/CodingWorkbenchPanel";
+import {
+  panelPosition,
+  stepSelection,
+} from "../../../components/finance/coding/panelNav";
 import {
   ReviewQueue,
   type ReviewQueueRow,
@@ -78,6 +106,12 @@ import {
  *  words, because it is the same choice about the same books. */
 type BookScope = "all" | "central" | "chapter";
 const BOOK_SCOPES: BookScope[] = ["all", "central", "chapter"];
+
+/** Below this window width the side panel doesn't fit next to a readable
+ *  list — same threshold `explain.tsx`'s own wide-panel split uses
+ *  (`CentralView`/`ChapterView`'s `STACK_WIDTH`), so "wide" means the same
+ *  window width everywhere in finance. */
+const WIDE_MIN_WIDTH = 900;
 
 /** Jargon relief for a screen that leans on two terms it never defines
  *  inline. Same vocabulary the Academy teaches
@@ -114,6 +148,17 @@ export default function CodingScreen() {
   }, [params.filter]);
 
   const [openId, setOpenId] = useState<string | null>(null);
+
+  // Same threshold as `explain.tsx`'s own two-column split (`WIDE_MIN_WIDTH`,
+  // above) — "wide" means the same window width everywhere in finance.
+  const isWide = useWindowDimensions().width >= WIDE_MIN_WIDTH;
+
+  // ── THE CAPABILITY PROBE, ONCE PER SCREEN ────────────────────────────────
+  // Not per row: see the module doc. `undefined` (still loading) reads as
+  // `false` here — deliberately conservative, so the panel never fires the
+  // gated `listForTransaction` query before this probe has actually
+  // resolved to `true`.
+  const canViewReceiptList = useQuery(api.receipts.canViewList, {}) === true;
 
   const orgWide = workload?.orgWide === true;
   // Scope is URL-backed so a drill-down is shareable and survives a refresh —
@@ -171,7 +216,28 @@ export default function CodingScreen() {
     { value: "", label: "No category" },
     ...(categories ?? []).map((c) => ({ value: c.id, label: c.name })),
   ];
+  // `openRow` is looked up in `rows` — the caller's WHOLE ledger — not
+  // `visible`, which a filter chip can narrow at any moment. A submit inside
+  // the panel flips `todo.actionable` to `false` the instant it lands, which
+  // would drop the row out of `visible` under the "Needs you" filter right
+  // after the one action someone opened the panel to take; looking it up in
+  // `rows` instead means the panel just stays open on the same row and shows
+  // its new state (the same "no auto-advance on submit" contract
+  // `CodingWorkbenchPanel`'s own module doc describes for `explain.tsx`).
   const openRow = rows.find((r) => r.txn.id === openId) ?? null;
+
+  // Prev/Next + the "N of M" position step through exactly what's ON SCREEN
+  // (`visible` — the same biggest-first, possibly-filtered list the table
+  // below renders), not the whole ledger `openRow` reads from. If the open
+  // row falls out of `visible` (the filter case above), `panelNav.ts`
+  // degrades it gracefully on its own: `stepSelection` returns no next id and
+  // `panelPosition` returns `null` — Prev/Next just disable and the header
+  // omits the count, exactly as documented there for a selection that isn't
+  // in the list. The panel itself never closes or jumps to a different row
+  // because of that; only these two controls notice.
+  const panelRows = useMemo(() => visible.map((r) => ({ id: r.txn.id })), [visible]);
+  const stepRow = (delta: 1 | -1) =>
+    setOpenId((current) => stepSelection(panelRows, current, delta) ?? current);
 
   const ownChapterName =
     workload?.byChapter.find((b) => b.id === drillChapterId)?.name ?? null;
@@ -183,6 +249,35 @@ export default function CodingScreen() {
     });
   }
 
+  // ── QUICK FLOW: ArrowUp/ArrowDown (and j/k) step through the SAME
+  // biggest-first order the panel's own Prev/Next buttons use — only while
+  // the panel is actually open (wide screen, a row selected) and only when no
+  // text field has focus, so typing into a note, a business purpose, OR the
+  // "Awaiting review" section's own send-back note (`ReviewQueue`, rendered
+  // below on this same screen) never gets eaten by row-stepping. Mirrors
+  // `explain.tsx`'s identical effect verbatim. ──
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isWide || openId == null) return;
+    if (typeof document === "undefined") return;
+    function onKey(e: KeyboardEvent) {
+      const el = document.activeElement as HTMLElement | null;
+      const typing =
+        !!el &&
+        (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (typing) return;
+      if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        stepRow(-1);
+      } else if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        stepRow(1);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWide, openId, panelRows]);
+
   if (workload === undefined || transactions === undefined) {
     return <Screen loading />;
   }
@@ -191,9 +286,18 @@ export default function CodingScreen() {
   const showReviewSection =
     (workload.awaitingMyReview ?? 0) > 0 || hasReviewQueue || orgWide;
 
+  // The persistent side panel only on a wide screen WITH a row selected —
+  // founder: "quickly click in and click out, rather than a modal in the
+  // middle of the screen." Narrow screens keep the pre-panel Modal sheet,
+  // byte-identical, regardless of width — this is the only branch point
+  // between the two (mirrors `explain.tsx`'s own `showPanel`).
+  const showPanel = isWide && openRow != null;
+
   return (
-    <Screen maxWidth={1080}>
-      <Narrow>
+    <View style={{ flex: 1, flexDirection: showPanel ? "row" : "column" }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Screen maxWidth={1080}>
+          <Narrow>
         {/* ── 1. YOURS TO CODE ─────────────────────────────────────────── */}
         <SectionHeader
           title="Yours to code"
@@ -284,6 +388,7 @@ export default function CodingScreen() {
                 txn={r.txn}
                 todo={r.todo}
                 last={i === visible.length - 1}
+                selected={showPanel && r.txn.id === openId}
                 onOpen={() => setOpenId(r.txn.id)}
                 onUpload={async (storageId, filename) => {
                   await run(
@@ -395,15 +500,37 @@ export default function CodingScreen() {
         ) : null}
       </Narrow>
 
-      {openRow ? (
-        <FinishChargeSheet
-          txn={openRow.txn}
-          todo={openRow.todo}
-          categoryOptions={categoryOptions}
-          onClose={() => setOpenId(null)}
-        />
+          {/* NARROW screens only — the pre-panel Modal sheet, unchanged. On a
+              wide screen with a row selected, the panel to the right is the
+              whole record instead; this never mounts alongside it. */}
+          {openRow && !showPanel ? (
+            <FinishChargeSheet
+              txn={openRow.txn}
+              todo={openRow.todo}
+              categoryOptions={categoryOptions}
+              onClose={() => setOpenId(null)}
+            />
+          ) : null}
+          <ToastView toast={toast} onDismiss={dismiss} />
+        </Screen>
+      </View>
+
+      {showPanel && openRow ? (
+        <View style={{ width: "44%", maxWidth: 640, minWidth: 380, padding: 16 }}>
+          <CodingWorkbenchPanel
+            txn={openRow.txn}
+            todo={openRow.todo}
+            categoryOptions={categoryOptions}
+            onDeselect={() => setOpenId(null)}
+            onPrev={() => stepRow(-1)}
+            onNext={() => stepRow(1)}
+            hasPrev={stepSelection(panelRows, openId, -1) != null}
+            hasNext={stepSelection(panelRows, openId, 1) != null}
+            position={panelPosition(panelRows, openId)}
+            canViewReceiptList={canViewReceiptList}
+          />
+        </View>
       ) : null}
-      <ToastView toast={toast} onDismiss={dismiss} />
-    </Screen>
+    </View>
   );
 }

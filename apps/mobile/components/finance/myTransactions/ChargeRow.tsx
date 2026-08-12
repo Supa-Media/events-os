@@ -37,6 +37,7 @@ export function ChargeRow({
   txn,
   todo,
   last,
+  selected = false,
   onOpen,
   onUpload,
   generateUploadUrl,
@@ -44,6 +45,10 @@ export function ChargeRow({
   txn: MyTxnRow;
   todo: ChargeTodo;
   last: boolean;
+  /** The wide-screen workbench panel (`coding.tsx`) is open on this exact
+   *  row — see `Row`'s own doc. `false` on every host that has no panel
+   *  (narrow screens, which keep the modal). */
+  selected?: boolean;
   onOpen: () => void;
   onUpload: (storageId: Id<"_storage">, filename: string | null) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
@@ -52,7 +57,7 @@ export function ChargeRow({
 
   return (
     <>
-      <Row last={last && !sentBack}>
+      <Row last={last && !sentBack} selected={selected}>
         <Cell flex={2}>
           <View className="flex-row items-center gap-2">
             {/* `shrink min-w-0` is what makes numberOfLines actually truncate
