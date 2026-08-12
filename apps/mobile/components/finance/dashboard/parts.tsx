@@ -20,8 +20,16 @@ import { Icon, type BadgeTone, InfoTooltip } from "../../ui";
  * Catches a render-time throw from a Convex `useQuery` in its subtree. Finance
  * reads gate on a `financeRoles` grant, so a viewer without one makes the query
  * throw a `ConvexError`; this keeps that from blanking the whole screen and
- * renders `fallback` instead. It does not auto-retry — finance-role errors
- * aren't transient — but remounting via a `key` resets it.
+ * renders `fallback` instead.
+ *
+ * IT LATCHES, AND THAT BIT US (owner report, 2026-08-11): "finance-role errors
+ * aren't transient" was true right up until a deploy WIDENED a gate while the
+ * founder's tab sat on the denied screen — the server started saying yes, the
+ * boundary kept showing "Restricted", and the fix looked unshipped. So the
+ * fallback now carries its own "Check again" affordance: one tap clears the
+ * latch, remounts the children, and re-runs the queries against whatever the
+ * server says TODAY. No auto-retry loop — a genuine denial stays a denial
+ * until a human pokes it — but a stale one is now one tap from the truth.
  */
 export class FinanceBoundary extends Component<
   { children: ReactNode; fallback?: ReactNode },
@@ -32,7 +40,22 @@ export class FinanceBoundary extends Component<
     return { failed: true };
   }
   render() {
-    if (this.state.failed) return this.props.fallback ?? null;
+    if (this.state.failed) {
+      return (
+        <View>
+          {this.props.fallback ?? null}
+          <Pressable
+            onPress={() => this.setState({ failed: false })}
+            accessibilityRole="button"
+            className="mt-2 items-center py-2 active:opacity-70 web:hover:opacity-90"
+          >
+            <Text className="text-sm font-semibold text-accent">
+              Check again
+            </Text>
+          </Pressable>
+        </View>
+      );
+    }
     return this.props.children;
   }
 }
