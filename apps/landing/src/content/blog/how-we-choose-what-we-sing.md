@@ -1,8 +1,8 @@
 ---
-title: "Before You Lead With Us"
-description: "Why the Public Worship catalog centers on doxology — songs whose only content is the glory of God — and the test we run every lyric through before we sing it in public."
-subtitle: "If we've asked you to lead with us, this is the one thing to read first. It isn't a style guide. It's the conviction underneath every set we play."
-audience: "worship leaders"
+title: "Our Song Selection Philosophy"
+description: "What you'll hear when Public Worship leads worship, and why: a catalog centered on doxology — songs whose only content is the glory of God — the test every lyric goes through, and the 80/20 goal we hold ourselves to."
+subtitle: "What you should expect to hear when you worship with us, and the standard we invite every worship leader who serves with us into."
+audience: "everyone who worships with us"
 pubDate: 2026-08-11
 author: "The Public Worship Team"
 tags: ["Songwriting", "Song Selection", "Worship"]
@@ -19,10 +19,11 @@ them all. We're specializing in the one we believe contemporary worship most
 lacks: the song that simply declares God Himself, from the first line to the
 last.
 
-If you're going to lead with us — on a subway platform, in a park, or on a
-stage at Eden or Love Thy Neighbor — you don't have to agree with every line
-of this. You do have to know what we're aiming at, because it shapes every set
-list we'll hand you.
+This is what you should expect to hear when you worship with us — on a subway
+platform, in a park, or at Eden or Love Thy Neighbor. And if you lead worship
+and we've asked you to serve with us, it's the conviction your set will be
+built around: you don't have to agree with every line, but you do have to
+know what we're aiming at.
 
 ## What doxology means
 
@@ -185,6 +186,18 @@ story pulling the line back home.
 - **"Blessed be God" and thanksgiving forms** (Eph 1:3–14; 1 Pet 1:3–5) — on
   the boundary. They pass while the focus stays on God's acts, and drift when
   they dwell on what we received. Test them line by line.
+
+## The 80/20 goal
+
+We hold ourselves to a number. In the songs we sing — as far as a set is ours
+to control — and in the songs we write and release as Public Worship, we aim
+for **80% doxological, 20% anthropological**.
+
+The number isn't sacred; the center of gravity is. Twenty percent keeps
+lament, testimony, confession, and petition in the room, where Scripture puts
+them. Eighty percent keeps them tethered to the declaration that holds them
+in orbit — and keeps "we also sing them" from quietly becoming "we mostly
+sing them."
 
 ## An invitation
 
