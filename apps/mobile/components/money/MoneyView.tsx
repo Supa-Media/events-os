@@ -580,6 +580,7 @@ function TxnEditModal({ tr, onClose }: { tr: TxnRowData; onClose: () => void }) 
           transactionId={tr.id}
           currentNote={tr.note}
           merchantLine={`${tr.merchantName ?? tr.description ?? "Transaction"} · ${formatDate(tr.postedAt)}`}
+          rawDescription={tr.description}
           amountCents={tr.amountCents}
           onClose={() => setNoteModalOpen(false)}
         />

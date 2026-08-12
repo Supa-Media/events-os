@@ -39,6 +39,7 @@ import {
   type TransactionCodingStatus,
 } from "@events-os/shared";
 import { requireUserId } from "./lib/context";
+import { referenceFor } from "./reimbursements";
 import { assertSeparationOfDuties } from "./lib/finance";
 import { logFinanceAudit } from "./lib/financeAuditLog";
 import {
@@ -118,6 +119,97 @@ const codingRow = v.object({
   decidedAt: v.union(v.number(), v.null()),
   reviewNote: v.union(v.string(), v.null()),
 });
+
+/** One reimbursement line's already-authored substantiation, as surfaced to
+ *  a coder of the payout transaction (Finding 1, UX audit 2026-08-12). Same
+ *  shape as a coding's own fields — the claimant answered the identical
+ *  §274(d) questions on the request form (`CodingFields.tsx` /
+ *  `reimbursePage.ts`), so it maps onto the SAME form via "Use these
+ *  answers" with no translation. `attendees` is `null` for a caller without
+ *  names-view — the SAME redaction `codingRow.attendees` gets, never a
+ *  separate rule for this surface. */
+const reimbursementLineContext = v.object({
+  id: v.id("reimbursementLineItems"),
+  description: v.string(),
+  amountCents: v.number(),
+  expenseType: v.union(expenseTypeValidator, v.null()),
+  businessPurpose: v.union(v.string(), v.null()),
+  travelFrom: v.union(v.string(), v.null()),
+  travelTo: v.union(v.string(), v.null()),
+  headcount: v.union(v.number(), v.null()),
+  attendees: v.union(v.array(attendeeValidator), v.null()),
+  groupDescription: v.union(v.string(), v.null()),
+});
+
+/**
+ * "What the claimant already wrote" — the originating reimbursement request's
+ * purpose + every line's own substantiation, for a payout transaction
+ * (`source:"reimbursement"`). `null` for anything else (the vast majority of
+ * codings, which have no reimbursement behind them at all).
+ *
+ * WHY THIS EXISTS (Finding 1, UX audit 2026-08-12, founder-framed): "does
+ * Seyi have all the info he needs to code everything himself line by line
+ * easily, including things he's already coded or comments he has already
+ * added elsewhere." `postReimbursementSpend` books the payout with
+ * `reimbursementId` set, but until this, nothing that codes the resulting
+ * transaction could see a word the claimant wrote — a bookkeeper coding a
+ * reimbursement payout was re-typing testimony that already exists, verbatim,
+ * one table away.
+ *
+ * ACCESS: the SAME bar as reading the coding itself — `canSeeNames` is
+ * `hasCodingNamesView` on this exact transaction, the identical redaction a
+ * coding's own `attendees` field gets. This is the same charge's record, so
+ * whoever may view the coding may see this.
+ */
+async function reimbursementCodingContext(
+  ctx: QueryCtx,
+  txn: Doc<"transactions">,
+  canSeeNames: boolean,
+): Promise<{
+  requestId: Id<"reimbursementRequests">;
+  reference: string;
+  purpose: string | null;
+  payeeName: string;
+  lines: Infer<typeof reimbursementLineContext>[];
+} | null> {
+  if (txn.source !== "reimbursement" || !txn.reimbursementId) return null;
+  const req = await ctx.db.get(txn.reimbursementId);
+  if (!req) return null;
+  // Bounded exactly like `deriveReimbursementTxnFields` — a reimbursement
+  // has a handful of lines, never an unbounded list.
+  const lines = await ctx.db
+    .query("reimbursementLineItems")
+    .withIndex("by_reimbursement", (q) => q.eq("reimbursementId", req._id))
+    .take(200);
+  return {
+    requestId: req._id,
+    reference: referenceFor(req._id),
+    purpose: req.purpose?.trim() || null,
+    payeeName: req.payeeName,
+    lines: lines.map((l) => ({
+      id: l._id,
+      description: l.description,
+      amountCents: l.amountCents,
+      expenseType: (l.expenseType as ExpenseType | undefined) ?? null,
+      businessPurpose: l.businessPurpose ?? null,
+      travelFrom: l.travelFrom ?? null,
+      travelTo: l.travelTo ?? null,
+      headcount: l.headcount ?? null,
+      // NAMES ARE THE CLAIMANT'S OWN TESTIMONY about who was there — same
+      // internal-only rule as a coding's own attendee list. Redacted (never
+      // just omitted) so the shape always tells the client WHY it's empty.
+      attendees:
+        canSeeNames && l.attendees
+          ? l.attendees.map((a) => ({
+              personId: a.personId,
+              name: a.name,
+              affiliation: a.affiliation,
+            }))
+          : null,
+      groupDescription: l.groupDescription ?? null,
+    })),
+  };
+}
 
 /** Project one coding for display, redacting names unless the caller holds
  *  names-view on the row. */
@@ -219,6 +311,19 @@ export const getForTransaction = query({
     categoryExpenseTypeHint: v.optional(
       v.union(...EXPENSE_TYPES.map((t) => v.literal(t))),
     ),
+    /** "What the claimant already wrote" — see `reimbursementCodingContext`'s
+     *  own doc (Finding 1, UX audit 2026-08-12). `null` unless this txn is a
+     *  reimbursement payout. */
+    reimbursementContext: v.union(
+      v.object({
+        requestId: v.id("reimbursementRequests"),
+        reference: v.string(),
+        purpose: v.union(v.string(), v.null()),
+        payeeName: v.string(),
+        lines: v.array(reimbursementLineContext),
+      }),
+      v.null(),
+    ),
   }),
   handler: async (ctx, args) => {
     const { txn, actorPersonId } = await requireViewCoding(
@@ -237,9 +342,18 @@ export const getForTransaction = query({
     const hasDocumentation =
       txn.receiptStorageId != null ||
       exceptions.some((e) => e.status === "approved" || e.status === "pending");
-    const canSeeNames = row
-      ? await hasCodingNamesView(ctx, args.transactionId)
-      : false;
+    // Read UNCONDITIONALLY now (not gated on `row` existing) — the
+    // reimbursement context below needs the same answer even when there's no
+    // coding yet at all, which is the whole point: surfacing this BEFORE the
+    // first coding is authored. `requireViewCoding` already ran above, so
+    // this is one more permission check on an already-authorized caller, not
+    // an extra document read.
+    const canSeeNames = await hasCodingNamesView(ctx, args.transactionId);
+    const reimbursementContext = await reimbursementCodingContext(
+      ctx,
+      txn,
+      canSeeNames,
+    );
     // Mirrors `finances.requiresCoding` — spend posted at/after the policy
     // date. Kept inline (three fields) rather than importing the whole
     // finances module into this one.
@@ -269,6 +383,7 @@ export const getForTransaction = query({
       minPurposeLength: MIN_PURPOSE_LENGTH,
       categoryName: category?.name ?? null,
       ...(category?.expenseType ? { categoryExpenseTypeHint: category.expenseType } : {}),
+      reimbursementContext,
     };
   },
 });

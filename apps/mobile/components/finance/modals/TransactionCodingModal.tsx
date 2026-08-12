@@ -39,7 +39,9 @@
  */
 import type { ReactNode } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
-import { formatCents } from "@events-os/shared";
+import { formatCents, type AttendeeAffiliation, type ExpenseType } from "@events-os/shared";
+import type { FunctionReturnType } from "convex/server";
+import type { api } from "@events-os/convex/_generated/api";
 import { Button, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import {
@@ -52,6 +54,7 @@ import {
   type CodingFormState,
   type CodingFormValue,
 } from "../coding/CodingFieldSet";
+import { ReimbursementContextBlock } from "../coding/ReimbursementContextBlock";
 
 export type { CodingFormValue };
 
@@ -74,6 +77,7 @@ export function TransactionCodingModal({
   initial,
   initialBudgetId,
   category,
+  reimbursementContext,
   reviewNote,
   personalCharge,
   submitLabel = "Submit for review",
@@ -106,6 +110,14 @@ export function TransactionCodingModal({
    *  context; `null` when the charge is simply uncategorized. See
    *  `CodingCategoryContext`. */
   category?: CodingCategoryContext;
+  /** FINDING 1 (UX audit, 2026-08-12): "What the claimant already wrote" —
+   *  `getForTransaction().reimbursementContext`, passed through verbatim by
+   *  `TransactionCodingSection` (the only caller with it). `undefined`/`null`
+   *  renders nothing (the vast majority of codings, which aren't
+   *  reimbursement payouts). */
+  reimbursementContext?: NonNullable<
+    FunctionReturnType<typeof api.transactionCodings.getForTransaction>["reimbursementContext"]
+  > | null;
   /** The reviewer's send-back note, when this is a revision. Shown INSIDE the
    *  editor: "what would make this approvable" is useless one screen away from
    *  the fields it's about. */
@@ -213,6 +225,26 @@ export function TransactionCodingModal({
                   {documentationSlot}
                 </View>
               ) : null}
+
+              {/* FINDING 1: ABOVE the form, so it's seen before typing
+                  starts. */}
+              <ReimbursementContextBlock
+                context={reimbursementContext}
+                onUseLine={(line) =>
+                  form.applyExternalLine({
+                    expenseType: (line.expenseType as ExpenseType | null) ?? "general",
+                    businessPurpose: line.businessPurpose ?? "",
+                    travelFrom: line.travelFrom,
+                    travelTo: line.travelTo,
+                    headcount: line.headcount,
+                    attendees: line.attendees?.map((a) => ({
+                      name: a.name,
+                      affiliation: a.affiliation as AttendeeAffiliation,
+                    })),
+                    groupDescription: line.groupDescription,
+                  })
+                }
+              />
 
               <ExpenseTypeChips form={form} category={category} />
 

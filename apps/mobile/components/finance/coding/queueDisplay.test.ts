@@ -45,6 +45,34 @@ describe("substantiationLine", () => {
     ).toBe("? → New York");
   });
 
+  // FINDING 2 (UX audit, 2026-08-12): lodging asks ONE place, not a route —
+  // "? → Chicago" would misread as a half-known route for a stay that never
+  // had a departure city.
+  test("lodging renders the ONE place, never a route", () => {
+    expect(
+      substantiationLine({
+        ...NO_MEAL,
+        expenseType: "lodging",
+        travelFrom: null,
+        travelTo: "Chicago",
+      }),
+    ).toBe("Stayed in Chicago");
+    // A legacy row with both fields still reads sensibly — travelFrom is
+    // simply ignored for lodging's display, exactly as it's ignored by the
+    // validator now.
+    expect(
+      substantiationLine({
+        ...NO_MEAL,
+        expenseType: "lodging",
+        travelFrom: "Boston",
+        travelTo: "Chicago",
+      }),
+    ).toBe("Stayed in Chicago");
+    expect(
+      substantiationLine({ ...NO_MEAL, expenseType: "lodging", travelFrom: null, travelTo: null }),
+    ).toBeNull();
+  });
+
   test("a meal at or below the threshold names everyone", () => {
     expect(
       substantiationLine({

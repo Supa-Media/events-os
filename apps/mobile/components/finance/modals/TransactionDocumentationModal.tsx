@@ -39,12 +39,15 @@ import { MAX_NOTE_LENGTH } from "@events-os/shared";
 import { Button, Icon, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
+import { confirmAction } from "../../../lib/confirmAction";
 import { TransactionCodingSection } from "../reconcile/TransactionCodingSection";
+import { TransactionHistoryCompact } from "../coding/TransactionHistoryCompact";
 
 export function TransactionDocumentationModal({
   transactionId,
   currentNote,
   merchantLine,
+  rawDescription,
   amountCents,
   readOnly = false,
   onClose,
@@ -54,6 +57,11 @@ export function TransactionDocumentationModal({
   /** Merchant + date, for the header and the coding editor's own context line
    *  — a person cannot substantiate a charge they can't see. */
   merchantLine: string;
+  /** FINDING 5 (UX audit, 2026-08-12): the raw bank/processor description —
+   *  shown beneath `merchantLine` only when it isn't already part of it.
+   *  Optional because not every caller has it handy; omitting it just skips
+   *  the extra line rather than guessing. */
+  rawDescription?: string | null;
   amountCents: number;
   /** Peek / below-bookkeeper: the record stays readable, the writes don't. */
   readOnly?: boolean;
@@ -63,6 +71,26 @@ export function TransactionDocumentationModal({
   const [value, setValue] = useState(currentNote ?? "");
   const [saving, setSaving] = useState(false);
   const dirty = (value.trim() || null) !== (currentNote?.trim() || null);
+
+  // FINDING 10 (UX audit, 2026-08-12): "Done" used to close unconditionally,
+  // discarding a typed-but-unsaved comment with no warning. `dirty` above is
+  // already the exact "unsent typed input" signal this panel has (the
+  // coding form's own dirtiness lives inside `TransactionCodingSection` and
+  // isn't threaded out here — this covers the comment field, the one thing
+  // this modal itself holds draft state for).
+  function requestClose() {
+    if (readOnly || !dirty) {
+      onClose();
+      return;
+    }
+    confirmAction({
+      title: "Discard unsaved comment?",
+      message: "You've typed a comment that hasn't been saved yet. Closing now discards it.",
+      confirmLabel: "Discard",
+      destructive: true,
+      onConfirm: onClose,
+    });
+  }
 
   async function saveNote() {
     setSaving(true);
@@ -76,9 +104,9 @@ export function TransactionDocumentationModal({
   }
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible transparent animationType="fade" onRequestClose={requestClose}>
       <Pressable
-        onPress={onClose}
+        onPress={requestClose}
         className="flex-1 items-center justify-center bg-ink/30 p-6"
       >
         <Pressable
@@ -93,8 +121,15 @@ export function TransactionDocumentationModal({
               <Text className="text-xs text-muted" numberOfLines={1}>
                 {merchantLine}
               </Text>
+              {/* FINDING 5: the raw bank line, shown only when it isn't
+                  already part of the cleaned `merchantLine` above. */}
+              {rawDescription?.trim() && !merchantLine.includes(rawDescription.trim()) ? (
+                <Text className="text-2xs text-faint" numberOfLines={1}>
+                  {rawDescription.trim()}
+                </Text>
+              ) : null}
             </View>
-            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+            <Pressable onPress={requestClose} hitSlop={8} className="rounded-md p-1">
               <Icon name="x" size={18} color={colors.muted} />
             </Pressable>
           </View>
@@ -146,10 +181,15 @@ export function TransactionDocumentationModal({
               readOnly={readOnly}
               onError={alertError}
             />
+
+            {/* FINDING 4 (UX audit, 2026-08-12): the audit trail existed but
+                was invisible from this panel — see
+                `TransactionHistoryCompact`'s own module doc. */}
+            <TransactionHistoryCompact transactionId={transactionId} />
           </ScrollView>
 
           <View className="flex-row justify-end border-t border-border px-5 py-4">
-            <Button title="Done" variant="secondary" onPress={onClose} />
+            <Button title="Done" variant="secondary" onPress={requestClose} />
           </View>
         </Pressable>
       </Pressable>

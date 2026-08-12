@@ -87,6 +87,14 @@ export function ReviseForm({
   );
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // FINDING 3 (UX audit, 2026-08-12): the card used to just vanish on success
+  // ("the list re-queries and this card disappears with the status") — which
+  // reads as nothing happened until the re-query lands, especially on a slow
+  // connection. This is a TRANSIENT local flag painted for the moment between
+  // "resubmit resolved" and "the query catches up and removes this card
+  // entirely" — it doesn't fight the re-query above, it just makes the gap
+  // before it unmistakable instead of silent.
+  const [justResubmitted, setJustResubmitted] = useState(false);
 
   const codingFor = (line: RevisableLine): LineCoding =>
     codings[String(line._id)] ?? codingFromLine(line);
@@ -118,11 +126,24 @@ export function ReviseForm({
       });
       // On success the list re-queries and this card disappears with the
       // status — no local "done" flag to drift out of sync with the server.
+      // `justResubmitted` (below) only covers the moment before that happens.
+      setJustResubmitted(true);
     } catch (err) {
       setError(errorMessage(err));
     } finally {
       setBusy(false);
     }
+  }
+
+  if (justResubmitted) {
+    return (
+      <View className="mb-3.5 flex-row items-center gap-2 rounded-lg border border-success/40 bg-success-bg p-4 shadow-card">
+        <Icon name="check-circle" size={18} color={colors.success} />
+        <Text className="text-sm font-semibold text-success">
+          Resubmitted for review ✓
+        </Text>
+      </View>
+    );
   }
 
   return (

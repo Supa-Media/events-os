@@ -150,7 +150,9 @@ export function codingArgs(coding: LineCoding) {
       : undefined,
     expenseType: coding.expenseType,
     businessPurpose: coding.businessPurpose.trim(),
-    travelFrom: isTravelish ? coding.travelFrom.trim() : undefined,
+    // FINDING 2 (UX audit, 2026-08-12): lodging asks ONE place ("where did
+    // you stay"), persisted in `travelTo` — `travelFrom` is travel-only now.
+    travelFrom: coding.expenseType === "travel" ? coding.travelFrom.trim() : undefined,
     travelTo: isTravelish ? coding.travelTo.trim() : undefined,
     headcount: isMeal ? headcount : undefined,
     attendees:
@@ -294,8 +296,10 @@ export function CodingFields({
         />
       ) : null}
 
+      {/* FINDING 6 (UX audit, 2026-08-12): same "spend?" then "expense?"
+          collision the sheet's chip row had — renamed for the same reason. */}
       <Select
-        label="What kind of expense?"
+        label="Which proof questions apply?"
         hint="This decides what the IRS requires us to record — a route for travel, who was there for a meal."
         value={value.expenseType}
         options={EXPENSE_TYPE_OPTIONS}
@@ -313,25 +317,37 @@ export function CodingFields({
       />
 
       {isTravelish ? (
-        <View className="flex-row gap-3">
-          <View className="flex-1">
-            <TextField
-              label="Traveled from"
-              value={value.travelFrom}
-              onChangeText={(v) => onChange({ travelFrom: v })}
-              placeholder="City you left from"
-            />
+        value.expenseType === "lodging" ? (
+          // FINDING 2: lodging asks ONE place, not a route — nobody
+          // "traveled from" a hotel. Persisted in `travelTo`.
+          <TextField
+            label="Where did you stay?"
+            hint="City level is enough."
+            value={value.travelTo}
+            onChangeText={(v) => onChange({ travelTo: v })}
+            placeholder="e.g. Chicago — city is enough"
+          />
+        ) : (
+          <View className="flex-row gap-3">
+            <View className="flex-1">
+              <TextField
+                label="Traveled from"
+                value={value.travelFrom}
+                onChangeText={(v) => onChange({ travelFrom: v })}
+                placeholder="City you left from"
+              />
+            </View>
+            <View className="flex-1">
+              <TextField
+                label="Traveled to"
+                hint="City level is enough."
+                value={value.travelTo}
+                onChangeText={(v) => onChange({ travelTo: v })}
+                placeholder="City you traveled to"
+              />
+            </View>
           </View>
-          <View className="flex-1">
-            <TextField
-              label="Traveled to"
-              hint="City level is enough."
-              value={value.travelTo}
-              onChangeText={(v) => onChange({ travelTo: v })}
-              placeholder="City you traveled to"
-            />
-          </View>
-        </View>
+        )
       ) : null}
 
       {isMeal ? (

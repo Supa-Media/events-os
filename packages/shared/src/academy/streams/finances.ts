@@ -912,7 +912,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
           [
             "**Overnight stay (lodging)**",
-            "The same route — **plus an itemized receipt, at any amount**. This is the one place a bank-record-only exception is refused outright; the IRS wants the itemized folio for lodging, full stop. A Travel & Lodging charge defaults to the Travel branch, not this one — an overnight stay is one tap away on the sheet whenever the trip actually included a room.",
+            "One place — **where you stayed** (city level is enough; nobody \"travelled from\" a hotel, so there's no second field to fill) — **plus an itemized receipt, at any amount**. This is the one place a bank-record-only exception is refused outright; the IRS wants the itemized folio for lodging, full stop. A Travel & Lodging charge defaults to the Travel branch, not this one — an overnight stay is one tap away on the sheet whenever the trip actually included a room.",
           ],
           [
             "**A meal**",

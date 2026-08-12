@@ -62,7 +62,7 @@
  * can't substantiate what they can't see — but every answer is typed by the
  * human whose testimony it is.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -70,6 +70,7 @@ import {
   displayMerchantName,
   documentationState,
   formatCents,
+  rawBankLine,
   type AttendeeAffiliation,
   type ExpenseType,
 } from "@events-os/shared";
@@ -87,6 +88,7 @@ import {
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { errorMessage } from "../../../lib/errors";
+import { confirmAction } from "../../../lib/confirmAction";
 import {
   CodingFieldSet,
   CodingProblemsList,
@@ -97,6 +99,8 @@ import {
   type CodingFormValue,
 } from "../coding/CodingFieldSet";
 import { planCategoryEdit } from "../coding/categoryEditPlan";
+import { TransactionHistoryCompact } from "../coding/TransactionHistoryCompact";
+import { ReimbursementContextBlock } from "../coding/ReimbursementContextBlock";
 import { CodingDocumentation } from "./CodingDocumentation";
 import { PublicPurposeNotice } from "../coding/PublicPurposeEditor";
 import { parseAmountToCents, receiptAmountMismatch } from "./receiptAmountCheck";
@@ -154,11 +158,21 @@ function RequirementHeader({
   title,
   done,
   hint,
+  optional = false,
 }: {
   title: string;
   done: boolean;
   hint?: string;
+  /** FINDING 11 (UX audit, 2026-08-12): a row where THIS requirement isn't
+   *  actually required (e.g. coding on a charge `requiresCoding: false`)
+   *  used to show the exact same hollow "outstanding" dot as a genuinely
+   *  missing required field — reading as a to-do that isn't one. An optional,
+   *  not-yet-done requirement gets a distinct neutral dash marker instead;
+   *  DONE still reads identically either way (a completed optional coding is
+   *  just as complete as a required one). */
+  optional?: boolean;
 }) {
+  const outstandingOptional = !done && optional;
   return (
     <View className="mb-1.5">
       <View className="flex-row items-center gap-2">
@@ -169,6 +183,8 @@ function RequirementHeader({
         >
           {done ? (
             <Icon name="check" size={12} color={colors.success} />
+          ) : outstandingOptional ? (
+            <Icon name="minus" size={10} color={colors.faint} />
           ) : (
             <Icon name="circle" size={10} color={colors.muted} />
           )}
@@ -204,6 +220,7 @@ export function FinishChargeSheetBody({
   categoryOptions,
   ownCharge,
   onClose,
+  onDirtyChange,
   renderReview,
 }: {
   txn: MyTxnRow;
@@ -245,6 +262,13 @@ export function FinishChargeSheetBody({
    *  selected and shows its new state (the "quick flow" contract: no
    *  auto-advance, ever). */
   onClose?: () => void;
+  /** FINDING 10 (UX audit, 2026-08-12): reports whether this row currently
+   *  has unsent typed input — an open coding form with something typed into
+   *  it, a note draft that hasn't been saved, or a receipt-total check
+   *  typed but not yet acted on. The Modal frame's "Done" button uses this
+   *  to warn before discarding it; the panel host (no "Done" to guard) may
+   *  simply omit this prop. */
+  onDirtyChange?: (dirty: boolean) => void;
   /** The reviewer's Approve / Send back, rendered by the HOST (only the
    *  workbench panel passes this) right where the coding it decides is
    *  shown — same `approve`/`requestChanges` mutations `ReviewQueue` uses,
@@ -283,6 +307,19 @@ export function FinishChargeSheetBody({
 
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
+  // FINDING 3 (UX audit, 2026-08-12): `submitBoth` had no success feedback at
+  // all — a failure toasts, but a SUCCESS just quietly returns to the summary
+  // view, which reads as "did that work?" on both the modal sheet and the
+  // wide-screen workbench panel (`CodingWorkbenchPanel` mounts this exact
+  // body). The panel deliberately doesn't auto-advance to the next row — this
+  // banner is what makes staying put read as intentional rather than stalled.
+  // Cleared the moment editing reopens (a fresh edit makes the old
+  // confirmation stale) or the row changes underneath this component.
+  const [justSubmitted, setJustSubmitted] = useState(false);
+  useEffect(() => {
+    setJustSubmitted(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [transactionId]);
   // The attach-time amount check (see `receiptAmountCheck.ts` for why the
   // human types the number instead of OCR handing it to us).
   const [receiptTotal, setReceiptTotal] = useState("");
@@ -325,11 +362,23 @@ export function FinishChargeSheetBody({
       ? null
       : receiptAmountMismatch(receiptCents, txn.amountCents);
 
-  async function guard(fn: () => Promise<unknown>, errorTitle: string) {
+  async function guard(
+    fn: () => Promise<unknown>,
+    errorTitle: string,
+    onSuccess?: () => void,
+  ) {
     setBusy(true);
-    const res = await run(fn, { errorTitle });
+    const res = await run(fn, { errorTitle, onSuccess });
     setBusy(false);
     return res;
+  }
+
+  /** Opens the editor and clears a stale success banner from a previous
+   *  submission on this row — every "Edit" / "Add a coding" affordance below
+   *  calls this instead of a bare `setEditing(true)` (Finding 3). */
+  function startEditing() {
+    setJustSubmitted(false);
+    setEditing(true);
   }
 
   // THE CATEGORY-DRIVEN CHIP CONTEXT. Only card charges reach `submitOwnCharge`
@@ -385,6 +434,31 @@ export function FinishChargeSheetBody({
 
   const blocking = form.value == null || form.fieldProblems.length > 0;
 
+  // FINDING 8: the note is provenance-labeled when it's exactly the ported
+  // reimbursement-request purpose (`deriveReimbursementTxnFields`'s own
+  // `fields.note = purpose` write) — the cheap, honest signal available
+  // without a full authorship trail. Compared against the SAVED note
+  // (`txn.note`), never the unsaved `noteDraft` — this describes where the
+  // note ON RECORD came from, not what's currently typed.
+  const noteFromReimbursementRequest =
+    data?.reimbursementContext != null &&
+    !!txn.note?.trim() &&
+    txn.note.trim() === (data.reimbursementContext.purpose ?? "").trim();
+
+  // FINDING 10: "unsent typed input" — a coding form open with something
+  // typed into it, a note edited but not saved, or a receipt-total check
+  // typed but never acted on. Deliberately a SIMPLE check (not a deep
+  // equality against every field) — the point is catching "I typed
+  // something and tapped away", not modeling every possible edit.
+  const hasUnsentInput =
+    (showForm && form.touched) ||
+    noteDraft.trim() !== (txn.note ?? "").trim() ||
+    receiptTotal.trim().length > 0;
+  useEffect(() => {
+    onDirtyChange?.(hasUnsentInput);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [hasUnsentInput]);
+
   /** ONE PRIMARY SUBMIT — CODING FIRST, ALWAYS, then the category if it
    *  changed (HIGH review finding, fixed 2026-08-1x). The old order tried the
    *  category first and only reached the coding on success; for the Explain
@@ -439,12 +513,28 @@ export function FinishChargeSheetBody({
       }
 
       setEditing(false);
-    }, "Couldn't save this charge");
+    }, "Couldn't save this charge", () => setJustSubmitted(true));
   }
 
   return (
     <>
       <View className="gap-5">
+              {/* FINDING 3 (UX audit, 2026-08-12): an unmistakable success
+                  state — the panel deliberately doesn't auto-advance to the
+                  next row after a submit, so this is what makes staying put
+                  read as "that worked" rather than "did anything happen?".
+                  Only shown once the form has actually closed back to the
+                  summary view (`!showForm`) — never layered under the form
+                  itself. */}
+              {justSubmitted && !showForm ? (
+                <View className="flex-row items-center gap-2 rounded-lg border border-success/40 bg-success-bg px-3 py-2.5">
+                  <Icon name="check-circle" size={16} color={colors.success} />
+                  <Text className="text-sm font-semibold text-success">
+                    Submitted for review ✓
+                  </Text>
+                </View>
+              ) : null}
+
               {/* THE SEND-BACK, FIRST. For the person who has to act on it,
                   this is the single most important thing on the screen — a
                   reviewer already told them exactly what would make this
@@ -496,6 +586,7 @@ export function FinishChargeSheetBody({
                   <RequirementHeader
                     title="What it was for"
                     done={coding != null && coding.status !== "changes_requested"}
+                    optional={data?.requiresCoding === false}
                     hint={
                       data?.requiresCoding === false
                         ? "Not required for this row, but any spend can carry one."
@@ -521,7 +612,7 @@ export function FinishChargeSheetBody({
                           size="sm"
                           icon="edit-3"
                           disabled={data === undefined}
-                          onPress={() => setEditing(true)}
+                          onPress={startEditing}
                         />
                       </View>
                     ) : (
@@ -549,7 +640,16 @@ export function FinishChargeSheetBody({
                             author's memory of it silently disagreeing. Their own
                             words are still the ones above, untouched. */}
                         <PublicPurposeNotice state={coding} />
-                        {coding.travelFrom || coding.travelTo ? (
+                        {/* FINDING 2: lodging is ONE place, not a route —
+                            "Route: — → Chicago" would misread a stay as a
+                            half-known trip. */}
+                        {coding.expenseType === "lodging" ? (
+                          coding.travelTo ? (
+                            <Text className="mt-1 text-2xs text-muted">
+                              Stayed in {coding.travelTo}
+                            </Text>
+                          ) : null
+                        ) : coding.travelFrom || coding.travelTo ? (
                           <Text className="mt-1 text-2xs text-muted">
                             Route: {coding.travelFrom ?? "—"} →{" "}
                             {coding.travelTo ?? "—"}
@@ -586,7 +686,7 @@ export function FinishChargeSheetBody({
                               }
                               variant="secondary"
                               size="sm"
-                              onPress={() => setEditing(true)}
+                              onPress={startEditing}
                             />
                           </View>
                         ) : null}
@@ -604,6 +704,30 @@ export function FinishChargeSheetBody({
                           placeholder="No category"
                         />
                       ) : null}
+
+                      {/* FINDING 1: "What the claimant already wrote" — ABOVE
+                          the form, so it's seen before typing starts, not
+                          discovered after. `null` (renders nothing) for the
+                          vast majority of charges, which aren't reimbursement
+                          payouts at all. */}
+                      <ReimbursementContextBlock
+                        context={data?.reimbursementContext}
+                        onUseLine={(line) =>
+                          form.applyExternalLine({
+                            expenseType:
+                              (line.expenseType as ExpenseType | null) ?? "general",
+                            businessPurpose: line.businessPurpose ?? "",
+                            travelFrom: line.travelFrom,
+                            travelTo: line.travelTo,
+                            headcount: line.headcount,
+                            attendees: line.attendees?.map((a) => ({
+                              name: a.name,
+                              affiliation: a.affiliation as AttendeeAffiliation,
+                            })),
+                            groupDescription: line.groupDescription,
+                          })
+                        }
+                      />
 
                       <ExpenseTypeChips form={form} category={category} />
                       <CodingFieldSet
@@ -778,15 +902,33 @@ export function FinishChargeSheetBody({
                     hint="Helps the finance team file it. The business purpose above is the one that publishes."
                   />
                   <View className="gap-3">
-                    <TextField
-                      label="A note for the finance team"
-                      hint="Internal — unlike the business purpose, this never publishes."
-                      value={noteDraft}
-                      onChangeText={setNoteDraft}
-                      placeholder="Anything they'd otherwise have to ask you about…"
-                      multiline
-                      numberOfLines={2}
-                    />
+                    <View className="gap-1">
+                      {/* FINDING 8 (UX audit, 2026-08-12): the cheap, honest
+                          version of note provenance — full author
+                          attribution needs data this table doesn't store,
+                          but "this note is literally the reimbursement
+                          request's own purpose, ported over" is a fact we
+                          DO have (`deriveReimbursementTxnFields`), so say
+                          it rather than let it read as if a bookkeeper
+                          typed it fresh. */}
+                      {noteFromReimbursementRequest ? (
+                        <View className="flex-row items-center gap-1">
+                          <Icon name="file-text" size={11} color={colors.muted} />
+                          <Text className="text-2xs italic text-muted">
+                            From the reimbursement request
+                          </Text>
+                        </View>
+                      ) : null}
+                      <TextField
+                        label="A note for the finance team"
+                        hint="Internal — unlike the business purpose, this never publishes."
+                        value={noteDraft}
+                        onChangeText={setNoteDraft}
+                        placeholder="Anything they'd otherwise have to ask you about…"
+                        multiline
+                        numberOfLines={2}
+                      />
+                    </View>
                     <View className="flex-row">
                       <Button
                         title="Save note"
@@ -822,6 +964,10 @@ export function FinishChargeSheetBody({
                 </View>
               ) : null}
 
+              {/* FINDING 4: the audit trail existed but was invisible from
+                  here — see `TransactionHistoryCompact`'s own module doc. */}
+              <TransactionHistoryCompact transactionId={transactionId} />
+
               {toast ? <ToastView toast={toast} onDismiss={dismiss} /> : null}
       </View>
     </>
@@ -855,11 +1001,37 @@ export function FinishChargeSheet({
 }) {
   const actionable = todo === undefined ? true : todo.actionable;
   const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
+  // FINDING 5 (UX audit, 2026-08-12): the raw bank/processor description —
+  // shown beneath the cleaned name only when it actually says something
+  // different (`null` when there's nothing to add).
+  const rawLine = rawBankLine(txn);
+
+  // FINDING 10 (UX audit, 2026-08-12): "Done" used to close unconditionally —
+  // a person who typed a purpose, a receipt-total check, or a note and then
+  // tapped Done lost it silently. `dirty` is reported up by the body (see its
+  // own `onDirtyChange` prop doc); every explicit close affordance in this
+  // frame (the header ✕ and the footer "Done") routes through this one
+  // guarded closer instead of calling `onClose` directly.
+  const [dirty, setDirty] = useState(false);
+  function requestClose() {
+    if (!dirty) {
+      onClose();
+      return;
+    }
+    confirmAction({
+      title: "Discard unsaved changes?",
+      message:
+        "You've typed something here that hasn't been submitted or saved yet. Closing now discards it.",
+      confirmLabel: "Discard",
+      destructive: true,
+      onConfirm: onClose,
+    });
+  }
 
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={onClose}>
+    <Modal visible transparent animationType="fade" onRequestClose={requestClose}>
       <Pressable
-        onPress={onClose}
+        onPress={requestClose}
         className="flex-1 items-center justify-center bg-ink/30 p-6"
       >
         <Pressable
@@ -878,8 +1050,14 @@ export function FinishChargeSheet({
                 {merchantLine} · {formatCents(Math.abs(txn.amountCents))}
                 {txn.cardLast4 ? ` · card ••${txn.cardLast4}` : ""}
               </Text>
+              {/* FINDING 5: the raw bank line, only when it differs. */}
+              {rawLine ? (
+                <Text className="text-2xs text-faint" numberOfLines={1}>
+                  {rawLine}
+                </Text>
+              ) : null}
             </View>
-            <Pressable onPress={onClose} hitSlop={8} className="rounded-md p-1">
+            <Pressable onPress={requestClose} hitSlop={8} className="rounded-md p-1">
               <Icon name="x" size={18} color={colors.muted} />
             </Pressable>
           </View>
@@ -892,12 +1070,13 @@ export function FinishChargeSheet({
                 categoryOptions={categoryOptions}
                 ownCharge={ownCharge}
                 onClose={onClose}
+                onDirtyChange={setDirty}
               />
             </View>
           </ScrollView>
 
           <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
-            <Button title="Done" variant="secondary" onPress={onClose} />
+            <Button title="Done" variant="secondary" onPress={requestClose} />
           </View>
         </Pressable>
       </Pressable>

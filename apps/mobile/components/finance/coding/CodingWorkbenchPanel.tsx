@@ -52,7 +52,7 @@ import { ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { displayMerchantName, formatCents } from "@events-os/shared";
+import { displayMerchantName, formatCents, rawBankLine } from "@events-os/shared";
 import { Button, TextField } from "../../ui";
 import {
   FinishChargeSheetBody,
@@ -234,6 +234,9 @@ export function CodingWorkbenchPanel({
 }) {
   const transactionId = txn.id as Id<"transactions">;
   const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
+  // FINDING 5 (UX audit, 2026-08-12): the raw bank/processor description,
+  // shown beneath the cleaned name only when it says something different.
+  const rawLine = rawBankLine(txn);
 
   return (
     <View className="flex-1 rounded-xl border border-border bg-raised">
@@ -247,6 +250,11 @@ export function CodingWorkbenchPanel({
             {txn.cardLast4 ? ` · card ••${txn.cardLast4}` : ""}
             {position ? ` · ${position.index} of ${position.total}` : ""}
           </Text>
+          {rawLine ? (
+            <Text className="text-2xs text-faint" numberOfLines={1}>
+              {rawLine}
+            </Text>
+          ) : null}
         </View>
         <View className="flex-row items-center gap-1">
           <Button

@@ -925,6 +925,7 @@ export interface CodingProblem {
     | "PURPOSE_REQUIRED"
     | "PURPOSE_TOO_LONG"
     | "TRAVEL_ROUTE_REQUIRED"
+    | "LODGING_PLACE_REQUIRED"
     | "PLACE_TOO_LONG"
     | "HEADCOUNT_REQUIRED"
     | "ATTENDEES_REQUIRED"
@@ -960,7 +961,7 @@ export function codingFieldProblems(
     });
   }
 
-  if (fields.expenseType === "travel" || fields.expenseType === "lodging") {
+  if (fields.expenseType === "travel") {
     const from = fields.travelFrom?.trim() ?? "";
     const to = fields.travelTo?.trim() ?? "";
     if (!from || !to) {
@@ -976,6 +977,26 @@ export function codingFieldProblems(
       problems.push({
         code: "PLACE_TOO_LONG",
         message: `Keep each place under ${MAX_CODING_PLACE_LENGTH} characters.`,
+      });
+    }
+  } else if (fields.expenseType === "lodging") {
+    // FINDING 2 (founder-flagged UX audit, 2026-08-12): lodging used to ask
+    // for a ROUTE (from AND to), which makes no sense for a stay — nobody
+    // "traveled from" a hotel. It needs exactly ONE place: where you stayed.
+    // Persisted in `travelTo` (the same column travel's destination uses, so
+    // nothing new on the wire); `travelFrom` is optional/unused for lodging
+    // from here on — a historical row that still carries both keeps
+    // validating (reading is unaffected; only the REQUIREMENT changed).
+    const to = fields.travelTo?.trim() ?? "";
+    if (!to) {
+      problems.push({
+        code: "LODGING_PLACE_REQUIRED",
+        message: "An overnight stay needs a place — the city is enough.",
+      });
+    } else if (to.length > MAX_CODING_PLACE_LENGTH) {
+      problems.push({
+        code: "PLACE_TOO_LONG",
+        message: `Keep the place under ${MAX_CODING_PLACE_LENGTH} characters.`,
       });
     }
   }
@@ -1484,6 +1505,26 @@ export function displayMerchantName(
   if (row.merchantNameOverride != null) return row.merchantNameOverride;
   if (row.merchantName != null) return cleanCardDescriptor(row.merchantName);
   return row.description ?? fallback;
+}
+
+/**
+ * The RAW bank/processor description, worth showing BENEATH the cleaned
+ * merchant name — but only when it says something the clean name doesn't
+ * already say. `null` when there's nothing raw to show, or it would just
+ * repeat the clean name verbatim.
+ *
+ * FINDING 5 (UX audit, 2026-08-12): "the raw bank line dropped when the
+ * panel opens" — a coder who only ever sees "Amazon" loses the "AMAZON
+ * MKTPL*56OXD2TB2" the actual charge carried, which is sometimes the only
+ * way to tell two same-named purchases apart, or to recognize a charge the
+ * cleaned name obscures entirely.
+ */
+export function rawBankLine(row: MerchantNameSource): string | null {
+  const raw = row.description?.trim();
+  if (!raw) return null;
+  const clean = displayMerchantName(row, "").trim();
+  if (!clean || raw === clean) return null;
+  return raw;
 }
 
 /**

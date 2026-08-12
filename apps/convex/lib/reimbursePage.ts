@@ -614,17 +614,24 @@ function buildCoding(host,cfg,init,categories){
   purposeField.appendChild(purpose);
   purposeField.appendChild(chint('At least '+cfg.minPurpose+' characters — "Travel to NY to film the Eden event", not "bus to NY". This sentence appears on Public Worship\\'s public ledger.'));
 
+  /* FINDING 2 (UX audit, 2026-08-12): lodging asks ONE place ("where did you
+     stay"), not a route — nobody "traveled from" a hotel. Persisted in
+     'travelTo'; 'travelFrom' + its field are travel-only from here on, and
+     hidden (not just left blank) for lodging via syncType() below. */
   var travelBox=cel('div','mt8 hide');
   var travelRow=cel('div','two');
   var fromField=cel('div','field');var from=cel('input','forminput');
   from.placeholder='City you left from';from.value=init.travelFrom||'';
-  fromField.appendChild(clabel('Traveled from'));fromField.appendChild(from);
+  var fromLabel=clabel('Traveled from');
+  fromField.appendChild(fromLabel);fromField.appendChild(from);
   var toField=cel('div','field');var to=cel('input','forminput');
   to.placeholder='City you traveled to';to.value=init.travelTo||'';
-  toField.appendChild(clabel('Traveled to'));toField.appendChild(to);
+  var toLabel=clabel('Traveled to');
+  toField.appendChild(toLabel);toField.appendChild(to);
   travelRow.appendChild(fromField);travelRow.appendChild(toField);
   travelBox.appendChild(travelRow);
-  travelBox.appendChild(chint('City level is enough — the IRS requires where the trip went.'));
+  var travelHint=chint('City level is enough — the IRS requires where the trip went.');
+  travelBox.appendChild(travelHint);
 
   var mealBox=cel('div','mt8 hide');
   var headField=cel('div','field');
@@ -680,6 +687,19 @@ function buildCoding(host,cfg,init,categories){
     var t=type.value;
     var travelish=(t==='travel'||t==='lodging');
     travelBox.classList.toggle('hide',!travelish);
+    if(travelish){
+      if(t==='lodging'){
+        fromField.classList.add('hide');
+        toLabel.textContent='Where did you stay?';
+        to.placeholder='e.g. Chicago — city is enough';
+        travelHint.textContent='An overnight stay needs a place — the city is enough.';
+      }else{
+        fromField.classList.remove('hide');
+        toLabel.textContent='Traveled to';
+        to.placeholder='City you traveled to';
+        travelHint.textContent='City level is enough — the IRS requires where the trip went.';
+      }
+    }
     mealBox.classList.toggle('hide',t!=='meal');
     if(t==='meal')renderNames();
   }
@@ -699,7 +719,8 @@ function buildCoding(host,cfg,init,categories){
     var t=type.value;
     var out={expenseType:t,businessPurpose:purpose.value};
     if(cat)out.categoryId=cat.value||undefined;
-    if(t==='travel'||t==='lodging'){out.travelFrom=from.value;out.travelTo=to.value;}
+    if(t==='travel'){out.travelFrom=from.value;out.travelTo=to.value;}
+    if(t==='lodging'){out.travelTo=to.value;}
     if(t==='meal'){
       var n=parseInt(head.value,10);
       out.headcount=isFinite(n)?n:undefined;
