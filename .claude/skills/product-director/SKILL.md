@@ -308,6 +308,52 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-08-12 — Run 15 (founder voice-note: coding/reconcile confusion, ED lockout, false "fully explained", publish preview, self-approve)
+- **A fixed-date policy epoch plus relative-date fixtures is a scheduled CI
+  outage.** `DEFAULT_CODING_REQUIRED_SINCE_MS` (2026-08-08) armed while
+  `cards.test.ts` seeded a charge at `Date.now()-4d`: green through 08-11,
+  red everywhere on 08-12, blocking every PR that day. THREE separate
+  subagents independently verified it "pre-existing" (correctly) — but the
+  orchestrator had to recognize it as a TODAY-blocking base failure, not
+  background noise, and fix it first. When a suite goes red on a date
+  rollover, grep the repo for `Date.UTC(` policy constants vs `Date.now() -`
+  fixtures near the failure before diagnosing anything else.
+- **The access-ladder review lens caught the exact failure it was written
+  for, one layer up from where I looked.** WS-A widened the server gates for
+  the ED and its review proved the widening UNREACHABLE: `financeRoles.
+  mySeats` returns `[]` for every ED (the specializedRoles bridge fires only
+  for `roleKind === "finance"`), so `_layout.tsx` routes EDs to member tabs
+  and no navigation reaches the widened surfaces. "Does the client access
+  query distinguish the new rung" (Run 10's rule) generalizes to: *can the
+  persona NAVIGATE to the gate at all?* Tab-set gating is part of the ladder.
+- **A mid-run founder voice note is a fork, not a queue item.** "Coding UX
+  must be side-panel, receipts big, pinch-zoom, no blocking modal" arrived
+  while WS-B was restyling the modal. Right call made: the small isolated ask
+  (superuser self-approve) was built by the orchestrator in the main checkout
+  the same hour (worktrees keep it collision-free), the big UI reframe became
+  a QUEUED workstream behind the in-flight one touching the same files —
+  redirecting a mid-build agent toward a bigger design it wasn't briefed for
+  is how half-designs ship.
+- **Resuming a COMPLETED agent with SendMessage works well for fix rounds**
+  (three did fixes in their own worktrees with full context, no re-brief) —
+  the Run-7 "SendMessage is unreliable" caveat applies to agents mid-run,
+  not to completed ones being continued.
+- **Fixture-shape guardrails from this repo, verified the hard way:**
+  a brief that says "pre-existing mobile tsc failures are only in campaign
+  designer files" will be wrong — agents found `registrationDisplay.test.ts`
+  and ~324 baseline errors; the durable phrasing is "assert your touched
+  files add zero NEW errors against the counted baseline". And worktree
+  agents start with NO node_modules — tell them `pnpm install
+  --frozen-lockfile` is expected, not a surprise.
+- **Founder decisions this run, quoted, now standing:** "as super admin, I
+  need the ability to just approve my own coding things" (recorded
+  `approvalParty: "single"`, mirroring budgets); coding review UX = "click
+  in and click out… see the receipt, like really big… not a modal in the
+  middle of the screen that blocks your ability to see other things"
+  (side-panel workbench spec, queued); Reconcile-vs-Coding confusion is
+  primarily DISCOVERABILITY (the reconcile row's comment icon already hosts
+  the full coding surface — surface it, don't rebuild it).
+
 ### 2026-07-31 — Run 14 (data export: people/giving/tasks → one wide CSV per dataset)
 - **The ONE question I asked reversed my own recommendation, and asking cost
   two minutes.** I proposed a relational bundle of joined CSVs (recommended)
