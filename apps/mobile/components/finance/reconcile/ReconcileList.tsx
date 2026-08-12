@@ -963,6 +963,7 @@ function ReconcileRow({
           transactionId={id}
           currentNote={row.note}
           merchantLine={`${displayMerchantName(row, "—")} · ${shortDate(row.postedAt)}`}
+          rawDescription={row.description}
           amountCents={row.amountCents}
           readOnly={readOnly}
           onClose={() => setNoteModalOpen(false)}
