@@ -41,7 +41,7 @@ import { runWrapTargetingPage } from "./migrations/0042_wrap_targeting";
 import { runSplitPersonNamesPage } from "./migrations/0043_split_person_names";
 import { runReimbursementPayoutsOutflowPage } from "./migrations/0044_reimbursement_payouts_outflow";
 import { runBackfillPersonalRepaymentsPage } from "./migrations/0045_backfill_personal_repayments";
-import { runFixGenesisUtcMidnightPage } from "./migrations/0062_fix_genesis_utc_midnight";
+import { runFixGenesisUtcMidnightPage } from "./migrations/0063_fix_genesis_utc_midnight";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -823,7 +823,7 @@ export const continueBackfillPersonalRepayments = internalMutation({
  * Scheduler continuation for the genesis UTC-midnight fix (`0062`) — same
  * shape as the continuations above; idempotent (a row this migration already
  * shifted off the exact-midnight boundary never re-matches — see
- * `migrations/0062_fix_genesis_utc_midnight.ts`'s module doc), so a
+ * `migrations/0063_fix_genesis_utc_midnight.ts`'s module doc), so a
  * redundant fire is a no-op.
  */
 export const continueFixGenesisUtcMidnight = internalMutation({

@@ -6,7 +6,7 @@ import { GENESIS_BANK_ROWS } from "../lib/seed/historical/genesisBank";
 import { GENESIS_LTN_ROWS } from "../lib/seed/historical/genesisLtn";
 import { GENESIS_INKIND_EXPENSE_ROWS } from "../lib/seed/historical/genesisInkindExpenses";
 import { parseGenesisDate } from "../financeGenesisBackfill";
-import { runFixGenesisUtcMidnightPage } from "../migrations/0062_fix_genesis_utc_midnight";
+import { runFixGenesisUtcMidnightPage } from "../migrations/0063_fix_genesis_utc_midnight";
 
 /**
  * Finance genesis backfill: the ops-only runner that loads the org's full
