@@ -44,7 +44,7 @@
 import { ConvexError } from "convex/values";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { CENTRAL, financeRoleAtLeast } from "@events-os/shared";
+import { CENTRAL, expandPowers, financeRoleAtLeast } from "@events-os/shared";
 import {
   getFinanceRole,
   requireFinanceCentral,
@@ -394,11 +394,12 @@ export async function listCodingReviewerPersonIds(
       // Rolled-up/computed seats are never real occupancy — the same
       // belt-and-braces skip `holdsApprovalSeatAt` makes.
       if (!def || def.derived) continue;
-      if (def.capabilities.includes("finance.manager")) {
+      const powers = expandPowers(def.capabilities);
+      if (powers.has("finance.edit")) {
         personIds.add(a.personId);
         continue;
       }
-      if (!def.capabilities.includes("finance.approve")) continue;
+      if (!powers.has("finance.budgets.approve")) continue;
       // `finance.approve` at CENTRAL reaches every book (the ED). At a real
       // chapter it reaches only that chapter (the CD) — and since `scope` is
       // either `book` or `"central"` here, that's already true by

@@ -1,6 +1,10 @@
 import { afterEach, describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
-import { SEAT_ROOT, MULTI_HOLDER_CAP } from "@events-os/shared";
+import {
+  SEAT_ROOT,
+  MULTI_HOLDER_CAP,
+  migrateLegacyPowers,
+} from "@events-os/shared";
 import { api } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
@@ -317,9 +321,9 @@ describe("seatStructure.updateSeat", () => {
 
     await s.as.mutation(api.seatStructure.updateSeat, {
       slug: "music_lead",
-      capabilities: ["nav.finances"],
+      capabilities: ["finance.view"],
     });
-    expect((await defBySlug(s, "music_lead")).capabilities).toEqual(["nav.finances"]);
+    expect((await defBySlug(s, "music_lead")).capabilities).toEqual(["finance.view"]);
 
     await s.as.mutation(api.seatStructure.updateSeat, {
       slug: "event_organizers",
@@ -401,7 +405,7 @@ describe("seatStructure.updateSeat", () => {
     await expect(
       s.as.mutation(api.seatStructure.updateSeat, {
         slug: "chapter_directors",
-        capabilities: ["nav.finances"],
+        capabilities: ["finance.view"],
       }),
     ).rejects.toBeInstanceOf(ConvexError);
     await expect(
@@ -442,7 +446,12 @@ describe("seatStructure — SELF-LOCKOUT guard", () => {
   test("ED removing org.editChart from their OWN held seat is rejected", async () => {
     const s = await edSetup();
     const edDef = await defBySlug(s, "executive_director");
-    const withoutEditChart = edDef.capabilities.filter((c) => c !== "org.editChart");
+    // `migrateLegacyPowers` narrows the stored array (whose type still admits
+    // pre-standardization strings until the schema's legacy arm is dropped) to
+    // the vocabulary the mutation accepts.
+    const withoutEditChart = migrateLegacyPowers(edDef.capabilities).filter(
+      (c) => c !== "org.chart.edit",
+    );
 
     await expect(
       s.as.mutation(api.seatStructure.updateSeat, {
@@ -452,7 +461,7 @@ describe("seatStructure — SELF-LOCKOUT guard", () => {
     ).rejects.toBeInstanceOf(ConvexError);
 
     // Nothing committed.
-    expect((await defBySlug(s, "executive_director")).capabilities).toContain("org.editChart");
+    expect((await defBySlug(s, "executive_director")).capabilities).toContain("org.chart.edit");
   });
 
   test("self-lockout is capability-GENERAL: losing a non-editChart capability the caller holds is also rejected", async () => {
@@ -460,8 +469,10 @@ describe("seatStructure — SELF-LOCKOUT guard", () => {
     const edDef = await defBySlug(s, "executive_director");
     // Drop `finance.approve` only — org.editChart survives, but a DIFFERENT
     // currently-held capability would be lost. Still rejected.
-    const withoutFinanceApprove = edDef.capabilities.filter((c) => c !== "finance.approve");
-    expect(withoutFinanceApprove).toContain("org.editChart");
+    const withoutFinanceApprove = migrateLegacyPowers(edDef.capabilities).filter(
+      (c) => c !== "finance.budgets.approve",
+    );
+    expect(withoutFinanceApprove).toContain("org.chart.edit");
 
     await expect(
       s.as.mutation(api.seatStructure.updateSeat, {
@@ -492,7 +503,7 @@ describe("seatStructure — SELF-LOCKOUT guard", () => {
       title: "Assistant Director",
       maxHolders: 1,
       duties: [],
-      capabilities: ["org.editChart"],
+      capabilities: ["org.chart.edit"],
     });
     const newSeatDef = await run(s.t, (ctx) => ctx.db.get(newSeatId));
     const { as: assistantAs, userId } = await signInAs(s.t, "assistant@publicworship.life");
@@ -817,7 +828,7 @@ describe("seatStructure — global org.editChart lockout guard", () => {
       title: "Deputy Director",
       maxHolders: 1,
       duties: [],
-      capabilities: ["org.editChart"],
+      capabilities: ["org.chart.edit"],
     });
     const deputyDef = await run(s.t, (ctx) => ctx.db.get(deputySeatId));
     const deputyPersonId = await run(s.t, (ctx) =>
@@ -850,7 +861,7 @@ describe("seatStructure — global org.editChart lockout guard", () => {
       title: "Vacant Deputy",
       maxHolders: 1,
       duties: [],
-      capabilities: ["org.editChart"],
+      capabilities: ["org.chart.edit"],
     });
     const unoccupiedDef = await run(s.t, (ctx) => ctx.db.get(unoccupiedSeatId));
 
@@ -876,7 +887,7 @@ describe("seatStructure — global org.editChart lockout guard", () => {
     expect((caught as ConvexError<{ code: string }>).data.code).toBe(
       "GLOBAL_EDITCHART_LOCKOUT",
     );
-    expect((await defBySlug(s, "executive_director")).capabilities).toContain("org.editChart");
+    expect((await defBySlug(s, "executive_director")).capabilities).toContain("org.chart.edit");
   });
 
   test("SELF-lockout fires on its own when the ORG retains another active editor but the CALLER personally would lose their power", async () => {
@@ -890,7 +901,7 @@ describe("seatStructure — global org.editChart lockout guard", () => {
       title: "Deputy Director",
       maxHolders: 1,
       duties: [],
-      capabilities: ["org.editChart"],
+      capabilities: ["org.chart.edit"],
     });
     const deputyPersonId = await run(s.t, (ctx) =>
       ctx.db.insert("people", { chapterId: s.chapterId, name: "Deputy", createdAt: Date.now() }),

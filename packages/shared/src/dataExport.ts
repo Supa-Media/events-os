@@ -120,7 +120,7 @@ export type ExportGroup = (typeof EXPORT_GROUPS)[number];
  * widens reach — a Marketing Director with `data.export` but no `giving.view`
  * can export the roster and gets no giving columns, rather than an error.
  */
-export type ExportRequirement = "none" | "giving.view" | "finance.viewer";
+export type ExportRequirement = "none" | "giving.view" | "finance.view";
 
 export interface ExportDatasetDef {
   id: ExportDatasetId;
@@ -360,7 +360,7 @@ export const EXPORT_DATASETS: Record<ExportDatasetId, ExportDatasetDef> = {
     description:
       "One row per money movement — amount, merchant, fund, budget, receipt status and who spent it.",
     group: "Finance",
-    requires: "finance.viewer",
+    requires: "finance.view",
     supportsCentral: true,
     filters: ["dateRange"],
     sections: [],

@@ -3,6 +3,7 @@ import { v } from "convex/values";
 import {
   SEAT_CHARTS,
   SEAT_CAPABILITIES,
+  LEGACY_POWER_MIGRATION,
   SPECIALIZED_ROLE_TITLES,
 } from "@events-os/shared";
 
@@ -27,8 +28,31 @@ import {
  */
 
 const seatChartValidator = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
-const seatCapabilityValidator = v.union(
+/**
+ * Every power a `seatDefs` row may carry — the standardized vocabulary
+ * (`powers.ts`), PLUS the pre-standardization strings it replaced.
+ *
+ * The legacy arm is deliberate and load-bearing for exactly one deploy. Convex
+ * validates a schema change against EXISTING documents at push time, and the
+ * migration that rewrites those documents
+ * (`migrations/0062_standardize_powers.ts`) only runs AFTER the push lands. A
+ * validator narrowed to the new vocabulary alone would therefore reject the
+ * very rows the migration is on its way to fix, and the deploy would fail
+ * before it could.
+ *
+ * FOLLOW-UP, once this has deployed and `0062` has run in production: delete
+ * the `legacyPowerValidators` spread below. Nothing else changes — the app
+ * already reads only standardized strings (every stored array is normalized
+ * through `migrateLegacyPowers` on the way in, so a legacy string surviving
+ * here grants nothing).
+ */
+const legacyPowerValidators = Object.keys(LEGACY_POWER_MIGRATION)
+  .filter((k) => !(SEAT_CAPABILITIES as readonly string[]).includes(k))
+  .map((k) => v.literal(k));
+
+export const seatCapabilityValidator = v.union(
   ...SEAT_CAPABILITIES.map((c) => v.literal(c)),
+  ...legacyPowerValidators,
 );
 const legacyTitleValidator = v.union(
   ...SPECIALIZED_ROLE_TITLES.map((t) => v.literal(t)),

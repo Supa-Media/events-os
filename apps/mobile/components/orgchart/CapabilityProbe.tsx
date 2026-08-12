@@ -2,6 +2,7 @@ import { useEffect } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
+import { expandPowers } from "@events-os/shared";
 
 /**
  * Invisible probe: fetches ONE seat's full detail and reports whether it
@@ -35,7 +36,7 @@ export function EditChartCapabilityProbe({
   const detail = useQuery(api.seats.seatDetail, { defId, scope });
   useEffect(() => {
     if (detail) {
-      onResult(`${scope}:${defId}`, detail.capabilities.includes("org.editChart"));
+      onResult(`${scope}:${defId}`, expandPowers(detail.capabilities).has("org.chart.edit"));
     }
     // `onResult` is a stable useCallback from the caller — omitted from deps
     // on purpose so a caller re-render doesn't re-fire this effect.

@@ -70,7 +70,7 @@ async function seedReviewer(
       parentSlug: "root",
       maxHolders: 1,
       duties: [],
-      capabilities: ["campaigns.approve"],
+      capabilities: ["email.campaigns.approve"],
       sortOrder: 0,
       createdAt: Date.now(),
       updatedAt: Date.now(),

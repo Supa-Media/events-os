@@ -1,4 +1,5 @@
 import { describe, expect, test } from "vitest";
+import { expandPowers } from "@events-os/shared";
 import { ConvexError } from "convex/values";
 import { api } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
@@ -97,8 +98,8 @@ describe("setSeatCampaignPower — gate", () => {
       seatDefId: marketing._id,
       power: "approve",
     });
-    expect(result).toContain("campaigns.approve");
-    expect(result).toContain("campaigns.compose");
+    expect(result).toContain("email.campaigns.approve");
+    expect(expandPowers(result)).toContain("email.campaigns.edit");
   });
 
   test("a superuser is allowed", async () => {
@@ -108,8 +109,8 @@ describe("setSeatCampaignPower — gate", () => {
       seatDefId: marketing._id,
       power: "none",
     });
-    expect(result).not.toContain("campaigns.approve");
-    expect(result).not.toContain("campaigns.compose");
+    expect(result).not.toContain("email.campaigns.approve");
+    expect(result).not.toContain("email.campaigns.edit");
   });
 
   test("rejects a derived seat", async () => {
@@ -127,24 +128,18 @@ describe("setSeatCampaignPower — gate", () => {
 // ── Transitions touch ONLY the campaign pair ────────────────────────────────
 
 describe("setSeatCampaignPower — capability transitions", () => {
-  // `financial_manager`'s template ALSO carries `giving.view`/`nav.giving`
-  // by default (F-6 P1, 2026-07-19) — `setSeatCampaignPower` only ever
-  // touches the campaign pair, so these two ride along untouched through
-  // every assertion below.
-  const FINANCE_CAPS = [
-    "finance.manager",
-    "finance.central",
-    "finance.accounts",
-    "finance.record",
-    "nav.finances",
+  // `financial_manager`'s template also carries finance and giving powers —
+  // `setSeatCampaignPower` only ever touches the `email` domain, so every one
+  // of these must ride through each transition untouched. The list is the
+  // MINIMAL stored set, not the expanded one (see `powers.ts`): `finance.edit`
+  // stands in for what used to be four separate strings.
+  const NON_EMAIL_CAPS = [
+    "finance.edit",
+    "finance.ledger.publish",
     "giving.view",
-    "nav.giving",
-    // 2026-07-31: `data.export` is a NON-campaign cap on this seat, so the
+    // 2026-07-31: `data.export` is a NON-email power on this seat, so the
     // campaign-power rewrite must leave it alone — what this fixture asserts.
     "data.export",
-    // 2026-08-11: `finance.publish` is likewise a NON-campaign cap the rewrite
-    // must leave alone.
-    "finance.publish",
   ];
 
   test("approve → compose → none rewrites only campaign caps, never finance caps", async () => {
@@ -155,27 +150,30 @@ describe("setSeatCampaignPower — capability transitions", () => {
       seatDefId: fm._id,
       power: "approve",
     });
-    for (const c of FINANCE_CAPS) expect(afterApprove).toContain(c);
-    expect(afterApprove).toContain("campaigns.approve");
-    expect(afterApprove).toContain("campaigns.compose");
+    for (const c of NON_EMAIL_CAPS) expect(afterApprove).toContain(c);
+    // MINIMAL storage — approve alone. The compose and design rungs are
+    // GRANTED (asserted via `expandPowers`) but not written down.
+    expect(afterApprove).toContain("email.campaigns.approve");
+    expect(afterApprove).not.toContain("email.campaigns.edit");
+    expect(expandPowers(afterApprove)).toContain("email.campaigns.edit");
 
     const afterCompose = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: fm._id,
       power: "compose",
     });
-    for (const c of FINANCE_CAPS) expect(afterCompose).toContain(c);
-    expect(afterCompose).not.toContain("campaigns.approve");
-    expect(afterCompose).toContain("campaigns.compose");
+    for (const c of NON_EMAIL_CAPS) expect(afterCompose).toContain(c);
+    expect(afterCompose).not.toContain("email.campaigns.approve");
+    expect(afterCompose).toContain("email.campaigns.edit");
 
     const afterNone = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: fm._id,
       power: "none",
     });
-    expect(afterNone.filter((c) => c.startsWith("campaigns."))).toEqual([]);
-    expect(afterNone).toEqual(FINANCE_CAPS);
+    expect(afterNone.filter((c) => c.startsWith("email."))).toEqual([]);
+    expect(afterNone).toEqual(NON_EMAIL_CAPS);
 
     // Persisted, not just returned.
-    expect(await capsOf(s, "financial_manager")).toEqual(FINANCE_CAPS);
+    expect(await capsOf(s, "financial_manager")).toEqual(NON_EMAIL_CAPS);
   });
 
   test("an ED cannot strip campaign power off their OWN seat (self-lockout)", async () => {
@@ -324,7 +322,7 @@ describe("campaigns.design — the desk's bottom rung", () => {
 
   test("graphic_designer's post-seed default opens the desk but grants no approval power", async () => {
     const s = await designerSetup();
-    expect(await capsOf(s, "graphic_designer")).toEqual(["campaigns.design"]);
+    expect(await capsOf(s, "graphic_designer")).toEqual(["email.assets.edit"]);
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
       canDesign: true,
@@ -818,31 +816,40 @@ describe("campaigns.design — the desk's bottom rung", () => {
     ).rejects.toThrow(/design power/i);
   });
 
-  test("setSeatCampaignPower — the full ladder, each rung materializing what it implies", async () => {
+  test("setSeatCampaignPower — the full ladder, each rung storing only itself", async () => {
     const s = await seatSetup({ email: "seyi@publicworship.life" });
     const designer = await defBySlug(s, "graphic_designer");
 
+    // Each rung STORES only its own power; the rungs beneath it are derived by
+    // `expandPowers`. This inverts the pre-standardization convention, which
+    // materialized every implied rung onto the row so the org chart would read
+    // honestly without an implication rule — there is one now, and the seat
+    // panel renders the expanded set, so the honest reading survives without a
+    // stored list that can drift from it.
     const asApprove = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: designer._id,
       power: "approve",
     });
-    expect(asApprove).toEqual([
-      "campaigns.approve",
-      "campaigns.compose",
-      "campaigns.design",
+    expect(asApprove).toEqual(["email.campaigns.approve"]);
+    expect([...expandPowers(asApprove)].sort()).toEqual([
+      "email.assets.edit",
+      "email.campaigns.approve",
+      "email.campaigns.edit",
     ]);
 
     const asCompose = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: designer._id,
       power: "compose",
     });
-    expect(asCompose).toEqual(["campaigns.compose", "campaigns.design"]);
+    expect(asCompose).toEqual(["email.campaigns.edit"]);
+    expect(expandPowers(asCompose)).toContain("email.assets.edit");
+    expect(expandPowers(asCompose)).not.toContain("email.campaigns.approve");
 
     const asDesign = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: designer._id,
       power: "design",
     });
-    expect(asDesign).toEqual(["campaigns.design"]);
+    expect(asDesign).toEqual(["email.assets.edit"]);
 
     const asNone = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: designer._id,
@@ -912,7 +919,7 @@ describe("0036_add_campaign_power_defaults", () => {
         if (!def) throw new Error(`${slug} missing`);
         await ctx.db.patch(def._id, {
           capabilities: def.capabilities.filter(
-            (c) => c !== "campaigns.approve" && c !== "campaigns.compose",
+            (c) => c !== "email.campaigns.approve" && c !== "email.campaigns.edit",
           ),
         });
       });
@@ -926,8 +933,10 @@ describe("0036_add_campaign_power_defaults", () => {
       const def = await run(t, (ctx) =>
         ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", slug)).unique(),
       );
-      expect(def!.capabilities).toContain("campaigns.approve");
-      expect(def!.capabilities).toContain("campaigns.compose");
+      // MINIMAL storage: approve alone, because it IMPLIES the compose rung
+      // (and design beneath it) — see `expandPowers`.
+      expect(def!.capabilities).toContain("email.campaigns.approve");
+      expect(def!.capabilities).not.toContain("email.campaigns.edit");
     }
 
     // Idempotent: a second run touches nothing.
@@ -946,7 +955,7 @@ describe("0036_add_campaign_power_defaults", () => {
         .query("seatDefs")
         .withIndex("by_slug", (q) => q.eq("slug", "marketing_director"))
         .unique();
-      await ctx.db.patch(def!._id, { capabilities: ["campaigns.compose"] });
+      await ctx.db.patch(def!._id, { capabilities: ["email.campaigns.edit"] });
     });
     const res = await run(t, (ctx) => runAddCampaignPowerDefaults(ctx));
     // Missing campaigns.approve → the migration WOULD patch it back in
@@ -957,7 +966,7 @@ describe("0036_add_campaign_power_defaults", () => {
     const def = await run(t, (ctx) =>
       ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", "marketing_director")).unique(),
     );
-    expect(def!.capabilities).toContain("campaigns.approve");
+    expect(def!.capabilities).toContain("email.campaigns.approve");
   });
 });
 
@@ -970,9 +979,9 @@ describe("0053_add_campaign_design_defaults", () => {
     await run(t, async (ctx) => {
       const rows = await ctx.db.query("seatDefs").take(300);
       for (const row of rows) {
-        if (!row.capabilities.includes("campaigns.design")) continue;
+        if (!row.capabilities.includes("email.assets.edit")) continue;
         await ctx.db.patch(row._id, {
-          capabilities: row.capabilities.filter((c) => c !== "campaigns.design"),
+          capabilities: row.capabilities.filter((c) => c !== "email.assets.edit"),
         });
       }
     });
@@ -986,20 +995,24 @@ describe("0053_add_campaign_design_defaults", () => {
     return def.capabilities;
   }
 
-  test("grants the rung to the two marketing seats, tops it up where implied, and re-runs clean", async () => {
+  test("grants the rung to the two marketing seats, leaves stronger rungs to imply it, and re-runs clean", async () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     await stripDesign(t);
 
     const result = await run(t, (ctx) => runAddCampaignDesignDefaults(ctx));
-    // 5 rows: graphic_designer + social_media_manager (case 1), and
-    // executive_director + financial_manager + marketing_director (case 2).
-    expect(result.patched).toBe(5);
+    // 2 rows, not 5. The three seats holding a STRONGER rung
+    // (executive_director / financial_manager / marketing_director) no longer
+    // need the design power written onto them — `email.campaigns.approve`
+    // implies `email.assets.edit` through `expandPowers`, and storing an
+    // implied power would violate the minimal-storage rule. They still HAVE
+    // the design power; it is derived rather than recorded.
+    expect(result.patched).toBe(2);
 
-    expect(await capsFor(t, "graphic_designer")).toEqual(["campaigns.design"]);
-    expect(await capsFor(t, "social_media_manager")).toEqual(["campaigns.design"]);
+    expect(await capsFor(t, "graphic_designer")).toEqual(["email.assets.edit"]);
+    expect(await capsFor(t, "social_media_manager")).toEqual(["email.assets.edit"]);
     for (const slug of ["executive_director", "financial_manager", "marketing_director"]) {
-      expect(await capsFor(t, slug)).toContain("campaigns.design");
+      expect(expandPowers(await capsFor(t, slug))).toContain("email.assets.edit");
     }
 
     // Idempotent — a second run touches nothing.

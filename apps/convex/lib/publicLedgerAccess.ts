@@ -47,7 +47,7 @@
 import { ConvexError } from "convex/values";
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
-import { CENTRAL } from "@events-os/shared";
+import { CENTRAL, expandPowers } from "@events-os/shared";
 import {
   getFinanceRole,
   requireFinanceCentral,
@@ -122,7 +122,7 @@ async function holdsPublishSeatAt(
     if (assignment.scope !== scope) continue;
     const def = await ctx.db.get(assignment.seatDefId);
     if (!def || def.derived) continue;
-    if (def.capabilities.includes("finance.publish")) return true;
+    if (expandPowers(def.capabilities).has("finance.ledger.publish")) return true;
   }
   return false;
 }

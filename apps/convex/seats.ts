@@ -27,6 +27,10 @@ import type { QueryCtx, MutationCtx } from "./_generated/server";
 import {
   SEAT_CHARTS,
   SEAT_CAPABILITIES,
+  POWER_DEFS,
+  POWER_DOMAINS,
+  type PowerDomain,
+  migrateLegacyPowers,
   SEAT_ROOT,
   MULTI_HOLDER_CAP,
   SEAT_IDS,
@@ -51,7 +55,18 @@ import {
 } from "./lib/seatStructure";
 
 const seatChartValidator = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
-const seatCapabilityValidator = v.union(
+// Imported from the schema rather than rebuilt here, so this file and the table
+// definition can never disagree about which power strings are storable — they
+// briefly do accept a wider set than `POWERS`, for the one deploy in which
+// un-migrated rows still exist (see `schema/seats.ts` for why).
+import { seatCapabilityValidator } from "./schema/seats";
+export { seatCapabilityValidator };
+
+/** INPUT validator for power WRITES — strictly the standardized vocabulary,
+ *  unlike the storage validator above, which also tolerates pre-standardization
+ *  strings so a schema push can land ahead of `migrations/0062`. Rows on their
+ *  way in have no such excuse. Mirrors `seatStructure.ts`'s own input validator. */
+const powerInputValidator = v.union(
   ...SEAT_CAPABILITIES.map((c) => v.literal(c)),
 );
 
@@ -1107,6 +1122,108 @@ export const unassignSeat = mutation({
   },
 });
 
+// ── Power editor (general) ──────────────────────────────────────────────────
+
+/**
+ * Replace a seat's powers IN ONE DOMAIN, preserving every other domain
+ * verbatim.
+ *
+ * This is the single write path behind the org chart's Powers editor, and the
+ * generalization of the two desk-specific mutations below it — which are now
+ * thin wrappers that translate a named rung ("manage", "approve") into the
+ * minimal power set and delegate here. One code path, so the gate, the
+ * self-lockout simulation, the derived-seat refusal and the legacy
+ * normalization can't drift between "the giving toggle" and "the finance
+ * toggle".
+ *
+ * WHY DOMAIN-SCOPED rather than "set the whole array": a caller editing the
+ * Giving section must not be able to strip a finance power by omission. The
+ * editor sends only the domain it is showing, so a stale client, a partial
+ * render, or a race can never silently drop a power the user never saw. That
+ * safety property is what the two hand-written mutations had, and it is worth
+ * keeping when generalizing them.
+ *
+ * `powers` should be the MINIMAL set for the domain — implied rungs are
+ * derived by `expandPowers`, never stored (see `powers.ts`). Anything implied
+ * that is also sent is harmless but redundant; the array is de-duplicated.
+ *
+ * Gate: `requireChartEditor` — superuser OR a caller holding `org.chart.edit`.
+ * Also runs `assertNoSelfLockout`: an editor can't strip a power OFF THEIR OWN
+ * seat and silently lose it. Rejects a `derived` seat (its holders, and so its
+ * powers' reach, are computed rather than assigned).
+ *
+ * Returns the seat's FULL updated power array, so the caller reflects the
+ * whole set without a re-read.
+ */
+/**
+ * The one implementation behind every power edit: replace a seat's powers in
+ * ONE domain, preserve every other domain verbatim.
+ *
+ * Extracted so `setSeatDomainPowers` (the general editor) and the two named-rung
+ * wrappers below it cannot drift on the gate, the self-lockout simulation, the
+ * derived-seat refusal, or the legacy normalization. Those three used to be
+ * three hand-written copies of this body.
+ */
+async function setDomainPowersImpl(
+  ctx: MutationCtx,
+  seatDefId: Id<"seatDefs">,
+  domain: PowerDomain,
+  powers: readonly SeatCapability[],
+): Promise<SeatCapability[]> {
+  const editor = await requireChartEditor(ctx);
+
+  const def = await ctx.db.get(seatDefId);
+  if (!def) {
+    throw new ConvexError({ code: "NOT_FOUND", message: "That seat doesn't exist." });
+  }
+  if (def.derived === true) {
+    throw new ConvexError({
+      code: "DERIVED_SEAT",
+      message:
+        "This seat's holders are computed automatically — its powers can't be edited.",
+    });
+  }
+
+  // Every power sent must belong to the domain being edited — otherwise a
+  // caller could smuggle a finance power in through the Giving editor, which is
+  // exactly what the domain-scoping exists to prevent.
+  const stray = powers.find((pw) => POWER_DEFS[pw].domain !== domain);
+  if (stray) {
+    throw new ConvexError({
+      code: "WRONG_DOMAIN",
+      message: `"${stray}" is not a ${domain} power.`,
+    });
+  }
+
+  // Normalize the stored array on the way through (a row may still carry
+  // pre-standardization strings until `0062` has run everywhere), drop the
+  // domain being replaced, then append the new set de-duplicated.
+  const preserved = migrateLegacyPowers(def.capabilities).filter(
+    (c) => POWER_DEFS[c].domain !== domain,
+  );
+  const next: SeatCapability[] = [...preserved];
+  for (const pw of powers) if (!next.includes(pw)) next.push(pw);
+
+  const overrides = new Map<Id<"seatDefs">, DefOverride>([
+    [def._id, { ...def, capabilities: next }],
+  ]);
+  await assertNoSelfLockout(ctx, editor, overrides);
+
+  await ctx.db.patch(def._id, { capabilities: next, updatedAt: Date.now() });
+  return next;
+}
+
+export const setSeatDomainPowers = mutation({
+  args: {
+    seatDefId: v.id("seatDefs"),
+    domain: v.union(...POWER_DOMAINS.map((d) => v.literal(d))),
+    powers: v.array(powerInputValidator),
+  },
+  returns: v.array(seatCapabilityValidator),
+  handler: async (ctx, { seatDefId, domain, powers }) =>
+    setDomainPowersImpl(ctx, seatDefId, domain, powers),
+});
+
 // ── Giving power editor (owner decision 2026-07-19) ─────────────────────────
 //
 // The giving desk is an assignable per-role POWER: the ED (or a superuser)
@@ -1125,27 +1242,20 @@ export const unassignSeat = mutation({
 // a held `org.editChart` seat) and the SAME self-lockout guard
 // (`assertNoSelfLockout`) `updateSeat` uses.
 
-/** The three giving capabilities this editor owns — the ONLY caps it ever
- *  touches. Every other capability on the seat is preserved verbatim. */
-const GIVING_CAPS: readonly SeatCapability[] = [
-  "giving.view",
-  "giving.manage",
-  "nav.giving",
-];
-
 const givingPowerValidator = v.union(
   v.literal("none"),
   v.literal("view"),
   v.literal("manage"),
 );
 
-/** The giving capabilities a given power level grants. `view` → read the CRM +
- *  surface the desk; `manage` → additionally write it; `none` → strip all
- *  three. `giving.manage` always implies `giving.view` (a manager can see what
- *  they manage — mirrors `getSeatDerivedGivingCapabilities`). */
+/** The giving power a rung grants, as the MINIMAL set — `manage` stores only
+ *  `giving.edit`, because the ladder rule already derives `giving.view` from
+ *  it, and the nav rule derives the desk's tab from either. Storing the
+ *  minimum is what keeps the stored row and the implication rules from ever
+ *  disagreeing. */
 function givingCapsForPower(power: "none" | "view" | "manage"): SeatCapability[] {
-  if (power === "manage") return ["giving.manage", "giving.view", "nav.giving"];
-  if (power === "view") return ["giving.view", "nav.giving"];
+  if (power === "manage") return ["giving.edit"];
+  if (power === "view") return ["giving.view"];
   return [];
 }
 
@@ -1174,38 +1284,8 @@ export const setSeatGivingPower = mutation({
     power: givingPowerValidator,
   },
   returns: v.array(seatCapabilityValidator),
-  handler: async (ctx, { seatDefId, power }) => {
-    const editor = await requireChartEditor(ctx);
-
-    const def = await ctx.db.get(seatDefId);
-    if (!def) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "That seat doesn't exist." });
-    }
-    if (def.derived === true) {
-      throw new ConvexError({
-        code: "DERIVED_SEAT",
-        message:
-          "This seat's holders are computed automatically — its powers can't be edited.",
-      });
-    }
-
-    // Strip every giving cap, then re-add exactly the ones the target power
-    // grants — so only the giving trio ever changes; all other caps (in their
-    // original order) are preserved verbatim.
-    const preserved = def.capabilities.filter((c) => !GIVING_CAPS.includes(c));
-    const next: SeatCapability[] = [...preserved, ...givingCapsForPower(power)];
-
-    // Same self-lockout simulation `updateSeat` runs for a capabilities change:
-    // rejects an edit that would remove one of the CALLER's OWN currently-held
-    // capabilities (a no-op for an edit to a seat they don't hold).
-    const overrides = new Map<Id<"seatDefs">, DefOverride>([
-      [def._id, { ...def, capabilities: next }],
-    ]);
-    await assertNoSelfLockout(ctx, editor, overrides);
-
-    await ctx.db.patch(def._id, { capabilities: next, updatedAt: Date.now() });
-    return next;
-  },
+  handler: async (ctx, { seatDefId, power }) =>
+    setDomainPowersImpl(ctx, seatDefId, "giving", givingCapsForPower(power)),
 });
 
 // ── Campaign power editor (founder requirement, 2026-07-24) ────────────────
@@ -1220,14 +1300,6 @@ export const setSeatGivingPower = mutation({
 // `setSeatGivingPower`'s doc for the full rationale, which applies here
 // unchanged.
 
-/** The three campaign capabilities this editor owns — the ONLY caps it ever
- *  touches. */
-const CAMPAIGN_CAPS: readonly SeatCapability[] = [
-  "campaigns.compose",
-  "campaigns.approve",
-  "campaigns.design",
-];
-
 const campaignPowerValidator = v.union(
   v.literal("none"),
   v.literal("design"),
@@ -1237,11 +1309,13 @@ const campaignPowerValidator = v.union(
 
 type CampaignPower = "none" | "design" | "compose" | "approve";
 
-/** The campaign capabilities a given power level grants — the NESTED ladder
- *  from `SEAT_CAPABILITIES`'s doc in `@events-os/shared`, materialized. Each
- *  rung lists every capability it implies EXPLICITLY (rather than relying on
- *  the resolver's implication map) so a seat def row is self-describing and
- *  the org chart's "Powers" chips read honestly.
+/** The email power a rung grants, as the MINIMAL set — each rung stores ONLY
+ *  its own power and lets `expandPowers` derive the rungs beneath it
+ *  (`approve` → `edit` → `assets.edit`). This inverts the previous convention,
+ *  which materialized every implied rung onto the row so the chart would read
+ *  honestly without an implication rule; there is one now, and the seat panel
+ *  renders the expanded set, so the honest reading survives without a stored
+ *  list that can drift from it.
  *
  *  `approve` → be a campaign's reviewer, and everything below.
  *  `compose` → draft/submit/send a campaign, and everything below.
@@ -1249,10 +1323,9 @@ type CampaignPower = "none" | "design" | "compose" | "approve";
  *              library) and open the desk — but never compose or send.
  *  `none`    → strip all three. */
 function campaignCapsForPower(power: CampaignPower): SeatCapability[] {
-  if (power === "approve")
-    return ["campaigns.approve", "campaigns.compose", "campaigns.design"];
-  if (power === "compose") return ["campaigns.compose", "campaigns.design"];
-  if (power === "design") return ["campaigns.design"];
+  if (power === "approve") return ["email.campaigns.approve"];
+  if (power === "compose") return ["email.campaigns.edit"];
+  if (power === "design") return ["email.assets.edit"];
   return [];
 }
 
@@ -1273,32 +1346,8 @@ export const setSeatCampaignPower = mutation({
     power: campaignPowerValidator,
   },
   returns: v.array(seatCapabilityValidator),
-  handler: async (ctx, { seatDefId, power }) => {
-    const editor = await requireChartEditor(ctx);
-
-    const def = await ctx.db.get(seatDefId);
-    if (!def) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "That seat doesn't exist." });
-    }
-    if (def.derived === true) {
-      throw new ConvexError({
-        code: "DERIVED_SEAT",
-        message:
-          "This seat's holders are computed automatically — its powers can't be edited.",
-      });
-    }
-
-    const preserved = def.capabilities.filter((c) => !CAMPAIGN_CAPS.includes(c));
-    const next: SeatCapability[] = [...preserved, ...campaignCapsForPower(power)];
-
-    const overrides = new Map<Id<"seatDefs">, DefOverride>([
-      [def._id, { ...def, capabilities: next }],
-    ]);
-    await assertNoSelfLockout(ctx, editor, overrides);
-
-    await ctx.db.patch(def._id, { capabilities: next, updatedAt: Date.now() });
-    return next;
-  },
+  handler: async (ctx, { seatDefId, power }) =>
+    setDomainPowersImpl(ctx, seatDefId, "email", campaignCapsForPower(power)),
 });
 
 // ── Bridge drift audit (READ-ONLY) ──────────────────────────────────────────

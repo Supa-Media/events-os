@@ -42,123 +42,43 @@ export const SEAT_ROOT = "root" as const;
 export const MULTI_HOLDER_CAP = 50 as const;
 
 // ── Capabilities ─────────────────────────────────────────────────────────────
-/** The fixed vocabulary of capability strings a seat may carry. A capability
- *  gates a specific privileged action/surface (e.g. `nav.finances` shows the
- *  Finances tab; `org.editChart` allows editing the org chart itself). Most
- *  seats carry none — capabilities are the exception, stamped only on seats
- *  that need real authority, not every leadership title.
+/**
+ * A seat's powers are the standardized vocabulary in `./powers.ts` — read that
+ * module's doc for the grammar (`<domain>[.<area>].<action>`), the three
+ * implication rules, and the scope model. `SEAT_CAPABILITIES` / `SeatCapability`
+ * are the historical names for it, kept because they are threaded through the
+ * Convex schema validator and a hundred call sites.
  *
- *  `finance.viewer` (owner decision, 2026-07-16 — see `chapter_director`'s
- *  def below): read-only reach onto a scope's finance surfaces (dashboard,
- *  reconcile grid, budgets) — the bottom rung of the graded ladder
- *  (`viewer` < `bookkeeper` < `manager`, `lib/finance.ts`). Distinct from
- *  `finance.manager`, which additionally derives WRITE rights. A seat
- *  carrying `finance.viewer` never gains record/reconcile-write or
- *  budget-edit access from that capability alone — see
- *  `apps/convex/lib/seats.ts`'s "Mapping rules" for how it derives into the
- *  graded ladder.
+ * WHAT A SEAT STORES IS THE MINIMAL SET. Capability lists below name only the
+ * powers a seat is GRANTED, never the ones those grants imply — the ED carries
+ * `email.campaigns.approve`, not also the compose and design rungs beneath it.
+ * That inverts the pre-standardization convention, which listed every implied
+ * rung explicitly so the chart stayed "the honest answer to who can do this"
+ * in the absence of a real implication rule. There is one now
+ * (`expandPowers`), and the seat panel renders the EXPANDED set, so the chart
+ * is still the honest answer — it just isn't hand-maintained any more, and a
+ * missed rung is no longer possible.
  *
- *  `giving.manage` / `giving.view` / `nav.giving` (F-6 P1 — the giving PRD §6):
- *  the development-desk analog of the finance trio. `giving.view` reads the
- *  donor CRM (dashboard, donor list + history); `giving.manage` additionally
- *  writes it (upsert donors, record/remove gifts, CSV import); `nav.giving`
- *  surfaces the desk in navigation (mirrors `nav.finances`). Resolved by
- *  `apps/convex/lib/givingAccess.ts` off `lib/seats.ts#getSeatDerivedGivingCapabilities`
- *  — a central holder sees every scope, a chapter `giving.view` seat sees only
- *  its own chapter.
- *
- *  `campaigns.design` / `campaigns.compose` / `campaigns.approve` (founder
- *  requirement, 2026-07-24 — two-party approval for mass email; the `design`
- *  rung added 2026-07-28): a NESTED ladder, weakest first, resolved by
- *  `apps/convex/lib/campaignsAccess.ts` and mirroring the giving trio's
- *  seat-derived, per-scope resolution shape (central-only in practice —
- *  campaigns has no chapter surface).
- *
- *  `campaigns.design` may open the Campaigns desk and own the SHARED DESIGN
- *  SYSTEM behind it — email themes (`emailThemes.ts`), saved templates
- *  (`campaignTemplates.ts`), and the reusable image library
- *  (`emailImages.ts`) — WITHOUT ever being able to compose, submit, approve,
- *  or send a campaign. It exists because the person who actually builds the
- *  newsletter is the Graphic Designer / Social Media Manager, and gating the
- *  desk on compose-or-above locked exactly those two seats out of the tools
- *  they own. Every one of those write paths edits something SHARED — an
- *  archived built-in template or a hard-deleted image blob affects everyone —
- *  so it is now a named power rather than a side effect of desk visibility.
- *
- *  `campaigns.compose` IMPLIES `campaigns.design` (a composer can obviously
- *  edit a template they're about to start from) and additionally may draft a
- *  campaign, submit it for approval, and send it once a DIFFERENT
- *  approval-power holder has approved it.
- *
- *  `campaigns.approve` IMPLIES `campaigns.compose` (and so `campaigns.design`
- *  too — an approver can always do everything a composer can) and
- *  additionally lets its holder be picked as a campaign's reviewer and decide
- *  (approve / deny / request changes) on one — but never on a campaign they
- *  themselves submitted, even for a single person holding the seat that
- *  grants it (the Executive Director included — see
- *  `apps/convex/campaigns.ts`'s state-machine doc for the separation-of-duties
- *  enforcement). Test-sends and transactional email are NOT gated by any of
- *  the three — only a real mass send is. */
-export const SEAT_CAPABILITIES = [
-  "finance.manager",
-  "finance.viewer",
-  "finance.central",
-  "finance.accounts",
-  "finance.approve",
-  "finance.record",
-  /** Approve a month's statement and PUBLISH it to the public finances page
-   *  (`apps/convex/lib/publicLedgerAccess.ts`). Deliberately its own leaf
-   *  power that nothing else implies — not a rung of the finance ladder, and
-   *  not granted by `finance.manager`.
-   *
-   *  The reason is the audience. Every other finance power acts on the org's
-   *  own books, where a mistake is caught at the next close. This one puts a
-   *  number in front of the whole city, and a published number cannot be
-   *  un-seen — only amended in public. So "who may reconcile" and "who may
-   *  speak for the org's finances" are separated at the seat chart, exactly
-   *  as `campaigns.approve` separates "who may draft an email" from "who may
-   *  mail the list."
-   *
-   *  A CENTRAL-scope holder may publish any book; a chapter-scope holder may
-   *  publish only their own chapter's. Default holders: the Executive
-   *  Director and the Financial Manager centrally (the two people who already
-   *  sign off on the close), and the Chapter Director for their own chapter's
-   *  book. Notably NOT the chapter Treasurer — they PREPARE the statement,
-   *  and the separation-of-duties check would refuse their own publish
-   *  anyway. */
-  "finance.publish",
-  "nav.finances",
-  "org.editChart",
-  "giving.manage",
-  "giving.view",
-  "nav.giving",
-  "campaigns.compose",
-  "campaigns.approve",
-  "campaigns.design",
-  /** Bulk data extraction — running an export of a database to a spreadsheet
-   *  (`apps/convex/lib/dataExportAccess.ts`). Deliberately its own power
-   *  rather than an implication of any desk capability: being allowed to READ
-   *  a grid on screen and being allowed to walk the whole table out of the
-   *  building are different risks, and the second is the one that shows up in
-   *  a breach. It never WIDENS reach — a holder still only exports datasets
-   *  they could already see, so `data.export` + no `giving.view` yields a
-   *  people file with no giving columns. Founder grant (2026-07-31): the four
-   *  central directors + the FM + the Chapter Director (their own chapter). */
-  "data.export",
-  /** Door check-in at an event — scan/type a guest's ticket code and admit
-   *  them (`apps/convex/lib/ticketingAccess.ts`). Deliberately narrower than
-   *  general Tickets-tab admin access (`requireEvent`'s bare "any chapter
-   *  member" gate every other ticketing admin action still uses): "who can
-   *  admit guests at the door" is a real, asked-for restriction, granted
-   *  EITHER by holding this capability at the event's chapter OR by being
-   *  scheduled on that specific event's team (a `roleAssignments` row —
-   *  the two paths are equally sufficient, see `requireCheckInAccess`'s
-   *  doc). Default holders: `chapter_director`, `event_lead`,
-   *  `event_organizers` (the natural home for door volunteers), and
-   *  `production_coordinator`. */
-  "events.checkin",
-] as const;
-export type SeatCapability = (typeof SEAT_CAPABILITIES)[number];
+ * Most seats carry nothing. Powers are stamped only on seats that need real
+ * authority, not on every leadership title.
+ */
+export {
+  POWERS as SEAT_CAPABILITIES,
+  POWER_DEFS,
+  POWER_ACTIONS,
+  POWER_DOMAINS,
+  POWER_AREAS,
+} from "./powers";
+export type { Power as SeatCapability } from "./powers";
+import type { Power } from "./powers";
+
+/* Historical note on the vocabulary this replaced (2026-08-12). The old list
+ * had grown four incompatible shapes and two non-powers; the mapping lives in
+ * `LEGACY_POWER_MIGRATION` and the reasoning in `powers.ts`'s module doc. The
+ * prose that used to live here — the finance ladder's rungs, the giving trio,
+ * the campaigns chain, the export and check-in carve-outs — is now on each
+ * power's own `PowerDef`, next to the string it describes, rather than in one
+ * comment that every new power had to be appended to. */
 
 // ── Seat ids ─────────────────────────────────────────────────────────────────
 export const SEAT_IDS = [
@@ -208,7 +128,7 @@ export interface SeatDef {
    *  Populated for single-holder leadership seats; empty for associate/multi
    *  seats, which don't carry a fixed duty list in the template. */
   duties: readonly string[];
-  capabilities: readonly SeatCapability[];
+  capabilities: readonly Power[];
   /** Bridge to the legacy `specializedRoles.title` this seat corresponds to
    *  (see `SPECIALIZED_ROLE_TITLES` in `finance.ts`), where one exists. */
   legacyTitle?: "executive_director" | "president" | "finance_manager";
@@ -231,30 +151,24 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Approve the central budget & big spends",
       "Represent the org externally",
     ],
+    // A CENTRAL seat, so every power here reaches central AND every chapter
+    // (scope rule 2 — this is what the deleted `finance.central` used to say).
+    // Deliberately NOT `finance.edit`: the ED approves and publishes, they
+    // don't keep the books. That stays the Financial Manager's desk.
     capabilities: [
-      "finance.central",
-      "finance.accounts",
-      "finance.approve",
-      "nav.finances",
-      "org.editChart",
+      "finance.accounts.view",
+      "finance.budgets.approve",
+      // The ED speaks for the org, so the ED may publish its books.
+      "finance.ledger.publish",
+      "org.chart.edit",
       // F-6 P1: the ED oversees the whole org's giving, including central's.
-      "giving.manage",
-      "giving.view",
-      "nav.giving",
+      "giving.edit",
       // Founder requirement (2026-07-24): the ED can compose/send campaigns,
       // but every send still needs sign-off from a DIFFERENT approval-power
-      // holder (e.g. the Marketing Director) — see `campaigns.approve`'s doc.
-      // `campaigns.design` (2026-07-28) rides along because approve implies
-      // compose implies design; it's listed explicitly so the seat chart —
-      // not an implication rule buried in a resolver — stays the honest
-      // answer to "who can edit a shared template/theme/image?".
-      "campaigns.approve",
-      "campaigns.compose",
-      "campaigns.design",
+      // holder (e.g. the Marketing Director). Approve implies compose implies
+      // design — no longer listed out, since `expandPowers` derives them.
+      "email.campaigns.approve",
       "data.export",
-      // The ED speaks for the org, so the ED may publish its books — any
-      // book, this being a central seat. See `finance.publish`'s doc.
-      "finance.publish",
     ],
     legacyTitle: "executive_director",
   },
@@ -275,25 +189,20 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // central money and need central-lens READ of the donor CRM, so `giving.view`
     // + `nav.giving` (never `giving.manage` — record/edit/import stays the
     // Development Director / ED desk). The ED can toggle this off at runtime.
+    // `finance.edit` is the whole domain at CENTRAL scope, which is every
+    // chapter's books too (scope rule 2) — it covers what used to take four
+    // strings (`finance.manager` + `finance.central` + `finance.accounts` +
+    // `finance.record`) and picks up `finance.cards.edit` by the wildcard rule.
     capabilities: [
-      "finance.manager",
-      "finance.central",
-      "finance.accounts",
-      "finance.record",
-      "nav.finances",
+      "finance.edit",
+      // The FM closes the books monthly (see the duties above), so the FM
+      // publishes them. Its own leaf — `finance.edit` never grants it.
+      "finance.ledger.publish",
       "giving.view",
-      "nav.giving",
       // Founder requirement (2026-07-24): the FM is one of the org's
       // valid campaign approvers alongside the ED and Marketing Director.
-      // `campaigns.design` (2026-07-28) — approve implies it; listed
-      // explicitly, same reason as the ED's.
-      "campaigns.approve",
-      "campaigns.compose",
-      "campaigns.design",
+      "email.campaigns.approve",
       "data.export",
-      // The FM closes the books monthly (see the duties above), so the FM
-      // publishes them. Central seat → any book.
-      "finance.publish",
     ],
     legacyTitle: "finance_manager",
   },
@@ -313,7 +222,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // 2026-07-31: + data.export (founder grant) — the seat that runs the
     // funding pipeline is the one that needs donor/gift lists out of the app
     // for board reporting and mail-merge.
-    capabilities: ["giving.manage", "giving.view", "nav.giving", "data.export"],
+    capabilities: ["giving.edit", "data.export"],
   },
   partnership_associate: {
     id: "partnership_associate",
@@ -323,7 +232,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
     // F-6 P1: associates read the development desk (write is the director's).
-    capabilities: ["giving.view", "nav.giving"],
+    capabilities: ["giving.view"],
   },
   fundraising_associate: {
     id: "fundraising_associate",
@@ -333,7 +242,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
     // F-6 P1: associates read the development desk (write is the director's).
-    capabilities: ["giving.view", "nav.giving"],
+    capabilities: ["giving.view"],
   },
   music_director: {
     id: "music_director",
@@ -406,12 +315,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // spreadsheet. Note they hold NO `giving.view`, so their people export
     // comes back without giving columns rather than failing (see
     // `lib/dataExportAccess.ts`).
-    capabilities: [
-      "campaigns.approve",
-      "campaigns.compose",
-      "campaigns.design",
-      "data.export",
-    ],
+    capabilities: ["email.campaigns.approve", "data.export"],
   },
   social_media_manager: {
     id: "social_media_manager",
@@ -431,7 +335,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // Marketing Director / ED / FM makes, and the ED can promote this seat
     // to Compose or Approve at runtime from the org chart
     // (`apps/convex/seats.ts#setSeatCampaignPower`).
-    capabilities: ["campaigns.design"],
+    capabilities: ["email.assets.edit"],
   },
   graphic_designer: {
     id: "graphic_designer",
@@ -449,7 +353,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // designer couldn't even open the Campaigns desk. Same rung (and same
     // deliberate absence of `campaigns.compose`) as the Social Media Manager
     // above.
-    capabilities: ["campaigns.design"],
+    capabilities: ["email.assets.edit"],
   },
   marketing_associate: {
     id: "marketing_associate",
@@ -479,7 +383,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // by the ED at runtime.
     // 2026-07-31: + data.export (founder grant) — chapter launches run on
     // roster/pipeline lists pulled out per territory.
-    capabilities: ["giving.view", "nav.giving", "data.export"],
+    capabilities: ["giving.view", "data.export"],
   },
   chapter_directors: {
     id: "chapter_directors",
@@ -533,21 +437,22 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // F-6 P1 (giving PRD §6): the chapter director is "the seat that raises
     // money (backers)" — chapter-lens donor READ. Write/config stays central
     // (development director / ED), so this is `giving.view`, not `giving.manage`.
+    // A CHAPTER seat, so every power here reaches THIS chapter only (scope
+    // rule 1). `finance.view` is read of the whole finance domain at that
+    // scope — which is why it needs no carve-out for the org's bank accounts:
+    // those live at central, where a chapter grant never reaches (scope rule 3).
     capabilities: [
-      "finance.approve",
-      "finance.viewer",
-      "nav.finances",
+      "finance.view",
+      "finance.budgets.approve",
+      // Publishes their OWN chapter's month. Pairs with the Treasurer
+      // PREPARING it — the two seats are the two parties, which is exactly
+      // why the Treasurer does not carry this one.
+      "finance.ledger.publish",
       "giving.view",
-      "nav.giving",
       "data.export",
       // 2026-08-06: door check-in access for the QR scanner — the CD is one
       // of the "signed-in people we've given access to" by default.
       "events.checkin",
-      // Publishes their OWN chapter's month (a chapter-scope seat reaches
-      // only its own book). Pairs with the Treasurer PREPARING it — the two
-      // seats are the two parties, which is exactly why the Treasurer does
-      // not carry this one.
-      "finance.publish",
     ],
     legacyTitle: "president",
   },
@@ -563,13 +468,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Chase receipts",
     ],
     // F-6 P1: the treasurer sees their chapter's donors (chapter-lens read).
-    capabilities: [
-      "finance.manager",
-      "finance.record",
-      "nav.finances",
-      "giving.view",
-      "nav.giving",
-    ],
+    // `finance.edit` at CHAPTER scope: the whole finance domain for THIS
+    // chapter and nothing beyond it. The org's bank accounts sit at central,
+    // so the Treasurer never reaches them — stopped by scope, not by an
+    // exception carved into the power (see `powers.ts`'s scope rules).
+    capabilities: ["finance.edit", "giving.view"],
     legacyTitle: "finance_manager",
   },
   music_lead: {

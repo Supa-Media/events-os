@@ -98,7 +98,7 @@ describe("setSeatGivingPower — gate", () => {
       seatDefId: treasurer._id,
       power: "manage",
     });
-    expect(result).toContain("giving.manage");
+    expect(result).toContain("giving.edit");
   });
 
   test("a superuser is allowed", async () => {
@@ -109,7 +109,7 @@ describe("setSeatGivingPower — gate", () => {
       power: "none",
     });
     expect(result).not.toContain("giving.view");
-    expect(result).not.toContain("nav.giving");
+    expect(result).not.toContain("giving.edit");
   });
 
   test("rejects a derived seat", async () => {
@@ -127,27 +127,19 @@ describe("setSeatGivingPower — gate", () => {
 // ── Transitions touch ONLY the giving trio ───────────────────────────────────
 
 describe("setSeatGivingPower — capability transitions", () => {
-  // Post two-party-campaign-approval (2026-07-24) plus the `campaigns.design`
-  // rung (2026-07-28), `financial_manager`'s template ALSO carries the whole
-  // campaign ladder by default — `setSeatGivingPower` only ever touches the
-  // giving trio, so all three ride along untouched through every assertion
-  // below.
-  const FINANCE_CAPS = [
-    "finance.manager",
-    "finance.central",
-    "finance.accounts",
-    "finance.record",
-    "nav.finances",
-    "campaigns.approve",
-    "campaigns.compose",
-    "campaigns.design",
-    // 2026-07-31: `data.export` is a NON-giving cap on this seat, so the
-    // giving-power rewrite must leave it alone — that is exactly what this
-    // fixture asserts.
+  // `financial_manager`'s template also carries email-approval power — and
+  // `setSeatGivingPower` only ever touches the `giving` domain, so every
+  // non-giving power below must ride through each transition untouched. That
+  // is the whole point of this fixture. Note the list is the MINIMAL stored
+  // set, not the expanded one (see `powers.ts`): `finance.edit` stands in for
+  // what used to be four separate strings.
+  const NON_GIVING_CAPS = [
+    "finance.edit",
+    "finance.ledger.publish",
+    "email.campaigns.approve",
+    // 2026-07-31: `data.export` is a NON-giving power on this seat, so the
+    // giving-power rewrite must leave it alone — exactly what this asserts.
     "data.export",
-    // 2026-08-11: `finance.publish` is likewise a NON-giving cap the rewrite
-    // must leave alone.
-    "finance.publish",
   ];
 
   test("manage → view → none rewrites only giving caps, never finance caps", async () => {
@@ -159,31 +151,31 @@ describe("setSeatGivingPower — capability transitions", () => {
       seatDefId: fm._id,
       power: "manage",
     });
-    for (const c of FINANCE_CAPS) expect(afterManage).toContain(c);
-    expect(afterManage).toContain("giving.manage");
-    expect(afterManage).toContain("giving.view");
-    expect(afterManage).toContain("nav.giving");
+    for (const c of NON_GIVING_CAPS) expect(afterManage).toContain(c);
+    // MINIMAL storage: `giving.edit` alone, because the ladder rule derives
+    // `giving.view` from it and the nav rule derives the desk's tab.
+    expect(afterManage).toContain("giving.edit");
+    expect(afterManage).not.toContain("giving.view");
 
     // view: manage dropped, view + nav kept; finance untouched.
     const afterView = await s.as.mutation(api.seats.setSeatGivingPower, {
       seatDefId: fm._id,
       power: "view",
     });
-    for (const c of FINANCE_CAPS) expect(afterView).toContain(c);
-    expect(afterView).not.toContain("giving.manage");
+    for (const c of NON_GIVING_CAPS) expect(afterView).toContain(c);
+    expect(afterView).not.toContain("giving.edit");
     expect(afterView).toContain("giving.view");
-    expect(afterView).toContain("nav.giving");
 
     // none: all giving stripped; every finance cap still present & intact.
     const afterNone = await s.as.mutation(api.seats.setSeatGivingPower, {
       seatDefId: fm._id,
       power: "none",
     });
-    expect(afterNone.filter((c) => c.startsWith("giving.") || c === "nav.giving")).toEqual([]);
-    expect(afterNone).toEqual(FINANCE_CAPS);
+    expect(afterNone.filter((c) => c.startsWith("giving."))).toEqual([]);
+    expect(afterNone).toEqual(NON_GIVING_CAPS);
 
     // Persisted, not just returned.
-    expect(await capsOf(s, "financial_manager")).toEqual(FINANCE_CAPS);
+    expect(await capsOf(s, "financial_manager")).toEqual(NON_GIVING_CAPS);
   });
 
   test("an ED cannot strip giving off their OWN seat (self-lockout)", async () => {
@@ -256,7 +248,7 @@ describe("setSeatGivingPower — giving enforcement effect", () => {
 // ── Migration 0033 — additive backfill, idempotent ──────────────────────────
 
 describe("0033_add_giving_power_defaults", () => {
-  test("adds the default giving.view + nav.giving to the two seats; second run is a no-op", async () => {
+  test("adds the default giving.view to the two seats; second run is a no-op", async () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
 
@@ -267,9 +259,7 @@ describe("0033_add_giving_power_defaults", () => {
         const def = await ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", slug)).unique();
         if (!def) throw new Error(`${slug} missing`);
         await ctx.db.patch(def._id, {
-          capabilities: def.capabilities.filter(
-            (c) => c !== "giving.view" && c !== "nav.giving",
-          ),
+          capabilities: def.capabilities.filter((c) => c !== "giving.view"),
         });
       });
     }
@@ -283,7 +273,9 @@ describe("0033_add_giving_power_defaults", () => {
         ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", slug)).unique(),
       );
       expect(def!.capabilities).toContain("giving.view");
-      expect(def!.capabilities).toContain("nav.giving");
+      // `nav.giving` is gone — the desk's tab is derived from holding any
+      // giving power, so there is no second string to backfill.
+      expect(def!.capabilities).not.toContain("nav.giving");
     }
 
     // Idempotent: a second run touches nothing.
@@ -299,7 +291,7 @@ describe("0033_add_giving_power_defaults", () => {
     await run(t, async (ctx) => {
       const def = await ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", "expansion_director")).unique();
       await ctx.db.patch(def!._id, {
-        capabilities: ["giving.manage", "giving.view", "nav.giving"],
+        capabilities: ["giving.edit"],
       });
     });
     const res = await run(t, (ctx) => runAddGivingPowerDefaults(ctx));
@@ -308,6 +300,6 @@ describe("0033_add_giving_power_defaults", () => {
     const def = await run(t, (ctx) =>
       ctx.db.query("seatDefs").withIndex("by_slug", (q) => q.eq("slug", "expansion_director")).unique(),
     );
-    expect(def!.capabilities).toContain("giving.manage");
+    expect(def!.capabilities).toContain("giving.edit");
   });
 });

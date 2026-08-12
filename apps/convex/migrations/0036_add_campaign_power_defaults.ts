@@ -20,6 +20,17 @@ import type { Migration } from "./index";
  * the missing capability to a row that lacks it, never removes one) — so a
  * runtime edit via `seats.ts#setSeatCampaignPower` (e.g. the ED turning a
  * seat's campaign power to "none") is never clobbered by a later re-run.
+ *
+ * VOCABULARY UPDATE (2026-08-12): the capability strings below were rewritten
+ * into the standardized power vocabulary (`packages/shared/src/powers.ts`).
+ * The migration's BEHAVIOR is unchanged — same seats, same defaults, same
+ * additive-and-idempotent shape — only the strings it reads and writes moved
+ * to the new grammar. Rewriting a shipped migration is normally the wrong
+ * instinct, but these read and write a vocabulary that no longer exists: left
+ * alone they would stamp dead strings onto every FRESH database, which is both
+ * useless (no gate asks for them) and the one thing preventing the storage
+ * validator's legacy arm from ever being deleted. Existing deployments are
+ * untouched either way — the ledger means this body never runs there again.
  */
 const TARGET_SLUGS = ["executive_director", "financial_manager", "marketing_director"] as const;
 
@@ -40,11 +51,13 @@ export async function runAddCampaignPowerDefaults(ctx: MutationCtx) {
       // already carrying it (the default, or a runtime edit that already
       // granted it) is left exactly as-is, never rewritten, never
       // downgraded.
-      if (row.capabilities.includes("campaigns.approve")) {
+      if (row.capabilities.includes("email.campaigns.approve")) {
         skipped++;
         continue;
       }
-      const next = [...row.capabilities, "campaigns.approve", "campaigns.compose"] as const;
+      // MINIMAL: `email.campaigns.approve` alone, because it implies the
+      // compose rung (and design beneath it) through `expandPowers`.
+      const next = [...row.capabilities, "email.campaigns.approve"] as const;
       await ctx.db.patch(row._id, {
         capabilities: [...next],
         updatedAt: Date.now(),

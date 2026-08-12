@@ -4,7 +4,7 @@
  * read. Distinct from `seats.ts` (occupancy: who sits in a seat).
  *
  * Gated by the `org.editChart` POWER, not a role name: the caller must hold
- * a seat whose def's capabilities include `"org.editChart"` (today only
+ * a seat whose def's capabilities include `"org.chart.edit"` (today only
  * `executive_director`), or be a superuser (backstop). See
  * `lib/seatStructure.ts`'s `requireChartEditor`.
  *
@@ -46,8 +46,14 @@ import {
   type DefOverride,
 } from "./lib/seatStructure";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
+import { expandPowers } from "@events-os/shared";
 
 const seatChartValidator = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
+/** INPUT validator — deliberately STRICTER than the storage validator in
+ *  `schema/seats.ts`, which also accepts the pre-standardization strings so a
+ *  schema push can land ahead of `migrations/0062`. Rows on their way IN have
+ *  no such excuse: a client writing a legacy power would be re-introducing the
+ *  vocabulary this replaced, so the mutations below reject it outright. */
 const seatCapabilityValidator = v.union(
   ...SEAT_CAPABILITIES.map((c) => v.literal(c)),
 );
@@ -242,7 +248,7 @@ async function otherEditChartDefs(
   const rows = await ctx.db.query("seatDefs").take(SAFETY_SCAN_LIMIT);
   assertScanCompleteOrThrow(rows.length, "global org.editChart lockout check");
   return rows.filter(
-    (d) => d._id !== excludeDefId && d.capabilities.includes("org.editChart"),
+    (d) => d._id !== excludeDefId && expandPowers(d.capabilities).has("org.chart.edit"),
   );
 }
 
@@ -504,7 +510,8 @@ export const updateSeat = mutation({
       // superuser may still do this knowingly (they're the backstop for
       // exactly this state) — loudly logged, never silent.
       const losingEditChart =
-        def.capabilities.includes("org.editChart") && !capabilities.includes("org.editChart");
+        expandPowers(def.capabilities).has("org.chart.edit") &&
+        !expandPowers(capabilities).has("org.chart.edit");
       if (losingEditChart) {
         const others = await otherEditChartDefs(ctx, def._id);
         const someoneElseStillHolds = await anyDefHasAHolder(ctx, others);
