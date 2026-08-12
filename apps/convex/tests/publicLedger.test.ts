@@ -1198,6 +1198,38 @@ describe("a pre-policy month discloses what a reader can see", () => {
 
 // ── The month coding worklist (the backfill workbench's data) ────────────────
 
+describe("the console preview answers at all", () => {
+  // THE TEST THAT WAS MISSING. #642 added `unexplainedCount`/`unexplainedCents`
+  // to the snapshot and to `publish`'s validator but not to `preview`'s — and
+  // since `totalsOf` spreads the whole snapshot, `preview` failed its own
+  // returns validation on EVERY call, for every account, every month, empty
+  // or not. Nothing in this suite ever simply CALLED preview, so 60+ green
+  // tests coexisted with a publish console that could not open (the founder's
+  // night-long "Restricted", 2026-08-11/12 — a validator crash wearing denial
+  // copy). These stay deliberately shallow: their job is to fail the moment
+  // the snapshot and the validator drift apart again.
+  test("preview returns totals for a month with lines", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, { amountCents: 4_783 });
+    const totals = await s.as.query(api.publicLedger.preview, {
+      periodKey: AUG_KEY,
+    });
+    expect(totals).not.toBeNull();
+    expect(totals?.unexplainedCount).toBe(1);
+    expect(totals?.unexplainedCents).toBe(4_783);
+  });
+
+  test("preview returns totals for an empty month too", async () => {
+    const s = await asPublisher();
+    const totals = await s.as.query(api.publicLedger.preview, {
+      periodKey: AUG_KEY,
+    });
+    expect(totals).not.toBeNull();
+    expect(totals?.entryCount).toBe(0);
+    expect(totals?.unexplainedCount).toBe(0);
+  });
+});
+
 describe("explaining a month", () => {
   const worklist = (s: ChapterSetup, periodKey: string) =>
     s.as.query(api.finances.monthCodingWorklist, { periodKey });
