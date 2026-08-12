@@ -88,15 +88,43 @@ describe("codingFieldProblems — business purpose", () => {
 });
 
 describe("codingFieldProblems — travel", () => {
-  test("travel and lodging need a route; general doesn't", () => {
+  test("travel needs a route; general doesn't", () => {
     expect(
       problems({ expenseType: "travel", businessPurpose: GOOD_PURPOSE }),
     ).toContain("TRAVEL_ROUTE_REQUIRED");
     expect(
-      problems({ expenseType: "lodging", businessPurpose: GOOD_PURPOSE }),
-    ).toContain("TRAVEL_ROUTE_REQUIRED");
-    expect(
       problems({ expenseType: "general", businessPurpose: GOOD_PURPOSE }),
+    ).toEqual([]);
+  });
+
+  // FINDING 2 (UX audit, 2026-08-12, founder-flagged): lodging used to
+  // require a full route (from AND to) — nobody "traveled from" a hotel.
+  // It now needs exactly ONE place, persisted in `travelTo`; `travelFrom`
+  // is travel-only from here on and is never checked for lodging.
+  test("lodging needs one place (travelTo); travelFrom is unused", () => {
+    expect(
+      problems({ expenseType: "lodging", businessPurpose: GOOD_PURPOSE }),
+    ).toContain("LODGING_PLACE_REQUIRED");
+    expect(
+      problems({ expenseType: "lodging", businessPurpose: GOOD_PURPOSE }),
+    ).not.toContain("TRAVEL_ROUTE_REQUIRED");
+    // travelTo alone, no travelFrom at all — passes.
+    expect(
+      problems({
+        expenseType: "lodging",
+        businessPurpose: GOOD_PURPOSE,
+        travelTo: "Chicago",
+      }),
+    ).toEqual([]);
+    // A historical row that still carries both keeps validating — reading is
+    // unaffected, only the REQUIREMENT changed.
+    expect(
+      problems({
+        expenseType: "lodging",
+        businessPurpose: GOOD_PURPOSE,
+        travelFrom: "Boston",
+        travelTo: "Chicago",
+      }),
     ).toEqual([]);
   });
 
