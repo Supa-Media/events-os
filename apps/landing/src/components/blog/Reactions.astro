@@ -54,7 +54,10 @@ const LABELS: Record<string, string> = {
     Did this land?
   </h2>
   <p class="mt-1 text-sm text-ink/60">
-    No sign-in, no comment box — just tap. You can tap again to take it back.
+    No sign-in, no comment box — just tap. You can tap again to take it back.{" "}
+    {/* Filled by the script once the read ping returns ("· 12 readers");
+        empty until then so a failed backend never shows a made-up number. */}
+    <span data-reader-count></span>
   </p>
 
   <div class="mt-4 flex flex-wrap gap-2.5" data-reaction-list>

@@ -46,6 +46,18 @@ async function countsForSlug(
   return tally(rows);
 }
 
+/** Distinct browsers that have opened this post. Same full-scan posture as
+ *  countsForSlug — rows are written once per (post, browser), and the
+ *  response is edge-cached; the aggregate component is the fix if a post
+ *  ever draws enough traffic to matter. */
+async function readersForSlug(ctx: QueryCtx, slug: string): Promise<number> {
+  const rows = await ctx.db
+    .query("blogReads")
+    .withIndex("by_slug", (q) => q.eq("slug", slug))
+    .collect();
+  return rows.length;
+}
+
 /** The emoji this reader has already left on this post. */
 async function mineForSlug(
   ctx: QueryCtx,
@@ -84,6 +96,41 @@ export const getReactions = query({
       emojis: [...BLOG_REACTION_EMOJIS],
       counts: await countsForSlug(ctx, slug),
       mine: await mineForSlug(ctx, slug, actorKey),
+      readers: await readersForSlug(ctx, slug),
+    };
+  },
+});
+
+/**
+ * PUBLIC. Count this browser as a reader of this post — once, ever — and
+ * return the post's full state so the page needs one round trip, not two.
+ *
+ * Idempotent per (post, browser): the first call inserts a row, every later
+ * call finds it and moves on. So a refresh, a back-button, or a re-shared
+ * link never inflates the count — "readers" stays distinct browsers.
+ */
+export const recordRead = mutation({
+  args: { slug: v.string(), actorKey: v.string() },
+  handler: async (ctx, args) => {
+    const slug = normalizeSlug(args.slug);
+    const actorKey = normalizeActorKey(args.actorKey);
+
+    const existing = await ctx.db
+      .query("blogReads")
+      .withIndex("by_slug_actor", (q) =>
+        q.eq("slug", slug).eq("actorKey", actorKey),
+      )
+      .first();
+    if (!existing) {
+      await ctx.db.insert("blogReads", { slug, actorKey, createdAt: Date.now() });
+    }
+
+    return {
+      slug,
+      emojis: [...BLOG_REACTION_EMOJIS],
+      counts: await countsForSlug(ctx, slug),
+      mine: await mineForSlug(ctx, slug, actorKey),
+      readers: await readersForSlug(ctx, slug),
     };
   },
 });
@@ -125,6 +172,7 @@ export const toggleReaction = mutation({
       emojis: [...BLOG_REACTION_EMOJIS],
       counts: await countsForSlug(ctx, slug),
       mine: await mineForSlug(ctx, slug, actorKey),
+      readers: await readersForSlug(ctx, slug),
     };
   },
 });
@@ -141,28 +189,43 @@ export const reactionSummary = query({
   handler: async (ctx) => {
     await requireBlogModerate(ctx);
     const rows = await ctx.db.query("blogReactions").collect();
+    const readRows = await ctx.db.query("blogReads").collect();
+    const readsBySlug = new Map<string, number>();
+    for (const r of readRows) {
+      readsBySlug.set(r.slug, (readsBySlug.get(r.slug) ?? 0) + 1);
+    }
     const bySlug = new Map<string, typeof rows>();
     for (const row of rows) {
       const list = bySlug.get(row.slug);
       if (list) list.push(row);
       else bySlug.set(row.slug, [row]);
     }
+    // A post can have readers but no reactions yet — it still belongs in
+    // the summary, so seed the map from the read side too.
+    for (const slug of readsBySlug.keys()) {
+      if (!bySlug.has(slug)) bySlug.set(slug, []);
+    }
     return [...bySlug.entries()]
       .map(([slug, slugRows]) => ({
         slug,
         total: slugRows.length,
         counts: tally(slugRows),
-        // Distinct browsers, not distinct people — see lib/blogReactions.ts.
-        readers: new Set(slugRows.map((r) => r.actorKey)).size,
-        lastAt: Math.max(...slugRows.map((r) => r.createdAt)),
+        // Distinct browsers that reacted — see lib/blogReactions.ts.
+        reactors: new Set(slugRows.map((r) => r.actorKey)).size,
+        // Distinct browsers that opened the post (schema/blog.ts#blogReads).
+        readers: readsBySlug.get(slug) ?? 0,
+        lastAt: slugRows.length
+          ? Math.max(...slugRows.map((r) => r.createdAt))
+          : 0,
       }))
       .sort((a, b) => b.total - a.total);
   },
 });
 
 /**
- * STAFF. Wipe a post's reactions — the spam remedy for a counter that anyone
- * on the internet can tap. Returns how many rows went.
+ * STAFF. Wipe a post's reactions AND its read count — the spam remedy for
+ * counters that anyone on the internet can bump. One hammer on purpose: an
+ * inflated post gets reset whole, not half. Returns how many rows went.
  */
 export const clearReactions = mutation({
   args: { slug: v.string() },
@@ -174,6 +237,11 @@ export const clearReactions = mutation({
       .withIndex("by_slug", (q) => q.eq("slug", slug))
       .collect();
     for (const row of rows) await ctx.db.delete(row._id);
-    return { slug, removed: rows.length };
+    const readRows = await ctx.db
+      .query("blogReads")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .collect();
+    for (const row of readRows) await ctx.db.delete(row._id);
+    return { slug, removed: rows.length, readsRemoved: readRows.length };
   },
 });

@@ -18,6 +18,7 @@
 const API_BASE =
   import.meta.env.PUBLIC_REACTIONS_API?.replace(/\/$/, "") ?? "";
 const API = `${API_BASE}/api/blog/reactions`;
+const READ_API = `${API_BASE}/api/blog/read`;
 
 const ACTOR_STORAGE_KEY = "pw:blog:actor";
 
@@ -25,6 +26,7 @@ interface ReactionState {
   slug: string;
   counts: Array<{ emoji: string; count: number }>;
   mine: string[];
+  readers?: number;
 }
 
 /**
@@ -59,6 +61,14 @@ function setError(root: HTMLElement, message: string): void {
 
 /** Paint counts and pressed state onto the already-rendered buttons. */
 function render(root: HTMLElement, state: ReactionState): void {
+  // "· N readers" appended to the explainer line. Distinct browsers, not
+  // views (apps/convex/schema/blog.ts#blogReads); left blank below 2 — "1
+  // reader" on a page you yourself just opened is noise, not information.
+  const readersEl = root.querySelector<HTMLElement>("[data-reader-count]");
+  if (readersEl && typeof state.readers === "number") {
+    readersEl.textContent =
+      state.readers >= 2 ? `\u00b7 ${state.readers} readers` : "";
+  }
   const mine = new Set(state.mine);
   for (const button of root.querySelectorAll<HTMLButtonElement>(
     "button[data-emoji]",
@@ -85,16 +95,33 @@ async function mount(root: HTMLElement): Promise<void> {
   if (!slug) return;
   const actor = actorKey();
 
-  // Load current state. A failure here means no backend — leave the zeroed
-  // bar in place, disabled, and say nothing: an error message about an
-  // internal API is noise to a reader.
+  // Load current state — via the read ping, which counts this browser as a
+  // reader (once, ever) and returns the same full state as a GET, so page
+  // load is a single round trip. Falls back to the plain GET if the ping
+  // fails (e.g. a POST-blocking proxy); a failure of both means no backend —
+  // leave the zeroed bar in place, disabled, and say nothing: an error
+  // message about an internal API is noise to a reader.
   try {
-    const res = await fetch(
-      `${API}?slug=${encodeURIComponent(slug)}&actorKey=${encodeURIComponent(actor)}`,
-      { headers: { Accept: "application/json" } },
-    );
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    render(root, (await res.json()) as ReactionState);
+    let state: ReactionState | null = null;
+    try {
+      const res = await fetch(READ_API, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ slug, actorKey: actor }),
+      });
+      if (res.ok) state = (await res.json()) as ReactionState;
+    } catch {
+      // fall through to the GET
+    }
+    if (!state) {
+      const res = await fetch(
+        `${API}?slug=${encodeURIComponent(slug)}&actorKey=${encodeURIComponent(actor)}`,
+        { headers: { Accept: "application/json" } },
+      );
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      state = (await res.json()) as ReactionState;
+    }
+    render(root, state);
   } catch {
     disable(root);
     return;

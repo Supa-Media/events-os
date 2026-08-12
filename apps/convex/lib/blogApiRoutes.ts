@@ -3,8 +3,11 @@
  * to. Mirrors `giveApiRoutes.ts` / `ticketApiRoutes.ts`'s shape (local `json`
  * + `errorJson` helpers, registered onto the main router from `http.ts`).
  *
- *   GET  /api/blog/reactions?slug=<slug>&actorKey=<key>  → counts + mine
+ *   GET  /api/blog/reactions?slug=<slug>&actorKey=<key>  → counts + mine + readers
  *   POST /api/blog/reactions  {slug, emoji, actorKey}    → toggled state
+ *   POST /api/blog/read       {slug, actorKey}           → read counted (once
+ *                              per browser), returns the same full state —
+ *                              the page's single load-time call
  *
  * Same-origin in production: publicworship.life/blog/<slug> is static HTML
  * served by pw-router from the Astro build, and the Worker proxies `/api/*`
@@ -85,6 +88,30 @@ export function registerBlogApiRoutes(http: HttpRouter): void {
         const state = await ctx.runMutation(api.blog.toggleReaction, {
           slug: String(body.slug ?? ""),
           emoji: String(body.emoji ?? ""),
+          actorKey: String(body.actorKey ?? ""),
+        });
+        return json(state);
+      } catch (err) {
+        return errorJson(err);
+      }
+    }),
+  });
+
+  // Same preflight posture as /api/blog/reactions — dev-only in practice.
+  http.route({
+    path: "/api/blog/read",
+    method: "OPTIONS",
+    handler: httpAction(async () => new Response(null, { status: 204, headers: CORS_HEADERS })),
+  });
+
+  http.route({
+    path: "/api/blog/read",
+    method: "POST",
+    handler: httpAction(async (ctx, req) => {
+      try {
+        const body = (await req.json()) as Record<string, unknown>;
+        const state = await ctx.runMutation(api.blog.recordRead, {
+          slug: String(body.slug ?? ""),
           actorKey: String(body.actorKey ?? ""),
         });
         return json(state);
