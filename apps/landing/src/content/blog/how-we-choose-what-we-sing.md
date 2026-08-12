@@ -224,15 +224,14 @@ when it's ready. Until then — read both columns.
 
 **Voices that shaped us:**
 
-- **[Augustine, *Confessions* X.33](https://www.newadvent.org/fathers/110110.htm)**
-  (c. 400) — "…more moved by the singing than by what is sung, I confess
-  myself to have sinned criminally." Still load-bearing.
-- **[A.W. Tozer, *Worship: The Missing Jewel of the Evangelical
-  Church*](https://archive.org/details/isbn_2901600663238)** (preached 1961) —
-  the recovery of God-centered adoration.
-- **[Marva Dawn](https://onfaithcanada.blogspot.com/2021/05/a-feast-called-worship-interview-with.html)**
-  (2007 interview) — "Too much music being used today is narcissistic—it's
-  about us and how we feel about God."
+- **[A.W. Tozer, *Whatever Happened to
+  Worship?*](https://www.goodreads.com/en/book/show/721486.Whatever_Happened_to_Worship)**
+  (sermons preached 1961) — worship as the thing we were made for, and the
+  jewel the church misplaced.
+- **[Marva Dawn, *Reaching Out without Dumbing
+  Down*](https://a.co/d/02CmICyZ)** (1995) — a theology of worship where God
+  is both the subject and the object, against letting the surrounding culture
+  set the terms.
 - **[Bob Kauflin, "Evaluating Worship Song
   Lyrics"](https://worshipmatters.com/2006/12/01/worship-leaders-pastors-evaluating-worship-song-lyrics/)**
   (2006) — a working worship pastor's checklist.
