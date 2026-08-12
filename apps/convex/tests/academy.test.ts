@@ -219,12 +219,21 @@ describe("curriculum content", () => {
     // course because it has two audiences — the Treasurer who prepares a
     // month and the ED/FM/CD who publishes it. See
     // `docs/plans/public-ledger.md`.)
-    expect(ACADEMY_SECTION_COUNT).toBe(108);
+    // + 1 (finance-three-tracks, 2026-08-12, inserted into the
+    // finances-for-everyone course BETWEEN finance-stewardship and
+    // finance-card-and-receipts — required, not a capstone. The founders'
+    // spending policy, and the only finance lesson that runs BEFORE the money
+    // leaves: name the budget, check there's room, then decide green (spend,
+    // tell the budget's owner) / yellow (get a yes FIRST) / red (don't — it
+    // comes back as a personal charge). Deliberately has no product mechanism
+    // behind it; the founders were explicit that the tracks are taught and
+    // reinforced in meetings rather than enforced in software.)
+    expect(ACADEMY_SECTION_COUNT).toBe(109);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 108 }, (_v, i) => i + 1),
+      Array.from({ length: 109 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(107);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(108);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

@@ -405,6 +405,43 @@
  * 5-question cap, so questions were SWAPPED, not added — titles, minutes and
  * quiz lengths are unchanged everywhere, nothing in the tables below moved,
  * and the total is unchanged.
+ *
+ * The 2026-08-12 founder call INSERTED one section, `finance-three-tracks`
+ * ("Green, yellow, red", 4 min, 6-quiz), into `finances-for-everyone` between
+ * `finance-stewardship` and `finance-card-and-receipts`. Total: 109 sections;
+ * everything from it onward shifts one `order`, derived from array position.
+ * It teaches the founders' spending policy — name the budget, check there's
+ * room, then decide green (spend, tell the owner) / yellow (get a yes FIRST) /
+ * red (don't; it becomes a personal charge) — and it is deliberately the one
+ * finance lesson with no product mechanism behind it: the founders were
+ * explicit that the tracks are taught and reinforced in meetings rather than
+ * enforced in software.
+ *
+ * Two existing sections were also rewritten for truthfulness rather than
+ * scope. Both were already at the 5-question cap `apps/convex/tests/
+ * academy.test.ts` enforces, so questions were SWAPPED, not added, and
+ * neither section's title/minutes/quizLength moved in the tables below.
+ *
+ * `finance-card-and-receipts` gained the caveat that a legacy Relay card
+ * cannot be auto-locked — the lock runs through Increase's real-time
+ * authorization decision, which only covers cards Increase issued — alongside
+ * the code change that stops the sweep locking them. Every other consequence
+ * still applies, and the new question tests exactly that. It replaced "why
+ * does the app lock instead of sending reminders forever", which taught
+ * motivation rather than a rule and is now the weaker half of the same point.
+ *
+ * `finance-tiers-and-skim` stopped asserting the chapter operating formula and
+ * started deriving it: the $570 fixed base broken out line by line (film /
+ * event food / transport / storage / software, matching
+ * `finance.ts#OPERATING_FLOOR_FIXED_CENTS`'s own doc), the $20/teammate as the
+ * monthly team meal, an explicit "adding a teammate costs money" rule, and the
+ * conference sinking fund explained AND flagged as the model's one
+ * forward-looking line, since no conference is scheduled. Two questions were
+ * swapped in for it (the $690 arithmetic; what four new teammates cost),
+ * displacing "is the skim automated today" (an implementation detail the
+ * lesson's own tip still states, and one that changes the day it's automated)
+ * and the past-due-pledge edge case (taught at length in the Development
+ * stream's backer-model course, which is where the lifecycle lives).
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -468,6 +505,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "mgmt-the-four-gates",
   "mgmt-frontline-no-final-yes",
   "finance-stewardship",
+  "finance-three-tracks",
   "finance-card-and-receipts",
   "finance-receipt-exceptions",
   "finance-coding-your-charges",
@@ -984,6 +1022,14 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-stewardship",
     title: "Where the money comes from",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-three-tracks",
+    title: "Green, yellow, red",
     minutes: 4,
     quizLength: 5,
     optional: false,
@@ -1513,6 +1559,7 @@ const EXPECTED_COURSES: {
     themeKey: "finances",
     moduleSlugs: [
       "finance-stewardship",
+      "finance-three-tracks",
       "finance-card-and-receipts",
       "finance-receipt-exceptions",
       "finance-coding-your-charges",
