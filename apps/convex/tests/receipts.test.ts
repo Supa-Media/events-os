@@ -173,6 +173,55 @@ describe("role gates", () => {
   });
 });
 
+// ── canViewList ──────────────────────────────────────────────────────────────
+// The coding workbench panel's (`coding.tsx`) ONE-PROBE-PER-SCREEN gate — the
+// non-throwing `has` form of the same `requireFinanceRole(bookkeeper)` check
+// `listForTransaction` itself runs. It must degrade to `false`, never throw,
+// for every caller below bookkeeper (including one with no roster row and no
+// `financeRoles` grant at all — a cardholder with no finance seat, exactly
+// who "Yours to code" is reachable by) and must return `true` the instant a
+// caller actually clears the same bar `listForTransaction` enforces.
+describe("canViewList", () => {
+  test("a signed-in member with no finance role at all gets false, not a throw", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // No `people` row, no `financeRoles` grant — the exact shape of a
+    // cardholder who has never touched finance admin.
+    await expect(s.as.query(api.receipts.canViewList, {})).resolves.toBe(false);
+  });
+
+  test("a plain viewer grant is still below bookkeeper", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s);
+    await grantRole(s, person, "viewer");
+    await expect(s.as.query(api.receipts.canViewList, {})).resolves.toBe(false);
+  });
+
+  test("a bookkeeper grant gets true — and it agrees with listForTransaction's own gate", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedBookkeeper(s);
+
+    await expect(s.as.query(api.receipts.canViewList, {})).resolves.toBe(true);
+    // Same underlying check, non-throwing form vs. the throwing one
+    // `listForTransaction` itself runs — a `true` here must mean that call
+    // wouldn't throw FORBIDDEN.
+    const txn = await seedTxn(s);
+    await expect(
+      s.as.query(api.receipts.listForTransaction, { transactionId: txn }),
+    ).resolves.toEqual([]);
+  });
+
+  test("a manager grant (above bookkeeper) also gets true", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const person = await seedPerson(s);
+    await grantRole(s, person, "manager");
+    await expect(s.as.query(api.receipts.canViewList, {})).resolves.toBe(true);
+  });
+});
+
 // ── listReceipts filters ─────────────────────────────────────────────────────
 describe("listReceipts", () => {
   test("unlinked/linked/all filters partition correctly, newest first", async () => {

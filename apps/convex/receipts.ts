@@ -58,6 +58,7 @@ import { getChapterIdOrNull, requireChapterId } from "./lib/context";
 import {
   requireFinanceRole,
   requireCentralFinanceRole,
+  hasFinanceRole,
   getFinanceRole,
   type FinanceAccess,
 } from "./lib/finance";
@@ -1000,6 +1001,39 @@ export const listForTransaction = query({
       if (r) out.push(await toReceiptSummary(ctx, r));
     }
     return out;
+  },
+});
+
+/**
+ * Whether the caller may call `listForTransaction` at all — a client-side
+ * probe, not a gate anything else relies on. `listForTransaction` is
+ * bookkeeper+ gated (`requireFinanceRole`), which is fine for its original
+ * host (`explain.tsx`, itself gated behind ledger-console access) but not for
+ * the coding workbench panel (`coding.tsx`'s "Yours to code" list), which is
+ * reachable by a cardholder with NO finance seat at all — that caller would
+ * get a FORBIDDEN on every receipted row if the panel auto-fetched.
+ *
+ * Mirrors `financeRoles.canViewAccounts`'s degrade-quietly shape: no
+ * identity → `false`, never a thrown `NOT_AUTHENTICATED` — this is read by a
+ * screen deciding what to render, not asserting a right to act. Probing it
+ * reveals nothing a denied caller couldn't already learn by calling
+ * `listForTransaction` directly and catching the FORBIDDEN — same
+ * `requireFinanceRole(bookkeeper)` check, just the non-throwing `has` form
+ * (`lib/finance.ts#hasFinanceRole`), so this widens nothing.
+ *
+ * Called ONCE per screen (not once per row) — the coding workbench panel
+ * probes this itself and threads the answer down, rather than each row's
+ * `ReceiptPane` calling it independently.
+ */
+export const canViewList = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) return false;
+    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!chapterId) return false;
+    return hasFinanceRole(ctx, chapterId, "bookkeeper");
   },
 });
 

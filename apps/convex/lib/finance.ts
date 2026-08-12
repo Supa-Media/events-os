@@ -329,6 +329,29 @@ export async function requireFinanceRole(
   return access;
 }
 
+/**
+ * The non-throwing `has` half of `requireFinanceRole` — same union-of-seats-
+ * and-stored-grants resolution, same `min` ladder comparison, just a boolean
+ * instead of a thrown `FORBIDDEN`. Lets a screen ask "would this throw"
+ * before deciding whether to render something that calls the throwing form
+ * (e.g. probing once whether a receipts query is reachable, instead of
+ * discovering a 403 per row). A denied caller learns nothing here they
+ * couldn't already learn by calling the throwing form and catching the
+ * error — this never widens what's visible, it only avoids the round trip.
+ * Mirror this shape rather than inlining `getFinanceRole` +
+ * `financeRoleAtLeast` at a call site that wants the same probe
+ * (`financeRoles.canViewAccounts` follows the same degrade-quietly pattern
+ * for a different gate).
+ */
+export async function hasFinanceRole(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+  min: FinanceRole,
+): Promise<boolean> {
+  const access = await getFinanceRole(ctx, chapterId);
+  return financeRoleAtLeast(access.role, min);
+}
+
 /** Assert the caller is a finance manager (the write/approve gate). */
 export async function requireFinanceManager(
   ctx: QueryCtx,
