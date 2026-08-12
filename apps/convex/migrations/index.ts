@@ -81,6 +81,7 @@ import { splitLegacyIncreaseCards } from "./0059_split_legacy_increase_cards";
 import { addEventsCheckinDefaults } from "./0060_add_events_checkin_defaults";
 import { stampDigestWatermarkProvenance } from "./0061_stamp_digest_watermark_provenance";
 import { standardizePowers } from "./0062_standardize_powers";
+import { fixGenesisUtcMidnight } from "./0063_fix_genesis_utc_midnight";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -348,4 +349,12 @@ export const MIGRATIONS: Migration[] = [
   // already-seeded org loses every power at once. Access-preserving and
   // idempotent — see 0062's doc for the per-deletion argument.
   standardizePowers,
+  // Genesis-imported history was stamped at UTC-midnight, which is the
+  // PREVIOUS Eastern calendar day — every such row shifts to noon UTC (same
+  // ET date year-round), so it lands in ITS OWN month's worklist/totals
+  // instead of the prior one's. Live books only; a published month keeps its
+  // old bucketing (frozen by design — corrections are revisions). Idempotent
+  // (the shift moves a row off the exact-midnight boundary it's keyed on).
+  // See 0063.
+  fixGenesisUtcMidnight,
 ];

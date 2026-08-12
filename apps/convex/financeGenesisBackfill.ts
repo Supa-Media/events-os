@@ -132,11 +132,21 @@ const MONTHS: Record<string, number> = {
 // ── Date parsing ─────────────────────────────────────────────────────────────
 
 /**
- * Parse a "Jun 9, 2025"-style date to a UTC-midnight epoch ms. Deterministic
+ * Parse a "Jun 9, 2025"-style date to a NOON-UTC epoch ms. Deterministic
  * (never touches the host timezone the way `Date.parse` of a bare date would),
  * so the same row always maps to the same `postedAt` — which the ±2d dedup
  * window depends on. Throws for an unparseable string (surfaces as a row
  * `invalid`, never a silent wrong date).
+ *
+ * NOON, not UTC-MIDNIGHT: the org's month bucketing (`easternParts`, everything
+ * downstream that groups/publishes by month — `finances.ts#monthCodingWorklist`,
+ * `lib/publicLedgerSnapshot.ts`) is America/New_York, and UTC-midnight is the
+ * PREVIOUS Eastern calendar day (ET is always behind UTC). A row dated the 1st
+ * would silently land in the PRIOR month's worklist/totals/public snapshot.
+ * 12:00 UTC is the same calendar date in both UTC and US Eastern time,
+ * winter (UTC-5, 07:00 ET) or summer (UTC-4, 08:00 ET) — the one hour of day
+ * that's immune to the offset. See migration `0031_fix_genesis_utc_midnight`
+ * for the one-time correction of rows already written at the old boundary.
  */
 export function parseGenesisDate(input: string): number {
   const m = input.trim().match(/^([A-Za-z]{3})[a-z]*\s+(\d{1,2}),\s+(\d{4})$/);
@@ -146,7 +156,7 @@ export function parseGenesisDate(input: string): number {
   const day = Number(m[2]);
   const year = Number(m[3]);
   if (day < 1 || day > 31) throw new Error(`Out-of-range day in date: "${input}"`);
-  return Date.UTC(year, monthIdx, day);
+  return Date.UTC(year, monthIdx, day, 12);
 }
 
 // ── Counts ───────────────────────────────────────────────────────────────────

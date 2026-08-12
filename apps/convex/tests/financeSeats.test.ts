@@ -3,6 +3,7 @@ import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 
 /**
  * `financeRoles.mySeats` — the caller's REAL finance seats (WP-0.2).
@@ -387,6 +388,157 @@ describe("financeRoles.mySeats", () => {
         role: "bookkeeper",
       },
     ]);
+  });
+});
+
+/**
+ * `financeRoles.mySeats` — the central ED/FM widening (bug #2 follow-up to
+ * the ledger console/prepare fix, `lib/publicLedgerAccess.ts`).
+ *
+ * A REAL `executive_director` seat assignment (`seats.assignSeat`) writes a
+ * `seatAssignments` row AND mirrors a `specializedRoles` row (every seat with
+ * a `legacyTitle` gets the mirror, regardless of finance/leadership kind —
+ * see `assignSeatImpl`'s doc) — but NEVER bridges a stored `financeRoles`
+ * central grant, because `assignSpecializedRoleImpl`'s finance-only bridge
+ * fires only for FINANCE-kind titles (`finance_manager`), and ED's title is
+ * LEADERSHIP-kind. Before this fix `mySeats` read only the stored
+ * `financeRoles` table, so a real ED got `[]` — and `finances/_layout.tsx`
+ * branches on `seats.length === 0` BEFORE `canViewAccounts`, so the ED landed
+ * on `MEMBER_TABS` despite `lib/publicLedgerAccess.ts`'s widening already
+ * granting them the console/prepare/publish surfaces server-side.
+ */
+describe("financeRoles.mySeats — the central ED/FM widening (bug #2 fix)", () => {
+  test("a REAL executive_director seat assignment (seatAssignments + mirrored specializedRoles, no bridged financeRoles grant) yields a non-empty mySeats with central reach", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+
+    const superuserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "seyi@publicworship.life" }),
+    );
+    const superuserAs = s.t.withIdentity({
+      subject: `${superuserId}|session`,
+      issuer: "test",
+    });
+    const edDef = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "executive_director"))
+        .unique(),
+    );
+    if (!edDef) throw new Error("executive_director seatDef not seeded");
+    await superuserAs.mutation(api.seats.assignSeat, {
+      seatDefId: edDef._id,
+      scope: "central",
+      personId,
+    });
+
+    // Confirms the fixture actually reproduces the bug's precondition: the
+    // write-through mirrored a title but bridged NO stored central grant.
+    const grants = await run(s.t, (ctx) =>
+      ctx.db
+        .query("financeRoles")
+        .withIndex("by_person", (q) => q.eq("personId", personId))
+        .collect(),
+    );
+    expect(grants).toHaveLength(0);
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    // "viewer", not "manager" — the honest floor (see `mySeats`' module doc):
+    // this seat carries no `finance.manager` capability, so claiming
+    // "manager" would light up manager-only UI (`receipt-chase.tsx`,
+    // `PersonalChargesView`) this caller can't actually use.
+    expect(seats).toEqual([
+      { scope: "central", role: "viewer", title: "executive_director" },
+    ]);
+  });
+
+  test("a real financial_manager seat assignment is UNCHANGED by the widening — it already bridges its own stored central manager grant", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+
+    const superuserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "seyi@publicworship.life" }),
+    );
+    const superuserAs = s.t.withIdentity({
+      subject: `${superuserId}|session`,
+      issuer: "test",
+    });
+    const fmDef = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "financial_manager"))
+        .unique(),
+    );
+    if (!fmDef) throw new Error("financial_manager seatDef not seeded");
+    await superuserAs.mutation(api.seats.assignSeat, {
+      seatDefId: fmDef._id,
+      scope: "central",
+      personId,
+    });
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    // The REAL bridged grant wins — "manager", not the widening's "viewer"
+    // floor — because `centralRole` was already non-null before the
+    // widening's `if (centralRole == null ...)` guard runs.
+    expect(seats).toEqual([
+      { scope: "central", role: "manager", title: "finance_manager" },
+    ]);
+  });
+
+  test("an executive_director who exists only as a legacy specializedRoles row (no seatAssignments mirror) also gets the widened central seat", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+    await assignSpecializedRole(s, personId, "central", "executive_director");
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([
+      { scope: "central", role: "viewer", title: "executive_director" },
+    ]);
+  });
+
+  test("a plain member (no seat, no grant, no title) still gets [] — the widening never fires for a non-ED/FM", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    await seedSelfPerson(s);
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([]);
+  });
+
+  test("a chapter-scope seat with finance.approve (chapter_director) does NOT trigger the CENTRAL widening", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    const personId = await seedSelfPerson(s);
+
+    const superuserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "seyi@publicworship.life" }),
+    );
+    const superuserAs = s.t.withIdentity({
+      subject: `${superuserId}|session`,
+      issuer: "test",
+    });
+    const cdDef = await run(s.t, (ctx) =>
+      ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "chapter_director"))
+        .unique(),
+    );
+    if (!cdDef) throw new Error("chapter_director seatDef not seeded");
+    await superuserAs.mutation(api.seats.assignSeat, {
+      seatDefId: cdDef._id,
+      scope: s.chapterId,
+      personId,
+    });
+
+    const seats = await s.as.query(api.financeRoles.mySeats, {});
+    expect(seats).toEqual([]);
   });
 });
 

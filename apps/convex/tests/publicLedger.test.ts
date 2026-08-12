@@ -5,6 +5,8 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { PREVIEW_BANNER_TEXT } from "../lib/publicLedgerPage";
+import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
+import { CENTRAL } from "@events-os/shared";
 
 /**
  * THE PUBLIC LEDGER — publishing the books, and being held to them.
@@ -190,6 +192,40 @@ async function publishMonth(
 
 const statementOf = (s: ChapterSetup, periodKey = AUG_KEY) =>
   s.as.query(api.publicLedger.publicStatement, { periodKey });
+
+/** The seatDef row seeded for a template `slug` — mirrors
+ *  `financeGatesSeatUnion.test.ts#defBySlug`. */
+async function defBySlug(s: ChapterSetup, slug: string) {
+  const def = await run(s.t, (ctx) =>
+    ctx.db
+      .query("seatDefs")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique(),
+  );
+  if (!def) throw new Error(`${slug} not seeded`);
+  return def;
+}
+
+/** Insert a `seatAssignments` row directly (bypassing `assignSeat`'s
+ *  write-through, so no bridged `financeRoles` row comes along for free) —
+ *  same shape as `financeGatesSeatUnion.test.ts#assignSeatDirect`. Used to
+ *  prove the FIX-1 widening comes from the seat alone, not a stored grant. */
+async function assignSeatDirect(
+  s: ChapterSetup,
+  personId: Id<"people">,
+  slug: string,
+  scope: Id<"chapters"> | "central",
+): Promise<void> {
+  const def = await defBySlug(s, slug);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("seatAssignments", {
+      seatDefId: def._id,
+      scope,
+      personId,
+      createdAt: Date.now(),
+    }),
+  );
+}
 
 // ── 1. Frozen ────────────────────────────────────────────────────────────────
 
@@ -624,6 +660,95 @@ describe("the lifecycle refuses shortcuts", () => {
     const august = console_!.months.find((m) => m.periodKey === AUG_KEY);
     expect(august!.status).toBe("changes_requested");
     expect(august!.reviewNote).toContain("receipt");
+  });
+});
+
+// ── FIX 1: the ED/FM console+prepare widening ───────────────────────────────
+// A founder-confirmed bug: the ED's (and, on their own book, the FM's) seat
+// carries central reach and `finance.publish` but never a graded
+// `financeRoles` ladder rank, so the pre-widening `requireLedgerConsole`/
+// `requireLedgerPrepare` (which check `access.role`/`access.isManager` for
+// the caller's OWN book — see `lib/publicLedgerAccess.ts`'s module doc)
+// locked them out of the very console the design hands them. Every scenario
+// below exercises the caller's OWN chapter book (`scope` omitted, so it
+// defaults to `homeChapterId`) — the one branch that was broken; the CENTRAL/
+// foreign-book branch already worked via `access.isCentral` and is unchanged.
+describe("ED/FM console + prepare widening (own book, no financeRoles row)", () => {
+  const consoleOf = (s: ChapterSetup) => s.as.query(api.publicLedger.console_, {});
+  const prepare = (s: ChapterSetup) =>
+    s.as.mutation(api.publicLedger.submit, { periodKey: AUG_KEY });
+
+  test("a central executive_director seat (real seatAssignments row) reaches the console and can prepare their own chapter's book", async () => {
+    const s = await setupChapter(newT(), { email: "ed@publicworship.life" });
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const personId = await seedPerson(s, "ED");
+    await assignSeatDirect(s, personId, "executive_director", "central");
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).resolves.toBeNull();
+    const status = (await consoleOf(s))!.months.find((m) => m.periodKey === AUG_KEY);
+    expect(status!.status).toBe("in_review");
+  });
+
+  test("an executive_director who exists only as a legacy specializedRoles row (no seatAssignments mirror) still reaches the console and can prepare — the drift `isCentralEdOrFm` covers", async () => {
+    const s = await setupChapter(newT(), { email: "legacy-ed@publicworship.life" });
+    const personId = await seedPerson(s, "Legacy ED");
+    await run(s.t, (ctx) =>
+      ctx.db.insert("specializedRoles", {
+        personId,
+        scope: "central",
+        title: "executive_director",
+        roleKind: "leadership",
+        createdAt: Date.now(),
+      }),
+    );
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).resolves.toBeNull();
+  });
+
+  test("a central financial_manager seat reaches the console and can prepare their own chapter's book, with NO bridged central financeRoles grant", async () => {
+    const s = await setupChapter(newT(), { email: "fm@publicworship.life" });
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const personId = await seedPerson(s, "FM");
+    // Direct insert bypasses `assignSeat`'s write-through — no bridged
+    // `financeRoles` grant comes along, unlike a real assignment. Proves the
+    // widening comes from the seat itself, not the bridge.
+    await assignSeatDirect(s, personId, "financial_manager", "central");
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).resolves.toBeNull();
+  });
+
+  test("a chapter_director seat still sees the console (pre-existing viewer widening, unaffected) but still cannot prepare — not manager rank, and not ED/FM", async () => {
+    const s = await setupChapter(newT(), { email: "cd@publicworship.life" });
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const personId = await seedPerson(s, "CD");
+    await assignSeatDirect(s, personId, "chapter_director", s.chapterId);
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).rejects.toThrow(ConvexError);
+  });
+
+  test("a plain member with no seat and no grant is denied both the console and prepare", async () => {
+    const s = await setupChapter(newT(), { email: "nobody@publicworship.life" });
+    await seedPerson(s, "No Grant");
+
+    await expect(consoleOf(s)).rejects.toThrow(ConvexError);
+    await expect(prepare(s)).rejects.toThrow(ConvexError);
+  });
+
+  test("a superuser reaches the console and can prepare with no seat and no grant at all — unchanged by the widening", async () => {
+    const s = await setupChapter(newT(), { email: SUPERUSER_EMAIL });
+    await seedPerson(s, "Superuser");
+    await insertTxn(s);
+
+    await expect(consoleOf(s)).resolves.toBeDefined();
+    await expect(prepare(s)).resolves.toBeNull();
   });
 });
 
@@ -1159,6 +1284,109 @@ describe("explaining a month", () => {
     await seedPerson(s, "No Grant");
     await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
     await expect(worklist(s, "2024-06")).rejects.toThrow(ConvexError);
+  });
+
+  // ── FIX 2: a zero-row resolved book must never read as "fully explained" ──
+  // The founder-confirmed bug: a central-reach caller defaults to the central
+  // desk, but ALL of 2024/2025's genesis-imported history lives on the New
+  // York chapter's book (`financeGenesisBackfill.ts`, deliberately not
+  // "central"). Central's book is genuinely empty for those months, which
+  // this suite pins as `totalCount === 0` and — the fix — a populated
+  // `otherBooks` list saying where the real rows are.
+  describe("otherBooks — the 'switch desks' nudge for a central-reach caller", () => {
+    test("a central-reach caller resolving to an EMPTY central book sees where the unexplained rows actually are", async () => {
+      const s = await asPublisher(); // superuser: central reach, home chapter "New York"
+      await insertTxn(s, {
+        amountCents: 4_000,
+        postedAt: Date.UTC(2024, 5, 14, 16),
+        historicalImportBatch: "genesis-2024",
+        merchantName: "U-Haul",
+      });
+
+      // The central book itself has nothing — exactly the false-positive
+      // scenario: this must read as "central has nothing", not "done".
+      const central = (await s.as.query(api.finances.monthCodingWorklist, {
+        periodKey: "2024-06",
+        scope: CENTRAL,
+      }))!;
+      expect(central.totalCount).toBe(0);
+      expect(central.rows).toHaveLength(0);
+
+      expect(central.otherBooks).toBeDefined();
+      const nyRow = central.otherBooks!.find((b) => b.scopeName === "New York");
+      expect(nyRow).toBeDefined();
+      expect(nyRow!.totalCount).toBe(1);
+      expect(nyRow!.scope).toBe(s.chapterId);
+    });
+
+    test("a chapter-only caller (no central reach) never gets an otherBooks list", async () => {
+      const s = await setupChapter(newT(), { email: "treasurer2@publicworship.life" });
+      const personId = await seedPerson(s, "Chapter Treasurer");
+      await grantRole(s, personId, "manager"); // chapter-scoped only, no central grant
+      await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
+
+      const list = (await worklist(s, "2024-06"))!;
+      expect(list.otherBooks).toBeUndefined();
+    });
+
+    test("otherBooks omits books with nothing unexplained this month and sorts the rest biggest-first", async () => {
+      const s = await asPublisher(); // home chapter "New York"
+      const austinId = await run(s.t, (ctx) =>
+        ctx.db.insert("chapters", {
+          name: "Austin",
+          isActive: true,
+          createdAt: Date.now(),
+        }),
+      );
+      // Chicago exists (an active book) but gets no transactions this month —
+      // it must be OMITTED from `otherBooks`, not listed at zero.
+      await run(s.t, (ctx) =>
+        ctx.db.insert("chapters", {
+          name: "Chicago",
+          isActive: true,
+          createdAt: Date.now(),
+        }),
+      );
+      // New York: one unexplained line.
+      await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
+      // Austin: two unexplained lines — should sort ABOVE New York.
+      await run(s.t, (ctx) =>
+        ctx.db.insert("transactions", {
+          chapterId: austinId,
+          source: "manual",
+          flow: "outflow",
+          amountCents: 2_000,
+          postedAt: Date.UTC(2024, 5, 15, 16),
+          status: "reconciled",
+          merchantName: "Austin Vendor A",
+          createdAt: Date.now(),
+        }),
+      );
+      await run(s.t, (ctx) =>
+        ctx.db.insert("transactions", {
+          chapterId: austinId,
+          source: "manual",
+          flow: "outflow",
+          amountCents: 3_000,
+          postedAt: Date.UTC(2024, 5, 16, 16),
+          status: "reconciled",
+          merchantName: "Austin Vendor B",
+          createdAt: Date.now(),
+        }),
+      );
+      const central = (await s.as.query(api.finances.monthCodingWorklist, {
+        periodKey: "2024-06",
+        scope: CENTRAL,
+      }))!;
+      expect(central.otherBooks).toBeDefined();
+      const names = central.otherBooks!.map((b) => b.scopeName);
+      expect(names).toContain("Austin");
+      expect(names).toContain("New York");
+      expect(names).not.toContain("Chicago");
+      expect(central.otherBooks!.findIndex((b) => b.scopeName === "Austin")).toBeLessThan(
+        central.otherBooks!.findIndex((b) => b.scopeName === "New York"),
+      );
+    });
   });
 });
 
