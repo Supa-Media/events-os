@@ -73,7 +73,7 @@ export const TYPE_HINTS: Record<ExpenseType, string> = {
   travel:
     "Getting somewhere — fares, gas, parking, tolls (your Transportation category lands here). Asks where from and where to.",
   meal: "Food or drinks for people — asks who was there.",
-  lodging: "An overnight stay — asks for the route, and always needs an itemized receipt.",
+  lodging: "A hotel or overnight stay — asks where you stayed, and always needs an itemized receipt.",
 };
 
 /** The chip's own short label. Deliberately NOT `EXPENSE_TYPE_LABELS` for
@@ -147,6 +147,23 @@ export interface CodingFormState {
    *  form covered in red before anything was typed teaches people to ignore
    *  red). */
   touched: boolean;
+  /** FINDING 1 (UX audit, 2026-08-12): bulk-apply an externally-authored
+   *  line — the ONE write path for "Use these answers" on a reimbursement
+   *  payout's already-written substantiation (`reimbursementCodingContext`).
+   *  A single explicit human tap, never automatic — see
+   *  `ReimbursementContextBlock`'s own module doc for the principle this
+   *  guards. Marks the expense-type chip OVERRIDDEN (same as a manual chip
+   *  tap) so a later category change can't silently clobber what was just
+   *  copied in. */
+  applyExternalLine: (line: {
+    expenseType: ExpenseType;
+    businessPurpose: string;
+    travelFrom?: string | null;
+    travelTo?: string | null;
+    headcount?: number | null;
+    attendees?: { name: string; affiliation: AttendeeAffiliation }[] | null;
+    groupDescription?: string | null;
+  }) => void;
 }
 
 /**
@@ -229,8 +246,11 @@ export function useCodingFormState({
       : {
           expenseType,
           businessPurpose,
+          // Lodging asks ONE place (persisted in `travelTo`) — `travelFrom`
+          // is travel-only from here on (Finding 2).
+          ...(expenseType === "travel" ? { travelFrom } : {}),
           ...(expenseType === "travel" || expenseType === "lodging"
-            ? { travelFrom, travelTo }
+            ? { travelTo }
             : {}),
           ...(expenseType === "meal" && headcount != null ? { headcount } : {}),
           ...(namesMode === true
@@ -251,6 +271,24 @@ export function useCodingFormState({
     headcountRaw.trim().length > 0 ||
     attendees.length > 0 ||
     groupDescription.trim().length > 0;
+
+  function applyExternalLine(line: {
+    expenseType: ExpenseType;
+    businessPurpose: string;
+    travelFrom?: string | null;
+    travelTo?: string | null;
+    headcount?: number | null;
+    attendees?: { name: string; affiliation: AttendeeAffiliation }[] | null;
+    groupDescription?: string | null;
+  }) {
+    setChip((s) => overrideExpenseType(s, line.expenseType));
+    setBusinessPurpose(line.businessPurpose);
+    setTravelFrom(line.travelFrom ?? "");
+    setTravelTo(line.travelTo ?? "");
+    setHeadcountRaw(line.headcount != null ? String(line.headcount) : "");
+    setAttendees(line.attendees ?? []);
+    setGroupDescription(line.groupDescription ?? "");
+  }
 
   return {
     expenseType,
@@ -275,6 +313,7 @@ export function useCodingFormState({
     value,
     fieldProblems,
     touched,
+    applyExternalLine,
   };
 }
 
@@ -299,12 +338,17 @@ export function ExpenseTypeChips({
 
   return (
     <View className="mb-4">
+      {/* FINDING 6 (UX audit, 2026-08-12): this used to read "What kind of
+          spend?" (the category picker just above) immediately followed by
+          "What kind of expense?" (this chip row) — two near-identical
+          questions back to back. This one is a QUESTION-SET picker, not a
+          category, so it's renamed to say what it actually decides. */}
       <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
-        What kind of expense?
+        Which proof questions apply?
       </Text>
       <Text className="mb-2 text-2xs text-muted">{followLine}</Text>
       <RadioGroup
-        accessibilityLabel="What kind of expense?"
+        accessibilityLabel="Which proof questions apply?"
         horizontal
         className="flex-row flex-wrap gap-1.5"
       >
@@ -405,13 +449,19 @@ export function CodingFieldSet({
       />
       <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
         <Icon name="globe" size={13} color={colors.muted} />
+        {/* FINDING 7 (UX audit, 2026-08-12): "This sentence publishes" led
+            with the consequence before the reason, which lands cold. Lead
+            with the why — a public page this connects to — in one short
+            sentence, then the consequence. */}
         <Text className="flex-1 text-2xs text-muted">
-          <Text className="font-semibold text-ink">This sentence publishes.</Text>{" "}
-          Public Worship is making every transaction public, and what you write
-          here is what the ledger prints, word for word — so write it for a
-          stranger reading it next year. &quot;Travel to NY to film the Eden
-          event&quot;, not &quot;bus to NY&quot;. In your own words, at least{" "}
-          {minPurposeLength} characters.
+          <Text className="font-semibold text-ink">
+            Public Worship publishes every transaction at
+            publicworship.life/finances
+          </Text>{" "}
+          — this sentence is what that page prints, word for word, so write
+          it for a stranger reading it next year. &quot;Travel to NY to film
+          the Eden event&quot;, not &quot;bus to NY&quot;. In your own words,
+          at least {minPurposeLength} characters.
         </Text>
       </View>
 
@@ -423,9 +473,11 @@ export function CodingFieldSet({
           someone
           {expenseType === "meal"
             ? " — put who was there in the attendee list below, where names stay internal and only the breakdown (“5 volunteers, 3 community members”) is ever published."
-            : expenseType === "travel" || expenseType === "lodging"
+            : expenseType === "travel"
               ? " — the route publishes at city level, so “to LIRR in Rosedale” is fine and “to Michael’s place” is not."
-              : " — describe the work, not the person."}
+              : expenseType === "lodging"
+                ? " — the place publishes at city level, so “Chicago” is fine and “Michael’s place” is not."
+                : " — describe the work, not the person."}
         </Text>
       </View>
 
@@ -433,6 +485,14 @@ export function CodingFieldSet({
 
       {budgetItems.length > 1 ? (
         <View className="mt-4">
+          {/* FINDING 9 (UX audit, 2026-08-12): one clause tying the three
+              buckets (events, operating, equipment) together before the
+              guidance below unpacks them — the picker used to jump straight
+              into "which of these three?" with nothing framing it as the
+              last step. */}
+          <Text className="mb-1.5 text-2xs text-muted">
+            Last one — which budget pays for it.
+          </Text>
           <Select
             label="Which budget did this come out of?"
             value={form.budgetId || ""}
@@ -458,31 +518,40 @@ export function CodingFieldSet({
       {expenseType === "travel" || expenseType === "lodging" ? (
         <View className="mt-4">
           <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
-            {expenseType === "lodging" ? "Where?" : "Where from, where to?"}
-          </Text>
-          <View className="flex-row gap-2">
-            <View className="flex-1">
-              <TextField
-                value={form.travelFrom}
-                onChangeText={form.setTravelFrom}
-                placeholder="From — e.g. Boston"
-              />
-            </View>
-            <View className="flex-1">
-              <TextField
-                value={form.travelTo}
-                onChangeText={form.setTravelTo}
-                placeholder="To — e.g. New York"
-              />
-            </View>
-          </View>
-          <Text className="mt-1 text-2xs text-muted">
-            The IRS asks travel for a PLACE, not just a trip — where from and
-            where to. City level is enough, and the route publishes at city
-            level too.
             {expenseType === "lodging"
-              ? " Lodging always needs an itemized receipt, at any amount — a bank line won't do."
-              : ""}
+              ? "Where did you stay?"
+              : "Where from, where to?"}
+          </Text>
+          {expenseType === "lodging" ? (
+            // FINDING 2: lodging asks ONE place, not a route — nobody
+            // "traveled from" a hotel. Persisted in `travelTo`.
+            <TextField
+              value={form.travelTo}
+              onChangeText={form.setTravelTo}
+              placeholder="e.g. Chicago — city is enough"
+            />
+          ) : (
+            <View className="flex-row gap-2">
+              <View className="flex-1">
+                <TextField
+                  value={form.travelFrom}
+                  onChangeText={form.setTravelFrom}
+                  placeholder="From — e.g. Boston"
+                />
+              </View>
+              <View className="flex-1">
+                <TextField
+                  value={form.travelTo}
+                  onChangeText={form.setTravelTo}
+                  placeholder="To — e.g. New York"
+                />
+              </View>
+            </View>
+          )}
+          <Text className="mt-1 text-2xs text-muted">
+            {expenseType === "lodging"
+              ? "An overnight stay needs a place — the city is enough. Lodging always needs an itemized receipt, at any amount — a bank line won't do."
+              : "The IRS asks travel for a PLACE, not just a trip — where from and where to. City level is enough, and the route publishes at city level too."}
           </Text>
         </View>
       ) : null}
