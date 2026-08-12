@@ -149,6 +149,7 @@ import {
   codingOverdueMs,
   isDocumented,
   isUncodedCharge,
+  stageForAge,
 } from "./lib/codingReminders";
 import { listCodingReviewerPersonIds } from "./lib/transactionCodingAccess";
 import { listActiveChapters } from "./lib/chapters";
@@ -2846,9 +2847,34 @@ export const unflagPersonalCharge = mutation({
     }
 
     if (repayment) await ctx.db.delete(repayment._id);
+
+    // RESTORE THE REMINDER TIMELINE TO WHAT THE CHARGE'S AGE ALREADY
+    // IMPLIES — don't just leave it cleared. `convertChargeToPersonalRepayment`
+    // clears `receiptReminderStage` the moment a charge is flagged personal
+    // (nobody chases a receipt on money that isn't the org's), but a charge
+    // un-flagged as a correction is exactly as old as it was a moment ago.
+    // Leaving the stage blank makes the next sweep treat it as BRAND NEW —
+    // re-transitioning it (and re-emailing the cardholder) purely because of
+    // the flag/unflag round trip, not because any time actually passed.
+    // `stageForAge` is the sweep's own day-threshold arithmetic, not a copy
+    // of it, so the two can never drift. No email is sent for this
+    // re-stamp — `lastReminderSentAt` is deliberately left untouched, same
+    // as the sweep's own "seed only" branch does for a stage it sets
+    // silently. Gated on `chargeOutstanding` too: a charge that's already
+    // fully documented/coded by the time it's un-flagged owes nothing, and
+    // stamping a stage on it would just be a different stale badge.
+    const now = Date.now();
+    const { sinceMs } = await codingPolicy(ctx);
+    const impliedStage = stageForAge(transaction.postedAt, now);
+    const stillOutstanding =
+      chargeOutstanding({ ...transaction, isPersonal: false }, sinceMs) !=
+      null;
     await ctx.db.patch(transactionId, {
       isPersonal: false,
       repaymentId: undefined,
+      ...(stillOutstanding && impliedStage !== "none"
+        ? { receiptReminderStage: impliedStage }
+        : {}),
     });
 
     await logFinanceAudit(ctx, {
@@ -4190,8 +4216,6 @@ export const advanceReceiptReminders = internalMutation({
     escalated: Id<"transactions">[];
   }> => {
     const now = Date.now();
-    const flagCutoff = now - DAY_MS;
-    const escalateCutoff = now - RECEIPT_ESCALATE_DAYS * DAY_MS;
     const seedOnlyCutoff = now - REMINDER_SEED_ONLY_DAYS * DAY_MS;
     const { sinceMs } = await codingPolicy(ctx);
     const cards = await ctx.db.query("cards").take(AUTOLOCK_LIMIT);
@@ -4215,15 +4239,16 @@ export const advanceReceiptReminders = internalMutation({
         // other sweep in this file re-checks the chapter, so this one does too.
         if (tr.chapterId !== card.chapterId) continue;
         if (chargeOutstanding(tr, sinceMs) == null) continue;
-        if (
-          tr.postedAt < escalateCutoff &&
-          tr.receiptReminderStage !== "escalated"
-        ) {
+        // `stageForAge` is THE shared day-threshold arithmetic — also read
+        // by `unflagPersonalCharge` to re-stamp a stage without emailing.
+        // Only ever candidate a FORWARD transition: escalated is skipped if
+        // already escalated, flagged only fires from a blank stage (a
+        // charge already at "flagged" waits for the next age threshold, not
+        // a re-transition into the same stage).
+        const implied = stageForAge(tr.postedAt, now);
+        if (implied === "escalated" && tr.receiptReminderStage !== "escalated") {
           candidates.push({ tr, stage: "escalated" });
-        } else if (
-          tr.postedAt < flagCutoff &&
-          tr.receiptReminderStage == null
-        ) {
+        } else if (implied === "flagged" && tr.receiptReminderStage == null) {
           candidates.push({ tr, stage: "flagged" });
         }
       }

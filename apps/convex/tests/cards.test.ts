@@ -659,6 +659,50 @@ describe("flagPersonalCharge", () => {
     expect(after?.lastReminderSentAt).toBeUndefined();
   });
 
+  // Regression for a bug the personal-flag clear above (naively) introduced:
+  // flag then immediately UN-flag (correcting a mistake) used to leave
+  // `receiptReminderStage` cleared, which made the very next sweep treat the
+  // charge as brand new and re-escalate + re-email it — a duplicate
+  // escalation notice for a charge the cardholder was already escalated on,
+  // purely from the flag/unflag round trip and not from any elapsed time.
+  test("flag then unflag doesn't cause the next sweep to re-escalate and re-email", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const holder = await seedPerson(s, { name: "Holder" });
+    const cardId = await seedCard(s, { cardholderPersonId: holder });
+    const txnId = await seedCardTxn(s, { cardId, amountCents: 4200, ageDays: 4 });
+
+    // First sweep: 4 days old, past RECEIPT_ESCALATE_DAYS (3) → escalates.
+    const firstSweep = await s.t.mutation(internal.cards.advanceReceiptReminders, {});
+    expect(firstSweep.escalated).toContain(txnId);
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(txnId)))?.receiptReminderStage,
+    ).toBe("escalated");
+
+    // Flagged personal by mistake, then immediately un-flagged to correct it.
+    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+    await s.as.mutation(api.cards.unflagPersonalCharge, { transactionId: txnId });
+
+    const afterUnflag = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(afterUnflag?.isPersonal).toBe(false);
+    // Restored to what the charge's AGE already implies — still 4 days old,
+    // still past the escalate threshold — not left blank.
+    expect(afterUnflag?.receiptReminderStage).toBe("escalated");
+    // No email sent for the restamp: no fresh `lastReminderSentAt` stamp.
+    expect(afterUnflag?.lastReminderSentAt).toBeUndefined();
+
+    // Second sweep, simulating the next daily cron run right after the
+    // round trip — the charge must NOT be returned again (which is what
+    // triggers `sendReceiptReminders` to email).
+    const secondSweep = await s.t.mutation(internal.cards.advanceReceiptReminders, {});
+    expect(secondSweep.escalated).not.toContain(txnId);
+    expect(secondSweep.flagged).not.toContain(txnId);
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(txnId)))?.receiptReminderStage,
+    ).toBe("escalated");
+  });
+
   test("a non-cardholder, non-manager cannot flag (FORBIDDEN)", async () => {
     const t = newT();
     const s = await setupChapter(t);
