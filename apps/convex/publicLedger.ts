@@ -258,6 +258,14 @@ const snapshotTotals = v.object({
   undocumentedCents: v.number(),
   uncodedCount: v.number(),
   uncodedCents: v.number(),
+  // #642 added these to `Snapshot`/`statementShape` and missed THIS validator
+  // — `totalsOf` spreads the whole snapshot, so `preview` failed its own
+  // returns validation on EVERY call, for everyone, any month, and the
+  // FinanceBoundary of the day dressed the crash as "Restricted" (the
+  // founder's night-long lockout, 2026-08-11/12). The regression test that
+  // was missing — preview simply being CALLED — now exists.
+  unexplainedCount: v.number(),
+  unexplainedCents: v.number(),
   truncated: v.boolean(),
   overCap: v.boolean(),
 });
