@@ -48,18 +48,28 @@ export function Row({
   children,
   onPress,
   last = false,
+  selected = false,
 }: {
   children: ReactNode;
   onPress?: () => void;
   /** Drop the bottom hairline on the final row. */
   last?: boolean;
+  /** A side panel is open on this exact row — an accent-tinted background so
+   *  which row the panel is showing stays unambiguous while the list keeps
+   *  scrolling past it (mirrors `explain.tsx`'s `ExplainRow` accent border,
+   *  which is a `Card` rather than a `Row` and so can't share this prop).
+   *  Defaults `false`; every existing caller is unaffected. */
+  selected?: boolean;
 }) {
   const [hovered, setHovered] = useState(false);
   const border = last ? "" : "border-b border-border";
+  const selectedClass = selected ? "bg-accent/10" : "";
 
   if (!onPress) {
     return (
-      <View className={`flex-row items-center gap-3 px-4 py-3 ${border}`}>{children}</View>
+      <View className={`flex-row items-center gap-3 px-4 py-3 ${border} ${selectedClass}`}>
+        {children}
+      </View>
     );
   }
 
@@ -68,7 +78,9 @@ export function Row({
       onPress={onPress}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
-      className={`flex-row items-center gap-3 px-4 py-3 ${border} ${hovered ? "bg-sunken" : "bg-raised"}`}
+      className={`flex-row items-center gap-3 px-4 py-3 ${border} ${
+        selected ? "bg-accent/10" : hovered ? "bg-sunken" : "bg-raised"
+      }`}
     >
       {children}
     </Pressable>
