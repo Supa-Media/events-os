@@ -158,7 +158,7 @@ import { serviceOptions } from "./schema/services";
 import { formSubmissions, formDefinitions } from "./schema/forms";
 import { identityDecisions } from "./schema/identity";
 import { exportJobs } from "./schema/dataExports";
-import { blogReactions } from "./schema/blog";
+import { blogReactions, blogReads } from "./schema/blog";
 
 /**
  * Database schema for Chapter OS.
@@ -635,6 +635,7 @@ const schema = defineSchema({
   // not rows here; this is only the counter. See schema/blog.ts's module doc
   // + lib/blogReactions.ts (rules) + blog.ts + lib/blogApiRoutes.ts.
   blogReactions,
+  blogReads,
 });
 
 export default schema;

@@ -32,3 +32,24 @@ export const blogReactions = defineTable({
   .index("by_slug_actor", ["slug", "actorKey"])
   // The exact row a toggle flips, without scanning the reader's other taps.
   .index("by_slug_actor_emoji", ["slug", "actorKey", "emoji"]);
+
+/**
+ * Blog reads — the "N readers" count next to the reaction bar.
+ *
+ * One row per (post, browser), written once when a browser first opens the
+ * post and never again: the count is DISTINCT READERS, not page views, so a
+ * refresh doesn't inflate it. Same anonymous `actorKey` as blogReactions,
+ * with the same honesty caveat: it counts browsers that ran the script, so
+ * it undercounts (JS off, storage blocked → fresh key each visit is the one
+ * overcount path) and a determined person can clear storage and count
+ * again. A warmth signal for the writers, never a metric.
+ */
+export const blogReads = defineTable({
+  slug: v.string(),
+  actorKey: v.string(),
+  createdAt: v.number(),
+})
+  // Counting a post's readers.
+  .index("by_slug", ["slug"])
+  // The dedup check: has THIS browser already been counted for this post?
+  .index("by_slug_actor", ["slug", "actorKey"]);

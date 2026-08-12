@@ -26,7 +26,10 @@ import { ConvexError } from "convex/values";
  * a lockfile change for five strings. If the two drift, the client shows an
  * emoji this rejects with UNKNOWN_EMOJI; nothing else breaks.
  */
-export const BLOG_REACTION_EMOJIS = ["🙏", "🙌", "❤️", "🔥", "💡"] as const;
+// 🤔 is deliberate: a bar with only positive taps can't tell the writers a
+// post DIDN'T land, and inviting disagreement is part of the philosophy the
+// first post argues for.
+export const BLOG_REACTION_EMOJIS = ["🙏", "🙌", "❤️", "🔥", "💡", "🤔"] as const;
 
 export type BlogReactionEmoji = (typeof BLOG_REACTION_EMOJIS)[number];
 
