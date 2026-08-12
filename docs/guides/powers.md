@@ -160,3 +160,27 @@ any more, and a missed rung is no longer possible.
 
 `finance.cards.*` is granted to nobody yet — the area exists so card access can
 be handed out broadly without inventing a power at the moment it's needed.
+
+## Editing powers
+
+Every power on a seat is editable from the org chart: open a seat, and the
+**Powers** section renders each domain from the registry. A domain with a
+ladder (Giving, Emails) offers a segmented **None / View / Manage** control; a
+domain of independent powers (Finance, Events, Organization, Data) offers
+toggles.
+
+Three things the editor does deliberately:
+
+- **Derived powers are shown, not hidden** — and can't be toggled. A seat
+  storing `finance.edit` really does grant `finance.cards.edit`, and hiding
+  that would misrepresent the seat; but offering a switch that does nothing
+  would be worse. They read as included, naming the power that grants them.
+- **One domain is written at a time** (`seats.setSeatDomainPowers`). Editing
+  Finance can't strip an email power by omission, so a stale client or a
+  partial render can never silently drop a power the editor never saw.
+- **A chapter seat never lists a central-only power.** There are no
+  chapter-level bank accounts, so `finance.accounts.view` isn't offered there.
+
+Gated on `org.chart.edit`, with the same self-lockout guard the structure
+editor uses: you cannot strip a power off your own seat and silently lose it.
+Ask another chart editor instead.

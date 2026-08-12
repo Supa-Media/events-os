@@ -21,8 +21,7 @@ import {
 import { colors } from "../../lib/theme";
 import { SeatActionsPanel } from "./SeatActions";
 import { RenameSeatControl, StructureEditActions } from "./StructureEditor";
-import { GivingPowerControl } from "./GivingPowerControl";
-import { CampaignPowerControl } from "./CampaignPowerControl";
+import { PowersEditor } from "./PowersEditor";
 import {
   avatarNameFor,
   capabilityLabel,
@@ -261,30 +260,31 @@ export function SeatDetailPanel({
           stored would under-report what the seat can actually do. See
           `displayPowers`. */}
       <SectionHeader title="Powers" />
-      {displayPowers(detail.capabilities).length === 0 ? (
+      {displayPowers(detail.capabilities, detail.chart).length === 0 ? (
         <Text className="text-sm text-muted">No special powers — standard member access.</Text>
       ) : (
         <View className="flex-row flex-wrap gap-1.5">
-          {displayPowers(detail.capabilities).map((c) => (
+          {displayPowers(detail.capabilities, detail.chart).map((c) => (
             <Badge key={c} label={capabilityLabel(c)} tone="accent" />
           ))}
         </View>
       )}
 
-      {/* Assignable giving power (owner decision 2026-07-19) — a per-role
-          None/View/Manage toggle for the Giving desk, shown ONLY to a caller
-          allowed to edit powers (`canEditPowers`: superuser or an
-          `org.editChart` holder — the same gate `setSeatGivingPower` enforces).
-          Not shown for a derived seat (its holders/powers are computed). */}
-      {detail.canEditPowers && !detail.derived ? (
-        <GivingPowerControl seatDefId={detail.defId} capabilities={detail.capabilities} />
-      ) : null}
+      {/* The Powers EDITOR, for a caller allowed to edit powers
+          (`canEditPowers`: superuser or an `org.chart.edit` holder — the same
+          gate `setSeatDomainPowers` enforces server-side). Not shown for a
+          derived seat, whose holders (and so its powers' reach) are computed.
 
-      {/* Assignable campaign power (founder requirement, 2026-07-24) — the
-          Campaigns-desk analog of the giving control right above it, same
-          gate. */}
+          This replaced two bespoke desk controls (Giving and Emails). They
+          were the only powers editable from this panel, which meant finance,
+          org-chart, export and door-check-in powers had no editor outside the
+          separate "Edit structure" mode — see `PowersEditor`'s doc. */}
       {detail.canEditPowers && !detail.derived ? (
-        <CampaignPowerControl seatDefId={detail.defId} capabilities={detail.capabilities} />
+        <PowersEditor
+          seatDefId={detail.defId}
+          capabilities={detail.capabilities}
+          chart={detail.chart}
+        />
       ) : null}
 
       <SectionHeader title="Reports to" />

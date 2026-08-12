@@ -18,8 +18,8 @@ import {
   POWER_DEFS,
   POWER_DOMAINS,
   SEAT_ROOT,
-  expandPowers,
   isPower,
+  powersAtScope,
   powerDescription,
   powerLabel,
   type Power,
@@ -351,9 +351,15 @@ export function capabilityDescription(id: string): string | null {
  * lets the chart stay the honest answer to "who can do this?" without a
  * hand-maintained list of implied rungs on every seat def.
  */
-export function displayPowers(stored: readonly string[]): Power[] {
-  const expanded = [...expandPowers(stored)];
-  return expanded.sort((a, b) => {
+export function displayPowers(
+  stored: readonly string[],
+  chart: "central" | "chapter",
+): Power[] {
+  // SCOPE-AWARE (`powersAtScope`, not `expandPowers`): a chapter seat's
+  // `finance.edit` expands to `finance.accounts.view`, which is harmless at the
+  // gate but would print "Open the Accounts tab" on a seat that cannot open it.
+  // The chart has to read honestly, not merely be safe.
+  return powersAtScope(stored, chart).sort((a, b) => {
     const da = POWER_DOMAINS.indexOf(POWER_DEFS[a].domain);
     const db = POWER_DOMAINS.indexOf(POWER_DEFS[b].domain);
     return da !== db ? da - db : a.localeCompare(b);

@@ -156,6 +156,21 @@ export interface PowerDef {
   description: string;
   /** Extra grants the grammar can't derive (rule 3). Transitive. */
   implies?: readonly Power[];
+  /**
+   * WHERE THE RESOURCE LIVES, when it doesn't live everywhere. `"central"`
+   * means the thing this power acts on exists only at the org level, so the
+   * power is meaningless at a chapter scope.
+   *
+   * This exists because of scope rule 3, and it is what keeps the wildcard rule
+   * from LYING. A chapter Treasurer's `finance.edit` expands to
+   * `finance.accounts.view`, and that expansion is harmless at the gate — the
+   * org's accounts are central, and `isCentralEdOrFm` reads the central scope
+   * specifically, so the Treasurer is refused. But the org chart renders the
+   * expanded set, and without this field it would print "Open the Accounts tab"
+   * on a seat that cannot open it. Being safe and reading honestly are
+   * different properties; this field is how the second one is kept.
+   */
+  scope?: "central";
 }
 
 /**
@@ -222,6 +237,8 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
     action: "view",
     label: "Open the Accounts tab",
     description: "See the org's bank accounts, balances, and transfers.",
+    // The org banks centrally; there are no chapter-level bank accounts.
+    scope: "central",
   },
   /** Cards are their own area on purpose, and it is the clearest example of
    *  why areas are earned: card access is the one finance power the org wants
@@ -463,6 +480,24 @@ export function grantsPower(held: Iterable<string>, needed: Power): boolean {
   return expandPowers(held).has(needed);
 }
 
+/**
+ * The powers `held` grants THAT MEAN SOMETHING at `chart`'s scope — the
+ * expanded set minus anything whose resource only exists centrally.
+ *
+ * Every surface that SHOWS a person their powers should use this rather than
+ * `expandPowers`, because the two answer different questions: `expandPowers`
+ * says what the rules grant, and this says what the holder can actually do
+ * from where they sit. For a central seat they are identical.
+ */
+export function powersAtScope(
+  held: Iterable<string>,
+  chart: "central" | "chapter",
+): Power[] {
+  const all = [...expandPowers(held)];
+  if (chart === "central") return all;
+  return all.filter((p) => POWER_DEFS[p].scope !== "central");
+}
+
 /** True iff `held` grants ANY power in `domain` — the navigation rule. A
  *  desk's tab is visible exactly when its holder can do something there, which
  *  is why there is no `nav.*` power to forget to grant. */
@@ -474,6 +509,102 @@ export function grantsAnyInDomain(
     if (POWER_DEFS[p].domain === domain) return true;
   }
   return false;
+}
+
+// ── Presentation: how a domain's powers are edited ───────────────────────────
+/**
+ * A domain's human name and how its powers should be OFFERED in an editor.
+ *
+ * Some domains are a LADDER — each rung strictly stronger than the last, so
+ * exactly one is held and a segmented "None / View / Manage" control is the
+ * honest UI. Others are a SET of independent powers, where a checklist is.
+ * Getting this wrong is not cosmetic: rendering a ladder as checkboxes invites
+ * an editor to tick `approve` without `edit` and wonder why nothing changed
+ * (the implication rules would grant `edit` anyway), while rendering a set as a
+ * ladder makes powers look mutually exclusive when they aren't.
+ *
+ * Declared here rather than in the app so the two editors that exist today —
+ * and any surface added later — can't disagree about which shape a domain is.
+ */
+export interface PowerDomainDef {
+  id: PowerDomain;
+  /** Section heading in the editor. */
+  label: string;
+  /** One line under the heading. */
+  description: string;
+  /**
+   * For a ladder domain: the rungs, WEAKEST FIRST, each naming the single
+   * power it stores. "None" is implicit and always offered first. Absent for a
+   * set domain, whose powers are offered independently.
+   */
+  ladder?: readonly { value: string; label: string; power: Power }[];
+}
+
+export const POWER_DOMAIN_DEFS: Record<PowerDomain, PowerDomainDef> = {
+  finance: {
+    id: "finance",
+    label: "Finance",
+    description:
+      "The books, budgets, cards, and the public ledger. Approving and publishing are separate from editing on purpose.",
+  },
+  giving: {
+    id: "giving",
+    label: "Giving desk",
+    description: "The donor CRM.",
+    ladder: [
+      { value: "view", label: "View", power: "giving.view" },
+      { value: "manage", label: "Manage", power: "giving.edit" },
+    ],
+  },
+  email: {
+    id: "email",
+    label: "Emails desk",
+    description:
+      "Design owns themes and templates but never sends. Compose can send once someone else approves. Approve decides on others' emails, never their own.",
+    ladder: [
+      { value: "design", label: "Design", power: "email.assets.edit" },
+      { value: "compose", label: "Compose", power: "email.campaigns.edit" },
+      { value: "approve", label: "Approve", power: "email.campaigns.approve" },
+    ],
+  },
+  events: {
+    id: "events",
+    label: "Events",
+    description: "Running events and the door.",
+  },
+  org: {
+    id: "org",
+    label: "Organization",
+    description: "The org chart itself.",
+  },
+  data: {
+    id: "data",
+    label: "Data",
+    description: "Bulk extraction. Never widens what a person can already see.",
+  },
+};
+
+/** The powers belonging to `domain`, in registry order. */
+export function powersInDomain(domain: PowerDomain): Power[] {
+  return POWERS.filter((p) => POWER_DEFS[p].domain === domain);
+}
+
+/**
+ * Which rung of a LADDER domain `held` currently sits on — the strongest rung
+ * whose power is granted, or `"none"`. Reads the EXPANDED set, so a row storing
+ * only the top rung still resolves to that rung rather than falling through.
+ */
+export function ladderRungOf(
+  held: Iterable<string>,
+  domain: PowerDomain,
+): string {
+  const ladder = POWER_DOMAIN_DEFS[domain].ladder;
+  if (!ladder) return "none";
+  const powers = expandPowers(held);
+  for (let i = ladder.length - 1; i >= 0; i--) {
+    if (powers.has(ladder[i].power)) return ladder[i].value;
+  }
+  return "none";
 }
 
 // ── Migration from the pre-standardization vocabulary ────────────────────────
