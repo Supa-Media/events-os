@@ -224,22 +224,29 @@ when it's ready. Until then — read both columns.
 
 **Voices that shaped us:**
 
-- **Augustine, *Confessions* X.33** (c. 400) — "more moved by the singing than
-  by what is sung… I confess myself to have sinned." Still load-bearing.
-- **A.W. Tozer, *Worship: The Missing Jewel*** (1961) — the recovery of
-  God-centered adoration as the thing we were made for.
-- **Marva Dawn** (Christianity Today tribute, 2021) — "too much music being
-  used today is narcissistic — it's about us and how we feel about God."
-- **Bob Kauflin, "Evaluating Worship Song Lyrics"** (2006) — a working worship
-  pastor's checklist.
+- **[Augustine, *Confessions* X.33](https://www.newadvent.org/fathers/110110.htm)**
+  (c. 400) — "…more moved by the singing than by what is sung, I confess
+  myself to have sinned criminally." Still load-bearing.
+- **[A.W. Tozer, *Worship: The Missing Jewel of the Evangelical
+  Church*](https://archive.org/details/isbn_2901600663238)** (preached 1961) —
+  the recovery of God-centered adoration.
+- **[Marva Dawn](https://onfaithcanada.blogspot.com/2021/05/a-feast-called-worship-interview-with.html)**
+  (2007 interview) — "Too much music being used today is narcissistic—it's
+  about us and how we feel about God."
+- **[Bob Kauflin, "Evaluating Worship Song
+  Lyrics"](https://worshipmatters.com/2006/12/01/worship-leaders-pastors-evaluating-worship-song-lyrics/)**
+  (2006) — a working worship pastor's checklist.
 
 **Voices that check us:**
 
-- **Isaac Watts, Preface to *Hymns and Spiritual Songs*** (1707) — the defense
-  of worship in the worshiper's voice; a check on overcorrecting.
-- **Justin Taylor, "Don't Neglect the Horizontal Dimension of Singing and
-  Worship"** (TGC, 2017) — the strongest counter-voice to our framing; read it
-  before you trust us too much.
-- **Walter Brueggemann, "The Costly Loss of Lament"** (1986) — why a
-  vertical-only catalog that skips lament is dangerous in the opposite
-  direction.
+- **[Isaac Watts, Preface to *Hymns and Spiritual
+  Songs*](https://www.ccel.org/ccel/ccel/eee/files/wattsprh.htm)** (1707) —
+  the defense of worship in the worshiper's voice; a check on overcorrecting.
+- **[Justin Taylor, "Don't Neglect the Horizontal Dimension of Singing and
+  Worship"](https://www.thegospelcoalition.org/blogs/justin-taylor/dont-neglect-the-horizontal-dimension-of-singing-and-worship/)**
+  (TGC, 2017) — the strongest counter-voice to our framing; read it before you
+  trust us too much.
+- **[Walter Brueggemann, "The Costly Loss of
+  Lament"](https://doi.org/10.1177/030908928601103605)**
+  (JSOT, 1986) — why a vertical-only catalog that skips lament is dangerous in
+  the opposite direction.
