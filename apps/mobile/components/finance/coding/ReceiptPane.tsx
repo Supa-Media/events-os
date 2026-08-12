@@ -26,9 +26,18 @@
  * already handles that same access boundary today by staying inert until
  * clicked, so this is strictly no worse than the pre-panel behavior, just
  * more visible.
+ *
+ * THE BOUNDARY IS KEYED BY `transactionId` (`ReceiptPane`'s render, below).
+ * An error boundary's `state` survives ordinary re-renders — only a remount
+ * clears it — so without a key, one 403'd row would leave every row selected
+ * AFTER it stuck on "Couldn't load this receipt" too, even ones the caller
+ * can perfectly well read: navigating past the bad row would never retry the
+ * query for the next one. Keying by the transaction id forces React to
+ * discard and recreate the boundary (and its state) on every row change, so
+ * each row gets its own fresh attempt.
  */
 import { Component, useState, type ReactNode } from "react";
-import { Text, View } from "react-native";
+import { Pressable, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -38,9 +47,13 @@ import { colors } from "../../../lib/theme";
 /** Local, tiny error boundary — a FORBIDDEN/NOT_FOUND from the receipts query
  *  degrades this ONE pane, not the panel or the screen around it. Mirrors
  *  `components/finance/dashboard/parts.tsx#FinanceBoundary`, kept local
- *  rather than imported: that one's fallback assumes a full-screen layout
- *  ("Check again" button et al.), this one has to fit inside a fixed-height
- *  card. */
+ *  rather than imported: that one's fallback assumes a full-screen layout,
+ *  this one has to fit inside a fixed-height card — but it keeps the SAME
+ *  "Check again" affordance (#657) rather than a dead-end message, for the
+ *  same-row case: a transient failure (a dropped connection, a query that
+ *  raced ahead of a permission grant) clears without navigating away and
+ *  back, which is the only thing that would otherwise remount this boundary
+ *  (see the module doc above on why the key matters). */
 class ReceiptBoundary extends Component<
   { children: ReactNode },
   { failed: boolean }
@@ -52,11 +65,22 @@ class ReceiptBoundary extends Component<
   render() {
     if (this.state.failed) {
       return (
-        <NoReceiptState
-          icon="alert-triangle"
-          title="Couldn't load this receipt"
-          detail="Open it from the record below instead."
-        />
+        <View className="h-full w-full items-center justify-center gap-2 px-8 py-16">
+          <Icon name="alert-triangle" size={26} color={colors.faint} />
+          <Text className="text-center text-sm font-semibold text-ink">
+            Couldn&apos;t load this receipt
+          </Text>
+          <Text className="text-center text-xs text-muted">
+            Open it from the record below instead.
+          </Text>
+          <Pressable
+            onPress={() => this.setState({ failed: false })}
+            accessibilityRole="button"
+            className="mt-1 active:opacity-70"
+          >
+            <Text className="text-xs font-semibold text-accent">Check again</Text>
+          </Pressable>
+        </View>
       );
     }
     return this.props.children;
@@ -137,7 +161,9 @@ export function ReceiptPane({
       style={{ height: 420 }}
     >
       {hasReceipt ? (
-        <ReceiptBoundary>
+        // Keyed by transactionId — see the module doc above on why an
+        // unkeyed boundary here would latch a 403 across row navigation.
+        <ReceiptBoundary key={transactionId}>
           <LoadedReceipt transactionId={transactionId} />
         </ReceiptBoundary>
       ) : hasApprovedException ? (
