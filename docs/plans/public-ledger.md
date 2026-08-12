@@ -109,7 +109,7 @@ Per CLAUDE.md's "gate it behind a power" rule, every gate lives in
 
 | Power | Resolver | Today |
 |---|---|---|
-| Prepare / submit | `requireLedgerPrepare` | Finance manager at the book; central reach for a foreign book |
+| Prepare / submit | `requireLedgerPrepare` | Finance manager at the book; central reach for a foreign book — or a central Executive Director/Financial Manager seat, any book including their own chapter's |
 | Publish / send back | `requireLedgerPublish` | The `finance.publish` **seat capability** |
 | Read the console | `requireLedgerConsole` | Finance viewer+ at the book |
 

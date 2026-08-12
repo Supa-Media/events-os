@@ -52,6 +52,51 @@ const specializedTitleValidator = v.union(
  * Central first (the UI's default desk), then chapters by name. Placeholder
  * roster rows never count (mirrors `viewerPerson`). No grants → `[]` → member.
  *
+ * ── THE CENTRAL ED/FM WIDENING (bug #2 follow-up to the ledger console/
+ * prepare fix) ─────────────────────────────────────────────────────────────
+ * A central `executive_director` seat carries `finance.central`/
+ * `finance.approve`/`finance.accounts`/`finance.publish` but deliberately
+ * NEVER `finance.manager` (see `SEAT_DEFS`), and its `legacyTitle` is a
+ * LEADERSHIP-kind title — `assignSpecializedRoleImpl`'s finance-only bridge
+ * (`bridgeFinanceManagerGrant`) never fires for it, unlike
+ * `financial_manager`'s finance-kind title, which DOES bridge a real central
+ * `financeRoles` manager grant on assignment. So a real ED seat produces
+ * NEITHER a seat-derived graded role (this file reads only the stored
+ * `financeRoles` table, not `lib/seats.ts#getSeatDerivedCapabilities`) NOR a
+ * bridged stored grant — `centralRole` stays `null` and this query returned
+ * `[]` for an ED even after `lib/publicLedgerAccess.ts`'s console/prepare
+ * widening started letting that same ED into the console server-side.
+ * `finances/_layout.tsx` branches on `seats.length === 0` BEFORE
+ * `canViewAccounts`, so the ED landed on `MEMBER_TABS` — no Publish, no By
+ * month, no Accounts tab — despite the server granting all of it.
+ *
+ * Fixed by unioning in a SYNTHESIZED central seat, gated on
+ * `isCentralEdOrFm` — the exact resolver the console/prepare widening itself
+ * uses (one source of truth; this file does not re-derive the ED/FM check).
+ * Only fires when `centralRole` is STILL `null` after the real grants loop
+ * above, so a real `financial_manager` assignment (which bridges its own
+ * stored grant) is untouched and never double-counted.
+ *
+ * `role: "viewer"`, not `"manager"` — deliberately the HONEST floor, not the
+ * seat's peak power. This seat carries no `finance.manager` CAPABILITY, and
+ * every WRITE gate `lib/finance.ts#getFinanceRole` backs (reconcile writes,
+ * `updateBudget`, `receipt-chase.tsx`'s `isManager` check,
+ * `PersonalChargesView`'s own) is UNCHANGED by the console/prepare widening
+ * — only `hasLedgerConsole`/`hasLedgerPrepare` were widened. Synthesizing
+ * `"manager"` here would light up manager-only UI this caller cannot
+ * actually use and get a 403 from on the write. `"viewer"` is exactly the
+ * `chapter_director` seat's own precedent (seat-derived `finance.viewer`,
+ * read-only) and is enough to satisfy the one thing this query is FOR: a
+ * non-empty result puts the caller on `SEAT_TABS`, not `MEMBER_TABS`.
+ * `canViewAccounts` (a separate query, already correct) still independently
+ * governs the Accounts tab.
+ *
+ * `seats.myDeskChapters` already offers this ED a central desk (their real
+ * `seatAssignments` row is enough for that query), so `ChapterContext`'s
+ * `mergeDesks` was never broken — this fix brings `mySeats` into agreement
+ * with what `myDeskChapters` already said, rather than changing what the
+ * merged desk list shows.
+ *
  * WP-1.1: each seat is additionally enriched with an optional `title` — the
  * caller's SPECIALIZED role (`executive_director` / `president` /
  * `finance_manager`) at that same scope, if any. This is display enrichment
@@ -127,6 +172,14 @@ export const mySeats = query({
       if (g.scope === "central" && stronger(g.role, centralRole)) {
         centralRole = g.role;
       }
+    }
+    // The widening (see module doc): a central ED/FM who produced neither a
+    // seat-derived nor a bridged stored central grant still gets a desk —
+    // gated on the SAME resolver `lib/publicLedgerAccess.ts`'s console/
+    // prepare widening uses, so this can never drift ahead of or behind that
+    // gate's own definition of "central ED or FM."
+    if (centralRole == null && (await isCentralEdOrFm(ctx))) {
+      centralRole = "viewer";
     }
 
     // Chapter seats: the strongest chapter-scoped grant per chapter.
