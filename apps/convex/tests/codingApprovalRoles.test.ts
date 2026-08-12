@@ -614,6 +614,98 @@ describe("separation of duties outranks every one of the four seats", () => {
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// THE ONE RELAXATION — the solo-operator bypass, and the trace it must leave.
+// Mirrors `budgets.approvalParty` (owner, 2026-08-11: "as super admin, I need
+// the ability to just approve my own coding things"). A SUPERUSER may decide
+// their own coding; the approval is branded `approvalParty: "single"` so it
+// stays re-reviewable when the org grows past one person. Nobody else gets it
+// — the describe above stays true for every ordinary seat holder.
+// ─────────────────────────────────────────────────────────────────────────────
+describe("solo-operator self-approval — superuser only, and it leaves a trace", () => {
+  async function selfCodingRow(s: ChapterSetup, txnId: Id<"transactions">) {
+    return await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactionCodings")
+        .withIndex("by_transaction", (q) => q.eq("transactionId", txnId))
+        .unique(),
+    );
+  }
+
+  test("a superuser approves their OWN coding, recorded as approvalParty 'single'", async () => {
+    // The founder's exact shape: superuser email, their own roster row, their
+    // own submitted coding — before this relaxation, SOD_VIOLATION.
+    const s = await seatSetup({ email: "seyi@publicworship.life" });
+    const selfPersonId = await seedPerson(s, "Owner", { self: true });
+    const txnId = await seedTxn(s, s.chapterId);
+    await seedSubmittedCoding(s, txnId, s.chapterId, selfPersonId);
+
+    // `canReview` must promise what the mutation allows — the queue's own
+    // row shows a live Approve button, not "waiting on somebody else".
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: txnId,
+    });
+    expect(data.canReview).toBe(true);
+
+    await s.as.mutation(api.transactionCodings.approve, {
+      transactionId: txnId,
+    });
+    const row = await selfCodingRow(s, txnId);
+    expect(row?.status).toBe("approved");
+    expect(row?.approvalParty).toBe("single");
+    expect(row?.decidedByPersonId).toBe(selfPersonId);
+  });
+
+  test("a normal different-identity approval records 'two_party'", async () => {
+    const s = await seatSetup();
+    const ed = await addMember(s, { email: "ed@publicworship.life", name: "ED" });
+    await assignSeatDirect(s, ed.personId, "executive_director", "central");
+    const author = await seedPerson(s, "Cardholder");
+    const txnId = await seedTxn(s, s.chapterId);
+    await seedSubmittedCoding(s, txnId, s.chapterId, author);
+
+    await ed.as.mutation(api.transactionCodings.approve, {
+      transactionId: txnId,
+    });
+    const row = await selfCodingRow(s, txnId);
+    expect(row?.status).toBe("approved");
+    expect(row?.approvalParty).toBe("two_party");
+  });
+
+  test("a non-superuser ED still cannot self-approve — the relaxation is the superuser's alone", async () => {
+    const s = await seatSetup();
+    const ed = await addMember(s, { email: "ed@publicworship.life", name: "ED" });
+    await assignSeatDirect(s, ed.personId, "executive_director", "central");
+    const txnId = await seedTxn(s, s.chapterId);
+    await seedSubmittedCoding(s, txnId, s.chapterId, ed.personId);
+
+    await expect(
+      ed.as.mutation(api.transactionCodings.approve, { transactionId: txnId }),
+    ).rejects.toMatchObject({ data: { code: "SOD_VIOLATION" } });
+    const row = await selfCodingRow(s, txnId);
+    expect(row?.approvalParty).toBeUndefined();
+  });
+
+  test("the superuser can also redact their own coding's public wording first", async () => {
+    // Redaction is part of the deciding power — a solo operator approving
+    // their own coding must be able to strip a name from the public sentence
+    // on the way (the mutation used to SOD-block them).
+    const s = await seatSetup({ email: "seyi@publicworship.life" });
+    const selfPersonId = await seedPerson(s, "Owner", { self: true });
+    const txnId = await seedTxn(s, s.chapterId);
+    await seedSubmittedCoding(s, txnId, s.chapterId, selfPersonId);
+
+    await s.as.mutation(api.transactionCodings.setPublicPurpose, {
+      transactionId: txnId,
+      publicPurpose: "Travel to NY to film the event with the team",
+    });
+    const row = await selfCodingRow(s, txnId);
+    expect(row?.publicPurpose).toBe(
+      "Travel to NY to film the event with the team",
+    );
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
 // The seats that carry no approval power at all stay refused.
 // ─────────────────────────────────────────────────────────────────────────────
 describe("nobody else approves anything", () => {

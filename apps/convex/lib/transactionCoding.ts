@@ -332,6 +332,11 @@ export async function decideCoding(
     reviewNote?: string;
     decidedByPersonId: Id<"people"> | null;
     decidedByUserId: Id<"users">;
+    /** The decider is the coding's own author, allowed through the
+     *  solo-operator relaxation (`maySelfDecideCoding`). Recorded on the row
+     *  as `approvalParty: "single"` — the bypass must leave a durable trace,
+     *  exactly as `budgets.approvalParty` does. */
+    selfApproved?: boolean;
   },
 ): Promise<void> {
   const reviewNote = args.reviewNote?.trim() || undefined;
@@ -372,6 +377,16 @@ export async function decideCoding(
     decidedByUserId: args.decidedByUserId,
     decidedAt: Date.now(),
     reviewNote: args.approve ? undefined : reviewNote,
+    // Only an APPROVAL records its party — a send-back decides nothing final.
+    // "single" = the solo-operator self-approval bypass; "two_party" = a
+    // different identity decided, the normal case. See the schema doc.
+    ...(args.approve
+      ? {
+          approvalParty: args.selfApproved
+            ? ("single" as const)
+            : ("two_party" as const),
+        }
+      : {}),
   });
   await ctx.db.patch(args.coding.transactionId, { codingState: status });
 }

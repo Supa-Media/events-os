@@ -2105,6 +2105,17 @@ export const transactionCodings = defineTable({
   // The reviewer's latest send-back note ("receipt must show exact amount") —
   // required on `changes_requested`, cleared on approval.
   reviewNote: v.optional(v.string()),
+  // Mirrors `budgets.approvalParty` (owner addendum 2026-07-17, extended to
+  // codings 2026-08-11: "as super admin, I need the ability to just approve
+  // my own coding things"): while the owner is solo-operating, a SUPERUSER
+  // may approve a coding they themselves authored — everyone else still gets
+  // the SoD identity block. `"single"` records that an approval took that
+  // bypass; `"two_party"` is every normal different-identity approval. Set
+  // only on approval, so the record of WHICH approvals were solo survives
+  // for re-review when the org grows past one person.
+  approvalParty: v.optional(
+    v.union(v.literal("single"), v.literal("two_party")),
+  ),
   // ── REDACTION, NOT FALSIFICATION ──────────────────────────────────────────
   // `businessPurpose` above is and remains the AUTHOR'S OWN WORDS. It is never
   // rewritten by anyone else and never deleted — it is the substantiation of
