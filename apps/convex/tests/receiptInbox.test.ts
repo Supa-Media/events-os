@@ -2196,7 +2196,19 @@ describe("processInboundReceipt", () => {
       const t = newT();
       const s = await setupChapter(t);
       await seedPerson(s, { email: "charisma@example.com" });
-      const txn = await seedTxn(s, { amountCents: 29852, status: "categorized" });
+      // PINNED to the forwarded receipt's own date. `seedTxn` defaults
+      // `postedAt` to `Date.now()`, and the body above hardcodes "Jul 30,
+      // 2026" — so the gap between them grew by a day every day until it
+      // crossed `MATCH_WINDOW_MS` (14 days) and the candidate stopped
+      // matching. The suite went red on 2026-08-13 for no reason but the
+      // calendar, and would have stayed red. A fixture with a fixed date needs
+      // its transaction fixed to the same one; same reasoning as
+      // `reimbursementSpend.test.ts#postPayoutOn`.
+      const txn = await seedTxn(s, {
+        amountCents: 29852,
+        status: "categorized",
+        postedAt: Date.UTC(2026, 6, 30, 21, 35),
+      });
 
       const replies = mockRelayedEmail(FORWARDED_BODY, {
         "List-Id": "<receipts.publicworship.life>",
