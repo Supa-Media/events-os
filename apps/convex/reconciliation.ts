@@ -132,7 +132,11 @@ import {
   giftCoverageByTransaction,
   giftCoverageState,
 } from "./lib/giftCoverage";
-import { canManageGivingScope, resolveGivingAccess } from "./lib/givingAccess";
+import {
+  canManageGivingScope,
+  resolveGivingAccess,
+  type GivingScope,
+} from "./lib/givingAccess";
 import {
   reconcileOrgMoney,
   addableBankPendingCents,
@@ -4452,29 +4456,54 @@ export const bookValueBreakdown = query({
     // stuck on: a $7,000 wire that is a $5,000 gift and a $2,000 gift matched
     // neither, so the app showed nothing and the money stayed counted twice.
     //
-    // CENTRAL'S GIFTS ARE IN SCOPE for a chapter's deposit, because that is
-    // where the split lands: money arrives in the chapter's account and part
-    // of it is central's revenue. Only for a reader who can manage central's
-    // giving — a chapter-only manager must not be shown central's donors.
+    // OTHER BOOKS' GIFTS ARE IN SCOPE, in BOTH directions. That is where a
+    // split lands: the money arrives in one account and part of it is another
+    // book's revenue, and which account it arrived in is an accident of how
+    // the wire was addressed. Scoping the search to the deposit's own book
+    // would make the panel's usefulness depend on that accident — it would
+    // find the founder's $5,000 half but not the $2,000 half, or the reverse,
+    // with no way for the reader to tell which case they were in.
+    //
+    // ONLY books the reader can manage giving for. A chapter-only manager is
+    // never shown another chapter's donors, so widening the SEARCH does not
+    // widen who can SEE anything. Bounded per book and capped at
+    // `MAX_OTHER_BOOKS_SEARCHED`, which is the same order of reads the
+    // accounts page already does across every scope.
     const WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
     /** Gifts offered per deposit before the panel stops guessing. A split runs
      *  to a handful of books; a long tail is noise, not a finding. */
     const MAX_GIFTS_OFFERED_PER_DEPOSIT = 6;
+    /** Other books searched for a match before the panel gives up. Reached
+     *  only by an org with more chapters than this, and reported rather than
+     *  silently truncated. */
+    const MAX_OTHER_BOOKS_SEARCHED = 24;
 
     const giving = await resolveGivingAccess(ctx);
     const candidateGifts: { gift: Doc<"gifts">; bookLabel: string | null }[] =
       gifts
         .filter((g) => g.transactionId == null)
         .map((g) => ({ gift: g, bookLabel: null }));
-    if (scope !== CENTRAL && canManageGivingScope(giving, CENTRAL)) {
-      const centralGifts = await ctx.db
+
+    const otherBooks: { scope: FinanceScope; label: string }[] = [];
+    if (scope !== CENTRAL) otherBooks.push({ scope: CENTRAL, label: "Central" });
+    const chapterRows = await ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT);
+    for (const c of chapterRows) {
+      if (String(c._id) === String(scope)) continue;
+      otherBooks.push({ scope: c._id as FinanceScope, label: c.name });
+    }
+    const searchable = otherBooks.filter((b) =>
+      canManageGivingScope(giving, b.scope as GivingScope),
+    );
+    if (searchable.length > MAX_OTHER_BOOKS_SEARCHED) truncated = true;
+    for (const book of searchable.slice(0, MAX_OTHER_BOOKS_SEARCHED)) {
+      const theirs = await ctx.db
         .query("gifts")
-        .withIndex("by_scope", (q) => q.eq("scope", CENTRAL))
+        .withIndex("by_scope", (q) => q.eq("scope", book.scope))
         .take(ROLLUP_SCAN_LIMIT);
-      if (centralGifts.length === ROLLUP_SCAN_LIMIT) truncated = true;
-      for (const g of centralGifts) {
+      if (theirs.length === ROLLUP_SCAN_LIMIT) truncated = true;
+      for (const g of theirs) {
         if (g.transactionId != null) continue;
-        candidateGifts.push({ gift: g, bookLabel: "Central" });
+        candidateGifts.push({ gift: g, bookLabel: book.label });
       }
     }
 

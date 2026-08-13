@@ -261,6 +261,39 @@ describe("the detector offers the parts of a split", () => {
     expect(offers[1].uncoveredCents).toBe(200_000);
   });
 
+  test("the search runs BOTH ways — a chapter's gift is offered against central's deposit", async () => {
+    // Which account a wire lands in is an accident of how it was addressed.
+    // If the panel only searched one direction it would find the founder's
+    // $5,000 half but not the $2,000 half, or the reverse, with no way for the
+    // reader to tell which case they were looking at.
+    const s = await devDirectorSetup();
+    const at = Date.now() - DAY_MS;
+    const wire = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: "central" as const,
+        source: "manual",
+        flow: "inflow" as const,
+        amountCents: 700_000,
+        postedAt: at,
+        status: "unreviewed" as const,
+        createdAt: Date.now(),
+      }),
+    );
+    await seedGift(s, 500_000, { scope: "central", receivedAt: at });
+    await seedGift(s, 200_000, { receivedAt: at });
+
+    const breakdown = await s.as.query(api.reconciliation.bookValueBreakdown, {
+      scope: "central",
+    });
+    const offers = breakdown.suspectedDoubleCounts.filter(
+      (d) => d.transactionId === wire,
+    );
+    expect(offers.map((o) => o.giftAmountCents)).toEqual([500_000, 200_000]);
+    // Central's own gift is unlabelled; the chapter's names its book.
+    expect(offers[0].giftBookLabel).toBe(null);
+    expect(offers[1].giftBookLabel).toBeTruthy();
+  });
+
   test("a gift bigger than what is left is not offered", async () => {
     const s = await devDirectorSetup();
     const at = Date.now() - DAY_MS;
