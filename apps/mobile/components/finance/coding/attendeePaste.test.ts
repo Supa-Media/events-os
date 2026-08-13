@@ -1,5 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
-import { parseAttendeePaste } from "./attendeePaste";
+import { capBulkAdditions, parseAttendeePaste } from "./attendeePaste";
 
 describe("parseAttendeePaste — newline-broken lists", () => {
   test("a plain list of names, one per line, defaults to team", () => {
@@ -169,5 +169,38 @@ describe("parseAttendeePaste — empty input", () => {
 
   test("whitespace-only string parses to no attendees", () => {
     expect(parseAttendeePaste("   \n\n  ")).toEqual([]);
+  });
+});
+
+describe("capBulkAdditions", () => {
+  test("accepts everything when there's room for it all", () => {
+    const result = capBulkAdditions(["a", "b", "c"], 2, 15);
+    expect(result).toEqual({ accepted: ["a", "b", "c"], overflow: 0 });
+  });
+
+  test("FINDING 1 repro: 3 existing + 20 pasted, threshold 15 — caps at 12 and reports the other 8 as overflow", () => {
+    const pasted = Array.from({ length: 20 }, (_, i) => ({
+      name: `Person ${i + 1}`,
+      affiliation: "team" as const,
+    }));
+    const result = capBulkAdditions(pasted, 3, 15);
+    expect(result.accepted).toHaveLength(12);
+    expect(result.accepted[0]).toEqual({ name: "Person 1", affiliation: "team" });
+    expect(result.accepted[11]).toEqual({ name: "Person 12", affiliation: "team" });
+    expect(result.overflow).toBe(8);
+  });
+
+  test("no room left at all — every candidate overflows, nothing accepted", () => {
+    const result = capBulkAdditions(["a", "b"], 15, 15);
+    expect(result).toEqual({ accepted: [], overflow: 2 });
+  });
+
+  test("existingCount already over the max — still no negative room, nothing accepted", () => {
+    const result = capBulkAdditions(["a"], 20, 15);
+    expect(result).toEqual({ accepted: [], overflow: 1 });
+  });
+
+  test("empty candidates list — accepted empty, no overflow", () => {
+    expect(capBulkAdditions([], 5, 15)).toEqual({ accepted: [], overflow: 0 });
   });
 });

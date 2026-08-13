@@ -178,3 +178,42 @@ export function parseAttendeePaste(
 
   return results;
 }
+
+// ── Capping a bulk addition at the meal-names threshold ─────────────────────
+export interface BulkAdditionCap<T> {
+  /** The candidates that fit, in order, up to `maxTotal`. */
+  accepted: T[];
+  /** How many candidates didn't fit — 0 means nothing was left out. */
+  overflow: number;
+}
+
+/**
+ * Cap a list of bulk-add candidates (parsed paste rows, or team-roster
+ * fills) so `existingCount + accepted.length` never exceeds `maxTotal`.
+ *
+ * THE DEFECT THIS CLOSES (FINDING 1, adversarial review 2026-08-13): meal
+ * names are only REQUIRED up to a headcount threshold
+ * (`mealNamesRequired`/`namesMaxHeadcount`) — past it, the form asks for a
+ * headcount + group description instead, and `namesMode` flips to `false`.
+ * Before this cap existed, a bulk add (paste or "start with the team") could
+ * push headcount past that threshold as a side effect of growing it to match
+ * the new total. On the VERY NEXT RENDER `namesMode` would flip, and since
+ * `rows` is empty and a coding's submittable `attendees` value is only
+ * populated `namesMode === true` (`useCodingFormState`'s `value`
+ * computation), the entire roster — including the people who were JUST
+ * added — would vanish from both the screen and the value about to be
+ * submitted, with an inflated headcount and an empty, unexplained
+ * group-description box left behind. Capping the addition here means
+ * headcount can never be pushed past the threshold by these paths in the
+ * first place; the caller reports `overflow` so the UI can say plainly how
+ * many people were left out and why, instead of losing them silently.
+ */
+export function capBulkAdditions<T>(
+  candidates: readonly T[],
+  existingCount: number,
+  maxTotal: number,
+): BulkAdditionCap<T> {
+  const room = Math.max(0, maxTotal - existingCount);
+  const accepted = candidates.slice(0, room);
+  return { accepted, overflow: candidates.length - accepted.length };
+}
