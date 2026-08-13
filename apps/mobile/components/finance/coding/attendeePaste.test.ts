@@ -1,5 +1,9 @@
 import { describe, expect, test } from "@jest/globals";
-import { capBulkAdditions, parseAttendeePaste } from "./attendeePaste";
+import {
+  HARD_BULK_ATTENDEE_CAP,
+  mergeBulkAttendees,
+  parseAttendeePaste,
+} from "./attendeePaste";
 
 describe("parseAttendeePaste — newline-broken lists", () => {
   test("a plain list of names, one per line, defaults to team", () => {
@@ -172,35 +176,56 @@ describe("parseAttendeePaste — empty input", () => {
   });
 });
 
-describe("capBulkAdditions", () => {
-  test("accepts everything when there's room for it all", () => {
-    const result = capBulkAdditions(["a", "b", "c"], 2, 15);
-    expect(result).toEqual({ accepted: ["a", "b", "c"], overflow: 0 });
+describe("mergeBulkAttendees — the prune-down merge", () => {
+  const person = (name: string) => ({ name, affiliation: "team" as const });
+
+  test("FOUNDER SCENARIO (2026-08-13 report): headcount typed 12, empty rows, 18-person team — the WHOLE team lands, headcount follows", () => {
+    // The shipped version mapped over the raw (empty) attendees state and
+    // wrote nothing while reporting "Added 12 of 18". The merge writes the
+    // roster outright: all 18 in, prune from there.
+    const team = Array.from({ length: 18 }, (_, i) => person(`Member ${i + 1}`));
+    const result = mergeBulkAttendees([], team);
+    expect(result.merged).toHaveLength(18);
+    expect(result.added).toBe(18);
+    expect(result.capped).toBe(0);
+    expect(result.deduped).toBe(0);
+    expect(result.merged[0].name).toBe("Member 1");
+    expect(result.merged[17].name).toBe("Member 18");
   });
 
-  test("FINDING 1 repro: 3 existing + 20 pasted, threshold 15 — caps at 12 and reports the other 8 as overflow", () => {
-    const pasted = Array.from({ length: 20 }, (_, i) => ({
-      name: `Person ${i + 1}`,
-      affiliation: "team" as const,
-    }));
-    const result = capBulkAdditions(pasted, 3, 15);
-    expect(result.accepted).toHaveLength(12);
-    expect(result.accepted[0]).toEqual({ name: "Person 1", affiliation: "team" });
-    expect(result.accepted[11]).toEqual({ name: "Person 12", affiliation: "team" });
-    expect(result.overflow).toBe(8);
+  test("already-filled rows are kept first; duplicates (case-insensitive) are dropped and counted", () => {
+    const existing = [person("Alice"), { name: "", affiliation: "team" as const }, person("Bob")];
+    const result = mergeBulkAttendees(existing, [person("alice"), person("Cara")]);
+    expect(result.merged.map((r) => r.name)).toEqual(["Alice", "Bob", "Cara"]);
+    expect(result.added).toBe(1);
+    expect(result.deduped).toBe(1);
   });
 
-  test("no room left at all — every candidate overflows, nothing accepted", () => {
-    const result = capBulkAdditions(["a", "b"], 15, 15);
-    expect(result).toEqual({ accepted: [], overflow: 2 });
+  test("blank-named additions are ignored entirely", () => {
+    const result = mergeBulkAttendees([person("Alice")], [person("  "), person("Bea")]);
+    expect(result.merged.map((r) => r.name)).toEqual(["Alice", "Bea"]);
+    expect(result.deduped).toBe(0);
   });
 
-  test("existingCount already over the max — still no negative room, nothing accepted", () => {
-    const result = capBulkAdditions(["a"], 20, 15);
-    expect(result).toEqual({ accepted: [], overflow: 1 });
+  test("only the HARD cap drops anyone — never the names threshold", () => {
+    const crowd = Array.from({ length: HARD_BULK_ATTENDEE_CAP + 10 }, (_, i) =>
+      person(`P${i + 1}`),
+    );
+    const result = mergeBulkAttendees([], crowd);
+    expect(result.merged).toHaveLength(HARD_BULK_ATTENDEE_CAP);
+    expect(result.capped).toBe(10);
+    // Well past the 15-name threshold and everything still landed — the
+    // threshold is where names stop being REQUIRED, not where the roster
+    // stops being editable.
+    expect(result.merged.length).toBeGreaterThan(15);
   });
 
-  test("empty candidates list — accepted empty, no overflow", () => {
-    expect(capBulkAdditions([], 5, 15)).toEqual({ accepted: [], overflow: 0 });
+  test("empty additions — a clean no-op", () => {
+    expect(mergeBulkAttendees([person("Alice")], [])).toEqual({
+      merged: [person("Alice")],
+      added: 0,
+      deduped: 0,
+      capped: 0,
+    });
   });
 });

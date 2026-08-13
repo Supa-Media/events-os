@@ -237,17 +237,37 @@ export function CodingWorkbenchPanel({
   // FINDING 5 (UX audit, 2026-08-12): the raw bank/processor description,
   // shown beneath the cleaned name only when it says something different.
   const rawLine = rawBankLine(txn);
+  // WHO TO ASK (founder, 2026-08-13: "I have to probably ping and message
+  // them what it was for — but I don't even know who to ask").
+  // `cardholderName` rides `monthCodingWorklist` rows; `coding.tsx`'s rows
+  // are the caller's own, where the field is absent and the question is
+  // moot. "No cardholder" is said out loud rather than omitted — a bank or
+  // imported row genuinely has nobody to ping, and silence would read as a
+  // data gap instead of a fact.
+  const cardholderName = (txn as { cardholderName?: string | null }).cardholderName;
+  const whose =
+    cardholderName != null
+      ? `${cardholderName} · card ••${txn.cardLast4 ?? "—"}`
+      : txn.cardLast4
+        ? `card ••${txn.cardLast4}`
+        : cardholderName === null
+          ? "no cardholder — bank/imported row"
+          : null;
 
   return (
     <View className="flex-1 rounded-xl border border-border bg-raised">
       <View className="flex-row items-start justify-between gap-3 border-b border-border px-4 py-3">
         <View className="flex-1">
-          <Text className="text-base font-semibold text-ink" numberOfLines={1}>
+          {/* numberOfLines={2}: the merchant name is the row's identity, and
+              the founder hit it truncated to uselessness at one line ("the
+              name of the transaction is kind of cut off"). Two lines covers
+              every real descriptor; beyond that the raw line below has it. */}
+          <Text className="text-base font-semibold text-ink" numberOfLines={2}>
             {merchantLine}
           </Text>
           <Text className="text-xs text-muted">
             {formatCents(Math.abs(txn.amountCents))}
-            {txn.cardLast4 ? ` · card ••${txn.cardLast4}` : ""}
+            {whose ? ` · ${whose}` : ""}
             {position ? ` · ${position.index} of ${position.total}` : ""}
           </Text>
           {rawLine ? (

@@ -296,6 +296,15 @@ const txnSummaryFields = {
   // R1a: the bookkeeper's own freeform note ("who was this for and why") —
   // distinct from `description` (provider-sourced). Null until set.
   note: v.union(v.string(), v.null()),
+  // WHO TO ASK (founder, 2026-08-13: "I'm looking at an expense, and I have
+  // to probably ping and message them what it was for — but I don't even
+  // know who to ask"). The resolved cardholder's name — the txn's own
+  // `personId`, else the owner of its `cardId` (`makeCardholderResolver`,
+  // the same answer Reconcile's Cardholder column gives). OPTIONAL, and
+  // populated only by `monthCodingWorklist`: that's the one surface where
+  // the person coding is routinely NOT the person who spent.
+  // `personTransactions` rows are the caller's own by construction.
+  cardholderName: v.optional(v.union(v.string(), v.null())),
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
   budgetId: v.union(v.id("budgets"), v.null()),
@@ -4842,6 +4851,18 @@ export const monthCodingWorklist = query({
     }
 
     pending.sort((a, b) => b.amountCents - a.amountCents);
+    // WHO TO ASK, per row — resolved here (never in `toTxnSummary`, which is
+    // deliberately sync) with the same cached resolver Reconcile's
+    // Cardholder column uses, so the two surfaces can't disagree about
+    // whose charge a row is.
+    const cardholders = makeCardholderResolver(ctx);
+    const rowsWithCardholder = [];
+    for (const tr of pending) {
+      rowsWithCardholder.push({
+        ...toTxnSummary(tr),
+        cardholderName: await cardholders.resolveName(tr),
+      });
+    }
     const scopeName =
       scope === CENTRAL
         ? "Central"
@@ -4883,7 +4904,7 @@ export const monthCodingWorklist = query({
       totalCents,
       explainedCount,
       explainedCents,
-      rows: pending.map((tr) => toTxnSummary(tr)),
+      rows: rowsWithCardholder,
       truncated,
       otherBooks,
     };
