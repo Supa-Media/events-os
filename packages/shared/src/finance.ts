@@ -1724,6 +1724,53 @@ export function personalExpenseState(
   return repaymentStatus === "paid" ? "personal_reimbursed" : "personal_unpaid";
 }
 
+// ── Auto-explained rows (founder directive, 2026-08-12) ─────────────────────
+// "only things that actually need explaining should show up here, so I can
+// attack this month by month." Two row classes publish on the ledger but
+// carry their OWN explanation, so no human should ever be asked to code them
+// or chase a receipt for them:
+//
+//  - a processor FEE row (`feeOrigin` — see `finances.ts#isNonDiscretionaryFee`
+//    and `processorFees.ts`): a cost of the rail, not a purchase anyone made.
+//    There is no receipt and never will be; the processor's own ledger
+//    (`processorFeeEntries`) is the record.
+//  - a PERSONAL charge (`isPersonal`): not org spend — the repayment is its
+//    explanation. Founder's exact ledger wording: "accidental personal
+//    charge, paid back (if paid), and awaiting repayment (if we are waiting
+//    for repayment)".
+//
+// Internal movements (transfers, payout deposits) are a THIRD self-explaining
+// class, but they already sign to zero (`signedBookCents`) and are excluded
+// by the `direction !== "internal"` / `signed === 0` checks everywhere — this
+// classification covers the two classes that are real money out and so can't
+// be caught by the zero test.
+export type AutoExplainedKind = "fee" | "personal";
+
+export function autoExplainedKind(tr: {
+  feeOrigin?: unknown;
+  isPersonal?: boolean;
+}): AutoExplainedKind | null {
+  if (tr.feeOrigin != null) return "fee";
+  if (tr.isPersonal === true) return "personal";
+  return null;
+}
+
+/** The sentence the public ledger prints in place of a coding for an
+ *  auto-explained row — derived from structured state, never composed
+ *  testimony (the no-AI-in-coding rule is about authorship of a human's
+ *  account; a status label is the product describing its own records). */
+export function autoExplanationLine(
+  kind: AutoExplainedKind,
+  personalState?: PersonalExpenseState,
+): string {
+  if (kind === "fee") {
+    return "Payment processing fees — charged by the processor on money already accepted, itemized in the processor's own ledger. Not a purchase anyone made, so there is no receipt.";
+  }
+  return personalState === "personal_reimbursed"
+    ? "Accidental personal charge — paid back."
+    : "Accidental personal charge — awaiting repayment.";
+}
+
 // ── ACH destination capture (Increase External Accounts) ─────────────────────
 // The funding-type Increase records on an External Account (`POST
 // /external_accounts`). Increase itself also allows `general_ledger`/`other`,

@@ -375,13 +375,16 @@ export const getForTransaction = query({
       canSeeNames,
     );
     // Mirrors `finances.requiresCoding` — spend posted at/after the policy
-    // date. Kept inline (three fields) rather than importing the whole
-    // finances module into this one.
+    // date, minus the exempt classes (personal charges, and processor fees —
+    // `feeOrigin`, which have no testimony to give; founder 2026-08-12).
+    // Kept inline rather than importing the whole finances module into this
+    // one.
     const requiresCoding =
       txn.postedAt >= sinceMs &&
       txn.flow === "outflow" &&
       txn.status !== "excluded" &&
-      txn.isPersonal !== true;
+      txn.isPersonal !== true &&
+      txn.feeOrigin == null;
     // The same two conditions `approve` enforces, asked in the same order.
     // A superuser with no roster row (`actorPersonId == null`) skips the SoD
     // half exactly as the mutation does — see `approve`'s own comment — and

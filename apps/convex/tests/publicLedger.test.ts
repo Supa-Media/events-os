@@ -128,6 +128,8 @@ type TxnFixture = Partial<{
   payoutProcessor: "stripe" | "givebutter" | "other";
   preMarkFlow: "outflow" | "inflow";
   historicalImportBatch: string;
+  feeOrigin: "stripe_processing" | "givebutter_processing";
+  isPersonal: boolean;
 }>;
 
 async function insertTxn(
@@ -146,9 +148,40 @@ async function insertTxn(
       payoutProcessor: f.payoutProcessor,
       preMarkFlow: f.preMarkFlow,
       historicalImportBatch: f.historicalImportBatch,
+      feeOrigin: f.feeOrigin,
+      isPersonal: f.isPersonal,
       createdAt: Date.now(),
     }),
   );
+}
+
+/** Flag a charge personal with a linked repayment in the given state — the
+ *  same `isPersonal` + `repaymentId` pair `cards.ts` writes, so the derived
+ *  `personalExpenseState` reads exactly what production rows carry. */
+async function markPersonal(
+  s: ChapterSetup,
+  transactionId: Id<"transactions">,
+  repayment: "pending" | "paid",
+): Promise<void> {
+  await run(s.t, async (ctx) => {
+    const payerPersonId = await ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: "Payer",
+      isTeamMember: true,
+      createdAt: Date.now(),
+    });
+    const repaymentId = await ctx.db.insert("personalRepayments", {
+      chapterId: s.chapterId,
+      transactionId,
+      payerPersonId,
+      amountCents: 1000,
+      method: "ach",
+      status: repayment,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    await ctx.db.patch(transactionId, { isPersonal: true, repaymentId });
+  });
 }
 
 /** An APPROVED coding — the only kind that publishes. `attendees` carries
@@ -1324,6 +1357,57 @@ describe("explaining a month", () => {
     const list = (await worklist(s, "2024-06"))!;
     expect(list.rows).toHaveLength(0);
     expect(list.totalCount).toBe(0);
+  });
+
+  test("fees and personal charges are auto-explained — off the worklist, own status line on the ledger", async () => {
+    // Founder, 2026-08-12: "only things that actually need explaining should
+    // show up here, so I can attack this month by month" — and for personal
+    // charges on the public page: "accidental personal charge, paid back (if
+    // paid), and awaiting repayment (if we are waiting for repayment)".
+    const s = await asPublisher();
+    await insertTxn(s, { amountCents: 5_000 });
+    await insertTxn(s, {
+      amountCents: 6_014,
+      merchantName: "Stripe",
+      feeOrigin: "stripe_processing",
+    });
+    const unpaid = await insertTxn(s, { amountCents: 2_000, merchantName: "MTA" });
+    await markPersonal(s, unpaid, "pending");
+    const repaid = await insertTxn(s, { amountCents: 3_000, merchantName: "Uber" });
+    await markPersonal(s, repaid, "paid");
+
+    // The worklist offers ONLY the row a human can actually explain — the
+    // fee and both personal charges are out of the rows AND the denominator.
+    const list = (await worklist(s, AUG_KEY))!;
+    expect(list.rows).toHaveLength(1);
+    expect(list.rows[0].merchantName).toBe("Costco");
+    expect(list.totalCount).toBe(1);
+    expect(list.totalCents).toBe(5_000);
+
+    // The publish preview agrees: one unexplained row, not four.
+    const totals = await s.as.query(api.publicLedger.preview, {
+      periodKey: AUG_KEY,
+    });
+    expect(totals!.unexplainedCount).toBe(1);
+    expect(totals!.unexplainedCents).toBe(5_000);
+    // The fee's missing receipt is not an undocumented gap — the processor's
+    // own ledger is its record — and a personal charge was never org spend.
+    // Only the ordinary receiptless Costco row counts.
+    expect(totals!.undocumentedCount).toBe(1);
+    expect(totals!.undocumentedCents).toBe(5_000);
+
+    // Published, each self-explaining row prints its own status line —
+    // derived from real state, so "paid back" can never precede the money.
+    await publishMonth(s);
+    const statement = (await statementOf(s))!;
+    const by = (name: string) =>
+      statement.entries.find((e) => e.counterparty === name);
+    expect(by("Stripe")?.purpose).toContain("Payment processing fees");
+    expect(by("MTA")?.purpose).toBe(
+      "Accidental personal charge — awaiting repayment.",
+    );
+    expect(by("Uber")?.purpose).toBe("Accidental personal charge — paid back.");
+    expect(by("Costco")?.purpose).toBeNull();
   });
 
   test("only the requested month, and a malformed one is refused", async () => {
