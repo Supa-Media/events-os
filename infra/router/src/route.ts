@@ -131,6 +131,32 @@ export function route(url: URL): RouteDecision {
     };
   }
 
+  // A SHORT LINK FOR THE ONE PAGE THAT ACTUALLY GETS SENT TO PEOPLE.
+  //
+  // `/code` is the spender's own charges (`apps/mobile/app/code.tsx`), which
+  // lives in the Expo app and is therefore really at `/os/code`. The founder
+  // asked for it by the name they'd say out loud — "a page I can send people
+  // to, like /code" — and `/os` is an artefact of how the app is mounted at
+  // the apex, not something anyone should have to read down a phone. One
+  // redirect keeps both true: the app keeps its single mount point, and the
+  // link stays sayable.
+  //
+  // Without this the path falls through to `assets` and the Astro landing
+  // build 404s it — the same edge-level miss that took the whole finance
+  // ledger down on 2026-08-12, which is why this ships with the route rather
+  // than after someone reports the link is broken.
+  //
+  // EXACT PATH, not a prefix: `/code` is one page with nothing beneath it, so
+  // a prefix rule would only invent ways for a typo to land somewhere odd.
+  // `search` is carried because every coding reminder already links with
+  // `?filter=uncoded`.
+  if (pathname === "/code") {
+    return {
+      kind: "redirect",
+      location: `https://${APEX}${OS_PREFIX}/code${search}`,
+    };
+  }
+
   if (isConvexPath(pathname)) {
     return { kind: "proxy", target: `${CONVEX_ORIGIN}${pathname}${search}` };
   }

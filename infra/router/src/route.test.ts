@@ -23,6 +23,40 @@ describe("route: apex landing paths -> assets", () => {
   });
 });
 
+describe("route: /code is the sayable link to the app's coding page", () => {
+  it("redirects to the /os-mounted page", () => {
+    expect(route(u("https://publicworship.life/code"))).toEqual({
+      kind: "redirect",
+      location: "https://publicworship.life/os/code",
+    });
+  });
+
+  it("carries the query string every coding reminder already sends", () => {
+    expect(route(u("https://publicworship.life/code?filter=uncoded"))).toEqual({
+      kind: "redirect",
+      location: "https://publicworship.life/os/code?filter=uncoded",
+    });
+  });
+
+  it("does NOT swallow neighbouring paths — it is one page, not a prefix", () => {
+    // A landing page called /codex must keep serving the static site, and
+    // nothing hangs beneath /code for a prefix rule to catch.
+    expect(route(u("https://publicworship.life/codex"))).toEqual({
+      kind: "assets",
+    });
+    expect(route(u("https://publicworship.life/code/extra"))).toEqual({
+      kind: "assets",
+    });
+  });
+
+  it("the app's own mount point still serves the page directly", () => {
+    expect(route(u("https://publicworship.life/os/code"))).toEqual({
+      kind: "proxy",
+      target: `${EXPO_ORIGIN}/code`,
+    });
+  });
+});
+
 describe("route: Convex prefixes -> proxy unchanged", () => {
   it.each([
     // /rsvp/ is the canonical public RSVP page; /r/ (short), /event/ and /e/
