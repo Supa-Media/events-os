@@ -84,6 +84,7 @@ import { standardizePowers } from "./0062_standardize_powers";
 import { fixGenesisUtcMidnight } from "./0063_fix_genesis_utc_midnight";
 import { releaseLegacyCardAutolocks } from "./0064_release_legacy_card_autolocks";
 import { stampDefaultCategoryExpenseHints } from "./0065_stamp_default_category_expense_hints";
+import { stampCashbackSourceCategory } from "./0066_stamp_cashback_source_category";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -374,4 +375,7 @@ export const MIGRATIONS: Migration[] = [
   // default-named rows (exact name match, additive-only, idempotent). See
   // 0065's own doc.
   stampDefaultCategoryExpenseHints,
+  // 0066: stamp `sourceCategory:"cashback_payment"` on pre-field Increase
+  // cashback rows so `autoExplainedKind` covers history too — see the file.
+  stampCashbackSourceCategory,
 ];

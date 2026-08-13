@@ -452,6 +452,20 @@ describe("autoExplainedKind", () => {
     expect(autoExplainedKind({ isPersonal: false })).toBeNull();
     expect(autoExplainedKind({ feeOrigin: null })).toBeNull();
   });
+
+  test("a bank cashback payment is auto-explained — keyed on the provider's own category, never on text", () => {
+    // Owner, 2026-08-13: "there's literally nothing for me to code there.
+    // It's just money back… auto code these ones as well."
+    expect(autoExplainedKind({ sourceCategory: "cashback_payment" })).toBe(
+      "cashback",
+    );
+    // Any OTHER provider category is not the marker — an ordinary inbound
+    // ACH still gets explained by a human.
+    expect(
+      autoExplainedKind({ sourceCategory: "inbound_ach_transfer" }),
+    ).toBeNull();
+    expect(autoExplainedKind({ sourceCategory: null })).toBeNull();
+  });
 });
 
 describe("autoExplanationLine", () => {
@@ -471,5 +485,9 @@ describe("autoExplanationLine", () => {
   test("the fee line says why there is no receipt", () => {
     expect(autoExplanationLine("fee")).toContain("Payment processing fees");
     expect(autoExplanationLine("fee")).toContain("no receipt");
+  });
+
+  test("the cashback line says what the money is", () => {
+    expect(autoExplanationLine("cashback")).toContain("Card cashback");
   });
 });

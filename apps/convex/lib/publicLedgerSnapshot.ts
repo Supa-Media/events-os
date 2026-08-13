@@ -406,7 +406,10 @@ export async function buildSnapshot(
           personalExpenseState(true, repayment?.status ?? null),
         );
       } else {
-        autoLine = autoExplanationLine("fee");
+        // "fee" and "cashback" both — pass the kind through, never hardcode
+        // one branch's line (the first version did, and the cashback class
+        // arrived wearing the fee sentence).
+        autoLine = autoExplanationLine(autoKind);
       }
     }
 

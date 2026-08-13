@@ -179,7 +179,10 @@ export const applyIncreaseAccountTransaction = internalMutation({
     postedAt: v.number(),
     description: v.optional(v.string()),
     counterpartyName: v.optional(v.string()),
-    // The Increase `source.category` (e.g. `inbound_ach_transfer`) — logging only.
+    // The Increase `source.category` (e.g. `inbound_ach_transfer`,
+    // `cashback_payment`) — stored on the row (`sourceCategory`) since
+    // 2026-08-13: it's the provider's own classification, and
+    // `autoExplainedKind` keys the cashback auto-explanation off it.
     category: v.string(),
     // The originating transfer object's id, when the entry settles a transfer —
     // drives the already-booked guards below.
@@ -288,6 +291,7 @@ export const applyIncreaseAccountTransaction = internalMutation({
       fundId,
       externalId: args.externalId,
       sourceAccountId: args.accountId,
+      sourceCategory: args.category,
       pending: false,
       status: "unreviewed",
       createdAt: Date.now(),

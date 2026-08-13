@@ -593,6 +593,16 @@ export const transactions = defineTable({
   // dedup key. `sourceAccountId` is the Increase/legacy account it came from.
   externalId: v.optional(v.string()),
   sourceAccountId: v.optional(v.string()),
+  // The PROVIDER'S OWN classification of a bank-feed row — Increase's
+  // `source.category` (e.g. `cashback_payment`, `inbound_ach_transfer`),
+  // stored verbatim at ingestion (`increaseLedger.ts`). A positive marker,
+  // never an inference (same discipline as `feeOrigin`/`preMarkFlow`):
+  // `autoExplainedKind` keys the cashback auto-explanation off exactly
+  // `"cashback_payment"` (owner, 2026-08-13: "there's literally nothing for
+  // me to code there — it's just money back… auto code these ones as well").
+  // Absent on rows ingested before 2026-08-13 except where migration 0066
+  // stamped it, and on non-Increase sources.
+  sourceCategory: v.optional(v.string()),
   // A REFUND pairing, marked by a human in Reconcile (`finances.markAsRefund`).
   // The charge carries `refundedByTransactionId`; the credit that reversed it
   // carries `refundsTransactionId`. Both, so either row can be read on its own.
