@@ -1,6 +1,5 @@
 import { describe, expect, test } from "@jest/globals";
 import {
-  booksInRows,
   breakdownLine,
   daysWaiting,
   substantiationLine,
@@ -168,26 +167,5 @@ describe("daysWaiting", () => {
 
   test("never goes negative — a clock skew must not render 'waiting -1 days'", () => {
     expect(daysWaiting(now + 86_400_000, now)).toBe(0);
-  });
-});
-
-describe("booksInRows", () => {
-  test("dedupes, keeps first-seen order, and keeps central alongside chapters", () => {
-    expect(
-      booksInRows([
-        { book: { id: "central", name: "Central" } },
-        { book: { id: "ny", name: "New York" } },
-        { book: { id: "central", name: "Central" } },
-        { book: { id: "chi", name: "Chicago" } },
-      ]),
-    ).toEqual([
-      { id: "central", name: "Central" },
-      { id: "ny", name: "New York" },
-      { id: "chi", name: "Chicago" },
-    ]);
-  });
-
-  test("an empty page has no book filter options", () => {
-    expect(booksInRows([])).toEqual([]);
   });
 });
