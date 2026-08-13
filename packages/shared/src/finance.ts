@@ -317,6 +317,14 @@ export const FINANCE_AUDIT_ACTIONS = [
   "personal_flag", // cards.flagPersonalCharge / cards.unflagPersonalCharge
   "transfer_mark", // finances.markAsTransfer / unmarkTransfer (BOTH legs logged)
   "refund_mark", // finances.markAsRefund / unmarkRefund (BOTH rows logged)
+  // The Increase ingester auto-pairing a `card_refund` against its
+  // `card_settlement` under the same `cardPaymentId` — SAME pairing writes as
+  // `refund_mark` (via `lib/refundPair.ts`, shared, never a looser copy), but
+  // no human clicked anything, so it gets its own action rather than
+  // impersonating one. No `actorUserId` on these rows — see
+  // `financeAuditLog.actorUserId`'s schema doc for why that's the ONE
+  // sanctioned exception.
+  "refund_mark_auto", // increaseLedger.ts auto-pairer (BOTH rows logged)
   "payout_mark", // finances.markAsPayout / unmarkPayout
   "note_edit", // setTransactionNote
   "manual_create", // createManualTransaction
@@ -354,6 +362,7 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   personal_flag: "Personal flag changed",
   transfer_mark: "Internal transfer marking changed",
   refund_mark: "Refund marking changed",
+  refund_mark_auto: "Refund auto-paired (Increase)",
   payout_mark: "Processor payout marking changed",
   note_edit: "Note edited",
   manual_create: "Created manually",

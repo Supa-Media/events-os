@@ -603,7 +603,23 @@ export const transactions = defineTable({
   // Absent on rows ingested before 2026-08-13 except where migration 0066
   // stamped it, and on non-Increase sources.
   sourceCategory: v.optional(v.string()),
-  // A REFUND pairing, marked by a human in Reconcile (`finances.markAsRefund`).
+  // Increase's Card Payment grouping id (`card_payment_id`, from the
+  // `card_settlement`/`card_refund` sub-object — `lib/increaseExtract.ts`) —
+  // the STRUCTURAL link between a charge and the refund that reverses it.
+  // Increase groups a charge's authorization/settlement/refund under ONE Card
+  // Payment object, so two rows sharing this id are provider-stated to be the
+  // same purchase — a POSITIVE marker, not a text heuristic (same doctrine as
+  // `sourceCategory`/`feeOrigin`), which is what lets `increaseLedger.ts`
+  // auto-pair a `card_refund` against its `card_settlement` the moment both
+  // have landed (`lib/refundPair.ts`, reusing `markAsRefund`'s own guards so
+  // the automatic and human paths can never drift). FORWARD-ONLY: rows
+  // ingested before 2026-08-13 carry no value here — there is no migration
+  // backfilling it (Increase's API isn't re-paged for it), so historical
+  // pairs still go through hand-pairing in Reconcile.
+  cardPaymentId: v.optional(v.string()),
+  // A REFUND pairing, marked by a human in Reconcile (`finances.markAsRefund`)
+  // OR automatically by the Increase ingester when a `card_refund` and its
+  // `card_settlement` share one `cardPaymentId` (see that field's doc above).
   // The charge carries `refundedByTransactionId`; the credit that reversed it
   // carries `refundsTransactionId`. Both, so either row can be read on its own.
   //
@@ -687,7 +703,8 @@ export const transactions = defineTable({
   .index("by_event", ["eventId"])
   .index("by_person", ["personId"])
   .index("by_reimbursement", ["reimbursementId"])
-  .index("by_transfer_group", ["transferGroupId"]);
+  .index("by_transfer_group", ["transferGroupId"])
+  .index("by_card_payment", ["cardPaymentId"]);
 
 // ── Processor-fee entries (the evidence behind one monthly fee row) ──────────
 /** ONE row per fee-bearing processor ledger entry — the receipt for the single
@@ -1433,14 +1450,25 @@ export const financeAuditLog = defineTable({
   // `reattributionAudit` above (the existing house precedent for exactly this
   // problem).
   //
-  // `actorUserId` is REQUIRED and is this trail's integrity anchor: every
-  // mutation that logs here runs behind auth, so an authenticated user id
-  // always exists, and an audit row that can't name anyone is worthless
-  // precisely when it matters most ("$303.86 left the budget and nobody knows
-  // who"). `actorPersonId` is the friendly, DISPLAYABLE identity and stays
-  // optional — legitimately absent for a superuser with no roster row — which
-  // is exactly why it can't be the anchor on its own.
-  actorUserId: v.id("users"),
+  // `actorUserId` is this trail's integrity anchor for every HUMAN-initiated
+  // write: every mutation that logs here runs behind auth, so an
+  // authenticated user id always exists, and an audit row that can't name
+  // anyone is worthless precisely when it matters most ("$303.86 left the
+  // budget and nobody knows who"). `actorPersonId` is the friendly,
+  // DISPLAYABLE identity and stays optional — legitimately absent for a
+  // superuser with no roster row — which is exactly why it can't be the
+  // anchor on its own.
+  //
+  // OPTIONAL as of 2026-08-13 for exactly one exception: the Increase
+  // auto-pairer (`increaseLedger.ts`, via `lib/refundPair.ts`) runs from a
+  // webhook-triggered `internalMutation` with no authenticated caller at
+  // all — there is no user id to anchor to, forging one would be worse than
+  // omitting it, and `logFinanceAudit`'s `system: true` path is the ONLY
+  // writer allowed to leave this blank. Every such row is still
+  // identifiable after the fact: its `action` is `"refund_mark_auto"` (never
+  // reused by a human path), so "no actorUserId" and "system-initiated" are
+  // the same statement, not two independent nulls to reconcile.
+  actorUserId: v.optional(v.id("users")),
   actorPersonId: v.optional(v.id("people")),
   // The changed field's name (e.g. "status", "category", "budget", "amount",
   // "note", "receipt", "isPersonal") — omitted for an action with no single
