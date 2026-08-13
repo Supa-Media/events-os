@@ -239,7 +239,10 @@ export function transactionSourceLabel(source: string): string {
  *
  * Two of the eight have no branch in `signedBookCents` at all, for opposite
  * reasons. `linked_gift` is decided BEFORE it is asked — the query skips those
- * rows because the gift layer already counted that money. `zero_amount` is
+ * rows because the gift layer already counted that money. It means FULLY
+ * counted: one deposit can carry several gifts (`lib/giftCoverage.ts`), and a
+ * deposit only partly matched keeps its unclaimed remainder and stays on the
+ * page rather than vanishing behind this code. `zero_amount` is
  * decided AFTER: a $0.00 row goes down an ordinary inflow/outflow branch and
  * signs to zero arithmetically, so it is not a rule at all, just a row with
  * nothing in it. Naming it separately keeps it out of
@@ -262,7 +265,7 @@ export const BOOK_VALUE_ZERO_REASON_LABELS: Record<
   BookValueZeroReason,
   string
 > = {
-  linked_gift: "Counted once, at the gift this bank row belongs to",
+  linked_gift: "Counted once, at the gift or gifts this bank row belongs to",
   excluded: "Excluded by hand — out of every total",
   payout_deposit:
     "A processor payout arriving — already counted at the gift, ticket, sale or registration",

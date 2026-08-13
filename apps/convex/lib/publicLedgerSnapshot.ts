@@ -70,6 +70,10 @@ import {
   ROLLUP_SCAN_LIMIT,
 } from "../finances";
 import { signedBookCents } from "./bookBalance";
+import {
+  coveredSignedBookCents,
+  giftCoverageByTransaction,
+} from "./giftCoverage";
 import { codingPolicy } from "./transactionCoding";
 import type { FinanceScope } from "./finance";
 
@@ -376,18 +380,11 @@ export async function buildSnapshot(
   // (founder, 2026-08-13 — a $7,000 founder wire publishing as "Other income"
   // beside the very gifts it was already recorded as).
   //
-  // Looked up per inflow through `gifts.by_transaction` rather than by
-  // gathering the period's gifts: a wire received on the 31st can post on the
-  // 1st, and a period-matched set would silently miss exactly those.
-  const giftLinkedTxnIds = new Set<string>();
-  for (const tr of rawTxns) {
-    if (tr.flow !== "inflow") continue;
-    const linked = await ctx.db
-      .query("gifts")
-      .withIndex("by_transaction", (q) => q.eq("transactionId", tr._id))
-      .first();
-    if (linked) giftLinkedTxnIds.add(tr._id);
-  }
+  // One deposit is often SEVERAL gifts across books ($7,000 wired as $5,000
+  // for central and $2,000 for New York), so this is a sum, not a flag: the
+  // credit contributes whatever no gift has claimed. See `lib/giftCoverage.ts`
+  // for why the lookup is per-transaction rather than by the period's gifts.
+  const giftCoverage = await giftCoverageByTransaction(ctx, rawTxns);
 
   for (const tr of rawTxns) {
     if (!txnMatchesMode(tr, sandboxMode)) continue;
@@ -399,8 +396,13 @@ export async function buildSnapshot(
     // A confirmed gift credit carries no value of its own — the gift does. It
     // still PUBLISHES (the bank really received it, and a reader following the
     // money should see it arrive); it simply contributes nothing, exactly like
-    // the payout deposits `signedBookCents` already zeroes.
-    const signed = giftLinkedTxnIds.has(tr._id) ? 0 : signedBookCents(tr);
+    // the payout deposits `signedBookCents` already zeroes. A PARTLY matched
+    // deposit keeps its unclaimed remainder, which is the honest reading:
+    // that much really did arrive and nobody has said what it was.
+    const signed = coveredSignedBookCents(
+      tr,
+      giftCoverage.get(tr._id as string) ?? 0,
+    );
     // Direction from the book-value sign where there is one; otherwise the row
     // moves cash without changing value, which is exactly `internal`.
     const direction: EntryDraft["direction"] =

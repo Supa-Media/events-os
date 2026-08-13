@@ -128,6 +128,12 @@ import {
 } from "./lib/reconciliationAccess";
 import { signedBookCents } from "./lib/bookBalance";
 import {
+  coveredSignedBookCents,
+  giftCoverageByTransaction,
+  giftCoverageState,
+} from "./lib/giftCoverage";
+import { canManageGivingScope, resolveGivingAccess } from "./lib/givingAccess";
+import {
   reconcileOrgMoney,
   addableBankPendingCents,
 } from "./lib/reconciliationGap";
@@ -3414,7 +3420,11 @@ async function computeBookBalances(
     // Collected ACROSS scopes before any ledger sum so a cross-book link
     // still excludes. Revenue is a REAL-money figure; in the sandbox demo
     // state it reads 0 so demo books stay pure sandbox-ledger numbers. ─────
-    const linkedGiftTxnIds = new Set<string>();
+    // Cents of each bank row already counted as giving — a SUM, because one
+    // deposit is routinely several gifts (a $7,000 wire that is $5,000 for
+    // central and $2,000 for New York). Built from the all-scopes gift scan
+    // that is happening anyway, so a cross-book link costs nothing extra here.
+    const giftCoverageCentsByTxn = new Map<string, number>();
     const revenueByScope = new Map<FinanceScope, number>();
     // IN-KIND, tracked separately for the reconciliation panel. It is a slice of
     // the revenue above, NOT an addition to it: goods and services given to the
@@ -3435,7 +3445,11 @@ async function computeBookBalances(
         if (gifts.length === ROLLUP_SCAN_LIMIT) warnTruncated(scope, "gifts");
         for (const gift of gifts) {
           if (gift.transactionId != null) {
-            linkedGiftTxnIds.add(gift.transactionId);
+            const key = gift.transactionId as string;
+            giftCoverageCentsByTxn.set(
+              key,
+              (giftCoverageCentsByTxn.get(key) ?? 0) + gift.amountCents,
+            );
           }
           revenueCents += gift.amountCents;
           if (gift.method === "in_kind") inKindCents += gift.amountCents;
@@ -3537,9 +3551,13 @@ async function computeBookBalances(
         for (const tr of txns) {
           if (!txnMatchesMode(tr, sandboxMode)) continue;
           // A bank credit a confirmed gift links to IS that gift's cash —
-          // already counted in phase 1.
-          if (linkedGiftTxnIds.has(tr._id)) continue;
-          ledgerNetCents += signedBookCents(tr);
+          // already counted in phase 1. Only up to the gifts' total, though:
+          // whatever part of a deposit nobody has claimed is still income this
+          // book received and has not explained.
+          ledgerNetCents += coveredSignedBookCents(
+            tr,
+            giftCoverageCentsByTxn.get(tr._id as string) ?? 0,
+          );
         }
 
         // The account row for the current environment (mirrors
@@ -4194,6 +4212,9 @@ export const bookValueBreakdown = query({
         giftId: v.id("gifts"),
         giftMethod: v.string(),
         giftExternalRef: v.union(v.string(), v.null()),
+        uncoveredCents: v.number(),
+        giftAmountCents: v.number(),
+        giftBookLabel: v.union(v.string(), v.null()),
         ...docIdentityFields,
       }),
     ),
@@ -4263,10 +4284,8 @@ export const bookValueBreakdown = query({
     let truncated = gifts.length === ROLLUP_SCAN_LIMIT;
 
     const byMethod = new Map<string, { amountCents: number; count: number }>();
-    const linkedGiftTxnIds = new Set<string>();
     let revenueCents = 0;
     for (const gift of gifts) {
-      if (gift.transactionId != null) linkedGiftTxnIds.add(gift.transactionId);
       revenueCents += gift.amountCents;
       const slot = byMethod.get(gift.method) ?? { amountCents: 0, count: 0 };
       slot.amountCents += gift.amountCents;
@@ -4342,6 +4361,12 @@ export const bookValueBreakdown = query({
       .take(ROLLUP_SCAN_LIMIT);
     if (txns.length === ROLLUP_SCAN_LIMIT) truncated = true;
 
+    // Read per bank row rather than off the gift scan above: a gift in ANOTHER
+    // book can claim a deposit that landed here (money arrives in one account
+    // and belongs to another book's revenue), and this scope's own gifts can
+    // never reveal that. See `lib/giftCoverage.ts`.
+    const giftCoverage = await giftCoverageByTransaction(ctx, txns);
+
     const categories = await ctx.db.query("budgetCategories").take(ROLLUP_SCAN_LIMIT);
     const categoryName = new Map(categories.map((c) => [c._id as string, c.name]));
 
@@ -4362,10 +4387,18 @@ export const bookValueBreakdown = query({
     };
     let ledgerNetCents = 0;
     const countedInflowRows: Doc<"transactions">[] = [];
+    /** Uncovered cents per partly-matched deposit — what the detector should
+     *  offer further gifts against, and what the modal tells the reader is
+     *  still unaccounted for. */
+    const uncoveredByTxn = new Map<string, number>();
 
     for (const tr of txns) {
       if (!txnMatchesMode(tr, sandboxMode)) continue;
-      if (linkedGiftTxnIds.has(tr._id)) {
+      const covered = giftCoverage.get(tr._id as string) ?? 0;
+      // Fully matched: the gifts account for the whole deposit, so it counts
+      // nothing — the same zero this row has always contributed. PARTLY
+      // matched rows fall through and carry their remainder.
+      if (giftCoverageState(tr, covered) === "full") {
         zero.linkedGiftCredits += 1;
         continue;
       }
@@ -4381,7 +4414,8 @@ export const bookValueBreakdown = query({
         zero.allocationLegs += 1;
         continue;
       }
-      const signed = signedBookCents(tr);
+      const signed = coveredSignedBookCents(tr, covered);
+      if (covered > 0) uncoveredByTxn.set(tr._id as string, signed);
       ledgerNetCents += signed;
       if (signed === 0) {
         zero.unknownTransferShape += 1;
@@ -4411,8 +4445,39 @@ export const bookValueBreakdown = query({
     // actually contributed. A gift already consumed by one inflow is not
     // offered against a second, so two $500 deposits and two $500 gifts pair
     // off cleanly rather than reporting four suspicions.
+    //
+    // It matches against what is still UNACCOUNTED FOR on a deposit, not the
+    // deposit's face value, and will offer several gifts for one row. That is
+    // the case the old exact-match detector was blind to and the founder was
+    // stuck on: a $7,000 wire that is a $5,000 gift and a $2,000 gift matched
+    // neither, so the app showed nothing and the money stayed counted twice.
+    //
+    // CENTRAL'S GIFTS ARE IN SCOPE for a chapter's deposit, because that is
+    // where the split lands: money arrives in the chapter's account and part
+    // of it is central's revenue. Only for a reader who can manage central's
+    // giving — a chapter-only manager must not be shown central's donors.
     const WINDOW_MS = 3 * 24 * 60 * 60 * 1000;
-    const unlinkedGifts = gifts.filter((g) => g.transactionId == null);
+    /** Gifts offered per deposit before the panel stops guessing. A split runs
+     *  to a handful of books; a long tail is noise, not a finding. */
+    const MAX_GIFTS_OFFERED_PER_DEPOSIT = 6;
+
+    const giving = await resolveGivingAccess(ctx);
+    const candidateGifts: { gift: Doc<"gifts">; bookLabel: string | null }[] =
+      gifts
+        .filter((g) => g.transactionId == null)
+        .map((g) => ({ gift: g, bookLabel: null }));
+    if (scope !== CENTRAL && canManageGivingScope(giving, CENTRAL)) {
+      const centralGifts = await ctx.db
+        .query("gifts")
+        .withIndex("by_scope", (q) => q.eq("scope", CENTRAL))
+        .take(ROLLUP_SCAN_LIMIT);
+      if (centralGifts.length === ROLLUP_SCAN_LIMIT) truncated = true;
+      for (const g of centralGifts) {
+        if (g.transactionId != null) continue;
+        candidateGifts.push({ gift: g, bookLabel: "Central" });
+      }
+    }
+
     const claimed = new Set<string>();
     const suspectedDoubleCounts: (ReturnType<typeof docIdentity> & {
       transactionId: Id<"transactions">;
@@ -4422,26 +4487,49 @@ export const bookValueBreakdown = query({
       giftId: Id<"gifts">;
       giftMethod: string;
       giftExternalRef: string | null;
+      /** Cents of the deposit nobody has claimed yet, BEFORE this gift. */
+      uncoveredCents: number;
+      /** The gift's own amount — no longer the deposit's by definition. */
+      giftAmountCents: number;
+      /** Set only when the gift belongs to a different book than the deposit,
+       *  which is the fact a reader most needs before confirming. */
+      giftBookLabel: string | null;
     })[] = [];
     for (const tr of countedInflowRows) {
-      const twin = unlinkedGifts.find(
-        (g) =>
-          !claimed.has(g._id) &&
-          g.amountCents === tr.amountCents &&
-          Math.abs(g.receivedAt - tr.postedAt) <= WINDOW_MS,
-      );
-      if (!twin) continue;
-      claimed.add(twin._id);
-      suspectedDoubleCounts.push({
-        transactionId: tr._id,
-        postedAt: tr.postedAt,
-        amountCents: tr.amountCents,
-        description: tr.description ?? "",
-        giftId: twin._id,
-        giftMethod: twin.method,
-        giftExternalRef: twin.externalRef ?? null,
-        ...docIdentity(tr),
-      });
+      let remaining = uncoveredByTxn.get(tr._id as string) ?? tr.amountCents;
+      for (let taken = 0; taken < MAX_GIFTS_OFFERED_PER_DEPOSIT; taken++) {
+        if (remaining <= 0) break;
+        const inWindow = candidateGifts.filter(
+          (c) =>
+            !claimed.has(c.gift._id) &&
+            c.gift.amountCents <= remaining &&
+            Math.abs(c.gift.receivedAt - tr.postedAt) <= WINDOW_MS,
+        );
+        if (inWindow.length === 0) break;
+        // A gift that settles the deposit outright is the strongest reading;
+        // otherwise take the largest that fits, so a split resolves in as few
+        // confirmations as it has parts.
+        const pick =
+          inWindow.find((c) => c.gift.amountCents === remaining) ??
+          inWindow.reduce((best, c) =>
+            c.gift.amountCents > best.gift.amountCents ? c : best,
+          );
+        claimed.add(pick.gift._id);
+        suspectedDoubleCounts.push({
+          transactionId: tr._id,
+          postedAt: tr.postedAt,
+          amountCents: tr.amountCents,
+          description: tr.description ?? "",
+          giftId: pick.gift._id,
+          giftMethod: pick.gift.method,
+          giftExternalRef: pick.gift.externalRef ?? null,
+          uncoveredCents: remaining,
+          giftAmountCents: pick.gift.amountCents,
+          giftBookLabel: pick.bookLabel,
+          ...docIdentity(tr),
+        });
+        remaining -= pick.gift.amountCents;
+      }
     }
 
     return {
@@ -4647,7 +4735,6 @@ export const bookValueLines = query({
       .withIndex("by_scope", (q) => q.eq("scope", scope))
       .take(ROLLUP_SCAN_LIMIT);
     if (gifts.length === ROLLUP_SCAN_LIMIT) truncated = true;
-    const linkedGiftTxnIds = new Set<string>();
     // One read for the donor names rather than one per gift.
     const donorIds = [...new Set(gifts.map((g) => g.donorId))];
     const donors = await Promise.all(donorIds.map((id) => ctx.db.get(id)));
@@ -4656,7 +4743,6 @@ export const bookValueLines = query({
 
     let revenueCents = 0;
     for (const g of gifts) {
-      if (g.transactionId != null) linkedGiftTxnIds.add(g.transactionId);
       revenueCents += g.amountCents;
       earned.push({
         kind: "gift",
@@ -4755,6 +4841,9 @@ export const bookValueLines = query({
       .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
       .take(ROLLUP_SCAN_LIMIT);
     if (txns.length === ROLLUP_SCAN_LIMIT) truncated = true;
+    // Per bank row, not off this scope's gifts: a gift in another book can
+    // claim a deposit that landed here. See `lib/giftCoverage.ts`.
+    const giftCoverage = await giftCoverageByTransaction(ctx, txns);
     const categories = await ctx.db.query("budgetCategories").take(ROLLUP_SCAN_LIMIT);
     const categoryName = new Map(categories.map((c) => [c._id as string, c.name]));
 
@@ -4771,7 +4860,11 @@ export const bookValueLines = query({
     for (const tr of txns) {
       if (!txnMatchesMode(tr, sandboxMode)) continue;
       const push = (reason: BookValueZeroReason) => skipped.push({ tr, reason });
-      if (linkedGiftTxnIds.has(tr._id)) {
+      const covered = giftCoverage.get(tr._id as string) ?? 0;
+      // Only a FULLY matched deposit drops out. A partly matched one keeps its
+      // unclaimed remainder and stays on the page, which is where a reader can
+      // see that the rest of it still needs explaining.
+      if (giftCoverageState(tr, covered) === "full") {
         push("linked_gift");
         continue;
       }
@@ -4787,7 +4880,7 @@ export const bookValueLines = query({
         push("payout_allocation");
         continue;
       }
-      const signed = signedBookCents(tr);
+      const signed = coveredSignedBookCents(tr, covered);
       if (signed === 0) {
         // WHICH branch of `signedBookCents` returned the zero, tested in that
         // function's own order (balance settlement before the marked-transfer

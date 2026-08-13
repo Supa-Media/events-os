@@ -59,13 +59,14 @@ import type { QueryCtx } from "./_generated/server";
 // `lib/peopleAggregate.ts`'s module doc.
 import { mutation as triggerMutation } from "./lib/peopleAggregate";
 import { Doc, Id } from "./_generated/dataModel";
-import { financeRoleAtLeast } from "@events-os/shared";
+import { financeRoleAtLeast, formatCents } from "@events-os/shared";
 import {
   requireGivingManage,
   resolveGivingAccess,
   type GivingScope,
 } from "./lib/givingAccess";
 import { getFinanceRole } from "./lib/finance";
+import { giftCoverageCents } from "./lib/giftCoverage";
 import { getChapterIdOrNull, requireUserId } from "./lib/context";
 import {
   assertReceiptsBound,
@@ -415,16 +416,35 @@ export const dismissGiftCandidate = mutation({
  * DIRECT bank credits — wires, ACH pulls, transfers from another of the org's
  * own accounts.
  *
- * ── WHAT IT REFUSES ─────────────────────────────────────────────────────────
- * The amounts must match exactly, and both rows must sit in the same book. A
- * near-miss is a different problem (a fee taken in transit, a partial deposit)
- * and quietly linking mismatched rows would move book value by the difference
- * while looking like housekeeping.
+ * ── ONE DEPOSIT IS OFTEN SEVERAL GIFTS ──────────────────────────────────────
+ * This used to demand the gift and the credit be the same amount, in the same
+ * book, one gift per row. Real giving does not arrive that way: a founder
+ * wires $7,000 that is $5,000 for central and $2,000 for New York. Under the
+ * old rule neither gift equalled the deposit, a deposit could hold only one
+ * gift anyway, and the two books were different — so there was no way to state
+ * the truth, and the money stayed counted twice.
  *
- * It will not steal a transaction another gift already claims, and it will not
- * relink a gift that already points somewhere. Both are the shape of a
- * double-click or a stale screen, and both should say so rather than silently
- * rewrite an evidence trail.
+ * So a deposit is now covered by the SUM of the gifts pointing at it, and it
+ * contributes only the unclaimed remainder (`lib/giftCoverage.ts`). Linking
+ * one gift of a split leaves the rest visible and unexplained, which is
+ * exactly right — the work is half done until the other gift is matched too.
+ *
+ * A gift in a DIFFERENT book may claim the deposit, because that is what
+ * happened: the money physically landed in one account and belongs to another
+ * book's revenue. No offsetting receivable is written — the founder's call
+ * (2026-08-13) was to stop the double count, not to model an inter-book debt.
+ * Because such a link moves BOTH books' value, it requires `giving.manage` on
+ * both, not just the gift's.
+ *
+ * ── WHAT IT STILL REFUSES ───────────────────────────────────────────────────
+ * Over-coverage: the gifts on a deposit may not come to more than the deposit.
+ * That is the rule the old exact-match was a blunt version of, and it is the
+ * one that matters — under it a link can only ever reduce a book toward the
+ * truth, never past it.
+ *
+ * It also will not relink a gift that already points somewhere (the shape of a
+ * double-click or a stale screen). Use `unlinkGiftFromTransaction` to undo a
+ * match deliberately.
  *
  * NOTE the deliberate asymmetry with the UI that calls it: the suspicion is
  * raised on amount and date proximity, but CONFIRMING is a human act. Two
@@ -450,17 +470,16 @@ export const linkGiftToTransaction = mutation({
       });
     }
     await requireGivingManage(ctx, gift.scope as GivingScope);
+    // A cross-book match moves the DEPOSIT's book too — its value drops by the
+    // gift. Whoever does that must be able to manage giving there as well.
+    if (String(txn.chapterId) !== String(gift.scope)) {
+      await requireGivingManage(ctx, txn.chapterId as GivingScope);
+    }
 
     if (gift.transactionId !== undefined) {
       throw new ConvexError({
         code: "ALREADY_LINKED",
         message: "This gift is already matched to a bank row.",
-      });
-    }
-    if (String(txn.chapterId) !== String(gift.scope)) {
-      throw new ConvexError({
-        code: "SCOPE_MISMATCH",
-        message: "The gift and the bank row belong to different books.",
       });
     }
     if (txn.flow !== "inflow") {
@@ -469,28 +488,49 @@ export const linkGiftToTransaction = mutation({
         message: "Only a bank credit can be a gift's arrival.",
       });
     }
-    if (txn.amountCents !== gift.amountCents) {
-      throw new ConvexError({
-        code: "AMOUNT_MISMATCH",
-        message:
-          "The gift and the bank row are different amounts — link only rows that are the same money.",
-      });
-    }
 
-    // One bank row can only be one gift's arrival. Bounded read: gifts already
-    // linked to THIS transaction, which is 0 or 1 by this very rule.
-    const claimed = await ctx.db
-      .query("gifts")
-      .withIndex("by_scope", (q) => q.eq("scope", gift.scope))
-      .take(4000);
-    if (claimed.some((g) => g.transactionId === transactionId)) {
+    const coveredCents = await giftCoverageCents(ctx, transactionId);
+    if (coveredCents + gift.amountCents > txn.amountCents) {
+      const remaining = Math.max(0, txn.amountCents - coveredCents);
       throw new ConvexError({
-        code: "TRANSACTION_TAKEN",
-        message: "Another gift is already matched to that bank row.",
+        code: "OVER_COVERED",
+        message:
+          remaining === 0
+            ? "That deposit is already fully accounted for by the gifts matched to it."
+            : `Only ${formatCents(remaining)} of that deposit is still unaccounted for, and this gift is ${formatCents(gift.amountCents)}.`,
       });
     }
 
     await ctx.db.patch(giftId, { transactionId });
+    return null;
+  },
+});
+
+/**
+ * Undo a match. Once a deposit can hold several gifts, matching the wrong one
+ * stops being hard to do — and an evidence link nobody can retract is a worse
+ * record than one they can, because the only remaining fix is a database edit.
+ *
+ * Gated exactly like linking, on both books when they differ: this RAISES the
+ * deposit's book value back, so it is the same power in the other direction.
+ */
+export const unlinkGiftFromTransaction = mutation({
+  args: { giftId: v.id("gifts") },
+  returns: v.null(),
+  handler: async (ctx, { giftId }) => {
+    const gift = await ctx.db.get(giftId);
+    if (!gift) {
+      throw new ConvexError({ code: "NOT_FOUND", message: "Gift not found." });
+    }
+    await requireGivingManage(ctx, gift.scope as GivingScope);
+    if (gift.transactionId === undefined) return null; // already unmatched
+
+    const txn = await ctx.db.get(gift.transactionId);
+    if (txn && String(txn.chapterId) !== String(gift.scope)) {
+      await requireGivingManage(ctx, txn.chapterId as GivingScope);
+    }
+
+    await ctx.db.patch(giftId, { transactionId: undefined });
     return null;
   },
 });
