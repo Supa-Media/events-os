@@ -349,6 +349,7 @@ const REGISTRY_NAMES = [
   "0067_rename_reimbursement_payout_rows",
   "0068_materialize_reimbursement_codings",
   "0069_materialize_reimbursement_receipts",
+  "0070_link_wire_gifts_to_their_deposit",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
