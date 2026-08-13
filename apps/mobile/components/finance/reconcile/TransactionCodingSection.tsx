@@ -352,6 +352,7 @@ export function TransactionCodingSection({
 
       {editing ? (
         <TransactionCodingModal
+          transactionId={transactionId}
           merchantLine={merchantLine}
           amountCents={amountCents}
           namesMaxHeadcount={namesMaxHeadcount}

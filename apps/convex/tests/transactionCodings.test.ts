@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
-import { DEFAULT_CODING_REQUIRED_SINCE_MS, DAY_MS } from "@events-os/shared";
+import { CENTRAL, DEFAULT_CODING_REQUIRED_SINCE_MS, DAY_MS } from "@events-os/shared";
 import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
@@ -983,5 +983,133 @@ describe("priorCoding — a vendor's own approved coding history, offered as an 
     expect(data.priorCoding?.businessPurpose).toBe(
       "The one approved coding, buried under newer noise",
     );
+  });
+});
+
+describe("attendeeSuggestions — the roster bulk entry autofills/suggests from", () => {
+  test("returns team members on the transaction's own chapter, sorted by name, excluding non-roster rows", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Zara Volunteer",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Amir Team",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    // Not eligible: not a team member at all.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Not On Team",
+        createdAt: Date.now(),
+      }),
+    );
+    // Not eligible: a team member, but contact-only (auto-created from a
+    // gift/RSVP, never actually showed up).
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Contact Only",
+        isTeamMember: true,
+        isContactOnly: true,
+        createdAt: Date.now(),
+      }),
+    );
+    // Not eligible: a placeholder crew slot, never a real attendee.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Placeholder Slot",
+        isTeamMember: true,
+        isPlaceholder: true,
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await s.as.query(api.transactionCodings.attendeeSuggestions, {
+      transactionId: txnId,
+    });
+    // `asManager` itself seeds a team-member row ("Manager Mo") — sorted in
+    // with the others rather than special-cased out.
+    expect(result).toEqual([
+      { name: "Amir Team", isTeamMember: true },
+      { name: "Manager Mo", isTeamMember: true },
+      { name: "Zara Volunteer", isTeamMember: true },
+    ]);
+  });
+
+  test("refuses a caller with no reach into the transaction's book — same bar as authoring it", async () => {
+    const t = newT();
+    const chapterA = await setupChapter(t, { email: "a@publicworship.life" });
+    await asManager(chapterA);
+    const txnId = await seedTxn(chapterA);
+
+    const chapterB = await setupChapter(t, {
+      email: "b@publicworship.life",
+      chapterName: "Other Chapter",
+    });
+
+    await expect(
+      chapterB.as.query(api.transactionCodings.attendeeSuggestions, {
+        transactionId: txnId,
+      }),
+    ).rejects.toMatchObject({ data: { code: "NOT_FOUND" } });
+  });
+
+  test("a central-book transaction falls back to the caller's own home-chapter team", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const managerId = await asManager(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: CENTRAL,
+        personId: managerId,
+        role: "bookkeeper",
+        scope: "central",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Home Chapter Teammate",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const centralTxnId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 5000,
+        postedAt: POST_POLICY,
+        merchantName: "Central Vendor",
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const result = await s.as.query(api.transactionCodings.attendeeSuggestions, {
+      transactionId: centralTxnId,
+    });
+    // `asManager` itself seeds a team-member row ("Manager Mo") on the same
+    // home chapter — sorted in with the others.
+    expect(result).toEqual([
+      { name: "Home Chapter Teammate", isTeamMember: true },
+      { name: "Manager Mo", isTeamMember: true },
+    ]);
   });
 });
