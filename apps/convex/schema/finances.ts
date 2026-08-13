@@ -2123,7 +2123,15 @@ export const transactionCodings = defineTable({
   // demands it) — these fields say who actually typed, and the SoD check in
   // `transactionCodings.approve` compares the DECIDER against them.
   codedByPersonId: v.optional(v.id("people")),
-  codedByUserId: v.id("users"),
+  // OPTIONAL (was required) as of the reimbursement-testimony porting feature
+  // (`lib/transactionCoding.ts#materializePortedReimbursementCoding`,
+  // 2026-08-13): a MATERIALIZED row's author is the reimbursement's
+  // accountless public claimant, who has no `users` row at all — attributing
+  // authorship to the bookkeeper/reviewer who happened to trigger the payout
+  // would misstate whose testimony this is. Every HUMAN-submitted coding
+  // (`transactionCodings.submit`) still always sets this — `codedByPersonId`
+  // is the honest fallback identity for a row with neither.
+  codedByUserId: v.optional(v.id("users")),
   submittedAt: v.number(), // first submission
   updatedAt: v.number(), // latest edit/resubmission
   // The latest decision. Rewritten per round (history in `financeAuditLog`).
@@ -2175,6 +2183,21 @@ export const transactionCodings = defineTable({
   // notification entirely is stamped SILENTLY on first touch so arming the
   // feature can't mail anybody about months of history.
   reviewerRemindedAt: v.optional(v.number()),
+  // ── PROVENANCE: ported, not composed ─────────────────────────────────────
+  // Set ONLY by `lib/transactionCoding.ts#materializePortedReimbursementCoding`
+  // (founder directive, 2026-08-13): when a reimbursement payout transaction
+  // is booked and its request carries exactly one line with a COMPLETE
+  // §274(d) answer, that line's own words become this row verbatim — the
+  // claimant already wrote the testimony and a reviewer already approved it
+  // when they approved the request, so nothing here is re-typed OR
+  // machine-composed. `businessPurpose`/`expenseType`/etc. above are the
+  // ported fields themselves; this is just the receipt saying where they
+  // came from, so the UI can tell a coder "you don't have to touch this" and
+  // a later reader can always trace the words back to the request. Absent
+  // for every human-authored coding (the overwhelming majority) and for a
+  // multi-line or incomplete reimbursement, which still goes through the
+  // normal editor.
+  portedFromReimbursementId: v.optional(v.id("reimbursementRequests")),
 })
   // At most one row per transaction (enforced by `lib/transactionCoding.ts`).
   .index("by_transaction", ["transactionId"])

@@ -255,6 +255,13 @@ export function TransactionCodingSection({
               : ""}
           </Text>
 
+          {coding.portedFromReimbursementId ? (
+            <Text className="mt-1 text-2xs text-muted">
+              Ported from reimbursement request — the claimant's own approved
+              answers.
+            </Text>
+          ) : null}
+
           {coding.reviewNote ? (
             <Text className="mt-1 text-2xs italic text-danger">
               Sent back: “{coding.reviewNote}”

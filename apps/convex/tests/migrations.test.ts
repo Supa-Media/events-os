@@ -347,6 +347,7 @@ const REGISTRY_NAMES = [
   "0065_stamp_default_category_expense_hints",
   "0066_stamp_cashback_source_category",
   "0067_rename_reimbursement_payout_rows",
+  "0068_materialize_reimbursement_codings",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

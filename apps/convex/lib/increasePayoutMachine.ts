@@ -10,7 +10,14 @@
  */
 import type { MutationCtx } from "../_generated/server";
 import { Doc, Id } from "../_generated/dataModel";
-import { deriveReimbursementTxnFields } from "./reimbursementTxnFields";
+import {
+  deriveReimbursementCodingMaterialization,
+  deriveReimbursementTxnFields,
+} from "./reimbursementTxnFields";
+import {
+  codingPolicy,
+  materializePortedReimbursementCoding,
+} from "./transactionCoding";
 
 /**
  * The single transaction recording a reimbursement payout leaving the account.
@@ -72,6 +79,36 @@ export async function postReimbursementSpend(
     ...ported,
   });
   await ctx.db.patch(payout._id, { transactionId: txnId, updatedAt: now });
+
+  // MATERIALIZE the coding from the request's own approved testimony, so
+  // nobody has to re-type what the claimant already wrote and a reviewer
+  // already approved (founder directive, 2026-08-13). Deliberately narrow —
+  // see `deriveReimbursementCodingMaterialization`'s own doc for the rule; a
+  // multi-line or incomplete request is left for the normal human flow
+  // (`reimbursementContext` prefill in `transactionCodings.ts`).
+  const { namesMaxHeadcount } = await codingPolicy(ctx);
+  const materialization = await deriveReimbursementCodingMaterialization(
+    ctx,
+    req,
+    namesMaxHeadcount,
+  );
+  if (materialization.eligible) {
+    await materializePortedReimbursementCoding(ctx, {
+      transactionId: txnId,
+      scope: chapterId,
+      fields: materialization.fields,
+      namesMaxHeadcount,
+      codedByPersonId: materialization.codedByPersonId,
+      codedByUserId: materialization.codedByUserId,
+      decidedByPersonId: materialization.decidedByPersonId,
+      decidedByUserId: materialization.decidedByUserId,
+      decidedAt: materialization.decidedAt,
+      submittedAt: materialization.submittedAt,
+      approvalParty: materialization.approvalParty,
+      portedFromReimbursementId: req._id,
+    });
+  }
+
   return txnId;
 }
 

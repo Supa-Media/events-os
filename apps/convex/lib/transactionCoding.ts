@@ -390,3 +390,77 @@ export async function decideCoding(
   });
   await ctx.db.patch(args.coding.transactionId, { codingState: status });
 }
+
+/**
+ * Materialize a coding row PORTED verbatim from an approved reimbursement
+ * line — never composed, never re-typed (founder directive, 2026-08-13). The
+ * caller (`increasePayoutMachine.ts#postReimbursementSpend`, live path; the
+ * `0068` migration, historical backfill) has already decided the request is
+ * eligible — exactly one line, that line's own §274(d) answer passes
+ * `codingFieldProblems` unmodified — via
+ * `reimbursementTxnFields.ts#deriveReimbursementCodingMaterialization`. This
+ * function is the single WRITE for that decision, keeping the same
+ * single-writer discipline every other coding write in this module holds:
+ * nothing outside `lib/transactionCoding.ts` inserts a `transactionCodings`
+ * row or touches `codingState`.
+ *
+ * Differs from `submitCoding` deliberately:
+ *  - status lands `"approved"` directly — the request's own review WAS the
+ *    coding review (the founder directive's framing: "don't re-stage it").
+ *  - skips the `DOCUMENTATION_REQUIRED` gate entirely. The payout row's
+ *    documentation is the REQUEST's own receipt trail (see
+ *    `deriveReimbursementTxnFields`) — this function must never fabricate a
+ *    documentation state the row doesn't have, so it simply doesn't touch
+ *    that axis at all.
+ *  - NEVER clobbers an existing coding (human or already-ported) — returns
+ *    `null` and does nothing. This is what makes the live path AND the
+ *    migration both idempotent for free.
+ */
+export async function materializePortedReimbursementCoding(
+  ctx: MutationCtx,
+  args: {
+    transactionId: Id<"transactions">;
+    scope: FinanceScope;
+    fields: CodingWriteFields;
+    namesMaxHeadcount: number;
+    /** AUTHORSHIP — the claimant's testimony. Both optional: an accountless
+     *  public submitter has neither a roster link nor a `users` row, and
+     *  authorship must never fall back to the approver (see the schema
+     *  doc on `codedByUserId`). */
+    codedByPersonId?: Id<"people">;
+    codedByUserId?: Id<"users">;
+    /** DECISION — whoever approved the reimbursement request; the request
+     *  review WAS the coding review. */
+    decidedByPersonId?: Id<"people">;
+    decidedByUserId?: Id<"users">;
+    decidedAt: number;
+    /** The claimant's own first-submission time, ported through rather than
+     *  stamped "now" — this is when the testimony was actually written. */
+    submittedAt: number;
+    approvalParty: "single" | "two_party";
+    portedFromReimbursementId: Id<"reimbursementRequests">;
+  },
+): Promise<Id<"transactionCodings"> | null> {
+  const existing = await codingForTransaction(ctx, args.transactionId);
+  if (existing) return null;
+  const fields = normalizeCodingFields(args.fields, args.namesMaxHeadcount);
+  const codingId = await ctx.db.insert("transactionCodings", {
+    transactionId: args.transactionId,
+    chapterId: args.scope,
+    ...fields,
+    status: "approved",
+    ...(args.codedByPersonId ? { codedByPersonId: args.codedByPersonId } : {}),
+    ...(args.codedByUserId ? { codedByUserId: args.codedByUserId } : {}),
+    submittedAt: args.submittedAt,
+    updatedAt: args.decidedAt,
+    ...(args.decidedByPersonId
+      ? { decidedByPersonId: args.decidedByPersonId }
+      : {}),
+    ...(args.decidedByUserId ? { decidedByUserId: args.decidedByUserId } : {}),
+    decidedAt: args.decidedAt,
+    approvalParty: args.approvalParty,
+    portedFromReimbursementId: args.portedFromReimbursementId,
+  });
+  await ctx.db.patch(args.transactionId, { codingState: "approved" });
+  return codingId;
+}

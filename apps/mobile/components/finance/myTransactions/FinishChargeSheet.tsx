@@ -730,6 +730,12 @@ export function FinishChargeSheetBody({
                               .join(", ")}
                           </Text>
                         ) : null}
+                        {coding.portedFromReimbursementId ? (
+                          <Text className="mt-1 text-2xs text-muted">
+                            Ported from reimbursement request — the
+                            claimant's own approved answers.
+                          </Text>
+                        ) : null}
                         {coding.status !== "approved" ? (
                           <View className="mt-2 flex-row">
                             <Button
