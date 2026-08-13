@@ -247,6 +247,7 @@ function MonthDetail({
   const publish = useMutation(api.publicLedger.publish);
   const requestChanges = useMutation(api.publicLedger.requestChanges);
   const startAmendment = useMutation(api.publicLedger.startAmendment);
+  const republish = useMutation(api.publicLedger.republish);
   const mintPreviewToken = useMutation(api.publicLedger.mintLedgerPreviewToken);
 
   const router = useRouter();
@@ -479,9 +480,38 @@ function MonthDetail({
               onChangeText={setNote}
               multiline
             />
+            {/* ONE ACTION, when the caller may do both halves (founder,
+                2026-08-13: "the rows either need to not be frozen, or can be
+                republished easily"). Same reason + sentence, same new
+                revision, same public record — it just doesn't cost three
+                screens to get a name off a live page.
+
+                Offered only to a publisher: `republish` calls
+                `resolveApprovalParty` with the caller as preparer AND
+                publisher, which anyone but a superuser is refused for. Hiding
+                it from the rest is what keeps the button from being a promise
+                the server breaks; they get the reviewed flow below, which is
+                the correct path for them. */}
+            {canPublish ? (
+              <Button
+                title={`Correct and republish now (revision ${(month.liveRevision ?? 1) + 1})`}
+                loading={busy}
+                disabled={busy || noteTooShort}
+                onPress={() =>
+                  void act(() =>
+                    republish({
+                      scope,
+                      periodKey: month.periodKey,
+                      reason,
+                      note: note.trim(),
+                    } as never),
+                  )
+                }
+              />
+            ) : null}
             <Button
               variant="secondary"
-              title="Start a correction"
+              title={canPublish ? "Or hand it to someone to review" : "Start a correction"}
               disabled={busy || noteTooShort}
               onPress={() =>
                 void act(() =>
