@@ -324,6 +324,43 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-08-13 — Run 18 (the auto-coding roadmap: reimbursement port, backlog split, refund auto-pair, heuristic visibility)
+- **Three parallel worktree builds + orchestrator-built fourth, all landed
+  sequentially in one night — the collision that mattered came from OUTSIDE
+  the run.** A sibling session merged migration 0067 to main mid-build,
+  colliding with the port brief's "create 0067". Caught on a routine branch
+  sync (the migrations/index.ts import list showed a number I never wrote);
+  one SendMessage renumbered the agent to 0068 before it finished, and the
+  landing conflict was the trivial append-merge predicted. Rule: when a
+  brief assigns a migration NUMBER, re-verify the number against origin/main
+  at every sync, not just at brief time — and tell the agent what the merge
+  will look like so it keeps its changes append-only.
+- **"Anchor loosened" is the review lens that pays: both feature agents
+  independently loosened a required-field anchor** (codedByUserId for
+  accountless claimants; actorUserId for machine audit rows). Both calls
+  were RIGHT on the merits and both were flagged honestly — but one shipped
+  the constraint as a comment, and the probe proved any human call site
+  could write an anonymous audit row. The durable rule: an exception to an
+  integrity anchor must be ENFORCED at the single write path (allow-list +
+  negative tests), never documented-as-convention; and every anchor
+  loosening gets its own review lens item with a "can this defeat a guard"
+  probe (SoD held because comparisons were personId-based — proven, not
+  assumed).
+- **Two agents cross-verifying the same full-suite flake beats one.** Both
+  builders hit the same 6 unrelated timeouts in their full-repo sweeps;
+  each independently re-ran the offenders (one on a pristine base worktree,
+  one in isolation) and converged on load-contention-under-parallel-suites.
+  Concurrent worktree builds make the full sweep unreliable as a gate —
+  scope agent gates to named suites, keep the full sweep as advisory.
+- **Founder decision, quoted, now standing:** on the Opus roadmap — "let's
+  go with your best recommendation on all of this" — which cashed out as:
+  reimbursement request approval IS the coding review (single-line complete
+  requests materialize approved codings, ported verbatim, provenance
+  stamped); reconstructed history splits the meter rather than
+  auto-explaining; refund auto-pairing keys on the provider's structural
+  link only; the payout text-heuristic keeps zero-touch but must say on the
+  row how it claimed it.
+
 ### 2026-08-13 — Run 17 (Explain-worklist noise: fees/personal/transfers; names bulk entry; recurring-charge suggestions)
 - **THE RECON FAN-OUT DIED SILENTLY AND COST TWO HOURS — the founder caught
   it, not the ticker.** Three of four recon agents died at launch (output
