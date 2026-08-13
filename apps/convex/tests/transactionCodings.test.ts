@@ -650,3 +650,248 @@ describe("the CODING_REQUIRED gate and the Reconcile facets", () => {
     expect(counts.coding_review).toBe(0);
   });
 });
+
+/**
+ * `priorCoding` — "You've coded this vendor before" (founder, 2026-08-12):
+ * the newest APPROVED coding at the same merchant, in the same chapter's
+ * book, offered as an analogy for a coder to copy from (never prefill — see
+ * `PriorCodingBlock`'s own module doc).
+ */
+
+/** A transaction inserted directly, skipping the ingestion path — these
+ *  fixtures are about the recurring-vendor query, not about how a charge
+ *  lands on the books. */
+async function seedVendorTxn(
+  s: ChapterSetup,
+  opts: {
+    merchantName?: string;
+    amountCents?: number;
+    postedAt?: number;
+    chapterId?: Id<"chapters">;
+    personId?: Id<"people">;
+  } = {},
+): Promise<Id<"transactions">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("transactions", {
+      chapterId: opts.chapterId ?? s.chapterId,
+      source: "manual",
+      flow: "outflow",
+      amountCents: opts.amountCents ?? 999,
+      postedAt: opts.postedAt ?? POST_POLICY,
+      merchantName: opts.merchantName ?? "Spotify",
+      status: "unreviewed",
+      ...(opts.personId ? { personId: opts.personId } : {}),
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** A coding row inserted directly at a given status — these fixtures are
+ *  about what `getForTransaction` does with an EXISTING record on a
+ *  DIFFERENT charge, not about the submit/approve flow (see `review loop`
+ *  above for that). */
+async function seedCodingRow(
+  s: ChapterSetup,
+  transactionId: Id<"transactions">,
+  opts: {
+    status?: "submitted" | "approved";
+    businessPurpose?: string;
+    headcount?: number;
+    attendees?: { name: string; affiliation: string }[];
+  } = {},
+): Promise<void> {
+  const authorUserId = await run(s.t, (ctx) =>
+    ctx.db.insert("users", { email: `coder-${transactionId}@test.local` }),
+  );
+  await run(s.t, (ctx) =>
+    ctx.db.insert("transactionCodings", {
+      transactionId,
+      chapterId: s.chapterId,
+      expenseType: opts.attendees ? "meal" : "general",
+      businessPurpose: opts.businessPurpose ?? GOOD_PURPOSE,
+      ...(opts.headcount != null ? { headcount: opts.headcount } : {}),
+      ...(opts.attendees ? { attendees: opts.attendees as never } : {}),
+      status: opts.status ?? "approved",
+      codedByUserId: authorUserId,
+      submittedAt: Date.now(),
+      updatedAt: Date.now(),
+    }),
+  );
+}
+
+describe("priorCoding — a vendor's own approved coding history, offered as an analogy", () => {
+  test("an approved prior coding at the same vendor+chapter is offered, with amountMatches correct", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const priorTxnId = await seedVendorTxn(s, {
+      merchantName: "Spotify",
+      amountCents: 999,
+      postedAt: POST_POLICY - 30 * DAY_MS,
+    });
+    await seedCodingRow(s, priorTxnId, {
+      businessPurpose: "Monthly team Spotify subscription for event playlists",
+    });
+    const sameAmountTxnId = await seedVendorTxn(s, {
+      merchantName: "Spotify",
+      amountCents: 999,
+      postedAt: POST_POLICY,
+    });
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: sameAmountTxnId,
+    });
+    expect(data.priorCoding?.transactionId).toBe(priorTxnId);
+    expect(data.priorCoding?.businessPurpose).toBe(
+      "Monthly team Spotify subscription for event playlists",
+    );
+    expect(data.priorCoding?.merchantName).toBe("Spotify");
+    expect(data.priorCoding?.amountMatches).toBe(true);
+
+    // A charge at the same vendor for a DIFFERENT amount still gets offered
+    // the prior coding — it's still the same analogy — but the badge doesn't
+    // claim they match.
+    const differentAmountTxnId = await seedVendorTxn(s, {
+      merchantName: "Spotify",
+      amountCents: 1499,
+      postedAt: POST_POLICY,
+    });
+    const data2 = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: differentAmountTxnId,
+    });
+    expect(data2.priorCoding?.amountMatches).toBe(false);
+  });
+
+  test("a SUBMITTED (not yet approved) prior coding is never offered", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const priorTxnId = await seedVendorTxn(s, {
+      merchantName: "Adobe",
+      amountCents: 5499,
+      postedAt: POST_POLICY - 30 * DAY_MS,
+    });
+    await seedCodingRow(s, priorTxnId, { status: "submitted" });
+    const currentTxnId = await seedVendorTxn(s, {
+      merchantName: "Adobe",
+      amountCents: 5499,
+      postedAt: POST_POLICY,
+    });
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: currentTxnId,
+    });
+    expect(data.priorCoding).toBeNull();
+  });
+
+  test("a different merchant, or a different chapter's book, is never offered", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // Different merchant, same chapter — an approved coding, but not this
+    // vendor's history.
+    const otherMerchantTxnId = await seedVendorTxn(s, {
+      merchantName: "Not Spotify",
+      amountCents: 999,
+      postedAt: POST_POLICY - 30 * DAY_MS,
+    });
+    await seedCodingRow(s, otherMerchantTxnId);
+
+    // Same merchant, a DIFFERENT chapter's book entirely.
+    const otherChapterId = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Elsewhere",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const otherChapterTxnId = await seedVendorTxn(s, {
+      merchantName: "Spotify",
+      amountCents: 999,
+      postedAt: POST_POLICY - 15 * DAY_MS,
+      chapterId: otherChapterId,
+    });
+    await seedCodingRow(s, otherChapterTxnId);
+
+    const currentTxnId = await seedVendorTxn(s, {
+      merchantName: "Spotify",
+      amountCents: 999,
+      postedAt: POST_POLICY,
+    });
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: currentTxnId,
+    });
+    expect(data.priorCoding).toBeNull();
+  });
+
+  // Mirrors `codingRedaction.test.ts`'s seeding of a plain member with no
+  // finance role who may only view a charge because it is their own.
+  test("attendee names are redacted when the caller lacks names-view on the PRIOR transaction", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const cardholderUserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "cardholder@publicworship.life" }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("userChapters", {
+        userId: cardholderUserId,
+        chapterId: s.chapterId,
+        role: "member",
+        isActive: true,
+        joinedAt: Date.now(),
+      }),
+    );
+    const cardholderPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Cardholder Cass",
+        userId: cardholderUserId,
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const cardholderAs = t.withIdentity({
+      subject: `${cardholderUserId}|session`,
+      issuer: "test",
+    });
+
+    // The PRIOR transaction belongs to somebody else entirely — coded and
+    // approved by people who are not this cardholder, and this cardholder
+    // holds no finance role that would open a chapter-wide names-view.
+    const otherPersonId = await seedOtherPerson(s, "Other Person");
+    const priorTxnId = await seedVendorTxn(s, {
+      merchantName: "Panera",
+      amountCents: 8600,
+      postedAt: POST_POLICY - 10 * DAY_MS,
+      personId: otherPersonId,
+    });
+    await seedCodingRow(s, priorTxnId, {
+      headcount: 4,
+      attendees: [
+        { name: "Real Name One", affiliation: "team" },
+        { name: "Real Name Two", affiliation: "volunteer" },
+      ],
+    });
+
+    // THIS transaction is the cardholder's own — they may view it with no
+    // finance role at all (same as `codingRedaction.test.ts`'s "THE AUTHOR
+    // SEES IT").
+    const currentTxnId = await seedVendorTxn(s, {
+      merchantName: "Panera",
+      amountCents: 8600,
+      postedAt: POST_POLICY,
+      personId: cardholderPersonId,
+    });
+
+    const data = await cardholderAs.query(
+      api.transactionCodings.getForTransaction,
+      { transactionId: currentTxnId },
+    );
+    expect(data.priorCoding).not.toBeNull();
+    expect(data.priorCoding?.attendees).toBeNull();
+    // Headcount is not a name — it stays visible even when names are
+    // redacted, exactly like `codingRow.headcount` does.
+    expect(data.priorCoding?.headcount).toBe(4);
+  });
+});
