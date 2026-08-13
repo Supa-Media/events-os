@@ -326,64 +326,129 @@ export function useCodingFormState({
     setAttendees(rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   }
 
-  /** See the `removeAttendeeRow` interface doc for the headcount rule. */
+  /**
+   * See the `removeAttendeeRow` interface doc for the headcount rule.
+   *
+   * HARDENING (FINDING 4, adversarial review 2026-08-13): both setters use
+   * the UPDATER-FUNCTION form, reading the PREVIOUS state fresh rather than
+   * the `rows`/`headcount` this render closed over. That matters if this
+   * fires twice before React re-renders (a double-tap on the ✕ queues two
+   * calls in the same batch): the render-time `rows`/`headcount` snapshot
+   * would be IDENTICAL for both calls, so both would compute "remove index i
+   * from THIS SAME array" and both would try to set headcount to the SAME
+   * `render value − 1` — the second call's write would land on top of the
+   * first's rather than composing with it, silently losing one removal. The
+   * updater form instead lets each call see what the OTHER already did.
+   */
   function removeAttendeeRow(index: number) {
-    setAttendees(rows.filter((_, i) => i !== index));
-    if (headcount != null && rows.length === headcount) {
-      setHeadcountRaw(String(Math.max(0, headcount - 1)));
+    const targetHeadcount = headcount;
+    const wasAtHeadcount = targetHeadcount != null && rows.length === targetHeadcount;
+    setAttendees((prev) => {
+      if (targetHeadcount == null) return prev;
+      // Recompute the row shape from `prev` — the same derivation `rows`
+      // itself uses — rather than trusting this render's `rows`, which may
+      // already be stale if an earlier queued update in this same batch
+      // changed `prev` first.
+      const currentRows = Array.from(
+        { length: Math.min(targetHeadcount, namesMaxHeadcount) },
+        (_, i) => prev[i] ?? { name: "", affiliation: "team" as const },
+      );
+      return currentRows.filter((_, i) => i !== index);
+    });
+    if (wasAtHeadcount) {
+      setHeadcountRaw((prevRaw) => {
+        const parsed = /^\d+$/.test(prevRaw.trim())
+          ? parseInt(prevRaw.trim(), 10)
+          : NaN;
+        return Number.isInteger(parsed) && parsed > 0
+          ? String(parsed - 1)
+          : prevRaw;
+      });
     }
   }
 
-  /** See the `startWithTeam` interface doc for the headcount + cap rules. */
+  /** See the `startWithTeam` interface doc for the headcount + cap rules.
+   *  Same updater-form hardening as `removeAttendeeRow` for the attendees
+   *  array — the fill amount/branch decision still reads the render-time
+   *  `headcount` (recombining that with a separately-updater-form
+   *  `headcountRaw` isn't possible without one update seeing the other's
+   *  result, and nothing else changes `headcount` between a render and this
+   *  same click, so that residual read is safe in practice). */
   function startWithTeam(team: { name: string }[]): BulkAddResult {
     if (team.length === 0) return { added: 0, requested: 0 };
     const requested = team.length;
-    if (headcount == null) {
-      const { accepted } = capBulkAdditions(team, 0, namesMaxHeadcount);
-      setHeadcountRaw(String(accepted.length));
-      setAttendees(
-        accepted.map((p) => ({ name: p.name, affiliation: "team" as const })),
+    const targetHeadcount = headcount;
+    let added = 0;
+    let newHeadcountRaw: string | null = null;
+    setAttendees((prev) => {
+      const filledCount = prev.filter((r) => r.name.trim().length > 0).length;
+      const maxTotal = targetHeadcount ?? namesMaxHeadcount;
+      const { accepted } = capBulkAdditions(team, filledCount, maxTotal);
+      added = accepted.length;
+      if (accepted.length === 0) return prev;
+      const filled = accepted.map((p) => ({
+        name: p.name,
+        affiliation: "team" as const,
+      }));
+      if (targetHeadcount == null) {
+        newHeadcountRaw = String(filledCount + accepted.length);
+        return [...prev.filter((r) => r.name.trim().length > 0), ...filled];
+      }
+      // Fill BLANK rows in place, preserving any already-filled ones and
+      // their positions.
+      let fi = 0;
+      return prev.map((r) =>
+        r.name.trim().length > 0
+          ? r
+          : fi < filled.length
+            ? filled[fi++]
+            : r,
       );
-      return { added: accepted.length, requested };
+    });
+    if (newHeadcountRaw != null) {
+      const raw = newHeadcountRaw;
+      setHeadcountRaw(() => raw);
     }
-    const filledCount = rows.filter((r) => r.name.trim().length > 0).length;
-    const { accepted } = capBulkAdditions(team, filledCount, headcount);
-    const filled = accepted.map((p) => ({
-      name: p.name,
-      affiliation: "team" as const,
-    }));
-    // Fill BLANK rows in place, preserving any already-filled ones and their
-    // positions.
-    let fi = 0;
-    setAttendees(
-      rows.map((r) =>
-        r.name.trim().length > 0 ? r : fi < filled.length ? filled[fi++] : r,
-      ),
-    );
-    return { added: accepted.length, requested };
+    return { added, requested };
   }
 
+  /** See the `appendAttendees` interface doc for the cap rule. Same
+   *  updater-form hardening: `existing`/`added` are computed from each
+   *  call's own `prev` snapshot at the moment its `setAttendees` updater
+   *  actually runs, so two queued calls in one batch compose (the second
+   *  sees the first's additions already applied) instead of one clobbering
+   *  the other. */
   function appendAttendees(
     parsed: { name: string; affiliation: AttendeeAffiliation }[],
   ): BulkAddResult {
-    const existing = rows.filter((r) => r.name.trim().length > 0);
-    const existingLower = new Set(
-      existing.map((r) => r.name.trim().toLowerCase()),
-    );
-    const newOnes = parsed.filter(
-      (p) => !existingLower.has(p.name.trim().toLowerCase()),
-    );
-    if (newOnes.length === 0) return { added: 0, requested: 0 };
-    const { accepted } = capBulkAdditions(
-      newOnes,
-      existing.length,
-      namesMaxHeadcount,
-    );
-    if (accepted.length > 0) {
-      setAttendees([...existing, ...accepted]);
-      setHeadcountRaw(String(existing.length + accepted.length));
+    let added = 0;
+    let requested = 0;
+    let newHeadcountRaw: string | null = null;
+    setAttendees((prev) => {
+      const existing = prev.filter((r) => r.name.trim().length > 0);
+      const existingLower = new Set(
+        existing.map((r) => r.name.trim().toLowerCase()),
+      );
+      const newOnes = parsed.filter(
+        (p) => !existingLower.has(p.name.trim().toLowerCase()),
+      );
+      requested = newOnes.length;
+      if (newOnes.length === 0) return prev;
+      const { accepted } = capBulkAdditions(
+        newOnes,
+        existing.length,
+        namesMaxHeadcount,
+      );
+      added = accepted.length;
+      if (accepted.length === 0) return prev;
+      newHeadcountRaw = String(existing.length + accepted.length);
+      return [...existing, ...accepted];
+    });
+    if (newHeadcountRaw != null) {
+      const raw = newHeadcountRaw;
+      setHeadcountRaw(() => raw);
     }
-    return { added: accepted.length, requested: newOnes.length };
+    return { added, requested };
   }
 
   const value: CodingFormValue | null =
@@ -867,6 +932,11 @@ function lastUsedAffiliation(
  * itself (FINDING 1, adversarial review 2026-08-13). When the cap bites,
  * `capNotice` says so in plain numbers rather than losing anyone silently.
  */
+
+/** The `BulkAddResult` copy, shared by both bulk-add paths — one sentence
+ *  saying exactly how many landed and why the rest didn't. `null` when
+ *  nothing was left out — the caller renders no notice at all in that
+ *  case. */
 function bulkAddCapNotice(
   result: BulkAddResult,
   namesMaxHeadcount: number,
