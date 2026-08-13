@@ -1294,7 +1294,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Reconcile is the Treasurer's spreadsheet-style home: every chapter charge as a row, Category and Budget editable inline, receipts uploaded inline. Nothing here is guessed — a charge only counts against a budget when YOU explicitly link it. There is no automatic matching that quietly assigns spend to the nearest budget.",
+        text: "Reconcile is the Treasurer's spreadsheet-style home: every chapter charge as a row, Category and Budget editable inline, receipts uploaded inline, and a \"What it was for\" column carrying the spender's own sentence so you can read a month without opening a single row. Nothing here is guessed — a charge only counts against a budget when YOU explicitly link it. There is no automatic matching that quietly assigns spend to the nearest budget.",
       },
       {
         kind: "p",
@@ -1331,6 +1331,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Renaming a merchant is not correcting a row",
         text: "Bank feeds hand us machine strings: \"IC* COSTCO BY IN CAR\", \"AMAZON MKTPL*56OXD2TB2\", \"Purchase from AMAZON.COM*569A3 | Address: SEATTLE, WA, US | **8728\". Type over the Merchant cell in Reconcile and call it what it actually was — \"Costco\", \"Amazon — sound cables\". A bookkeeper can do this on ANY row, bank rows included, which is why it's a different thing from the corrections above.\n\nIt's safe on a bank row because it changes nothing about the bank's record. The name you type is stored beside the original, never over it: the statement's own string is still on the row, still searchable (typing either name finds the charge), and one tap away behind the clock icon that appears on every renamed row. That icon opens the name history — what the bank called it, every name since, and who changed it when. Clear the rename and the bank's name simply shows through again; nothing had to be restored, because nothing was ever overwritten.\n\nSo rename freely for readability, and understand what you have NOT done: renaming doesn't correct an amount, a date, or a claim about what happened. If the row itself is wrong, that's the pencil — or a note and an exclusion.",
+      },
+      {
+        kind: "rule",
+        title: "\"What it was for\" is the sentence that publishes",
+        text: "The column reads the charge's coding — what it bought and which of our work it served — straight on the row. A blank one says \"Not written\" when that charge owes an account of itself, so an unexplained month is visible at a glance instead of one row at a time. Tap the cell to open the full record: the receipt, who was there, the route, and Approve / Send back if it's yours to decide.\n\nWhat it shows is the PUBLISHED wording, not always the author's. When an approver has redacted a sentence — stripping a name out of \"Dinner with Michael Reid and the volunteers\" — the grid shows the redaction, with a small pencil beside it. The author's original is never overwritten and is still on the coding for an auditor; it simply doesn't render on the surface most likely to end up in a screenshot. So don't read this column as a quote of what somebody typed. Read it as what the public page will say.\n\nAnd it's read-only on purpose. An approved coding can't be edited — testimony a second person signed off on doesn't get quietly reworded — so the cell opens the record rather than pretending to be a text box that would work on some rows and refuse on others.",
       },
       {
         kind: "rule",

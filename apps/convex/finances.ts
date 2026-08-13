@@ -79,6 +79,7 @@ import {
   TRANSACTION_STATUS_LABELS,
   FINANCE_AUDIT_ACTIONS,
   EXPENSE_TYPES,
+  publishedPurpose,
   type BudgetType,
   type BudgetRefKind,
   type BudgetApprovalStatus,
@@ -135,7 +136,7 @@ import {
   type TransferDirection,
 } from "./lib/transferPair";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
-import { codingPolicy } from "./lib/transactionCoding";
+import { codingForTransaction, codingPolicy } from "./lib/transactionCoding";
 import { chargeOutstanding } from "./lib/codingReminders";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
@@ -482,6 +483,33 @@ const reconcileRow = v.object({
   // repayment row vanished). Lets the grid's Personal badge distinguish
   // "awaiting repayment" from "repaid" instead of one undated flag forever.
   repaymentStatus: v.union(repaymentStatusValidator, v.null()),
+  // WHAT THIS WAS FOR — the coding's own sentence, on the row.
+  //
+  // `codingState` next to it already says WHERE the explanation sits in
+  // review; it never said WHAT it says, so reading a month meant opening
+  // every row one at a time to find out. The grid is the surface people
+  // actually scan, so the sentence belongs in it (founder ask, 2026-08-13).
+  //
+  // `null` for a row that has never been coded — and costing nothing to
+  // discover, because `codingState` is a denorm and answers that without a
+  // read (see `resolveExplanation`).
+  explanation: v.union(
+    v.object({
+      /** The sentence that will PUBLISH — `publicPurpose ?? businessPurpose`,
+       *  exactly what `publicLedger` renders. Deliberately NOT the author's
+       *  original where a reviewer has redacted it: the whole point of a
+       *  redaction is that a name shouldn't be on the public page, and
+       *  putting it back on a grid a hundred rows wide would undo that in the
+       *  one place a screenshot is most likely to be taken. */
+      purpose: v.string(),
+      /** A reviewer replaced the author's wording for publication
+       *  (`setPublicPurpose`). The author's original is still on the coding —
+       *  this only tells the cell that what it's showing isn't the words the
+       *  spender typed. */
+      redacted: v.boolean(),
+    }),
+    v.null(),
+  ),
 });
 
 // The reconcile filter pills (server-side, correct across ALL rows).
@@ -9212,6 +9240,36 @@ export const listReconcile = query({
       };
     };
 
+    // THE ROW'S OWN SENTENCE, for the page only.
+    //
+    // Gated on the `codingState` denorm FIRST, which is the whole reason this
+    // is affordable: a row that has never been coded — most of the "To
+    // review" queue — answers `null` with no read at all, so the cost lands
+    // only on rows that genuinely have something to say. A coded row costs
+    // ONE indexed read (`by_transaction`, unique), which is the same shape as
+    // the three enrichments below and bounded by the same page cap
+    // (`DEFAULT_RECONCILE_PAGE_SIZE` 100 / `MAX_RECONCILE_PAGE_SIZE` 500).
+    //
+    // The denorm can only be MISSING a coding, never invent one, so the
+    // `!coding` branch stays: if the two ever disagree the row reads as
+    // unexplained, which is the safe direction — it never claims an
+    // explanation that isn't there.
+    const resolveExplanation = async (
+      tr: Doc<"transactions">,
+    ): Promise<(typeof reconcileRow.type)["explanation"]> => {
+      if (tr.codingState == null) return null;
+      const coding = await codingForTransaction(ctx, tr._id);
+      if (!coding) return null;
+      // `publishedPurpose`, never an inline `??`: that helper's whole reason
+      // for existing is that "which sentence publishes" is decided in ONE
+      // place (it also treats a whitespace-only redaction as no redaction,
+      // which a bare `??` gets wrong). `redacted` is then DERIVED from the
+      // same answer rather than re-tested against `publicPurpose`, so the
+      // flag and the string can never disagree about what happened.
+      const purpose = publishedPurpose(coding);
+      return { purpose, redacted: purpose !== coding.businessPurpose };
+    };
+
     // Projected for the PAGE only, and CONCURRENTLY. Each row costs up to three
     // dependent reads (documentation state, cardholder, budget owner); walking
     // them in a sequential `for` loop made the query's latency the SUM of every
@@ -9231,6 +9289,7 @@ export const listReconcile = query({
         book: bookOf(tr),
         chargedTo: await resolveChargedTo(tr),
         repaymentStatus: await resolveRepaymentStatus(tr),
+        explanation: await resolveExplanation(tr),
       })),
     );
     // Resolved off the caller's HOME chapter (not `scope`, which can be a
