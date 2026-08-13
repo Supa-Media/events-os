@@ -102,6 +102,7 @@ import {
 } from "./cards";
 import { createReceipt, linkReceiptToTransaction } from "./lib/receiptLinks";
 import { logFinanceAudit } from "./lib/financeAuditLog";
+import { checkRefundPair, writeRefundPair } from "./lib/refundPair";
 import {
   pendingExceptionForTransaction,
   retireApprovedExceptionOnAmountChange,
@@ -10415,63 +10416,12 @@ export const markAsRefund = mutation({
       MARK_MIN_ROLE,
     );
 
-    if (charge.txn.chapterId !== refund.txn.chapterId) {
-      throw new ConvexError({
-        code: "CROSS_SCOPE_REFUND",
-        message:
-          "Those rows belong to different books. A refund lands back on the book that paid.",
-      });
-    }
-    if (charge.txn.flow !== "outflow" || refund.txn.flow !== "inflow") {
-      throw new ConvexError({
-        code: "NOT_A_PAIR",
-        message:
-          "A refund is one charge going out and one credit coming back — pick one of each.",
-      });
-    }
-    if (charge.txn.amountCents !== refund.txn.amountCents) {
-      throw new ConvexError({
-        code: "PARTIAL_REFUND",
-        message:
-          "Only a full refund can be marked — these amounts differ. Leave a partial refund coded as income against the same budget.",
-      });
-    }
-    if ((charge.txn.currency ?? "usd") !== (refund.txn.currency ?? "usd")) {
-      throw new ConvexError({
-        code: "CURRENCY_MISMATCH",
-        message: "Those two rows are in different currencies.",
-      });
-    }
-    for (const leg of [charge.txn, refund.txn]) {
-      if (leg.refundsTransactionId != null || leg.refundedByTransactionId != null) {
-        throw new ConvexError({
-          code: "ALREADY_REFUND",
-          message: "One of those rows is already part of a refund.",
-        });
-      }
-      if (leg.transferGroupId != null) {
-        throw new ConvexError({
-          code: "IS_TRANSFER",
-          message:
-            "One of those rows is part of a transfer. Un-mark it first if it's really a refund.",
-        });
-      }
-      if (leg.stripePayoutId != null) {
-        // Same class as `payoutProcessor` below: an engine-matched payout
-        // deposit signs to zero, so pairing against it would leave a refund
-        // pair that doesn't net (Opus audit, 2026-08-13).
-        throw new ConvexError({
-          code: "IS_PAYOUT",
-          message:
-            "One of those rows was matched to a processor payout by the reconciliation engine.",
-        });
-      }
-      if (leg.payoutProcessor != null) {
-        throw new ConvexError({
-          code: "IS_PAYOUT",
-          message: "One of those rows is marked as a processor payout.",
-        });
-      }
+    // Same rules the auto-pairer runs (`lib/refundPair.ts`) — extracted so
+    // the human mutation and the Increase ingester can never validate a pair
+    // differently.
+    const refusal = checkRefundPair(charge.txn, refund.txn);
+    if (refusal) {
+      throw new ConvexError({ code: refusal.code, message: refusal.message });
     }
 
     const trimmedNote = args.note?.trim() || null;
@@ -10482,32 +10432,10 @@ export const markAsRefund = mutation({
       });
     }
 
-    await ctx.db.patch(charge.txn._id, {
-      refundedByTransactionId: refund.txn._id,
-      ...(trimmedNote && !charge.txn.note ? { note: trimmedNote } : {}),
+    await writeRefundPair(ctx, charge.txn, refund.txn, {
+      note: trimmedNote,
+      actorPersonId: charge.actorPersonId,
     });
-    await ctx.db.patch(refund.txn._id, {
-      refundsTransactionId: charge.txn._id,
-      // Legibility only — an inflow is never spend, so this moves no total.
-      ...(charge.txn.categoryId ? { categoryId: charge.txn.categoryId } : {}),
-      ...(charge.txn.budgetId ? { budgetId: charge.txn.budgetId } : {}),
-      ...(trimmedNote && !refund.txn.note ? { note: trimmedNote } : {}),
-    });
-
-    for (const leg of [charge, refund]) {
-      await logFinanceAudit(ctx, {
-        chapterId: leg.txn.chapterId,
-        subjectType: "transaction",
-        subjectId: leg.txn._id,
-        action: "refund_mark",
-        actorPersonId: leg.actorPersonId,
-        field: "refund",
-        before: "none",
-        after: "refunded",
-        reason: trimmedNote,
-        amountCents: leg.txn.amountCents,
-      });
-    }
     return null;
   },
 });
