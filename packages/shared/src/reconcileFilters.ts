@@ -25,8 +25,8 @@
  *           you get it back. Its count is computed over the hidden rows too, so
  *           the number in the dropdown is still one you can get to.
  *   STATE — where is it in the pipeline? Needs review, needs a budget, needs a
- *           receipt, undocumented, owed back personally, or already cleared. A
- *           row can be in several of these at once.
+ *           receipt, needs explaining, undocumented, owed back personally, or
+ *           already cleared. A row can be in several of these at once.
  *
  * `missing_receipt` and `undocumented` are two halves of one backlog, and they
  * are DISJOINT. The first is the CHASE worklist: still open, still owes a
@@ -71,6 +71,7 @@ export const RECONCILE_FILTER_KEYS = [
   "needs_budget",
   "missing_receipt",
   "uncoded",
+  "needs_explaining",
   "coding_review",
   "undocumented",
   "personal_unpaid",
@@ -105,6 +106,7 @@ export const RECONCILE_FILTER_GROUPS: readonly {
       "needs_budget",
       "missing_receipt",
       "uncoded",
+      "needs_explaining",
       "coding_review",
       "undocumented",
       "personal_unpaid",
@@ -190,6 +192,27 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   // none approved-or-awaiting; `coding_review` is a submitted coding waiting
   // on a reviewer — the treasurer's inbox, not the cardholder's.
   uncoded: "Needs coding",
+  // WHAT WILL PUBLISH BLANK — the same question `finances.monthCodingWorklist`
+  // asks, asked from the grid.
+  //
+  // `uncoded` above is the POLICY question ("does this row owe a coding yet"),
+  // and it grandfathers everything posted before `codingRequiredSinceMs`. That
+  // is correct about obligation and useless for the job the founder actually
+  // has: ~400 reconstructed 2024–25 rows are exempt by calendar, so the facet
+  // is empty and the grid cannot reach a single one of them. The only surface
+  // that could was the month-at-a-time Explain screen, which is why that
+  // screen existed.
+  //
+  // This key is the PUBLISHING population instead: a row that can carry an
+  // explanation (`isSpend`, via `finances.ts#canCarryExplanation`), isn't
+  // auto-explained (`autoExplainedKind` — fees, personal charges, cashback,
+  // refund pairs, interest), isn't excluded, and has no approved coding.
+  // Policy dates never enter into it. Server-side it is ONE function,
+  // `finances.ts#needsExplaining`, called by this facet AND by
+  // `monthCodingWorklist` — never a second copy, which is the failure mode
+  // this area already has a scar from (the `requiresCoding` mirrors in
+  // `transactionCodings.ts`).
+  needs_explaining: "Needs explaining",
   coding_review: "Coding review",
   // "Closed without documentation", not "Undocumented" — and the FACET is now
   // the difference rather than the superset (see `listReconcile`'s `flagsFor`).

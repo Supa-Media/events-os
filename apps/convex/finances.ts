@@ -546,6 +546,11 @@ const reconcileFilterValidator = v.union(
   v.literal("needs_budget"),
   v.literal("missing_receipt"),
   v.literal("uncoded"),
+  // The PUBLISHING population — `needsExplaining`, no policy date. `uncoded`
+  // beside it is the POLICY question and grandfathers pre-policy history, so
+  // it can never reach the ~400 reconstructed 2024–25 rows this key exists
+  // for. See `RECONCILE_FILTER_LABELS.needs_explaining`.
+  v.literal("needs_explaining"),
   v.literal("coding_review"),
   v.literal("to_review"),
   v.literal("reconciled"),
@@ -567,6 +572,7 @@ const reconcileCounts = v.object({
   needs_budget: v.number(),
   missing_receipt: v.number(),
   uncoded: v.number(),
+  needs_explaining: v.number(),
   coding_review: v.number(),
   to_review: v.number(),
   reconciled: v.number(),
@@ -1500,6 +1506,60 @@ export function requiresCoding(
  */
 export function canCarryExplanation(tr: Doc<"transactions">): boolean {
   return isSpend(tr);
+}
+
+/**
+ * WILL THIS ROW PUBLISH WITH A BLANK NEXT TO IT? — the publishing predicate,
+ * in ONE place.
+ *
+ * `explanationPopulation` is the denominator: every row a month would publish
+ * that a human could be asked to account for. `needsExplaining` is the
+ * numerator's complement: the same population, minus the rows that already
+ * have an approved coding.
+ *
+ * ## Why this is a function and not two copies
+ *
+ * It was written inline inside `monthCodingWorklist`, copied once into
+ * `unexplainedCountForBook` right below it (with a comment asking the next
+ * person to keep them identical), and the reconcile grid had no way to ask the
+ * question at all. Its `uncoded` facet asks the POLICY question instead —
+ * `requiresCoding`, which grandfathers everything posted before
+ * `codingRequiredSinceMs` — so ~400 reconstructed 2024–25 rows are exempt by
+ * calendar and the grid cannot reach one of them. That gap is the entire
+ * reason a separate month-at-a-time Explain screen exists.
+ *
+ * Consolidating the grid onto this predicate means a third caller, and a third
+ * hand-kept copy of a four-line predicate is exactly how the `requiresCoding`
+ * mirrors in `transactionCodings.ts` drifted. One function, three callers:
+ * `monthCodingWorklist`, `unexplainedCountForBook`, and `listReconcile`'s
+ * `needs_explaining` facet.
+ *
+ * ## What it asks, and what it deliberately does NOT
+ *
+ *  - EXCLUDED rows never publish, so they never need explaining.
+ *  - Only SPEND can be explained (`canCarryExplanation` === `isSpend`):
+ *    inflows are the giving layer's record, and internal movements have no
+ *    business purpose to give.
+ *  - AUTO-EXPLAINED kinds are out — fees, personal charges, cashback, refund
+ *    pairs, repayment credits, interest. They publish carrying their own
+ *    sentence (`autoExplanationLine`), so nobody is ever asked for one.
+ *  - NO POLICY DATE. This is not "what does policy demand"; it is "what will a
+ *    stranger see a blank next to". A 2024 row is as blank as a 2026 one.
+ *  - NO STATUS TEST beyond `excluded`. A treasurer who closed a row didn't
+ *    explain it, and the public page doesn't care that it's `reconciled`.
+ *    (This is where it parts company with `isUncoded`, which is a CHASE
+ *    predicate and correctly stops chasing closed rows.)
+ */
+export function explanationPopulation(tr: Doc<"transactions">): boolean {
+  if (tr.status === "excluded") return false;
+  if (!canCarryExplanation(tr)) return false;
+  return autoExplainedKind(tr) == null;
+}
+
+/** A row in {@link explanationPopulation} with no approved coding yet — what
+ *  the Explain worklist lists and the `needs_explaining` facet selects. */
+export function needsExplaining(tr: Doc<"transactions">): boolean {
+  return explanationPopulation(tr) && tr.codingState !== "approved";
 }
 
 /**
@@ -2814,6 +2874,20 @@ function makeCardholderResolver(ctx: QueryCtx) {
      */
     resolveName: async (tr: Doc<"transactions">): Promise<string | null> =>
       (await personFor(tr))?.name ?? null,
+    /**
+     * Identity without the avatar — for `listReconcile`'s `groupBy:"person"`,
+     * which needs a stable GROUP KEY (the personId) and a header LABEL (the
+     * name) across the whole match set, not just the page. Same reasoning as
+     * `resolveName` above: grouping 400 rows must not mint 400 signed URLs,
+     * and it shares the same caches, so a row that lands on the page still
+     * costs no second read.
+     */
+    resolveRef: async (
+      tr: Doc<"transactions">,
+    ): Promise<{ personId: Id<"people">; name: string } | null> => {
+      const person = await personFor(tr);
+      return person ? { personId: person._id, name: person.name } : null;
+    },
   };
 }
 
@@ -4937,29 +5011,16 @@ export const monthCodingWorklist = query({
 
     for (const tr of raw) {
       if (!txnMatchesMode(tr, sandboxMode)) continue;
-      // An excluded row never publishes, so it never needs explaining.
-      if (tr.status === "excluded") continue;
       const p = easternParts(tr.postedAt);
       if (p.year !== year || p.month !== month) continue;
-      // ONLY SPEND CAN BE EXPLAINED. `canCarryExplanation` is the same base
-      // predicate `requiresCoding` builds on, so this list and the detail
-      // panel beside it can't disagree about whether a row owes anything.
-      //
-      // This used to test `signedBookCents(tr) !== 0`, which is TRUE for an
-      // inflow — so a donation arriving was listed as owing an explanation
-      // (founder, 2026-08-13: "why is it asking me to code my 7000 donation").
-      // It also only ever caught MARKED internal movements, while the comment
-      // it carried claimed all of them; an unmarked central↔chapter transfer
-      // leg kept its sign and got listed too. Both are money that moved
-      // between our own books or arrived from outside, and neither has a
-      // business purpose to give.
-      if (!canCarryExplanation(tr)) continue;
-      // AUTO-EXPLAINED rows (fees, personal charges) never enter the
-      // worklist — not the rows, not the denominator (founder, 2026-08-12:
-      // "only things that actually need explaining should show up here").
-      // They still publish; the snapshot prints their status line for them
-      // (`autoExplanationLine`).
-      if (autoExplainedKind(tr) != null) continue;
+      // THE PUBLISHING PREDICATE, and the only copy of it: excluded rows never
+      // publish, only spend can be explained (`canCarryExplanation` — an
+      // arriving donation is not an expense report, founder 2026-08-13), and
+      // the auto-explained kinds carry their own sentence so nobody is ever
+      // asked for one. Extracted to `explanationPopulation` so the reconcile
+      // grid's `needs_explaining` facet asks the SAME question rather than a
+      // second copy of it — see that function's doc comment.
+      if (!explanationPopulation(tr)) continue;
 
       totalCount += 1;
       totalCents += tr.amountCents;
@@ -5102,16 +5163,13 @@ async function unexplainedCountForBook(
   let count = 0;
   for (const tr of raw) {
     if (!txnMatchesMode(tr, sandboxMode)) continue;
-    if (tr.status === "excluded") continue;
     const p = easternParts(tr.postedAt);
     if (p.year !== year || p.month !== month) continue;
-    // Same spend test as the primary scan above — these two counts describe
-    // the same worklist for different books, so they must filter identically
-    // or the "there are rows in another book" nudge points at nothing.
-    if (!canCarryExplanation(tr)) continue;
-    // Same auto-explained carve-out as the primary worklist scan above.
-    if (autoExplainedKind(tr) != null) continue;
-    if (tr.codingState === "approved") continue;
+    // The SAME predicate the primary scan above runs, by calling it rather
+    // than restating it — these two counts describe the same worklist for
+    // different books, so a drift here points the "there are rows in another
+    // book" nudge at nothing.
+    if (!needsExplaining(tr)) continue;
     count += 1;
   }
   return count;
@@ -8606,6 +8664,17 @@ export const DEFAULT_RECONCILE_PAGE_SIZE = 100;
 /** Hard ceiling on `limit`, so a caller can't ask for the old unbounded behavior. */
 export const MAX_RECONCILE_PAGE_SIZE = 500;
 
+/**
+ * The `groupBy:"person"` group key for rows that resolve to no cardholder — a
+ * bank transfer, a processor deposit, a genesis-imported row carrying no card.
+ * A sentinel STRING rather than `null` because the group key is a string on the
+ * wire (a personId is one), and because it has to sort LAST — the same rule
+ * `receiptChase` pins for its "Unattributed" bundle, and for the same reason:
+ * there is nobody attached to those rows, so a person-by-person read shouldn't
+ * open on them. Not a valid `Id<"people">`, so it can never collide with one.
+ */
+export const UNATTRIBUTED_GROUP_KEY = "unattributed";
+
 export const listReconcile = query({
   args: {
     // LEGACY single filter — one mutually-exclusive bucket. Superseded by
@@ -8671,6 +8740,30 @@ export const listReconcile = query({
     // 346 rows' worth of sequential database round-trips the moment the filter
     // came off. Clamped server-side to `MAX_RECONCILE_PAGE_SIZE`.
     limit: v.optional(v.number()),
+    // ── SORT ──────────────────────────────────────────────────────────────
+    // Absent = `date`/`desc`, which is exactly the newest-first order this
+    // query has always returned, so no existing caller moves.
+    //
+    // `amount` sorts by ABSOLUTE cents — biggest money first regardless of
+    // whether it went in or out. That is what the Explain screen calls
+    // "biggest first" (`monthCodingWorklist` orders the same way) and it is
+    // the entire justification for that screen: a month of history is a grind
+    // that will not always be finished, so the work done first should be the
+    // work that changes the page most. Ten explanations on the ten largest
+    // charges beat fifty on the small ones.
+    //
+    // Applied to the WHOLE match set before paging (see the handler) — a sort
+    // that only ordered the loaded page would be a lie the moment the scope
+    // exceeded one page, which is every real book.
+    sort: v.optional(v.union(v.literal("date"), v.literal("amount"))),
+    dir: v.optional(v.union(v.literal("asc"), v.literal("desc"))),
+    // ── GROUPING ──────────────────────────────────────────────────────────
+    // `Group by: None | Month | Person`. When set, `rows` come back with every
+    // group's rows CONTIGUOUS and the response carries a `groups` array in
+    // render order, so the grid draws headers by walking the rows once instead
+    // of re-deriving the grouping — and the group totals — client-side off a
+    // page it can only partly see.
+    groupBy: v.optional(v.union(v.literal("month"), v.literal("person"))),
   },
   returns: v.object({
     rows: v.array(reconcileRow),
@@ -8706,6 +8799,64 @@ export const listReconcile = query({
        *  over a non-empty selection instead of looking broken. */
       neutralCount: v.number(),
     }),
+    // HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS — "142 of 418
+    // explained · $61k of $88k", over ANY filter rather than only a month.
+    //
+    // The Explain screen could already say this, but only ever about one
+    // book-month (`monthCodingWorklist`'s `totalCount`/`explainedCount`),
+    // because that was the only surface that could ask the publishing
+    // question at all. Now that `needs_explaining` is a filter key, the same
+    // sentence is available over whatever the grid is currently showing — a
+    // person, a quarter, a search, the whole book.
+    //
+    // Computed over the WHOLE match set, never the page, for the same reason
+    // `selectionTotals` is: a progress meter that silently meant "this page"
+    // would be worse than none. The population is `explanationPopulation` —
+    // identical to the worklist's denominator, by calling the same function —
+    // so a month filtered here and the same month on the Explain screen
+    // cannot report different progress.
+    explainedProgress: v.object({
+      /** Matched rows that could carry an explanation at all — the
+       *  denominator. Excludes inflows, internal movements, excluded rows and
+       *  the auto-explained kinds, exactly as the worklist does. */
+      explainableCount: v.number(),
+      /** Their `amountCents` sum (unsigned, matching the worklist's
+       *  `totalCents` — this is "how much money is on the page", not a book
+       *  effect; `selectionTotals` above is the signed arithmetic). */
+      explainableCents: v.number(),
+      /** Of those, the ones with an APPROVED coding. */
+      explainedCount: v.number(),
+      explainedCents: v.number(),
+    }),
+    // GROUP HEADERS, in render order — present only when `groupBy` is set.
+    // `rows` is ordered so each group's rows are contiguous and appear in this
+    // same order, so the grid can render headers by walking the page once.
+    //
+    // `count` and `totalCents` are over the WHOLE match set, not the page: a
+    // group header that said "3 rows" because only 3 of its 40 fit on the
+    // loaded page is the dead number this area keeps fixing. That also means
+    // the group list is complete even when `hasMore` is true — the grid can
+    // show every month/person and let the user page into one.
+    groups: v.optional(
+      v.array(
+        v.object({
+          /** `YYYY-MM` for month; the cardholder's `personId` for person, or
+           *  the literal `"unattributed"` sentinel for rows that resolve to
+           *  nobody (a bank transfer, a processor deposit, a genesis-imported
+           *  row with no card). */
+          key: v.string(),
+          /** What the header prints — "June 2024", a person's name, or
+           *  "Unattributed". */
+          label: v.string(),
+          count: v.number(),
+          /** `signedBookCents` summed over the group — the same arithmetic
+           *  `selectionTotals` uses, so the groups add up to
+           *  `selectionTotals.netCents` instead of being a second, subtly
+           *  different summation. */
+          totalCents: v.number(),
+        }),
+      ),
+    ),
     // True when a non-empty `search` caused the State/roll-up groups to be
     // dropped for this request. The grid shows this; a filter that silently
     // stops applying is the defect this whole change exists to remove.
@@ -8766,6 +8917,7 @@ export const listReconcile = query({
       needs_budget: 0,
       missing_receipt: 0,
       uncoded: 0,
+      needs_explaining: 0,
       coding_review: 0,
       to_review: 0,
       reconciled: 0,
@@ -8801,6 +8953,12 @@ export const listReconcile = query({
         matchedCount: 0,
         hasMore: false,
         selectionTotals: { inCents: 0, outCents: 0, netCents: 0, neutralCount: 0 },
+        explainedProgress: {
+          explainableCount: 0,
+          explainableCents: 0,
+          explainedCount: 0,
+          explainedCents: 0,
+        },
         searchIgnoredState: false,
         codingArmed: false,
         toClearCount: 0,
@@ -8976,6 +9134,15 @@ export const listReconcile = query({
       // `codingState` alone, so a voluntarily-coded pre-policy row still
       // reaches the review queue.
       uncoded: isUncoded(tr, codingSinceMs),
+      // WHAT WILL PUBLISH BLANK — the publishing question, not the policy one,
+      // and the SAME function `monthCodingWorklist` runs (`needsExplaining`,
+      // never a copy of it). `uncoded` above grandfathers everything posted
+      // before `codingRequiredSinceMs`, which is right about obligation and
+      // meant the ~400 reconstructed 2024–25 rows were unreachable from this
+      // grid entirely — the gap the month-at-a-time Explain screen exists to
+      // cover. Note it also ignores `status`: a treasurer closing a row is not
+      // an explanation, and the public page doesn't care that it's closed.
+      needs_explaining: needsExplaining(tr),
       coding_review: tr.codingState === "submitted",
       personal_unpaid: isPersonalUnpaid(tr),
       reconciled: tr.status === "reconciled",
@@ -9155,11 +9322,136 @@ export const listReconcile = query({
         if (countsTowardFacet(flags, activeFilters, key)) counts[key] += 1;
       }
     }
-    // PAGE the rows. `selected` is the full match set across the scope — that's
+    const matchedCount = selected.length;
+
+    // ── HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS ────────────────────
+    // Over the WHOLE match set (never the page), and over the SAME population
+    // `monthCodingWorklist` counts — by calling its predicate, not by
+    // restating it. Costs one pass over rows already in memory and no reads at
+    // all, which is why it can be unconditional rather than a flag the client
+    // has to remember to ask for.
+    const explainedProgress = {
+      explainableCount: 0,
+      explainableCents: 0,
+      explainedCount: 0,
+      explainedCents: 0,
+    };
+    for (const tr of selected) {
+      if (!explanationPopulation(tr)) continue;
+      explainedProgress.explainableCount += 1;
+      explainedProgress.explainableCents += tr.amountCents;
+      if (tr.codingState === "approved") {
+        explainedProgress.explainedCount += 1;
+        explainedProgress.explainedCents += tr.amountCents;
+      }
+    }
+
+    // ── SORT, ACROSS THE WHOLE MATCH SET ────────────────────────────────────
+    // `selected` is every matching row in scope, not a page of them — the scan
+    // above already covers the whole scope (that is what makes the facet counts
+    // truthful), so ordering here and slicing below means "biggest first"
+    // genuinely means biggest in the book, not biggest among the hundred rows
+    // that happened to load. Sorting AFTER paging would have been the bug.
+    //
+    // The default is `date`/`desc` and its comparator is exactly the one `all`
+    // was already sorted by, so with no sort args this is a stable no-op re-sort
+    // and every existing caller gets the identical order it always did.
+    const sortKey = args.sort ?? "date";
+    const sortDir = args.dir ?? "desc";
+    // `desc` is the natural direction of both keys (newest first, biggest
+    // first), so `asc` is expressed by flipping the comparator rather than by
+    // writing four of them.
+    const dirSign = sortDir === "asc" ? -1 : 1;
+    const byActiveSort = (a: Doc<"transactions">, b: Doc<"transactions">): number =>
+      sortKey === "amount"
+        ? // ABSOLUTE cents: "biggest money first" is a question about size, not
+          // about direction — a $9,000 refund is as worth looking at as a
+          // $9,000 charge. Ties fall back to newest-first so paging is stable.
+          dirSign * (Math.abs(b.amountCents) - Math.abs(a.amountCents)) ||
+          b.postedAt - a.postedAt
+        : dirSign * (b.postedAt - a.postedAt);
+    let ordered: Doc<"transactions">[] = [...selected].sort(byActiveSort);
+
+    // ── GROUPING ────────────────────────────────────────────────────────────
+    // Rows are REORDERED so each group is contiguous (the active sort still
+    // decides the order WITHIN a group), and `groups` describes them in render
+    // order with counts and totals over the whole match set.
+    //
+    // Computed from the SCAN, not by enriching rows: a month key is arithmetic
+    // on `postedAt`, and a person key comes from the same cached cardholder
+    // resolver the search path already runs over every row in scope
+    // (`resolveRef` — no avatar URLs). Its reads are bounded by the number of
+    // DISTINCT people and cards in the book, not by the row count, so grouping
+    // adds no per-row read and stays inside the page cap's intent.
+    let groups:
+      | { key: string; label: string; count: number; totalCents: number }[]
+      | undefined;
+    if (args.groupBy != null) {
+      const byKey = new Map<
+        string,
+        { key: string; label: string; count: number; totalCents: number; rows: Doc<"transactions">[] }
+      >();
+      for (const tr of ordered) {
+        let key: string;
+        let label: string;
+        if (args.groupBy === "month") {
+          const p = easternParts(tr.postedAt);
+          key = `${p.year}-${String(p.month).padStart(2, "0")}`;
+          label = periodLabel(key);
+        } else {
+          const holder = await cardholders.resolveRef(tr);
+          key = holder?.personId ?? UNATTRIBUTED_GROUP_KEY;
+          label = holder?.name ?? "Unattributed";
+        }
+        let group = byKey.get(key);
+        if (!group) {
+          group = { key, label, count: 0, totalCents: 0, rows: [] };
+          byKey.set(key, group);
+        }
+        group.count += 1;
+        // `signedBookCents`, the same authority `selectionTotals` uses, so the
+        // group totals ADD UP to `selectionTotals.netCents` rather than being a
+        // second summation that disagrees with the header above them.
+        group.totalCents += signedBookCents(tr);
+        group.rows.push(tr);
+      }
+      const ordering = [...byKey.values()];
+      if (args.groupBy === "month") {
+        // Chronological, newest month first unless the caller asked for `asc` —
+        // the one order a month list has. Deliberately NOT "order of first
+        // appearance", which under `sort:"amount"` would sequence the months by
+        // whichever happened to contain the largest single charge.
+        ordering.sort((a, b) => (a.key < b.key ? 1 : a.key > b.key ? -1 : 0) * dirSign);
+      } else {
+        ordering.sort((a, b) => {
+          // UNATTRIBUTED PINNED LAST, always — `receiptChase`'s rule, for the
+          // same reason: those rows have nobody attached, so a person-by-person
+          // read shouldn't open on them.
+          const aNone = a.key === UNATTRIBUTED_GROUP_KEY;
+          const bNone = b.key === UNATTRIBUTED_GROUP_KEY;
+          if (aNone !== bNone) return aNone ? 1 : -1;
+          // Otherwise biggest first by SIZE (`totalCents` is signed, and a
+          // cardholder's group is normally all outflow, i.e. negative), then
+          // by name so the order is deterministic for equal totals.
+          return (
+            Math.abs(b.totalCents) - Math.abs(a.totalCents) ||
+            a.label.localeCompare(b.label)
+          );
+        });
+      }
+      ordered = ordering.flatMap((g) => g.rows);
+      groups = ordering.map(({ key, label, count, totalCents }) => ({
+        key,
+        label,
+        count,
+        totalCents,
+      }));
+    }
+
+    // PAGE the rows. `ordered` is the full match set across the scope — that's
     // what `matchedCount` reports and what "Load more" walks — but only
     // `pageSize` of them get enriched and serialized below.
-    const matchedCount = selected.length;
-    const page = selected.slice(0, pageSize);
+    const page = ordered.slice(0, pageSize);
     const hasMore = matchedCount > page.length;
 
     // Totals over the WHOLE match set, before paging — see `selectionTotals`
@@ -9309,6 +9601,8 @@ export const listReconcile = query({
       matchedCount,
       hasMore,
       selectionTotals,
+      explainedProgress,
+      groups,
       searchIgnoredState,
       codingArmed: codingSinceMs <= Date.now(),
       toClearCount,
