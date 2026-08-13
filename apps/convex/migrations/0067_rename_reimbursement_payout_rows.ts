@@ -100,6 +100,6 @@ export async function runRenameReimbursementPayoutRows(
 }
 
 export const renameReimbursementPayoutRows: Migration = {
-  name: "0066_rename_reimbursement_payout_rows",
+  name: "0067_rename_reimbursement_payout_rows",
   run: runRenameReimbursementPayoutRows,
 };

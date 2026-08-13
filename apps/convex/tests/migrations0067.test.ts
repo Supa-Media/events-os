@@ -1,11 +1,11 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
-import { runRenameReimbursementPayoutRows } from "../migrations/0066_rename_reimbursement_payout_rows";
+import { runRenameReimbursementPayoutRows } from "../migrations/0067_rename_reimbursement_payout_rows";
 import type { Id } from "../_generated/dataModel";
 
 /**
- * Migration 0066 — retitle reimbursement payout rows that are still named after
+ * Migration 0067 — retitle reimbursement payout rows that are still named after
  * the payee instead of what was bought. See the migration's module doc.
  */
 
@@ -58,7 +58,7 @@ async function seedPayout(
   });
 }
 
-describe("0066_rename_reimbursement_payout_rows", () => {
+describe("0067_rename_reimbursement_payout_rows", () => {
   test("retitles a payee-labelled row to what was actually bought", async () => {
     const t = newT();
     const s = await setupChapter(t);
