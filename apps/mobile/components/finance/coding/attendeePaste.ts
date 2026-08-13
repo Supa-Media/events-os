@@ -179,41 +179,69 @@ export function parseAttendeePaste(
   return results;
 }
 
-// ── Capping a bulk addition at the meal-names threshold ─────────────────────
-export interface BulkAdditionCap<T> {
-  /** The candidates that fit, in order, up to `maxTotal`. */
-  accepted: T[];
-  /** How many candidates didn't fit — 0 means nothing was left out. */
-  overflow: number;
+// ── Merging a bulk addition into the roster ─────────────────────────────────
+
+/** More named rows than anyone can prune through is group-description
+ *  territory, full stop — a hard sanity ceiling for a runaway paste, far
+ *  above any real meal roster. Distinct from `namesMaxHeadcount` (the org's
+ *  names-REQUIRED threshold, usually 15), which bulk adds may exceed on
+ *  purpose — see `mergeBulkAttendees`. */
+export const HARD_BULK_ATTENDEE_CAP = 50;
+
+export interface BulkMergeResult<T> {
+  /** The merged roster: every already-FILLED existing row, then every
+   *  accepted addition, in order. */
+  merged: T[];
+  /** How many additions actually landed (post-dedupe, post-hard-cap). */
+  added: number;
+  /** Additions dropped as case-insensitive duplicates of existing names. */
+  deduped: number;
+  /** Additions dropped by `HARD_BULK_ATTENDEE_CAP` — 0 in any sane use. */
+  capped: number;
 }
 
 /**
- * Cap a list of bulk-add candidates (parsed paste rows, or team-roster
- * fills) so `existingCount + accepted.length` never exceeds `maxTotal`.
+ * Merge bulk-add candidates (parsed paste rows, or the team roster) into the
+ * existing FILLED rows. Deliberately NOT capped at `namesMaxHeadcount`:
  *
- * THE DEFECT THIS CLOSES (FINDING 1, adversarial review 2026-08-13): meal
- * names are only REQUIRED up to a headcount threshold
- * (`mealNamesRequired`/`namesMaxHeadcount`) — past it, the form asks for a
- * headcount + group description instead, and `namesMode` flips to `false`.
- * Before this cap existed, a bulk add (paste or "start with the team") could
- * push headcount past that threshold as a side effect of growing it to match
- * the new total. On the VERY NEXT RENDER `namesMode` would flip, and since
- * `rows` is empty and a coding's submittable `attendees` value is only
- * populated `namesMode === true` (`useCodingFormState`'s `value`
- * computation), the entire roster — including the people who were JUST
- * added — would vanish from both the screen and the value about to be
- * submitted, with an inflated headcount and an empty, unexplained
- * group-description box left behind. Capping the addition here means
- * headcount can never be pushed past the threshold by these paths in the
- * first place; the caller reports `overflow` so the UI can say plainly how
- * many people were left out and why, instead of losing them silently.
+ * THE PRUNE-DOWN MODEL (founder, 2026-08-13): "what I was expecting with
+ * start with team was that it would populate with ALL the team members, and
+ * then I could go in and start ✕-ing people who weren't there… most of the
+ * time it's everybody on the team, but this person was missing." Filling
+ * only the first N of an 18-person team is worse than useless — WHICH N is
+ * arbitrary — and the earlier cap-at-threshold design (FINDING 1's fix)
+ * answered the wrong question: the threshold is where names stop being
+ * REQUIRED, not where a roster stops being editable. So a bulk add may
+ * exceed the threshold, the editor keeps rendering every row for pruning
+ * (`useCodingFormState`'s overflow-pruning state), and a banner explains the
+ * two honest ways down: ✕ the absentees, or keep the headcount and describe
+ * the group. Nothing is silently dropped and nothing silently changes mode —
+ * the failure FINDING 1 originally closed stays closed, from the other side.
  */
-export function capBulkAdditions<T>(
-  candidates: readonly T[],
-  existingCount: number,
-  maxTotal: number,
-): BulkAdditionCap<T> {
-  const room = Math.max(0, maxTotal - existingCount);
-  const accepted = candidates.slice(0, room);
-  return { accepted, overflow: candidates.length - accepted.length };
+export function mergeBulkAttendees<T extends { name: string }>(
+  existing: readonly T[],
+  additions: readonly T[],
+): BulkMergeResult<T> {
+  const filled = existing.filter((r) => r.name.trim().length > 0);
+  const seen = new Set(filled.map((r) => r.name.trim().toLowerCase()));
+  const fresh: T[] = [];
+  let deduped = 0;
+  for (const a of additions) {
+    const key = a.name.trim().toLowerCase();
+    if (key.length === 0) continue;
+    if (seen.has(key)) {
+      deduped += 1;
+      continue;
+    }
+    seen.add(key);
+    fresh.push(a);
+  }
+  const room = Math.max(0, HARD_BULK_ATTENDEE_CAP - filled.length);
+  const accepted = fresh.slice(0, room);
+  return {
+    merged: [...filled, ...accepted],
+    added: accepted.length,
+    deduped,
+    capped: fresh.length - accepted.length,
+  };
 }

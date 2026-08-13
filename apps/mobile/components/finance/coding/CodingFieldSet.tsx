@@ -59,7 +59,7 @@ import {
   overrideExpenseType,
   type ExpenseTypeChipState,
 } from "./deriveExpenseType";
-import { capBulkAdditions, parseAttendeePaste } from "./attendeePaste";
+import { mergeBulkAttendees, parseAttendeePaste } from "./attendeePaste";
 import type { ReimbursementPrefillPlan } from "./reimbursementPrefill";
 
 /** The category context a host offers the chip row, if any:
@@ -122,17 +122,16 @@ const BUDGET_GUIDANCE = [
   "Equipment that isn't tied to one event? The annual equipment budget.",
 ];
 
-/** What a bulk-add path (`startWithTeam`/`appendAttendees`) actually did,
- *  after capping at the meal-names threshold (`capBulkAdditions`) —
- *  `added < requested` is the caller's cue to say plainly how many people
- *  were left out and why, instead of letting a bulk add silently overflow
- *  the threshold (see `attendeePaste.ts#capBulkAdditions`'s own doc for the
- *  defect this closes). */
+/** What a bulk-add path (`startWithTeam`/`appendAttendees`) actually did
+ *  (`attendeePaste.ts#mergeBulkAttendees`) — `added < requested` only ever
+ *  means the absurd `HARD_BULK_ATTENDEE_CAP` bit; an over-THRESHOLD add
+ *  keeps every row and is narrated by the live overflow-pruning banner
+ *  instead. */
 export interface BulkAddResult {
   /** How many candidates actually landed on the form. */
   added: number;
   /** How many candidates were eligible to add (after de-dupe) — `added`
-   *  falls short of this exactly when the cap bit. */
+   *  falls short of this exactly when the hard cap bit. */
   requested: number;
 }
 
@@ -158,46 +157,39 @@ export interface CodingFormState {
     patch: Partial<{ name: string; affiliation: AttendeeAffiliation }>,
   ) => void;
   /** BULK ATTENDEE ENTRY (founder, 2026-08-12): remove one row, shifting the
-   *  rest up. THE HEADCOUNT/ROWS CONSISTENCY RULE: `rows` is always sized to
-   *  `Math.min(headcount, namesMaxHeadcount)`, and this is only reachable
-   *  while `namesMode === true` — which itself requires `headcount <=
-   *  namesMaxHeadcount` — so at the moment this runs, `rows.length` always
-   *  equals `headcount` exactly. Removing a row therefore always means one
-   *  fewer expected attendee, so headcount comes down by one too. The
-   *  equality is checked explicitly rather than assumed, so a future change
-   *  that decouples `rows` from `headcount` fails safe (no headcount edit)
-   *  instead of silently under-counting. Counts as touched, like every
-   *  other content edit. */
+   *  rest up. THE HEADCOUNT/ROWS CONSISTENCY RULE: whenever the roster
+   *  editor renders (`namesMode === true`, OR the overflow-pruning state
+   *  after a bulk add pushed past the threshold), `rows.length` equals
+   *  `headcount` exactly, so removing a row always means one fewer expected
+   *  attendee and headcount comes down by one too. The equality is checked
+   *  explicitly rather than assumed, so a future change that decouples
+   *  `rows` from `headcount` fails safe (no headcount edit) instead of
+   *  silently under-counting. Counts as touched, like every other content
+   *  edit. */
   removeAttendeeRow: (index: number) => void;
-  /** "Start with the team" (founder: "even a way to start the list with the
-   *  team, and then remove who maybe wasn't there and add who was there") —
-   *  fill blank rows from the roster's team members, affiliation `"team"`.
-   *  SAME INTERPLAY RULE, the fill-in direction: if headcount is empty, it's
-   *  SET to the filled count; if headcount is already typed, this fills rows
-   *  up to it. EITHER WAY, capped at `namesMaxHeadcount`
-   *  (`attendeePaste.ts#capBulkAdditions`) so this can never push the total
-   *  past the threshold and flip the section into group-description mode out
-   *  from under the names that were just added (FINDING 1, adversarial
-   *  review 2026-08-13) — the returned `BulkAddResult` says how many of the
-   *  team actually fit, so the caller can tell the coder when some didn't. A
-   *  no-op (`{added: 0, requested: 0}`) on an empty team. (Under the current
-   *  headcount-first flow this only ever renders once headcount is already
-   *  set — the empty-headcount branch is defensive, not dead: it's what
-   *  keeps the rule correct if a future host ever offers this button before
-   *  headcount is typed.) */
+  /** "Start with the team" — THE PRUNE-DOWN MODEL (founder, 2026-08-13:
+   *  "populate with all the team members, and then I could go in and start
+   *  ✕-ing people who weren't there"). Merges the WHOLE team roster into the
+   *  filled rows (`mergeBulkAttendees` — deduped, uncapped at the names
+   *  threshold, hard-capped only at `HARD_BULK_ATTENDEE_CAP`) and sets
+   *  headcount to the merged total, replacing whatever headcount was typed:
+   *  the roster IS the new answer to "how many", and pruning keeps the two
+   *  in step from there. May land above `namesMaxHeadcount` — that's the
+   *  `overflowPruning` state, rows stay rendered for ✕-ing. */
   startWithTeam: (team: { name: string }[]) => BulkAddResult;
-  /** "Paste a list" — append parsed rows from `attendeePaste.ts`, growing
-   *  headcount to match the new total, CAPPED at `namesMaxHeadcount` for the
-   *  same reason `startWithTeam` is (FINDING 1) — a paste that would push the
-   *  total past the threshold gets the room that's left, not silently
-   *  dropped by a `namesMode` flip on the next render. The parser is
-   *  expected to have already deduped against the form's existing names
-   *  (pass them as `existingNames`); this re-checks defensively so a caller
-   *  that skips that never doubles a row. A no-op (`{added: 0, requested:
-   *  0}`) when nothing new survives the dedupe. */
+  /** "Paste a list" — same merge semantics as `startWithTeam` (the paste is
+   *  the roster being declared, prune-down applies the same way), with the
+   *  parser's own affiliations preserved. Dedupes defensively even though
+   *  the parser already deduped against `existingNames`. */
   appendAttendees: (
     parsed: { name: string; affiliation: AttendeeAffiliation }[],
   ) => BulkAddResult;
+  /** True while a bulk add has put MORE named rows on the form than the
+   *  names-required threshold: rows stay rendered for pruning, the
+   *  submittable value carries no attendees yet, and the host shows the
+   *  banner explaining the two ways down (✕ absentees, or keep the
+   *  headcount and describe the group). */
+  overflowPruning: boolean;
   /** The threshold `rows`/`namesMode` are computed against — exposed so a
    *  host can word a cap notice ("holds up to N people") without having to
    *  be handed the constant separately. */
@@ -311,13 +303,28 @@ export function useCodingFormState({
       ? mealNamesRequired(headcount, namesMaxHeadcount)
       : null;
 
+  // OVERFLOW-PRUNING (founder, 2026-08-13): a bulk add may put MORE names on
+  // the form than the names-required threshold — "populate with all the team
+  // members, then start ✕-ing people who weren't there." Above the threshold
+  // `namesMode` is false (group-description territory), but the rows must
+  // STAY rendered so the pruning can happen; hiding them is exactly the
+  // roster-vanishes defect FINDING 1 closed. The submittable `value` still
+  // only carries attendees once the count is back at/under the threshold —
+  // honest both ways.
+  const overflowPruning =
+    expenseType === "meal" &&
+    headcount != null &&
+    headcount > namesMaxHeadcount &&
+    attendees.some((r) => r.name.trim().length > 0);
+
   const rows = useMemo(() => {
-    if (namesMode !== true || headcount == null) return [];
+    if (headcount == null) return [];
+    if (namesMode !== true && !overflowPruning) return [];
     return Array.from(
-      { length: Math.min(headcount, namesMaxHeadcount) },
+      { length: overflowPruning ? headcount : Math.min(headcount, namesMaxHeadcount) },
       (_, i) => attendees[i] ?? { name: "", affiliation: "team" as const },
     );
-  }, [namesMode, headcount, namesMaxHeadcount, attendees]);
+  }, [namesMode, overflowPruning, headcount, namesMaxHeadcount, attendees]);
 
   function setRow(
     index: number,
@@ -343,6 +350,14 @@ export function useCodingFormState({
   function removeAttendeeRow(index: number) {
     const targetHeadcount = headcount;
     const wasAtHeadcount = targetHeadcount != null && rows.length === targetHeadcount;
+    // Same length rule the `rows` memo uses — uncapped while overflow-pruning
+    // (every row must stay removable on the way down to the threshold).
+    const rowLength =
+      targetHeadcount == null
+        ? 0
+        : overflowPruning
+          ? targetHeadcount
+          : Math.min(targetHeadcount, namesMaxHeadcount);
     setAttendees((prev) => {
       if (targetHeadcount == null) return prev;
       // Recompute the row shape from `prev` — the same derivation `rows`
@@ -350,7 +365,7 @@ export function useCodingFormState({
       // already be stale if an earlier queued update in this same batch
       // changed `prev` first.
       const currentRows = Array.from(
-        { length: Math.min(targetHeadcount, namesMaxHeadcount) },
+        { length: rowLength },
         (_, i) => prev[i] ?? { name: "", affiliation: "team" as const },
       );
       return currentRows.filter((_, i) => i !== index);
@@ -367,43 +382,40 @@ export function useCodingFormState({
     }
   }
 
-  /** See the `startWithTeam` interface doc for the headcount + cap rules.
-   *  Same updater-form hardening as `removeAttendeeRow` for the attendees
-   *  array — the fill amount/branch decision still reads the render-time
-   *  `headcount` (recombining that with a separately-updater-form
-   *  `headcountRaw` isn't possible without one update seeing the other's
-   *  result, and nothing else changes `headcount` between a render and this
-   *  same click, so that residual read is safe in practice). */
-  function startWithTeam(team: { name: string }[]): BulkAddResult {
-    if (team.length === 0) return { added: 0, requested: 0 };
-    const requested = team.length;
-    const targetHeadcount = headcount;
+  /**
+   * THE PRUNE-DOWN MODEL, both bulk paths (founder, 2026-08-13: "it would
+   * populate with all the team members, and then I could go in and start
+   * ✕-ing people who weren't there"). One shared body: merge the additions
+   * into the FILLED rows via the pure, tested `mergeBulkAttendees`
+   * (uncapped at the names threshold — the overflow-pruning state renders
+   * every row for ✕-ing; only the absurd `HARD_BULK_ATTENDEE_CAP` drops
+   * anything), and grow headcount to the merged total.
+   *
+   * THE BUG THE FIRST VERSION SHIPPED (founder-reported): with a headcount
+   * already typed, the old fill-blank-rows-in-place branch mapped over the
+   * raw `attendees` STATE — which is `[]` until someone types, because the
+   * blank rows on screen are synthesized in the `rows` memo, not stored. It
+   * mapped over nothing, wrote nothing, and separately reported "Added 12 of
+   * 18". The merge path has no such branch: it writes the merged roster
+   * outright and sets headcount to its true length, so what the notice says
+   * and what the screen shows can no longer come apart.
+   *
+   * Updater-form hardening kept: the merge computes from each call's own
+   * `prev` snapshot, so queued calls in one batch compose.
+   */
+  function bulkMerge(
+    additions: { name: string; affiliation: AttendeeAffiliation }[],
+  ): BulkAddResult {
     let added = 0;
+    let requested = 0;
     let newHeadcountRaw: string | null = null;
     setAttendees((prev) => {
-      const filledCount = prev.filter((r) => r.name.trim().length > 0).length;
-      const maxTotal = targetHeadcount ?? namesMaxHeadcount;
-      const { accepted } = capBulkAdditions(team, filledCount, maxTotal);
-      added = accepted.length;
-      if (accepted.length === 0) return prev;
-      const filled = accepted.map((p) => ({
-        name: p.name,
-        affiliation: "team" as const,
-      }));
-      if (targetHeadcount == null) {
-        newHeadcountRaw = String(filledCount + accepted.length);
-        return [...prev.filter((r) => r.name.trim().length > 0), ...filled];
-      }
-      // Fill BLANK rows in place, preserving any already-filled ones and
-      // their positions.
-      let fi = 0;
-      return prev.map((r) =>
-        r.name.trim().length > 0
-          ? r
-          : fi < filled.length
-            ? filled[fi++]
-            : r,
-      );
+      const result = mergeBulkAttendees(prev, additions);
+      requested = result.added + result.capped;
+      added = result.added;
+      if (result.added === 0) return prev;
+      newHeadcountRaw = String(result.merged.length);
+      return result.merged;
     });
     if (newHeadcountRaw != null) {
       const raw = newHeadcountRaw;
@@ -412,43 +424,16 @@ export function useCodingFormState({
     return { added, requested };
   }
 
-  /** See the `appendAttendees` interface doc for the cap rule. Same
-   *  updater-form hardening: `existing`/`added` are computed from each
-   *  call's own `prev` snapshot at the moment its `setAttendees` updater
-   *  actually runs, so two queued calls in one batch compose (the second
-   *  sees the first's additions already applied) instead of one clobbering
-   *  the other. */
+  function startWithTeam(team: { name: string }[]): BulkAddResult {
+    return bulkMerge(
+      team.map((p) => ({ name: p.name, affiliation: "team" as const })),
+    );
+  }
+
   function appendAttendees(
     parsed: { name: string; affiliation: AttendeeAffiliation }[],
   ): BulkAddResult {
-    let added = 0;
-    let requested = 0;
-    let newHeadcountRaw: string | null = null;
-    setAttendees((prev) => {
-      const existing = prev.filter((r) => r.name.trim().length > 0);
-      const existingLower = new Set(
-        existing.map((r) => r.name.trim().toLowerCase()),
-      );
-      const newOnes = parsed.filter(
-        (p) => !existingLower.has(p.name.trim().toLowerCase()),
-      );
-      requested = newOnes.length;
-      if (newOnes.length === 0) return prev;
-      const { accepted } = capBulkAdditions(
-        newOnes,
-        existing.length,
-        namesMaxHeadcount,
-      );
-      added = accepted.length;
-      if (accepted.length === 0) return prev;
-      newHeadcountRaw = String(existing.length + accepted.length);
-      return [...existing, ...accepted];
-    });
-    if (newHeadcountRaw != null) {
-      const raw = newHeadcountRaw;
-      setHeadcountRaw(() => raw);
-    }
-    return { added, requested };
+    return bulkMerge(parsed);
   }
 
   const value: CodingFormValue | null =
@@ -562,6 +547,7 @@ export function useCodingFormState({
       setTouched(true);
       return appendAttendees(parsed);
     },
+    overflowPruning,
     namesMaxHeadcount,
     groupDescription,
     setGroupDescription: (s) => {
@@ -842,7 +828,14 @@ export function CodingFieldSet({
           <Text className="mt-1 text-2xs text-muted">
             Everyone the meal was bought for, including you.
           </Text>
-          {form.namesMode === true ? (
+          {/* Rendered in THREE states: names mode (headcount at/under the
+              threshold), overflow-pruning (a bulk add pushed past it), and
+              NO HEADCOUNT YET — because the founder's flow is often
+              roster-first: "Start with the team" or a paste answers "how
+              many?" by itself (bulk adds set headcount to the merged
+              total), so demanding a number before offering the roster tools
+              would put the steps in the wrong order. */}
+          {form.namesMode === true || form.overflowPruning || form.headcount == null ? (
             <View className="mt-3">
               <Text className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted">
                 Who was there?
@@ -937,12 +930,14 @@ function lastUsedAffiliation(
  *  saying exactly how many landed and why the rest didn't. `null` when
  *  nothing was left out — the caller renders no notice at all in that
  *  case. */
-function bulkAddCapNotice(
-  result: BulkAddResult,
-  namesMaxHeadcount: number,
-): string | null {
+function bulkAddCapNotice(result: BulkAddResult): string | null {
+  // Only the absurd hard cap drops anyone now (`HARD_BULK_ATTENDEE_CAP`) —
+  // an ordinary over-threshold bulk add keeps every row for pruning and is
+  // narrated by the persistent overflow banner instead, which derives from
+  // live state and so can never disagree with what the rows actually show
+  // (the founder-reported failure of the one-shot notice this replaces).
   if (result.added >= result.requested) return null;
-  return `Added ${result.added} of ${result.requested} — the named list holds up to ${namesMaxHeadcount} people. For a bigger group, set the headcount and describe the group instead.`;
+  return `Added ${result.added} of ${result.requested} — a named list this long stops being usable. For a crowd that size, set the headcount and describe the group instead.`;
 }
 
 function AttendeeRosterEditor({
@@ -961,9 +956,28 @@ function AttendeeRosterEditor({
   const [capNotice, setCapNotice] = useState<string | null>(null);
 
   const allRowsBlank = form.rows.every((r) => r.name.trim().length === 0);
+  const namedCount = form.rows.filter((r) => r.name.trim().length > 0).length;
 
   return (
     <View className="gap-2">
+      {/* THE PRUNE-DOWN BANNER — derived from live state (never a one-shot
+          notice, which is how the shipped version managed to say "Added 12"
+          over visibly empty rows). Renders exactly while a bulk add has put
+          more names on the form than the threshold, and disappears on its
+          own the moment ✕-ing brings the count back down. */}
+      {form.overflowPruning ? (
+        <View className="flex-row items-start gap-2 rounded-md border border-accent/40 bg-accent/5 px-3 py-2">
+          <Icon name="users" size={13} color={colors.accent} />
+          <Text className="flex-1 text-2xs text-ink">
+            <Text className="font-semibold">
+              {namedCount} people named — names are only needed up to{" "}
+              {form.namesMaxHeadcount}.
+            </Text>{" "}
+            ✕ whoever wasn&apos;t there and the list submits as names — or
+            keep the headcount and describe the group below instead.
+          </Text>
+        </View>
+      ) : null}
       {capNotice ? (
         <View className="flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
           <Icon name="alert-triangle" size={13} color={colors.muted} />
@@ -987,7 +1001,7 @@ function AttendeeRosterEditor({
           icon="users"
           onPress={() => {
             const result = form.startWithTeam(team);
-            setCapNotice(bulkAddCapNotice(result, form.namesMaxHeadcount));
+            setCapNotice(bulkAddCapNotice(result));
           }}
         />
       ) : null}
@@ -1074,7 +1088,7 @@ function AttendeeRosterEditor({
                   lastAffiliation: lastUsedAffiliation(form.rows),
                 });
                 const result = form.appendAttendees(parsed);
-                setCapNotice(bulkAddCapNotice(result, form.namesMaxHeadcount));
+                setCapNotice(bulkAddCapNotice(result));
                 setPasteText("");
                 setPasteOpen(false);
               }}
