@@ -1541,6 +1541,95 @@ describe("explaining a month", () => {
     expect(row!.direction).toBe("internal");
   });
 
+  test("a wire split between two books counts once, in the book that earned it", async () => {
+    // The founder's actual case: $7,000 wired into New York's account, of
+    // which $5,000 is CENTRAL's revenue and $2,000 is New York's. Under the
+    // old one-gift-of-exactly-this-amount-in-this-book rule none of that could
+    // be said, so New York's March published $9,050 against a real $2,050.
+    const s = await asPublisher();
+    const credit = await insertTxn(s, {
+      flow: "inflow",
+      amountCents: 700_000,
+      postedAt: Date.UTC(2024, 5, 26, 16),
+      merchantName: "OLUSEYI OLUJIDE",
+    });
+    const giveTo = async (scope: Id<"chapters"> | "central", cents: number) => {
+      await run(s.t, async (ctx) => {
+        const donorId = await ctx.db.insert("donors", {
+          scope,
+          kind: "individual",
+          name: "Oluseyi Olujide",
+          status: "active",
+          lifetimeCents: cents,
+          giftCount: 1,
+          createdAt: Date.now(),
+        });
+        await ctx.db.insert("gifts", {
+          donorId,
+          scope,
+          amountCents: cents,
+          currency: "usd",
+          receivedAt: Date.UTC(2024, 5, 26, 16),
+          method: "wire",
+          transactionId: credit,
+          createdAt: Date.now(),
+        });
+      });
+    };
+    await giveTo("central", 500_000);
+    await giveTo(s.chapterId, 200_000);
+    await publishMonth(s, "2024-06");
+
+    const statement = (await statementOf(s, "2024-06"))!;
+    // This book's OWN $2,000 gift, and nothing from the deposit on top — the
+    // $5,000 is central's revenue and is counted on central's books.
+    expect(statement.incomeCents).toBe(200_000);
+    const other = statement.incomeByStream.find((i) => i.stream === "other");
+    expect(other?.cents ?? 0).toBe(0);
+  });
+
+  test("a wire only HALF matched keeps its unclaimed remainder", async () => {
+    // Half-done work must not read as finished: matching one gift of a split
+    // settles that gift's share and leaves the rest plainly unexplained.
+    const s = await asPublisher();
+    const credit = await insertTxn(s, {
+      flow: "inflow",
+      amountCents: 700_000,
+      postedAt: Date.UTC(2024, 5, 26, 16),
+      merchantName: "OLUSEYI OLUJIDE",
+    });
+    const donorId = await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: s.chapterId,
+        kind: "individual",
+        name: "Oluseyi Olujide",
+        status: "active",
+        lifetimeCents: 200_000,
+        giftCount: 1,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("gifts", {
+        donorId,
+        scope: s.chapterId,
+        amountCents: 200_000,
+        currency: "usd",
+        receivedAt: Date.UTC(2024, 5, 26, 16),
+        method: "wire",
+        transactionId: credit,
+        createdAt: Date.now(),
+      }),
+    );
+    await publishMonth(s, "2024-06");
+
+    const statement = (await statementOf(s, "2024-06"))!;
+    // $2,000 of gift + the $5,000 of the deposit nobody has claimed.
+    expect(statement.incomeCents).toBe(700_000);
+    const other = statement.incomeByStream.find((i) => i.stream === "other");
+    expect(other?.cents).toBe(500_000);
+  });
+
   test("an UNCONFIRMED bank credit still counts — linking is the fix, not hiding", async () => {
     const s = await asPublisher();
     await insertTxn(s, {

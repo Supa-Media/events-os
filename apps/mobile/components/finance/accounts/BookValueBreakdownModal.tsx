@@ -295,12 +295,13 @@ export function BookValueBreakdownModal({
                       Each of these is a bank credit that looks like money already
                       counted as a gift. If it is the same money, it is in this
                       book twice — link the gift to the bank row to settle it.
-                      Same amount on a nearby date is a hint, not proof: two
-                      separate deposits of the same size do happen.
+                      One deposit can hold several gifts: match them one at a
+                      time and the unaccounted-for part shrinks to nothing. A
+                      nearby date and a fitting amount are a hint, not proof.
                     </Text>
                     {data.suspectedDoubleCounts.map((s) => (
                       <View
-                        key={s.transactionId}
+                        key={`${s.transactionId}:${s.giftId}`}
                         className="border-t border-border py-2"
                       >
                         <View className="flex-row items-baseline gap-3">
@@ -316,9 +317,25 @@ export function BookValueBreakdownModal({
                         </View>
                         <Text className="text-2xs text-faint">
                           {shortDate(s.postedAt)} · also recorded as a{" "}
+                          {formatCents(s.giftAmountCents)}{" "}
                           {methodLabel(s.giftMethod)} gift
+                          {s.giftBookLabel ? ` in ${s.giftBookLabel}` : ""}
                           {s.giftExternalRef ? ` (${s.giftExternalRef})` : ""}
                         </Text>
+                        {/* A deposit worth more than the gift is a SPLIT, and
+                            saying so is the whole point: matching this gift
+                            settles part of it and leaves the rest visible. */}
+                        {s.uncoveredCents !== s.amountCents ||
+                        s.giftAmountCents !== s.amountCents ? (
+                          <Text className="text-2xs text-muted">
+                            {formatCents(s.uncoveredCents)} of this deposit is
+                            still unaccounted for
+                            {s.giftAmountCents < s.uncoveredCents
+                              ? ` — this gift covers ${formatCents(s.giftAmountCents)} of it`
+                              : ""}
+                            .
+                          </Text>
+                        ) : null}
                         {/* Confirming is a HUMAN act. The suspicion came from
                             amounts matching on nearby dates, which is a hint and
                             not proof — two separate deposits of the same size on
@@ -328,11 +345,15 @@ export function BookValueBreakdownModal({
                           <Button
                             size="sm"
                             variant="secondary"
-                            title="Same money — link them"
-                            loading={linking === s.transactionId}
+                            title={
+                              s.giftAmountCents < s.uncoveredCents
+                                ? "Part of this deposit — link them"
+                                : "Same money — link them"
+                            }
+                            loading={linking === `${s.transactionId}:${s.giftId}`}
                             disabled={linking !== null}
                             onPress={() => {
-                              setLinking(s.transactionId);
+                              setLinking(`${s.transactionId}:${s.giftId}`);
                               void run(
                                 () =>
                                   linkGift({
