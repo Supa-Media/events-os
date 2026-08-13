@@ -198,15 +198,25 @@ async function priorApprovedCoding(
 ): Promise<Infer<typeof priorCodingContext> | null> {
   const merchantName = txn.merchantName;
   if (!merchantName) return null;
-  // Newest first, bounded — a vendor's recurring charges are a handful, never
-  // near this (same reasoning as `CODING_SCAN_LIMIT` elsewhere in this file).
+  // Newest first, bounded. NOT `CODING_SCAN_LIMIT` — this widens to 100
+  // (review finding, 2026-08-13): a vendor with 20+ newer UNCODED or
+  // not-yet-approved charges was hiding an older APPROVED coding behind the
+  // window, returning `null` indistinguishably from "never coded this
+  // vendor". The per-candidate `by_transaction` lookup below already returns
+  // on the FIRST approved hit, so the worst case is ~100 transaction reads +
+  // ~100 coding lookups — bounded, and fine per the query guidelines.
+  // ACCEPTED, STATED TRADE-OFF: a vendor with 100+ consecutive newer
+  // same-merchant rows that are all unapproved still misses an older
+  // approved coding. That is a real limit, not a silent one — this comment
+  // is the record of it, and it is far rarer than the 20-row window this
+  // replaces.
   const candidates = await ctx.db
     .query("transactions")
     .withIndex("by_chapter_and_merchant", (q) =>
       q.eq("chapterId", txn.chapterId).eq("merchantName", merchantName),
     )
     .order("desc")
-    .take(20);
+    .take(100);
   for (const candidate of candidates) {
     if (candidate._id === txn._id) continue;
     const row = await ctx.db

@@ -894,4 +894,54 @@ describe("priorCoding — a vendor's own approved coding history, offered as an 
     // redacted, exactly like `codingRow.headcount` does.
     expect(data.priorCoding?.headcount).toBe(4);
   });
+
+  // Review finding (2026-08-13): the candidate scan used to stop at the 20
+  // newest same-merchant transactions, so a vendor with 20+ newer charges
+  // that hadn't reached `approved` yet hid an older approved coding entirely
+  // — `priorCoding` came back `null`, indistinguishable from "never coded
+  // this vendor at all". Widened to 100, with the loop still returning on
+  // the FIRST approved hit it finds.
+  test("an older approved coding is still found behind 21 newer unapproved same-merchant charges", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const oldestTxnId = await seedVendorTxn(s, {
+      merchantName: "Widget Co",
+      amountCents: 4200,
+      postedAt: POST_POLICY - 100 * DAY_MS,
+    });
+    await seedCodingRow(s, oldestTxnId, {
+      businessPurpose: "The one approved coding, buried under newer noise",
+    });
+
+    // 21 newer same-merchant charges, none of them approved — some with no
+    // coding at all, some submitted-but-pending. Strictly newer than the
+    // approved one, so a `.take(20)` window would exhaust itself on these
+    // alone and never reach the approved row.
+    for (let i = 0; i < 21; i++) {
+      const noisyTxnId = await seedVendorTxn(s, {
+        merchantName: "Widget Co",
+        amountCents: 4200,
+        postedAt: POST_POLICY - (99 - i) * DAY_MS,
+      });
+      if (i % 2 === 0) {
+        await seedCodingRow(s, noisyTxnId, { status: "submitted" });
+      }
+    }
+
+    const currentTxnId = await seedVendorTxn(s, {
+      merchantName: "Widget Co",
+      amountCents: 4200,
+      postedAt: POST_POLICY,
+    });
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: currentTxnId,
+    });
+    expect(data.priorCoding?.transactionId).toBe(oldestTxnId);
+    expect(data.priorCoding?.businessPurpose).toBe(
+      "The one approved coding, buried under newer noise",
+    );
+  });
 });
