@@ -372,6 +372,26 @@ Before finishing a run of this skill, you MUST:
   different charge's coding is an analogy, not this charge's testimony);
   names bulk entry: paste lists, row delete, roster autofill, "start with
   the team".
+- **Run 17 follow-ups (same day, live founder loop):** (a) "Start with the
+  team" shipped broken — the fill-blank-rows branch mapped over the raw
+  (empty) attendees STATE while the notice separately claimed success; the
+  builder's tests never rendered the hook, exactly the gap its reviewer had
+  flagged as "traced, not executed". Durable fix shape: extract bulk state
+  ops into PURE merge functions and pin the founder's exact scenario; a
+  one-shot notice must never narrate state — derive banners from live state
+  so screen and message can't disagree. The founder's model was PRUNE-DOWN
+  ("populate ALL the team members, then ✕ people") — a threshold is where a
+  requirement stops, not where an editor stops. (b) The auto-explained class
+  keeps growing on founder asks: cashback ("just money back — auto code
+  these ones as well"; the provider's own source.category was received and
+  DROPPED at ingestion — store provider classifications verbatim, they're
+  free positive markers) and full-refund pairs ("if something's refunded,
+  why are we coding it?"). When adding a kind to a shared classification,
+  grep every consumer for a hardcoded per-kind branch — the snapshot's
+  else-branch had frozen "fee" in and the new kind arrived wearing the
+  wrong sentence. (c) Founder directive: "we should really only need a
+  human when it comes to these coding tasks" — an Opus analysis lane now
+  owns the "what else auto-codes" question.
 
 ### 2026-08-12 — Run 16 (founder call transcript: reconcile totals, spending policy, card-lock reality, money model)
 - **The headline finding came from disbelieving the founders, not the code.**

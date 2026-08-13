@@ -1739,19 +1739,50 @@ export function personalExpenseState(
 //    charge, paid back (if paid), and awaiting repayment (if we are waiting
 //    for repayment)".
 //
-// Internal movements (transfers, payout deposits) are a THIRD self-explaining
+//  - a CASHBACK payment (`sourceCategory === "cashback_payment"` — the bank's
+//    own classification, stored verbatim at ingestion): the card program
+//    handing back a slice of card spend. Owner, 2026-08-13: "there's
+//    literally nothing for me to code there. It's just money back… auto code
+//    these ones as well."
+//  - a REFUND pair (`refundedByTransactionId` on the charge /
+//    `refundsTransactionId` on the credit — both written by one human act,
+//    `finances.markAsRefund`, FULL refunds only): the purchase un-happened.
+//    Owner, 2026-08-13: "if something's refunded, why are we coding it and
+//    categorizing it? Doesn't really make sense."
+//
+// Internal movements (transfers, payout deposits) are another self-explaining
 // class, but they already sign to zero (`signedBookCents`) and are excluded
 // by the `direction !== "internal"` / `signed === 0` checks everywhere — this
-// classification covers the two classes that are real money out and so can't
-// be caught by the zero test.
-export type AutoExplainedKind = "fee" | "personal";
+// classification covers the classes that carry real signed money and so
+// can't be caught by the zero test.
+export type AutoExplainedKind =
+  | "fee"
+  | "personal"
+  | "cashback"
+  | "refunded_charge"
+  | "refund_credit";
+
+/** Increase's `source.category` for a cashback payment — the ONE value the
+ *  cashback classification keys on. A positive marker, never a
+ *  description-text inference (`processorFees.ts`'s `feeOrigin` rule). */
+export const CASHBACK_SOURCE_CATEGORY = "cashback_payment";
 
 export function autoExplainedKind(tr: {
   feeOrigin?: unknown;
   isPersonal?: boolean;
+  sourceCategory?: string | null;
+  refundedByTransactionId?: unknown;
+  refundsTransactionId?: unknown;
 }): AutoExplainedKind | null {
   if (tr.feeOrigin != null) return "fee";
+  // Refund outranks personal ON PURPOSE: a personal-flagged charge the
+  // merchant then refunded in full has un-happened — "refunded" is the truer
+  // headline, and the repayment record (whose state a human still settles)
+  // keeps its own books either way.
+  if (tr.refundedByTransactionId != null) return "refunded_charge";
+  if (tr.refundsTransactionId != null) return "refund_credit";
   if (tr.isPersonal === true) return "personal";
+  if (tr.sourceCategory === CASHBACK_SOURCE_CATEGORY) return "cashback";
   return null;
 }
 
@@ -1765,6 +1796,15 @@ export function autoExplanationLine(
 ): string {
   if (kind === "fee") {
     return "Payment processing fees — charged by the processor on money already accepted, itemized in the processor's own ledger. Not a purchase anyone made, so there is no receipt.";
+  }
+  if (kind === "cashback") {
+    return "Card cashback paid by the bank — a slice of card spend returned by the card program. Not a sale and not anyone's purchase.";
+  }
+  if (kind === "refunded_charge") {
+    return "Refunded in full — the money came back on a paired credit, and the two rows net to zero.";
+  }
+  if (kind === "refund_credit") {
+    return "A refund received — reverses its paired charge in full.";
   }
   return personalState === "personal_reimbursed"
     ? "Accidental personal charge — paid back."
