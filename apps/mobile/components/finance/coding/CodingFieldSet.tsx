@@ -59,7 +59,7 @@ import {
   overrideExpenseType,
   type ExpenseTypeChipState,
 } from "./deriveExpenseType";
-import { parseAttendeePaste } from "./attendeePaste";
+import { capBulkAdditions, parseAttendeePaste } from "./attendeePaste";
 import type { ReimbursementPrefillPlan } from "./reimbursementPrefill";
 
 /** The category context a host offers the chip row, if any:
@@ -122,6 +122,20 @@ const BUDGET_GUIDANCE = [
   "Equipment that isn't tied to one event? The annual equipment budget.",
 ];
 
+/** What a bulk-add path (`startWithTeam`/`appendAttendees`) actually did,
+ *  after capping at the meal-names threshold (`capBulkAdditions`) —
+ *  `added < requested` is the caller's cue to say plainly how many people
+ *  were left out and why, instead of letting a bulk add silently overflow
+ *  the threshold (see `attendeePaste.ts#capBulkAdditions`'s own doc for the
+ *  defect this closes). */
+export interface BulkAddResult {
+  /** How many candidates actually landed on the form. */
+  added: number;
+  /** How many candidates were eligible to add (after de-dupe) — `added`
+   *  falls short of this exactly when the cap bit. */
+  requested: number;
+}
+
 export interface CodingFormState {
   expenseType: ExpenseType | null;
   /** The manual chip tap — sticky, and the ONLY thing that sets `overridden`
@@ -159,23 +173,35 @@ export interface CodingFormState {
    *  team, and then remove who maybe wasn't there and add who was there") —
    *  fill blank rows from the roster's team members, affiliation `"team"`.
    *  SAME INTERPLAY RULE, the fill-in direction: if headcount is empty, it's
-   *  SET to the filled count (capped at `namesMaxHeadcount` so this doesn't
-   *  immediately flip the section into group-description mode); if headcount
-   *  is already typed, this fills `min(team.length, headcount)` rows and
-   *  leaves any remaining rows blank for the coder to add by hand. A no-op
-   *  on an empty team. (Under the current headcount-first flow this only
-   *  ever renders once headcount is already set — the empty-headcount branch
-   *  is defensive, not dead: it's what keeps the rule correct if a future
-   *  host ever offers this button before headcount is typed.) */
-  startWithTeam: (team: { name: string }[]) => void;
+   *  SET to the filled count; if headcount is already typed, this fills rows
+   *  up to it. EITHER WAY, capped at `namesMaxHeadcount`
+   *  (`attendeePaste.ts#capBulkAdditions`) so this can never push the total
+   *  past the threshold and flip the section into group-description mode out
+   *  from under the names that were just added (FINDING 1, adversarial
+   *  review 2026-08-13) — the returned `BulkAddResult` says how many of the
+   *  team actually fit, so the caller can tell the coder when some didn't. A
+   *  no-op (`{added: 0, requested: 0}`) on an empty team. (Under the current
+   *  headcount-first flow this only ever renders once headcount is already
+   *  set — the empty-headcount branch is defensive, not dead: it's what
+   *  keeps the rule correct if a future host ever offers this button before
+   *  headcount is typed.) */
+  startWithTeam: (team: { name: string }[]) => BulkAddResult;
   /** "Paste a list" — append parsed rows from `attendeePaste.ts`, growing
-   *  headcount to match the new total. The parser is expected to have
-   *  already deduped against the form's existing names (pass them as
-   *  `existingNames`); this re-checks defensively so a caller that skips
-   *  that never doubles a row. A no-op when nothing new survives the dedupe. */
+   *  headcount to match the new total, CAPPED at `namesMaxHeadcount` for the
+   *  same reason `startWithTeam` is (FINDING 1) — a paste that would push the
+   *  total past the threshold gets the room that's left, not silently
+   *  dropped by a `namesMode` flip on the next render. The parser is
+   *  expected to have already deduped against the form's existing names
+   *  (pass them as `existingNames`); this re-checks defensively so a caller
+   *  that skips that never doubles a row. A no-op (`{added: 0, requested:
+   *  0}`) when nothing new survives the dedupe. */
   appendAttendees: (
     parsed: { name: string; affiliation: AttendeeAffiliation }[],
-  ) => void;
+  ) => BulkAddResult;
+  /** The threshold `rows`/`namesMode` are computed against — exposed so a
+   *  host can word a cap notice ("holds up to N people") without having to
+   *  be handed the constant separately. */
+  namesMaxHeadcount: number;
   groupDescription: string;
   setGroupDescription: (s: string) => void;
   budgetId: string;
@@ -308,37 +334,56 @@ export function useCodingFormState({
     }
   }
 
-  /** See the `startWithTeam` interface doc for the headcount rule. */
-  function startWithTeam(team: { name: string }[]) {
-    if (team.length === 0) return;
+  /** See the `startWithTeam` interface doc for the headcount + cap rules. */
+  function startWithTeam(team: { name: string }[]): BulkAddResult {
+    if (team.length === 0) return { added: 0, requested: 0 };
+    const requested = team.length;
     if (headcount == null) {
-      const capped = Math.min(team.length, namesMaxHeadcount);
-      setHeadcountRaw(String(capped));
+      const { accepted } = capBulkAdditions(team, 0, namesMaxHeadcount);
+      setHeadcountRaw(String(accepted.length));
       setAttendees(
-        team.slice(0, capped).map((p) => ({ name: p.name, affiliation: "team" as const })),
+        accepted.map((p) => ({ name: p.name, affiliation: "team" as const })),
       );
-      return;
+      return { added: accepted.length, requested };
     }
-    const capped = Math.min(team.length, headcount);
-    const filled = team
-      .slice(0, capped)
-      .map((p) => ({ name: p.name, affiliation: "team" as const }));
-    setAttendees([...filled, ...rows.slice(capped)]);
+    const filledCount = rows.filter((r) => r.name.trim().length > 0).length;
+    const { accepted } = capBulkAdditions(team, filledCount, headcount);
+    const filled = accepted.map((p) => ({
+      name: p.name,
+      affiliation: "team" as const,
+    }));
+    // Fill BLANK rows in place, preserving any already-filled ones and their
+    // positions.
+    let fi = 0;
+    setAttendees(
+      rows.map((r) =>
+        r.name.trim().length > 0 ? r : fi < filled.length ? filled[fi++] : r,
+      ),
+    );
+    return { added: accepted.length, requested };
   }
 
   function appendAttendees(
     parsed: { name: string; affiliation: AttendeeAffiliation }[],
-  ) {
+  ): BulkAddResult {
     const existing = rows.filter((r) => r.name.trim().length > 0);
     const existingLower = new Set(
       existing.map((r) => r.name.trim().toLowerCase()),
     );
-    const additions = parsed.filter(
+    const newOnes = parsed.filter(
       (p) => !existingLower.has(p.name.trim().toLowerCase()),
     );
-    if (additions.length === 0) return;
-    setAttendees([...existing, ...additions]);
-    setHeadcountRaw(String(existing.length + additions.length));
+    if (newOnes.length === 0) return { added: 0, requested: 0 };
+    const { accepted } = capBulkAdditions(
+      newOnes,
+      existing.length,
+      namesMaxHeadcount,
+    );
+    if (accepted.length > 0) {
+      setAttendees([...existing, ...accepted]);
+      setHeadcountRaw(String(existing.length + accepted.length));
+    }
+    return { added: accepted.length, requested: newOnes.length };
   }
 
   const value: CodingFormValue | null =
@@ -443,15 +488,16 @@ export function useCodingFormState({
       removeAttendeeRow(index);
     },
     startWithTeam: (team) => {
-      if (team.length === 0) return;
+      if (team.length === 0) return { added: 0, requested: 0 };
       setTouched(true);
-      startWithTeam(team);
+      return startWithTeam(team);
     },
     appendAttendees: (parsed) => {
-      if (parsed.length === 0) return;
+      if (parsed.length === 0) return { added: 0, requested: 0 };
       setTouched(true);
-      appendAttendees(parsed);
+      return appendAttendees(parsed);
     },
+    namesMaxHeadcount,
     groupDescription,
     setGroupDescription: (s) => {
       setTouched(true);
@@ -813,7 +859,22 @@ function lastUsedAffiliation(
  *
  * No portal/popover anywhere — a wrap row of small `Pressable` chips, same
  * language the affiliation radios in this file already use.
+ *
+ * BOTH bulk-add paths are capped at `namesMaxHeadcount`
+ * (`form.startWithTeam`/`form.appendAttendees`, via
+ * `attendeePaste.ts#capBulkAdditions`) so a big paste or a big team can never
+ * push headcount past the threshold and flip the section away out from under
+ * itself (FINDING 1, adversarial review 2026-08-13). When the cap bites,
+ * `capNotice` says so in plain numbers rather than losing anyone silently.
  */
+function bulkAddCapNotice(
+  result: BulkAddResult,
+  namesMaxHeadcount: number,
+): string | null {
+  if (result.added >= result.requested) return null;
+  return `Added ${result.added} of ${result.requested} — the named list holds up to ${namesMaxHeadcount} people. For a bigger group, set the headcount and describe the group instead.`;
+}
+
 function AttendeeRosterEditor({
   form,
   transactionId,
@@ -827,18 +888,37 @@ function AttendeeRosterEditor({
   const team = suggestions ?? [];
   const [pasteOpen, setPasteOpen] = useState(false);
   const [pasteText, setPasteText] = useState("");
+  const [capNotice, setCapNotice] = useState<string | null>(null);
 
   const allRowsBlank = form.rows.every((r) => r.name.trim().length === 0);
 
   return (
     <View className="gap-2">
+      {capNotice ? (
+        <View className="flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
+          <Icon name="alert-triangle" size={13} color={colors.muted} />
+          <Text className="flex-1 text-2xs text-muted">{capNotice}</Text>
+          <Pressable
+            onPress={() => setCapNotice(null)}
+            accessibilityRole="button"
+            accessibilityLabel="Dismiss"
+            className="active:opacity-70"
+          >
+            <Icon name="x" size={12} color={colors.muted} />
+          </Pressable>
+        </View>
+      ) : null}
+
       {allRowsBlank && team.length > 0 ? (
         <Button
           title={`Start with the team (${team.length})`}
           variant="secondary"
           size="sm"
           icon="users"
-          onPress={() => form.startWithTeam(team)}
+          onPress={() => {
+            const result = form.startWithTeam(team);
+            setCapNotice(bulkAddCapNotice(result, form.namesMaxHeadcount));
+          }}
         />
       ) : null}
 
@@ -923,7 +1003,8 @@ function AttendeeRosterEditor({
                     .filter((n) => n.trim().length > 0),
                   lastAffiliation: lastUsedAffiliation(form.rows),
                 });
-                form.appendAttendees(parsed);
+                const result = form.appendAttendees(parsed);
+                setCapNotice(bulkAddCapNotice(result, form.namesMaxHeadcount));
                 setPasteText("");
                 setPasteOpen(false);
               }}
