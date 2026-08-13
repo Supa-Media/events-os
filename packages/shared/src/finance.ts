@@ -1760,16 +1760,20 @@ export type AutoExplainedKind =
   | "personal"
   | "cashback"
   | "refunded_charge"
-  | "refund_credit";
+  | "refund_credit"
+  | "repayment_credit"
+  | "interest";
 
-/** Increase's `source.category` for a cashback payment — the ONE value the
- *  cashback classification keys on. A positive marker, never a
- *  description-text inference (`processorFees.ts`'s `feeOrigin` rule). */
+/** Increase's `source.category` values the classification keys on — POSITIVE
+ *  markers stored verbatim at ingestion, never description-text inferences
+ *  (`processorFees.ts`'s `feeOrigin` rule). */
 export const CASHBACK_SOURCE_CATEGORY = "cashback_payment";
+export const INTEREST_SOURCE_CATEGORY = "interest_payment";
 
 export function autoExplainedKind(tr: {
   feeOrigin?: unknown;
   isPersonal?: boolean;
+  source?: string;
   sourceCategory?: string | null;
   refundedByTransactionId?: unknown;
   refundsTransactionId?: unknown;
@@ -1781,8 +1785,16 @@ export function autoExplainedKind(tr: {
   // keeps its own books either way.
   if (tr.refundedByTransactionId != null) return "refunded_charge";
   if (tr.refundsTransactionId != null) return "refund_credit";
+  // The settled offsetting credit of a personal charge (`source:"repayment"`
+  // — `cards.ts#settleRepayment` is its single writer): machine-posted from
+  // a settled payment rail, never a judgement call. Its counterpart charge
+  // is already auto-explained as `personal`.
+  if (tr.source === "repayment") return "repayment_credit";
   if (tr.isPersonal === true) return "personal";
   if (tr.sourceCategory === CASHBACK_SOURCE_CATEGORY) return "cashback";
+  // Bank interest on the account balance — same shape as cashback: nobody
+  // chose it, there is no receipt, the bank's ledger is the record.
+  if (tr.sourceCategory === INTEREST_SOURCE_CATEGORY) return "interest";
   return null;
 }
 
@@ -1805,6 +1817,12 @@ export function autoExplanationLine(
   }
   if (kind === "refund_credit") {
     return "A refund received — reverses its paired charge in full.";
+  }
+  if (kind === "repayment_credit") {
+    return "Repayment received for an accidental personal charge — the offsetting credit; the charge it settles publishes alongside it.";
+  }
+  if (kind === "interest") {
+    return "Interest paid by the bank on the account balance. Not a gift and not a sale.";
   }
   return personalState === "personal_reimbursed"
     ? "Accidental personal charge — paid back."

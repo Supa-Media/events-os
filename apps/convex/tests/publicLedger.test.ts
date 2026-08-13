@@ -1433,6 +1433,13 @@ describe("explaining a month", () => {
     expect(totals!.undocumentedCount).toBe(1);
     expect(totals!.undocumentedCents).toBe(5_000);
 
+    // THE TOTALS AGREE WITH THE LINES (Opus audit, 2026-08-13): a refunded
+    // charge whose own line promises "the two rows net to zero" must not be
+    // charged to published expense, its credit must not read as income, and
+    // a personal pair likewise counts as nothing — only Costco (5000) and
+    // the Stripe fee (6014, real money out) are expense.
+    expect(totals!.expenseCents).toBe(5_000 + 6_014);
+
     // Published, each self-explaining row prints its own status line —
     // derived from real state, so "paid back" can never precede the money.
     await publishMonth(s);

@@ -508,7 +508,11 @@ export const getForTransaction = query({
       txn.flow === "outflow" &&
       txn.status !== "excluded" &&
       txn.isPersonal !== true &&
-      txn.feeOrigin == null;
+      txn.feeOrigin == null &&
+      // A refunded charge un-happened (Opus audit 2026-08-13 caught this
+      // mirror drifting from `finances.requiresCoding`, which excludes it
+      // via `isSpend`'s `refundedByTransactionId` clause).
+      txn.refundedByTransactionId == null;
     // The same two conditions `approve` enforces, asked in the same order.
     // A superuser with no roster row (`actorPersonId == null`) skips the SoD
     // half exactly as the mutation does — see `approve`'s own comment — and
