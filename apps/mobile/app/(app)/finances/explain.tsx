@@ -247,6 +247,19 @@ function Body() {
   // than a percentage that implies a completion that never happened.
   const pct = data.totalCount > 0 ? Math.round((done / data.totalCount) * 100) : 0;
 
+  // ── THE SPLIT (founder-approved, 2026-08-13): a month with 450 reconstructed
+  // 2024–25 rows and 3 live ones read as "3% explained" — the backlog was
+  // swamping the meter that's supposed to tell the founder whether THIS
+  // month is done. `hasBoth` decides which shape to render: when only one
+  // population actually has rows, `total* === live*` (or `=== backlog*`) by
+  // construction, so the single line below is already the honest answer and
+  // showing a second "0 of 0 reconstructed" line under it would just be
+  // noise. Only when BOTH populations are non-empty does the split earn a
+  // second line. ──
+  const hasBoth = data.liveCount > 0 && data.backlogCount > 0;
+  const livePct =
+    data.liveCount > 0 ? Math.round((data.liveExplainedCount / data.liveCount) * 100) : 0;
+
   // The persistent side panel only on a wide screen WITH a row selected —
   // founder: "if I'm seeing a database view when I'm coding... maybe in a
   // side panel." Narrow screens keep the pre-panel Modal sheet, untouched,
@@ -305,19 +318,74 @@ function Body() {
             ) : (
               <>
                 <Card>
-                  <Text className="text-sm text-muted">
-                    {done} of {data.totalCount} lines explained ({pct}%) —{" "}
-                    {formatCents(data.explainedCents)} of {formatCents(data.totalCents)}.
-                  </Text>
-                  {/* Dollars beside counts, deliberately. A month can be 20% of
-                      the lines and 80% of the money, and on a page strangers
-                      read, the money is the part that gets asked about. */}
-                  <View className="mt-2 h-2 overflow-hidden rounded-full bg-sunken">
-                    <View
-                      className="h-full rounded-full bg-success"
-                      style={{ width: `${pct}%` }}
-                    />
-                  </View>
+                  {hasBoth ? (
+                    <>
+                      {/* PRIMARY — this month's own work, the number the
+                          founder actually asked "did I finish" about. The
+                          bar is sized to the LIVE population, not the whole
+                          (live + backlog) total — otherwise 3 live rows next
+                          to 450 backlog ones would still read as barely
+                          started. */}
+                      <Text className="text-sm text-muted">
+                        {data.liveExplainedCount} of {data.liveCount} of this
+                        month&apos;s rows explained ({livePct}%) —{" "}
+                        {formatCents(data.liveExplainedCents)} of{" "}
+                        {formatCents(data.liveCents)}.
+                      </Text>
+                      <View className="mt-2 h-2 overflow-hidden rounded-full bg-sunken">
+                        <View
+                          className="h-full rounded-full bg-success"
+                          style={{ width: `${livePct}%` }}
+                        />
+                      </View>
+
+                      {/* SECONDARY, muted — the reconstructed backlog, shown
+                          so it's never mistaken for this month's own work,
+                          but never asked to auto-explain itself (the analysis
+                          this split came from explicitly recommends against
+                          it — the imported labels are categories, not
+                          purposes). Its own thin bar, same reason the number
+                          gets its own line: sized against the combined total
+                          would let a big backlog quietly borrow credit from
+                          the live bar above it. */}
+                      <Text className="mt-3 text-2xs text-faint">
+                        + {data.backlogExplainedCount} of {data.backlogCount}{" "}
+                        reconstructed rows from the org&apos;s imported 2024–25
+                        records — {formatCents(data.backlogExplainedCents)} of{" "}
+                        {formatCents(data.backlogCents)}.
+                      </Text>
+                      <View className="mt-1 h-1 overflow-hidden rounded-full bg-sunken">
+                        <View
+                          className="h-full rounded-full bg-muted"
+                          style={{
+                            width: `${
+                              data.backlogCount > 0
+                                ? Math.round(
+                                    (data.backlogExplainedCount / data.backlogCount) * 100,
+                                  )
+                                : 0
+                            }%`,
+                          }}
+                        />
+                      </View>
+                    </>
+                  ) : (
+                    <>
+                      <Text className="text-sm text-muted">
+                        {done} of {data.totalCount} lines explained ({pct}%) —{" "}
+                        {formatCents(data.explainedCents)} of {formatCents(data.totalCents)}.
+                      </Text>
+                      {/* Dollars beside counts, deliberately. A month can be 20% of
+                          the lines and 80% of the money, and on a page strangers
+                          read, the money is the part that gets asked about. */}
+                      <View className="mt-2 h-2 overflow-hidden rounded-full bg-sunken">
+                        <View
+                          className="h-full rounded-full bg-success"
+                          style={{ width: `${pct}%` }}
+                        />
+                      </View>
+                    </>
+                  )}
                   <Text className="mt-2 text-2xs text-muted">
                     Biggest first — the top of this list is most of the money.
                   </Text>
@@ -433,6 +501,15 @@ function ExplainRow({
             {row.needsBudget ? " · not attached to a budget" : ""}
           </Text>
         </View>
+        {/* THE SPLIT (founder-approved, 2026-08-13): the row's own tell for
+            "this is reconstructed 2024–25 history, not something we watched
+            happen" — so while working biggest-first, a reconstructed row
+            reads honestly even though it sorts right next to a live one.
+            Never a reason to skip it: it still needs the same explanation,
+            it's just not what the LIVE meter above is tracking. */}
+        {row.reconstructed ? (
+          <Badge tone="info" icon="archive" label="Imported record" />
+        ) : null}
         {/* A receipt already on file is worth showing here: it is the
             difference between writing an explanation from memory and writing
             it off the document. */}
