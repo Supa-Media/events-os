@@ -9,7 +9,7 @@ import {
   storeBlob,
   type ChapterSetup,
 } from "./setup.helpers";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import type { Doc, Id } from "../_generated/dataModel";
 
 /**
@@ -73,6 +73,8 @@ async function seedTxn(
     isPersonal?: boolean;
     receiptStorageId?: Id<"_storage">;
     merchantName?: string;
+    categoryId?: Id<"budgetCategories">;
+    feeOrigin?: Doc<"transactions">["feeOrigin"];
   },
 ): Promise<Id<"transactions">> {
   return await run(s.t, (ctx) =>
@@ -87,6 +89,8 @@ async function seedTxn(
       cardId: opts.cardId,
       isPersonal: opts.isPersonal,
       receiptStorageId: opts.receiptStorageId,
+      categoryId: opts.categoryId,
+      feeOrigin: opts.feeOrigin,
       status: opts.status ?? "unreviewed",
       createdAt: Date.now(),
     }),
@@ -296,5 +300,129 @@ describe("finances.receiptChase: scope/chapterId (mirrors listReconcile's drill-
     const res = await s.as.query(api.finances.receiptChase, {});
     expect(res.count).toBe(1);
     expect(res.groups[0].transactions[0].merchantName).toBe("Home charge");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * A PROCESSOR FEE CAN NEVER HAVE A RECEIPT — so it must not be chased for one.
+ *
+ * The bug: `finances.needsDocumentation` and `finances.requiresCoding` both
+ * exempt `feeOrigin` rows, but `lib/codingReminders.ts#chaseEligible` did not,
+ * and `chargeOutstanding` read only the POLICY-DATE half of `requiresCoding`.
+ * `receiptChase`, the reconcile `chaseCount` and the nudge targets are all the
+ * UNION of those two predicates, so a Stripe/Givebutter fee row — written
+ * `flow:"outflow"`, `status:"categorized"`, receipt-less by nature
+ * (`processorFees.ts`) — came back as "needs coding and a receipt" from one
+ * half while the other half said it owed nothing. Cardholders got nudged for
+ * Stripe's cut.
+ *
+ * THE CONTRAST IS THE TEST. The exemption is by ORIGIN (`feeOrigin`), never by
+ * category — a Givebutter paid subscription the org CHOSE to buy sits in the
+ * same "Bank & Fees" category and is still chased for all three. A fix that
+ * exempted the category instead would silence a real chase, and only the
+ * second half of each assertion below would catch it.
+ */
+describe("finances.receiptChase: a non-discretionary fee is never chased", () => {
+  async function seedFeeAndSubscription(s: ChapterSetup): Promise<{
+    alice: Id<"people">;
+    fee: Id<"transactions">;
+    subscription: Id<"transactions">;
+  }> {
+    const alice = await seedPerson(s, { name: "Alice" });
+    // ONE category, shared by both rows: "Bank & Fees" is where the fee sweep
+    // codes its rows AND where a platform subscription lands.
+    const fundId = await run(s.t, (ctx) =>
+      ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      }),
+    );
+    const categoryId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Bank & Fees",
+        kind: "lineItem",
+        createdAt: Date.now(),
+      }),
+    );
+    // Exactly what `processorFees.ts` writes, down to the status — and
+    // deliberately ATTRIBUTED to Alice, so this passes because of the fee
+    // marker and not because nobody could be nudged for it.
+    const fee = await seedTxn(s, {
+      personId: alice,
+      amountCents: 289,
+      status: "categorized",
+      categoryId,
+      feeOrigin: "stripe_processing",
+      merchantName: "Stripe processing fees",
+    });
+    const subscription = await seedTxn(s, {
+      personId: alice,
+      amountCents: 4200,
+      status: "categorized",
+      categoryId,
+      merchantName: "Givebutter Plus",
+    });
+    return { alice, fee, subscription };
+  }
+
+  test("it is absent from the chase list and its count; the subscription beside it is present", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "FM", userId: s.userId });
+    await grantRole(s, me, "manager");
+    const { subscription } = await seedFeeAndSubscription(s);
+
+    const chase = await s.as.query(api.finances.receiptChase, {});
+    // One row, not two: the $42 subscription. The $2.89 fee is gone.
+    expect(chase.count).toBe(1);
+    expect(chase.totalCents).toBe(4200);
+    expect(chase.groups.flatMap((g) => g.transactions.map((tr) => tr.id))).toEqual([
+      subscription,
+    ]);
+  });
+
+  test("it does not count in the reconcile grid's chaseCount", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "FM", userId: s.userId });
+    await grantRole(s, me, "manager");
+    await seedFeeAndSubscription(s);
+
+    // `chaseCount` is what gates the "Chase receipts" button, and it is
+    // `receiptChase`'s population expression-for-expression — so it moves with
+    // it or the button lies about the page it opens.
+    const grid = await s.as.query(api.finances.listReconcile, {});
+    expect(grid.chaseCount).toBe(1);
+    // The documentation pill agreed all along (`needsDocumentation` always
+    // exempted fees). Asserted here because the two disagreeing is the actual
+    // defect: a row the pill said owed nothing that the chase still counted.
+    expect(grid.counts.missing_receipt).toBe(1);
+  });
+
+  test("it generates no reminder — the subscription in the same category still does", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const me = await seedPerson(s, { name: "FM", userId: s.userId });
+    await grantRole(s, me, "manager");
+    const { alice } = await seedFeeAndSubscription(s);
+
+    // The one query behind every nudge email/SMS the FM sends from the Chase
+    // page (`cards.sendReceiptNudge` is its only caller).
+    const targets = await s.as.query(internal.cards.getManualNudgeTargets, {});
+    expect(targets).toHaveLength(1);
+    expect(targets[0].personId).toBe(alice);
+    // ONE charge in the bundle, and it is not the fee: Alice is asked about
+    // the subscription she chose to buy, and nothing about Stripe's cut.
+    expect(targets[0].charges.map((c) => c.merchantName)).toEqual([
+      "Givebutter Plus",
+    ]);
+    expect(targets[0].charges[0].outstanding).toBe("needs coding and a receipt");
   });
 });

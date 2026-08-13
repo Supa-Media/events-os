@@ -3,7 +3,11 @@ import { describe, expect, test, vi } from "vitest";
 import { DAY_MS } from "@events-os/shared";
 import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
-import { chargeOutstanding, outstandingLabel } from "../lib/codingReminders";
+import {
+  chargeOutstanding,
+  isUncodedCharge,
+  outstandingLabel,
+} from "../lib/codingReminders";
 import type { Id } from "../_generated/dataModel";
 import { LOST_RECEIPT_CHECKS } from "@events-os/shared";
 /** Every lost-receipt check answered yes — since 2026-08-09 the interactive
@@ -165,6 +169,11 @@ async function seedCharge(
     // `undefined` IS "uncoded" — the denorm only carries the states a coding
     // row can be in (`TRANSACTION_CODING_STATUSES`).
     codingState?: "submitted" | "changes_requested" | "approved";
+    /** The processor-fee marker `processorFees.ts` stamps. Its presence — not
+     *  the category the row is coded to — is what exempts a row from the
+     *  chase. */
+    feeOrigin?: "stripe_processing" | "givebutter_processing";
+    status?: "unreviewed" | "categorized" | "reconciled" | "excluded";
   },
 ): Promise<Id<"transactions">> {
   const now = Date.now();
@@ -180,11 +189,109 @@ async function seedCharge(
       personId: opts.personId,
       receiptStorageId: opts.receiptStorageId,
       codingState: opts.codingState,
-      status: "unreviewed",
+      feeOrigin: opts.feeOrigin,
+      status: opts.status ?? "unreviewed",
       createdAt: now,
     }),
   );
 }
+
+// ── The fee carve-out, at the predicate itself ───────────────────────────────
+
+/**
+ * `chargeOutstanding` / `isUncodedCharge` are the predicates every reminder
+ * surface reads. They exempted nothing for `feeOrigin` while
+ * `finances.needsDocumentation` and `finances.requiresCoding` both did, so a
+ * processor fee row answered "needs coding and a receipt" — for a receipt that
+ * does not exist and a decision nobody made.
+ *
+ * Asserted here at the function, not only through a query, because the
+ * exemption now comes from ONE shared place (`@events-os/shared#isNonDiscretionaryFee`,
+ * via `chaseEligible`) and this is the level a future copy would drift at.
+ */
+describe("chargeOutstanding — a processor fee owes nothing, a chosen purchase still does", () => {
+  async function outstandingFor(
+    s: ChapterSetup,
+    txnId: Id<"transactions">,
+  ): Promise<string | null> {
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    const settings = await run(s.t, (ctx) =>
+      ctx.db.query("financeSettings").first(),
+    );
+    return chargeOutstanding(txn!, settings!.codingRequiredSinceMs!);
+  }
+
+  test("a POST-policy fee row is not chased; a discretionary subscription is", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await armCodingPolicy(s);
+    // Both rows land in "Bank & Fees" in real books. Only one was a decision.
+    const fee = await seedCharge(s, {
+      ageDays: 10,
+      amountCents: 289,
+      merchantName: "Stripe processing fees",
+      feeOrigin: "stripe_processing",
+      status: "categorized",
+    });
+    const subscription = await seedCharge(s, {
+      ageDays: 10,
+      amountCents: 4200,
+      merchantName: "Givebutter Plus",
+      status: "categorized",
+    });
+
+    expect(await outstandingFor(s, fee)).toBeNull();
+    expect(await outstandingFor(s, subscription)).toBe(
+      "needs coding and a receipt",
+    );
+  });
+
+  test("a PRE-policy fee row is not chased for a receipt either", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Policy armed only 30 days back; both rows posted 200 days ago, so the
+    // coding half is off and "needs a receipt" is the whole question. The
+    // date was never the reason a fee is exempt — the origin is.
+    await armCodingPolicy(s, { sinceDaysAgo: 30 });
+    const fee = await seedCharge(s, {
+      ageDays: 200,
+      merchantName: "Givebutter processing fees",
+      feeOrigin: "givebutter_processing",
+      status: "categorized",
+    });
+    const subscription = await seedCharge(s, {
+      ageDays: 200,
+      merchantName: "Givebutter Plus",
+      status: "categorized",
+    });
+
+    expect(await outstandingFor(s, fee)).toBeNull();
+    expect(await outstandingFor(s, subscription)).toBe("needs a receipt");
+  });
+
+  test("isUncodedCharge — the 60-day accountable-plan clock never runs on a fee", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await armCodingPolicy(s);
+    const fee = await seedCharge(s, {
+      ageDays: 90,
+      feeOrigin: "stripe_processing",
+      status: "categorized",
+    });
+    const subscription = await seedCharge(s, { ageDays: 90, status: "categorized" });
+    const settings = await run(s.t, (ctx) =>
+      ctx.db.query("financeSettings").first(),
+    );
+    const sinceMs = settings!.codingRequiredSinceMs!;
+    const feeDoc = await run(s.t, (ctx) => ctx.db.get(fee));
+    const subDoc = await run(s.t, (ctx) => ctx.db.get(subscription));
+
+    // A fee billed back to a cardholder as a personal repayment for "not being
+    // coded" is the worst version of this bug, and this is the gate.
+    expect(isUncodedCharge(feeDoc!, sinceMs)).toBe(false);
+    expect(isUncodedCharge(subDoc!, sinceMs)).toBe(true);
+  });
+});
 
 // ── The chase is about codings now, not receipts ─────────────────────────────
 

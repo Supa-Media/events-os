@@ -53,6 +53,7 @@ import {
   easternParts,
   formatCents,
   INCOME_STREAMS,
+  isNonDiscretionaryFee,
   isReconstructedHistory,
   MAX_PUBLISHED_ENTRIES,
   parsePeriodKey,
@@ -504,7 +505,10 @@ export async function buildSnapshot(
       groupDescription: approved?.groupDescription,
       documentation,
       reconstructed: reconstructed || undefined,
-      nonDiscretionaryFee: tr.feeOrigin != null || undefined,
+      // The shared predicate, not a fourth inline `feeOrigin` test — see
+      // `@events-os/shared#isNonDiscretionaryFee` for why they were pulled
+      // together.
+      nonDiscretionaryFee: isNonDiscretionaryFee(tr) || undefined,
       sourceTransactionId: tr._id,
     });
 

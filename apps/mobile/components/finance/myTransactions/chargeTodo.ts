@@ -90,7 +90,20 @@ export function isSpendCharge(f: ChargeFacts): boolean {
 /** Mirrors `finances.ts#requiresCoding`: spend posted on/after the org's
  *  policy date (`financeSettings.codingRequiredSinceMs`, owner-decided
  *  2026-09-01). Pre-policy history is the voluntary on-ramp — it may carry a
- *  coding, it is never chased for one. */
+ *  coding, it is never chased for one.
+ *
+ *  ONE CLAUSE OF THE SERVER PREDICATE IS DELIBERATELY ABSENT: the processor-fee
+ *  exemption (`@events-os/shared#isNonDiscretionaryFee` — the carve-out
+ *  `finances.requiresCoding` and `lib/codingReminders.ts#chaseEligible` both
+ *  make). It is UNREACHABLE here. This screen renders
+ *  `finances.personTransactions`, a `by_person` scan, and fee rows are written
+ *  by `processorFees.ts`/`givebutterSync.ts` with no `personId` and no
+ *  `cardId` — no member's own ledger can contain one — so honoring it would
+ *  mean widening the `txnSummary` wire projection for a row class that cannot
+ *  arrive. If a fee row ever DOES get attributed to a person, this mirror is
+ *  the next place that has to learn the rule: carry `feeOrigin` onto
+ *  `ChargeFacts` and read the shared predicate, never re-derive it from the
+ *  category (a chosen subscription sits in Bank & Fees too). */
 export function codingRequired(f: ChargeFacts, sinceMs: number): boolean {
   return isSpendCharge(f) && f.postedAt >= sinceMs;
 }

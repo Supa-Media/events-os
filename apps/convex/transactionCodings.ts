@@ -51,6 +51,7 @@ import {
   TRANSACTION_CODING_STATUSES,
   TRANSACTION_CODING_STATUS_LABELS,
   attendeeAffiliationBreakdown,
+  isNonDiscretionaryFee,
   type ExpenseType,
   type TransactionCodingStatus,
 } from "@events-os/shared";
@@ -517,16 +518,20 @@ export const getForTransaction = query({
     );
     const priorCoding = await priorApprovedCoding(ctx, txn);
     // Mirrors `finances.requiresCoding` — spend posted at/after the policy
-    // date, minus the exempt classes (personal charges, and processor fees —
-    // `feeOrigin`, which have no testimony to give; founder 2026-08-12).
-    // Kept inline rather than importing the whole finances module into this
-    // one.
+    // date, minus the exempt classes (personal charges, and processor fees,
+    // which have no testimony to give; founder 2026-08-12). Kept inline
+    // rather than importing the whole finances module into this one — but the
+    // FEE half is no longer inline: it reads the shared
+    // `isNonDiscretionaryFee`, the same function `finances.requiresCoding` and
+    // the cardholder chase (`lib/codingReminders.ts#chaseEligible`) read. That
+    // one was the copy that went missing, and the chase nagged for fees this
+    // very screen said needed no coding.
     const requiresCoding =
       txn.postedAt >= sinceMs &&
       txn.flow === "outflow" &&
       txn.status !== "excluded" &&
       txn.isPersonal !== true &&
-      txn.feeOrigin == null &&
+      !isNonDiscretionaryFee(txn) &&
       // A refunded charge un-happened (Opus audit 2026-08-13 caught this
       // mirror drifting from `finances.requiresCoding`, which excludes it
       // via `isSpend`'s `refundedByTransactionId` clause).

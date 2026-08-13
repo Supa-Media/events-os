@@ -1782,6 +1782,47 @@ export type AutoExplainedKind =
 export const CASHBACK_SOURCE_CATEGORY = "cashback_payment";
 export const INTEREST_SOURCE_CATEGORY = "interest_payment";
 
+/**
+ * True iff this row is a per-transaction processor or bank fee — a cost that
+ * was CHARGED, not chosen. THE single definition: `finances.ts` re-exports it
+ * under the same name, and every fee carve-out in the app reads this one
+ * function.
+ *
+ * ## Why it lives here and not next to its callers
+ *
+ * It was written in `finances.ts` and then hand-copied — as `feeOrigin == null`
+ * inside `transactionCodings.getForTransaction`'s `requiresCoding` mirror, as
+ * `feeOrigin != null` in the public-ledger snapshot, and NOT AT ALL into
+ * `lib/codingReminders.ts`. That last omission is the one that shipped a bug:
+ * the cardholder chase (`chargeOutstanding` → `receiptChase`, the reconcile
+ * `chaseCount`, the reminder digests) took only the POLICY-DATE half of
+ * `requiresCoding` and dropped the fee exemption, so Stripe/Givebutter fee rows
+ * were chased for receipts that cannot exist. `lib/codingReminders.ts` cannot
+ * import `finances.ts` — finances imports `chargeOutstanding` FROM it, so that
+ * edge would close a cycle — and this package is the one place all of the
+ * callers already import. Same consolidation #702 did for
+ * `explanationPopulation`: share the predicate, don't copy the carve-out.
+ *
+ * ## What it means
+ *
+ * Written by `processorFees.ts` (sweeping Stripe's balance transactions) and
+ * `givebutterSync.ts`, and read everywhere else. A POSITIVE MARKER, never an
+ * inference: the alternative was matching on the `stripe-fees:` external-id
+ * prefix, which would silently miss Cash App's rows (a different prefix) and
+ * would break the moment a key format changed.
+ *
+ * DELIBERATELY NARROW — the exemption is by ORIGIN, not by category. It marks
+ * the fee taken out of an individual payment, nothing else. A monthly platform
+ * subscription, a paid Givebutter tier, an accounting service — those are real
+ * decisions somebody made, they belong to whoever decided, and they stay
+ * budgeted, coded and chased for a receipt even though they land in the same
+ * "Bank & Fees" category. Being coded there does not exempt anything; carrying
+ * a `feeOrigin` does.
+ */
+export function isNonDiscretionaryFee(tr: { feeOrigin?: unknown }): boolean {
+  return tr.feeOrigin != null;
+}
+
 export function autoExplainedKind(tr: {
   feeOrigin?: unknown;
   isPersonal?: boolean;
@@ -1790,7 +1831,7 @@ export function autoExplainedKind(tr: {
   refundedByTransactionId?: unknown;
   refundsTransactionId?: unknown;
 }): AutoExplainedKind | null {
-  if (tr.feeOrigin != null) return "fee";
+  if (isNonDiscretionaryFee(tr)) return "fee";
   // Refund outranks personal ON PURPOSE: a personal-flagged charge the
   // merchant then refunded in full has un-happened — "refunded" is the truer
   // headline, and the repayment record (whose state a human still settles)
