@@ -15,6 +15,19 @@
  * shows ✓ or an inline upload; Amount is read-only (signed). The fund is
  * hidden — the backend defaults it to the General Fund on categorize.
  *
+ * ── THE SIDE PANEL (wide screens) ────────────────────────────────────────────
+ * Opening a charge from this grid used to mean a modal — and the receipt
+ * inside it meant a SECOND modal, which cannot be open at the same time. So
+ * the one thing the founder asked for ("see the receipts really well, like
+ * maybe in a side panel… quickly click in and click out, rather than a modal
+ * that's in the middle of the screen") was not merely awkward here, it was
+ * unreachable. At ≥900px `reconcile.tsx` now renders `CodingWorkbenchPanel`
+ * beside this grid and passes `onOpenRow`/`openRowId`/`panelOpen` in: a row's
+ * open affordances select instead of opening the modal, the panel swaps to
+ * that row in place, and three columns the panel itself renders step aside to
+ * pay for the space (see `hidesForPanel`). Below 900px, and anywhere
+ * `onOpenRow` is absent, this file behaves exactly as it did.
+ *
  * MERCHANT is a RENAME, not an edit of the bank's record — it writes a
  * separate `merchantNameOverride` and leaves the provider's own string
  * untouched, with a history icon on renamed rows. The icon stays live on a
@@ -205,6 +218,9 @@ export function ReconcileList({
   centralForItems,
   isManager = false,
   viewerPersonId = null,
+  onOpenRow,
+  openRowId = null,
+  panelOpen = false,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
@@ -244,6 +260,28 @@ export function ReconcileList({
   // (`listReconcile`'s `viewerPersonId`) — widens "Mark personal" to a
   // cardholder's OWN row, mirroring the server's cardholder-or-manager gate.
   viewerPersonId?: Id<"people"> | null;
+  // ── THE SIDE PANEL (wide screens only) ────────────────────────────────────
+  // Founder, verbatim: "information that helps me quickly click in and click
+  // out, rather than a modal that's in the middle of the screen that blocks
+  // your ability to see other things." In THIS grid that failure was
+  // structural, not merely annoying: the record opened in
+  // `TransactionDocumentationModal` and the receipt opened in
+  // `ReceiptViewerModal`, and two `<Modal>`s cannot be open at once — so
+  // reading a receipt WHILE typing its explanation was impossible from here,
+  // which is the one thing that was asked for. `reconcile.tsx` now hosts
+  // `CodingWorkbenchPanel` beside this grid on a wide screen; these three
+  // props are the whole seam, and all three are absent on narrow, where every
+  // behavior below is exactly what it was.
+  /** Present ⇔ the host is rendering the side panel (wide screen). A row's
+   *  "open the record" affordances then SELECT the row for the panel instead
+   *  of opening the modal. ABSENT (narrow) → the modal, unchanged. */
+  onOpenRow?: (id: string) => void;
+  /** The row the panel is showing — marked with an accent bar so it stays
+   *  identifiable while the list scrolls past it. */
+  openRowId?: string | null;
+  /** The panel is actually on screen (wide AND a row selected). Hides the
+   *  columns the panel itself renders in full — see `hidesForPanel`. */
+  panelOpen?: boolean;
 }) {
   // "Select all" only ever means the rows this caller can actually act on —
   // an uneditable row (a foreign chapter's, in the merged queue) has no
@@ -268,14 +306,41 @@ export function ReconcileList({
     (r) => r.chargedTo != null && r.chargedTo.id !== r.book.id,
   );
   const showCategory = !centralScope || anyCrossBook;
+  // ── WHAT THE PANEL COSTS THIS GRID, AND WHAT IT PAYS BACK ─────────────────
+  // The columns already total ~1776px in a single-book scope and the grid
+  // scrolls horizontally to fit them; handing 44% of the window to the panel
+  // would make that scroll much worse if nothing gave way. So while the panel
+  // is open, this grid drops exactly the columns the panel RENDERS IN FULL —
+  // and nothing else:
+  //
+  //   Cardholder (168)      → the panel's header line ("Marcus Webb · card
+  //                           ••4417"), the founder's "who do I even ask".
+  //   What it was for (300) → the panel's purpose field, where it is not just
+  //                           shown but WRITTEN.
+  //   Documentation (208)   → `ReceiptPane` — the receipt itself, big, plus
+  //                           the very same `ReceiptCell` upload affordance
+  //                           this column renders (that component is imported
+  //                           FROM this file), so no capability is lost.
+  //
+  // 676px back: ~1776 → ~1100, which is what makes the two-pane layout usable
+  // rather than two scrollbars fighting. Everything the panel does NOT do
+  // stays: the checkbox (bulk actions), Book, Merchant (the rename lives
+  // here), Date, Amount, Category, For, Status, and the row Actions.
+  const hidesForPanel = panelOpen;
+  const showCardholder = !hidesForPanel;
+  const showExplanation = !hidesForPanel;
+  const showReceipt = !hidesForPanel;
   const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
   // Drop the width of any column this scope doesn't render so the grid doesn't
-  // leave dead space: Category when it isn't shown, and the Book column outside
-  // the merged all-books queue.
+  // leave dead space: Category when it isn't shown, the Book column outside
+  // the merged all-books queue, and the three the side panel supersedes.
   const width =
     tableWidth -
     (showCategory ? 0 : widths.category) -
-    (showBook ? 0 : widths.book);
+    (showBook ? 0 : widths.book) -
+    (showCardholder ? 0 : widths.cardholder) -
+    (showExplanation ? 0 : widths.explanation) -
+    (showReceipt ? 0 : widths.receipt);
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
@@ -313,16 +378,20 @@ export function ReconcileList({
               width={widths.amount}
               onResizeStart={startResize("amount")}
             />
-            <GridHeaderCell
-              label="Cardholder"
-              width={widths.cardholder}
-              onResizeStart={startResize("cardholder")}
-            />
-            <GridHeaderCell
-              label="What it was for"
-              width={widths.explanation}
-              onResizeStart={startResize("explanation")}
-            />
+            {showCardholder ? (
+              <GridHeaderCell
+                label="Cardholder"
+                width={widths.cardholder}
+                onResizeStart={startResize("cardholder")}
+              />
+            ) : null}
+            {showExplanation ? (
+              <GridHeaderCell
+                label="What it was for"
+                width={widths.explanation}
+                onResizeStart={startResize("explanation")}
+              />
+            ) : null}
             {showCategory ? (
               <GridHeaderCell
                 label="Category"
@@ -331,11 +400,13 @@ export function ReconcileList({
               />
             ) : null}
             <GridHeaderCell label="For" width={widths.forCol} onResizeStart={startResize("forCol")} />
-            <GridHeaderCell
-              label="Documentation"
-              width={widths.receipt}
-              onResizeStart={startResize("receipt")}
-            />
+            {showReceipt ? (
+              <GridHeaderCell
+                label="Documentation"
+                width={widths.receipt}
+                onResizeStart={startResize("receipt")}
+              />
+            ) : null}
             <GridHeaderCell
               label="Status"
               width={widths.status}
@@ -362,6 +433,11 @@ export function ReconcileList({
               isManager={isManager}
               viewerPersonId={viewerPersonId}
               widths={widths}
+              showCardholder={showCardholder}
+              showExplanation={showExplanation}
+              showReceipt={showReceipt}
+              onOpenRow={onOpenRow}
+              panelSelected={panelOpen && row.id === openRowId}
             />
           ))}
         </View>
@@ -385,6 +461,11 @@ function ReconcileRow({
   isManager,
   viewerPersonId,
   widths,
+  showCardholder,
+  showExplanation,
+  showReceipt,
+  onOpenRow,
+  panelSelected,
 }: {
   row: TxnRow;
   categoryItems: PickerItem[];
@@ -400,6 +481,14 @@ function ReconcileRow({
   isManager: boolean;
   viewerPersonId: Id<"people"> | null;
   widths: ColWidths;
+  /** The side panel renders these three itself — see `hidesForPanel`. */
+  showCardholder: boolean;
+  showExplanation: boolean;
+  showReceipt: boolean;
+  /** Wide screen: select this row for the panel instead of opening the modal. */
+  onOpenRow?: (id: string) => void;
+  /** This is the row the panel is showing. */
+  panelSelected: boolean;
 }) {
   const categorize = useMutation(api.finances.categorizeTransaction);
   const setStatus = useMutation(api.finances.setTransactionStatus);
@@ -497,6 +586,48 @@ function ReconcileRow({
         : "empty";
 
   const [noteModalOpen, setNoteModalOpen] = useState(false);
+  /**
+   * ONE WAY IN to this charge's whole record, two frames for it. On a wide
+   * screen (`onOpenRow` present) it selects the row and the host's side panel
+   * swaps to it in place — the list stays visible and the receipt stays
+   * readable while the explanation is typed. Everywhere else it is the modal
+   * this grid has always opened, unchanged.
+   *
+   * Every affordance that used to call `setNoteModalOpen(true)` calls this
+   * instead, so the two frames can never be reachable by different routes.
+   */
+  const openRecord = () => {
+    if (onOpenRow) {
+      onOpenRow(row.id);
+      return;
+    }
+    setNoteModalOpen(true);
+  };
+  /**
+   * Makes a READ-ONLY cell double as the row's way into the panel — but only
+   * when there is a panel. Without one it returns its argument untouched, so
+   * a narrow screen renders precisely the cells it rendered before.
+   *
+   * It exists because the panel HIDES "What it was for" (the cell that used
+   * to be the way in), and the speech-bubble in Actions sits at the far right
+   * of a grid that scrolls horizontally. Stepping from row to row is the
+   * whole point of the panel, so the target for it has to be wide, on the
+   * left, and on every row: Date and Amount, which have nothing to edit and
+   * so cost nothing to give away.
+   */
+  const openable = (node: React.ReactNode) =>
+    onOpenRow ? (
+      <Pressable
+        onPress={openRecord}
+        accessibilityRole="button"
+        accessibilityLabel={`Open ${displayMerchantName(row, "this transaction")}`}
+        className="flex-1 active:opacity-70 web:hover:opacity-90"
+      >
+        {node}
+      </Pressable>
+    ) : (
+      node
+    );
   const [correctOpen, setCorrectOpen] = useState(false);
   const [correcting, setCorrecting] = useState(false);
   // Reason prompt (server-enforced, `finances.setTransactionStatus`) — set
@@ -571,9 +702,29 @@ function ReconcileRow({
   return (
     <View
       className={`flex-row items-stretch border-b border-border ${
-        selected ? "bg-accent-soft" : "bg-raised"
+        selected || panelSelected ? "bg-accent-soft" : "bg-raised"
       } ${isLast ? "border-b-0" : ""}`}
     >
+      {/* THE ROW THE PANEL IS SHOWING. An absolutely-positioned bar rather
+          than a left border, deliberately: a border would push this row's
+          cells 3px out of line with every other row's and with the header,
+          which in a grid reads as a rendering fault. Distinct from the
+          checkbox tint above (which this row may also carry) because the two
+          mean different things — one is "in the bulk selection", this is
+          "open in the panel to the right". */}
+      {panelSelected ? (
+        <View
+          pointerEvents="none"
+          style={{
+            position: "absolute",
+            left: 0,
+            top: 0,
+            bottom: 0,
+            width: 3,
+            backgroundColor: colors.accent,
+          }}
+        />
+      ) : null}
       {/* Select checkbox — replaced by a lock for a row this caller can't
           write. `book.canEdit` is server-resolved and mirrors
           `requireReconcileTxn` exactly (see `finances.ts#reconcileBook`), so
@@ -638,40 +789,49 @@ function ReconcileRow({
         style={readOnly ? { opacity: 0.55 } : undefined}
       >
 
-      {/* Date (read-only) */}
+      {/* Date (read-only) — and, on a wide screen, part of the row's way IN.
+          `openable` is a no-op wrapper when there's no panel, so on narrow
+          these two cells render exactly the plain Text they always have. */}
       <Cell width={widths.date}>
-        <Text className="flex-1 px-2 py-1.5 text-sm text-muted" style={NUM}>
-          {shortDate(row.postedAt)}
-        </Text>
+        {openable(
+          <Text className="flex-1 px-2 py-1.5 text-sm text-muted" style={NUM}>
+            {shortDate(row.postedAt)}
+          </Text>,
+        )}
       </Cell>
 
       {/* Amount (read-only, signed) */}
       <Cell width={widths.amount}>
-        <Text
-          className="flex-1 px-2 py-1.5 text-right text-sm font-semibold text-ink"
-          style={NUM}
-        >
-          {signedMoney(row.amountCents, row.flow, row.preMarkFlow)}
-        </Text>
-      </Cell>
-
-      {/* Cardholder (read-only) */}
-      <Cell width={widths.cardholder}>
-        {row.cardholder ? (
-          <View className="flex-1 flex-row items-center gap-2 px-2 py-1.5">
-            <Avatar
-              name={row.cardholder.name || "?"}
-              size={22}
-              uri={row.cardholder.imageUrl}
-            />
-            <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-              {row.cardholder.name}
-            </Text>
-          </View>
-        ) : (
-          <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
+        {openable(
+          <Text
+            className="flex-1 px-2 py-1.5 text-right text-sm font-semibold text-ink"
+            style={NUM}
+          >
+            {signedMoney(row.amountCents, row.flow, row.preMarkFlow)}
+          </Text>,
         )}
       </Cell>
+
+      {/* Cardholder (read-only) — hidden while the panel is open, which says
+          the same thing in words ("Marcus Webb · card ••4417"). */}
+      {showCardholder ? (
+        <Cell width={widths.cardholder}>
+          {row.cardholder ? (
+            <View className="flex-1 flex-row items-center gap-2 px-2 py-1.5">
+              <Avatar
+                name={row.cardholder.name || "?"}
+                size={22}
+                uri={row.cardholder.imageUrl}
+              />
+              <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+                {row.cardholder.name}
+              </Text>
+            </View>
+          ) : (
+            <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
+          )}
+        </Cell>
+      ) : null}
 
       {/* WHAT IT WAS FOR — the coding's own sentence, readable without
           opening anything (founder ask, 2026-08-13: "inline a lot of ...
@@ -694,9 +854,10 @@ function ReconcileRow({
             written — show it (truncated to two lines; the modal has the rest)
             missing — this charge owes an account of itself and has none
             empty   — nothing written, nothing owed; stays quiet. */}
+      {showExplanation ? (
       <Cell width={widths.explanation}>
         <Pressable
-          onPress={() => setNoteModalOpen(true)}
+          onPress={openRecord}
           accessibilityRole="button"
           accessibilityLabel={
             row.explanation
@@ -727,6 +888,7 @@ function ReconcileRow({
           )}
         </Pressable>
       </Cell>
+      ) : null}
 
       {/* Category (inline dropdown) — chapter-only; central txns have none.
           The COLUMN is present whenever any chapter row could be in view; an
@@ -798,7 +960,11 @@ function ReconcileRow({
         </View>
       </Cell>
 
-      {/* Receipt (✓ or inline upload, escalating with the reminder timeline) */}
+      {/* Receipt (✓ or inline upload, escalating with the reminder timeline).
+          Hidden while the panel is open — `ReceiptPane` there shows the
+          receipt itself, big, and mounts this very component for the upload
+          case, so nothing here is out of reach. */}
+      {showReceipt ? (
       <Cell width={widths.receipt}>
         <ReceiptCell
           hasReceipt={row.hasReceipt}
@@ -823,6 +989,7 @@ function ReconcileRow({
           generateUploadUrl={generateUploadUrl}
         />
       </Cell>
+      ) : null}
 
       {/* Status (inline dropdown). Picking "Excluded" opens the required
           reason prompt instead of committing right away — the mutation
@@ -880,7 +1047,7 @@ function ReconcileRow({
               the only one of the three that needs somebody to do something is
               the empty one on a charge that owes an account of itself. */}
           <Pressable
-            onPress={() => setNoteModalOpen(true)}
+            onPress={openRecord}
             hitSlop={6}
             accessibilityRole="button"
             accessibilityLabel={
