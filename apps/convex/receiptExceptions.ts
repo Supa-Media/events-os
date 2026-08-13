@@ -29,7 +29,7 @@ import {
   lostReceiptBlocker,
   type ReceiptExceptionReason,
 } from "@events-os/shared";
-import { requireUserId, getChapterIdOrNull } from "./lib/context";
+import { requireUserId } from "./lib/context";
 import { assertSeparationOfDuties, type FinanceScope } from "./lib/finance";
 import { logFinanceAudit } from "./lib/financeAuditLog";
 import {
@@ -530,54 +530,6 @@ export const withdraw = mutation({
       amountCents: exception.amountCents,
     });
     return null;
-  },
-});
-
-/**
- * The approval queue: pending exceptions for the caller's scope, oldest first
- * (an attestation waiting three weeks is the one holding up a close).
- * Manager-gated per row via the same resolver the decision itself uses, so the
- * queue can never show something the viewer couldn't act on.
- */
-export const pendingQueue = query({
-  args: { chapterId: v.optional(v.union(v.id("chapters"), v.literal("central"))) },
-  returns: v.object({
-    rows: v.array(exceptionRow),
-    totalCents: v.number(),
-    thresholdCents: v.number(),
-  }),
-  handler: async (ctx, args) => {
-    const thresholdCents = await approvalThresholdCents(ctx);
-    // An explicit scope (the central desk, or a central drill-down into one
-    // chapter) else the caller's own chapter. Signed-out / chapterless callers
-    // get an empty queue rather than a throw — same posture as the other
-    // finance list queries.
-    const scope =
-      args.chapterId ??
-      ((await getChapterIdOrNull(ctx)) as Id<"chapters"> | null);
-    if (!scope) return { rows: [], totalCents: 0, thresholdCents };
-    const pending = await ctx.db
-      .query("receiptExceptions")
-      .withIndex("by_chapter_and_status", (q) =>
-        q.eq("chapterId", scope).eq("status", "pending"),
-      )
-      .collect();
-    pending.sort((a, b) => a.attestedAt - b.attestedAt);
-    const visible: Doc<"receiptExceptions">[] = [];
-    for (const row of pending) {
-      try {
-        await requireApproveReceiptException(ctx, row.transactionId);
-        visible.push(row);
-      } catch {
-        // Not this caller's to decide — omit rather than throw, so one
-        // out-of-scope row can't blank the whole queue.
-      }
-    }
-    return {
-      rows: await Promise.all(visible.map((r) => projectException(ctx, r))),
-      totalCents: visible.reduce((sum, r) => sum + Math.abs(r.amountCents), 0),
-      thresholdCents,
-    };
   },
 });
 
