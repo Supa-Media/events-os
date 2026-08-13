@@ -1487,6 +1487,77 @@ describe("explaining a month", () => {
     expect(seen.canRename).toBe(false);
   });
 
+  test("a bank credit confirmed as a gift stops counting as other income", async () => {
+    // The accounts page has always zeroed a gift-linked credit; this snapshot
+    // did not, so a founder's wire published as "Other income" beside the very
+    // gifts it was already recorded as. One dollar, counted twice, on the page
+    // the public reads.
+    const s = await asPublisher();
+    const credit = await insertTxn(s, {
+      flow: "inflow",
+      amountCents: 700_000,
+      postedAt: Date.UTC(2024, 5, 26, 16),
+      merchantName: "OLUSEYI OLUJIDE",
+    });
+    const donorId = await run(s.t, (ctx) =>
+      ctx.db.insert("donors", {
+        scope: s.chapterId,
+        kind: "individual",
+        name: "Oluseyi Olujide",
+        status: "active",
+        lifetimeCents: 700_000,
+        giftCount: 1,
+        createdAt: Date.now(),
+      }),
+    );
+    // The gift the wire delivered, linked to it the way `givingCandidates`
+    // writes the link when a human confirms the credit.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("gifts", {
+        donorId,
+        scope: s.chapterId,
+        amountCents: 700_000,
+        currency: "usd",
+        receivedAt: Date.UTC(2024, 5, 26, 16),
+        method: "wire",
+        transactionId: credit,
+        createdAt: Date.now(),
+      }),
+    );
+    await publishMonth(s, "2024-06");
+
+    const statement = (await statementOf(s, "2024-06"))!;
+    // ONCE, not twice. The gift carries the $7,000; the credit that delivered
+    // it carries nothing. Before this fix the page reported $14,000 — the gift
+    // plus the bank row, the same dollars counted on both sides of the model.
+    expect(statement.incomeCents).toBe(700_000);
+    // And specifically NOT as "other income", which is where an unconfirmed
+    // credit lands and where the founder saw her own wire.
+    const other = statement.incomeByStream.find((i) => i.stream === "other");
+    expect(other?.cents ?? 0).toBe(0);
+    // …but the credit still PUBLISHES — the bank really received it.
+    const row = statement.entries.find((e) => e.counterparty === "OLUSEYI OLUJIDE");
+    expect(row).toBeDefined();
+    expect(row!.direction).toBe("internal");
+  });
+
+  test("an UNCONFIRMED bank credit still counts — linking is the fix, not hiding", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, {
+      flow: "inflow",
+      amountCents: 700_000,
+      postedAt: Date.UTC(2024, 5, 26, 16),
+      merchantName: "OLUSEYI OLUJIDE",
+    });
+    await publishMonth(s, "2024-06");
+    const statement = (await statementOf(s, "2024-06"))!;
+    // No gift exists, so the credit is the only record of this money and
+    // counts on its own — hiding it would erase real income.
+    expect(statement.incomeCents).toBe(700_000);
+    const other = statement.incomeByStream.find((i) => i.stream === "other");
+    expect(other?.cents).toBe(700_000);
+  });
+
   test("money coming IN is never listed — a donation has no business purpose to give", async () => {
     // Founder, 2026-08-13: "why is it asking me to code my 7000 donation, this
     // shouldn't show up here." The filter tested `signedBookCents !== 0`, which

@@ -361,6 +361,34 @@ export async function buildSnapshot(
     .take(ROLLUP_SCAN_LIMIT);
   if (rawTxns.length === ROLLUP_SCAN_LIMIT) truncated = true;
 
+  // BANK CREDITS THAT ARE ALREADY GIFTS. Some giving arrives as a direct wire
+  // or Zelle into the account, so the same money exists twice: once as a
+  // `gifts` row (where the org counts its revenue) and once as the bank credit
+  // that delivered it. `givingCandidates.ts` is how a human confirms the
+  // second IS the first, writing `gifts.transactionId`.
+  //
+  // `accountBalances` has always honoured that link — a gift-linked credit is
+  // zeroed there exactly like a processor payout deposit. This snapshot did
+  // not, because it reads `signedBookCents`, a pure function on the
+  // transaction that cannot know about a row in another table. So the accounts
+  // page and the PUBLISHED page disagreed about the same dollar: one counted
+  // the gift, the other counted the gift AND the credit that carried it
+  // (founder, 2026-08-13 — a $7,000 founder wire publishing as "Other income"
+  // beside the very gifts it was already recorded as).
+  //
+  // Looked up per inflow through `gifts.by_transaction` rather than by
+  // gathering the period's gifts: a wire received on the 31st can post on the
+  // 1st, and a period-matched set would silently miss exactly those.
+  const giftLinkedTxnIds = new Set<string>();
+  for (const tr of rawTxns) {
+    if (tr.flow !== "inflow") continue;
+    const linked = await ctx.db
+      .query("gifts")
+      .withIndex("by_transaction", (q) => q.eq("transactionId", tr._id))
+      .first();
+    if (linked) giftLinkedTxnIds.add(tr._id);
+  }
+
   for (const tr of rawTxns) {
     if (!txnMatchesMode(tr, sandboxMode)) continue;
     // An intentional exclusion is the org asserting this is NOT a transaction
@@ -368,7 +396,11 @@ export async function buildSnapshot(
     if (tr.status === "excluded") continue;
     if (!inPeriod(tr.postedAt, year, month)) continue;
 
-    const signed = signedBookCents(tr);
+    // A confirmed gift credit carries no value of its own — the gift does. It
+    // still PUBLISHES (the bank really received it, and a reader following the
+    // money should see it arrive); it simply contributes nothing, exactly like
+    // the payout deposits `signedBookCents` already zeroes.
+    const signed = giftLinkedTxnIds.has(tr._id) ? 0 : signedBookCents(tr);
     // Direction from the book-value sign where there is one; otherwise the row
     // moves cash without changing value, which is exactly `internal`.
     const direction: EntryDraft["direction"] =
