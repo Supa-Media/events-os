@@ -31,9 +31,53 @@
  * hooks and crashed on the throw (the [hotfix] crash class). `ReconcileGrid` is
  * the FinanceBoundary-wrapped inner component so a role throw degrades to a
  * friendly empty state instead of the root error boundary.
+ *
+ * ── THE SIDE PANEL (wide screens) ────────────────────────────────────────────
+ * Founder, verbatim: "if I'm seeing a database view when I'm coding, I'm gonna
+ * have to be able to see the receipts really well, like maybe in a side panel";
+ * "information that helps me quickly click in and click out, rather than a
+ * modal that's in the middle of the screen that blocks your ability to see
+ * other things." THIS is the database view she meant, and it was the one
+ * surface still answering with a modal: a row opened
+ * `TransactionDocumentationModal`, and its receipt opened `ReceiptViewerModal`
+ * on top — except two `<Modal>`s can't both be open, so looking at a receipt
+ * while typing its explanation was not merely awkward here, it was impossible.
+ *
+ * At ≥`WIDE_MIN_WIDTH` a selected row now opens `CodingWorkbenchPanel` to the
+ * RIGHT of the grid, list still visible and scrollable to its left, clicking
+ * another row swapping the panel's content in place. Same component, same
+ * layout idiom, same threshold as `explain.tsx` and `coding.tsx` — a third
+ * home for the panel, not a second kind of panel. Narrow screens keep the
+ * modal, untouched; `showPanel` below is the only branch point between them.
+ *
+ * WHAT THE PANEL IS GIVEN, and what it deliberately isn't:
+ *  - `txn` — a `listReconcile` row IS a `txnSummary` (`reconcileRow` spreads
+ *    `txnSummaryFields`), so no re-shaping is needed; two OPTIONAL summary
+ *    fields that only `monthCodingWorklist` normally fills get filled from
+ *    this row's own richer data instead (see `panelTxn`).
+ *  - `ownCharge: false` — these rows are the whole book, not the caller's own
+ *    charges (the same reading `explain.tsx` takes, and what makes the panel's
+ *    category write use the bookkeeper-gated mutation).
+ *  - `canViewReceiptList` — probed ONCE PER SCREEN, never per row (see
+ *    `coding.tsx`'s module doc for why per-row is the wrong shape). This grid
+ *    admits a finance VIEWER, and `receipts.listForTransaction` is
+ *    bookkeeper+, so the answer here genuinely can be `false`.
+ *  - NOT `todo` — `chargeTodo`'s chase semantics call a `reconciled` row
+ *    settled, and most of this grid is reconciled. Correct for chasing a
+ *    cardholder, wrong for a book. `explain.tsx` omits it for the same reason.
+ *  - NOT `canRename` — the rename affordance stays in the Merchant column,
+ *    which remains on screen beside the panel. Two live rename fields on one
+ *    screen would be two, not one.
  */
 import { useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, TextInput, Pressable } from "react-native";
+import {
+  View,
+  Text,
+  TextInput,
+  Pressable,
+  Platform,
+  useWindowDimensions,
+} from "react-native";
 import { useQuery, useMutation } from "convex/react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
@@ -59,6 +103,13 @@ import {
   type PickerItem,
 } from "../../../components/finance/reconcile/ReconcileList";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
+import { CodingWorkbenchPanel } from "../../../components/finance/coding/CodingWorkbenchPanel";
+import {
+  indexOfSelected,
+  panelPosition,
+  selectionAfterRowsShrink,
+  stepSelection,
+} from "../../../components/finance/coding/panelNav";
 import {
   ViewMenu,
   activeView,
@@ -164,6 +215,12 @@ function periodLabel(year: number, month: number, mode: "month" | "ytd"): string
  * the server is tuned for.
  */
 const PAGE_STEP = 100;
+
+/** Below this window width the side panel doesn't fit next to a readable
+ *  grid — the SAME threshold `explain.tsx` and `coding.tsx` use for the same
+ *  panel (and `CentralView`/`ChapterView`'s `STACK_WIDTH`), so "wide" means
+ *  one window width everywhere in finance. */
+const WIDE_MIN_WIDTH = 900;
 
 /**
  * `value`, but only after it has stopped changing for `ms`.
@@ -272,6 +329,12 @@ function ReconcileGrid() {
   const [pageSize, setPageSize] = useState(PAGE_STEP);
   const [searchFocused, setSearchFocused] = useState(false);
   const [selected, setSelected] = useState<Set<string>>(new Set());
+  // The row the wide-screen side panel is showing (see the module doc). Stays
+  // `null` on a narrow screen — nothing there can ever set it, which is what
+  // keeps the narrow behavior exactly what it was.
+  const [openId, setOpenId] = useState<string | null>(null);
+  // Same threshold `explain.tsx`/`coding.tsx` use for this same panel.
+  const isWide = useWindowDimensions().width >= WIDE_MIN_WIDTH;
   const [noDocOpen, setNoDocOpen] = useState(false);
   const [noDocBusy, setNoDocBusy] = useState(false);
   // Result summary for the bulk acknowledge. `useActionRunner`'s own toast is
@@ -464,6 +527,38 @@ function ReconcileGrid() {
 
   // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
+  // ── THE PANEL'S OWN CATEGORY OPTIONS ──────────────────────────────────────
+  // NOT built from `categories` above, even though that list is already here:
+  // `listCategories` returns no `expenseTypeHint`, and the hint is what
+  // decides which §274(d) proof questions the coding form asks. Handing the
+  // panel a hint-less option list would be a silently half-populated input —
+  // the form would still render, just asking the generic question set on
+  // every category. So the panel reads the SAME member-gated list
+  // `explain.tsx` and `coding.tsx` give it. Skipped entirely on a narrow
+  // screen, where no panel ever mounts.
+  const chargeCategories = useQuery(
+    api.finances.myChargeCategories,
+    isWide ? {} : "skip",
+  );
+  const categoryOptions = useMemo(
+    () => [
+      { value: "", label: "No category" },
+      ...(chargeCategories ?? []).map((c) => ({
+        value: c.id,
+        label: c.name,
+        expenseTypeHint: c.expenseTypeHint,
+      })),
+    ],
+    [chargeCategories],
+  );
+  // ── THE CAPABILITY PROBE, ONCE PER SCREEN ─────────────────────────────────
+  // Never per row (see `coding.tsx`'s module doc: a per-row probe 403s the
+  // wrong audience over and over). This grid's own floor is a finance VIEWER
+  // while `receipts.listForTransaction` is bookkeeper+, so `false` is a real
+  // answer here, not a theoretical one — and `undefined` (still resolving)
+  // reads as `false` so the panel never fires the gated query speculatively.
+  const canViewReceiptList =
+    useQuery(api.receipts.canViewList, isWide ? {} : "skip") === true;
   // The "For" picker's option groups (WP-U) — events/projects + recurring
   // budgets by level, every row carrying a real, APPROVED budget (item 5).
   const forOptions = useQuery(api.finances.forPickerOptions, {});
@@ -596,6 +691,106 @@ function ReconcileGrid() {
   // filter had already narrowed, which is precisely what made the box unable to
   // find anything the active State filter excluded.
   const displayed = rows;
+
+  // ── SIDE-PANEL SELECTION: stepping, position, and integrity ───────────────
+  // `panelRows` is just the ids, in exactly the order the grid renders them,
+  // so Prev/Next, the "3 of 42" label and the keyboard shortcut all step
+  // through what's ON SCREEN (`panelNav.ts` — one implementation for all
+  // three, rather than three hand-rolled `findIndex` calls disagreeing about
+  // the ends of the list).
+  const panelRows = useMemo(() => displayed.map((r) => ({ id: r.id })), [displayed]);
+  const stepRow = (delta: 1 | -1) =>
+    setOpenId((current) => stepSelection(panelRows, current, delta) ?? current);
+  const openRow = displayed.find((r) => r.id === openId) ?? null;
+
+  // A ROW CAN LEAVE THIS LIST UNDER AN OPEN PANEL, and unlike `explain.tsx`
+  // it happens constantly: reconcile it, exclude it, code it while a State
+  // filter is on, and the very next query result no longer contains it.
+  // `lastKnownIndexRef` tracks the selected row's position while it IS in the
+  // list; the moment it isn't, `selectionAfterRowsShrink` lands on whichever
+  // row now occupies that same position — the natural next item for someone
+  // clearing a queue top to bottom — or closes the panel if the list emptied.
+  const lastKnownIndexRef = useRef<number | null>(null);
+  useEffect(() => {
+    if (openId == null) return;
+    // NOT while the query is in flight. `useQuery` returns `undefined` on
+    // every argument change — "Load more" included — and reading that empty
+    // moment as "the row is gone" would close the panel every time the
+    // treasurer asked for another page. Absence of an answer isn't an answer.
+    if (reconcile === undefined) return;
+    const idx = indexOfSelected(panelRows, openId);
+    if (idx !== -1) {
+      lastKnownIndexRef.current = idx;
+      return;
+    }
+    const next = selectionAfterRowsShrink(panelRows, lastKnownIndexRef.current);
+    lastKnownIndexRef.current = next == null ? null : indexOfSelected(panelRows, next);
+    setOpenId(next);
+  }, [panelRows, openId, reconcile]);
+
+  // A NEW QUESTION CLOSES THE PANEL — a new filter set, a new search, a
+  // different book. That's the ONE case the rule above must not apply to:
+  // "the row at the old index" is a sensible answer when a row was cleared
+  // out from under you, and a nonsense one when you just asked to look at a
+  // different set of rows entirely, where index 7 means nothing it used to.
+  // Declared AFTER the integrity effect deliberately: both can run in the
+  // same commit, and the last write to `openId` has to be this one.
+  useEffect(() => {
+    setOpenId(null);
+  }, [filters, debouncedQuery, scope, targetChapterId]);
+
+  // ── QUICK FLOW: ArrowUp/ArrowDown (and j/k) step the selection through the
+  // SAME order the panel's own Prev/Next buttons use — only while the panel
+  // is actually open, and only when no text field has focus, so typing "j"
+  // into the panel's purpose field, a note, or this screen's own search box
+  // never gets eaten by row-stepping. Mirrors `explain.tsx`/`coding.tsx`'s
+  // identical effect verbatim. ──
+  useEffect(() => {
+    if (Platform.OS !== "web" || !isWide || openId == null) return;
+    if (typeof document === "undefined") return;
+    function onKey(e: KeyboardEvent) {
+      const el = document.activeElement as HTMLElement | null;
+      const typing =
+        !!el &&
+        (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable);
+      if (typing) return;
+      if (e.key === "ArrowUp" || e.key === "k") {
+        e.preventDefault();
+        stepRow(-1);
+      } else if (e.key === "ArrowDown" || e.key === "j") {
+        e.preventDefault();
+        stepRow(1);
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isWide, openId, panelRows]);
+
+  // WHAT THE PANEL IS HANDED. A `listReconcile` row already IS a `txnSummary`
+  // — `reconcileRow` spreads `txnSummaryFields` verbatim — so there is no
+  // re-shaping to get wrong here, only two OPTIONAL summary fields that this
+  // query doesn't fill and this grid's own richer payload can:
+  //   `cardholderName` → the panel's "who do I even ask" line, taken from the
+  //     resolved `cardholder` the Cardholder column renders (`null` when the
+  //     row resolves nobody — a bank/imported line — which the panel says out
+  //     loud rather than leaving blank).
+  //   `reconstructed`  → the "Imported record" badge, the same fact this
+  //     grid's rows carry as `isReconstructed`.
+  // Everything else on a reconcile row (documentation, book, chargedTo, …) is
+  // simply extra the panel doesn't read.
+  const panelTxn = useMemo(() => {
+    if (openRow == null) return null;
+    return {
+      ...openRow,
+      cardholderName: openRow.cardholder?.name ?? null,
+      reconstructed: openRow.isReconstructed,
+    };
+  }, [openRow]);
+  // The panel only on a wide screen WITH a row selected — the one branch
+  // point between the two frames (mirrors `explain.tsx`'s own `showPanel`).
+  const showPanel = isWide && panelTxn != null;
+
   const searching = debouncedQuery.trim().length > 0;
   // How many rows matched across the WHOLE scope, before paging — so "showing
   // 100 of 346" is a statement about the book, not about the page.
@@ -1075,7 +1270,12 @@ function ReconcileGrid() {
   }
 
   return (
-    <>
+    // Two columns when the panel is up, one when it isn't — the same wrapper
+    // `explain.tsx` and `coding.tsx` use for the same panel. On a narrow
+    // screen `showPanel` is always false and this is a plain column around
+    // the screen it has always been.
+    <View style={{ flex: 1, flexDirection: showPanel ? "row" : "column" }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
       <Screen maxWidth={FULL_WIDTH}>
         <Narrow>
           {/* Header — title + "N to clear" (or the searched result count), with
@@ -1440,6 +1640,13 @@ function ReconcileGrid() {
               centralForItems={centralForItems}
               isManager={isManager}
               viewerPersonId={reconcile?.viewerPersonId ?? null}
+              // The panel seam. `onOpenRow` present ⇔ wide, which is what
+              // makes a row's open affordances select instead of opening the
+              // modal; `panelOpen` (wide AND something selected) is what
+              // makes the grid give up the three columns the panel renders.
+              onOpenRow={isWide ? (id) => setOpenId(id) : undefined}
+              openRowId={openId}
+              panelOpen={showPanel}
             />
             {/* PAGING. The server ships `limit` rows and reports how many
                 matched across the whole scope, so this footer states both —
@@ -1473,6 +1680,30 @@ function ReconcileGrid() {
         toast={noDocSummary}
         onDismiss={() => setNoDocSummary(null)}
       />
-    </>
+      </View>
+
+      {showPanel && panelTxn ? (
+        // Same geometry as the panel's other two hosts, deliberately — this
+        // is a third home for one panel, not a second kind of panel.
+        <View style={{ width: "44%", maxWidth: 640, minWidth: 380, padding: 16 }}>
+          <CodingWorkbenchPanel
+            txn={panelTxn}
+            categoryOptions={categoryOptions}
+            // `listReconcile` rows are the whole book, never the caller's own
+            // charges by construction — same reading `explain.tsx` takes, and
+            // what routes the panel's category write through the
+            // bookkeeper-gated mutation instead of the cardholder's own.
+            ownCharge={false}
+            onDeselect={() => setOpenId(null)}
+            onPrev={() => stepRow(-1)}
+            onNext={() => stepRow(1)}
+            hasPrev={stepSelection(panelRows, openId, -1) != null}
+            hasNext={stepSelection(panelRows, openId, 1) != null}
+            position={panelPosition(panelRows, openId)}
+            canViewReceiptList={canViewReceiptList}
+          />
+        </View>
+      ) : null}
+    </View>
   );
 }
