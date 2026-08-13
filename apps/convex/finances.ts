@@ -305,6 +305,15 @@ const txnSummaryFields = {
   // the person coding is routinely NOT the person who spent.
   // `personTransactions` rows are the caller's own by construction.
   cardholderName: v.optional(v.union(v.string(), v.null())),
+  // THE SPLIT (founder-approved, 2026-08-13): true iff `isReconstructedHistory`
+  // (`@events-os/shared`) — loaded from a spreadsheet/export/document rather
+  // than observed as it happened. OPTIONAL, and populated only by
+  // `monthCodingWorklist` — same discipline as `cardholderName` just above,
+  // the one other field that surface alone fills in. Lets the Explain
+  // workbench badge a row "Imported record" and keep it out of the LIVE
+  // meter without a second query. A label, never a permission — see
+  // `isReconstructedHistory`'s own doc comment.
+  reconstructed: v.optional(v.boolean()),
   fundId: v.union(v.id("funds"), v.null()),
   categoryId: v.union(v.id("budgetCategories"), v.null()),
   budgetId: v.union(v.id("budgets"), v.null()),
@@ -4758,13 +4767,45 @@ export const monthCodingWorklist = query({
       label: v.string(),
       /** Every row the month would publish and that COULD carry an
        *  explanation — internal movements excluded, since they have none to
-       *  give. The denominator of the progress line. */
+       *  give. The WHOLE population (live + backlog combined) — kept meaning
+       *  exactly what it always has, so existing consumers (the publish
+       *  console's own totals, the tests pinning them) never see a changed
+       *  number here. Prefer `live*`/`backlog*` below for the progress
+       *  line itself. */
       totalCount: v.number(),
       totalCents: v.number(),
-      /** How many of those already have an approved coding. */
+      /** How many of those already have an approved coding — the whole
+       *  population, same scope as `totalCount`. */
       explainedCount: v.number(),
       explainedCents: v.number(),
-      /** The remainder, biggest first. */
+      // ── THE SPLIT (founder-approved, 2026-08-13): the Explain screen's
+      // progress line was mixing THIS month's live rows with reconstructed
+      // 2024–25 genesis-import history, so a backlog of imported rows
+      // swamped the meter for a month with only a couple of live lines.
+      // `isReconstructedHistory` (`@events-os/shared`) is the split: a row
+      // reconstructed from a spreadsheet/export/document (the genesis
+      // backfill, or any future `historicalImportBatch` import) is
+      // "backlog"; everything else — including a live row posted years ago
+      // and coded normally — is "live". `live* + backlog* === total*`
+      // always, by construction (every row lands in exactly one bucket).
+      /** Live rows only — this month's population as observed, not
+       *  reconstructed. */
+      liveCount: v.number(),
+      liveCents: v.number(),
+      liveExplainedCount: v.number(),
+      liveExplainedCents: v.number(),
+      /** Reconstructed rows only — `isReconstructedHistory(tr)`. Deliberately
+       *  never auto-explained (the analysis this split came out of: the
+       *  imported labels are categories, not purposes) — a backlog row still
+       *  needs a human explanation, it just isn't counted against the SAME
+       *  meter as this month's own work. */
+      backlogCount: v.number(),
+      backlogCents: v.number(),
+      backlogExplainedCount: v.number(),
+      backlogExplainedCents: v.number(),
+      /** The remainder, biggest first — live and backlog rows interleaved by
+       *  amount (never reordered for the split; each row carries its own
+       *  `reconstructed` flag so the client can badge it in place). */
       rows: v.array(txnSummary),
       /** The scan hit its cap — the list is a prefix, not the whole month. */
       truncated: v.boolean(),
@@ -4820,6 +4861,14 @@ export const monthCodingWorklist = query({
     let totalCents = 0;
     let explainedCount = 0;
     let explainedCents = 0;
+    let liveCount = 0;
+    let liveCents = 0;
+    let liveExplainedCount = 0;
+    let liveExplainedCents = 0;
+    let backlogCount = 0;
+    let backlogCents = 0;
+    let backlogExplainedCount = 0;
+    let backlogExplainedCents = 0;
     const pending: Doc<"transactions">[] = [];
 
     for (const tr of raw) {
@@ -4842,11 +4891,35 @@ export const monthCodingWorklist = query({
 
       totalCount += 1;
       totalCents += tr.amountCents;
-      if (tr.codingState === "approved") {
+      const explained = tr.codingState === "approved";
+      if (explained) {
         explainedCount += 1;
         explainedCents += tr.amountCents;
       } else {
         pending.push(tr);
+      }
+
+      // THE SPLIT — see the returns doc comment. `isReconstructedHistory`
+      // decides which meter this row belongs to; it is never asked to
+      // decide whether the row needs explaining (that's `codingState`
+      // above, unchanged) — a backlog row still shows up in `rows` and
+      // still needs a human purpose, it just doesn't inflate a meter
+      // dominated by ~450 imported lines when the founder is trying to read
+      // "did I finish THIS month."
+      if (isReconstructedHistory(tr)) {
+        backlogCount += 1;
+        backlogCents += tr.amountCents;
+        if (explained) {
+          backlogExplainedCount += 1;
+          backlogExplainedCents += tr.amountCents;
+        }
+      } else {
+        liveCount += 1;
+        liveCents += tr.amountCents;
+        if (explained) {
+          liveExplainedCount += 1;
+          liveExplainedCents += tr.amountCents;
+        }
       }
     }
 
@@ -4861,6 +4934,11 @@ export const monthCodingWorklist = query({
       rowsWithCardholder.push({
         ...toTxnSummary(tr),
         cardholderName: await cardholders.resolveName(tr),
+        // Populated only here, same discipline as `cardholderName` above —
+        // the flag that lets the client badge "Imported record" without a
+        // second query, matching an existing optional-field-added-by-this-
+        // surface pattern rather than putting it in `toTxnSummary` itself.
+        reconstructed: isReconstructedHistory(tr),
       });
     }
     const scopeName =
@@ -4904,6 +4982,14 @@ export const monthCodingWorklist = query({
       totalCents,
       explainedCount,
       explainedCents,
+      liveCount,
+      liveCents,
+      liveExplainedCount,
+      liveExplainedCents,
+      backlogCount,
+      backlogCents,
+      backlogExplainedCount,
+      backlogExplainedCents,
       rows: rowsWithCardholder,
       truncated,
       otherBooks,

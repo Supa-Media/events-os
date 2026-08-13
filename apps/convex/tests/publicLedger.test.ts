@@ -1481,6 +1481,59 @@ describe("explaining a month", () => {
     expect(bare?.cardholderName).toBeNull();
   });
 
+  test("the live/backlog split — this month's rows vs. reconstructed 2024–25 history", async () => {
+    // Founder-approved directive (2026-08-13, via Opus analysis): the
+    // progress line was mixing THIS month's live rows with reconstructed
+    // genesis-import history, so the backlog dominated the meter. 2 live
+    // rows (1 explained) + 2 reconstructed rows (0 explained) — the whole
+    // totals cover all 4, but `live*`/`backlog*` split them apart, and each
+    // row carries its own `reconstructed` flag.
+    const s = await asPublisher();
+    const liveExplained = await insertTxn(s, {
+      amountCents: 10_000,
+      merchantName: "Live explained",
+    });
+    await approveCoding(s, liveExplained, { businessPurpose: "August supplies" });
+    await insertTxn(s, { amountCents: 3_000, merchantName: "Live pending" });
+    await insertTxn(s, {
+      amountCents: 40_000,
+      merchantName: "Backlog A",
+      historicalImportBatch: "genesis-2024",
+    });
+    await insertTxn(s, {
+      amountCents: 5_000,
+      merchantName: "Backlog B",
+      externalId: "genesis-bank:abc123",
+    });
+
+    const list = (await worklist(s, AUG_KEY))!;
+
+    // The whole population, unchanged in meaning: all 4 rows.
+    expect(list.totalCount).toBe(4);
+    expect(list.totalCents).toBe(10_000 + 3_000 + 40_000 + 5_000);
+    expect(list.explainedCount).toBe(1);
+    expect(list.explainedCents).toBe(10_000);
+
+    // Live split: 1 of 2 explained.
+    expect(list.liveCount).toBe(2);
+    expect(list.liveCents).toBe(10_000 + 3_000);
+    expect(list.liveExplainedCount).toBe(1);
+    expect(list.liveExplainedCents).toBe(10_000);
+
+    // Backlog split: 0 of 2 explained — never auto-explained by the split.
+    expect(list.backlogCount).toBe(2);
+    expect(list.backlogCents).toBe(40_000 + 5_000);
+    expect(list.backlogExplainedCount).toBe(0);
+    expect(list.backlogExplainedCents).toBe(0);
+
+    // Per-row flag, biggest first — the split never reorders `rows`.
+    expect(list.rows.map((r) => r.amountCents)).toEqual([40_000, 5_000, 3_000]);
+    const byName = (name: string) => list.rows.find((r) => r.merchantName === name);
+    expect(byName("Backlog A")?.reconstructed).toBe(true);
+    expect(byName("Backlog B")?.reconstructed).toBe(true);
+    expect(byName("Live pending")?.reconstructed).toBe(false);
+  });
+
   test("only the requested month, and a malformed one is refused", async () => {
     const s = await asPublisher();
     await insertTxn(s, { amountCents: 1_000, postedAt: Date.UTC(2024, 5, 14, 16) });
