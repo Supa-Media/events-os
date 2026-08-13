@@ -698,6 +698,10 @@ async function seedCodingRow(
     businessPurpose?: string;
     headcount?: number;
     attendees?: { name: string; affiliation: string }[];
+    /** Group-description mode (>15 heads): a headcount with NO attendees
+     *  array at all — `attendees` reads `null` on the wire for a reason that
+     *  has nothing to do with the viewer's permissions. */
+    groupDescription?: string;
   } = {},
 ): Promise<void> {
   const authorUserId = await run(s.t, (ctx) =>
@@ -707,10 +711,11 @@ async function seedCodingRow(
     ctx.db.insert("transactionCodings", {
       transactionId,
       chapterId: s.chapterId,
-      expenseType: opts.attendees ? "meal" : "general",
+      expenseType: opts.attendees || opts.groupDescription ? "meal" : "general",
       businessPurpose: opts.businessPurpose ?? GOOD_PURPOSE,
       ...(opts.headcount != null ? { headcount: opts.headcount } : {}),
       ...(opts.attendees ? { attendees: opts.attendees as never } : {}),
+      ...(opts.groupDescription ? { groupDescription: opts.groupDescription } : {}),
       status: opts.status ?? "approved",
       codedByUserId: authorUserId,
       submittedAt: Date.now(),
@@ -827,9 +832,43 @@ describe("priorCoding — a vendor's own approved coding history, offered as an 
 
   // Mirrors `codingRedaction.test.ts`'s seeding of a plain member with no
   // finance role who may only view a charge because it is their own.
-  test("attendee names are redacted when the caller lacks names-view on the PRIOR transaction", async () => {
+  test("attendeesRedacted is true only when names were actually hidden — a group-mode prior coding never claims it, even for a full-names-view caller", async () => {
     const t = newT();
     const s = await setupChapter(t);
+    await asManager(s);
+
+    // SCENARIO 1: a GROUP-MODE prior coding (>15 heads, no structured
+    // attendees at all) read by a caller who holds FULL names-view (the
+    // manager). `attendees` is null because there was never a names list —
+    // NOT because anything was hidden — so `attendeesRedacted` must be
+    // false. (Review finding, 2026-08-13: the old
+    // `attendees === null && headcount != null` inference couldn't tell
+    // these apart and rendered a false "names not shown to you" notice.)
+    const groupPriorTxnId = await seedVendorTxn(s, {
+      merchantName: "Costco",
+      amountCents: 42000,
+      postedAt: POST_POLICY - 10 * DAY_MS,
+    });
+    await seedCodingRow(s, groupPriorTxnId, {
+      headcount: 40,
+      groupDescription: "The whole chapter, open invite",
+    });
+    const groupCurrentTxnId = await seedVendorTxn(s, {
+      merchantName: "Costco",
+      amountCents: 42000,
+      postedAt: POST_POLICY,
+    });
+    const groupData = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: groupCurrentTxnId,
+    });
+    expect(groupData.priorCoding).not.toBeNull();
+    expect(groupData.priorCoding?.attendees).toBeNull();
+    expect(groupData.priorCoding?.attendeesRedacted).toBe(false);
+    expect(groupData.priorCoding?.headcount).toBe(40);
+
+    // SCENARIO 2: a NAMES-MODE prior coding read by a caller who lacks
+    // names-view on the PRIOR transaction — names really were hidden, so
+    // `attendeesRedacted` must be true.
     const cardholderUserId = await run(s.t, (ctx) =>
       ctx.db.insert("users", { email: "cardholder@publicworship.life" }),
     );
@@ -890,6 +929,7 @@ describe("priorCoding — a vendor's own approved coding history, offered as an 
     );
     expect(data.priorCoding).not.toBeNull();
     expect(data.priorCoding?.attendees).toBeNull();
+    expect(data.priorCoding?.attendeesRedacted).toBe(true);
     // Headcount is not a name — it stays visible even when names are
     // redacted, exactly like `codingRow.headcount` does.
     expect(data.priorCoding?.headcount).toBe(4);

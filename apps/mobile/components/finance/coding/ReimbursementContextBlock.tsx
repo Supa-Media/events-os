@@ -144,7 +144,12 @@ export function ReimbursementContextBlock({
               {detail ? (
                 <Text className="mt-1 text-2xs text-muted">{detail}</Text>
               ) : null}
-              {line.attendees === null && line.headcount != null ? (
+              {/* `attendeesRedacted` (not `attendees === null`, review finding
+                  2026-08-13): a group-description line (>15 heads) also has
+                  `attendees === null`, but there was nothing to redact — that
+                  must never read as "hidden from you" to a caller who
+                  actually holds full names-view. */}
+              {line.attendeesRedacted ? (
                 <Text className="mt-1 text-2xs italic text-faint">
                   Names not shown to you on this transaction.
                 </Text>

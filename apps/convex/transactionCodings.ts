@@ -142,6 +142,13 @@ const reimbursementLineContext = v.object({
   travelTo: v.union(v.string(), v.null()),
   headcount: v.union(v.number(), v.null()),
   attendees: v.union(v.array(attendeeValidator), v.null()),
+  /** True ONLY when this line actually HAS attendees and the caller lacks
+   *  names-view — i.e. `attendees` is `null` BECAUSE it was redacted, not
+   *  because the line is in group-description mode (>15 heads) or has no
+   *  meal attendees at all. Without this, a caller WITH full names-view sees
+   *  a false "names not shown to you" claim on a large-group line that never
+   *  had names to redact in the first place. */
+  attendeesRedacted: v.boolean(),
   groupDescription: v.union(v.string(), v.null()),
 });
 
@@ -158,6 +165,11 @@ const priorCodingContext = v.object({
   travelTo: v.union(v.string(), v.null()),
   headcount: v.union(v.number(), v.null()),
   attendees: v.union(v.array(attendeeValidator), v.null()),
+  /** Same distinction as `reimbursementLineContext.attendeesRedacted`: true
+   *  ONLY when the prior coding row actually HAS attendees and the caller
+   *  lacks names-view on the PRIOR transaction — never true for a
+   *  group-description (>15 heads) row, which never had names to redact. */
+  attendeesRedacted: v.boolean(),
   groupDescription: v.union(v.string(), v.null()),
   merchantName: v.string(),
   postedAt: v.number(),
@@ -233,6 +245,10 @@ async function priorApprovedCoding(
       travelTo: row.travelTo ?? null,
       headcount: row.headcount ?? null,
       attendees: canSeeNames ? (row.attendees ?? null) : null,
+      // Redacted iff there was something to redact — a group-description
+      // (>15 heads) row has `row.attendees == null` on its own, which must
+      // never read as "hidden from you".
+      attendeesRedacted: row.attendees != null && !canSeeNames,
       groupDescription: row.groupDescription ?? null,
       merchantName: candidate.merchantName ?? merchantName,
       postedAt: candidate.postedAt,
@@ -308,6 +324,11 @@ async function reimbursementCodingContext(
               affiliation: a.affiliation,
             }))
           : null,
+      // True ONLY when there was something redacted — a group-description
+      // (>15 heads) line has `l.attendees == null` on its own account, which
+      // must never read as "hidden from you" to a caller with full
+      // names-view (review finding, 2026-08-13).
+      attendeesRedacted: l.attendees != null && !canSeeNames,
       groupDescription: l.groupDescription ?? null,
     })),
   };

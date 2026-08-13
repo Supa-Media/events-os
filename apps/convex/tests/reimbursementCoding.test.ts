@@ -1069,3 +1069,99 @@ describe("the substantiation reaches the surfaces that need it", () => {
     ).resolves.toBeNull();
   });
 });
+
+// ── reimbursementContext.lines[].attendeesRedacted (review finding, 2026-08-13) ─
+/**
+ * `ReimbursementContextBlock` used to decide "names not shown to you" from
+ * `line.attendees === null` alone — but a GROUP-DESCRIPTION line (>15 heads,
+ * `codingFieldProblems`'s own carve-out) also has `attendees === null`, for a
+ * reason that has nothing to do with the viewer's permissions. A caller who
+ * genuinely holds full names-view saw a false redaction claim on that line.
+ *
+ * `transactionCodings.reimbursementCodingContext` now stamps each line with
+ * `attendeesRedacted: l.attendees != null && !canSeeNames` — true ONLY when
+ * there was something to redact.
+ *
+ * NOTE on what this suite can and can't pin: on THIS surface, `canSeeNames`
+ * is `hasCodingNamesView(ctx, args.transactionId)` — the SAME transaction id
+ * `getForTransaction` already ran `requireViewCoding` against a moment
+ * earlier, with the same caller and no intervening write. That re-check is
+ * therefore deterministically `true` whenever the read succeeds at all, so a
+ * genuine "viewer lacks names-view" case is not reachable through THIS
+ * query (unlike `priorCoding`, whose names check runs against a DIFFERENT,
+ * PRIOR transaction — see `transactionCodings.test.ts`'s
+ * "attendee names are redacted..." test for that live case). What IS
+ * reachable, and is the actual bug this fixes, is the group-mode false
+ * positive pinned below.
+ */
+describe("reimbursementContext.lines[].attendeesRedacted", () => {
+  test("a group-description line (no attendees by design) never claims redaction; a names-mode line does not either, once the viewer can actually see them", async () => {
+    const { s } = await chapterWithManager();
+
+    const { txnId } = await run(s.t, async (ctx) => {
+      const reimbursementId = await ctx.db.insert("reimbursementRequests", {
+        chapterId: s.chapterId,
+        token: "tok-attendees-redacted",
+        status: "paid",
+        payeeName: "Vera Volunteer",
+        purpose: PURPOSE,
+        totalCents: 9000,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("reimbursementLineItems", {
+        chapterId: s.chapterId,
+        reimbursementId,
+        description: "All-chapter cookout",
+        amountCents: 6000,
+        expenseType: "meal",
+        businessPurpose: "Fed the whole chapter after the outreach event",
+        headcount: 40,
+        groupDescription: "The whole chapter, open invite",
+        order: 0,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("reimbursementLineItems", {
+        chapterId: s.chapterId,
+        reimbursementId,
+        description: "Leadership dinner",
+        amountCents: 3000,
+        expenseType: "meal",
+        businessPurpose: "Dinner with the visiting leadership team",
+        headcount: 2,
+        attendees: [{ name: "Real Name", affiliation: "team" }],
+        order: 1,
+        createdAt: Date.now(),
+      });
+      const txnId = await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "reimbursement",
+        flow: "outflow",
+        amountCents: 9000,
+        postedAt: Date.now(),
+        reimbursementId,
+        status: "reconciled",
+        createdAt: Date.now(),
+      });
+      return { reimbursementId, txnId };
+    });
+
+    const data = await s.as.query(api.transactionCodings.getForTransaction, {
+      transactionId: txnId,
+    });
+    const lines = data.reimbursementContext?.lines ?? [];
+    const groupLine = lines.find((l) => l.description === "All-chapter cookout");
+    const namesLine = lines.find((l) => l.description === "Leadership dinner");
+
+    // Group-description line: attendees is null because there were never
+    // structured names on it, NOT because they were hidden.
+    expect(groupLine?.attendees).toBeNull();
+    expect(groupLine?.attendeesRedacted).toBe(false);
+
+    // Names-mode line: this viewer (the manager) actually holds names-view,
+    // so the real names come through and nothing was redacted either.
+    expect(namesLine?.attendees).not.toBeNull();
+    expect(namesLine?.attendees?.[0]?.name).toBe("Real Name");
+    expect(namesLine?.attendeesRedacted).toBe(false);
+  });
+});

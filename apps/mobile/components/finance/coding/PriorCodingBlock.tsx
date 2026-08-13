@@ -122,7 +122,12 @@ export function PriorCodingBlock({
         </Text>
         <Text className="mt-1 text-xs text-ink">{priorCoding.businessPurpose}</Text>
         {detail ? <Text className="mt-1 text-2xs text-muted">{detail}</Text> : null}
-        {priorCoding.attendees === null && priorCoding.headcount != null ? (
+        {/* `attendeesRedacted` (not `attendees === null`, review finding
+            2026-08-13): a group-description prior coding (>15 heads) also
+            has `attendees === null`, but there was nothing to redact — that
+            must never read as "hidden from you" to a caller who actually
+            holds full names-view. */}
+        {priorCoding.attendeesRedacted ? (
           <Text className="mt-1 text-2xs italic text-faint">
             Names not shown to you on this transaction.
           </Text>
