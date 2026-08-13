@@ -71,6 +71,7 @@ import {
   stepSelection,
 } from "../../../components/finance/coding/panelNav";
 import { useChapterContext } from "../../../lib/ChapterContext";
+import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
 import { colors } from "../../../lib/theme";
 
 type WorklistRow = NonNullable<
@@ -137,6 +138,12 @@ function Body() {
   } as never);
   const categories = useQuery(api.finances.myChargeCategories, {});
   const [openId, setOpenId] = useState<string | null>(null);
+  // "See the page this becomes" — the same mint-and-open the publish console
+  // uses, on the same scope this screen already resolved. Safe to offer on
+  // every row of this screen's population: `monthCodingWorklist` above and
+  // `mintLedgerPreviewToken` run the SAME `requireLedgerConsole` gate, so
+  // anyone who can see this month can already mint its preview.
+  const previewPage = useLedgerPreview();
 
   const categoryOptions = useMemo(
     () => [
@@ -280,6 +287,34 @@ function Body() {
                 {data.label}
               </Text>
               <Button variant="secondary" size="sm" title="→" onPress={() => step(1)} />
+            </View>
+
+            {/* SEE WHAT THIS MONTH BECOMES (founder ask, 2026-08-13). The
+                meter below says how MUCH is explained; this says what that
+                actually looks like to a stranger, which is the question
+                somebody working a month is really asking. It belongs here and
+                not only on the publish console: this is the screen where the
+                blanks get filled, and walking to another tab to find out
+                whether they read well is how a month gets published with
+                sentences nobody re-read.
+
+                Rendered ABOVE the zero-row branch on purpose — an empty book
+                still has a public page, and opening it is the fastest way to
+                discover that the month resolved to a book you didn't mean. */}
+            <View className="mb-4">
+              <Button
+                title="Preview this month's public page"
+                icon="eye"
+                variant="secondary"
+                size="sm"
+                loading={previewPage.loading}
+                onPress={() =>
+                  void previewPage.open({ scope, periodKey: data.periodKey })
+                }
+              />
+              {previewPage.error ? (
+                <Text className="mt-2 text-sm text-danger">{previewPage.error}</Text>
+              ) : null}
             </View>
 
             {data.totalCount === 0 ? (
