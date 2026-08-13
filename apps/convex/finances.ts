@@ -4836,6 +4836,15 @@ export const monthCodingWorklist = query({
       rows: v.array(txnSummary),
       /** The scan hit its cap — the list is a prefix, not the whole month. */
       truncated: v.boolean(),
+      /**
+       * Whether this caller may RENAME a row's merchant from the panel
+       * (`finances.renameMerchant`, bookkeeper+). Resolved server-side rather
+       * than assumed, because this screen's own floor is VIEWER
+       * (`requireLedgerConsole`) — a viewer can legitimately read the worklist
+       * and must not be shown an editable field every keystroke of which the
+       * server would refuse. Mirrors `listSales.canEdit`'s reasoning exactly.
+       */
+      canRename: v.boolean(),
       /** OTHER active books' unexplained-line counts for this SAME month —
        *  present only for a central-reach caller (`undefined` otherwise, never
        *  an empty array standing in for "no reach"). Exists so a zero-row
@@ -5027,6 +5036,10 @@ export const monthCodingWorklist = query({
       backlogExplainedCents,
       rows: rowsWithCardholder,
       truncated,
+      // Same rank `renameMerchant` itself gates on, answered here so the panel
+      // renders from the server's answer instead of guessing from the fact
+      // that the screen loaded at all.
+      canRename: financeRoleAtLeast(access.role, "bookkeeper"),
       otherBooks,
     };
   },

@@ -1350,6 +1350,32 @@ describe("explaining a month", () => {
     expect(list.explainedCount).toBe(0);
   });
 
+  test("canRename answers the rank renameMerchant enforces, not 'the screen loaded'", async () => {
+    // This screen's floor is VIEWER (`requireLedgerConsole`), but renaming a
+    // merchant is bookkeeper+. The panel renders its editable title from THIS
+    // field, so a viewer must get `false` — otherwise they'd be handed an
+    // input every keystroke of which the server refuses.
+    const manager = await asPublisher();
+    await insertTxn(manager, {
+      amountCents: 4_000,
+      postedAt: Date.UTC(2024, 5, 14, 16),
+    });
+    expect((await worklist(manager, "2024-06"))!.canRename).toBe(true);
+
+    const viewer = await setupChapter(newT());
+    const viewerPerson = await seedPerson(viewer);
+    await grantRole(viewer, viewerPerson, "viewer");
+    await insertTxn(viewer, {
+      amountCents: 4_000,
+      postedAt: Date.UTC(2024, 5, 14, 16),
+    });
+    const seen = (await worklist(viewer, "2024-06"))!;
+    // They can READ the worklist — that's the point of a viewer …
+    expect(seen.rows).toHaveLength(1);
+    // … and cannot be offered the rename.
+    expect(seen.canRename).toBe(false);
+  });
+
   test("money coming IN is never listed — a donation has no business purpose to give", async () => {
     // Founder, 2026-08-13: "why is it asking me to code my 7000 donation, this
     // shouldn't show up here." The filter tested `signedBookCents !== 0`, which

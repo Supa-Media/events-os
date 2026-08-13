@@ -52,8 +52,14 @@ import { ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { displayMerchantName, formatCents, rawBankLine } from "@events-os/shared";
-import { Badge, Button, TextField } from "../../ui";
+import {
+  displayMerchantName,
+  formatCents,
+  rawBankLine,
+  MAX_MERCHANT_NAME_LENGTH,
+} from "@events-os/shared";
+import { Badge, Button, InlineText, TextField } from "../../ui";
+import { alertError } from "../../../lib/errors";
 import {
   FinishChargeSheetBody,
   type CategoryOption,
@@ -194,6 +200,7 @@ export function CodingWorkbenchPanel({
   hasNext,
   position,
   canViewReceiptList,
+  canRename,
 }: {
   txn: MyTxnRow;
   /** Forwarded verbatim to `FinishChargeSheetBody` — see that prop's own
@@ -231,9 +238,41 @@ export function CodingWorkbenchPanel({
    *  the answer here, because ITS caller can be a cardholder with no
    *  finance seat at all. */
   canViewReceiptList?: boolean;
+  /**
+   * Whether this caller may rename the row's merchant here
+   * (`finances.renameMerchant`, bookkeeper+). SERVER-ANSWERED — `explain.tsx`
+   * passes `monthCodingWorklist.canRename`, because that screen's own floor is
+   * VIEWER and an editable field a viewer's every keystroke would be refused
+   * for is worse than no field. Omitted by `coding.tsx` (a cardholder working
+   * their own charges has no finance seat to rename with).
+   *
+   * WHY RENAME LIVES HERE AT ALL (founder, 2026-08-13: "when doing the by
+   * month reconciliation there is currently no way for me to edit the
+   * transaction title"). It was reachable only from the Reconcile grid's
+   * merchant cell — but the moment you NOTICE a bad title is while preparing a
+   * month to publish, looking at this panel, and the specific thing she
+   * noticed was a private individual's full name about to go on a public page.
+   * Making her leave for another screen to fix it is how it doesn't get fixed.
+   */
+  canRename?: boolean;
 }) {
   const transactionId = txn.id as Id<"transactions">;
-  const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
+  const shownMerchant = displayMerchantName(txn, "—");
+  const renameMerchant = useMutation(api.finances.renameMerchant);
+  const clearMerchantRename = useMutation(api.finances.clearMerchantRename);
+
+  function onCommitMerchant(next: string) {
+    const trimmed = next.trim();
+    if (trimmed === shownMerchant) return; // untouched — never write, never log
+    if (!trimmed) {
+      // Nothing to revert to when no override is in place; `InlineText`
+      // re-syncs from `value` on the next render.
+      if (txn.merchantNameOverride == null) return;
+      void clearMerchantRename({ transactionId }).catch(alertError);
+      return;
+    }
+    void renameMerchant({ transactionId, merchantName: trimmed }).catch(alertError);
+  }
   // FINDING 5 (UX audit, 2026-08-12): the raw bank/processor description,
   // shown beneath the cleaned name only when it says something different.
   const rawLine = rawBankLine(txn);
@@ -268,13 +307,41 @@ export function CodingWorkbenchPanel({
               name of the transaction is kind of cut off"). Two lines covers
               every real descriptor; beyond that the raw line below has it. */}
           <View className="flex-row flex-wrap items-center gap-2">
-            <Text className="text-base font-semibold text-ink" numberOfLines={2}>
-              {merchantLine}
+            {canRename ? (
+              // Same commit semantics as the Reconcile grid's own merchant
+              // cell, deliberately: blank means "go back to what the bank
+              // called it", which is `clearMerchantRename` rather than an
+              // empty name. The provider's value is never overwritten either
+              // way — `renameMerchant` writes a separate override — so a title
+              // fixed here keeps the statement's own wording as provenance.
+              <View className="min-w-0 flex-1">
+                <InlineText
+                  value={shownMerchant}
+                  onCommit={onCommitMerchant}
+                  maxLength={MAX_MERCHANT_NAME_LENGTH}
+                  weight="medium"
+                />
+              </View>
+            ) : (
+              <Text className="text-base font-semibold text-ink" numberOfLines={2}>
+                {shownMerchant}
+              </Text>
+            )}
+            <Text className="text-base font-semibold text-ink">
+              · {dateStr(txn.postedAt)}
             </Text>
             {reconstructed ? (
               <Badge tone="info" icon="archive" label="Imported record" />
             ) : null}
           </View>
+          {canRename ? (
+            // Said plainly, because the founder's reason for renaming was a
+            // person's name heading for a public page and "will this actually
+            // remove it" is the question that decides whether she trusts it.
+            <Text className="text-2xs text-faint">
+              Rename publishes; the bank&apos;s own wording is kept underneath.
+            </Text>
+          ) : null}
           <Text className="text-xs text-muted">
             {formatCents(Math.abs(txn.amountCents))}
             {whose ? ` · ${whose}` : ""}

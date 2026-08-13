@@ -451,6 +451,10 @@ function Body() {
             hasPrev={stepSelection(rows, openId, -1) != null}
             hasNext={stepSelection(rows, openId, 1) != null}
             position={panelPosition(rows, openId)}
+            // Server-answered (bookkeeper+). This screen's own floor is
+            // viewer, so the editable title has to be gated on the same rank
+            // `renameMerchant` enforces rather than on having got this far.
+            canRename={data.canRename}
           />
         </View>
       ) : null}
