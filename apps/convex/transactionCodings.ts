@@ -15,6 +15,18 @@
  * payout's coding form may START from the claimant's own request text
  * (`reimbursementContext` below) — existing human testimony carried forward,
  * editable, never machine-composed. Machine-GENERATED text stays forbidden.
+ * EXTENDED (founder directive, 2026-08-13): when a request's testimony is
+ * complete enough that there is nothing left to edit — exactly one line,
+ * every §274(d) field the shared validator asks for already answered — the
+ * carve-out goes one step further and MATERIALIZES the coding directly,
+ * `status:"approved"`, instead of merely prefilling a form for a human to
+ * resubmit. Still PORTED, never composed: the claimant's own words become the
+ * row verbatim, and the request's own approval becomes the coding's decision
+ * (`portedFromReimbursementId` marks the row; see
+ * `lib/transactionCoding.ts#materializePortedReimbursementCoding` and
+ * `lib/reimbursementTxnFields.ts#deriveReimbursementCodingMaterialization`
+ * for the eligibility rule and the write). A multi-line or incomplete
+ * request is untouched by this and still only gets the prefill above.
  *
  * Authored by the transaction's own person or a bookkeeper
  * (`lib/transactionCodingAccess.ts`), decided by a finance manager who is NOT
@@ -122,6 +134,11 @@ const codingRow = v.object({
   decidedByName: v.union(v.string(), v.null()),
   decidedAt: v.union(v.number(), v.null()),
   reviewNote: v.union(v.string(), v.null()),
+  /** Present iff this row was PORTED from a reimbursement request's own
+   *  approved line (`lib/transactionCoding.ts#materializePortedReimbursementCoding`)
+   *  rather than authored on this surface — the UI's cue for "the claimant's
+   *  own approved answers, not something a reviewer typed here". */
+  portedFromReimbursementId: v.union(v.id("reimbursementRequests"), v.null()),
 });
 
 /** One reimbursement line's already-authored substantiation, as surfaced to
@@ -371,6 +388,7 @@ async function projectCoding(
     decidedByName: await name(row.decidedByPersonId),
     decidedAt: row.decidedAt ?? null,
     reviewNote: row.reviewNote ?? null,
+    portedFromReimbursementId: row.portedFromReimbursementId ?? null,
   };
 }
 
