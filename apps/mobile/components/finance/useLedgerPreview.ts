@@ -17,10 +17,17 @@
  * `v.optional(scopeValidator)`, which accepts the field being ABSENT — an
  * explicit `null` fails argument validation before the handler runs, and the
  * caller sees "Couldn't open the preview" for what is really a malformed
- * call. Both call sites resolve scope to `string | null` (`?scope=`, else the
- * desk, else nothing), so the null case is reachable: a caller with a home
- * chapter but no resolved `ChapterContext` yet. Omitting lets the backend
- * apply its own documented fallback (the caller's home chapter) instead.
+ * call. Both call sites resolve scope to `SingleBookScope | null` (`?scope=`,
+ * else the desk, else nothing), so the null case is reachable: a caller with
+ * a home chapter but no resolved `ChapterContext` yet. Omitting lets the
+ * backend apply its own documented fallback (the caller's home chapter).
+ *
+ * AND NEVER A GRID WORD. `scopeValidator` is `v.id("chapters") | "central"`;
+ * the reconcile grid's `"all"` fails that validation the same uncatchable way
+ * (2026-08-13 — the Explain screen passed its raw `?scope=` straight through
+ * here). So `scope` is typed `SingleBookScope | null`, not `string | null`:
+ * `Id<"chapters">` is a BRANDED string, so a caller that hasn't run its URL
+ * param through `resolveBookScope` (`./bookScope`) no longer compiles.
  *
  * PREVIEWING IS NOT PUBLISHING, and the gate says so: the mint only needs
  * ledger-console access and works in every working status — draft, in review,
@@ -37,10 +44,11 @@ import { api } from "@events-os/convex/_generated/api";
 // prod, Convex .site fallback elsewhere) — same import the publish console
 // used before this hook existed.
 import { publicSiteUrl } from "../event/ticketing/helpers";
+import type { SingleBookScope } from "./bookScope";
 
 export interface LedgerPreview {
   /** Mint and open. Never throws — failures land in `error`. */
-  open: (args: { scope: string | null; periodKey: string }) => Promise<void>;
+  open: (args: { scope: SingleBookScope | null; periodKey: string }) => Promise<void>;
   /** True only while a mint is in flight, so a host can keep this separate
    *  from whatever else it has busy (a submit, a publish) — looking should
    *  never appear queued behind a commitment. */
@@ -54,14 +62,22 @@ export function useLedgerPreview(): LedgerPreview {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const open = async ({ scope, periodKey }: { scope: string | null; periodKey: string }) => {
+  const open = async ({
+    scope,
+    periodKey,
+  }: {
+    scope: SingleBookScope | null;
+    periodKey: string;
+  }) => {
     setLoading(true);
     setError(null);
     try {
-      const { token } = await mint({
-        ...(scope ? { scope } : {}),
-        periodKey,
-      } as never);
+      // Built as a ternary, not a spread, and with no `as never`: the two
+      // arg shapes are exactly what the mutation declares, so this call site
+      // is type-checked against the real validator instead of silenced.
+      const { token } = await mint(
+        scope ? { scope, periodKey } : { periodKey },
+      );
       void Linking.openURL(`${publicSiteUrl()}/finances/${periodKey}?preview=${token}`);
     } catch (e) {
       const data = (e as { data?: { message?: string } })?.data;

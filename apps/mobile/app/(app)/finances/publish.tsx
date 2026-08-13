@@ -65,6 +65,8 @@ import {
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { useChapterContext } from "../../../lib/ChapterContext";
 import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
+import { resolveBookScope } from "../../../components/finance/bookScope";
+import { BookScopeNotice } from "../../../components/finance/BookScopeNotice";
 
 function NoAccess() {
   return (
@@ -97,6 +99,7 @@ export default function PublishScreen() {
 
 function Body() {
   const params = useLocalSearchParams<{ scope?: string }>();
+  const router = useRouter();
   const { context } = useChapterContext();
   // WHICH BOOK ARE WE PUBLISHING? Resolved the same way every other finance
   // screen resolves it (`book-value.tsx`): `?scope=` wins so a shared link is
@@ -107,18 +110,31 @@ function Body() {
   // and central is where the org's own money lives. It also means a central
   // holder peeking at a chapter would work their own queue while believing
   // they were working that chapter's.
-  const scope =
-    params.scope ??
-    (context?.kind === "peek"
+  //
+  // But `?scope=` is written by the reconcile grid's view menu, which speaks a
+  // WIDER vocabulary than `publicLedger`'s `scopeValidator`
+  // (`v.id("chapters") | "central"`) accepts — its default for a dual-hat
+  // caller is `"all"`, the merged queue, and there is no such thing as
+  // publishing "all books" as one month. Handed over raw it failed argument
+  // validation before the handler ran — not a `ConvexError`, so
+  // `FinanceBoundary` never saw it and the screen died with a bare "Server
+  // Error" (2026-08-13). `resolveBookScope` degrades anything unusable to the
+  // caller's own desk and REPORTS it, so the banner below can name the book
+  // actually on screen. See `components/finance/bookScope.ts`.
+  const desk =
+    context?.kind === "peek"
       ? context.chapterId
       : context?.kind === "seat"
         ? context.scope
-        : null);
+        : null;
+  const resolved = resolveBookScope(params.scope, desk);
+  const scope = resolved.scope;
 
-  const data = useQuery(
-    api.publicLedger.console_,
-    scope ? ({ scope } as never) : {},
-  );
+  // NO `as never`. `scope` is `SingleBookScope | null` (`Id<"chapters">` is a
+  // BRANDED string), so the compiler now rejects a grid word at this call
+  // site rather than production doing it. `null` OMITS the field — an
+  // explicit null fails `v.optional`.
+  const data = useQuery(api.publicLedger.console_, scope ? { scope } : {});
   const [open, setOpen] = useState<string | null>(null);
 
   if (data === undefined) return <Screen loading />;
@@ -140,6 +156,17 @@ function Body() {
     <Screen>
       <Narrow>
         <SectionHeader title={`Publish — ${data.scopeName}`} />
+        {/* THE URL ASKED FOR A BOOK THIS SCREEN CAN'T OPEN. Above the month
+            list, never below it: on the one screen that puts numbers in front
+            of the whole city, "which book is this" has to be settled before
+            anything is read, let alone submitted for review. Named with the
+            server's own `scopeName`, so the correction can't itself be
+            wrong. */}
+        <BookScopeNotice
+          resolved={resolved}
+          showingName={data.scopeName}
+          onPick={(next) => router.setParams({ scope: next })}
+        />
         <Text className="mb-3 text-sm text-muted">
           Each month is closed, reviewed by someone who didn&apos;t prepare it, and
           then frozen. What goes out can&apos;t be edited afterwards — only

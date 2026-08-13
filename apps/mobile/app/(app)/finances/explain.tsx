@@ -72,6 +72,8 @@ import {
 } from "../../../components/finance/coding/panelNav";
 import { useChapterContext } from "../../../lib/ChapterContext";
 import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
+import { resolveBookScope } from "../../../components/finance/bookScope";
+import { BookScopeNotice } from "../../../components/finance/BookScopeNotice";
 import { colors } from "../../../lib/theme";
 
 type WorklistRow = NonNullable<
@@ -119,23 +121,40 @@ function Body() {
   // it matters here as on the publish console: without it this would silently
   // work the caller's own chapter while they believed they were working
   // central's book.
-  const scope =
-    params.scope ??
-    (context?.kind === "peek"
+  //
+  // SANITIZED, not trusted. `?scope=` is written by the reconcile grid's view
+  // menu, which speaks a WIDER vocabulary than `monthCodingWorklist` accepts —
+  // its default for a dual-hat caller is `"all"`, the merged queue, and there
+  // is no such thing as "all" for a screen that publishes ONE book. Handing it
+  // over failed argument validation before the handler ran, which is not a
+  // `ConvexError`: `FinanceBoundary` never saw it and the founder got a bare
+  // "[CONVEX Q(finances:monthCodingWorklist)] Server Error" (2026-08-13).
+  // `resolveBookScope` degrades anything unusable to the caller's own desk —
+  // and reports it, so the banner below can say which book this actually is.
+  // See `components/finance/bookScope.ts` for the whole rule.
+  const desk =
+    context?.kind === "peek"
       ? context.chapterId
       : context?.kind === "seat"
         ? context.scope
-        : null);
+        : null;
+  const resolved = resolveBookScope(params.scope, desk);
+  const scope = resolved.scope;
 
   const period =
     params.period && parsePeriodKey(params.period)
       ? params.period
       : defaultPeriod();
 
-  const data = useQuery(api.finances.monthCodingWorklist, {
-    periodKey: period,
-    ...(scope ? { scope } : {}),
-  } as never);
+  // NO `as never` here, deliberately. `scope` is typed `SingleBookScope |
+  // null` (`Id<"chapters">` is a BRANDED string), so the compiler — not a
+  // code review, and not production — is what now rejects a grid word at this
+  // call site. Omitting the field rather than sending `null` is required:
+  // `v.optional` accepts ABSENT, never an explicit null.
+  const data = useQuery(
+    api.finances.monthCodingWorklist,
+    scope ? { periodKey: period, scope } : { periodKey: period },
+  );
   const categories = useQuery(api.finances.myChargeCategories, {});
   const [openId, setOpenId] = useState<string | null>(null);
   // "See the page this becomes" — the same mint-and-open the publish console
@@ -281,40 +300,23 @@ function Body() {
             <BackLink fallback="/finances/publish" label="Publish" />
             <SectionHeader title={`Explain — ${data.scopeName}`} />
 
+            {/* THE URL ASKED FOR A BOOK THIS SCREEN CAN'T OPEN. Rendered
+                directly under the heading, above everything the substituted
+                book produced, so the correction is read before the numbers
+                it applies to. `data.scopeName` — the server's own name for
+                the book it actually read — is what the sentence names. */}
+            <BookScopeNotice
+              resolved={resolved}
+              showingName={data.scopeName}
+              onPick={(next) => router.setParams({ scope: next })}
+            />
+
             <View className="mb-3 flex-row items-center gap-2">
               <Button variant="secondary" size="sm" title="←" onPress={() => step(-1)} />
               <Text className="flex-1 text-center text-base font-semibold text-ink">
                 {data.label}
               </Text>
               <Button variant="secondary" size="sm" title="→" onPress={() => step(1)} />
-            </View>
-
-            {/* SEE WHAT THIS MONTH BECOMES (founder ask, 2026-08-13). The
-                meter below says how MUCH is explained; this says what that
-                actually looks like to a stranger, which is the question
-                somebody working a month is really asking. It belongs here and
-                not only on the publish console: this is the screen where the
-                blanks get filled, and walking to another tab to find out
-                whether they read well is how a month gets published with
-                sentences nobody re-read.
-
-                Rendered ABOVE the zero-row branch on purpose — an empty book
-                still has a public page, and opening it is the fastest way to
-                discover that the month resolved to a book you didn't mean. */}
-            <View className="mb-4">
-              <Button
-                title="Preview this month's public page"
-                icon="eye"
-                variant="secondary"
-                size="sm"
-                loading={previewPage.loading}
-                onPress={() =>
-                  void previewPage.open({ scope, periodKey: data.periodKey })
-                }
-              />
-              {previewPage.error ? (
-                <Text className="mt-2 text-sm text-danger">{previewPage.error}</Text>
-              ) : null}
             </View>
 
             {data.totalCount === 0 ? (
@@ -352,6 +354,40 @@ function Body() {
               </View>
             ) : (
               <>
+                {/* SEE WHAT THIS MONTH BECOMES (founder ask, 2026-08-13). The
+                    meter below says how MUCH is explained; this says what that
+                    actually looks like to a stranger, which is the question
+                    somebody working a month is really asking. It belongs here
+                    and not only on the publish console: this is the screen
+                    where the blanks get filled, and walking to another tab to
+                    find out whether they read well is how a month gets
+                    published with sentences nobody re-read.
+
+                    INSIDE the non-empty branch (2026-08-13). It used to render
+                    above the zero-row check, on the theory that previewing an
+                    empty book is how you discover you're on the wrong one —
+                    but that offered "preview this month's public page" one
+                    line above "this book has nothing in it", i.e. a page the
+                    screen was in the middle of saying was blank. The empty
+                    branch now answers "wrong book?" properly by itself: it
+                    names the book, and lists the other books that DO have
+                    lines this month. */}
+                <View className="mb-4">
+                  <Button
+                    title="Preview this month's public page"
+                    icon="eye"
+                    variant="secondary"
+                    size="sm"
+                    loading={previewPage.loading}
+                    onPress={() =>
+                      void previewPage.open({ scope, periodKey: data.periodKey })
+                    }
+                  />
+                  {previewPage.error ? (
+                    <Text className="mt-2 text-sm text-danger">{previewPage.error}</Text>
+                  ) : null}
+                </View>
+
                 <Card>
                   {hasBoth ? (
                     <>
