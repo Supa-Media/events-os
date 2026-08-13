@@ -17,6 +17,11 @@
  *    name plus two unrecognized cells — the shape a name-only CSV column
  *    produces when copied out of a spreadsheet with commas as the row's own
  *    separator, not the field's.
+ *  - A line with MORE THAN TWO cells where exactly one cell matches an
+ *    affiliation AND it's the LAST cell ("Alice, Bob, volunteer") is read as
+ *    every other cell being a name that shares that one trailing
+ *    affiliation — the shape a spreadsheet produces when several people on
+ *    one row share a single affiliation column.
  *
  * WHAT AFFILIATION A NAME GETS WHEN THE LINE DOESN'T SAY: the MOST RECENTLY
  * USED affiliation so far in this same paste (seeded from whatever the form's
@@ -121,15 +126,39 @@ export function parseAttendeePaste(
     // Look for an affiliation token anywhere after the first (name) cell —
     // "Name, Affiliation" is the common shape, but tolerate it landing
     // anywhere a person happened to paste it.
-    let matched: AttendeeAffiliation | null = null;
+    const matchedIdxs: number[] = [];
     for (let i = 1; i < cells.length; i++) {
-      matched = matchAffiliation(cells[i]);
-      if (matched) break;
+      if (matchAffiliation(cells[i])) matchedIdxs.push(i);
     }
 
-    if (matched) {
-      lastAffiliation = matched;
-      addName(cells[0], matched);
+    // A SHARED TRAILING AFFILIATION (FINDING 3, adversarial review
+    // 2026-08-13): more than two cells, and exactly one of them matches an
+    // affiliation — landing in the LAST position. That's the shape a
+    // spreadsheet produces when several people on one row share one
+    // affiliation column ("Alice, Bob, volunteer") — every cell except the
+    // matching one is a name carrying it, not just the first (the previous
+    // behavior kept only "Alice" and silently dropped "Bob").
+    if (
+      cells.length > 2 &&
+      matchedIdxs.length === 1 &&
+      matchedIdxs[0] === cells.length - 1
+    ) {
+      const affiliation = matchAffiliation(cells[matchedIdxs[0]])!;
+      lastAffiliation = affiliation;
+      for (let i = 0; i < cells.length; i++) {
+        if (i === matchedIdxs[0]) continue;
+        addName(cells[i], affiliation);
+      }
+      continue;
+    }
+
+    if (matchedIdxs.length > 0) {
+      // A match somewhere else (a lone "Name, Affiliation" pair, or a match
+      // that isn't uniquely trailing) — the plain NAME, AFFILIATION reading:
+      // the first cell is the name, the matched cell sets the affiliation.
+      const affiliation = matchAffiliation(cells[matchedIdxs[0]])!;
+      lastAffiliation = affiliation;
+      addName(cells[0], affiliation);
       continue;
     }
 

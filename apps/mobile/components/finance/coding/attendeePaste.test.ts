@@ -130,8 +130,27 @@ describe("parseAttendeePaste — multi-name lines with no affiliation token", ()
     ]);
   });
 
-  test(">2 cells where one DOES match an affiliation is read as name + affiliation, not multi-name", () => {
+  test(">2 cells with a SHARED TRAILING affiliation match every other cell as a name carrying it (FINDING 3 fix, adversarial review 2026-08-13 — previously kept only the first name and silently dropped the rest)", () => {
     expect(parseAttendeePaste("Alice, Bob, volunteer")).toEqual([
+      { name: "Alice", affiliation: "volunteer" },
+      { name: "Bob", affiliation: "volunteer" },
+    ]);
+  });
+
+  test(">2 cells with a shared trailing match still applies to every OTHER cell, not just two", () => {
+    expect(parseAttendeePaste("Alice, Bob, Charlie, guest")).toEqual([
+      { name: "Alice", affiliation: "guest" },
+      { name: "Bob", affiliation: "guest" },
+      { name: "Charlie", affiliation: "guest" },
+    ]);
+  });
+
+  test(">2 cells where the affiliation match is NOT in the last position keeps the old name+affiliation reading (only the first cell is the name)", () => {
+    // Deliberately narrower than the trailing case: "Alice, volunteer, Bob"
+    // doesn't read as unambiguously "two names sharing one affiliation
+    // column" the way a TRAILING match does, so this keeps the original
+    // NAME, AFFILIATION reading rather than guessing "Bob" is a second name.
+    expect(parseAttendeePaste("Alice, volunteer, Bob")).toEqual([
       { name: "Alice", affiliation: "volunteer" },
     ]);
   });
