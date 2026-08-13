@@ -808,6 +808,9 @@ function ReconcileRow({
           reminderStage={row.reminderStage}
           isPersonal={row.isPersonal === true}
           transactionId={id}
+          // The one surface where it's safe: this grid throws for anyone
+          // below bookkeeper before a row ever renders.
+          libraryPicker
           onUpload={async (storageId, filename) => {
             await guard(
               attachReceipt({
@@ -1447,10 +1450,21 @@ export function ReceiptCell({
   libraryPicker,
 }: {
   hasReceipt: boolean;
-  /** Show the "attach an existing receipt" library picker? Defaults to true
-   *  (the Reconcile grid, where every caller is bookkeeper+). Pass `false` on
-   *  member-facing surfaces — the picker's queries are bookkeeper-gated. */
-  libraryPicker?: boolean;
+  /**
+   * Show the "attach an existing receipt" library picker?
+   *
+   * REQUIRED, deliberately — no default. The picker reads
+   * `receipts.listReceipts`, which is bookkeeper-gated, and a Convex query
+   * throws the moment it mounts; on a member-facing surface that unwinds to
+   * the root ErrorBoundary and replaces the entire page. When this defaulted
+   * to `true`, `ChargeRow` — the row on `/code`, whose whole audience is
+   * people with NO finance seat — silently inherited the picker and could
+   * crash the page out from under a volunteer. Every other host was passing
+   * `false` correctly; the default is what made the one miss invisible.
+   *
+   * `true` only where every caller is bookkeeper+ (the Reconcile grid).
+   */
+  libraryPicker: boolean;
   reminderStage: "none" | "flagged" | "escalated";
   /** BELT, not the primary fix: `convertChargeToPersonalRepayment` now clears
    *  `receiptReminderStage` the moment a charge is flagged personal, so a

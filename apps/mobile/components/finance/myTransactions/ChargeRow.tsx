@@ -105,6 +105,19 @@ export function ChargeRow({
             transactionId={txn.id as Id<"transactions">}
             onUpload={onUpload}
             generateUploadUrl={generateUploadUrl}
+            // NO LIBRARY PICKER HERE. This row renders for the caller's OWN
+            // charges — on `/code` that caller can be a volunteer with no
+            // finance seat at all — and the picker reads
+            // `receipts.listReceipts`, which requires bookkeeper rank. A
+            // Convex query throws as soon as it mounts, so tapping the search
+            // icon didn't degrade: it unwound to the root ErrorBoundary and
+            // replaced the whole page, every charge, with a crash screen.
+            //
+            // Every other host of this cell already passes this
+            // (`MoneyView`, `CodingDocumentation` ×2, `ReceiptPane`); this
+            // was the one call site that didn't, on the one screen whose
+            // whole audience is people without the rank.
+            libraryPicker={false}
           />
         </Cell>
         <Cell width={110} align="right">
@@ -148,6 +161,78 @@ export function ChargeRow({
         </Pressable>
       ) : null}
     </>
+  );
+}
+
+/**
+ * THE PHONE SHAPE of a charge. `ChargeRow` is a table row whose cells are
+ * fixed at 110 + 185 + 130 + 110 = 535px before gaps and padding, inside a
+ * `Table` that is `overflow-hidden` with no horizontal scroller — so on a
+ * 390px viewport the "still needs" badge, the receipt control and the
+ * primary Finish button were all painted past the right edge and clipped.
+ *
+ * That is the whole failure of `/code`, because `/code` is a link sent by
+ * email and email is opened on a phone: the one page built for volunteers
+ * had no reachable primary action on the device they use.
+ *
+ * A stacked card, not a horizontal scroller — coding a receipt is a list of
+ * chores, not a spreadsheet, and nobody should have to drag sideways to
+ * find the button. Same props, same `chargeTodo` vocabulary, same
+ * `ReceiptCell` (with the library picker off — see `ChargeRow`).
+ */
+export function ChargeCard({
+  txn,
+  todo,
+  onOpen,
+  onUpload,
+  generateUploadUrl,
+}: {
+  txn: MyTxnRow;
+  todo: ChargeTodo;
+  onOpen: () => void;
+  onUpload: (storageId: Id<"_storage">, filename: string | null) => Promise<void>;
+  generateUploadUrl: () => Promise<string>;
+}) {
+  return (
+    <View className="mb-2.5 rounded-xl border border-border bg-raised p-3.5">
+      <View className="mb-2 flex-row items-start justify-between gap-3">
+        <View className="flex-1">
+          <Text className="text-base font-semibold text-ink" numberOfLines={2}>
+            {displayMerchantName(txn)}
+          </Text>
+          <Text className="mt-0.5 text-xs text-muted">
+            {new Date(txn.postedAt).toLocaleDateString("en-US", {
+              month: "short",
+              day: "numeric",
+              year: "numeric",
+            })}
+          </Text>
+        </View>
+        <SignedMoney cents={txn.amountCents} flow={txn.flow} />
+      </View>
+
+      <View className="mb-3 flex-row flex-wrap items-center gap-2">
+        <Badge label={todo.label} tone={todo.tone} />
+        <ReceiptCell
+          hasReceipt={txn.hasReceipt}
+          reminderStage={txn.reminderStage}
+          isPersonal={txn.isPersonal}
+          transactionId={txn.id as Id<"transactions">}
+          onUpload={onUpload}
+          generateUploadUrl={generateUploadUrl}
+          libraryPicker={false}
+        />
+      </View>
+
+      {/* Full width, always reachable — the point of this component. */}
+      <Button
+        title={todo.actionable ? "Finish this charge" : "View"}
+        variant={todo.actionable ? "primary" : "muted"}
+        size="sm"
+        className="w-full"
+        onPress={onOpen}
+      />
+    </View>
   );
 }
 
