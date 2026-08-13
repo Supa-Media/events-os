@@ -130,6 +130,7 @@ type TxnFixture = Partial<{
   historicalImportBatch: string;
   feeOrigin: "stripe_processing" | "givebutter_processing";
   isPersonal: boolean;
+  personId: Id<"people">;
 }>;
 
 async function insertTxn(
@@ -150,6 +151,7 @@ async function insertTxn(
       historicalImportBatch: f.historicalImportBatch,
       feeOrigin: f.feeOrigin,
       isPersonal: f.isPersonal,
+      personId: f.personId,
       createdAt: Date.now(),
     }),
   );
@@ -1408,6 +1410,30 @@ describe("explaining a month", () => {
     );
     expect(by("Uber")?.purpose).toBe("Accidental personal charge — paid back.");
     expect(by("Costco")?.purpose).toBeNull();
+  });
+
+  test("every row says WHOSE charge it is — the coder has to know who to ask", async () => {
+    // Founder, 2026-08-13: "I'm looking at an expense, and I have to
+    // probably ping and message them what it was for — but I don't even
+    // know who to ask."
+    const s = await asPublisher();
+    const spender = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Jess Cardholder",
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    await insertTxn(s, { amountCents: 4_000, personId: spender });
+    await insertTxn(s, { amountCents: 2_000, merchantName: "Bank fee-less row" });
+
+    const list = (await worklist(s, AUG_KEY))!;
+    const attributed = list.rows.find((r) => r.amountCents === 4_000);
+    const bare = list.rows.find((r) => r.amountCents === 2_000);
+    expect(attributed?.cardholderName).toBe("Jess Cardholder");
+    // A row with nobody behind it says so with null — a fact, not a gap.
+    expect(bare?.cardholderName).toBeNull();
   });
 
   test("only the requested month, and a malformed one is refused", async () => {

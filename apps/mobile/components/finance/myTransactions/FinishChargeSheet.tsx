@@ -1153,9 +1153,21 @@ export function FinishChargeSheet({
                   : ((todo && SUMMARY_TITLE[todo.kind]) ??
                     "This charge is squared away")}
               </Text>
-              <Text className="text-2xs text-muted" numberOfLines={1}>
+              {/* WHO TO ASK (founder, 2026-08-13) — same rule as
+                  `CodingWorkbenchPanel`'s header: `cardholderName` rides
+                  worklist rows (where the coder isn't the spender); two
+                  lines so the merchant identity never truncates away. */}
+              <Text className="text-2xs text-muted" numberOfLines={2}>
                 {merchantLine} · {formatCents(Math.abs(txn.amountCents))}
-                {txn.cardLast4 ? ` · card ••${txn.cardLast4}` : ""}
+                {(() => {
+                  const holder = (txn as { cardholderName?: string | null })
+                    .cardholderName;
+                  return holder != null
+                    ? ` · ${holder} · card ••${txn.cardLast4 ?? "—"}`
+                    : txn.cardLast4
+                      ? ` · card ••${txn.cardLast4}`
+                      : "";
+                })()}
               </Text>
               {/* FINDING 5: the raw bank line, only when it differs. */}
               {rawLine ? (
