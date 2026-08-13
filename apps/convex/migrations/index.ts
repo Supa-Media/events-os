@@ -86,6 +86,7 @@ import { releaseLegacyCardAutolocks } from "./0064_release_legacy_card_autolocks
 import { stampDefaultCategoryExpenseHints } from "./0065_stamp_default_category_expense_hints";
 import { stampCashbackSourceCategory } from "./0066_stamp_cashback_source_category";
 import { renameReimbursementPayoutRows } from "./0067_rename_reimbursement_payout_rows";
+import { materializeReimbursementCodings } from "./0068_materialize_reimbursement_codings";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -386,4 +387,9 @@ export const MIGRATIONS: Migration[] = [
   // Rewrites ONLY rows still carrying the exact auto-generated payee label,
   // which is what keeps a bookkeeper's own wording safe. See 0067.
   renameReimbursementPayoutRows,
+  // 0068: materialize a coding — ported verbatim, `status:"approved"` — for
+  // every existing reimbursement payout whose request has exactly one
+  // complete line, so historical payouts pick up the same auto-coding the
+  // live path now applies. See the file.
+  materializeReimbursementCodings,
 ];
