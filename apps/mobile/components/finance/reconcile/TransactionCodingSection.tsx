@@ -48,6 +48,10 @@ import {
 // it is deliberately host-agnostic — the receipt half of a coding is the same
 // three affordances wherever coding happens.
 import { CodingDocumentation } from "../myTransactions/CodingDocumentation";
+// "5 volunteers, 3 community members, 2 contractors" — the redacted (and
+// public) rendering of who was there. Shared with the Coding tab's review
+// queue (`coding/queueDisplay.ts`) so the two never drift apart.
+import { breakdownLine } from "../coding/queueDisplay";
 
 const STATUS_TONE: Record<string, BadgeTone> = {
   submitted: "warn",
@@ -62,18 +66,6 @@ function when(ts: number): string {
     year: "numeric",
     timeZone: "America/New_York",
   });
-}
-
-/** "5 volunteers, 3 community members, 2 contractors" — the redacted (and
- *  public) rendering of who was there. */
-function breakdownLine(breakdown: Record<string, number>): string {
-  const parts = Object.entries(breakdown).map(([affiliation, count]) => {
-    const label =
-      ATTENDEE_AFFILIATION_LABELS[affiliation as AttendeeAffiliation] ??
-      affiliation;
-    return `${count} ${label.toLowerCase()}${count === 1 ? "" : "s"}`;
-  });
-  return parts.join(", ");
 }
 
 export function TransactionCodingSection({
@@ -136,7 +128,9 @@ export function TransactionCodingSection({
     }
   }
 
-  const breakdown = coding ? breakdownLine(coding.affiliationBreakdown) : "";
+  const breakdown = coding
+    ? breakdownLine(coding.affiliationBreakdown, ATTENDEE_AFFILIATION_LABELS)
+    : "";
 
   return (
     <View>
