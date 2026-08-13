@@ -1269,3 +1269,69 @@ export const workload = query({
     return { mineToCode, awaitingMyReview, orgWide: true, byChapter };
   },
 });
+
+/** Bound on the roster scan below — a chapter's team roster runs to dozens,
+ *  never near this (mirrors `REVIEWER_SCAN_LIMIT`'s reasoning in
+ *  `lib/transactionCodingAccess.ts`). */
+const ATTENDEE_SUGGESTIONS_SCAN_LIMIT = 500;
+/** The cap this query promises callers — the "Start with the team" button
+ *  and the per-row suggestion chips both want a short list to render, not a
+ *  full roster dump. */
+const ATTENDEE_SUGGESTIONS_LIMIT = 100;
+
+/**
+ * BULK ATTENDEE ENTRY — "Start with the team" / per-row suggestion chips
+ * (founder, 2026-08-12: "even a way to start the list with the team, and
+ * then remove who maybe wasn't there and add who was there" / "autofill
+ * based on the people database"). Every TEAM MEMBER on the transaction's own
+ * chapter roster, so the meal-attendee editor can pre-fill from — or suggest
+ * names out of — the org's own roster instead of the coder retyping
+ * everyone by hand every time.
+ *
+ * GATED THE SAME AS AUTHORING (`requireSubmitCoding`): whoever may write the
+ * coding may see the roster it autofills from; nobody else needs it, and a
+ * caller with no reach into this transaction's book gets the same refusal
+ * submitting one would.
+ *
+ * TEAM MEMBERS ONLY, v1 — deliberately narrow. A chapter's full roster runs
+ * into the hundreds across its history, but the people actually eligible to
+ * be "the team that showed up" are the `isTeamMember` rows; contact-only,
+ * placeholder, and Academy sample rows are excluded the same way every other
+ * roster-facing surface excludes them (see `schema/people.ts`'s field docs).
+ * Folding in recently-used coding-attendee names (a second candidate source
+ * this could grow into) is left for later — team members alone already
+ * answers the founder's "start with the team" ask.
+ *
+ * CENTRAL-BOOK TRANSACTIONS have no chapter roster of their own (central
+ * issues no cards, so there's no "central team" table) — this falls back to
+ * the CALLER'S OWN home-chapter team, the same fallback `resolveAuthor` uses
+ * to let a central-scope caller act on the coding at all.
+ */
+export const attendeeSuggestions = query({
+  args: { transactionId: v.id("transactions") },
+  returns: v.array(v.object({ name: v.string(), isTeamMember: v.boolean() })),
+  handler: async (ctx, args) => {
+    const { txn } = await requireSubmitCoding(ctx, args.transactionId);
+    const chapterId: Id<"chapters"> =
+      txn.chapterId === CENTRAL
+        ? ((await requireChapterId(ctx)) as Id<"chapters">)
+        : (txn.chapterId as Id<"chapters">);
+
+    const roster = await ctx.db
+      .query("people")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(ATTENDEE_SUGGESTIONS_SCAN_LIMIT);
+
+    return roster
+      .filter(
+        (p) =>
+          p.isTeamMember === true &&
+          !p.isContactOnly &&
+          !p.isPlaceholder &&
+          !p.isSamplePerson,
+      )
+      .sort((a, b) => a.name.localeCompare(b.name))
+      .slice(0, ATTENDEE_SUGGESTIONS_LIMIT)
+      .map((p) => ({ name: p.name, isTeamMember: true }));
+  },
+});
