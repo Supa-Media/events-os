@@ -21,7 +21,7 @@
  * Migration 0044 (the historical flip) is covered in `migrations0044.test.ts`.
  */
 import { describe, expect, test } from "vitest";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
@@ -174,6 +174,126 @@ async function payoutTxn(s: ChapterSetup, reimbursementId: Id<"reimbursementRequ
       .first(),
   );
 }
+
+describe("a paid reimbursement's receipts become real receipts", () => {
+  /** Store a blob and hang it off a reimbursement's line, the way a filed
+   *  claim carries its document. */
+  async function attachLineReceipt(
+    s: ChapterSetup,
+    reimbursementId: Id<"reimbursementRequests">,
+    lineIndex = 0,
+  ): Promise<Id<"_storage">> {
+    const storageId = await storeBlob(s.t);
+    const lines = await run(s.t, (ctx) =>
+      ctx.db
+        .query("reimbursementLineItems")
+        .withIndex("by_reimbursement", (q) => q.eq("reimbursementId", reimbursementId))
+        .collect(),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.patch(lines[lineIndex]._id, { receiptStorageId: storageId }),
+    );
+    return storageId;
+  }
+
+  test("the document lands in the library AND on the charge — not one without the other", async () => {
+    // The bug, in one test. `receiptStorageId` on a transaction is a
+    // denormalized cache of the first LINKED receipt; the payout path used to
+    // copy it on directly, so the charge said "receipt attached" while the
+    // Receipts library had no row to find. Founder, 2026-08-12: "there is no
+    // receipt, but it says attached … but it's not in the file."
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const sarah = await seedPerson(s, "Sarah");
+    const reimbursementId = await seedApprovedReimbursement(s, {
+      payeePersonId: sarah,
+      amountCents: 4_200,
+      lineDescription: "Bus ticket",
+    });
+    const storageId = await attachLineReceipt(s, reimbursementId);
+
+    await s.as.mutation(api.increasePayouts.markPaidManually, { reimbursementId });
+    const txn = await payoutTxn(s, reimbursementId);
+
+    // The charge still reads as receipted — set by the linker now, not copied.
+    expect(txn?.receiptStorageId).toBe(storageId);
+
+    // …and the library actually has it.
+    const receipts = await run(s.t, (ctx) => ctx.db.query("receipts").collect());
+    expect(receipts).toHaveLength(1);
+    expect(receipts[0].storageId).toBe(storageId);
+    expect(receipts[0].chapterId).toBe(s.chapterId);
+    expect(receipts[0].linkCount).toBe(1);
+    // Findable: the line's own facts, as canonical values a human asserted…
+    expect(receipts[0].merchant).toBe("Bus ticket");
+    expect(receipts[0].amountCents).toBe(4_200);
+    // …and NOT as OCR provenance, because nothing read the document.
+    expect(receipts[0].ocrMerchant).toBeUndefined();
+    expect(receipts[0].ocrAmountCents).toBeUndefined();
+
+    // Linked, so it opens from the charge and counts as backing it.
+    const links = await run(s.t, (ctx) => ctx.db.query("receiptLinks").collect());
+    expect(links).toHaveLength(1);
+    expect(links[0].transactionId).toBe(txn!._id);
+    expect(links[0].receiptId).toBe(receipts[0]._id);
+  });
+
+  test("every line's receipt is kept, not just the one the cache can hold", async () => {
+    // A cache holds one value, so the old copy kept one document. A claim for
+    // a bus ticket and a hotel has two, and both are evidence.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const sarah = await seedPerson(s, "Sarah");
+    const reimbursementId = await seedApprovedReimbursement(s, {
+      payeePersonId: sarah,
+      amountCents: 4_200,
+      lineDescription: "Bus ticket",
+    });
+    const now = Date.now();
+    await run(s.t, (ctx) =>
+      ctx.db.insert("reimbursementLineItems", {
+        chapterId: s.chapterId,
+        reimbursementId,
+        description: "Hotel",
+        amountCents: 12_000,
+        order: 1,
+        createdAt: now,
+      }),
+    );
+    const first = await attachLineReceipt(s, reimbursementId, 0);
+    await attachLineReceipt(s, reimbursementId, 1);
+
+    await s.as.mutation(api.increasePayouts.markPaidManually, { reimbursementId });
+    const txn = await payoutTxn(s, reimbursementId);
+
+    const receipts = await run(s.t, (ctx) => ctx.db.query("receipts").collect());
+    expect(receipts).toHaveLength(2);
+    expect(receipts.map((r) => r.merchant).sort()).toEqual(["Bus ticket", "Hotel"]);
+    const links = await run(s.t, (ctx) => ctx.db.query("receiptLinks").collect());
+    expect(links).toHaveLength(2);
+    // The FIRST line's document still drives the cache, exactly as before, so
+    // no downstream reader sees a different "the" receipt than it used to.
+    expect(txn?.receiptStorageId).toBe(first);
+  });
+
+  test("a reimbursement with no receipts creates none, and the charge says so", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedManager(s);
+    const sarah = await seedPerson(s, "Sarah");
+    const reimbursementId = await seedApprovedReimbursement(s, {
+      payeePersonId: sarah,
+      amountCents: 4_200,
+    });
+
+    await s.as.mutation(api.increasePayouts.markPaidManually, { reimbursementId });
+    const txn = await payoutTxn(s, reimbursementId);
+    expect(txn?.receiptStorageId).toBeUndefined();
+    expect(await run(s.t, (ctx) => ctx.db.query("receipts").collect())).toHaveLength(0);
+  });
+});
 
 describe("a paid reimbursement registers as spend", () => {
   test("the payout posts as outflow and lands in the budget + category it's coded to", async () => {

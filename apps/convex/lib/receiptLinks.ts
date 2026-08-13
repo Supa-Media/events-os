@@ -66,6 +66,25 @@ export async function createReceipt(
     // caller that hasn't computed a hash (or found no dupe) omits them.
     fileSha256?: string;
     duplicateOfReceiptId?: Id<"receipts">;
+    /**
+     * Canonical facts asserted by a HUMAN rather than read off the document —
+     * a reimbursement line's own amount, date and description, which the
+     * claimant typed and a reviewer approved.
+     *
+     * Separate from the `ocr*` args on purpose. Those are immutable provenance
+     * meaning "this is what extraction read", and passing human-entered values
+     * through them would fabricate a machine reading that never happened. But
+     * leaving the canonical fields empty is its own failure: a receipt with no
+     * amount, date or merchant is one nobody can find in the library, which is
+     * the whole complaint that led here. So these land ONLY on the canonical,
+     * human-correctable fields — exactly what `receipts.updateReceiptFields`
+     * writes — and `ocr*` stays empty, which is the truth.
+     */
+    canonical?: {
+      amountCents?: number;
+      receiptDate?: number;
+      merchant?: string;
+    };
   },
 ): Promise<Id<"receipts">> {
   const now = Date.now();
@@ -85,7 +104,17 @@ export async function createReceipt(
       ? { duplicateOfReceiptId: args.duplicateOfReceiptId }
       : {}),
     // Canonical fields seeded from OCR (never fabricated — undefined stays
-    // undefined so a backfilled legacy document keeps no read total).
+    // undefined so a backfilled legacy document keeps no read total), or from
+    // a human's own assertion when there was no extraction to read (see
+    // `canonical`). OCR wins where both exist: it describes the document
+    // itself, while a human value describes what someone says it was.
+    ...(args.canonical?.amountCents != null
+      ? { amountCents: args.canonical.amountCents }
+      : {}),
+    ...(args.canonical?.receiptDate != null
+      ? { receiptDate: args.canonical.receiptDate }
+      : {}),
+    ...(args.canonical?.merchant ? { merchant: args.canonical.merchant } : {}),
     ...(args.ocrAmountCents != null ? { amountCents: args.ocrAmountCents } : {}),
     ...(args.ocrDate != null ? { receiptDate: args.ocrDate } : {}),
     ...(args.ocrMerchant ? { merchant: args.ocrMerchant } : {}),
