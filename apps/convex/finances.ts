@@ -1435,6 +1435,32 @@ export function requiresCoding(
   // processor's ledger already says (founder, 2026-08-12). `isSpend`
   // already exempts personal charges — their repayment is their record.
   if (isNonDiscretionaryFee(tr)) return false;
+  return canCarryExplanation(tr);
+}
+
+/**
+ * Whether this row has a business purpose to give AT ALL — the question that
+ * comes before "does policy require one yet".
+ *
+ * It is exactly `isSpend`, named for the question the coding surfaces ask so
+ * that both of them read from one predicate instead of two. `requiresCoding`
+ * adds the policy DATE and the fee exemption on top; `monthCodingWorklist`
+ * deliberately skips the date (a month published from before the policy still
+ * wants its spending explained) but must ask this same base question.
+ *
+ * IT USED TO ASK A DIFFERENT ONE, and the two disagreed on screen (founder,
+ * 2026-08-13: "why is it asking me to code my 7000 donation, this shouldn't
+ * show up here"). The worklist tested `signedBookCents(tr) !== 0`, which is
+ * true for an INFLOW — so a donation arriving was listed as owing an
+ * explanation, complete with travel/meal/lodging proof questions, while the
+ * detail panel next to it correctly said "not required for this row" because
+ * IT asked `requiresCoding`. Money coming in is never substantiated as spend:
+ * where a gift came from is the giving layer's record, not an expense report.
+ *
+ * Sharing the predicate is the fix, not a second copy of the outflow check —
+ * the copy is what drifted in the first place.
+ */
+export function canCarryExplanation(tr: Doc<"transactions">): boolean {
   return isSpend(tr);
 }
 
@@ -4828,11 +4854,19 @@ export const monthCodingWorklist = query({
       if (tr.status === "excluded") continue;
       const p = easternParts(tr.postedAt);
       if (p.year !== year || p.month !== month) continue;
-      // An internal movement — a transfer between our own accounts, or the
-      // bank arrival of income already counted at the giving layer — has no
-      // business purpose to give. Counting it here would pad the worklist
-      // with rows that are already complete.
-      if (signedBookCents(tr) === 0) continue;
+      // ONLY SPEND CAN BE EXPLAINED. `canCarryExplanation` is the same base
+      // predicate `requiresCoding` builds on, so this list and the detail
+      // panel beside it can't disagree about whether a row owes anything.
+      //
+      // This used to test `signedBookCents(tr) !== 0`, which is TRUE for an
+      // inflow — so a donation arriving was listed as owing an explanation
+      // (founder, 2026-08-13: "why is it asking me to code my 7000 donation").
+      // It also only ever caught MARKED internal movements, while the comment
+      // it carried claimed all of them; an unmarked central↔chapter transfer
+      // leg kept its sign and got listed too. Both are money that moved
+      // between our own books or arrived from outside, and neither has a
+      // business purpose to give.
+      if (!canCarryExplanation(tr)) continue;
       // AUTO-EXPLAINED rows (fees, personal charges) never enter the
       // worklist — not the rows, not the denominator (founder, 2026-08-12:
       // "only things that actually need explaining should show up here").
@@ -4943,7 +4977,10 @@ async function unexplainedCountForBook(
     if (tr.status === "excluded") continue;
     const p = easternParts(tr.postedAt);
     if (p.year !== year || p.month !== month) continue;
-    if (signedBookCents(tr) === 0) continue;
+    // Same spend test as the primary scan above — these two counts describe
+    // the same worklist for different books, so they must filter identically
+    // or the "there are rows in another book" nudge points at nothing.
+    if (!canCarryExplanation(tr)) continue;
     // Same auto-explained carve-out as the primary worklist scan above.
     if (autoExplainedKind(tr) != null) continue;
     if (tr.codingState === "approved") continue;

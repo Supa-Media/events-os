@@ -1319,6 +1319,56 @@ describe("explaining a month", () => {
     expect(list.explainedCount).toBe(0);
   });
 
+  test("money coming IN is never listed — a donation has no business purpose to give", async () => {
+    // Founder, 2026-08-13: "why is it asking me to code my 7000 donation, this
+    // shouldn't show up here." The filter tested `signedBookCents !== 0`, which
+    // is true for an inflow, so a gift arriving was listed as owing an
+    // explanation — while the detail panel beside it said "not required for
+    // this row", because that panel asks `requiresCoding` (→ `isSpend`).
+    // Both now read the same predicate.
+    const s = await asPublisher();
+    await insertTxn(s, {
+      flow: "inflow",
+      amountCents: 700_000,
+      postedAt: Date.UTC(2024, 5, 26, 16),
+      merchantName: "OLUSEYI OLUJIDE",
+    });
+    const spend = await insertTxn(s, {
+      amountCents: 4_000,
+      postedAt: Date.UTC(2024, 5, 14, 16),
+      merchantName: "U-Haul",
+    });
+
+    const list = (await worklist(s, "2024-06"))!;
+    expect(list.rows.map((r) => r.id)).toEqual([spend]);
+    // Out of the denominator too, not merely hidden — otherwise the month
+    // could never reach 100% explained.
+    expect(list.totalCount).toBe(1);
+    expect(list.totalCents).toBe(4_000);
+  });
+
+  test("an unmarked internal transfer leg is not listed either", async () => {
+    // The old filter's comment claimed internal movements were excluded, but
+    // `signedBookCents` only zeroes MARKED ones — a central↔chapter leg kept
+    // its sign and got listed. Money moving between our own books has no
+    // business purpose either way.
+    const s = await asPublisher();
+    await insertTxn(s, {
+      flow: "transfer",
+      amountCents: 250_000,
+      postedAt: Date.UTC(2024, 5, 20, 16),
+      merchantName: "Skim to central",
+    });
+    const spend = await insertTxn(s, {
+      amountCents: 4_000,
+      postedAt: Date.UTC(2024, 5, 14, 16),
+    });
+
+    const list = (await worklist(s, "2024-06"))!;
+    expect(list.rows.map((r) => r.id)).toEqual([spend]);
+    expect(list.totalCount).toBe(1);
+  });
+
   test("orders biggest first — the top of the list is most of the money", async () => {
     const s = await asPublisher();
     for (const amount of [500, 89_900, 4_000]) {
