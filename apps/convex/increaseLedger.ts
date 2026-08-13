@@ -45,6 +45,7 @@ import {
   extractAccountActivity,
   type IncreaseTransactionLite,
 } from "./lib/increaseExtract";
+import { checkRefundPair, writeRefundPair } from "./lib/refundPair";
 
 /** Resolve the owning scope (chapter or central) from an Increase account id.
  *  Null when the account isn't ours — the caller skips the row. */
@@ -86,6 +87,18 @@ export const applyIncreaseCardTransaction = internalMutation({
     // The resolved Increase card id (from the Card Payment), or absent when
     // attribution couldn't be resolved — the txn is still recorded.
     increaseCardId: v.optional(v.string()),
+    // Increase's own `source.category` (`card_settlement` / `card_refund`) —
+    // stored on the row (`sourceCategory`) and read below to decide which
+    // direction to auto-pair in. Optional so a direct test call (or any
+    // caller that predates this field) still inserts, just with auto-pairing
+    // a no-op (no category → no direction to reason about).
+    sourceCategory: v.optional(
+      v.union(v.literal("card_settlement"), v.literal("card_refund")),
+    ),
+    // Increase's Card Payment grouping id — see `schema/finances.ts`'s
+    // `cardPaymentId` doc for the full "why". Stored on the row and used to
+    // find the other half of the pair via `by_card_payment`.
+    cardPaymentId: v.optional(v.string()),
   },
   returns: v.object({ inserted: v.boolean(), skipped: v.boolean() }),
   handler: async (
@@ -131,7 +144,7 @@ export const applyIncreaseCardTransaction = internalMutation({
     // stays fund-less.
     const fundId = (await defaultFundId(ctx, chapterId)) ?? undefined;
 
-    await ctx.db.insert("transactions", {
+    const insertedId = await ctx.db.insert("transactions", {
       chapterId,
       source: "increase_card",
       flow: args.flow,
@@ -146,13 +159,75 @@ export const applyIncreaseCardTransaction = internalMutation({
       fundId,
       externalId: args.externalId,
       sourceAccountId: args.accountId,
+      sourceCategory: args.sourceCategory,
+      cardPaymentId: args.cardPaymentId,
       pending: false,
       status: "unreviewed",
       createdAt: Date.now(),
     });
+
+    // STRUCTURAL auto-pairing (Founder/Opus, 2026-08-13): Increase groups a
+    // charge's settlement + refund under one Card Payment, so a shared
+    // `cardPaymentId` is provider-stated, not inferred. Runs both orders —
+    // this fires for whichever row (settlement or refund) lands second.
+    const inserted = (await ctx.db.get(insertedId))!;
+    await tryAutoPairCardPayment(ctx, inserted);
+
     return { inserted: true, skipped: false };
   },
 });
+
+/**
+ * After a card-lane row lands, look for its Card Payment sibling
+ * (`transactions.by_card_payment`) and auto-pair it EXACTLY the way a human
+ * would via `finances.markAsRefund` — same guards, same writes
+ * (`lib/refundPair.ts`, shared so the two can never drift). A no-op when
+ * `newTxn` carries no `cardPaymentId` (a direct test call, or a row ingested
+ * before 2026-08-13).
+ *
+ * AMBIGUOUS → walk away silently, fields stay stored, nothing paired: zero
+ * candidates (the other leg hasn't landed yet — the common case, since
+ * settlement and refund arrive as separate webhooks) or two-or-more
+ * candidates (e.g. two same-amount settlements under one Card Payment — which
+ * charge did THIS refund reverse is a judgement call, not this function's to
+ * make). `checkRefundPair` still gets the final say (amount mismatch,
+ * transfer leg, payout mark, …) so this can never pair something
+ * `markAsRefund` itself would refuse.
+ */
+async function tryAutoPairCardPayment(
+  ctx: MutationCtx,
+  newTxn: Doc<"transactions">,
+): Promise<void> {
+  if (!newTxn.cardPaymentId) return;
+
+  const siblings = await ctx.db
+    .query("transactions")
+    .withIndex("by_card_payment", (q) => q.eq("cardPaymentId", newTxn.cardPaymentId))
+    .collect();
+  // Same chapter only (mirrors `checkRefundPair`'s CROSS_SCOPE_REFUND guard) —
+  // filtered here too so a cross-scope namesake never counts toward
+  // ambiguity.
+  const others = siblings.filter(
+    (r) => r._id !== newTxn._id && r.chapterId === newTxn.chapterId,
+  );
+
+  const isRefundSide = newTxn.flow === "inflow";
+  const candidates = others.filter((r) =>
+    isRefundSide
+      ? r.flow === "outflow" && r.refundedByTransactionId == null
+      : r.flow === "inflow" && r.refundsTransactionId == null,
+  );
+  if (candidates.length !== 1) return; // 0 or 2+ → ambiguous, leave for a human
+  const [other] = candidates;
+  const charge = isRefundSide ? other : newTxn;
+  const refund = isRefundSide ? newTxn : other;
+
+  if (checkRefundPair(charge, refund) != null) return; // fails a real guard
+  await writeRefundPair(ctx, charge, refund, { auto: true });
+  console.log(
+    `[increase] auto-paired refund: settlement ${charge._id} <-> refund ${refund._id} (cardPaymentId ${newTxn.cardPaymentId})`,
+  );
+}
 
 /**
  * Insert a non-card Increase account entry into the `transactions` ledger —
@@ -379,6 +454,8 @@ async function applyFetchedTransaction(
         merchantName: charge.merchantName,
         merchantCategory: charge.merchantCategory,
         increaseCardId: increaseCardId ?? undefined,
+        sourceCategory: charge.sourceCategory,
+        cardPaymentId: charge.cardPaymentId,
       },
     );
   }

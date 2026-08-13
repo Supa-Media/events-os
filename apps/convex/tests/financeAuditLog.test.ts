@@ -5,6 +5,7 @@ import { disarmCodingPolicy, newT, run, setupChapter, storeBlob, type ChapterSet
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { createReceipt } from "../lib/receiptLinks";
+import { logFinanceAudit, SYSTEM_AUDIT_ACTIONS } from "../lib/financeAuditLog";
 
 /**
  * `financeAuditLog` — the append-only field-change trail (founder ask: "let's
@@ -742,5 +743,109 @@ describe("append-only — nothing patches or deletes a financeAuditLog row once 
     const afterTrail = await trailFor(s, "transaction", txnId);
     expect(afterTrail.length).toBe(beforeTrail.length + 3);
     expect(afterTrail.find((r) => r.id === noteRowId)).toBeDefined();
+  });
+});
+
+// ── `system: true` is ENFORCED, not a convention a caller could misuse ──────
+// Opus adversarial review, 2026-08-13: the flag used to be gated on nothing
+// but the boolean — any caller could pass `system:true` alongside a HUMAN
+// action (e.g. `"recode"`) and log an anonymous row for it, which is exactly
+// the "$303.86 and nobody knows who" scenario `actorUserId` exists to
+// prevent. `logFinanceAudit` now throws unless `system:true`'s `action` is on
+// `SYSTEM_AUDIT_ACTIONS`.
+
+/** A raw transaction insert, bypassing `createManualTransaction` — these
+ *  tests call `logFinanceAudit` directly (a pure library function, not a
+ *  gated mutation), so they need a `subjectId` to point at, not a role grant
+ *  or a `manual_create` row of their own muddying the assertions below. */
+async function insertRawTxn(s: ChapterSetup): Promise<Id<"transactions">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("transactions", {
+      chapterId: s.chapterId,
+      source: "manual",
+      flow: "outflow",
+      amountCents: 4200,
+      postedAt: Date.now(),
+      status: "unreviewed",
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+describe("logFinanceAudit's system:true path is gated on the action, not just the flag", () => {
+  test("system:true with a HUMAN action (recode) throws — never logs anonymously", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const txnId = await insertRawTxn(s);
+
+    await expect(
+      run(s.t, (ctx) =>
+        logFinanceAudit(ctx, {
+          chapterId: s.chapterId,
+          subjectType: "transaction",
+          subjectId: txnId,
+          action: "recode",
+          system: true,
+        }),
+      ),
+    ).rejects.toThrow();
+
+    // Nothing was written — the probe from the finding must leave no trace.
+    const rows = await run(s.t, (ctx) => ctx.db.query("financeAuditLog").collect());
+    expect(rows).toHaveLength(0);
+  });
+
+  test("system:true with refund_mark_auto (the allow-listed action) writes, actorUserId absent", async () => {
+    expect(SYSTEM_AUDIT_ACTIONS).toEqual(["refund_mark_auto"]);
+
+    const t = newT();
+    const s = await setupChapter(t);
+    const txnId = await insertRawTxn(s);
+
+    await run(s.t, (ctx) =>
+      logFinanceAudit(ctx, {
+        chapterId: s.chapterId,
+        subjectType: "transaction",
+        subjectId: txnId,
+        action: "refund_mark_auto",
+        system: true,
+      }),
+    );
+
+    const rows = await run(s.t, (ctx) => ctx.db.query("financeAuditLog").collect());
+    expect(rows).toHaveLength(1);
+    expect(rows[0].action).toBe("refund_mark_auto");
+    expect(rows[0].actorUserId).toBeUndefined();
+    expect(rows[0].actorPersonId).toBeUndefined();
+  });
+
+  test("every OTHER action is refused for system:true (the allow-list is exactly one entry today)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const txnId = await insertRawTxn(s);
+
+    const nonSystemActions = [
+      "status_change",
+      "note_edit",
+      "manual_create",
+      "refund_mark",
+      "budget_delete",
+    ] as const;
+    for (const action of nonSystemActions) {
+      expect(SYSTEM_AUDIT_ACTIONS.includes(action)).toBe(false);
+      await expect(
+        run(s.t, (ctx) =>
+          logFinanceAudit(ctx, {
+            chapterId: s.chapterId,
+            subjectType: "transaction",
+            subjectId: txnId,
+            action,
+            system: true,
+          }),
+        ),
+      ).rejects.toThrow();
+    }
+    const rows = await run(s.t, (ctx) => ctx.db.query("financeAuditLog").collect());
+    expect(rows).toHaveLength(0);
   });
 });
