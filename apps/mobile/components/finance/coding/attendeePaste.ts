@@ -95,7 +95,15 @@ export function parseAttendeePaste(
     results.push({ name: trimmed, affiliation });
   };
 
-  for (const rawLine of text.split(/\r?\n/)) {
+  // Handles every line-ending style a paste can arrive with: "\r\n"
+  // (Windows), "\n" (Unix), and a BARE "\r" alone (classic Mac / some
+  // spreadsheet exports). `/\r?\n/` — the original regex — only matched when
+  // a "\n" was present, so a bare "\r" wasn't a line break at all: it stayed
+  // embedded mid-line, folding the next person's whole line into the current
+  // one's cells and silently dropping them from the results. Ordering the
+  // alternation "\r\n?" before "\n" makes sure a real "\r\n" pair consumes
+  // both characters as ONE break rather than leaving a stray blank line.
+  for (const rawLine of text.split(/\r\n?|\n/)) {
     const line = rawLine.trim();
     if (!line) continue;
 

@@ -23,6 +23,18 @@ describe("parseAttendeePaste — newline-broken lists", () => {
       { name: "Bob", affiliation: "team" },
     ]);
   });
+
+  test("handles BARE CR line endings (classic-Mac / some spreadsheet exports) without folding the next line into the previous one's cells", () => {
+    // FINDING 2 repro (adversarial review, 2026-08-13): a bare "\r" with no
+    // following "\n" used to fail to split at all, so "Bob\tguest" got
+    // folded into the cell after "team" instead of starting a new line —
+    // Bob vanished and Alice mis-read as affiliated with the unrecognized
+    // cell "team\rBob".
+    expect(parseAttendeePaste("Alice\tteam\rBob\tguest\r")).toEqual([
+      { name: "Alice", affiliation: "team" },
+      { name: "Bob", affiliation: "guest" },
+    ]);
+  });
 });
 
 describe("parseAttendeePaste — CSV-ish NAME, AFFILIATION lines", () => {
