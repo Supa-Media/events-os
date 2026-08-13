@@ -558,6 +558,13 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       // facets stay dark — post-policy coverage lives in
       // `transactionCodings.test.ts`.
       uncoded: 0,
+      // …but `needs_explaining` asks the PUBLISHING question, which has no
+      // policy date in it at all, so it lights up for both spend rows: t1
+      // (open, never coded) AND t2 (closed, receipted — and still publishing
+      // with a blank next to it, which is exactly the population `uncoded`
+      // above cannot reach). t4 is an inflow and t3 is excluded, so neither
+      // can carry an explanation.
+      needs_explaining: 2,
       coding_review: 0,
       personal_unpaid: 0, // none flagged personal in this fixture
       transfers: 0, // nothing marked as an internal transfer here

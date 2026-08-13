@@ -82,13 +82,3 @@ export function breakdownLine(
 export function daysWaiting(submittedAt: number, now = Date.now()): number {
   return Math.max(0, Math.floor((now - submittedAt) / 86_400_000));
 }
-
-/** Every distinct book present in a page of rows, in first-seen order — the
- *  Book column's filter options. */
-export function booksInRows(
-  rows: { book: { id: string; name: string } }[],
-): { id: string; name: string }[] {
-  const seen = new Map<string, string>();
-  for (const r of rows) seen.set(r.book.id, r.book.name);
-  return [...seen].map(([id, name]) => ({ id, name }));
-}
