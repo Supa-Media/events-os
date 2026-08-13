@@ -457,6 +457,10 @@ describe("applyPayoutAllocation — the per-book money math", () => {
     expect(deposit?.stripePayoutId).toBe("po_5");
     // Machine-coded, NOT human-reconciled: unreviewed lifts to categorized.
     expect(deposit?.status).toBe("categorized");
+    // The heuristic match says HOW the row got claimed (Opus inverse-audit,
+    // 2026-08-13): a text-heuristic that suppresses a row from every total
+    // must be discoverable on the row itself, never silent.
+    expect(deposit?.note).toContain("Matched to Stripe payout po_5 automatically");
     expect((await payoutRow(s, "po_5"))?.matchedTransactionId).toBe(depositId);
   });
 });
