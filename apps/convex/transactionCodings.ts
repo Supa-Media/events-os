@@ -145,6 +145,94 @@ const reimbursementLineContext = v.object({
   groupDescription: v.union(v.string(), v.null()),
 });
 
+/** One prior APPROVED coding at the same vendor+chapter as this transaction —
+ *  see `priorApprovedCoding`'s own doc just below for why. Same field set as
+ *  `reimbursementLineContext` where the shapes overlap, plus the vendor facts
+ *  (`merchantName`/`postedAt`/`amountCents`/`amountMatches`) a coder needs to
+ *  tell "same subscription" from "same store, different thing". */
+const priorCodingContext = v.object({
+  transactionId: v.id("transactions"),
+  expenseType: expenseTypeValidator,
+  businessPurpose: v.string(),
+  travelFrom: v.union(v.string(), v.null()),
+  travelTo: v.union(v.string(), v.null()),
+  headcount: v.union(v.number(), v.null()),
+  attendees: v.union(v.array(attendeeValidator), v.null()),
+  groupDescription: v.union(v.string(), v.null()),
+  merchantName: v.string(),
+  postedAt: v.number(),
+  amountCents: v.number(),
+  amountMatches: v.boolean(),
+});
+
+/**
+ * "You've coded this vendor before" — a prior APPROVED coding at the same
+ * merchant, in the same chapter's book, for a coder to copy from (founder,
+ * 2026-08-12): "sometimes there are recurring charges, like subscriptions
+ * same exact amount and vendor etc, when coding one it should be smart to
+ * auto suggest the coding."
+ *
+ * ONLY an APPROVED prior coding counts. `submitted`/`changes_requested` rows
+ * haven't cleared separation-of-duties review yet — surfacing an unreviewed
+ * coding as a model to copy would launder one uncertain guess into two.
+ * `approved` carries a second person's (or a recorded single-party) sign-off,
+ * which is what makes it safe to hold up as a precedent.
+ *
+ * THE SAME DOCTRINE AS `reimbursementCodingContext`, applied across charges
+ * instead of within one: this is a HUMAN's prior words, never machine-
+ * composed text, and it only ever reaches the form on an explicit tap
+ * (`PriorCodingBlock`'s "Use this coding") — never silently. The difference
+ * from `reimbursementCodingContext` is what the words are ABOUT: that helper
+ * carries the SAME person's testimony about THIS EXACT charge; this one
+ * carries a DIFFERENT charge's testimony offered as an analogy, which is why
+ * it can never be prefill — only an explicit copy.
+ *
+ * ACCESS: attendee names are redacted by the SAME `hasCodingNamesView` rule a
+ * coding's own `attendees` field gets, but evaluated against the PRIOR
+ * transaction's OWN id — a caller's names-view on THIS charge says nothing
+ * about whether they may see who was at a DIFFERENT charge's meal.
+ */
+async function priorApprovedCoding(
+  ctx: QueryCtx,
+  txn: Doc<"transactions">,
+): Promise<Infer<typeof priorCodingContext> | null> {
+  const merchantName = txn.merchantName;
+  if (!merchantName) return null;
+  // Newest first, bounded — a vendor's recurring charges are a handful, never
+  // near this (same reasoning as `CODING_SCAN_LIMIT` elsewhere in this file).
+  const candidates = await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter_and_merchant", (q) =>
+      q.eq("chapterId", txn.chapterId).eq("merchantName", merchantName),
+    )
+    .order("desc")
+    .take(20);
+  for (const candidate of candidates) {
+    if (candidate._id === txn._id) continue;
+    const row = await ctx.db
+      .query("transactionCodings")
+      .withIndex("by_transaction", (q) => q.eq("transactionId", candidate._id))
+      .unique();
+    if (!row || row.status !== "approved") continue;
+    const canSeeNames = await hasCodingNamesView(ctx, candidate._id);
+    return {
+      transactionId: candidate._id,
+      expenseType: row.expenseType as ExpenseType,
+      businessPurpose: row.businessPurpose,
+      travelFrom: row.travelFrom ?? null,
+      travelTo: row.travelTo ?? null,
+      headcount: row.headcount ?? null,
+      attendees: canSeeNames ? (row.attendees ?? null) : null,
+      groupDescription: row.groupDescription ?? null,
+      merchantName: candidate.merchantName ?? merchantName,
+      postedAt: candidate.postedAt,
+      amountCents: candidate.amountCents,
+      amountMatches: candidate.amountCents === txn.amountCents,
+    };
+  }
+  return null;
+}
+
 /**
  * "What the claimant already wrote" — the originating reimbursement request's
  * purpose + every line's own substantiation, for a payout transaction
@@ -344,6 +432,10 @@ export const getForTransaction = query({
       }),
       v.null(),
     ),
+    /** "You've coded this vendor before" — see `priorApprovedCoding`'s own
+     *  doc (founder, 2026-08-12). `null` when the charge has no merchant name
+     *  or no prior APPROVED coding at that vendor in this chapter. */
+    priorCoding: v.union(priorCodingContext, v.null()),
   }),
   handler: async (ctx, args) => {
     const { txn, actorPersonId } = await requireViewCoding(
@@ -374,6 +466,7 @@ export const getForTransaction = query({
       txn,
       canSeeNames,
     );
+    const priorCoding = await priorApprovedCoding(ctx, txn);
     // Mirrors `finances.requiresCoding` — spend posted at/after the policy
     // date, minus the exempt classes (personal charges, and processor fees —
     // `feeOrigin`, which have no testimony to give; founder 2026-08-12).
@@ -411,6 +504,7 @@ export const getForTransaction = query({
       ...(category?.expenseType ? { categoryExpenseTypeHint: category.expenseType } : {}),
       currentBudgetId: txn.budgetId ?? null,
       reimbursementContext,
+      priorCoding,
     };
   },
 });
