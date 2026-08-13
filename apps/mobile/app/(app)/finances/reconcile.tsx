@@ -492,13 +492,26 @@ function ReconcileGrid() {
   // built from the SAME resolution `chaseHref` above uses. Threaded, never
   // re-derived at the target: a page that resolves its own scope is how two
   // finance surfaces end up showing different books under the same heading.
-  const scopeQuery = allBooksScope
-    ? "?scope=all"
-    : centralScope
-      ? "?scope=central"
-      : targetChapterId
-        ? `?scope=${targetChapterId}`
-        : "";
+  //
+  // "ALL BOOKS" IS NOT A BOOK, and these destinations only take one.
+  // `monthCodingWorklist` and `publicLedger`'s `scopeValidator` both accept
+  // `v.id("chapters") | "central"` and nothing else, so forwarding
+  // `?scope=all` failed ARGUMENT VALIDATION before the handler ran and the
+  // screen died with a bare "Server Error" — on By month and Publish alike,
+  // for every dual-hat holder, because "All books" is their default landing
+  // scope. (`chaseHref` below is unaffected: `receiptChase` mirrors
+  // `listReconcile`'s scope args, which DO include "all".)
+  //
+  // Omitted rather than guessed: with no `scope`, each target falls back to
+  // the caller's own desk — exactly what it did before these menu entries
+  // existed. Picking `central` on their behalf would silently point a
+  // chapter treasurer at the wrong book, which is the failure this whole
+  // area threads scope to prevent.
+  const singleBookScopeQuery = centralScope
+    ? "?scope=central"
+    : targetChapterId
+      ? `?scope=${targetChapterId}`
+      : "";
 
   /**
    * THE VIEWS — saved questions about this one book.
@@ -558,7 +571,7 @@ function ReconcileGrid() {
       label: "By month",
       detail:
         "Work one month biggest-first, with a progress meter — the backfill view, and where a month gets published from.",
-      href: `/finances/explain${scopeQuery}`,
+      href: `/finances/explain${singleBookScopeQuery}`,
     },
     {
       key: "chase",
@@ -572,7 +585,7 @@ function ReconcileGrid() {
       label: "Publish a month",
       detail:
         "Close a month, hand it to a second person, and put it on publicworship.life.",
-      href: `/finances/publish${scopeQuery}`,
+      href: `/finances/publish${singleBookScopeQuery}`,
     },
   ];
   const currentView = activeView(views, filters);
