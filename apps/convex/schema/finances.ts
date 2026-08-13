@@ -1464,10 +1464,15 @@ export const financeAuditLog = defineTable({
   // webhook-triggered `internalMutation` with no authenticated caller at
   // all — there is no user id to anchor to, forging one would be worse than
   // omitting it, and `logFinanceAudit`'s `system: true` path is the ONLY
-  // writer allowed to leave this blank. Every such row is still
-  // identifiable after the fact: its `action` is `"refund_mark_auto"` (never
-  // reused by a human path), so "no actorUserId" and "system-initiated" are
-  // the same statement, not two independent nulls to reconcile.
+  // writer allowed to leave this blank. This is ENFORCED, not just a
+  // convention a caller could opt into: `logFinanceAudit` throws unless
+  // `system: true`'s `action` is in `lib/financeAuditLog.ts`'s
+  // `SYSTEM_AUDIT_ACTIONS` allow-list (today exactly `"refund_mark_auto"`),
+  // so a human-shaped write can never go anonymous by passing the flag.
+  // Every such row is still identifiable after the fact: its `action` is
+  // `"refund_mark_auto"` (never reused by a human path), so "no
+  // actorUserId" and "system-initiated" are the same statement, not two
+  // independent nulls to reconcile.
   actorUserId: v.optional(v.id("users")),
   actorPersonId: v.optional(v.id("people")),
   // The changed field's name (e.g. "status", "category", "budget", "amount",

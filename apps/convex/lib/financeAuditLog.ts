@@ -26,12 +26,34 @@
  * `financeAuditLog.actorUserId`'s schema doc for why that's safe: the row is
  * still identifiable after the fact by its `action`, which a human path
  * never reuses.
+ *
+ * That last sentence is ENFORCED here, not just documented (Opus adversarial
+ * review, 2026-08-13: `system: true` was gated on nothing but the boolean —
+ * any caller could pass it with any action, e.g. `system:true, action:"recode"`,
+ * and log a human-shaped edit with no name attached, exactly the
+ * "$303.86 and nobody knows who" failure the anchor exists to prevent). A
+ * `system:true` call whose `action` isn't in `SYSTEM_AUDIT_ACTIONS` throws
+ * rather than silently going anonymous.
  */
 import type { MutationCtx } from "../_generated/server";
 import { requireUserId } from "./context";
 import type { Id } from "../_generated/dataModel";
 import type { FinanceAuditAction } from "@events-os/shared";
 import type { FinanceScope } from "./finance";
+
+/**
+ * The ONLY `FinanceAuditAction`s a `system: true` call may log. Every other
+ * action requires a real `actorUserId` — adding one here is loosening the
+ * `financeAuditLog.actorUserId` integrity anchor for a NEW class of
+ * unauthenticated writer, and needs the same scrutiny that decision got
+ * (founder-approved, a genuinely no-caller-exists code path like a webhook
+ * ingester — never just "this mutation happens to run without checking auth
+ * today"). See this file's own header comment and the schema doc on
+ * `financeAuditLog.actorUserId`.
+ */
+export const SYSTEM_AUDIT_ACTIONS: readonly FinanceAuditAction[] = [
+  "refund_mark_auto",
+];
 
 export type FinanceAuditSubjectType = "transaction" | "budget" | "sale";
 
@@ -55,7 +77,9 @@ export interface FinanceAuditEntry {
   amountCents?: number;
   /** True ONLY for the Increase auto-pairer's system-initiated rows — skips
    *  `requireUserId` (there is no authenticated caller to resolve) and
-   *  leaves `actorUserId` unset. Every other writer omits this. */
+   *  leaves `actorUserId` unset. ENFORCED, not just convention: `action` must
+   *  be in `SYSTEM_AUDIT_ACTIONS` or the call throws. Every other writer
+   *  omits this. */
   system?: boolean;
 }
 
@@ -65,6 +89,16 @@ export async function logFinanceAudit(
   ctx: MutationCtx,
   entry: FinanceAuditEntry,
 ): Promise<void> {
+  if (entry.system && !SYSTEM_AUDIT_ACTIONS.includes(entry.action)) {
+    throw new Error(
+      `logFinanceAudit: "${entry.action}" is not in SYSTEM_AUDIT_ACTIONS — ` +
+        `a system:true call may only log an action on that allow-list. ` +
+        `Either this is a real human write (drop system:true, let it resolve ` +
+        `a real actorUserId) or a genuinely new unauthenticated writer (add ` +
+        `the action to SYSTEM_AUDIT_ACTIONS with the same scrutiny as ` +
+        `loosening the actorUserId anchor).`,
+    );
+  }
   const actorUserId = entry.system
     ? undefined
     : ((await requireUserId(ctx)) as Id<"users">);
