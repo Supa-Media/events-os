@@ -3077,7 +3077,9 @@ export const getCodingSendBackContact = internalQuery({
     const person = coding.codedByPersonId
       ? await ctx.db.get(coding.codedByPersonId)
       : null;
-    const user = await ctx.db.get(coding.codedByUserId);
+    const user = coding.codedByUserId
+      ? await ctx.db.get(coding.codedByUserId)
+      : null;
     const email = person?.pwEmail ?? person?.email ?? user?.email ?? null;
     if (!email) return null;
     const reviewer = coding.decidedByPersonId
