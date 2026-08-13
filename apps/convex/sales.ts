@@ -58,7 +58,7 @@
  * the difference.
  */
 import { mutation, query } from "./_generated/server";
-import { v, ConvexError } from "convex/values";
+import { v, ConvexError, type Infer } from "convex/values";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { financeRoleAtLeast } from "@events-os/shared";
@@ -91,8 +91,30 @@ const saleItemValidator = v.object({
   candidates: v.array(v.string()),
 });
 
+/** One row of the Sales grid, whichever rail sold it. */
+type SaleRow = Infer<typeof saleRowValidator>;
+
 const saleRowValidator = v.object({
-  saleId: v.id("sales"),
+  /**
+   * Which rail sold it. Founder, 2026-08-12: "we have regular sales, and we
+   * have ticket sales, and they're coming from different tables, I know, but
+   * they're all sales. So let's add it in there."
+   *
+   * They stay distinguishable rather than being flattened into one anonymous
+   * list, because the two are not interchangeable to a bookkeeper: an
+   * in-person tap may need its basket resolved and its event attributed, while
+   * a ticket order already knows both and can't be edited from here.
+   */
+  kind: v.union(v.literal("in_person"), v.literal("ticket")),
+  /** Row key — a `sales` id for a tap, a `ticketOrders` id for an order. */
+  id: v.string(),
+  /** Present ONLY on an in-person row; the two edit mutations key on it. A
+   *  ticket order's items and event come from the order itself, so it carries
+   *  `null` and the grid renders it read-only. */
+  saleId: v.union(v.id("sales"), v.null()),
+  /** Who bought it, when the rail records that. Ticket orders carry a
+   *  purchaser; a card reader at a snack table does not. */
+  buyerName: v.union(v.string(), v.null()),
   soldAt: v.number(),
   grossCents: v.number(),
   feeCents: v.number(),
@@ -171,6 +193,17 @@ export const listSales = query({
       resolvedCount: v.number(),
       unresolvedCount: v.number(),
       unresolvedCents: v.number(),
+      /** The two rails, split out — "how much came from merch vs tickets" is
+       *  the question a combined list otherwise makes harder to answer, not
+       *  easier. */
+      inPersonGrossCents: v.number(),
+      ticketGrossCents: v.number(),
+      /** True once any ticket row is in scope. `feeCents`/`netCents` above sum
+       *  only the fees this app actually holds per row, and a ticket order
+       *  doesn't carry one — Stripe's ticket fees are booked as a single
+       *  monthly line in Reconcile rather than per order. Without this flag the
+       *  net would silently read as if tickets cost nothing to process. */
+      ticketFeesBookedMonthly: v.boolean(),
     }),
     /** The chapter's events, newest first — the Event cell's options. Every
      *  event, not just the ones already carrying sales: attributing an ORPHAN
@@ -226,29 +259,94 @@ export const listSales = query({
       return options;
     };
 
-    const sales = scoped
-      .slice()
-      .sort((a, b) => b.soldAt - a.soldAt)
-      .map((r: Doc<"sales">) => ({
-        saleId: r._id,
-        soldAt: r.soldAt,
-        grossCents: r.grossCents,
-        feeCents: r.feeCents,
-        netCents: r.grossCents - r.feeCents,
-        channel: r.channel,
-        itemSource: r.itemSource,
-        items: r.items,
-        eventId: r.eventId ?? null,
-        eventName: r.eventId ? (eventName.get(r.eventId) ?? null) : null,
-        paymentRef: r.stripeChargeId ?? r.externalRef ?? "",
-        itemOptions: optionsFor(r.soldAt, r.grossCents),
-        itemsKey: itemsToKey(r.items),
-        hasCatalog: catalogForDay(dayISOFor(r.soldAt)) !== null,
+    // Both rails produce the SAME row type — annotated rather than inferred so
+    // a divergence between the two shapes is a compile error here, not a union
+    // every consumer has to narrow.
+    const inPersonRows: SaleRow[] = scoped.map((r: Doc<"sales">) => ({
+      kind: "in_person" as const,
+      id: r._id as string,
+      saleId: r._id,
+      buyerName: null,
+      soldAt: r.soldAt,
+      grossCents: r.grossCents,
+      feeCents: r.feeCents,
+      netCents: r.grossCents - r.feeCents,
+      channel: r.channel,
+      itemSource: r.itemSource,
+      items: r.items,
+      eventId: r.eventId ?? null,
+      eventName: r.eventId ? (eventName.get(r.eventId) ?? null) : null,
+      paymentRef: r.stripeChargeId ?? r.externalRef ?? "",
+      itemOptions: optionsFor(r.soldAt, r.grossCents),
+      itemsKey: itemsToKey(r.items),
+      hasCatalog: catalogForDay(dayISOFor(r.soldAt)) !== null,
+    }));
+
+    // ── Ticket orders, as sales ────────────────────────────────────────────
+    // The other half of "they're all sales". A ticket order needs none of the
+    // basket guesswork above — it was sold from a catalogue that recorded what
+    // it sold — so its items come straight off the order and its `itemSource`
+    // says so, which is also why it is not editable here.
+    //
+    // ONLY `paid` orders. A pending order is a checkout somebody abandoned, and
+    // canceled/refunded/expired ones are not revenue; counting any of them
+    // would inflate this page above what the accounts page reports, and those
+    // two must agree.
+    //
+    // `donationCents` is deliberately excluded: an add-on gift rides in the
+    // same Stripe charge but is split off to `donations` by the webhook and
+    // counted in giving. Including it here would count that money twice.
+    const ticketOrders = await ctx.db
+      .query("ticketOrders")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(SALES_SCAN_LIMIT);
+    const ticketsTruncated = ticketOrders.length === SALES_SCAN_LIMIT;
+    const ticketRows: SaleRow[] = ticketOrders
+      .filter((o) => o.status === "paid")
+      .filter((o) => (eventId ? o.eventId === eventId : true))
+      .map((o: Doc<"ticketOrders">) => ({
+        kind: "ticket" as const,
+        id: o._id as string,
+        saleId: null,
+        buyerName: o.name || null,
+        // A paid order's `updatedAt` is when the webhook settled it; `createdAt`
+        // is when the checkout opened. The money arrived at settlement, which is
+        // the date this page sorts and reports on.
+        soldAt: o.updatedAt,
+        grossCents: o.totalCents,
+        // Not zero-because-free: Stripe's ticket fees are booked as one monthly
+        // Reconcile line rather than per order, so there is no per-row fee to
+        // report. `summary.ticketFeesBookedMonthly` is what says so on screen.
+        feeCents: 0,
+        netCents: o.totalCents,
+        channel: o.externalProvider ?? "stripe_checkout",
+        itemSource: "ticket_order",
+        items: o.items.map((i) => ({
+          label: i.name,
+          quantity: i.quantity,
+          unitPriceCents: i.unitPriceCents,
+          // Never ambiguous: the order names the ticket type it sold. The
+          // `candidates` list exists for taps where several products share a
+          // price, which cannot happen here.
+          candidates: [],
+        })),
+        eventId: o.eventId,
+        eventName: eventName.get(o.eventId as string) ?? null,
+        paymentRef: o.stripePaymentIntentId ?? o.externalRef ?? "",
+        // No basket to guess at, so nothing to offer and nothing to pick.
+        itemOptions: [],
+        itemsKey: null,
+        hasCatalog: false,
       }));
+
+    const sales = [...inPersonRows, ...ticketRows].sort((a, b) => b.soldAt - a.soldAt);
 
     const grossCents = sales.reduce((a, s) => a + s.grossCents, 0);
     const feeCents = sales.reduce((a, s) => a + s.feeCents, 0);
-    const unresolved = sales.filter((s) => s.itemSource === "unresolved");
+    // "Unresolved" is an in-person concept — it means the amount alone couldn't
+    // be turned back into a basket. A ticket order is never unresolved, so it
+    // must not dilute the count the bookkeeper works through.
+    const unresolved = inPersonRows.filter((s) => s.itemSource === "unresolved");
 
     return {
       sales,
@@ -260,6 +358,9 @@ export const listSales = query({
         resolvedCount: sales.length - unresolved.length,
         unresolvedCount: unresolved.length,
         unresolvedCents: unresolved.reduce((a, s) => a + s.grossCents, 0),
+        inPersonGrossCents: inPersonRows.reduce((a, s) => a + s.grossCents, 0),
+        ticketGrossCents: ticketRows.reduce((a, s) => a + s.grossCents, 0),
+        ticketFeesBookedMonthly: ticketRows.length > 0,
       },
       events: chapterEvents
         .slice()
@@ -270,7 +371,7 @@ export const listSales = query({
           eventDate: e.eventDate ?? null,
         })),
       canEdit: financeRoleAtLeast(access.role, "bookkeeper"),
-      truncated,
+      truncated: truncated || ticketsTruncated,
     };
   },
 });

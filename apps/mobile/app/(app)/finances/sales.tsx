@@ -167,10 +167,17 @@ function SalesBody() {
   // something the user can no longer see — the one bulk-edit failure that is
   // genuinely hard to notice afterwards.
   const selectedRows = useMemo(
-    () => displayed.filter((r) => selected.has(r.saleId)),
+    () => displayed.filter((r) => r.kind === "in_person" && selected.has(r.id)),
     [displayed, selected],
   );
   const bulkBaskets = useMemo(() => sharedBasketOptions(selectedRows), [selectedRows]);
+  // Select-all means "every row I could actually act on". A ticket order is
+  // read-only here — its items and event come from the order — so including it
+  // would arm a bulk action against rows every write would refuse.
+  const editableDisplayed = useMemo(
+    () => displayed.filter((r) => r.kind === "in_person"),
+    [displayed],
+  );
 
   function clearSelection() {
     setSelected(new Set());
@@ -185,9 +192,9 @@ function SalesBody() {
   }
   function toggleAll() {
     setSelected((prev) =>
-      displayed.every((r) => prev.has(r.saleId))
+      editableDisplayed.every((r) => prev.has(r.id))
         ? new Set()
-        : new Set(displayed.map((r) => r.saleId)),
+        : new Set(editableDisplayed.map((r) => r.id)),
     );
   }
   function toggleFilter<K extends keyof SalesFilters>(group: K, value: string) {
@@ -220,7 +227,7 @@ function SalesBody() {
     );
   }
   async function bulkSetEvent(eventId: string | null) {
-    const ids = selectedRows.map((r) => r.saleId);
+    const ids = selectedRows.map((r) => r.id);
     await run(
       () =>
         Promise.all(
@@ -236,7 +243,7 @@ function SalesBody() {
     clearSelection();
   }
   async function bulkSetItems(basketKey: string | null) {
-    const ids = selectedRows.map((r) => r.saleId);
+    const ids = selectedRows.map((r) => r.id);
     await run(
       () =>
         Promise.all(
@@ -300,8 +307,9 @@ function SalesBody() {
           ) : null}
 
           <Text className="mb-3 text-sm text-muted">
-            Merch, snacks and drinks sold in person. Counted gross — Stripe&apos;s
-            fee is a separate expense, not a haircut on revenue.
+            Everything the chapter sold: merch, snacks and drinks taken in
+            person, and ticket orders. Counted gross — Stripe&apos;s fee is a
+            separate expense, not a haircut on revenue.
           </Text>
 
           {data === undefined ? (
@@ -323,6 +331,15 @@ function SalesBody() {
                     <Stat label="Stripe fees" cents={summary.feeCents} />
                     <Stat label="Banked" cents={summary.netCents} />
                   </View>
+                  {/* The split, because "they're all sales" is true of the money
+                      and not of the question you ask about it — merch and
+                      tickets grow for different reasons. */}
+                  {summary.ticketGrossCents > 0 ? (
+                    <View className="mt-1.5 flex-row flex-wrap items-baseline gap-x-6 gap-y-1">
+                      <Stat label="In person" cents={summary.inPersonGrossCents} />
+                      <Stat label="Tickets" cents={summary.ticketGrossCents} />
+                    </View>
+                  ) : null}
                   <Text className="mt-2 text-2xs text-faint">
                     {summary.count} sales · {summary.resolvedCount} itemised ·{" "}
                     {summary.unresolvedCount} banked without a breakdown
@@ -330,6 +347,16 @@ function SalesBody() {
                       ? ` (${formatCents(summary.unresolvedCents)})`
                       : ""}
                   </Text>
+                  {/* Say it rather than let the net imply tickets process for
+                      free — their Stripe fees are real, they're just booked as
+                      one monthly line in Reconcile instead of per order. */}
+                  {summary.ticketFeesBookedMonthly ? (
+                    <Text className="mt-1 text-2xs text-faint">
+                      Stripe fees above cover the in-person taps. Ticket
+                      processing fees are booked as a single monthly line in
+                      Reconcile, so they aren&apos;t deducted per order here.
+                    </Text>
+                  ) : null}
                 </Card>
               ) : null}
 
@@ -491,7 +518,7 @@ function SalesBody() {
         <SaleDetailModal
           // Re-read from the live rows so an edit made behind the modal is
           // reflected in it; fall back to the captured row if it filtered away.
-          row={rows.find((r) => r.saleId === detail.saleId) ?? detail}
+          row={rows.find((r) => r.id === detail.id) ?? detail}
           onClose={() => setDetail(null)}
         />
       ) : null}

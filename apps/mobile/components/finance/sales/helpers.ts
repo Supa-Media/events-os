@@ -297,4 +297,5 @@ export const ITEM_SOURCE_LABELS: Record<string, string> = {
   charge_description: "The point of sale wrote down what it rang up",
   amount_decomposition: "Reconstructed — only one basket makes this amount",
   unresolved: "The amount is all the card reader recorded",
+  ticket_order: "Sold as tickets — the order recorded exactly what it sold",
 };

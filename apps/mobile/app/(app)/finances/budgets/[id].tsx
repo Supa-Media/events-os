@@ -13,6 +13,20 @@
  * mode) for the plan, `BudgetApprovalChip`/`BudgetApprovalActions` for the
  * workflow, and `ApprovalHistory` straight from `BudgetCreateModal` (now
  * exported) rather than forking any of that UI.
+ *
+ * ONE MONEY SURFACE, TWO DOORS (founder, 2026-08-12: the budget detail page
+ * "leaves a lot to be desired… on the actual event page it has more details on
+ * the budget, but it just doesn't have it there"). She was right, and the gap
+ * was real: the event's own Money tab showed income and net, planned-vs-actual
+ * per category, the unallocated remainder and an unplanned-spend warning,
+ * while this page — the one Finances links to, and the one you'd actually
+ * share — showed a flat list of actuals by category and the raw budget lines.
+ *
+ * The fix is reuse, not reimplementation: for a budget linked to an event or
+ * project this page now renders `MoneyView` itself (embedded variant, which
+ * drops that component's own budget header and short transactions list since
+ * this page has both, in fuller form). Two pages that must agree about a
+ * budget now agree by construction instead of by discipline.
  */
 import { useState } from "react";
 import { Platform, Pressable, Text, View } from "react-native";
@@ -49,6 +63,7 @@ import {
   BudgetApprovalActions,
 } from "../../../../components/finance/dashboard/BudgetApprovalActions";
 import { PlanGrid } from "../../../../components/money/PlanGrid";
+import { MoneyView } from "../../../../components/money/MoneyView";
 import {
   BudgetCreateModal,
   ApprovalHistory,
@@ -177,29 +192,56 @@ function BudgetDetailBody({ budgetId }: { budgetId: Id<"budgets"> | undefined })
         ) : null}
       </Card>
 
-      {/* ── Where it went (category breakdown) ──────────────────────────────── */}
-      {detail.categories.length > 0 ? (
-        <View className="mt-5">
-          <SectionHeader title="Where it went" count={detail.categories.length} />
-          <Card className="gap-2.5">
-            {detail.categories.map((c) => (
-              <View key={c.name} className="gap-1">
-                <View className="flex-row items-center justify-between gap-2">
-                  <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
-                    {c.name}
-                  </Text>
-                  <Money cents={c.spentCents} className="text-xs font-semibold" />
-                </View>
-                <MiniBar barPct={c.barPct} />
-              </View>
-            ))}
-          </Card>
-        </View>
-      ) : null}
+      {/* ── The money surface ────────────────────────────────────────────────
+            A budget linked to an EVENT or PROJECT renders the very same
+            component that ref's own page renders (`MoneyView`, embedded
+            variant — see its `variant` prop). That closes the gap this page
+            was opened for: the event page had income, planned-vs-actual by
+            category, the unallocated remainder, the unplanned-spend warning
+            and the full plan grid, while the budget page — the page you land
+            on from Finances, and the one you'd share — had a flat "where it
+            went" list of actuals and nothing else.
 
-      {/* ── Plan (the SAME PlanGrid budget lines every "edit budget" modal
-            already uses, budget mode) ──────────────────────────────────────── */}
-      <PlanGrid source={{ kind: "budget" }} budgetId={detail.id} capCents={detail.capCents} />
+            Reusing the component rather than re-deriving those figures here is
+            the point: they are the numbers a budget gets judged on, and two
+            implementations of them would agree right up until someone edited
+            one. `refMoney` is gated at finance-viewer, the same floor as this
+            page's own query, so nothing widens by rendering it here.
+
+            A RECURRING budget has no ref and no event plan to union, so it
+            keeps the budget-lines plan grid and the actual-only breakdown it
+            has always had. ──────────────────────────────────────────────── */}
+      {detail.refKind && detail.scopeRefId && detail.refLive ? (
+        <View className="mt-3">
+          <MoneyView
+            refKind={detail.refKind}
+            refId={detail.scopeRefId}
+            variant="embedded"
+          />
+        </View>
+      ) : (
+        <>
+          {detail.categories.length > 0 ? (
+            <View className="mt-5">
+              <SectionHeader title="Where it went" count={detail.categories.length} />
+              <Card className="gap-2.5">
+                {detail.categories.map((c) => (
+                  <View key={c.name} className="gap-1">
+                    <View className="flex-row items-center justify-between gap-2">
+                      <Text className="flex-1 text-xs text-ink" numberOfLines={1}>
+                        {c.name}
+                      </Text>
+                      <Money cents={c.spentCents} className="text-xs font-semibold" />
+                    </View>
+                    <MiniBar barPct={c.barPct} />
+                  </View>
+                ))}
+              </Card>
+            </View>
+          ) : null}
+          <PlanGrid source={{ kind: "budget" }} budgetId={detail.id} capCents={detail.capCents} />
+        </>
+      )}
 
       {/* ── Linked transactions ─────────────────────────────────────────────── */}
       <View className="mt-5">

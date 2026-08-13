@@ -44,10 +44,23 @@ type TxnRowData = MoneyData["transactions"][number];
 export function MoneyView({
   refKind,
   refId,
+  variant = "full",
 }: {
   refKind: "event" | "project";
   refId: string;
+  /**
+   * `"full"` (default) — the whole surface, as the event/project page shows it.
+   *
+   * `"embedded"` — for a host that already renders a budget header and its own
+   * transactions list, i.e. the budget detail page. It drops exactly those two
+   * sections and keeps everything else, so the two pages can't drift: the
+   * planned-vs-actual, unallocated, unplanned and income/net figures a budget
+   * is judged on come from ONE component reading ONE query, rather than a
+   * second implementation that agrees until someone edits one of them.
+   */
+  variant?: "full" | "embedded";
 }) {
+  const embedded = variant === "embedded";
   const router = useRouter();
   const data = useQuery(api.moneyViews.refMoney, { refKind, refId });
   const summonBudget = useMutation(api.finances.summonBudgetForRef);
@@ -173,7 +186,10 @@ export function MoneyView({
 
   return (
     <View>
-      {/* ── Budget header ─────────────────────────────────────────────────── */}
+      {/* ── Budget header — suppressed when embedded: the budget detail page
+            already leads with the same name, cap, approval chip and approval
+            actions, and two of them stacked reads as a bug. ─────────────── */}
+      {embedded ? null : (
       <Card>
         <View className="flex-row items-start justify-between gap-3">
           <View className="flex-1">
@@ -240,6 +256,7 @@ export function MoneyView({
           </View>
         </View>
       </Card>
+      )}
 
       {/* ── Money IN (tickets + donations) — a summary alongside the spend-side
             plan above, not a second reconciliation surface. ─────────────── */}
@@ -347,8 +364,12 @@ export function MoneyView({
         </Pressable>
       ) : null}
 
-      {/* ── Recent linked transactions ────────────────────────────────────── */}
-      {transactions.length > 0 ? (
+      {/* ── Recent linked transactions — suppressed when embedded: the budget
+            detail page lists every linked transaction (not just the first 10)
+            with its own status badges, so showing a shorter duplicate above it
+            would only invite the "which of these is the real list?" question.
+            ────────────────────────────────────────────────────────────────── */}
+      {embedded ? null : transactions.length > 0 ? (
         <>
           <SectionHeader
             title="Recent transactions"

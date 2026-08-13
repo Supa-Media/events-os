@@ -346,6 +346,7 @@ const REGISTRY_NAMES = [
   "0064_release_legacy_card_autolocks",
   "0065_stamp_default_category_expense_hints",
   "0066_stamp_cashback_source_category",
+  "0067_rename_reimbursement_payout_rows",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

@@ -573,6 +573,56 @@ describe("moneyViews.refMoney: category grouping + unplanned bucket", () => {
 
 // ── Multi-budget summing (#171) ──────────────────────────────────────────────
 
+describe("moneyViews.refMoney: sandbox mode", () => {
+  test("drops the other mode's Increase rows, like every other finance surface", async () => {
+    // This view used to count both modes, so its actuals disagreed with the
+    // same budget's numbers on the Finances dashboard and the budget detail
+    // page whenever sandbox was on. The budget detail page now renders this
+    // view directly under its own mode-filtered "spent of cap" card, which
+    // would have put the two contradicting figures an inch apart.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asChapterManager(s);
+    const projectId = await seedProject(s, s.chapterId, "Music Recording");
+    const budgetId = await seedOneTimeBudget(s, s.chapterId, "project", projectId, {
+      amountCents: 100000,
+    });
+
+    // A manual row (mode-agnostic — always counted) plus one Increase row per
+    // mode, distinguished the way `txnMatchesMode` reads them.
+    await seedTxn(s, s.chapterId, budgetId, { amountCents: 5000 });
+    await seedTxn(s, s.chapterId, budgetId, {
+      amountCents: 700,
+      source: "increase_card",
+      externalId: "sandbox_txn_1",
+    });
+    await seedTxn(s, s.chapterId, budgetId, {
+      amountCents: 300,
+      source: "increase_card",
+      externalId: "prod_txn_1",
+    });
+
+    const live = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "project",
+      refId: projectId,
+    });
+    expect(live.totalActualCents).toBe(5300);
+
+    // Flip the setting directly — `setSandboxMode` is superuser-gated and this
+    // test is about the read path, not that gate.
+    await run(s.t, async (ctx) => {
+      const settings = await ctx.db.query("financeSettings").first();
+      if (settings) await ctx.db.patch(settings._id, { sandboxMode: true });
+      else await ctx.db.insert("financeSettings", { sandboxMode: true, updatedAt: Date.now() });
+    });
+    const sandboxed = await s.as.query(api.moneyViews.refMoney, {
+      refKind: "project",
+      refId: projectId,
+    });
+    expect(sandboxed.totalActualCents).toBe(5700);
+  });
+});
+
 describe("moneyViews.refMoney: multi-budget summing", () => {
   test("sums allocated + actual across every by_ref budget, header uses the earliest-created", async () => {
     const t = newT();
