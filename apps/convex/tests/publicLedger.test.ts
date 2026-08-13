@@ -1241,6 +1241,37 @@ describe("a pre-policy month discloses what a reader can see", () => {
     expect(coded!.purpose).toBe("Van to move gear for the June outdoor night");
   });
 
+  test("a donation received is not counted as a missing explanation", async () => {
+    // Founder, 2026-08-13: the published page disclosed "1 line ($7,000.00)
+    // publishes with no written explanation of what it was for" — about a
+    // DONATION. The guard was `direction !== "internal"`, and a plain inflow's
+    // direction is `"in"`, so a gift arriving was reported to the public as
+    // spending the org couldn't account for.
+    const s = await asPublisher();
+    await pinPolicy(s);
+    await insertTxn(s, {
+      flow: "inflow",
+      amountCents: 700_000,
+      postedAt: Date.UTC(2024, 5, 26, 16),
+      merchantName: "A generous person",
+    });
+    await insertTxn(s, {
+      amountCents: 4_000,
+      postedAt: Date.UTC(2024, 5, 14, 16),
+      merchantName: "U-Haul",
+    });
+    await publishMonth(s, "2024-06");
+
+    const statement = (await statementOf(s, "2024-06"))!;
+    // The U-Haul charge, and only it.
+    expect(statement.unexplainedCount).toBe(1);
+    expect(statement.unexplainedCents).toBe(4_000);
+    // The gift still PUBLISHES — it just isn't held to an expense report.
+    expect(
+      statement.entries.some((e) => e.counterparty === "A generous person"),
+    ).toBe(true);
+  });
+
   test("an internal movement is not counted as a missing explanation", async () => {
     const s = await asPublisher();
     await pinPolicy(s);
