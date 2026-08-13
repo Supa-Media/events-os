@@ -38,6 +38,7 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Pressable, Text, View } from "react-native";
 import {
   ATTENDEE_AFFILIATIONS,
@@ -58,6 +59,7 @@ import {
   overrideExpenseType,
   type ExpenseTypeChipState,
 } from "./deriveExpenseType";
+import { parseAttendeePaste } from "./attendeePaste";
 import type { ReimbursementPrefillPlan } from "./reimbursementPrefill";
 
 /** The category context a host offers the chip row, if any:
@@ -140,6 +142,39 @@ export interface CodingFormState {
   setRow: (
     index: number,
     patch: Partial<{ name: string; affiliation: AttendeeAffiliation }>,
+  ) => void;
+  /** BULK ATTENDEE ENTRY (founder, 2026-08-12): remove one row, shifting the
+   *  rest up. THE HEADCOUNT/ROWS CONSISTENCY RULE: `rows` is always sized to
+   *  `Math.min(headcount, namesMaxHeadcount)`, and this is only reachable
+   *  while `namesMode === true` — which itself requires `headcount <=
+   *  namesMaxHeadcount` — so at the moment this runs, `rows.length` always
+   *  equals `headcount` exactly. Removing a row therefore always means one
+   *  fewer expected attendee, so headcount comes down by one too. The
+   *  equality is checked explicitly rather than assumed, so a future change
+   *  that decouples `rows` from `headcount` fails safe (no headcount edit)
+   *  instead of silently under-counting. Counts as touched, like every
+   *  other content edit. */
+  removeAttendeeRow: (index: number) => void;
+  /** "Start with the team" (founder: "even a way to start the list with the
+   *  team, and then remove who maybe wasn't there and add who was there") —
+   *  fill blank rows from the roster's team members, affiliation `"team"`.
+   *  SAME INTERPLAY RULE, the fill-in direction: if headcount is empty, it's
+   *  SET to the filled count (capped at `namesMaxHeadcount` so this doesn't
+   *  immediately flip the section into group-description mode); if headcount
+   *  is already typed, this fills `min(team.length, headcount)` rows and
+   *  leaves any remaining rows blank for the coder to add by hand. A no-op
+   *  on an empty team. (Under the current headcount-first flow this only
+   *  ever renders once headcount is already set — the empty-headcount branch
+   *  is defensive, not dead: it's what keeps the rule correct if a future
+   *  host ever offers this button before headcount is typed.) */
+  startWithTeam: (team: { name: string }[]) => void;
+  /** "Paste a list" — append parsed rows from `attendeePaste.ts`, growing
+   *  headcount to match the new total. The parser is expected to have
+   *  already deduped against the form's existing names (pass them as
+   *  `existingNames`); this re-checks defensively so a caller that skips
+   *  that never doubles a row. A no-op when nothing new survives the dedupe. */
+  appendAttendees: (
+    parsed: { name: string; affiliation: AttendeeAffiliation }[],
   ) => void;
   groupDescription: string;
   setGroupDescription: (s: string) => void;
@@ -265,6 +300,47 @@ export function useCodingFormState({
     setAttendees(rows.map((r, i) => (i === index ? { ...r, ...patch } : r)));
   }
 
+  /** See the `removeAttendeeRow` interface doc for the headcount rule. */
+  function removeAttendeeRow(index: number) {
+    setAttendees(rows.filter((_, i) => i !== index));
+    if (headcount != null && rows.length === headcount) {
+      setHeadcountRaw(String(Math.max(0, headcount - 1)));
+    }
+  }
+
+  /** See the `startWithTeam` interface doc for the headcount rule. */
+  function startWithTeam(team: { name: string }[]) {
+    if (team.length === 0) return;
+    if (headcount == null) {
+      const capped = Math.min(team.length, namesMaxHeadcount);
+      setHeadcountRaw(String(capped));
+      setAttendees(
+        team.slice(0, capped).map((p) => ({ name: p.name, affiliation: "team" as const })),
+      );
+      return;
+    }
+    const capped = Math.min(team.length, headcount);
+    const filled = team
+      .slice(0, capped)
+      .map((p) => ({ name: p.name, affiliation: "team" as const }));
+    setAttendees([...filled, ...rows.slice(capped)]);
+  }
+
+  function appendAttendees(
+    parsed: { name: string; affiliation: AttendeeAffiliation }[],
+  ) {
+    const existing = rows.filter((r) => r.name.trim().length > 0);
+    const existingLower = new Set(
+      existing.map((r) => r.name.trim().toLowerCase()),
+    );
+    const additions = parsed.filter(
+      (p) => !existingLower.has(p.name.trim().toLowerCase()),
+    );
+    if (additions.length === 0) return;
+    setAttendees([...existing, ...additions]);
+    setHeadcountRaw(String(existing.length + additions.length));
+  }
+
   const value: CodingFormValue | null =
     expenseType == null
       ? null
@@ -362,6 +438,20 @@ export function useCodingFormState({
       setTouched(true);
       setRow(index, patch);
     },
+    removeAttendeeRow: (index) => {
+      setTouched(true);
+      removeAttendeeRow(index);
+    },
+    startWithTeam: (team) => {
+      if (team.length === 0) return;
+      setTouched(true);
+      startWithTeam(team);
+    },
+    appendAttendees: (parsed) => {
+      if (parsed.length === 0) return;
+      setTouched(true);
+      appendAttendees(parsed);
+    },
     groupDescription,
     setGroupDescription: (s) => {
       setTouched(true);
@@ -455,6 +545,7 @@ export function CodingFieldSet({
   form,
   minPurposeLength,
   personalChargeSlot,
+  transactionId,
 }: {
   form: CodingFormState;
   minPurposeLength: number;
@@ -463,6 +554,13 @@ export function CodingFieldSet({
    *  Omitted by hosts with no such affordance (e.g. a reviewer coding on
    *  someone else's behalf). */
   personalChargeSlot?: ReactNode;
+  /** The charge being coded — needed only to fetch `attendeeSuggestions`
+   *  (the roster "Start with the team" / name-suggestion chips autofill
+   *  from) once the meal-attendee editor renders. Both current hosts
+   *  (`TransactionCodingModal`, `FinishChargeSheetBody`) always have this in
+   *  scope, so it's required rather than optional — a host with no
+   *  transaction to code has nothing to submit a coding for either. */
+  transactionId: Id<"transactions">;
 }) {
   const { expenseType } = form;
   const budgetOptions = useQuery(api.transactionCodings.budgetOptions, {});
@@ -653,48 +751,7 @@ export function CodingFieldSet({
                   volunteers, 1 guest&quot; — never who they were.
                 </Text>
               </View>
-              <View className="gap-2">
-                {form.rows.map((row, i) => (
-                  <View
-                    key={i}
-                    className="rounded-lg border border-border bg-sunken px-3 py-2"
-                  >
-                    <TextField
-                      value={row.name}
-                      onChangeText={(name) => form.setRow(i, { name })}
-                      placeholder={`Person ${i + 1}`}
-                    />
-                    <RadioGroup
-                      accessibilityLabel={`Affiliation for person ${i + 1}`}
-                      horizontal
-                      className="mt-1.5 flex-row flex-wrap gap-1.5"
-                    >
-                      {ATTENDEE_AFFILIATIONS.map((a) => {
-                        const selected = row.affiliation === a;
-                        return (
-                          <Radio
-                            key={a}
-                            checked={selected}
-                            onSelect={() => form.setRow(i, { affiliation: a })}
-                            accessibilityLabel={ATTENDEE_AFFILIATION_LABELS[a]}
-                            className={`rounded-full border px-2 py-0.5 active:opacity-70 ${
-                              selected
-                                ? "border-accent bg-accent/10"
-                                : "border-border"
-                            }`}
-                          >
-                            <Text
-                              className={`text-2xs ${selected ? "font-medium text-ink" : "text-muted"}`}
-                            >
-                              {ATTENDEE_AFFILIATION_LABELS[a]}
-                            </Text>
-                          </Radio>
-                        );
-                      })}
-                    </RadioGroup>
-                  </View>
-                ))}
-              </View>
+              <AttendeeRosterEditor form={form} transactionId={transactionId} />
             </View>
           ) : null}
           {form.namesMode === false ? (
@@ -720,6 +777,241 @@ export function CodingFieldSet({
         </View>
       ) : null}
     </>
+  );
+}
+
+/** The affiliation a freshly-appended row without one of its own should
+ *  carry — the LAST row with a name, walking backward so the most recently
+ *  entered person's affiliation wins (`attendeePaste.ts`'s own `parseAttendeePaste`
+ *  applies the same "carries forward" idea within one paste; this is the
+ *  form-level seed for it). `undefined` when nothing has a name yet, which
+ *  the parser itself falls back to `"team"` for. */
+function lastUsedAffiliation(
+  rows: readonly { name: string; affiliation: AttendeeAffiliation }[],
+): AttendeeAffiliation | undefined {
+  for (let i = rows.length - 1; i >= 0; i--) {
+    if (rows[i].name.trim().length > 0) return rows[i].affiliation;
+  }
+  return undefined;
+}
+
+/**
+ * BULK ATTENDEE ENTRY (founder, 2026-08-12): "entering in names is such a
+ * pain… allow me to copy and paste a csv list of people or a line broken
+ * list of people with a way to easily delete rows, and even a way to
+ * autofill based on the people database… even a way to start the list with
+ * the team, and then remove who maybe wasn't there and add who was there."
+ * The roster editor for one meal's attendee rows — every affordance this ask
+ * named, layered onto the same `form.rows`/`form.setRow` the plain per-row
+ * editor always used:
+ *  - "Start with the team" — `form.startWithTeam`, from `attendeeSuggestions`.
+ *  - a per-row ✕ delete — `form.removeAttendeeRow`.
+ *  - "Paste a list" — a reveal-on-demand multiline field that runs
+ *    `parseAttendeePaste` and appends via `form.appendAttendees`.
+ *  - per-row name suggestion chips as you type — team members not already
+ *    listed, prefix-matched, capped at 5.
+ *
+ * No portal/popover anywhere — a wrap row of small `Pressable` chips, same
+ * language the affiliation radios in this file already use.
+ */
+function AttendeeRosterEditor({
+  form,
+  transactionId,
+}: {
+  form: CodingFormState;
+  transactionId: Id<"transactions">;
+}) {
+  const suggestions = useQuery(api.transactionCodings.attendeeSuggestions, {
+    transactionId,
+  });
+  const team = suggestions ?? [];
+  const [pasteOpen, setPasteOpen] = useState(false);
+  const [pasteText, setPasteText] = useState("");
+
+  const allRowsBlank = form.rows.every((r) => r.name.trim().length === 0);
+
+  return (
+    <View className="gap-2">
+      {allRowsBlank && team.length > 0 ? (
+        <Button
+          title={`Start with the team (${team.length})`}
+          variant="secondary"
+          size="sm"
+          icon="users"
+          onPress={() => form.startWithTeam(team)}
+        />
+      ) : null}
+
+      <View className="gap-2">
+        {form.rows.map((row, i) => (
+          <View
+            key={i}
+            className="rounded-lg border border-border bg-sunken px-3 py-2"
+          >
+            <View className="flex-row items-center gap-2">
+              <View className="flex-1">
+                <TextField
+                  value={row.name}
+                  onChangeText={(name) => form.setRow(i, { name })}
+                  placeholder={`Person ${i + 1}`}
+                />
+              </View>
+              <Pressable
+                onPress={() => form.removeAttendeeRow(i)}
+                accessibilityRole="button"
+                accessibilityLabel={`Remove ${row.name.trim() || `person ${i + 1}`}`}
+                className="rounded-full p-1.5 active:opacity-70"
+              >
+                <Icon name="x" size={14} color={colors.muted} />
+              </Pressable>
+            </View>
+            <NameSuggestionChips
+              typed={row.name}
+              index={i}
+              rows={form.rows}
+              team={team}
+              onPick={(name) => form.setRow(i, { name })}
+            />
+            <RadioGroup
+              accessibilityLabel={`Affiliation for person ${i + 1}`}
+              horizontal
+              className="mt-1.5 flex-row flex-wrap gap-1.5"
+            >
+              {ATTENDEE_AFFILIATIONS.map((a) => {
+                const selected = row.affiliation === a;
+                return (
+                  <Radio
+                    key={a}
+                    checked={selected}
+                    onSelect={() => form.setRow(i, { affiliation: a })}
+                    accessibilityLabel={ATTENDEE_AFFILIATION_LABELS[a]}
+                    className={`rounded-full border px-2 py-0.5 active:opacity-70 ${
+                      selected ? "border-accent bg-accent/10" : "border-border"
+                    }`}
+                  >
+                    <Text
+                      className={`text-2xs ${selected ? "font-medium text-ink" : "text-muted"}`}
+                    >
+                      {ATTENDEE_AFFILIATION_LABELS[a]}
+                    </Text>
+                  </Radio>
+                );
+              })}
+            </RadioGroup>
+          </View>
+        ))}
+      </View>
+
+      {pasteOpen ? (
+        <View className="gap-1.5 rounded-md border border-border bg-sunken px-3 py-2">
+          <TextField
+            value={pasteText}
+            onChangeText={setPasteText}
+            placeholder={'One name per line, or "Name, affiliation" per line'}
+            multiline
+            numberOfLines={4}
+          />
+          <View className="flex-row gap-2">
+            <Button
+              title="Add these people"
+              size="sm"
+              disabled={pasteText.trim().length === 0}
+              onPress={() => {
+                const parsed = parseAttendeePaste(pasteText, {
+                  existingNames: form.rows
+                    .map((r) => r.name)
+                    .filter((n) => n.trim().length > 0),
+                  lastAffiliation: lastUsedAffiliation(form.rows),
+                });
+                form.appendAttendees(parsed);
+                setPasteText("");
+                setPasteOpen(false);
+              }}
+            />
+            <Button
+              title="Cancel"
+              size="sm"
+              variant="secondary"
+              onPress={() => {
+                setPasteOpen(false);
+                setPasteText("");
+              }}
+            />
+          </View>
+        </View>
+      ) : (
+        <Pressable
+          onPress={() => setPasteOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="Paste a list of people"
+          className="flex-row items-center gap-1.5 self-start active:opacity-70"
+        >
+          <Icon name="clipboard" size={13} color={colors.accent} />
+          <Text className="text-2xs font-semibold text-accent">Paste a list</Text>
+        </Pressable>
+      )}
+    </View>
+  );
+}
+
+/** Suggestion chips beneath one row's name field — team members not already
+ *  listed elsewhere on this form, whose name starts with what's typed here
+ *  (case-insensitive), capped at 5. TRIGGERED BY TYPING, not focus: the
+ *  shared `TextField` claims `onFocus`/`onBlur` itself for its border
+ *  styling and would drop that behavior if a caller also passed its own
+ *  (React's `{...spread}` ordering means the last one wins) — typing is a
+ *  reliable, styling-safe signal that reads the same "as you go" way the ask
+ *  wanted. Renders nothing once the row already spells a name out in full
+ *  (nothing left to suggest) or once nothing typed yet (nothing to narrow
+ *  down from — nobody wants all 40 team members on Day 1). */
+function NameSuggestionChips({
+  typed,
+  index,
+  rows,
+  team,
+  onPick,
+}: {
+  typed: string;
+  index: number;
+  rows: readonly { name: string; affiliation: AttendeeAffiliation }[];
+  team: readonly { name: string; isTeamMember: boolean }[];
+  onPick: (name: string) => void;
+}) {
+  const needle = typed.trim().toLowerCase();
+  if (!needle) return null;
+
+  const alreadyListedElsewhere = new Set(
+    rows
+      .filter((_, i) => i !== index)
+      .map((r) => r.name.trim().toLowerCase())
+      .filter((n) => n.length > 0),
+  );
+  const matches = team
+    .filter((p) => {
+      const lower = p.name.trim().toLowerCase();
+      return (
+        lower.startsWith(needle) &&
+        lower !== needle &&
+        !alreadyListedElsewhere.has(lower)
+      );
+    })
+    .slice(0, 5);
+  if (matches.length === 0) return null;
+
+  return (
+    <View className="mt-1.5 flex-row flex-wrap gap-1.5">
+      {matches.map((p) => (
+        <Pressable
+          key={p.name}
+          onPress={() => onPick(p.name)}
+          accessibilityRole="button"
+          accessibilityLabel={`Use ${p.name}`}
+          className="rounded-full border border-border bg-raised px-2 py-0.5 active:opacity-70"
+        >
+          <Text className="text-2xs text-muted">{p.name}</Text>
+        </Pressable>
+      ))}
+    </View>
   );
 }
 

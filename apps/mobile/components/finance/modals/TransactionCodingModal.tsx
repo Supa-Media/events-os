@@ -45,6 +45,7 @@ import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import { formatCents, type AttendeeAffiliation, type ExpenseType } from "@events-os/shared";
 import type { FunctionReturnType } from "convex/server";
 import type { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Button, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import {
@@ -73,6 +74,7 @@ const DOCUMENTATION_PROBLEM = {
 };
 
 export function TransactionCodingModal({
+  transactionId,
   merchantLine,
   amountCents,
   namesMaxHeadcount,
@@ -91,6 +93,9 @@ export function TransactionCodingModal({
   onConfirm,
   onCancel,
 }: {
+  /** The charge being coded — threaded through to `CodingFieldSet` for its
+   *  `attendeeSuggestions` roster fetch. */
+  transactionId: Id<"transactions">;
   /** Context line shown at the top — merchant + date, never editable here. */
   merchantLine: string;
   amountCents: number;
@@ -316,6 +321,7 @@ export function TransactionCodingModal({
 
               <CodingFieldSet
                 form={form}
+                transactionId={transactionId}
                 minPurposeLength={minPurposeLength}
                 personalChargeSlot={
                   personalCharge ? <PersonalChargeEscape {...personalCharge} /> : null

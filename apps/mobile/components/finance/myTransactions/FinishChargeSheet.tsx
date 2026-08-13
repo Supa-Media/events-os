@@ -825,6 +825,7 @@ export function FinishChargeSheetBody({
                       <ExpenseTypeChips form={form} category={category} />
                       <CodingFieldSet
                         form={form}
+                        transactionId={transactionId}
                         minPurposeLength={data?.minPurposeLength ?? 20}
                         personalChargeSlot={
                           isCardCharge ? (
