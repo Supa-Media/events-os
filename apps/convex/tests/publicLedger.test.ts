@@ -131,6 +131,9 @@ type TxnFixture = Partial<{
   feeOrigin: "stripe_processing" | "givebutter_processing";
   isPersonal: boolean;
   personId: Id<"people">;
+  sourceCategory: string;
+  source: "manual" | "increase_ach";
+  externalId: string;
 }>;
 
 async function insertTxn(
@@ -140,7 +143,7 @@ async function insertTxn(
   return run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: s.chapterId,
-      source: "manual",
+      source: f.source ?? "manual",
       flow: f.flow ?? "outflow",
       amountCents: f.amountCents ?? 1000,
       postedAt: f.postedAt ?? AUG_2026,
@@ -152,6 +155,8 @@ async function insertTxn(
       feeOrigin: f.feeOrigin,
       isPersonal: f.isPersonal,
       personId: f.personId,
+      sourceCategory: f.sourceCategory,
+      externalId: f.externalId,
       createdAt: Date.now(),
     }),
   );
@@ -1377,16 +1382,26 @@ describe("explaining a month", () => {
     await markPersonal(s, unpaid, "pending");
     const repaid = await insertTxn(s, { amountCents: 3_000, merchantName: "Uber" });
     await markPersonal(s, repaid, "paid");
+    // A bank cashback payment (owner, 2026-08-13: "just auto code these ones
+    // as well") — an inflow, keyed on the provider's own category.
+    await insertTxn(s, {
+      amountCents: 71,
+      flow: "inflow",
+      merchantName: "Increase",
+      source: "increase_ach",
+      sourceCategory: "cashback_payment",
+    });
 
     // The worklist offers ONLY the row a human can actually explain — the
-    // fee and both personal charges are out of the rows AND the denominator.
+    // fee, both personal charges, and the cashback are out of the rows AND
+    // the denominator.
     const list = (await worklist(s, AUG_KEY))!;
     expect(list.rows).toHaveLength(1);
     expect(list.rows[0].merchantName).toBe("Costco");
     expect(list.totalCount).toBe(1);
     expect(list.totalCents).toBe(5_000);
 
-    // The publish preview agrees: one unexplained row, not four.
+    // The publish preview agrees: one unexplained row, not five.
     const totals = await s.as.query(api.publicLedger.preview, {
       periodKey: AUG_KEY,
     });
@@ -1409,6 +1424,7 @@ describe("explaining a month", () => {
       "Accidental personal charge — awaiting repayment.",
     );
     expect(by("Uber")?.purpose).toBe("Accidental personal charge — paid back.");
+    expect(by("Increase")?.purpose).toContain("Card cashback");
     expect(by("Costco")?.purpose).toBeNull();
   });
 

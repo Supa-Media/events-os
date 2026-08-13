@@ -1739,19 +1739,32 @@ export function personalExpenseState(
 //    charge, paid back (if paid), and awaiting repayment (if we are waiting
 //    for repayment)".
 //
-// Internal movements (transfers, payout deposits) are a THIRD self-explaining
+//  - a CASHBACK payment (`sourceCategory === "cashback_payment"` — the bank's
+//    own classification, stored verbatim at ingestion): the card program
+//    handing back a slice of card spend. Owner, 2026-08-13: "there's
+//    literally nothing for me to code there. It's just money back… auto code
+//    these ones as well."
+//
+// Internal movements (transfers, payout deposits) are another self-explaining
 // class, but they already sign to zero (`signedBookCents`) and are excluded
 // by the `direction !== "internal"` / `signed === 0` checks everywhere — this
-// classification covers the two classes that are real money out and so can't
-// be caught by the zero test.
-export type AutoExplainedKind = "fee" | "personal";
+// classification covers the classes that carry real signed money and so
+// can't be caught by the zero test.
+export type AutoExplainedKind = "fee" | "personal" | "cashback";
+
+/** Increase's `source.category` for a cashback payment — the ONE value the
+ *  cashback classification keys on. A positive marker, never a
+ *  description-text inference (`processorFees.ts`'s `feeOrigin` rule). */
+export const CASHBACK_SOURCE_CATEGORY = "cashback_payment";
 
 export function autoExplainedKind(tr: {
   feeOrigin?: unknown;
   isPersonal?: boolean;
+  sourceCategory?: string | null;
 }): AutoExplainedKind | null {
   if (tr.feeOrigin != null) return "fee";
   if (tr.isPersonal === true) return "personal";
+  if (tr.sourceCategory === CASHBACK_SOURCE_CATEGORY) return "cashback";
   return null;
 }
 
@@ -1765,6 +1778,9 @@ export function autoExplanationLine(
 ): string {
   if (kind === "fee") {
     return "Payment processing fees — charged by the processor on money already accepted, itemized in the processor's own ledger. Not a purchase anyone made, so there is no receipt.";
+  }
+  if (kind === "cashback") {
+    return "Card cashback paid by the bank — a slice of card spend returned by the card program. Not a sale and not anyone's purchase.";
   }
   return personalState === "personal_reimbursed"
     ? "Accidental personal charge — paid back."
