@@ -637,7 +637,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "table",
         headers: ["Day", "What happens"],
         rows: [
-          ["Day of charge", "Charge appears in My Transactions, receipt missing"],
+          ["Day of charge", "Charge appears on your own page at /code, receipt missing"],
           ["Day 1–3", "A reminder nudges you if the receipt still isn't attached"],
           ["Day 3+", "The reminder escalates — now a flagged charge, visible to your Treasurer"],
           ["Day 7", "No receipt yet → your card **locks automatically**. Uploading the receipt unlocks it immediately."],
@@ -707,13 +707,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "You emailed a receipt in on Monday. On Friday the charge still reads as missing its receipt. What's happening?",
         options: [
           "A bug — an emailed receipt attaches itself to the matching charge",
-          "It's in the receipts library waiting on you: the app offers it as a match when you open that charge in My Transactions, and one tap attaches it",
+          "It's in the receipts library waiting on you: the app offers it as a match when you open that charge at /code, and one tap attaches it",
           "Emailed receipts take about a week to process",
           "That address only works for reimbursements",
         ],
         answerIndex: 1,
         explanation:
-          "Emailing CAPTURES the receipt — the half worth doing at the counter, often before the charge has even posted. It doesn't decide which charge the receipt belongs to; you do, in one tap, in My Transactions (your own mini-reconcile: receipts, coding, and flagging your own charges, no finance seat needed). Until that tap, the receipt is still missing and the 7-day clock is still running.",
+          "Emailing CAPTURES the receipt — the half worth doing at the counter, often before the charge has even posted. It doesn't decide which charge the receipt belongs to; you do, in one tap, at /code (your own page: receipts, coding, and flagging your own charges — no finance seat needed, and the link works even if you have never opened the rest of the app). Until that tap, the receipt is still missing and the 7-day clock is still running.",
       },
       {
         prompt:
@@ -776,7 +776,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**File it where you code the charge.** It isn't a separate screen or a separate errand: open the charge in My Transactions, and the same sheet that asks what the money was for holds the no-receipt path. One sitting, one act.",
+          "**File it where you code the charge.** It isn't a separate screen or a separate errand: open the charge at /code, and the same sheet that asks what the money was for holds the no-receipt path. One sitting, one act.",
           "**Pick the reason, don't type one.** No receipt was issued · Receipt lost · Predates the receipt policy · Vendor can't reproduce it · Bank record only. \"Missing\" and \"unattainable\" aren't different states — they're different reasons, and the ledger should say which.",
           "**Write what it was for.** This is the part that actually gets published in place of the document, under your name. \"Cash tip for the sound engineer at the Aug 2 outdoor service — $40, agreed with Kansi beforehand\" is a real record. \"n/a\" is not, and the app won't take it.",
           "**Attach proof if it exists — up to 5 files.** You often can't get the receipt but you can absolutely get *something*: photos of the flowers at the event, a bank statement line, an order confirmation email, a picture of what you bought.",
@@ -970,7 +970,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         rows: [
           [
             "Day of charge",
-            "The charge lands in My Transactions, uncoded. Code it here and none of the rest of this table ever happens.",
+            "The charge lands on your own page at /code, uncoded. Code it here and none of the rest of this table ever happens.",
           ],
           [
             "Day 1–3",
@@ -1125,7 +1125,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
-          "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal on My Transactions, or a manager flags it for you from the Reconcile grid (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Reconciled AND an unpaid personal expense at the same time.",
+          "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Reconcile grid (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Reconciled AND an unpaid personal expense at the same time.",
           "**Pay it back by card or by bank:** once flagged, pay it back instantly by card (real-time, via Stripe Checkout) or by linking your bank account (ACH). Either way the flag only actually clears to \"repaid\" once the payment is CONFIRMED — closing the tab on a card payment without finishing it leaves the charge exactly as owed as before.",
           "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once it's marked repaid, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
           "**Both directions live in one place:** the Reimbursements tab shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",

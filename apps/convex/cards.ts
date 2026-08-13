@@ -3142,7 +3142,11 @@ export const notifyCodingSentBack = internalAction({
         `<div style="${emailTextStyle({ strong: true })}"><b>What to change:</b> ${escapeHtml(contact.reviewNote)}</div>`,
         { dashed: true },
       );
-      const link = appUrl("/finances/coding?filter=uncoded");
+      // `/code` — the spender's own page, no app chrome and no finance seat
+      // required. The recipient of a send-back is a cardholder, not a
+      // reviewer; they should land on their charges, not next to a queue of
+      // other people's.
+      const link = appUrl("/code?filter=uncoded");
       await sendEmail(ctx, {
         to: contact.email,
         subject,
@@ -4505,7 +4509,7 @@ async function notifyReceiptDigest(
   // The cardholder's OWN list, pre-filtered to what they owe — where the
   // coding sheet (purpose, people, receipt) lives. Null (omitted) when APP_URL
   // is unset.
-  const link = appUrl("/finances/coding?filter=uncoded");
+  const link = appUrl("/code?filter=uncoded");
   await sendEmail(ctx, {
     to: digest.email,
     subject,
