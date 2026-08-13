@@ -453,6 +453,24 @@ describe("autoExplainedKind", () => {
     expect(autoExplainedKind({ feeOrigin: null })).toBeNull();
   });
 
+  test("both legs of a marked refund pair are auto-explained — the purchase un-happened", () => {
+    // Owner, 2026-08-13: "if something's refunded, why are we coding it and
+    // categorizing it? Doesn't really make sense."
+    expect(autoExplainedKind({ refundedByTransactionId: "txn1" })).toBe(
+      "refunded_charge",
+    );
+    expect(autoExplainedKind({ refundsTransactionId: "txn2" })).toBe(
+      "refund_credit",
+    );
+    // Refund outranks personal: a personal-flagged charge the merchant
+    // refunded in full reads "refunded", the truer headline.
+    expect(
+      autoExplainedKind({ isPersonal: true, refundedByTransactionId: "txn1" }),
+    ).toBe("refunded_charge");
+    expect(autoExplanationLine("refunded_charge")).toContain("Refunded in full");
+    expect(autoExplanationLine("refund_credit")).toContain("refund received");
+  });
+
   test("a bank cashback payment is auto-explained — keyed on the provider's own category, never on text", () => {
     // Owner, 2026-08-13: "there's literally nothing for me to code there.
     // It's just money back… auto code these ones as well."

@@ -1391,6 +1391,26 @@ describe("explaining a month", () => {
       source: "increase_ach",
       sourceCategory: "cashback_payment",
     });
+    // A marked refund pair (owner, 2026-08-13: "if something's refunded, why
+    // are we coding it?") — both legs auto-explained, neither in the
+    // worklist.
+    const refundedCharge = await insertTxn(s, {
+      amountCents: 8_800,
+      merchantName: "Peerspace",
+    });
+    const refundCredit = await insertTxn(s, {
+      amountCents: 8_800,
+      flow: "inflow",
+      merchantName: "Peerspace refund",
+    });
+    await run(s.t, async (ctx) => {
+      await ctx.db.patch(refundedCharge, {
+        refundedByTransactionId: refundCredit,
+      });
+      await ctx.db.patch(refundCredit, {
+        refundsTransactionId: refundedCharge,
+      });
+    });
 
     // The worklist offers ONLY the row a human can actually explain — the
     // fee, both personal charges, and the cashback are out of the rows AND
@@ -1425,6 +1445,8 @@ describe("explaining a month", () => {
     );
     expect(by("Uber")?.purpose).toBe("Accidental personal charge — paid back.");
     expect(by("Increase")?.purpose).toContain("Card cashback");
+    expect(by("Peerspace")?.purpose).toContain("Refunded in full");
+    expect(by("Peerspace refund")?.purpose).toContain("refund received");
     expect(by("Costco")?.purpose).toBeNull();
   });
 
