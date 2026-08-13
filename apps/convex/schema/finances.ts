@@ -661,6 +661,13 @@ export const transactions = defineTable({
   .index("by_chapter_and_postedAt", ["chapterId", "postedAt"])
   .index("by_chapter_and_status", ["chapterId", "status"])
   .index("by_chapter_and_last4", ["chapterId", "cardLast4"])
+  // Recurring-charge detection for coding ("same vendor, same amount, every
+  // month" — founder, 2026-08-12): finds a chapter's other charges at the
+  // SAME merchant, newest first, so `transactionCodings.getForTransaction`
+  // can offer up a prior APPROVED coding at that vendor to copy from. Not
+  // `by_chapter_and_postedAt` + a JS filter — a vendor's charges can be a
+  // small fraction of a chapter's total transaction volume.
+  .index("by_chapter_and_merchant", ["chapterId", "merchantName", "postedAt"])
   .index("by_external_id", ["externalId"])
   .index("by_card", ["cardId"])
   .index("by_fund", ["fundId"])

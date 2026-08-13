@@ -142,8 +142,122 @@ const reimbursementLineContext = v.object({
   travelTo: v.union(v.string(), v.null()),
   headcount: v.union(v.number(), v.null()),
   attendees: v.union(v.array(attendeeValidator), v.null()),
+  /** True ONLY when this line actually HAS attendees and the caller lacks
+   *  names-view — i.e. `attendees` is `null` BECAUSE it was redacted, not
+   *  because the line is in group-description mode (>15 heads) or has no
+   *  meal attendees at all. Without this, a caller WITH full names-view sees
+   *  a false "names not shown to you" claim on a large-group line that never
+   *  had names to redact in the first place. */
+  attendeesRedacted: v.boolean(),
   groupDescription: v.union(v.string(), v.null()),
 });
+
+/** One prior APPROVED coding at the same vendor+chapter as this transaction —
+ *  see `priorApprovedCoding`'s own doc just below for why. Same field set as
+ *  `reimbursementLineContext` where the shapes overlap, plus the vendor facts
+ *  (`merchantName`/`postedAt`/`amountCents`/`amountMatches`) a coder needs to
+ *  tell "same subscription" from "same store, different thing". */
+const priorCodingContext = v.object({
+  transactionId: v.id("transactions"),
+  expenseType: expenseTypeValidator,
+  businessPurpose: v.string(),
+  travelFrom: v.union(v.string(), v.null()),
+  travelTo: v.union(v.string(), v.null()),
+  headcount: v.union(v.number(), v.null()),
+  attendees: v.union(v.array(attendeeValidator), v.null()),
+  /** Same distinction as `reimbursementLineContext.attendeesRedacted`: true
+   *  ONLY when the prior coding row actually HAS attendees and the caller
+   *  lacks names-view on the PRIOR transaction — never true for a
+   *  group-description (>15 heads) row, which never had names to redact. */
+  attendeesRedacted: v.boolean(),
+  groupDescription: v.union(v.string(), v.null()),
+  merchantName: v.string(),
+  postedAt: v.number(),
+  amountCents: v.number(),
+  amountMatches: v.boolean(),
+});
+
+/**
+ * "You've coded this vendor before" — a prior APPROVED coding at the same
+ * merchant, in the same chapter's book, for a coder to copy from (founder,
+ * 2026-08-12): "sometimes there are recurring charges, like subscriptions
+ * same exact amount and vendor etc, when coding one it should be smart to
+ * auto suggest the coding."
+ *
+ * ONLY an APPROVED prior coding counts. `submitted`/`changes_requested` rows
+ * haven't cleared separation-of-duties review yet — surfacing an unreviewed
+ * coding as a model to copy would launder one uncertain guess into two.
+ * `approved` carries a second person's (or a recorded single-party) sign-off,
+ * which is what makes it safe to hold up as a precedent.
+ *
+ * THE SAME DOCTRINE AS `reimbursementCodingContext`, applied across charges
+ * instead of within one: this is a HUMAN's prior words, never machine-
+ * composed text, and it only ever reaches the form on an explicit tap
+ * (`PriorCodingBlock`'s "Use this coding") — never silently. The difference
+ * from `reimbursementCodingContext` is what the words are ABOUT: that helper
+ * carries the SAME person's testimony about THIS EXACT charge; this one
+ * carries a DIFFERENT charge's testimony offered as an analogy, which is why
+ * it can never be prefill — only an explicit copy.
+ *
+ * ACCESS: attendee names are redacted by the SAME `hasCodingNamesView` rule a
+ * coding's own `attendees` field gets, but evaluated against the PRIOR
+ * transaction's OWN id — a caller's names-view on THIS charge says nothing
+ * about whether they may see who was at a DIFFERENT charge's meal.
+ */
+async function priorApprovedCoding(
+  ctx: QueryCtx,
+  txn: Doc<"transactions">,
+): Promise<Infer<typeof priorCodingContext> | null> {
+  const merchantName = txn.merchantName;
+  if (!merchantName) return null;
+  // Newest first, bounded. NOT `CODING_SCAN_LIMIT` — this widens to 100
+  // (review finding, 2026-08-13): a vendor with 20+ newer UNCODED or
+  // not-yet-approved charges was hiding an older APPROVED coding behind the
+  // window, returning `null` indistinguishably from "never coded this
+  // vendor". The per-candidate `by_transaction` lookup below already returns
+  // on the FIRST approved hit, so the worst case is ~100 transaction reads +
+  // ~100 coding lookups — bounded, and fine per the query guidelines.
+  // ACCEPTED, STATED TRADE-OFF: a vendor with 100+ consecutive newer
+  // same-merchant rows that are all unapproved still misses an older
+  // approved coding. That is a real limit, not a silent one — this comment
+  // is the record of it, and it is far rarer than the 20-row window this
+  // replaces.
+  const candidates = await ctx.db
+    .query("transactions")
+    .withIndex("by_chapter_and_merchant", (q) =>
+      q.eq("chapterId", txn.chapterId).eq("merchantName", merchantName),
+    )
+    .order("desc")
+    .take(100);
+  for (const candidate of candidates) {
+    if (candidate._id === txn._id) continue;
+    const row = await ctx.db
+      .query("transactionCodings")
+      .withIndex("by_transaction", (q) => q.eq("transactionId", candidate._id))
+      .unique();
+    if (!row || row.status !== "approved") continue;
+    const canSeeNames = await hasCodingNamesView(ctx, candidate._id);
+    return {
+      transactionId: candidate._id,
+      expenseType: row.expenseType as ExpenseType,
+      businessPurpose: row.businessPurpose,
+      travelFrom: row.travelFrom ?? null,
+      travelTo: row.travelTo ?? null,
+      headcount: row.headcount ?? null,
+      attendees: canSeeNames ? (row.attendees ?? null) : null,
+      // Redacted iff there was something to redact — a group-description
+      // (>15 heads) row has `row.attendees == null` on its own, which must
+      // never read as "hidden from you".
+      attendeesRedacted: row.attendees != null && !canSeeNames,
+      groupDescription: row.groupDescription ?? null,
+      merchantName: candidate.merchantName ?? merchantName,
+      postedAt: candidate.postedAt,
+      amountCents: candidate.amountCents,
+      amountMatches: candidate.amountCents === txn.amountCents,
+    };
+  }
+  return null;
+}
 
 /**
  * "What the claimant already wrote" — the originating reimbursement request's
@@ -210,6 +324,11 @@ async function reimbursementCodingContext(
               affiliation: a.affiliation,
             }))
           : null,
+      // True ONLY when there was something redacted — a group-description
+      // (>15 heads) line has `l.attendees == null` on its own account, which
+      // must never read as "hidden from you" to a caller with full
+      // names-view (review finding, 2026-08-13).
+      attendeesRedacted: l.attendees != null && !canSeeNames,
       groupDescription: l.groupDescription ?? null,
     })),
   };
@@ -344,6 +463,10 @@ export const getForTransaction = query({
       }),
       v.null(),
     ),
+    /** "You've coded this vendor before" — see `priorApprovedCoding`'s own
+     *  doc (founder, 2026-08-12). `null` when the charge has no merchant name
+     *  or no prior APPROVED coding at that vendor in this chapter. */
+    priorCoding: v.union(priorCodingContext, v.null()),
   }),
   handler: async (ctx, args) => {
     const { txn, actorPersonId } = await requireViewCoding(
@@ -374,6 +497,7 @@ export const getForTransaction = query({
       txn,
       canSeeNames,
     );
+    const priorCoding = await priorApprovedCoding(ctx, txn);
     // Mirrors `finances.requiresCoding` — spend posted at/after the policy
     // date, minus the exempt classes (personal charges, and processor fees —
     // `feeOrigin`, which have no testimony to give; founder 2026-08-12).
@@ -411,6 +535,7 @@ export const getForTransaction = query({
       ...(category?.expenseType ? { categoryExpenseTypeHint: category.expenseType } : {}),
       currentBudgetId: txn.budgetId ?? null,
       reimbursementContext,
+      priorCoding,
     };
   },
 });
