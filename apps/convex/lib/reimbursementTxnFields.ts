@@ -31,7 +31,6 @@ export type ReimbursementTxnFields = {
   projectId?: Id<"projects">;
   categoryId?: Id<"budgetCategories">;
   fundId?: Id<"funds">;
-  receiptStorageId?: Id<"_storage">;
 };
 
 /** The single value shared by every element of `ids`, or `undefined` when the
@@ -113,12 +112,18 @@ export async function deriveReimbursementTxnFields(
   const fundId = unanimous(lines.map((l) => l.fundId));
   if (fundId) fields.fundId = fundId;
 
-  // Receipt lives per line (every submitted line has one). Use the first as the
-  // row's REPRESENTATIVE receipt so the payout stops reading as "missing
-  // receipt"; the authoritative per-line receipts stay on the reimbursement,
-  // reachable from the row via `reimbursementId`.
-  const withReceipt = lines.find((l) => l.receiptStorageId != null);
-  if (withReceipt?.receiptStorageId) fields.receiptStorageId = withReceipt.receiptStorageId;
+  // RECEIPTS ARE NOT PORTED HERE ANY MORE. This used to copy the first line's
+  // `receiptStorageId` straight onto the transaction — but that field is a
+  // denormalized CACHE of the first-linked receipt, and writing it without
+  // creating the `receipts`/`receiptLinks` rows behind it left the row claiming
+  // a receipt the library had never heard of. That is exactly the two-sided
+  // symptom the founder hit: "there is no receipt, but it says attached … but
+  // it's not in the file."
+  //
+  // `lib/reimbursementReceipts.ts#materializeReimbursementReceipts` now does it
+  // properly — a real receipt per line, linked through the one write path,
+  // which sets this same cache as a side effect. Callers run it right after
+  // inserting/locating the payout transaction.
 
   return fields;
 }

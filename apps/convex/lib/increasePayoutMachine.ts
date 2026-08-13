@@ -10,6 +10,7 @@
  */
 import type { MutationCtx } from "../_generated/server";
 import { Doc, Id } from "../_generated/dataModel";
+import { materializeReimbursementReceipts } from "./reimbursementReceipts";
 import {
   deriveReimbursementCodingMaterialization,
   deriveReimbursementTxnFields,
@@ -79,6 +80,17 @@ export async function postReimbursementSpend(
     ...ported,
   });
   await ctx.db.patch(payout._id, { transactionId: txnId, updatedAt: now });
+
+  // The receipts the claimant filed become REAL receipts, linked to this row —
+  // which is also what sets the row's `receiptStorageId` cache. Previously the
+  // cache was copied on directly and no `receipts` row was ever made, so the
+  // charge read "receipt attached" while the Receipts library could not find
+  // the document at all. See `lib/reimbursementReceipts.ts`.
+  await materializeReimbursementReceipts(ctx, {
+    req,
+    transactionId: txnId,
+    chapterId,
+  });
 
   // MATERIALIZE the coding from the request's own approved testimony, so
   // nobody has to re-type what the claimant already wrote and a reviewer

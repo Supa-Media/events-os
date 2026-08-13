@@ -22,6 +22,7 @@ import { internalMutation } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Doc } from "./_generated/dataModel";
 import { deriveReimbursementTxnFields } from "./lib/reimbursementTxnFields";
+import { materializeReimbursementReceipts } from "./lib/reimbursementReceipts";
 
 const PAGE_SIZE = 100;
 
@@ -37,9 +38,12 @@ function fillBlanksPatch(
   if (txn.note == null && ported.note != null) patch.note = ported.note;
   if (txn.categoryId == null && ported.categoryId != null) patch.categoryId = ported.categoryId;
   if (txn.fundId == null && ported.fundId != null) patch.fundId = ported.fundId;
-  if (txn.receiptStorageId == null && ported.receiptStorageId != null) {
-    patch.receiptStorageId = ported.receiptStorageId;
-  }
+  // Receipts are NOT patched on here. `receiptStorageId` is a denormalized
+  // cache of the first-LINKED receipt, and setting it without the `receipts` /
+  // `receiptLinks` rows behind it is precisely the bug being fixed — the row
+  // claims a receipt the library has never heard of. The runner calls
+  // `materializeReimbursementReceipts` instead, which creates them and lets
+  // `linkReceiptToTransaction` set this cache as a side effect.
   // "For" is a single slot — only add one, and only if the row has none.
   if (txn.budgetId == null && txn.eventId == null && txn.projectId == null) {
     if (ported.budgetId != null) patch.budgetId = ported.budgetId;
@@ -57,6 +61,9 @@ export const backfillReimbursementTxnData = internalMutation({
   returns: v.object({
     scanned: v.number(),
     patched: v.number(),
+    /** `receipts` rows created for reimbursement line documents that had none
+     *  — the count that answers "did this actually put them in the library". */
+    receiptsCreated: v.number(),
     isDone: v.boolean(),
     continueCursor: v.union(v.string(), v.null()),
   }),
@@ -68,6 +75,7 @@ export const backfillReimbursementTxnData = internalMutation({
 
     let scanned = 0;
     let patched = 0;
+    let receiptsCreated = 0;
 
     for (const req of page.page) {
       // The single ledger row this reimbursement's payout posted (if any).
@@ -80,9 +88,22 @@ export const backfillReimbursementTxnData = internalMutation({
 
       const ported = await deriveReimbursementTxnFields(ctx, req);
       const patch = fillBlanksPatch(txn, ported);
-      if (Object.keys(patch).length === 0) continue;
-      patched++;
-      if (execute) await ctx.db.patch(txn._id, patch);
+      if (Object.keys(patch).length > 0) {
+        patched++;
+        if (execute) await ctx.db.patch(txn._id, patch);
+      }
+
+      // Receipts, materialized properly rather than cache-copied — see
+      // `fillBlanksPatch`. Idempotent on the transaction's own links, so a
+      // second run (or a row the live path already handled) does nothing.
+      if (execute) {
+        const res = await materializeReimbursementReceipts(ctx, {
+          req,
+          transactionId: txn._id,
+          chapterId: txn.chapterId,
+        });
+        receiptsCreated += res.created;
+      }
     }
 
     const continueCursor = page.isDone ? null : page.continueCursor;
@@ -94,6 +115,6 @@ export const backfillReimbursementTxnData = internalMutation({
       });
     }
 
-    return { scanned, patched, isDone: page.isDone, continueCursor };
+    return { scanned, patched, receiptsCreated, isDone: page.isDone, continueCursor };
   },
 });

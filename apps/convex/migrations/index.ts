@@ -87,6 +87,7 @@ import { stampDefaultCategoryExpenseHints } from "./0065_stamp_default_category_
 import { stampCashbackSourceCategory } from "./0066_stamp_cashback_source_category";
 import { renameReimbursementPayoutRows } from "./0067_rename_reimbursement_payout_rows";
 import { materializeReimbursementCodings } from "./0068_materialize_reimbursement_codings";
+import { materializeReimbursementReceiptsMigration } from "./0069_materialize_reimbursement_receipts";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -392,4 +393,10 @@ export const MIGRATIONS: Migration[] = [
   // complete line, so historical payouts pick up the same auto-coding the
   // live path now applies. See the file.
   materializeReimbursementCodings,
+  // A reimbursement's receipt was cached onto the payout row without the
+  // `receipts`/`receiptLinks` rows behind it, so the charge said "attached"
+  // while the Receipts library could never find the document. The live path
+  // is fixed; this materializes the ones already in the books. Skips any row
+  // a human already linked a receipt to. See 0069.
+  materializeReimbursementReceiptsMigration,
 ];
