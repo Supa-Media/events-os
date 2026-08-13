@@ -7,6 +7,13 @@
  *
  * Columns: [☐] Merchant · Date · Amount · Cardholder · What it was for ·
  * Category▾ · For▾ · Receipt · Status▾ · Actions.
+ * "What it was for" is the coding's own sentence, read-only and rendered
+ * straight from the row payload (`explanation`, see `finances.ts#reconcileRow`)
+ * — tapping it opens the same documentation modal the Actions speech-bubble
+ * does. Merchant / Category / For / Status edit inline
+ * (Merchant a text cell, the rest dropdowns, all committing per row); Receipt
+ * shows ✓ or an inline upload; Amount is read-only (signed). The fund is
+ * hidden — the backend defaults it to the General Fund on categorize.
  *
  * ── THE SIDE PANEL (wide screens) ────────────────────────────────────────────
  * Opening a charge from this grid used to mean a modal — and the receipt
@@ -15,18 +22,11 @@
  * maybe in a side panel… quickly click in and click out, rather than a modal
  * that's in the middle of the screen") was not merely awkward here, it was
  * unreachable. At ≥900px `reconcile.tsx` now renders `CodingWorkbenchPanel`
- * beside this grid and passes `onOpenRow`/`openRowId`/`panelOpen` in; a row's
+ * beside this grid and passes `onOpenRow`/`openRowId`/`panelOpen` in: a row's
  * open affordances select instead of opening the modal, the panel swaps to
  * that row in place, and three columns the panel itself renders step aside to
- * pay for the space (see `hidesForPanel`). Below 900px, and everywhere
+ * pay for the space (see `hidesForPanel`). Below 900px, and anywhere
  * `onOpenRow` is absent, this file behaves exactly as it did.
- * "What it was for" is the coding's own sentence, read-only and rendered
- * straight from the row payload (`explanation`, see `finances.ts#reconcileRow`)
- * — tapping it opens the same documentation modal the Actions speech-bubble
- * does. Merchant / Category / For / Status edit inline
- * (Merchant a text cell, the rest dropdowns, all committing per row); Receipt
- * shows ✓ or an inline upload; Amount is read-only (signed). The fund is
- * hidden — the backend defaults it to the General Fund on categorize.
  *
  * MERCHANT is a RENAME, not an edit of the bank's record — it writes a
  * separate `merchantNameOverride` and leaves the provider's own string
