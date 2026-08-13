@@ -372,7 +372,26 @@ export async function buildSnapshot(
     // moves cash without changing value, which is exactly `internal`.
     const direction: EntryDraft["direction"] =
       signed < 0 ? "out" : signed > 0 ? "in" : "internal";
-    const countsInTotals = signed !== 0;
+    // A marked refund pair's legs COUNT AS NOTHING (Opus audit, 2026-08-13):
+    // `signedBookCents` has no refund branch — the pair nets org-wide across
+    // both legs — but per-budget published spend was still charged the
+    // refunded amount and the credit inflated "other" income, while the
+    // rows' own auto-explanation line promised "the two rows net to zero."
+    // Both legs still PUBLISH (with that line); they just count toward no
+    // total, exactly like an internal movement. Same treatment as
+    // `isSpend`'s refund clause, one layer up. The personal-charge pair gets
+    // the identical logic for the identical reason: `isSpend` already says a
+    // personal charge is NOT org spend (it's a receivable being repaid), so
+    // publishing it as expense — and its repayment as "other income" —
+    // would both misstate; the two legs publish with their status lines and
+    // count as nothing, netting by construction rather than across months.
+    const autoKindForTotals = autoExplainedKind(tr);
+    const countsAsNothing =
+      autoKindForTotals === "refunded_charge" ||
+      autoKindForTotals === "refund_credit" ||
+      autoKindForTotals === "repayment_credit" ||
+      autoKindForTotals === "personal";
+    const countsInTotals = signed !== 0 && !countsAsNothing;
 
     const coding = await ctx.db
       .query("transactionCodings")
@@ -396,7 +415,7 @@ export async function buildSnapshot(
     // gap, because there is no explanation a human could add. The personal
     // line is derived from the linked repayment's real state, so it can never
     // claim "paid back" before the money arrived.
-    const autoKind = autoExplainedKind(tr);
+    const autoKind = autoKindForTotals;
     let autoLine: string | undefined;
     if (!approved && autoKind != null) {
       if (autoKind === "personal") {

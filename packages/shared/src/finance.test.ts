@@ -484,6 +484,19 @@ describe("autoExplainedKind", () => {
     ).toBeNull();
     expect(autoExplainedKind({ sourceCategory: null })).toBeNull();
   });
+
+  test("a settled personal-repayment credit and bank interest are auto-explained", () => {
+    // Opus analysis (2026-08-13): the repayment credit is machine-posted
+    // from a settled rail (`cards.ts#settleRepayment`, its single writer) —
+    // never a judgement call; interest is cashback's structural twin.
+    expect(autoExplainedKind({ source: "repayment" })).toBe("repayment_credit");
+    expect(autoExplainedKind({ source: "manual" })).toBeNull();
+    expect(autoExplainedKind({ sourceCategory: "interest_payment" })).toBe(
+      "interest",
+    );
+    expect(autoExplanationLine("repayment_credit")).toContain("Repayment received");
+    expect(autoExplanationLine("interest")).toContain("Interest paid by the bank");
+  });
 });
 
 describe("autoExplanationLine", () => {

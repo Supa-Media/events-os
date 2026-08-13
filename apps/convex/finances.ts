@@ -10255,6 +10255,15 @@ const MARK_MIN_ROLE = "bookkeeper" as const;
  * The credit inherits the charge's category and budget. Purely for legibility —
  * it changes no total, because an inflow is never spend — but a refund sitting
  * uncategorised next to the charge it reversed reads like unexplained income.
+ *
+ * ── WHAT MARKING ALSO ENDS (said out loud, Opus audit 2026-08-13) ───────────
+ * A refunded charge stops owing everything: coding (`requiresCoding` via
+ * `isSpend`), the receipt chase (`needsDocumentation`), the undocumented
+ * disclosure (`isUndocumented`), and the Explain worklist
+ * (`autoExplainedKind`). That makes this mutation a way to close a
+ * documentation gap — deliberate (the purchase un-happened; there is nothing
+ * left to substantiate), bookkeeper-gated, audit-logged, and reversible via
+ * `unmarkRefund`, which restores every obligation.
  */
 export const markAsRefund = mutation({
   args: {
@@ -10322,6 +10331,16 @@ export const markAsRefund = mutation({
           code: "IS_TRANSFER",
           message:
             "One of those rows is part of a transfer. Un-mark it first if it's really a refund.",
+        });
+      }
+      if (leg.stripePayoutId != null) {
+        // Same class as `payoutProcessor` below: an engine-matched payout
+        // deposit signs to zero, so pairing against it would leave a refund
+        // pair that doesn't net (Opus audit, 2026-08-13).
+        throw new ConvexError({
+          code: "IS_PAYOUT",
+          message:
+            "One of those rows was matched to a processor payout by the reconciliation engine.",
         });
       }
       if (leg.payoutProcessor != null) {
