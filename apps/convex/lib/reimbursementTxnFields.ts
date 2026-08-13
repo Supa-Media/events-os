@@ -42,6 +42,27 @@ function unanimous<T>(ids: (T | undefined)[]): T | undefined {
   return present.every((x) => x === first) ? first : undefined;
 }
 
+/** How many line descriptions a merchant name spells out before it summarizes
+ *  the rest. Two fits a Reconcile cell; past that the row stops being scannable
+ *  and the count carries more than a truncated third title would. */
+const MERCHANT_LINES_SHOWN = 2;
+
+/**
+ * The lines, as one merchant-name string: "Bus ticket + Parking" for two,
+ * "Bus ticket + Parking +2 more" beyond that. `""` when no line carries a
+ * description, which is the caller's cue to fall back to the payee label —
+ * a row named after nothing is worse than one named after who was paid.
+ */
+function lineSummary(lines: Doc<"reimbursementLineItems">[]): string {
+  const described = lines
+    .map((l) => l.description?.trim())
+    .filter((d): d is string => !!d);
+  if (described.length === 0) return "";
+  const shown = described.slice(0, MERCHANT_LINES_SHOWN);
+  const rest = described.length - shown.length;
+  return rest > 0 ? `${shown.join(" + ")} +${rest} more` : shown.join(" + ");
+}
+
 export async function deriveReimbursementTxnFields(
   ctx: QueryCtx,
   req: Doc<"reimbursementRequests">,
@@ -66,11 +87,21 @@ export async function deriveReimbursementTxnFields(
   else if (req.eventId) fields.eventId = req.eventId;
   else if (req.projectId) fields.projectId = req.projectId;
 
-  // Merchant / description label. A single-line reimbursement's line text is the
-  // truest merchant ("Dig Inn"); a multi-line one collapses to a payee label.
+  // Merchant / description label.
+  //
+  // WHAT IT WAS, NOT WHO WE PAID (founder, 2026-08-12: "I hate that the line
+  // item is reimbursed to Adam — the line item should read what it actually
+  // was"). A single-line reimbursement already read correctly; a multi-line one
+  // collapsed to the payee label, so a Reconcile row for a bus ticket and a
+  // parking fee said only that Adam got money, which is the one fact the amount
+  // and the payee column were already telling you.
+  //
+  // So the lines name the row, joined, and the payee label becomes the row's
+  // `description` — where `displayMerchantName` uses it only as a fallback and
+  // `rawBankLine` surfaces it BENEATH the merchant when the two differ. Both
+  // facts stay on screen; only the billing order changes.
   const payeeLabel = `Reimbursement to ${req.payeeName}`;
-  const singleLineMerchant = lines.length === 1 ? lines[0].description?.trim() : "";
-  fields.merchantName = singleLineMerchant || payeeLabel;
+  fields.merchantName = lineSummary(lines) || payeeLabel;
   fields.description = payeeLabel;
 
   // Category / fund live per line. Port only when UNAMBIGUOUS (one line, or all

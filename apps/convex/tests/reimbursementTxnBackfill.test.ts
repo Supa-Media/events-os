@@ -166,7 +166,7 @@ describe("reimbursement payout backfill", () => {
     expect(after?.status).toBe("reconciled"); // never re-opens a closed row
   });
 
-  test("multi-line: payee merchant label, only a unanimous category ports, still gets a receipt", async () => {
+  test("multi-line: the row is named after WHAT was bought, not who was paid", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const fundId = await seedFund(s);
@@ -183,10 +183,57 @@ describe("reimbursement payout backfill", () => {
 
     await t.mutation(internal.reimbursementBackfill.backfillReimbursementTxnData, { execute: true });
     const after = await run(t, (ctx) => ctx.db.get(txnId));
-    expect(after?.merchantName).toBe("Reimbursement to Sarah");
+    // Founder, 2026-08-12: "the line item should read what it actually was."
+    // This used to collapse to "Reimbursement to Sarah", which told a reader
+    // only what the amount and payee columns already had.
+    expect(after?.merchantName).toBe("Target + Costco");
+    // Who was paid is still on the row — as `description`, which the grid shows
+    // beneath the merchant name when the two differ (`rawBankLine`).
+    expect(after?.description).toBe("Reimbursement to Sarah");
     expect(after?.categoryId).toBeUndefined(); // categories disagree → bookkeeper decides
     expect(after?.receiptStorageId).not.toBeUndefined();
     expect(after?.note).toBe("Retreat supplies");
+  });
+
+  test("multi-line: past two lines the name summarizes the tail rather than sprawling", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const fundId = await seedFund(s);
+    const catA = await seedCategory(s, fundId, "Supplies");
+
+    const { txnId } = await seedPaidReimbursement(s, {
+      purpose: "Retreat supplies",
+      lines: [
+        { description: "Target", amountCents: 5000, categoryId: catA, withReceipt: true },
+        { description: "Costco", amountCents: 8000, categoryId: catA, withReceipt: true },
+        { description: "Gas", amountCents: 2000, categoryId: catA, withReceipt: true },
+        { description: "Parking", amountCents: 1000, categoryId: catA, withReceipt: true },
+      ],
+    });
+
+    await t.mutation(internal.reimbursementBackfill.backfillReimbursementTxnData, { execute: true });
+    const after = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(after?.merchantName).toBe("Target + Costco +2 more");
+  });
+
+  test("multi-line with no line descriptions falls back to the payee label", async () => {
+    // A row named after nothing is worse than one named after who was paid.
+    const t = newT();
+    const s = await setupChapter(t);
+    const fundId = await seedFund(s);
+    const catA = await seedCategory(s, fundId, "Supplies");
+
+    const { txnId } = await seedPaidReimbursement(s, {
+      purpose: "Retreat supplies",
+      lines: [
+        { description: "", amountCents: 5000, categoryId: catA, withReceipt: true },
+        { description: "   ", amountCents: 8000, categoryId: catA, withReceipt: true },
+      ],
+    });
+
+    await t.mutation(internal.reimbursementBackfill.backfillReimbursementTxnData, { execute: true });
+    const after = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(after?.merchantName).toBe("Reimbursement to Sarah");
   });
 
   test("fill-blanks-only: never clobbers a field a human already set", async () => {

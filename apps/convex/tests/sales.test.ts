@@ -118,6 +118,131 @@ async function seedEvent(
   });
 }
 
+async function seedTicketOrder(
+  s: ChapterSetup,
+  opts: {
+    eventId: Id<"events">;
+    totalCents: number;
+    status?: "pending" | "paid" | "canceled" | "refunded" | "expired";
+    soldAt?: number;
+    name?: string;
+    donationCents?: number;
+  },
+): Promise<Id<"ticketOrders">> {
+  return await run(s.t, async (ctx) => {
+    const ticketTypeId = await ctx.db.insert("ticketTypes", {
+      eventId: opts.eventId,
+      chapterId: s.chapterId,
+      name: "General Admission",
+      priceCents: opts.totalCents,
+      currency: "usd",
+      soldCount: 0,
+      sortOrder: 0,
+      isActive: true,
+      createdAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    return await ctx.db.insert("ticketOrders", {
+      eventId: opts.eventId,
+      chapterId: s.chapterId,
+      name: opts.name ?? "Buyer",
+      email: "buyer@example.com",
+      items: [
+        {
+          ticketTypeId,
+          name: "General Admission",
+          quantity: 1,
+          unitPriceCents: opts.totalCents,
+        },
+      ],
+      totalCents: opts.totalCents,
+      ...(opts.donationCents ? { donationCents: opts.donationCents } : {}),
+      currency: "usd",
+      status: opts.status ?? "paid",
+      stripePaymentIntentId: `pi_test_${Math.random().toString(36).slice(2)}`,
+      createdAt: Date.now(),
+      updatedAt: opts.soldAt ?? Date.now(),
+    });
+  });
+}
+
+describe("listSales: ticket orders", () => {
+  test("paid ticket orders join the list as sales, kept distinguishable and read-only", async () => {
+    const s = await setupBookkeeper();
+    const eventId = await seedEvent(s);
+    await seedSale(s, { soldAt: PTB_DAY_MS, grossCents: 300, feeCents: 30 });
+    await seedTicketOrder(s, { eventId, totalCents: 2500, soldAt: PTB_DAY_MS + 1000 });
+
+    const res = await s.as.query(api.sales.listSales, { chapterId: s.chapterId });
+    expect(res.sales).toHaveLength(2);
+
+    const ticket = res.sales.find((r) => r.kind === "ticket")!;
+    expect(ticket.grossCents).toBe(2500);
+    expect(ticket.eventId).toBe(eventId);
+    expect(ticket.buyerName).toBe("Buyer");
+    // Read-only: no sale id for the edit mutations to key on, and no basket to
+    // pick from — the order already recorded what it sold.
+    expect(ticket.saleId).toBeNull();
+    expect(ticket.itemOptions).toEqual([]);
+    expect(ticket.items[0].label).toBe("General Admission");
+
+    const inPerson = res.sales.find((r) => r.kind === "in_person")!;
+    expect(inPerson.saleId).not.toBeNull();
+
+    // Both rails in the gross, split so "merch vs tickets" stays answerable.
+    expect(res.summary.grossCents).toBe(2800);
+    expect(res.summary.inPersonGrossCents).toBe(300);
+    expect(res.summary.ticketGrossCents).toBe(2500);
+    expect(res.summary.ticketFeesBookedMonthly).toBe(true);
+    // A ticket order is never "unresolved" — it must not dilute the count of
+    // rows a bookkeeper still has to settle.
+    expect(res.summary.unresolvedCount).toBe(1);
+    expect(res.summary.resolvedCount).toBe(1);
+  });
+
+  test("only PAID orders count — pending, canceled, refunded and expired stay out", async () => {
+    // Counting any of these would put this page above what the accounts page
+    // reports, and those two have to agree.
+    const s = await setupBookkeeper();
+    const eventId = await seedEvent(s);
+    for (const status of ["pending", "canceled", "refunded", "expired"] as const) {
+      await seedTicketOrder(s, { eventId, totalCents: 9900, status });
+    }
+    await seedTicketOrder(s, { eventId, totalCents: 2500, status: "paid" });
+
+    const res = await s.as.query(api.sales.listSales, { chapterId: s.chapterId });
+    expect(res.sales).toHaveLength(1);
+    expect(res.summary.ticketGrossCents).toBe(2500);
+  });
+
+  test("a bundled donation is excluded — it is counted once, in giving", async () => {
+    // The add-on gift rides in the same Stripe charge but the webhook splits it
+    // into `donations`. Including it here would count that money twice.
+    const s = await setupBookkeeper();
+    const eventId = await seedEvent(s);
+    await seedTicketOrder(s, { eventId, totalCents: 2500, donationCents: 5000 });
+
+    const res = await s.as.query(api.sales.listSales, { chapterId: s.chapterId });
+    expect(res.summary.ticketGrossCents).toBe(2500);
+    expect(res.summary.grossCents).toBe(2500);
+  });
+
+  test("the eventId filter narrows ticket orders too", async () => {
+    const s = await setupBookkeeper();
+    const mine = await seedEvent(s, { name: "Mine" });
+    const other = await seedEvent(s, { name: "Other" });
+    await seedTicketOrder(s, { eventId: mine, totalCents: 1000 });
+    await seedTicketOrder(s, { eventId: other, totalCents: 7000 });
+
+    const res = await s.as.query(api.sales.listSales, {
+      chapterId: s.chapterId,
+      eventId: mine,
+    });
+    expect(res.sales).toHaveLength(1);
+    expect(res.summary.ticketGrossCents).toBe(1000);
+  });
+});
+
 describe("listSales", () => {
   test("ships each row the baskets its own amount could be", async () => {
     const s = await setupBookkeeper();

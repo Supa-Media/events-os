@@ -68,7 +68,8 @@ import {
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { requireFinanceRole, getFinanceRole, type FinanceAccess } from "./lib/finance";
-import { effectiveCapCents, isSpend } from "./finances";
+import { effectiveCapCents, isSpend, txnMatchesMode } from "./finances";
+import { readSandbox } from "./financeSettings";
 import { callerHasEventEditRights } from "./lib/org";
 
 // A generous bound on budgets-per-ref / lines-per-budget / txns-per-budget —
@@ -730,8 +731,19 @@ export const refMoney = query({
     // one budget. Defense-in-depth is preserved too: a stale/duplicate
     // transaction whose `chapterId` doesn't match ITS OWN budget's current
     // scope is still dropped, just anchored to the right value.
+    // SANDBOX MODE. Every other finance surface drops the other mode's
+    // Increase rows (`txnMatchesMode` — `finances.ts`, `budgetDetail.ts`,
+    // `receiptChase`, the dashboards). This view didn't, which made its
+    // actuals disagree with the same budget's numbers everywhere else while
+    // sandbox was on. That was survivable while the two lived on separate
+    // screens; the budget detail page now renders this view directly beneath
+    // its own (mode-filtered) "spent of cap" card, so the disagreement would
+    // be two contradicting figures an inch apart.
+    const sandboxMode = await readSandbox(ctx);
     const refChapterTxns = budgets.flatMap((b, i) =>
-      txnsByBudget[i].filter((tr) => tr.chapterId === b.chapterId),
+      txnsByBudget[i].filter(
+        (tr) => tr.chapterId === b.chapterId && txnMatchesMode(tr, sandboxMode),
+      ),
     );
     const spendTxns = refChapterTxns.filter(isSpend);
 

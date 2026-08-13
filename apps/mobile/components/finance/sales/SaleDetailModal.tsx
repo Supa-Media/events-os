@@ -41,10 +41,14 @@ export function SaleDetailModal({
   row: SaleRow;
   onClose: () => void;
 }) {
-  const trail = useQuery(api.finances.financeAuditTrail, {
-    subjectType: "sale",
-    subjectId: row.saleId,
-  });
+  // Only an in-person sale has an audit trail to show: the trail records the
+  // two edits this page allows (basket, event attribution), and neither is
+  // offered on a ticket order — its items and event come from the order itself.
+  // Skipping keeps the query from being asked for a subject id that can't exist.
+  const trail = useQuery(
+    api.finances.financeAuditTrail,
+    row.saleId ? { subjectType: "sale", subjectId: row.saleId } : "skip",
+  );
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={onClose}>

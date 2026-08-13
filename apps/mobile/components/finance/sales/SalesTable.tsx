@@ -111,7 +111,10 @@ export function SalesTable({
     SALES_COLUMNS_STORAGE_KEY,
     DEFAULT_COLS,
   );
-  const allSelected = rows.length > 0 && rows.every((r) => selected.has(r.saleId));
+  // Only in-person rows are selectable — a ticket order is read-only here, so
+  // a header checkbox that appeared to cover it would be lying.
+  const editable = rows.filter((r) => r.kind === "in_person");
+  const allSelected = editable.length > 0 && editable.every((r) => selected.has(r.id));
   const width = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
 
   return (
@@ -149,14 +152,14 @@ export function SalesTable({
           {/* Body */}
           {rows.map((row, i) => (
             <SaleGridRow
-              key={row.saleId}
+              key={row.id}
               row={row}
               events={events}
               canEdit={canEdit}
-              selected={selected.has(row.saleId)}
-              onToggle={() => onToggle(row.saleId)}
-              onSetItems={(key) => onSetItems(row.saleId, key)}
-              onSetEvent={(eventId) => onSetEvent(row.saleId, eventId)}
+              selected={selected.has(row.id)}
+              onToggle={() => onToggle(row.id)}
+              onSetItems={(key) => onSetItems(row.id, key)}
+              onSetEvent={(eventId) => onSetEvent(row.id, eventId)}
               onOpenDetail={() => onOpenDetail(row)}
               isLast={i === rows.length - 1}
               widths={widths}
@@ -191,6 +194,7 @@ function SaleGridRow({
   isLast: boolean;
   widths: Record<ColKey, number>;
 }) {
+  const editable = row.kind === "in_person";
   return (
     <View
       className={`flex-row items-stretch border-b border-border ${
@@ -198,7 +202,9 @@ function SaleGridRow({
       } ${isLast ? "border-b-0" : ""}`}
     >
       <View style={{ width: widths.check }} className="items-center justify-center">
-        {canEdit ? (
+        {/* A ticket order carries no checkbox: neither bulk action applies to
+            it, so offering one would arm a write the server refuses. */}
+        {canEdit && editable ? (
           <Checkbox
             checked={selected}
             onPress={onToggle}
@@ -218,13 +224,13 @@ function SaleGridRow({
           value={row.eventId}
           name={row.eventName}
           events={events}
-          canEdit={canEdit}
+          canEdit={canEdit && editable}
           onChange={onSetEvent}
         />
       </Cell>
 
       <Cell width={widths.items}>
-        <BasketCell row={row} canEdit={canEdit} onChange={onSetItems} />
+        <BasketCell row={row} canEdit={canEdit && editable} onChange={onSetItems} />
       </Cell>
 
       <Cell width={widths.gross}>
@@ -233,8 +239,11 @@ function SaleGridRow({
         </Text>
       </Cell>
       <Cell width={widths.fee}>
+        {/* A ticket order has no per-row fee to show — Stripe's ticket fees are
+            booked as one monthly line in Reconcile. An em dash says "not
+            recorded here"; a $0.00 would say "free", which isn't true. */}
         <Text className="flex-1 px-2 text-right text-sm text-muted" style={NUM}>
-          {formatCents(row.feeCents)}
+          {editable ? formatCents(row.feeCents) : "—"}
         </Text>
       </Cell>
       <Cell width={widths.net}>
