@@ -53,7 +53,7 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { displayMerchantName, formatCents, rawBankLine } from "@events-os/shared";
-import { Button, TextField } from "../../ui";
+import { Badge, Button, TextField } from "../../ui";
 import {
   FinishChargeSheetBody,
   type CategoryOption,
@@ -253,6 +253,11 @@ export function CodingWorkbenchPanel({
         : cardholderName === null
           ? "no cardholder — bank/imported row"
           : null;
+  // THE SPLIT (founder-approved, 2026-08-13): same optional, populated-only-
+  // by-`monthCodingWorklist` field as `cardholderName` just above — `coding.tsx`
+  // rows never carry it (the caller's own charges are never reconstructed
+  // history), so `undefined` there quietly renders nothing.
+  const reconstructed = (txn as { reconstructed?: boolean }).reconstructed === true;
 
   return (
     <View className="flex-1 rounded-xl border border-border bg-raised">
@@ -262,9 +267,14 @@ export function CodingWorkbenchPanel({
               the founder hit it truncated to uselessness at one line ("the
               name of the transaction is kind of cut off"). Two lines covers
               every real descriptor; beyond that the raw line below has it. */}
-          <Text className="text-base font-semibold text-ink" numberOfLines={2}>
-            {merchantLine}
-          </Text>
+          <View className="flex-row flex-wrap items-center gap-2">
+            <Text className="text-base font-semibold text-ink" numberOfLines={2}>
+              {merchantLine}
+            </Text>
+            {reconstructed ? (
+              <Badge tone="info" icon="archive" label="Imported record" />
+            ) : null}
+          </View>
           <Text className="text-xs text-muted">
             {formatCents(Math.abs(txn.amountCents))}
             {whose ? ` · ${whose}` : ""}
