@@ -72,6 +72,7 @@ import {
   CENTRAL_MERCHANT_KEYWORDS,
   CENTRAL_PROJECT_KEYWORDS,
   matchesAnyKeyword,
+  autoExplainedKind,
   REASSIGN_BATCH_CAP,
   chapterAffordability as chapterAffordabilityCalc,
   effectiveBudgetApprovalStatus,
@@ -1360,6 +1361,12 @@ export function isProcessorPayout(tr: Doc<"transactions">): boolean {
  * `excluded` never enters it.
  */
 export function needsDocumentation(tr: Doc<"transactions">): boolean {
+  // A processor fee has no receipt and never will — the processor's own
+  // ledger (`processorFeeEntries`) is the record, kept row by row exactly so
+  // this number never has to be taken on faith. Chasing a receipt for one
+  // asks for a document that does not exist (founder, 2026-08-12: "I
+  // literally dont have receipts").
+  if (isNonDiscretionaryFee(tr)) return false;
   if (tr.receiptStorageId != null) return false;
   // An APPROVED receipt exception is documentation — an attested, second-party
   // -approved statement of what this was for and why no receipt exists. It
@@ -1389,6 +1396,11 @@ export function needsDocumentation(tr: Doc<"transactions">): boolean {
  */
 export function isUndocumented(tr: Doc<"transactions">): boolean {
   if (tr.status === "excluded") return false;
+  // Same fee carve-out as `needsDocumentation`, for the same reason: the
+  // processor's ledger IS this row's documentation. A publishing predicate
+  // that counted fees "undocumented" forever would disclose a permanent gap
+  // nobody can close.
+  if (isNonDiscretionaryFee(tr)) return false;
   if (tr.receiptStorageId != null) return false;
   if (tr.approvedReceiptExceptionId != null) return false;
   return isSpend(tr) || isMarkedTransfer(tr) || isProcessorPayout(tr);
@@ -1409,6 +1421,11 @@ export function requiresCoding(
   sinceMs: number,
 ): boolean {
   if (tr.postedAt < sinceMs) return false;
+  // A processor fee is spend, but there is no testimony to give: nobody
+  // chose it, witnessed it, or can substantiate it beyond what the
+  // processor's ledger already says (founder, 2026-08-12). `isSpend`
+  // already exempts personal charges — their repayment is their record.
+  if (isNonDiscretionaryFee(tr)) return false;
   return isSpend(tr);
 }
 
@@ -4807,6 +4824,12 @@ export const monthCodingWorklist = query({
       // business purpose to give. Counting it here would pad the worklist
       // with rows that are already complete.
       if (signedBookCents(tr) === 0) continue;
+      // AUTO-EXPLAINED rows (fees, personal charges) never enter the
+      // worklist — not the rows, not the denominator (founder, 2026-08-12:
+      // "only things that actually need explaining should show up here").
+      // They still publish; the snapshot prints their status line for them
+      // (`autoExplanationLine`).
+      if (autoExplainedKind(tr) != null) continue;
 
       totalCount += 1;
       totalCents += tr.amountCents;
@@ -4900,6 +4923,8 @@ async function unexplainedCountForBook(
     const p = easternParts(tr.postedAt);
     if (p.year !== year || p.month !== month) continue;
     if (signedBookCents(tr) === 0) continue;
+    // Same auto-explained carve-out as the primary worklist scan above.
+    if (autoExplainedKind(tr) != null) continue;
     if (tr.codingState === "approved") continue;
     count += 1;
   }

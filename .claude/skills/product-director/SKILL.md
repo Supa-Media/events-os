@@ -324,6 +324,55 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-08-13 — Run 17 (Explain-worklist noise: fees/personal/transfers; names bulk entry; recurring-charge suggestions)
+- **THE RECON FAN-OUT DIED SILENTLY AND COST TWO HOURS — the founder caught
+  it, not the ticker.** Three of four recon agents died at launch (output
+  files stuck at 120 bytes, the harness init line); the fourth completed
+  normally, which masked the pattern. The armed Monitor ticker fired once at
+  +4min (agents looked alive — timestamps 4min old), then hit its ~30min
+  timeout and I never re-armed it, so nothing checked again until the founder
+  asked "you seem stuck?". TWO rules hardened: (a) a 120-byte output file at
+  ANY tick after the first few minutes is a dead agent — size is a cheaper
+  and earlier signal than transcript timestamps; check BOTH. (b) The ticker
+  timeout notification is itself a poll tick: re-arm AND run the full check
+  cycle in the same breath, never just re-arm. Recovery that worked: do the
+  recon inline yourself (the orchestrator knew most of the ground), keep only
+  the build lanes delegated.
+- **The date-rollover CI flake struck AGAIN one day later, one fixture over**
+  (cards.test.ts "a charge that already has a receipt": ageDays 5 crossed the
+  2026-08-08 coding epoch on 08-13, and the chase is coding-keyed now, so a
+  receipted-uncoded charge legitimately escalates). Run 15's lesson said grep
+  for the class; the durable fix is different: when a fixture's CLAIM is
+  "owes nothing", stamp EVERY obligation satisfied (receipt AND codingState)
+  rather than leaning on the fixture predating an epoch — each unsatisfied
+  axis is a scheduled future failure. Verify "not mine" by reading the sweep
+  predicate, not by rerunning on main (a worktree with symlinked node_modules
+  does not run vitest reliably under pnpm).
+- **"Only things that actually need explaining" is a PREDICATE-UNIFICATION
+  ask, not a filter ask.** The founder's fee/personal/transfer complaint
+  resolved into one shared classification (`autoExplainedKind` in shared)
+  consumed by the worklist, its otherBooks twin, AND the snapshot's
+  unexplained counts — plus carve-outs in requiresCoding/needsDocumentation/
+  isUndocumented (and the INLINE requiresCoding mirror in
+  transactionCodings.ts — grep for mirrors when touching a predicate; this
+  repo duplicates them deliberately). The founder also supplied the public
+  wording verbatim ("accidental personal charge, paid back / awaiting
+  repayment") — derived from the linked repayment's real status so the page
+  can never claim repayment before the money arrived. Machine-derived STATUS
+  LINES are compatible with the no-AI-in-coding doctrine: the ban is on
+  composing a human's testimony, not on the product describing its own
+  records.
+- **Founder decisions this run, quoted, now standing:** "only things that
+  actually need explaining should show up [in Explain], so I can attack this
+  month by month"; personal charges on the public ledger read "accidental
+  personal charge, paid back (if paid), and awaiting repayment (if we are
+  waiting)"; recurring same-vendor charges should "auto suggest the coding"
+  (shipped as prior-approved-coding surfaced with provenance + explicit tap —
+  the reimbursement-prefill carve-out's shape, NOT silent prefill, because a
+  different charge's coding is an analogy, not this charge's testimony);
+  names bulk entry: paste lists, row delete, roster autofill, "start with
+  the team".
+
 ### 2026-08-12 — Run 16 (founder call transcript: reconcile totals, spending policy, card-lock reality, money model)
 - **The headline finding came from disbelieving the founders, not the code.**
   Both of them stated on the call that the 7-day card lock "doesn't actually

@@ -1,5 +1,7 @@
 import { describe, expect, test } from "vitest";
 import {
+  autoExplainedKind,
+  autoExplanationLine,
   personalExpenseState,
   TRANSACTION_STATUSES,
   TRANSACTION_STATUS_LABELS,
@@ -427,5 +429,47 @@ describe("book-value zero reasons", () => {
     expect(BOOK_VALUE_ZERO_REASON_LABELS.balance_settlement).not.toContain(
       "no recorded direction",
     );
+  });
+});
+
+/**
+ * `autoExplainedKind` / `autoExplanationLine` — the 2026-08-12 founder
+ * directive: fees and personal charges never enter the Explain worklist, and
+ * the public ledger prints their status line for them. The line is derived
+ * from structured state, so "paid back" can never precede the money.
+ */
+describe("autoExplainedKind", () => {
+  test("a fee row is auto-explained even if somebody also flagged it personal (fee wins — it was never anyone's charge)", () => {
+    expect(autoExplainedKind({ feeOrigin: "stripe_processing" })).toBe("fee");
+    expect(
+      autoExplainedKind({ feeOrigin: "stripe_processing", isPersonal: true }),
+    ).toBe("fee");
+  });
+
+  test("a personal charge is auto-explained; an ordinary charge is not", () => {
+    expect(autoExplainedKind({ isPersonal: true })).toBe("personal");
+    expect(autoExplainedKind({})).toBeNull();
+    expect(autoExplainedKind({ isPersonal: false })).toBeNull();
+    expect(autoExplainedKind({ feeOrigin: null })).toBeNull();
+  });
+});
+
+describe("autoExplanationLine", () => {
+  test("the personal line tracks the repayment's real state — the founder's exact wording", () => {
+    expect(autoExplanationLine("personal", "personal_reimbursed")).toBe(
+      "Accidental personal charge — paid back.",
+    );
+    expect(autoExplanationLine("personal", "personal_unpaid")).toBe(
+      "Accidental personal charge — awaiting repayment.",
+    );
+    // No resolvable repayment reads as awaiting — never "paid back" on faith.
+    expect(autoExplanationLine("personal")).toBe(
+      "Accidental personal charge — awaiting repayment.",
+    );
+  });
+
+  test("the fee line says why there is no receipt", () => {
+    expect(autoExplanationLine("fee")).toContain("Payment processing fees");
+    expect(autoExplanationLine("fee")).toContain("no receipt");
   });
 });

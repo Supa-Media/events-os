@@ -53,9 +53,16 @@
  * human to approve it. Nobody ever did, correctly — there was no decision to
  * ratify — so 8 rows totalling $318.69 sat permanently in "Needs budget". The
  * rows now carry `feeOrigin`, which `finances.ts#needsBudget` reads, and the
- * question is never asked. They are still coded, still reconciled, still in
- * every spend total: a fee is real money out, it just isn't anybody's choice.
- * (Owner, 2026-08-09.)
+ * question is never asked. Still reconciled, still in every spend total: a
+ * fee is real money out, it just isn't anybody's choice. (Owner, 2026-08-09.)
+ * Since 2026-08-12 the same `feeOrigin` marker also exempts fee rows from
+ * CODING and from the receipt chase entirely (`finances.ts#requiresCoding` /
+ * `needsDocumentation` / `isUndocumented`, and the Explain worklist via
+ * `autoExplainedKind`): there is no receipt and no testimony to give — the
+ * `processorFeeEntries` kept below ARE the documentation, and the public
+ * ledger prints the fee's own status line (`autoExplanationLine`) in place
+ * of a coding. (Owner: "since these fees increase over time and I literally
+ * dont have receipts it shouldn't show up to need to be coded.")
  *
  * GIVEBUTTER IS COVERED TOO, since 2026-08-10. It did not used to be, and the reason
  * given here was wrong on the facts: this deployment DOES have a Givebutter API

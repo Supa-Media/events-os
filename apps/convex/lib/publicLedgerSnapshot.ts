@@ -44,6 +44,9 @@
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import {
+  autoExplainedKind,
+  autoExplanationLine,
+  personalExpenseState,
   CENTRAL,
   displayMerchantName,
   documentationState,
@@ -387,6 +390,26 @@ export async function buildSnapshot(
     );
     const reconstructed = isReconstructedHistory(tr);
 
+    // AUTO-EXPLAINED rows (founder directive, 2026-08-12): a processor fee or
+    // a personal charge publishes WITH its own status line in place of a
+    // coding — "maximum transparency" — and never counts as an unexplained
+    // gap, because there is no explanation a human could add. The personal
+    // line is derived from the linked repayment's real state, so it can never
+    // claim "paid back" before the money arrived.
+    const autoKind = autoExplainedKind(tr);
+    let autoLine: string | undefined;
+    if (!approved && autoKind != null) {
+      if (autoKind === "personal") {
+        const repayment = tr.repaymentId ? await ctx.db.get(tr.repaymentId) : null;
+        autoLine = autoExplanationLine(
+          "personal",
+          personalExpenseState(true, repayment?.status ?? null),
+        );
+      } else {
+        autoLine = autoExplanationLine("fee");
+      }
+    }
+
     const affiliationMix = approved
       ? affiliationCounts([...(approved.attendees ?? []), ...(approved.travelers ?? [])])
       : undefined;
@@ -410,7 +433,7 @@ export async function buildSnapshot(
       // `schema/finances.ts#transactionCodings.publicPurpose`.
       purpose: approved
         ? (approved.publicPurpose ?? approved.businessPurpose)
-        : undefined,
+        : autoLine,
       categoryLabel,
       fundLabel: await labels.fund(tr.fundId),
       budgetLabel,
@@ -485,8 +508,9 @@ export async function buildSnapshot(
       uncodedCents += tr.amountCents;
     }
     // What the READER sees, policy irrelevant. An internal movement has no
-    // purpose to give, so it is not a gap.
-    if (!approved && direction !== "internal") {
+    // purpose to give, and an auto-explained row (fee / personal — see
+    // `autoExplainedKind`) already carries its own line — neither is a gap.
+    if (!approved && direction !== "internal" && autoKind == null) {
       unexplainedCount += 1;
       unexplainedCents += tr.amountCents;
     }

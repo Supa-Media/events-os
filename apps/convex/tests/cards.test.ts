@@ -1939,7 +1939,7 @@ describe("advanceReceiptReminders", () => {
     ).toBeUndefined();
   });
 
-  test("a charge that already has a receipt is never flagged or escalated", async () => {
+  test("a charge that owes nothing — receipt attached, coding approved — is never flagged or escalated", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const holder = await seedPerson(s, { name: "Holder" });
@@ -1951,6 +1951,13 @@ describe("advanceReceiptReminders", () => {
       ageDays: 5,
       receiptStorageId: receiptId,
     });
+    // DATE-ROLLOVER GUARD (same class as the 2026-08-12 fix above): the chase
+    // rekeyed onto CODINGS, so once `now - 5d` crosses the policy epoch
+    // (2026-08-08) a receipted-but-uncoded charge legitimately DOES get
+    // flagged — the receipt alone stopped being enough. This fixture's claim
+    // is "owes nothing", so stamp the coding approved rather than lean on the
+    // fixture predating a fixed epoch, which stops being true one day a year.
+    await run(s.t, (ctx) => ctx.db.patch(txn, { codingState: "approved" }));
 
     const r = await s.t.mutation(internal.cards.advanceReceiptReminders, {});
     expect(r.flagged).toEqual([]);
