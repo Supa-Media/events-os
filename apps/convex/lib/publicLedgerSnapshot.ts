@@ -62,6 +62,7 @@ import {
   type IncomeStream,
 } from "@events-os/shared";
 import {
+  canCarryExplanation,
   effectiveCapCents,
   isUndocumented,
   requiresCoding,
@@ -529,10 +530,20 @@ export async function buildSnapshot(
       uncodedCount += 1;
       uncodedCents += tr.amountCents;
     }
-    // What the READER sees, policy irrelevant. An internal movement has no
-    // purpose to give, and an auto-explained row (fee / personal — see
-    // `autoExplainedKind`) already carries its own line — neither is a gap.
-    if (!approved && direction !== "internal" && autoKind == null) {
+    // What the READER sees, policy irrelevant. An auto-explained row (fee /
+    // personal — see `autoExplainedKind`) already carries its own line, and a
+    // row with no business purpose to give was never a gap.
+    //
+    // `canCarryExplanation` rather than `direction !== "internal"` (founder,
+    // 2026-08-13: a $7,000 donation was disclosed on the PUBLISHED page as "1
+    // line publishes with no written explanation of what it was for"). An
+    // inflow's `direction` is `"in"`, not `"internal"`, so it passed that
+    // guard — and the published ledger told readers the org couldn't explain a
+    // gift it received. Nobody explains money arriving as spending; where a
+    // gift came from is the giving layer's record. Same predicate the Explain
+    // worklist and the coding panel read, so all three agree about which rows
+    // owe an explanation.
+    if (!approved && canCarryExplanation(tr) && autoKind == null) {
       unexplainedCount += 1;
       unexplainedCents += tr.amountCents;
     }
