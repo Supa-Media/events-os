@@ -1325,6 +1325,117 @@ describe("the console preview answers at all", () => {
   });
 });
 
+describe("republish (one-action correction)", () => {
+  test("writes revision 2 from the live books, with the amendment recorded", async () => {
+    const s = await asPublisher();
+    const txn = await insertTxn(s, {
+      amountCents: 15_000,
+      postedAt: AUG_2026,
+      merchantName: "Isaiah Jones",
+    });
+    await publishMonth(s);
+    expect((await statementOf(s))!.entries[0].counterparty).toBe("Isaiah Jones");
+
+    // The correction the whole feature exists for: a private individual's
+    // name off a public page.
+    await s.as.mutation(api.finances.renameMerchant, {
+      transactionId: txn,
+      merchantName: "Musician honorarium",
+    });
+
+    const { revision } = await s.as.mutation(api.publicLedger.republish, {
+      periodKey: AUG_KEY,
+      reason: "other",
+      note: "Replaced a contractor's name with their role, per our published pay policy.",
+    });
+    expect(revision).toBe(2);
+
+    const after = (await statementOf(s))!;
+    expect(after.entries[0].counterparty).toBe("Musician honorarium");
+  });
+
+  test("refuses a month that is not live — a draft has its own buttons", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, { amountCents: 1_000, postedAt: AUG_2026 });
+    await expect(
+      s.as.mutation(api.publicLedger.republish, {
+        periodKey: AUG_KEY,
+        reason: "other",
+        note: "Nothing has been published for this month yet at all.",
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("still demands the sentence that publishes with the amendment", async () => {
+    const s = await asPublisher();
+    await insertTxn(s, { amountCents: 1_000, postedAt: AUG_2026 });
+    await publishMonth(s);
+    await expect(
+      s.as.mutation(api.publicLedger.republish, {
+        periodKey: AUG_KEY,
+        reason: "other",
+        note: "oops",
+      }),
+    ).rejects.toThrow(/Describe what's being corrected/);
+  });
+
+  test("cannot be used to escape two-party review", async () => {
+    // The guarantee is inherited, not re-implemented: `resolveApprovalParty`
+    // is called with the caller as BOTH preparer and publisher, which is
+    // exactly what `assertSeparationOfDuties` already refuses for anyone but
+    // a superuser. A non-superuser holding both powers still has to hand the
+    // correction to a second person.
+    //
+    // Two real people, because one non-superuser cannot get a month published
+    // in the first place — the same rule, firing one step earlier.
+    const s = await setupChapter(newT());
+    const alice = await seedPerson(s);
+    await grantRole(s, alice, "manager", "central");
+    await seedPublishSeat(s, alice, "central");
+
+    const bobUserId = await run(s.t, (ctx) =>
+      ctx.db.insert("users", { email: "bob@publicworship.life" }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("userChapters", {
+        userId: bobUserId,
+        chapterId: s.chapterId,
+        role: "admin",
+        isActive: true,
+        joinedAt: Date.now(),
+      }),
+    );
+    const bobPersonId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Bob",
+        userId: bobUserId,
+        createdAt: Date.now(),
+      }),
+    );
+    await grantRole(s, bobPersonId, "manager", "central");
+    await seedPublishSeat(s, bobPersonId, "central");
+    const asBob = s.t.withIdentity({
+      subject: `${bobUserId}|session`,
+      issuer: "test",
+    });
+
+    await insertTxn(s, { amountCents: 1_000, postedAt: AUG_2026 });
+    // Alice prepares, Bob publishes — a legitimate two-party publication.
+    await s.as.mutation(api.publicLedger.submit, { periodKey: AUG_KEY });
+    await asBob.mutation(api.publicLedger.publish, { periodKey: AUG_KEY });
+
+    // Now Bob alone tries to do BOTH halves of a correction.
+    await expect(
+      asBob.mutation(api.publicLedger.republish, {
+        periodKey: AUG_KEY,
+        reason: "other",
+        note: "A correction one non-superuser should not be able to make alone.",
+      }),
+    ).rejects.toThrow(/different from the requester/);
+  });
+});
+
 describe("explaining a month", () => {
   const worklist = (s: ChapterSetup, periodKey: string) =>
     s.as.query(api.finances.monthCodingWorklist, { periodKey });

@@ -55,6 +55,7 @@ import {
   PUBLICATION_STATUSES,
   REBUILDABLE_STATUSES,
   SUBMITTABLE_STATUSES,
+  type AmendmentReason,
   type PublicationStatus,
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
@@ -547,6 +548,121 @@ export const requestChanges = mutation({
 });
 
 /**
+ * WRITE ONE REVISION — the frozen artifact itself: the revision row, one entry
+ * row per published line, the internal giver keys a year unions over, and the
+ * publication's new live pointer.
+ *
+ * Extracted so `publish` and `republish` cannot drift. They differ ONLY in how
+ * they get here — a reviewed hand-off versus a single authorized correction —
+ * and that difference is settled before this runs, by `resolveApprovalParty`,
+ * which is recorded on the row. Everything a reader ever sees is written here,
+ * once.
+ */
+async function writeRevision(
+  ctx: MutationCtx,
+  args: {
+    pub: Doc<"financePublications">;
+    scope: FinanceScope;
+    periodKey: string;
+    snapshot: Snapshot;
+    revision: number;
+    publisherPersonId: Id<"people">;
+    approvalParty: "single" | "two_party";
+    /** Who prepared what is being published, and when. The reviewed flow
+     *  names the submitter; a `republish` names its single author. */
+    preparedByPersonId: Id<"people"> | undefined;
+    preparedAt: number | undefined;
+    /** Carried onto the revision row from revision 2 on — the sentence the
+     *  public amendment log prints. */
+    amendmentReason: AmendmentReason | undefined;
+    amendmentNote: string | undefined;
+  },
+): Promise<void> {
+  const {
+    pub,
+    scope,
+    periodKey,
+    snapshot,
+    revision,
+    publisherPersonId,
+    approvalParty,
+  } = args;
+    const now = Date.now();
+
+    await ctx.db.insert("financePublicationRevisions", {
+      publicationId: pub._id,
+      revision,
+      scope,
+      periodKey,
+      incomeCents: snapshot.incomeCents,
+      expenseCents: snapshot.expenseCents,
+      netCents: snapshot.netCents,
+      incomeByStream: snapshot.incomeByStream,
+      expenseByCategory: snapshot.expenseByCategory,
+      expenseByProject: snapshot.expenseByProject,
+      spendByBudget: snapshot.spendByBudget,
+      entryCount: snapshot.entryCount,
+      giftCount: snapshot.giftCount,
+      giverCount: snapshot.giverCount,
+      backerCount: snapshot.backerCount,
+      reconstructedCount: snapshot.reconstructedCount,
+      reconstructedCents: snapshot.reconstructedCents,
+      undocumentedCount: snapshot.undocumentedCount,
+      undocumentedCents: snapshot.undocumentedCents,
+      uncodedCount: snapshot.uncodedCount,
+      uncodedCents: snapshot.uncodedCents,
+      unexplainedCount: snapshot.unexplainedCount,
+      unexplainedCents: snapshot.unexplainedCents,
+      truncated: snapshot.truncated,
+      amendmentReason: revision > 1 ? args.amendmentReason : undefined,
+      note: revision > 1 ? args.amendmentNote?.trim() : undefined,
+      preparedByPersonId: args.preparedByPersonId,
+      preparedAt: args.preparedAt,
+      publishedByPersonId: publisherPersonId,
+      publishedAt: now,
+      approvalParty,
+    });
+
+    for (const entry of snapshot.entries) {
+      await ctx.db.insert("financePublicationEntries", {
+        publicationId: pub._id,
+        revision,
+        scope,
+        periodKey,
+        ...entry,
+      });
+    }
+
+    // Frozen giver identities — INTERNAL ONLY, never served (see
+    // `schema/publicLedger.ts#financePublicationGiverKeys`). They exist so a
+    // year can UNION its months rather than adding twelve distinct counts
+    // together and reporting a monthly giver as twelve people.
+    const periodYear = periodKey.slice(0, 4);
+    for (const giver of snapshot.giverKeys) {
+      await ctx.db.insert("financePublicationGiverKeys", {
+        publicationId: pub._id,
+        revision,
+        year: periodYear,
+        key: giver.key,
+        isBacker: giver.isBacker,
+      });
+    }
+
+    await ctx.db.patch(pub._id, {
+      status: "published",
+      liveRevision: revision,
+      isLive: true,
+      publishedAt: now,
+      publishedByPersonId: publisherPersonId,
+      // The in-flight amendment's reason/note now live on the revision row.
+      amendmentReason: undefined,
+      amendmentNote: undefined,
+      reviewNote: undefined,
+      updatedAt: now,
+    });
+}
+
+/**
  * PUBLISH — freeze the month and put it in front of the world.
  *
  * The one irreversible action in this file. It rebuilds the snapshot from the
@@ -598,78 +714,111 @@ export const publish = mutation({
       publisherPersonId,
       pub.submittedByPersonId,
     );
-    const now = Date.now();
-
-    await ctx.db.insert("financePublicationRevisions", {
-      publicationId: pub._id,
-      revision,
+    await writeRevision(ctx, {
+      pub,
       scope,
       periodKey: args.periodKey,
-      incomeCents: snapshot.incomeCents,
-      expenseCents: snapshot.expenseCents,
-      netCents: snapshot.netCents,
-      incomeByStream: snapshot.incomeByStream,
-      expenseByCategory: snapshot.expenseByCategory,
-      expenseByProject: snapshot.expenseByProject,
-      spendByBudget: snapshot.spendByBudget,
-      entryCount: snapshot.entryCount,
-      giftCount: snapshot.giftCount,
-      giverCount: snapshot.giverCount,
-      backerCount: snapshot.backerCount,
-      reconstructedCount: snapshot.reconstructedCount,
-      reconstructedCents: snapshot.reconstructedCents,
-      undocumentedCount: snapshot.undocumentedCount,
-      undocumentedCents: snapshot.undocumentedCents,
-      uncodedCount: snapshot.uncodedCount,
-      uncodedCents: snapshot.uncodedCents,
-      unexplainedCount: snapshot.unexplainedCount,
-      unexplainedCents: snapshot.unexplainedCents,
-      truncated: snapshot.truncated,
-      amendmentReason: revision > 1 ? pub.amendmentReason : undefined,
-      note: revision > 1 ? pub.amendmentNote?.trim() : undefined,
+      snapshot,
+      revision,
+      publisherPersonId,
+      approvalParty,
       preparedByPersonId: pub.submittedByPersonId,
       preparedAt: pub.submittedAt,
-      publishedByPersonId: publisherPersonId,
-      publishedAt: now,
-      approvalParty,
+      amendmentReason: pub.amendmentReason,
+      amendmentNote: pub.amendmentNote,
     });
+    return { revision };
+  },
+});
 
-    for (const entry of snapshot.entries) {
-      await ctx.db.insert("financePublicationEntries", {
-        publicationId: pub._id,
-        revision,
-        scope,
-        periodKey: args.periodKey,
-        ...entry,
+/**
+ * REPUBLISH — correct a published month in ONE action.
+ *
+ * The three-step round trip (`startAmendment` → `submit` → `publish`) is
+ * correct and stays; it is how a correction gets a second pair of eyes. But it
+ * is three screens' worth of ceremony for the case that actually keeps coming
+ * up: one authorized person notices something wrong on a live page — a name
+ * that should not be public, a title that reads badly, a figure a code change
+ * has since fixed — and needs it off the internet now (founder, 2026-08-13:
+ * "the rows either need to not be frozen, or can be republished easily").
+ *
+ * UNFREEZING WAS THE OTHER OPTION AND IT IS THE WRONG ONE. A published
+ * statement that can be silently revised is not a transparency page; the
+ * amendment note is precisely what makes a correction credible instead of a
+ * quiet edit. So nothing here unfreezes: this still writes revision N+1, still
+ * demands the reason and the sentence that publishes with it, and still leaves
+ * revision N readable in the audit trail. Only the number of interactions
+ * changes.
+ *
+ * IT CANNOT BE USED TO ESCAPE REVIEW, and that falls out of the existing rule
+ * rather than a new one. `resolveApprovalParty` is called with the caller as
+ * BOTH preparer and publisher, which is exactly what it already refuses:
+ * anyone but a superuser hits `assertSeparationOfDuties` and is told to use
+ * the reviewed flow. A superuser — the solo operator this org actually is
+ * today — gets `approvalParty: "single"`, recorded on the revision, the same
+ * way a solo coding approval is recorded. Nobody gains a power they did not
+ * already have; they save two screens.
+ *
+ * The public page never blinks: revision N stays live until N+1 is written in
+ * this same transaction.
+ */
+export const republish = mutation({
+  args: {
+    scope: v.optional(scopeValidator),
+    periodKey: v.string(),
+    reason: amendmentReasonValidator,
+    note: v.string(),
+  },
+  returns: v.object({ revision: v.number() }),
+  handler: async (ctx, args): Promise<{ revision: number }> => {
+    assertPeriodKey(args.periodKey);
+    const note = args.note.trim();
+    if (note.length < MIN_AMENDMENT_NOTE_LENGTH) {
+      throw new ConvexError({
+        code: "NOTE_TOO_SHORT",
+        message:
+          "Describe what's being corrected — this sentence publishes with the amendment.",
       });
     }
+    const homeChapterId = await requireHomeChapter(ctx);
+    const scope: FinanceScope = args.scope ?? homeChapterId;
+    // BOTH powers, because this does both jobs in one call. Holding only
+    // `prepare` means the reviewed flow is the path — which is the point.
+    await requireLedgerPrepare(ctx, homeChapterId, scope);
+    await requireLedgerPublish(ctx, homeChapterId, scope);
+    const publisherPersonId = await resolveCallerPersonId(ctx, homeChapterId);
 
-    // Frozen giver identities — INTERNAL ONLY, never served (see
-    // `schema/publicLedger.ts#financePublicationGiverKeys`). They exist so a
-    // year can UNION its months rather than adding twelve distinct counts
-    // together and reporting a monthly giver as twelve people.
-    const periodYear = args.periodKey.slice(0, 4);
-    for (const giver of snapshot.giverKeys) {
-      await ctx.db.insert("financePublicationGiverKeys", {
-        publicationId: pub._id,
-        revision,
-        year: periodYear,
-        key: giver.key,
-        isBacker: giver.isBacker,
-      });
-    }
+    const pub = await findPublication(ctx, scope, args.periodKey);
+    if (!pub) throw new ConvexError({ code: "NOT_FOUND", message: "No such month." });
+    // Only a LIVE month can be republished. A draft or in-review one is
+    // already in the working state and has its own buttons.
+    assertTransition(pub.status, ["published"], "republish");
 
-    await ctx.db.patch(pub._id, {
-      status: "published",
-      liveRevision: revision,
-      isLive: true,
-      publishedAt: now,
-      publishedByPersonId: publisherPersonId,
-      // The in-flight amendment's reason/note now live on the revision row.
-      amendmentReason: undefined,
-      amendmentNote: undefined,
-      reviewNote: undefined,
-      updatedAt: now,
+    const sandboxMode = await readSandbox(ctx);
+    const snapshot = await buildSnapshot(ctx, scope, args.periodKey, sandboxMode);
+    assertPublishable(snapshot);
+
+    // Caller as preparer AND publisher — see the module doc above. This
+    // throws for anyone who may not do both halves.
+    const approvalParty = await resolveApprovalParty(
+      ctx,
+      publisherPersonId,
+      publisherPersonId,
+    );
+
+    const revision = (pub.liveRevision ?? 0) + 1;
+    await writeRevision(ctx, {
+      pub,
+      scope,
+      periodKey: args.periodKey,
+      snapshot,
+      revision,
+      publisherPersonId,
+      approvalParty,
+      preparedByPersonId: publisherPersonId,
+      preparedAt: Date.now(),
+      amendmentReason: args.reason,
+      amendmentNote: note,
     });
 
     return { revision };
