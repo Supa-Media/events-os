@@ -17,6 +17,15 @@
  * this never adds a new failure mode. Kept out of `finances.ts` only so `receipts.ts` (which already
  * imports helpers FROM `finances.ts`, never the reverse) can log
  * receipt attach/detach without a circular import.
+ *
+ * `system: true` is the ONE sanctioned way around `requireUserId` — for the
+ * Increase auto-pairer (`lib/refundPair.ts`), which runs from a
+ * webhook-triggered `internalMutation` with no authenticated caller to
+ * resolve at all. It skips the `requireUserId` call entirely (there is
+ * nothing to require) and leaves `actorUserId` unset. See
+ * `financeAuditLog.actorUserId`'s schema doc for why that's safe: the row is
+ * still identifiable after the fact by its `action`, which a human path
+ * never reuses.
  */
 import type { MutationCtx } from "../_generated/server";
 import { requireUserId } from "./context";
@@ -44,6 +53,10 @@ export interface FinanceAuditEntry {
    *  status_change; optional everywhere else. */
   reason?: string | null;
   amountCents?: number;
+  /** True ONLY for the Increase auto-pairer's system-initiated rows — skips
+   *  `requireUserId` (there is no authenticated caller to resolve) and
+   *  leaves `actorUserId` unset. Every other writer omits this. */
+  system?: boolean;
 }
 
 /** Append one row. Never patches or deletes — every call is a brand-new
@@ -52,10 +65,12 @@ export async function logFinanceAudit(
   ctx: MutationCtx,
   entry: FinanceAuditEntry,
 ): Promise<void> {
-  const actorUserId = (await requireUserId(ctx)) as Id<"users">;
+  const actorUserId = entry.system
+    ? undefined
+    : ((await requireUserId(ctx)) as Id<"users">);
   await ctx.db.insert("financeAuditLog", {
     chapterId: entry.chapterId,
-    actorUserId,
+    ...(actorUserId ? { actorUserId } : {}),
     subjectType: entry.subjectType,
     subjectId: entry.subjectId,
     action: entry.action,

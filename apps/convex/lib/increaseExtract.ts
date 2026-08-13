@@ -72,6 +72,12 @@ export interface ExtractedCardCharge {
   merchantName?: string;
   merchantCategory?: string;
   cardPaymentId?: string;
+  /** Increase's own `source.category` for this row — `card_settlement` or
+   *  `card_refund`. Stored verbatim (`transactions.sourceCategory`), same
+   *  positive-marker discipline as the account lane, and — paired with
+   *  `cardPaymentId` — what lets `increaseLedger.ts` auto-pair a refund
+   *  against its settlement (see `schema/finances.ts`'s `cardPaymentId` doc). */
+  sourceCategory: (typeof CARD_SOURCE_CATEGORIES)[number];
 }
 
 /** The extracted non-card account activity we hand to the DB apply. */
@@ -158,6 +164,7 @@ export function extractCardCharge(
     merchantName: card?.merchant_name ?? undefined,
     merchantCategory: card?.merchant_category_code ?? undefined,
     cardPaymentId: card?.card_payment_id ?? undefined,
+    sourceCategory: category as (typeof CARD_SOURCE_CATEGORIES)[number],
   };
 }
 
