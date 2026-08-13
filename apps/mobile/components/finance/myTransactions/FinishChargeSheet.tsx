@@ -108,6 +108,7 @@ import { planCategoryEdit } from "../coding/categoryEditPlan";
 import { reimbursementPrefillPlan } from "../coding/reimbursementPrefill";
 import { TransactionHistoryCompact } from "../coding/TransactionHistoryCompact";
 import { ReimbursementContextBlock } from "../coding/ReimbursementContextBlock";
+import { PriorCodingBlock } from "../coding/PriorCodingBlock";
 import { CodingDocumentation } from "./CodingDocumentation";
 import { PublicPurposeNotice } from "../coding/PublicPurposeEditor";
 import { parseAmountToCents, receiptAmountMismatch } from "./receiptAmountCheck";
@@ -778,6 +779,29 @@ export function FinishChargeSheetBody({
                               affiliation: a.affiliation as AttendeeAffiliation,
                             })),
                             groupDescription: line.groupDescription,
+                          })
+                        }
+                      />
+
+                      {/* "You've coded this vendor before" — directly below
+                          the claimant's own words, ANALOGY not testimony, and
+                          only ever applied on an explicit tap. `null` for the
+                          vast majority of charges, which have no prior
+                          APPROVED coding at this merchant. */}
+                      <PriorCodingBlock
+                        priorCoding={data?.priorCoding}
+                        onUse={(coding) =>
+                          form.applyExternalLine({
+                            expenseType: coding.expenseType as ExpenseType,
+                            businessPurpose: coding.businessPurpose,
+                            travelFrom: coding.travelFrom,
+                            travelTo: coding.travelTo,
+                            headcount: coding.headcount,
+                            attendees: coding.attendees?.map((a) => ({
+                              name: a.name,
+                              affiliation: a.affiliation as AttendeeAffiliation,
+                            })),
+                            groupDescription: coding.groupDescription,
                           })
                         }
                       />

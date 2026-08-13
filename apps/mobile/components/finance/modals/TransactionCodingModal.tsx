@@ -58,6 +58,7 @@ import {
   type CodingFormValue,
 } from "../coding/CodingFieldSet";
 import { ReimbursementContextBlock } from "../coding/ReimbursementContextBlock";
+import { PriorCodingBlock } from "../coding/PriorCodingBlock";
 import { reimbursementPrefillPlan } from "../coding/reimbursementPrefill";
 
 export type { CodingFormValue };
@@ -82,6 +83,7 @@ export function TransactionCodingModal({
   initialBudgetId,
   category,
   reimbursementContext,
+  priorCoding,
   reviewNote,
   personalCharge,
   submitLabel = "Submit for review",
@@ -121,6 +123,13 @@ export function TransactionCodingModal({
    *  reimbursement payouts). */
   reimbursementContext?: NonNullable<
     FunctionReturnType<typeof api.transactionCodings.getForTransaction>["reimbursementContext"]
+  > | null;
+  /** "You've coded this vendor before" — `getForTransaction().priorCoding`,
+   *  passed through verbatim by `TransactionCodingSection` (the only caller
+   *  with it). `undefined`/`null` renders nothing (no prior APPROVED coding
+   *  at this merchant). */
+  priorCoding?: NonNullable<
+    FunctionReturnType<typeof api.transactionCodings.getForTransaction>["priorCoding"]
   > | null;
   /** The reviewer's send-back note, when this is a revision. Shown INSIDE the
    *  editor: "what would make this approvable" is useless one screen away from
@@ -265,6 +274,27 @@ export function TransactionCodingModal({
                       affiliation: a.affiliation as AttendeeAffiliation,
                     })),
                     groupDescription: line.groupDescription,
+                  })
+                }
+              />
+
+              {/* "You've coded this vendor before" — directly below the
+                  claimant's own words, ANALOGY not testimony, applied only
+                  on an explicit tap. */}
+              <PriorCodingBlock
+                priorCoding={priorCoding}
+                onUse={(coding) =>
+                  form.applyExternalLine({
+                    expenseType: coding.expenseType as ExpenseType,
+                    businessPurpose: coding.businessPurpose,
+                    travelFrom: coding.travelFrom,
+                    travelTo: coding.travelTo,
+                    headcount: coding.headcount,
+                    attendees: coding.attendees?.map((a) => ({
+                      name: a.name,
+                      affiliation: a.affiliation as AttendeeAffiliation,
+                    })),
+                    groupDescription: coding.groupDescription,
                   })
                 }
               />
