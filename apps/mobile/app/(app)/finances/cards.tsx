@@ -20,9 +20,11 @@
  * tab's D3 strip-down targets, and previously landed on the manager view's
  * permission wall instead of their own card.
  */
+import { View } from "react-native";
+import { useRouter } from "expo-router";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { EmptyState, Narrow, Screen } from "../../../components/ui";
+import { Button, EmptyState, Narrow, Screen } from "../../../components/ui";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { ManagerCardsView } from "../../../components/finance/cards/ManagerCardsView";
 import { MemberCardsView } from "../../../components/finance/cards/MemberCardsView";
@@ -39,6 +41,7 @@ function NoFinanceAccess() {
 
 export default function CardsScreen() {
   const seats = useQuery(api.financeRoles.mySeats, {});
+  const router = useRouter();
 
   if (seats === undefined) return <Screen loading />;
 
@@ -47,6 +50,24 @@ export default function CardsScreen() {
   return (
     <Screen maxWidth={1080}>
       <Narrow>
+        {/* REIMBURSEMENTS LIVES HERE NOW, and this link is the only reason
+            that's true. Flattening the tab bar deleted the Cards sub-row that
+            used to carry it, and the layout's comment claimed it had moved
+            "to the Cards page's own menu" — a menu that did not exist. For a
+            seat holder the route was left reachable ONLY from a Dashboard
+            attention row that renders when there are pending requests, so at
+            zero pending, approvals and the request form were unreachable
+            entirely.
+            A claim in a comment is not a feature; this is the feature. */}
+        <View className="mb-4 flex-row justify-end">
+          <Button
+            title="Reimbursements"
+            variant="secondary"
+            size="sm"
+            icon="corner-up-left"
+            onPress={() => router.navigate("/finances/reimbursements" as never)}
+          />
+        </View>
         {isManager ? (
           // The cardholders view still gates on the finance-role ladder server
           // side; catch a role throw locally instead of blanking the screen.

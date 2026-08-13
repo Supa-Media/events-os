@@ -35,7 +35,12 @@
  * have two implementations drifting apart.
  */
 import { useEffect, useMemo, useState } from "react";
-import { ActivityIndicator, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -55,6 +60,7 @@ import {
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import {
+  ChargeCard,
   ChargeRow,
   FilterChip,
 } from "../myTransactions/ChargeRow";
@@ -109,12 +115,26 @@ export function CodePage() {
   const { isAuthenticated, isLoading } = useConvexAuth();
   const me = useQuery(api.profiles.me, isAuthenticated ? {} : "skip");
   const reconcileMyPerson = useMutation(api.profiles.reconcileMyPerson);
+  // Read here, not only in `MyCharges`, because the sign-in bounce below has
+  // to carry it — see that effect.
+  const entryParams = useLocalSearchParams<{ filter?: string }>();
 
   useEffect(() => {
     if (!isLoading && !isAuthenticated) {
-      router.replace("/(auth)/login?redirect=/code");
+      // CARRY THE FILTER THROUGH SIGN-IN. Every coding reminder links
+      // `/code?filter=uncoded`, and the audience this page exists for — a
+      // volunteer who has never opened the app — is signed OUT every single
+      // time, so this bounce is the common path, not the edge case. Dropping
+      // the param landed them on the unfiltered list: a headline reading "3
+      // charges need a word from you" above all forty of their charges.
+      const target = entryParams.filter
+        ? `/code?filter=${encodeURIComponent(entryParams.filter)}`
+        : "/code";
+      router.replace(
+        `/(auth)/login?redirect=${encodeURIComponent(target)}` as never,
+      );
     }
-  }, [isLoading, isAuthenticated, router]);
+  }, [isLoading, isAuthenticated, router, entryParams.filter]);
 
   // A member who has never opened the main app still needs a People row
   // before `personTransactions` can attribute anything to them — the same
@@ -182,13 +202,20 @@ function MyCharges() {
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const { run, toast, dismiss } = useActionRunner();
+  // Below this, the table's fixed cells (535px of them) overflow a phone and
+  // the Finish button is clipped off the right edge — see `ChargeCard`. This
+  // page is opened from an email, so the phone IS the primary device.
+  const narrow = useWindowDimensions().width < 640;
 
-  const [filter, setFilter] = useState<ChargeFilter>(() =>
-    parseChargeFilter(params.filter),
+  // `null` = nobody has chosen yet, so the page may choose for them (below).
+  // A tap sets it and the page stops guessing.
+  const [chosen, setChosen] = useState<ChargeFilter | null>(() =>
+    params.filter ? parseChargeFilter(params.filter) : null,
   );
   useEffect(() => {
-    setFilter(parseChargeFilter(params.filter));
+    if (params.filter) setChosen(parseChargeFilter(params.filter));
   }, [params.filter]);
+  const setFilter = setChosen;
 
   const [openId, setOpenId] = useState<string | null>(null);
 
@@ -215,6 +242,13 @@ function MyCharges() {
   );
 
   const actionableCount = rows.filter((r) => r.todo.actionable).length;
+  // DEFAULT TO THE WORK. `parseChargeFilter` falls back to "all" for a
+  // missing param, which is right for a mistyped link but wrong for the
+  // common path: the sign-in bounce used to drop `?filter=uncoded`, and even
+  // with that fixed somebody may arrive at a bare `/code`. Landing on the
+  // full ledger under a headline that says "3 charges need a word from you"
+  // makes the page look like it's lying. If anything needs them, show that.
+  const filter: ChargeFilter = chosen ?? (actionableCount > 0 ? "uncoded" : "all");
   const visible = useMemo(() => {
     const subset =
       filter === "uncoded" ? rows.filter((r) => r.todo.actionable) : rows;
@@ -315,6 +349,33 @@ function MyCharges() {
               />
             }
           />
+        ) : narrow ? (
+          // PHONE: stacked cards. The table below cannot fit here — its fixed
+          // cells alone are 535px — and `Table` clips rather than scrolls, so
+          // the Finish button simply wasn't reachable on the device this
+          // page's emailed link is opened on.
+          <View>
+            {visible.map((r) => (
+              <ChargeCard
+                key={r.txn.id}
+                txn={r.txn}
+                todo={r.todo}
+                onOpen={() => setOpenId(r.txn.id)}
+                onUpload={async (storageId, filename) => {
+                  await run(
+                    () =>
+                      attachReceipt({
+                        transactionId: r.txn.id as Id<"transactions">,
+                        storageId,
+                        ...(filename ? { filename } : {}),
+                      }),
+                    { errorTitle: "Couldn't attach receipt" },
+                  );
+                }}
+                generateUploadUrl={generateUploadUrl}
+              />
+            ))}
+          </View>
         ) : (
           <Table>
             <TableHeader>

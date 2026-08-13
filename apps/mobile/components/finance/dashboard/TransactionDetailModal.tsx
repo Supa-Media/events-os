@@ -544,6 +544,14 @@ function TransactionDetailBody({
             reminderStage={txn.reminderStage}
             isPersonal={isPersonal === true}
             transactionId={txn.id}
+            // The second call site the old default hid. The dashboard gates on
+            // having a finance role at all, and that ladder starts at VIEWER —
+            // below the bookkeeper rank `receipts.listReceipts` demands — so a
+            // viewer-rank holder opening this drill-down could tap the picker
+            // and take the page down. Off here: losing "attach an existing
+            // receipt" inside a read-oriented drill-down costs a click (the
+            // Book has it); a thrown query costs the whole screen.
+            libraryPicker={false}
             onUpload={async (storageId, filename) => {
               await editReceipt(storageId, filename);
             }}
