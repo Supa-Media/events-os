@@ -324,6 +324,53 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-08-13 — Run 19 (finance IA: "what's the difference between reconcile and coding even?")
+- **An IA complaint is a request for a DIAGNOSIS, not a redesign — and the
+  run shape is inline recon, no fan-out.** The founder asked "you tell me if
+  I'm missing something." Answering that needed ~8 targeted reads (the
+  layout, the four screens' module docs, the shared filter constants) and
+  zero subagents; dispatching build lanes off an unvalidated design would
+  have been the expensive mistake. Deliverable was one assessment artifact
+  ending in four named decisions, each with a recommendation. When the ask
+  is "explore what this looks like," ship the argument, not a branch.
+- **This repo's module doc comments ARE the recon lane.** Every finance
+  screen opens with a doc block stating who it's for and why it exists
+  separately — `explain.tsx` literally documents that it exists because two
+  OTHER surfaces' facets exclude the rows it needs. Read the doc blocks
+  before tracing queries; they hand you the design history for free and they
+  are consistently honest about their own workarounds.
+- **The diagnosis that generalizes: a surface split by FIELD GROUP reads to
+  users as an arbitrary split.** Reconcile owns the bookkeeping columns,
+  Coding owns the substantiation columns, on the same row. Different
+  reviewers and different permissions are real and still don't justify
+  separate screens — they justify a column and a gate. The tell was that
+  Reconcile's row action already opened the full coding surface
+  (`ReconcileList.tsx` comment icon → `TransactionDocumentationModal`) and
+  its filter bar already shipped `uncoded`/`coding_review`. **Before
+  proposing a merge, grep whether one surface already embeds the other; if
+  it does, the merge is mostly deletion and you can say so with numbers.**
+- **Grouping nav chips DEFERS an IA problem and the founder will return.**
+  The 2026-08-11 directive ("this is just way too much") was answered by
+  hiding four chips under two group chips. Two days later: "one of the tabs
+  has three subtypes under it — that's unacceptable." Consolidating
+  navigation without consolidating SCREENS moves destinations down a row.
+  When a founder says a bar is too big, count destinations, not chips.
+- **The one thing that can't merge is usually a permission boundary, not a
+  workflow.** `finances.personTransactions` is caller-scoped and needs NO
+  finance grant; every sibling query throws for that persona. That single
+  fact is what makes "two surfaces" the right answer rather than one, and it
+  is the same fact that makes the founder's requested `/code` page a real
+  route rather than a deep link. Look for the seat-free query when deciding
+  how many surfaces a domain needs.
+- **Founder verbatim, now standing:** the finance area must serve three
+  audiences explicitly — the financial manager reviewing, the executive
+  director backfilling history, and the spender coding their own charges;
+  "I'm fine with this being two tabs, but I'm not fine with two tabs and one
+  of them having three subtypes"; and there must be a page "I can send
+  people to, like /code" where someone sees their own transactions, uploads
+  receipts and states reasons. Nesting in the finance bar is now a defect
+  class, not a layout preference.
+
 ### 2026-08-13 — Run 18 (the auto-coding roadmap: reimbursement port, backlog split, refund auto-pair, heuristic visibility)
 - **Three parallel worktree builds + orchestrator-built fourth, all landed
   sequentially in one night — the collision that mattered came from OUTSIDE
