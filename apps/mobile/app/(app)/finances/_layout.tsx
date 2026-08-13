@@ -33,80 +33,56 @@ import { ScopeBadge } from "../../../components/finance/ScopeBadge";
  */
 const ACCOUNTS_TAB: Tab = { label: "Accounts", path: "/finances/accounts" };
 
-// ── Grouped tabs (owner directive, 2026-08-11) ───────────────────────────────
-// "This is just way too much... coding, publish, and explain can be one thing.
-// Cards and reimbursements can be one thing." The bar had grown to eleven
-// chips by accretion — every workstream added one — and eleven chips is a
-// navigation problem pretending to be a feature list.
+// ── ONE ROW, NO NESTING (founder directive, 2026-08-13) ──────────────────────
+// "I'm fine with this being two tabs, but I'm not fine with this being two
+// tabs and then one of the tabs has three subtypes under it. That's just
+// unacceptable." — and, after the grouping shipped: "the tab is still a mess."
 //
-// A GROUP is one primary chip; its members appear as a second, smaller pill
-// row only while you're inside the group. The routes themselves are unchanged
-// (deep links, the Academy's screenshots, and the publish console's
-// cross-links all keep working) — only the bar is consolidated.
+// The bar reached eleven chips by accretion, and the first fix (2026-08-11)
+// hid four of them under two GROUP chips with a second pill row. That deferred
+// the problem rather than solving it: the destinations never went away, they
+// moved down a row, and a row of pills under a row of pills is the same
+// navigation problem wearing a hat.
 //
-// The three primary finance activities, per the owner's own requirements:
-//   overview it (Dashboard / Reconcile / Accounts) · explain it (Coding) ·
-//   spend it (Cards). Receipts, Sales and Budgets stay their own chips —
-//   no directive on them, and merging beyond the ask invents an information
-//   architecture nobody requested.
-type Tab = {
-  label: string;
-  path: string;
-  /** Sub-destinations shown as a second pill row while this tab is active.
-   *  The first member is the tab's own landing path. */
-  children?: { label: string; path: string }[];
-};
-
-// Coding, Explain and Publish are one activity read in one direction: explain
-// the transactions, then publish the month they belong to. Kept under the
-// "Coding" label because the Academy teaches that word for the §274(d) work
-// and a tab rename ripples into lessons (CLAUDE.md's Academy rule).
-const CODING_GROUP: Tab = {
-  label: "Coding",
-  path: "/finances/coding",
-  children: [
-    { label: "Code", path: "/finances/coding" },
-    { label: "By month", path: "/finances/explain" },
-    { label: "Publish", path: "/finances/publish" },
-  ],
-};
-
-// Cards and reimbursements are both "money a person spends and the org makes
-// right" — one chip, two sub-views.
-const CARDS_GROUP: Tab = {
-  label: "Cards",
-  path: "/finances/cards",
-  children: [
-    { label: "Cards", path: "/finances/cards" },
-    { label: "Reimbursements", path: "/finances/reimbursements" },
-  ],
-};
+// What actually removed them was consolidating the SCREENS, not the chips:
+//   · Code            → `/code`, its own page outside the finance tabs
+//                       entirely (no seat required — it's the one surface a
+//                       cardholder with no finance grant can use).
+//   · By month        → a view in the Book's own menu.
+//   · Publish         → a view in the Book's own menu, and still the
+//                       Dashboard's publishability card.
+//   · Reimbursements  → a view in the Cards page's own menu.
+// Every route still exists and every deep link still resolves; nothing is
+// reachable ONLY from a chip that no longer exists.
+//
+// There is deliberately no `children` concept left in this file. A tab is a
+// destination. If a future workstream wants a fifth thing under Cards, the
+// answer is a menu on the Cards page, not a second row here.
+type Tab = { label: string; path: string };
 
 const BUDGETS_TAB: Tab = { label: "Budgets", path: "/finances/budgets" };
 
+// "Book", not "Reconcile": the tab now holds every question you can ask of
+// the ledger — what needs attention, what's waiting on you, a month's
+// backfill, the receipt chase — and "reconcile" names only one of them (close
+// the month). The org already says "book" for this ("all books", "Central's
+// book", "which book are we publishing"), so the word costs nobody a lesson.
 const SEAT_TABS: Tab[] = [
   { label: "Dashboard", path: "/finances" },
-  { label: "Reconcile", path: "/finances/reconcile" },
-  CODING_GROUP,
+  { label: "Book", path: "/finances/reconcile" },
   { label: "Receipts", path: "/finances/receipts" },
   { label: "Sales", path: "/finances/sales" },
   BUDGETS_TAB,
-  CARDS_GROUP,
+  { label: "Cards", path: "/finances/cards" },
 ];
 
-// The member (no-seat) set: their card + reimbursements under one chip, their
-// own charges to code, and the read-only budgets view. Three chips.
-const MEMBER_CODING_TAB: Tab = { label: "Coding", path: "/finances/coding" };
+// The member (no-seat) set. Their own charges live at `/code` now — off this
+// bar entirely, which is why the Coding chip and its had-work/no-work
+// conditional are both gone: a page that requires no seat has no business
+// being gated behind a finance tab bar in the first place.
 const MEMBER_TABS: Tab[] = [
-  {
-    label: "My Card",
-    path: "/finances/cards",
-    children: [
-      { label: "My Card", path: "/finances/cards" },
-      { label: "Reimbursements", path: "/finances/reimbursements" },
-    ],
-  },
-  MEMBER_CODING_TAB,
+  { label: "My Card", path: "/finances/cards" },
+  { label: "Reimbursements", path: "/finances/reimbursements" },
   BUDGETS_TAB,
 ];
 
@@ -119,10 +95,24 @@ function isActive(pathname: string, path: string): boolean {
   return pathname === path || pathname.startsWith(`${path}/`);
 }
 
-/** A grouped tab lights up when ANY of its members is the active route, so
- *  standing on /finances/publish still highlights "Coding" in the bar. */
+/** The Book's menu leads to screens that are still their own routes (a
+ *  month's worklist, the chase list, the publish console). Standing on one of
+ *  those must keep the Book chip lit, or the bar would say you had left
+ *  finance's main tab by using its own menu. */
+const BOOK_SATELLITES = [
+  "/finances/explain",
+  "/finances/receipt-chase",
+  "/finances/publish",
+  "/finances/coding",
+] as const;
+
 function isTabActive(pathname: string, tab: Tab): boolean {
-  if (tab.children) return tab.children.some((c) => isActive(pathname, c.path));
+  if (tab.path === "/finances/reconcile") {
+    return (
+      isActive(pathname, tab.path) ||
+      BOOK_SATELLITES.some((p) => isActive(pathname, p))
+    );
+  }
   return isActive(pathname, tab.path);
 }
 
@@ -137,32 +127,18 @@ export default function FinancesLayout() {
   // Loading (`undefined`) → treated as "no access yet" so Accounts never
   // flashes in for a seat holder who turns out not to be ED/FM.
   const canViewAccounts = useQuery(api.financeRoles.canViewAccounts, {});
-  // Does the Coding tab have anything behind it for THIS person? Same query
-  // the screen reads, so the tab and the screen can never disagree about
-  // whether there's work. `undefined` while loading → no tab, matching the
-  // rest of this function's don't-guess posture.
-  const coding = useQuery(api.transactionCodings.workload, {});
-  const hasCodingWork =
-    coding !== undefined &&
-    (coding.mineToCode > 0 || coding.awaitingMyReview > 0 || coding.orgWide);
-  const tabs = (
+  // No workload probe any more: the Coding chip it existed to show-or-hide is
+  // gone, and `/code` — the page it used to gate — is now reachable by URL
+  // whether or not the caller has work, which is the whole point of a link
+  // you can send to forty people.
+  const tabs =
     seats === undefined
       ? []
       : seats.length === 0
         ? MEMBER_TABS
         : canViewAccounts === true
           ? [...SEAT_TABS, ACCOUNTS_TAB]
-          : SEAT_TABS
-  ).filter(
-    // The member set drops Coding when there is genuinely nothing behind it
-    // (same rule as before the grouping). Seat holders always keep the group:
-    // Explain and Publish are inside it, and those exist independent of the
-    // caller's personal coding workload.
-    (t) => seats?.length !== 0 || t.path !== MEMBER_CODING_TAB.path || hasCodingWork,
-  );
-
-  // The active group's second row, when there is one.
-  const activeGroup = tabs.find((t) => t.children && isTabActive(pathname, t));
+          : SEAT_TABS;
 
   return (
     <View className="flex-1">
@@ -187,27 +163,6 @@ export default function FinancesLayout() {
           ))}
         </ScrollView>
       </View>
-      {/* The group's members — a second, quieter row that exists only while
-          you're inside the group, so the primary bar stays seven chips
-          instead of eleven. */}
-      {activeGroup?.children ? (
-        <View className="border-b border-border bg-sunken px-4 py-2">
-          <ScrollView
-            horizontal
-            showsHorizontalScrollIndicator={false}
-            contentContainerStyle={{ gap: 8 }}
-          >
-            {activeGroup.children.map((c) => (
-              <Pill
-                key={c.path}
-                label={c.label}
-                selected={isActive(pathname, c.path)}
-                onPress={() => router.navigate(c.path as never)}
-              />
-            ))}
-          </ScrollView>
-        </View>
-      ) : null}
       {/* Founder directive: finance scope must be unmistakable, even from a
           bare screenshot of just this content column — see `ScopeBadge`'s
           doc for the three distinct treatments (Central / chapter desk /
