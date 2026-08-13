@@ -88,6 +88,7 @@ import { stampCashbackSourceCategory } from "./0066_stamp_cashback_source_catego
 import { renameReimbursementPayoutRows } from "./0067_rename_reimbursement_payout_rows";
 import { materializeReimbursementCodings } from "./0068_materialize_reimbursement_codings";
 import { materializeReimbursementReceiptsMigration } from "./0069_materialize_reimbursement_receipts";
+import { linkWireGiftsToTheirDeposit } from "./0070_link_wire_gifts_to_their_deposit";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -399,4 +400,11 @@ export const MIGRATIONS: Migration[] = [
   // is fixed; this materializes the ones already in the books. Skips any row
   // a human already linked a receipt to. See 0069.
   materializeReimbursementReceiptsMigration,
+  // A wire is money that hit the bank directly, so it sits in the books twice
+  // until a human links the gift to the credit — and until #696 the rule made
+  // the founder's split ($5,000 central + $2,000 chapter, one $7,000 wire)
+  // impossible to state at all. This matches unlinked wire gifts to their
+  // deposit by day and exact total, and only when exactly one deposit fits.
+  // See 0070.
+  linkWireGiftsToTheirDeposit,
 ];
