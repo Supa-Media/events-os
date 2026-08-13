@@ -781,6 +781,21 @@ async function matchPayoutDeposit(
     payoutProcessor: "stripe",
     stripePayoutId: payout.stripePayoutId,
     ...(match.status === "unreviewed" ? { status: "categorized" as const } : {}),
+    // SAY HOW THE ROW GOT CLAIMED (Opus inverse-audit, 2026-08-13): this
+    // match is the one place a TEXT HEURISTIC applies the strongest
+    // suppressing marker in the system (payout-marked rows leave book
+    // value, published totals, and the Explain worklist). The audit trail
+    // can't carry it — `financeAuditLog.actorUserId` is a required
+    // integrity anchor and the engine has no authenticated user — so the
+    // provenance goes on the row's own note (only when empty; a human's
+    // note is never overwritten), where the detail view shows it to
+    // whoever next looks. A false match is thereby discoverable and
+    // reversible (`unmarkPayout`) instead of silent.
+    ...(match.note == null || match.note.trim() === ""
+      ? {
+          note: `Matched to Stripe payout ${payout.stripePayoutId} automatically — same amount, arrival window, and "stripe" in the statement text. If this isn't that payout's arrival, un-mark it in Reconcile.`,
+        }
+      : {}),
   });
   return match._id;
 }
