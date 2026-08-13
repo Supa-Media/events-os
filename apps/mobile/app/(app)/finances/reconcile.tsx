@@ -59,6 +59,11 @@ import {
   type PickerItem,
 } from "../../../components/finance/reconcile/ReconcileList";
 import { BulkBar } from "../../../components/finance/reconcile/BulkBar";
+import {
+  ViewMenu,
+  activeView,
+  type BookView,
+} from "../../../components/finance/reconcile/ViewMenu";
 import { BulkNoDocumentationModal } from "../../../components/finance/modals/BulkNoDocumentationModal";
 import type { ReceiptExceptionReason } from "@events-os/shared";
 import type { ActionToast } from "../../../lib/useActionToast";
@@ -456,6 +461,7 @@ function ReconcileGrid() {
       : targetChapterId
         ? `/finances/receipt-chase?chapterId=${targetChapterId}`
         : "/finances/receipt-chase";
+
   // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
   // The "For" picker's option groups (WP-U) — events/projects + recurring
@@ -481,6 +487,95 @@ function ReconcileGrid() {
 
   const rows = reconcile?.rows ?? [];
   const counts = reconcile?.counts;
+
+  // The scope suffix every cross-screen destination in the view menu carries,
+  // built from the SAME resolution `chaseHref` above uses. Threaded, never
+  // re-derived at the target: a page that resolves its own scope is how two
+  // finance surfaces end up showing different books under the same heading.
+  const scopeQuery = allBooksScope
+    ? "?scope=all"
+    : centralScope
+      ? "?scope=central"
+      : targetChapterId
+        ? `?scope=${targetChapterId}`
+        : "";
+
+  /**
+   * THE VIEWS — saved questions about this one book.
+   *
+   * The first four re-filter the grid in place. The last three are separate
+   * screens because they GROUP or paginate differently (a month biggest-first
+   * with a progress meter; the chase list grouped by cardholder; a period's
+   * publish console) — not because they're a different subject. Both kinds
+   * read as "where do I want to be looking", which is the only question the
+   * person opening this menu is asking.
+   *
+   * Counts come from `counts`, which is server-side and truthful across the
+   * whole scope rather than the loaded page — so every number here is one you
+   * can actually get to. The routed entries carry no count on purpose: this
+   * screen has no honest figure for them, and a guessed one is the exact
+   * defect this area keeps repairing.
+   */
+  const views: BookView[] = [
+    {
+      key: "attention",
+      label: "Needs attention",
+      detail:
+        "Still unreviewed, or missing a budget, documentation, or money owed back. The pile that needs a decision.",
+      filters: ["needs_attention"],
+      count: counts?.needs_attention,
+    },
+    {
+      key: "review",
+      label: "Waiting on me",
+      detail:
+        "Explanations somebody submitted and you haven't decided yet — approve, or send back with a note.",
+      // Routed, not filtered, even though `coding_review` IS a filter on this
+      // grid. The review queue is a purpose-built surface — oldest first
+      // (the 60-day clock runs against the ones that have waited longest) and
+      // a send-back note field per row — and half-replacing it with a
+      // filtered grid would quietly drop both. The filter stays available in
+      // the State dropdown for anyone who wants these rows in the grid.
+      href: "/finances/coding",
+    },
+    {
+      key: "close",
+      label: "Ready to close",
+      detail:
+        "Categorised, budgeted, documented — and simply never closed. Needs a keystroke, not a decision.",
+      filters: ["ready_to_close"],
+      count: counts?.ready_to_close,
+    },
+    {
+      key: "everything",
+      label: "Everything",
+      detail: "The whole book for this desk, newest first, no filter applied.",
+      filters: [],
+      count: counts?.all,
+    },
+    {
+      key: "month",
+      label: "By month",
+      detail:
+        "Work one month biggest-first, with a progress meter — the backfill view, and where a month gets published from.",
+      href: `/finances/explain${scopeQuery}`,
+    },
+    {
+      key: "chase",
+      label: "Chase receipts",
+      detail:
+        "Everything still owed a receipt, grouped by who spent it, with a nudge button per person.",
+      href: chaseHref,
+    },
+    {
+      key: "publish",
+      label: "Publish a month",
+      detail:
+        "Close a month, hand it to a second person, and put it on publicworship.life.",
+      href: `/finances/publish${scopeQuery}`,
+    },
+  ];
+  const currentView = activeView(views, filters);
 
   // The server has already applied the filter set AND the search, so the grid
   // renders exactly what it was sent. This used to be
@@ -976,14 +1071,20 @@ function ReconcileGrid() {
               onto a line of its own on a phone; a page action belongs in the
               page header, and moving it there costs nothing and buys a row. */}
           <View className="mb-1 flex-row items-center justify-between gap-2">
-            <View className="flex-row items-baseline gap-2">
-              <Text className="font-display text-2xl text-ink">Reconcile</Text>
-              {searching ? (
-                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-                  {`${matchedCount} found`}
-                </Text>
-              ) : null}
-            </View>
+            {/* THE TITLE IS THE VIEW PICKER (founder: "I don't love all these
+                chips and stuff — maybe a drop down"). A rail of pills under a
+                bar of pills was two rows of the same thing, which is the
+                complaint this whole change exists to answer. The heading the
+                page needs anyway carries the menu instead, so nothing is
+                added to the screen and the current view is stated in the
+                largest type on it. See `ViewMenu`. */}
+            <ViewMenu
+              views={views}
+              active={currentView}
+              subtitle={searching ? `${matchedCount} found` : undefined}
+              onPickFilters={(next) => applyFilters([...next])}
+              onNavigate={(href) => router.navigate(href as never)}
+            />
             {chaseCount > 0 ? (
               <Button
                 title="Chase receipts"

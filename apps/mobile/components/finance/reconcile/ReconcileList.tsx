@@ -5,8 +5,12 @@
  * `useResizableColumns`), a `GridHeaderCell` header row, and per-row
  * `Cell`-wrapped cells that each commit ONE field via its own mutation.
  *
- * Columns: [☐] Merchant · Date · Amount · Cardholder · Category▾ · For▾ ·
- * Receipt · Status▾ · Actions. Merchant / Category / For / Status edit inline
+ * Columns: [☐] Merchant · Date · Amount · Cardholder · What it was for ·
+ * Category▾ · For▾ · Receipt · Status▾ · Actions.
+ * "What it was for" is the coding's own sentence, read-only and rendered
+ * straight from the row payload (`explanation`, see `finances.ts#reconcileRow`)
+ * — tapping it opens the same documentation modal the Actions speech-bubble
+ * does. Merchant / Category / For / Status edit inline
  * (Merchant a text cell, the rest dropdowns, all committing per row); Receipt
  * shows ✓ or an inline upload; Amount is read-only (signed). The fund is
  * hidden — the backend defaults it to the General Fund on categorize.
@@ -150,6 +154,18 @@ const DEFAULT_COLS = {
 
   amount: 104,
   cardholder: 168,
+  // THE ROW'S OWN SENTENCE. Wide because it holds prose, not a token, and
+  // placed straight after Cardholder so a scan reads as one line of English —
+  // "Guitar Center · $1,284.00 · Marcus Webb · Two condenser mics for the
+  // album sessions" — inside the first screenful, before the editable cells.
+  // Parking it out past Status would have put the thing people came to read
+  // behind a horizontal scroll.
+  //
+  // Deliberately NOT adjacent to `forCol`: "For" is the BUDGET and this is
+  // the EXPLANATION, and two columns reading "For" / "What it was for" side
+  // by side is exactly the vocabulary collision this area keeps paying for.
+  // Category sits between them.
+  explanation: 300,
   category: 168,
   forCol: 200,
   // Founder feedback (2026-07-24): 96px clipped BOTH the "Upload" label+icon
@@ -301,6 +317,11 @@ export function ReconcileList({
               label="Cardholder"
               width={widths.cardholder}
               onResizeStart={startResize("cardholder")}
+            />
+            <GridHeaderCell
+              label="What it was for"
+              width={widths.explanation}
+              onResizeStart={startResize("explanation")}
             />
             {showCategory ? (
               <GridHeaderCell
@@ -650,6 +671,61 @@ function ReconcileRow({
         ) : (
           <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
         )}
+      </Cell>
+
+      {/* WHAT IT WAS FOR — the coding's own sentence, readable without
+          opening anything (founder ask, 2026-08-13: "inline a lot of ...
+          like what was this for"). Until now the grid carried only
+          `codingState`, so a written explanation and an empty one looked the
+          same from here and reading a month meant opening every row.
+
+          The whole cell is the affordance, not a separate button: tapping it
+          opens the SAME `TransactionDocumentationModal` the speech-bubble in
+          Actions opens, so there is exactly one way in to a charge's record
+          and no second editing path to keep in sync. It is deliberately not a
+          text input — `submitCoding` refuses to touch an APPROVED coding
+          (`CODING_APPROVED`: "ask a reviewer to reopen it"), so a cell that
+          accepted typing would work on some rows and throw on others, which
+          is worse than a cell that always opens the surface that knows the
+          difference.
+
+          THREE STATES, matching the speech-bubble's `docState` exactly so the
+          two can never contradict each other on the same row:
+            written — show it (truncated to two lines; the modal has the rest)
+            missing — this charge owes an account of itself and has none
+            empty   — nothing written, nothing owed; stays quiet. */}
+      <Cell width={widths.explanation}>
+        <Pressable
+          onPress={() => setNoteModalOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel={
+            row.explanation
+              ? `What it was for: ${row.explanation.purpose}`
+              : docState === "missing"
+                ? "Needs an explanation — say what this was for"
+                : "Say what this was for"
+          }
+          className="flex-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
+        >
+          {row.explanation ? (
+            <View className="flex-row items-start gap-1">
+              <Text className="flex-1 text-sm text-ink" numberOfLines={2}>
+                {row.explanation.purpose}
+              </Text>
+              {/* A reviewer replaced the author's wording for publication.
+                  Marked rather than silent: this is the sentence the public
+                  page prints, and somebody reading the grid should be able to
+                  tell it isn't the spender's own words. */}
+              {row.explanation.redacted ? (
+                <Icon name="edit-3" size={11} color={colors.faint} />
+              ) : null}
+            </View>
+          ) : docState === "missing" ? (
+            <Text className="text-sm text-muted">Not written</Text>
+          ) : (
+            <Text className="text-sm text-faint">—</Text>
+          )}
+        </Pressable>
       </Cell>
 
       {/* Category (inline dropdown) — chapter-only; central txns have none.

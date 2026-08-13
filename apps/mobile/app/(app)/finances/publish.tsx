@@ -35,7 +35,7 @@
  * inline that a shared module already owns.
  */
 import { useState } from "react";
-import { Linking, Text, View } from "react-native";
+import { Text, View } from "react-native";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -64,12 +64,7 @@ import {
 } from "../../../components/ui";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { useChapterContext } from "../../../lib/ChapterContext";
-// `publicSiteUrl` — the one canonical resolver for the public-page base URL
-// (branded domain in prod, Convex .site fallback elsewhere). Lives with the
-// Tickets tab's helpers, not because this is ticket-specific, but because
-// that's where the org's first "open a preview link" button put it; finance
-// code already reuses this module for `formatMoney`/`parseDollars`.
-import { publicSiteUrl } from "../../../components/event/ticketing/helpers";
+import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
 
 function NoAccess() {
   return (
@@ -248,14 +243,15 @@ function MonthDetail({
   const requestChanges = useMutation(api.publicLedger.requestChanges);
   const startAmendment = useMutation(api.publicLedger.startAmendment);
   const republish = useMutation(api.publicLedger.republish);
-  const mintPreviewToken = useMutation(api.publicLedger.mintLedgerPreviewToken);
+  // Mint-and-open lives in `useLedgerPreview` now — the Explain screen wants
+  // the same button, and this was about to be its second copy.
+  const previewPage = useLedgerPreview();
 
   const router = useRouter();
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [reason, setReason] = useState<AmendmentReason>("recategorized");
-  const [previewPageLoading, setPreviewPageLoading] = useState(false);
 
   /** Every action shares one runner so a refusal always reaches the screen.
    *  The backend's messages are written to be read by a human (see
@@ -276,35 +272,17 @@ function MonthDetail({
   };
 
   /**
-   * "Preview the page" — mint a short-lived token and open the FULL public
-   * render of this month, built from the live books, in a new tab. Works in
-   * every working status (draft, in review, sent back, mid-amendment): the
-   * mint only needs console access, never a publishable snapshot, because
-   * looking is not the same commitment publishing is.
-   *
-   * Mirrors `TicketingTab.tsx#openPreview`'s RSVP draft-preview pattern —
-   * mint, then `Linking.openURL` — with its own loading flag rather than
-   * `busy` so tapping it never looks like it queued behind a submit/publish
-   * that's mid-flight.
+   * "Preview the page" — the FULL public render of this month, built from the
+   * live books, in a new tab. Works in every working status (draft, in
+   * review, sent back, mid-amendment): the mint only needs console access,
+   * never a publishable snapshot, because looking is not the same commitment
+   * publishing is. Mechanics (and why scope is omitted rather than sent as
+   * `null`) live in `useLedgerPreview`; its own `loading` is deliberately
+   * separate from `busy` so tapping it never looks like it queued behind a
+   * submit/publish that's mid-flight.
    */
-  const openPreviewPage = async () => {
-    setPreviewPageLoading(true);
-    setError(null);
-    try {
-      const { token } = await mintPreviewToken({
-        scope,
-        periodKey: month.periodKey,
-      } as never);
-      void Linking.openURL(
-        `${publicSiteUrl()}/finances/${month.periodKey}?preview=${token}`,
-      );
-    } catch (e) {
-      const data = (e as { data?: { message?: string } })?.data;
-      setError(data?.message ?? "Couldn't open the preview. Try again.");
-    } finally {
-      setPreviewPageLoading(false);
-    }
-  };
+  const openPreviewPage = () =>
+    previewPage.open({ scope, periodKey: month.periodKey });
 
   const noteTooShort = note.trim().length < MIN_AMENDMENT_NOTE_LENGTH;
 
@@ -403,11 +381,18 @@ function MonthDetail({
         icon="eye"
         variant="secondary"
         size="sm"
-        loading={previewPageLoading}
+        loading={previewPage.loading}
         onPress={() => void openPreviewPage()}
       />
 
+      {/* Two independent failure channels, rendered the same way: the action
+          runner's (`error`) and the preview mint's. They can't both be set by
+          one tap — the preview clears its own on each attempt and never
+          touches `error`. */}
       {error ? <Text className="mt-3 text-sm text-danger">{error}</Text> : null}
+      {previewPage.error ? (
+        <Text className="mt-3 text-sm text-danger">{previewPage.error}</Text>
+      ) : null}
 
       <View className="mt-3 gap-2">
         {(month.status === "draft" ||
