@@ -515,6 +515,32 @@ export const transactions = defineTable({
   feeOrigin: v.optional(
     v.union(...NON_DISCRETIONARY_FEE_ORIGINS.map((o) => v.literal(o))),
   ),
+  // ── SOMEBODY ELSE PAID OUR PROCESSING FEE ─────────────────────────────────
+  // Set only on the inflow row posted when a payer covers the processor's fee
+  // on their own personal-charge repayment (`cards.ts`). ABSENT on everything
+  // else, and — like `feeOrigin` above — it is a POSITIVE MARKER rather than
+  // an inference: the row shares `source:"repayment"` with the offsetting
+  // credit beside it, and nothing about its amount or shape distinguishes the
+  // two.
+  //
+  // IT EXISTS BECAUSE THE FEE IS BOOKED WHETHER OR NOT WE PAID IT. The monthly
+  // processor-fee sweep (`processorFees.ts`) books every cent Stripe took,
+  // including the cut on a repayment — and that row's own note says "revenue
+  // is recorded gross, so this is the whole difference between what was given
+  // and what banked". For a gift that holds. For a repayment it did not: the
+  // credit was posted at the DEBT while the payer had actually sent the debt
+  // plus the fee, so the fee expense had nothing funding it and book value
+  // sank by the coverage on every fee-covered repayment. A $6.00 charge paid
+  // back as $6.49 left exactly 49¢ of the org's own cash unexplained
+  // (founder, 2026-08-14). This row is that 49¢.
+  //
+  // NOT folded into the repayment credit, which is the other obvious shape and
+  // is wrong twice over: the credit is defined as the exact offset of the
+  // personal charge (widening it stops the pair netting), and
+  // `autoExplainedKind` classes a repayment credit as counting toward no
+  // published total — so coverage hidden inside it would vanish from the
+  // public page while still moving the books.
+  feeCoverageOrigin: v.optional(v.union(v.literal("repayment"))),
   // The Stripe payout this row was matched to by the reconciliation engine —
   // set on the central bank DEPOSIT row (`increase_ach`/`stripe_fc` inflow)
   // when the engine identifies it as the arrival of payout `po_…`, alongside
@@ -858,6 +884,27 @@ export const reimbursementRequests = defineTable({
   eventId: v.optional(v.id("events")),
   projectId: v.optional(v.id("projects")),
   budgetId: v.optional(v.id("budgets")),
+  // What the "For" column said at the moment the linked event/project was
+  // DELETED — written only by `releaseReimbursementsForDeletedRef`
+  // (`reimbursements.ts`), never by a submit path.
+  //
+  // A settled reimbursement is an audit record: the org has to be able to say
+  // what it paid $110.60 for, years later. `forLabel` resolves the ref LIVE and
+  // returns `null` the moment that row is gone — and returns EARLY, so it
+  // doesn't even fall through to `budgetId` — so deleting an old event silently
+  // blanked the "For" on every settled reimbursement that named it, with
+  // nothing left to say it ever had one. Unlinking alone doesn't fix that; it
+  // only makes the same blank honest.
+  //
+  // So the name is snapshotted into the row before the link is cleared, and
+  // `forLabel` falls back to it. Exactly the trick `createBudget` already plays
+  // with `budgets.label` — snapshot the ref's name, let `budgetDisplayName`
+  // read it once the live lookup misses. Same problem, so the same answer
+  // rather than a second one.
+  //
+  // Only ever set on a TERMINAL request: a live one blocks the deletion
+  // outright, so no in-flight reimbursement ever has a vanished ref.
+  forLabelSnapshot: v.optional(v.string()),
 
   // Denormalized sum of line-item amounts (integer cents), and the approved
   // subtotal once a manager approves (supports partial approval).
@@ -934,7 +981,12 @@ export const reimbursementRequests = defineTable({
   .index("by_token", ["token"])
   .index("by_chapter_and_status", ["chapterId", "status"])
   .index("by_person", ["personId"])
-  .index("by_event", ["eventId"]);
+  .index("by_event", ["eventId"])
+  // Mirrors `by_event`. Added for `releaseReimbursementsForDeletedRef`, which
+  // otherwise had to read the whole chapter and filter — a scan that
+  // TRUNCATES, and a truncated scan there silently reintroduces the dangling
+  // ref the function exists to prevent.
+  .index("by_project", ["projectId"]);
 
 /** One receipt line within a reimbursement request. Per-line categorization +
  *  receipt; `matchedTransactionId` links a line to an already-synced txn so an

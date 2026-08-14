@@ -74,21 +74,60 @@ export async function giftCoverageCents(
 }
 
 /**
+ * Coverage split by WHOSE giving it is.
+ *
+ * The book-value arithmetic only ever needs `totalCents` — a deposit stops
+ * counting to the extent gifts claim it, and it makes no difference which
+ * book recorded them (the $5,000 half of a founder's wire is central's
+ * revenue, so it is not New York's whether or not New York holds the cash).
+ *
+ * `inScopeCents` exists for the PUBLIC page, which has to say something a
+ * reader can act on. A statement showing a $7,000 arrival against $2,050 of
+ * giving, with nothing about where the rest went, reads like a gap.
+ */
+export type GiftCoverage = {
+  /** Cents of this deposit claimed by gifts, in ANY book. */
+  totalCents: number;
+  /** Of that, the part claimed by gifts in the scope asked about. Equal to
+   *  `totalCents` when no scope was given. */
+  inScopeCents: number;
+};
+
+/**
  * Coverage for a batch of ledger rows, keyed by transaction id. Only inflows
  * are looked up — a link may only ever be written against a credit, so an
  * outflow's coverage is zero without asking the database.
  */
+export async function giftCoverageDetailByTransaction(
+  ctx: QueryCtx,
+  txns: Doc<"transactions">[],
+  scope?: string,
+): Promise<Map<string, GiftCoverage>> {
+  const out = new Map<string, GiftCoverage>();
+  for (const tr of txns) {
+    if (tr.flow !== "inflow") continue;
+    const gifts = await giftsCoveringTransaction(ctx, tr._id);
+    if (gifts.length === 0) continue;
+    let totalCents = 0;
+    let inScopeCents = 0;
+    for (const g of gifts) {
+      totalCents += g.amountCents;
+      if (scope === undefined || String(g.scope) === scope) {
+        inScopeCents += g.amountCents;
+      }
+    }
+    out.set(tr._id as string, { totalCents, inScopeCents });
+  }
+  return out;
+}
+
+/** Totals only — the shape the book-value surfaces read. */
 export async function giftCoverageByTransaction(
   ctx: QueryCtx,
   txns: Doc<"transactions">[],
 ): Promise<Map<string, number>> {
-  const out = new Map<string, number>();
-  for (const tr of txns) {
-    if (tr.flow !== "inflow") continue;
-    const covered = await giftCoverageCents(ctx, tr._id);
-    if (covered > 0) out.set(tr._id as string, covered);
-  }
-  return out;
+  const detail = await giftCoverageDetailByTransaction(ctx, txns);
+  return new Map([...detail].map(([id, c]) => [id, c.totalCents]));
 }
 
 /**

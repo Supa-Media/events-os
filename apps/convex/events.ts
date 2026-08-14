@@ -68,6 +68,7 @@ import {
   syncBudgetIdentityForRef,
 } from "./finances";
 import { getFinanceRole, type FinanceAccess, type FinanceScope } from "./lib/finance";
+import { releaseReimbursementsForDeletedRef } from "./reimbursements";
 import { requireGivingView, type GivingScope } from "./lib/givingAccess";
 import { listActiveChapters } from "./lib/chapters";
 
@@ -1390,12 +1391,18 @@ export const setStatus = mutation({
 export const remove = mutation({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
-    await requireEvent(ctx, eventId);
+    const event = await requireEvent(ctx, eventId);
 
-    // FIRST, before anything is destroyed: this throws on coded spend. The
-    // mutation is transactional so a later throw would roll the cascade back
-    // anyway, but a guard that runs before the damage is easier to trust.
+    // FIRST, before anything is destroyed: these throw on coded spend and on
+    // an unsettled reimbursement. The mutation is transactional so a later
+    // throw would roll the cascade back anyway, but guards that run before the
+    // damage are easier to trust.
     await releaseBudgetsForDeletedRef(ctx, "event", eventId, "event");
+    await releaseReimbursementsForDeletedRef(
+      ctx,
+      { kind: "event", id: eventId },
+      event.name,
+    );
 
     const items = await ctx.db
       .query("eventItems")

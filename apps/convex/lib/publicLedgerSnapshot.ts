@@ -46,10 +46,12 @@ import type { QueryCtx } from "../_generated/server";
 import {
   autoExplainedKind,
   autoExplanationLine,
+  giftCreditExplanation,
   personalExpenseState,
   CENTRAL,
   displayMerchantName,
   documentationState,
+  type DocumentationExemption,
   easternParts,
   formatCents,
   INCOME_STREAMS,
@@ -64,6 +66,7 @@ import {
 } from "@events-os/shared";
 import {
   canCarryExplanation,
+  documentationExemption,
   effectiveCapCents,
   isUndocumented,
   requiresCoding,
@@ -73,7 +76,7 @@ import {
 import { signedBookCents } from "./bookBalance";
 import {
   coveredSignedBookCents,
-  giftCoverageByTransaction,
+  giftCoverageDetailByTransaction,
 } from "./giftCoverage";
 import { codingPolicy } from "./transactionCoding";
 import type { FinanceScope } from "./finance";
@@ -116,6 +119,26 @@ export type EntryDraft = {
   affiliationMix?: Record<string, number>;
   groupDescription?: string;
   documentation?: DocumentationState;
+  /**
+   * WHY THIS ROW OWES NO DOCUMENT, when it owes none — the published half of
+   * `finances.ts#documentationExemption`, carried as the key so the page reads
+   * its label and sentence off the same shared list the app does.
+   *
+   * IT EXISTS BECAUSE THE PUBLISHED PAGE WAS CONTRADICTING THE APP. The
+   * documentation cell inside the app has known since 2026-08-14 that a
+   * processor fee, a payout and an internal transfer owe nothing. This page
+   * knew only "no receipt file, no approved exception" and so printed
+   * "Undocumented" on all three — plus on personal charges and on deposits
+   * already recorded as giving. Founder, on the published March page: rows
+   * that "shouldn't need" a receipt "should automatically be a documented
+   * exception or document not needed".
+   *
+   * The row still publishes its true `documentation` state beside this — an
+   * exempt row genuinely has no receipt, and hiding that would be the
+   * over-correction. What changes is that the page now says why none is owed
+   * instead of implying somebody failed to file one.
+   */
+  documentationExempt?: DocumentationExemption;
   reconstructed?: boolean;
   nonDiscretionaryFee?: boolean;
   sourceTransactionId?: Id<"transactions">;
@@ -385,7 +408,13 @@ export async function buildSnapshot(
   // for central and $2,000 for New York), so this is a sum, not a flag: the
   // credit contributes whatever no gift has claimed. See `lib/giftCoverage.ts`
   // for why the lookup is per-transaction rather than by the period's gifts.
-  const giftCoverage = await giftCoverageByTransaction(ctx, rawTxns);
+  // Split by whose giving it is: the totals drive the arithmetic, the
+  // in-scope share is what the line can honestly tell a reader.
+  const giftCoverage = await giftCoverageDetailByTransaction(
+    ctx,
+    rawTxns,
+    String(book),
+  );
 
   for (const tr of rawTxns) {
     if (!txnMatchesMode(tr, sandboxMode)) continue;
@@ -400,7 +429,8 @@ export async function buildSnapshot(
     // the payout deposits `signedBookCents` already zeroes. A PARTLY matched
     // deposit keeps its unclaimed remainder, which is the honest reading:
     // that much really did arrive and nobody has said what it was.
-    const coveredCents = giftCoverage.get(tr._id as string) ?? 0;
+    const coverage = giftCoverage.get(tr._id as string);
+    const coveredCents = coverage?.totalCents ?? 0;
     const signed = coveredSignedBookCents(tr, coveredCents);
     // WHAT THIS ROW IS, in its own words. Without it the row fell through to
     // the page's `direction === "internal"` fallback and told every reader
@@ -412,11 +442,14 @@ export async function buildSnapshot(
     // A PARTLY matched deposit says exactly how much of it is giving, because
     // the rest still counts and still owes an answer.
     const giftLine =
-      coveredCents <= 0
+      coverage === undefined
         ? undefined
-        : signed === 0
-          ? autoExplanationLine("gift_credit")
-          : `${formatCents(coveredCents)} of this deposit is giving, counted once in the giving roll below. The rest is not yet accounted for.`;
+        : giftCreditExplanation({
+            bookLabel,
+            inScopeCents: coverage.inScopeCents,
+            otherBooksCents: coverage.totalCents - coverage.inScopeCents,
+            unclaimedCents: signed > 0 ? signed : 0,
+          });
     // Direction from the book-value sign where there is one; otherwise the row
     // moves cash without changing value, which is exactly `internal`.
     const direction: EntryDraft["direction"] =
@@ -456,6 +489,12 @@ export async function buildSnapshot(
       tr.receiptStorageId != null,
       tr.approvedReceiptExceptionId != null,
     );
+    // The SAME decision the app's own documentation cell makes, off the same
+    // function — `coveredCents` is already resolved above for the signing, so
+    // the gift-recorded case costs no extra read.
+    const documentationExempt = documentationExemption(tr, {
+      giftCoveredCents: coveredCents,
+    });
     const reconstructed = isReconstructedHistory(tr);
 
     // AUTO-EXPLAINED rows (founder directive, 2026-08-12): a processor fee or
@@ -528,6 +567,7 @@ export async function buildSnapshot(
       affiliationMix,
       groupDescription: approved?.groupDescription,
       documentation,
+      ...(documentationExempt ? { documentationExempt } : {}),
       reconstructed: reconstructed || undefined,
       // The shared predicate, not a fourth inline `feeOrigin` test — see
       // `@events-os/shared#isNonDiscretionaryFee` for why they were pulled
@@ -584,7 +624,14 @@ export async function buildSnapshot(
     // `isUndocumented` is the PUBLISHING predicate — status-blind, so a row a
     // treasurer quietly closed document-less years ago is disclosed rather
     // than dropping out. (`publishability.ts` makes this argument at length.)
-    if (isUndocumented(tr)) {
+    // BELT AND BRACES, and deliberately so — `isUndocumented` already answers
+    // this correctly today, because it ends at `owesDocumentation` and every
+    // exempt class here is also outside `isSpend`. The second test exists so
+    // the row's own badge and this disclosure count are decided by the SAME
+    // value: if `isSpend` ever widens, the page would otherwise publish a row
+    // saying "no document needed" while counting it as a missing one, which is
+    // the exact self-contradiction the exemption list was extracted to end.
+    if (isUndocumented(tr) && documentationExempt == null) {
       undocumentedCount += 1;
       undocumentedCents += tr.amountCents;
     }
@@ -647,11 +694,11 @@ export async function buildSnapshot(
       entries.push({
         kind: "gift",
         occurredAt: gift.receivedAt,
-        // `amountCents` is what the donor MEANT to give; `feeCoverageCents`
-        // is the extra they added so the processor's cut wouldn't come out of
-        // it. Publishing the gift figure keeps the public total comparable
-        // year on year as fee-coverage adoption changes — the invariant
-        // `schema/givingPlatform.ts#gifts` exists to protect.
+        // `amountCents` is the whole charge, fee coverage included — what
+        // the donor actually gave. `feeCoverageCents` notes how much of it
+        // they added to absorb the processor's cut and is NOT subtracted
+        // here; see `schema/givingPlatform.ts#gifts` for why the public
+        // total is the gross.
         amountCents: gift.amountCents,
         direction: "in",
         countsInTotals: true,

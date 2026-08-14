@@ -752,10 +752,11 @@ async function settleCheckoutSession(
     // without this branch it would fall through to the "unknown session"
     // error log.
     // `giveIntendedCents` is present when the donor covered the processing
-    // fees: the charge is intended + coverage, and the GIFT is the intended
-    // half (see `gifts.feeCoverageCents`). Parsed permissively and validated
-    // inside the mutation — metadata is a string map and an unparseable value
-    // has to degrade to "the whole charge was the gift", never to a throw.
+    // fees: it is what they typed before covering, and it survives only as the
+    // NOTE on the gift — the gift itself is the whole charge (see
+    // `gifts.feeCoverageCents`). Parsed permissively and validated inside the
+    // mutation — metadata is a string map and an unparseable value has to
+    // degrade to "no coverage note", never to a throw.
     const intended = Number(obj.metadata.giveIntendedCents);
     const intendedCents = Number.isFinite(intended) ? intended : undefined;
 
@@ -766,13 +767,14 @@ async function settleCheckoutSession(
       scope: obj.metadata.giveScope ?? "",
       ...(intendedCents !== undefined ? { intendedCents } : {}),
     });
-    // Flip the giver's optional activity-wall entry visible with the amount
-    // they GAVE, not the amount they were charged (no-op if they didn't opt
-    // in). A donor who covered fees agreed to show a $100 gift, not to
-    // announce that they also paid $3.30 to Stripe. See givingActivity.ts.
+    // Flip the giver's optional activity-wall entry visible at the SAME figure
+    // the ledger books — the charge (no-op if they didn't opt in). The wall
+    // echoes the gift, and the gift is the whole charge; showing the
+    // pre-coverage figure here would have the public page and the ledger
+    // disagree about one donation. See givingActivity.ts.
     await ctx.runMutation(internal.givingActivity.markActivityVisible, {
       refKey: `give:${obj.id}`,
-      amountCents: intendedCents ?? obj.amount_total ?? 0,
+      amountCents: obj.amount_total ?? 0,
     });
   } else if (obj.metadata?.repaymentIds) {
     // A personal-charge repayment Checkout (`stripe.ts#createRepaymentCheckout`,
@@ -1040,16 +1042,12 @@ http.route({
             sessionId,
           });
         }
-        const intendedMeta = Number(obj.metadata?.giveIntendedCents);
         await ctx.runMutation(internal.givingPending.recordPendingGift, {
           sessionId,
           amountTotalCents: obj.amount_total ?? 0,
           isGiveDonation: obj.metadata?.giveDonation === "1",
           ...(obj.metadata?.giveDonorId
             ? { giveDonorId: obj.metadata.giveDonorId }
-            : {}),
-          ...(Number.isFinite(intendedMeta)
-            ? { giveIntendedCents: intendedMeta }
             : {}),
         });
         // …and TELL THEM. From the donor's side this is the moment they
