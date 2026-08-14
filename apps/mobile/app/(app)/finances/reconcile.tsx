@@ -116,6 +116,12 @@ import { ColumnsControl } from "../../../components/finance/reconcile/ColumnsCon
 import { UNATTRIBUTED_GROUP_KEY } from "../../../components/finance/reconcile/gridView";
 import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
 import type { SingleBookScope } from "../../../components/finance/bookScope";
+import { PublishMonthModal } from "../../../components/finance/publish/PublishMonthModal";
+import type { PublishMonthSummary } from "../../../components/finance/publish/PublishMonth";
+import {
+  publicationBadge,
+  publishBandAction,
+} from "../../../components/finance/publish/publishBandAction";
 import {
   DEFAULT_SORT_DIR,
   DEFAULT_SORT_KEY,
@@ -168,8 +174,6 @@ import {
   MAX_BULK_EXPLANATION_ROWS,
   formatCents,
   parseReconcileFilters,
-  parsePeriodKey,
-  PUBLICATION_STATUS_LABELS,
   type PublicationStatus,
   serializeReconcileFilters,
   type PayoutProcessor,
@@ -802,22 +806,30 @@ function ReconcileGrid() {
   // things by month."
   //
   // So each month band carries that month's publication STATUS and the two
-  // acts that belong beside it. What the band does with each is deliberately
-  // different, and the difference is about guards, not effort:
+  // acts that belong beside it, and BOTH now happen here:
   //
-  //  - PREVIEW happens HERE. It needs only console access, mints a scoped
-  //    token and opens a page; it changes nothing. `useLedgerPreview` is the
-  //    same hook the console uses, so the artifact is identical.
-  //  - PUBLISH ROUTES to the console. It is the end of a two-approver state
-  //    machine — separation of duties (the submitter may not approve),
-  //    the amendment-reason record on a re-publish, and the SNAPSHOT_TRUNCATED
-  //    refusal that stops a partial month going public. Those are not
-  //    disclosures to skip past; they ARE the act. A one-tap "Publish" on a
-  //    band would either drop them or reimplement them, and reimplementing a
-  //    separation-of-duties check is how one gets quietly weakened.
+  //  - PREVIEW mints a scoped token and opens the month's real public page.
+  //    It needs only console access and changes nothing. `useLedgerPreview` is
+  //    the same hook the console uses, so the artifact is identical.
+  //  - PUBLISH opens the console's OWN month flow in a modal
+  //    (`PublishMonthModal` → `PublishMonthBody`). Founder, 2026-08-14: "I
+  //    want to be able to preview and publish from the same page — publish
+  //    here takes me to a different page entirely."
   //
-  // So the band answers "where is this month up to, and what does its page look
-  // like" without leaving the grid, and hands off only the irreversible part.
+  // Publish used to ROUTE to `/finances/publish`, on the reasoning that the
+  // two-approver state machine — separation of duties (the submitter may not
+  // approve), the amendment-reason record on a re-publish, the
+  // SNAPSHOT_TRUNCATED refusal that stops a partial month going public — is
+  // not paperwork in front of the act but the act itself, and that a one-tap
+  // Publish on a band would either drop it or reimplement it.
+  //
+  // ALL OF THAT IS STILL TRUE, and it is why nothing here was reimplemented.
+  // The console's body was made frameable instead, so the grid runs the same
+  // component, the same mutations and the same server gates — one
+  // implementation, two frames, exactly as `ReconcileList.tsx#openRecord`
+  // already does for a row's record. The only case that still travels is the
+  // merged all-books queue, where a band names no single book to publish
+  // (`components/finance/publish/publishBandAction.ts`).
   //
   // MOUNTED ONLY WHEN THE SERVER SAYS THE CALLER MAY READ THE CONSOLE.
   // `publicLedger.console_` THROWS for anyone else, and this screen is inside
@@ -844,11 +856,10 @@ function ReconcileGrid() {
   // charges · -$4,102 of -$88,201", from `groups[].unfilteredCount` /
   // `unfilteredTotalCents` — see `listReconcile`), which makes Publish plainly
   // about the month rather than about the selection, and the actions are
-  // allowed always. The irreversible half still ROUTES to `/finances/publish`:
-  // the two-approver handoff, the amendment reason on a re-publish and the
-  // SNAPSHOT_TRUNCATED refusal are the act itself, not paperwork in front of
-  // it, and reimplementing a separation-of-duties check on a band is how one
-  // gets quietly weakened.
+  // allowed always. That the irreversible half now opens IN PLACE doesn't
+  // soften this: the modal is the console's own flow, so a publisher still
+  // reads the whole month's figures and disclosures — the month's, never the
+  // filter's — before any button is reachable.
   const showPublishInBands = groupBy === "month" && canUseLedgerConsole;
   // ── THE ONE BOOK THE CONSOLE IS ABOUT ─────────────────────────────────────
   // `null` means "this grid is showing several books at once", and ONLY that.
@@ -881,17 +892,33 @@ function ReconcileGrid() {
         : {}
       : "skip",
   );
+  // THE WHOLE MONTH, not a two-field summary of it. The band needs the status
+  // and the live revision; the in-place publish modal renders the console's own
+  // body, which needs everything `console_` says about the month — the
+  // send-back note, the amendment in flight, the staleness prompt. Keeping ONE
+  // map of the server's own rows is what stops the band and the modal
+  // disagreeing about where a month stands.
   const publicationByPeriod = useMemo(() => {
-    const m = new Map<string, { status: PublicationStatus; liveRevision: number | null }>();
-    for (const month of ledgerConsole?.months ?? []) {
-      m.set(month.periodKey, {
-        status: month.status,
-        liveRevision: month.liveRevision,
-      });
-    }
+    const m = new Map<string, PublishMonthSummary>();
+    for (const month of ledgerConsole?.months ?? []) m.set(month.periodKey, month);
     return m;
   }, [ledgerConsole]);
   const previewPage = useLedgerPreview();
+  /**
+   * WHICH MONTH IS BEING PUBLISHED, if any — a period key, never a copy of the
+   * month. The modal re-reads `publicationByPeriod` on every render, so a
+   * publish that moves the month to `published` (or a reviewer's send-back
+   * arriving from someone else's screen) is reflected under the reader without
+   * closing anything: `console_` is a live query, and the body they are
+   * standing in front of is the same component the console route renders.
+   *
+   * A period the console has no row for closes the modal on its own rather
+   * than rendering half a flow — see `publishingMonth` below.
+   */
+  const [publishingPeriod, setPublishingPeriod] = useState<string | null>(null);
+  const publishingMonth = publishingPeriod
+    ? (publicationByPeriod.get(publishingPeriod) ?? null)
+    : null;
 
   /** How many person bands there is actually somebody to nudge on — gates the
    *  page-level "Remind all", which would otherwise offer to remind nobody. */
@@ -2238,6 +2265,23 @@ function ReconcileGrid() {
           />
         ) : null}
 
+        {/* PUBLISHING A MONTH FROM THE GRID — the publish console's own flow,
+            in a modal over the band that opened it. Rendered only with all
+            three of a month the console answered about, the one book it
+            answered about, and the console's own `canPublish` for that book:
+            `publishBandAction` sends every other case to `/finances/publish`,
+            and `ledgerConsole` is only queried at all when the server said
+            this caller may read the console (`viewerCanUseLedgerConsole`). */}
+        {publishingMonth && consoleScope && ledgerConsole ? (
+          <PublishMonthModal
+            month={publishingMonth}
+            scope={consoleScope}
+            scopeName={ledgerConsole.scopeName}
+            canPublish={ledgerConsole.canPublish}
+            onClose={() => setPublishingPeriod(null)}
+          />
+        ) : null}
+
         {loading ? (
           <View className="py-14">
             <EmptyState title="Loading transactions…" />
@@ -2320,7 +2364,19 @@ function ReconcileGrid() {
                   // status the badge can state, and both actions still apply.
                   const pub = publicationByPeriod.get(group.key) ?? null;
                   const status: PublicationStatus = pub?.status ?? "draft";
-                  const parsed = parsePeriodKey(group.key);
+                  const badge = publicationBadge({
+                    status,
+                    liveRevision: pub?.liveRevision ?? null,
+                  });
+                  // WHAT PUBLISH DOES HERE — open the console's own flow over
+                  // the grid, or travel to the console when this band cannot
+                  // name one book. Pure, and tested:
+                  // `publish/publishBandAction.ts`.
+                  const publishAction = publishBandAction({
+                    scope: consoleScope,
+                    periodKey: group.key,
+                    month: pub,
+                  });
                   return (
                     <View className="flex-row items-center gap-2">
                       {/* ── ONE BOOK'S STATUS, OR NONE ─────────────────────
@@ -2332,27 +2388,13 @@ function ReconcileGrid() {
                           it would be the dead-number defect wired to the
                           publish button.
 
-                          So the badge is withheld in the merged queue and the
-                          ACTIONS stay: Publish routes to the console, which is
-                          where a book gets chosen anyway. Pick a book in the
-                          Book dropdown and the status comes back. */}
+                          So the badge is withheld in the merged queue and
+                          PUBLISH STAYS, travelling to the console rather than
+                          opening in place — that screen is where a book gets
+                          chosen anyway. Pick a book in the Book dropdown and
+                          the status comes back. */}
                       {consoleScope ? (
-                        <Badge
-                          label={
-                            status === "published" && pub?.liveRevision != null
-                              ? `Published · rev ${pub.liveRevision}`
-                              : PUBLICATION_STATUS_LABELS[status]
-                          }
-                          tone={
-                            status === "published"
-                              ? "success"
-                              : status === "changes_requested"
-                                ? "danger"
-                                : status === "in_review" || status === "amending"
-                                  ? "warn"
-                                  : "neutral"
-                          }
-                        />
+                        <Badge label={badge.label} tone={badge.tone} />
                       ) : null}
                       {/* LOOKING, not committing — a mint and an open, which
                           is why it can happen right here, and why it is offered
@@ -2365,8 +2407,8 @@ function ReconcileGrid() {
                           queue this band's rows come from several. Minting one
                           anyway would open a page that silently answered about
                           the caller's own desk while the reader was looking at
-                          everyone's rows. Publish stays, because it routes to
-                          the console, where a book is chosen explicitly. */}
+                          everyone's rows. Publish stays there because it
+                          travels to the console, where a book is named. */}
                       {consoleScope ? (
                         <Button
                           title="Preview"
@@ -2382,25 +2424,39 @@ function ReconcileGrid() {
                           }
                         />
                       ) : null}
-                      {/* COMMITTING — routed to the console, deliberately. The
-                          two-approver handoff, the amendment reason and the
-                          truncated-snapshot refusal are the act itself, not
-                          paperwork in front of it. Always offered: what stopped
-                          it being offered on a filtered grid was the band's
-                          inability to say which rows it meant, and the band
-                          says so now. */}
+                      {/* ── COMMITTING, WITHOUT LEAVING THE PAGE ──────────
+                          The console's month flow opens right here
+                          (`PublishMonthModal`), because it is the console's
+                          OWN component — the two-approver handoff, the
+                          amendment reason on a re-publish, the
+                          SNAPSHOT_TRUNCATED refusal and every other refusal
+                          `publicLedger` raises come with it. Founder,
+                          2026-08-14: "I want to be able to preview and publish
+                          from the same page — publish here takes me to a
+                          different page entirely."
+
+                          It used to route, and the reasoning was that the
+                          ceremony IS the act and a band-local Publish would
+                          drop or reimplement it. That reasoning was right and
+                          is what the shape honors: nothing was reimplemented,
+                          the flow was made frameable. The merged all-books
+                          queue still travels — see `publishBandAction`. */}
                       <Button
-                        title={status === "published" ? "Amend" : "Publish"}
+                        title={publishAction.label}
                         variant="ghost"
                         size="sm"
-                        icon="arrow-up-right"
-                        onPress={() =>
-                          router.navigate(
-                            `/finances/publish${
-                              consoleScope ? `?scope=${consoleScope}` : ""
-                            }${parsed ? `${consoleScope ? "&" : "?"}period=${group.key}` : ""}` as never,
-                          )
+                        icon={
+                          publishAction.kind === "console"
+                            ? "arrow-up-right"
+                            : "upload"
                         }
+                        onPress={() => {
+                          if (publishAction.kind === "console") {
+                            router.navigate(publishAction.href as never);
+                            return;
+                          }
+                          setPublishingPeriod(publishAction.periodKey);
+                        }}
                       />
                     </View>
                   );

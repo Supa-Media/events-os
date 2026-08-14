@@ -616,6 +616,24 @@
  * and quizLength stays 5, so every table below is unchanged; no slugs, sections
  * or courses moved. See `streams/finances.ts`'s header comment for the
  * reasoning.
+ *
+ * 2026-08-14 — publishing a month no longer leaves the grid (founder: "I want
+ * to be able to preview and publish from the same page — publish here takes me
+ * to a different page entirely"). The publish console's month flow became a
+ * component both the console route and a modal over a Transactions month band
+ * render, so nothing about the act changed: same mutations, same two-approver
+ * handoff, same amendment reason, same truncated-snapshot refusal. Content-only
+ * on two Finances sections — `finance-reconcile-grid` (its "Group by" rule now
+ * says Publish opens over the grid, and names the All-books exception that
+ * still routes to the console, plus the matching correction in the filtered-
+ * band quiz explanation) and `finance-publishing-the-books` (the paragraph that
+ * taught the hand-off as deliberate now teaches the panel, and names the two
+ * places that still open the console screen itself). Both quizzes are at the
+ * 5-question cap and no question's answer changed truth value — the
+ * separation-of-duties question's EXPLANATION gained a clause saying the rule
+ * holds wherever you publish from — so nothing was swapped. No title, slug,
+ * minutes, quizLength, section or course order moved: every table below is
+ * unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
