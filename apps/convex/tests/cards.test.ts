@@ -8,7 +8,7 @@ import {
   type ChapterSetup,
 } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
-import type { Id } from "../_generated/dataModel";
+import type { Doc, Id } from "../_generated/dataModel";
 import schema from "../schema";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -849,7 +849,32 @@ describe("flagPersonalCharge", () => {
   });
 });
 
-describe("markRepaymentPaid", () => {
+/**
+ * Settle a repayment the ONLY way the app can settle one since 2026-08-14:
+ * a real payment landing. `markRepaymentPaid` — the manager's "the money
+ * arrived, trust me" mutation these tests used to call — is gone on purpose
+ * (see `cards.ts`'s "THERE IS NO MANUAL MARK REPAID" note), so the tests that
+ * merely NEEDED a settled repayment to assert something else now go through
+ * the Stripe webhook's settle path, which is the same `settleRepayment` core.
+ *
+ * Returns the fresh row, since the internal mutation returns null where the
+ * old public one returned a summary.
+ */
+async function settleThroughStripe(
+  s: ChapterSetup,
+  repaymentId: Id<"personalRepayments">,
+  amountCents: number,
+  sessionId = `cs_test_${repaymentId}`,
+): Promise<Doc<"personalRepayments"> | null> {
+  await s.t.mutation(internal.cards.applyRepaymentPaidFromStripe, {
+    repaymentIds: [repaymentId],
+    sessionId,
+    amountTotalCents: amountCents,
+  });
+  return await run(s.t, (ctx) => ctx.db.get(repaymentId));
+}
+
+describe("repayment settlement — payment only", () => {
   test("posts exactly one flow:transfer offsetting credit, idempotently", async () => {
     // Manager-flagging-someone-else's-charge schedules a best-effort
     // notification — drain it so it doesn't leak past this test's torn-down
@@ -867,11 +892,9 @@ describe("markRepaymentPaid", () => {
         transactionId: txnId,
       });
       await s.t.finishAllScheduledFunctions(vi.runAllTimers);
-      const paid = await s.as.mutation(api.cards.markRepaymentPaid, {
-        repaymentId: rep.id,
-      });
-      expect(paid.status).toBe("paid");
-      expect(paid.creditTransactionId).toBeTruthy();
+      const paid = await settleThroughStripe(s, rep.id, 6420);
+      expect(paid?.status).toBe("paid");
+      expect(paid?.creditTransactionId).toBeTruthy();
 
       // Exactly one offsetting credit, excluded from spend (flow:"transfer").
       const credits = await run(s.t, (ctx) =>
@@ -886,11 +909,9 @@ describe("markRepaymentPaid", () => {
       expect(credits[0].personId).toBe(holder);
       expect(credits[0].repaymentId).toBe(rep.id);
 
-      // Idempotent: re-settle → no second credit.
-      const again = await s.as.mutation(api.cards.markRepaymentPaid, {
-        repaymentId: rep.id,
-      });
-      expect(again.creditTransactionId).toBe(paid.creditTransactionId);
+      // Idempotent: a redelivered webhook → no second credit.
+      const again = await settleThroughStripe(s, rep.id, 6420);
+      expect(again?.creditTransactionId).toBe(paid?.creditTransactionId);
       const creditsAfter = await run(s.t, (ctx) =>
         ctx.db
           .query("transactions")
@@ -903,23 +924,36 @@ describe("markRepaymentPaid", () => {
     }
   });
 
-  test("the payer (cardholder) cannot self-settle — manager-only", async () => {
+  test("NOBODY can assert a settlement — there is no manual mark-repaid at all", async () => {
+    // This used to be "the payer cannot self-settle, manager-only": a
+    // cardholder could flag their own charge but only a manager could confirm
+    // the money arrived. The founder closed the remaining half of that hole
+    // (2026-08-14): "we should only mark repaid when you actually pay through
+    // the platform, no manual mark as paid."
+    //
+    // So the assertion is no longer about WHO may say it. Nobody may say it —
+    // the mutation does not exist, and a repayment reaches `paid` only when a
+    // rail this app started reports money landing. Checked against the live
+    // API surface rather than by the absence of a call below, because the
+    // failure this guards against is somebody adding the convenience back.
+    expect(Object.keys(api.cards)).not.toContain("markRepaymentPaid");
+
     const t = newT();
     const s = await setupChapter(t);
-    // Caller = the cardholder, viewer only (NOT a manager).
     const me = await seedPerson(s, { name: "Me", userId: s.userId });
-    await grantRole(s, me, "viewer");
+    await grantRole(s, me, "manager"); // even the strongest local role
     const cardId = await seedCard(s, { cardholderPersonId: me });
     const txnId = await seedCardTxn(s, { cardId, amountCents: 1000 });
-    // The cardholder may flag their own charge…
     const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
       transactionId: txnId,
     });
-    // …but may NOT self-confirm the money as received (would zero their spend
-    // without paying).
-    await expect(
-      s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id }),
-    ).rejects.toBeInstanceOf(ConvexError);
+
+    // The charge is owed, and no amount of role gets it cleared without a
+    // payment. The escape hatch for a mis-flag is `unflagPersonalCharge`,
+    // which reverses the flag rather than asserting a settlement.
+    const stored = await run(s.t, (ctx) => ctx.db.get(rep.id));
+    expect(stored?.status).toBe("pending");
+    expect(stored?.creditTransactionId).toBeUndefined();
     // No offsetting credit was posted.
     expect((await repaymentCredits(s)).length).toBe(0);
   });
@@ -946,10 +980,8 @@ describe("myPersonalRepayments", () => {
     const paidRep = await s.as.mutation(api.cards.flagPersonalCharge, {
       transactionId: paidTxn,
     });
-    // Settle the second one.
-    await s.as.mutation(api.cards.markRepaymentPaid, {
-      repaymentId: paidRep.id,
-    });
+    // Settle the second one — through a rail, the only way there is.
+    await settleThroughStripe(s, paidRep.id, 2500);
 
     const mine = await s.as.query(api.cards.myPersonalRepayments, {});
     expect(mine.length).toBe(2);
@@ -1021,7 +1053,7 @@ describe("personalRepaymentsOutstanding", () => {
       });
       await s.t.finishAllScheduledFunctions(vi.runAllTimers);
       // Settle one of the three — it must drop out of the aggregate.
-      await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: repC.id });
+      await settleThroughStripe(s, repC.id, 4000);
 
       const agg = await s.as.query(api.cards.personalRepaymentsOutstanding, {});
       expect(agg.count).toBe(2);
@@ -1262,15 +1294,19 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
-  test("even fully linked, the real ACH DEBIT is GATED OFF — degrades to pending (no /ach_transfers), settles via markRepaymentPaid", async () => {
-    // BLOCKER 2: the debit is disabled (REPAYMENT_DEBIT_ENABLED=false) because
-    // this PR ships no debit-bounce state machine. Linking still works, but
-    // `initiateRepayment` must NOT fire a debit — it degrades to the manual path.
+  test("even fully linked, the INCREASE ACH debit is GATED OFF — degrades to pending, no /ach_transfers", async () => {
+    // The Increase debit stays disabled (REPAYMENT_DEBIT_ENABLED=false): it
+    // has no bounce state machine. Linking still works and stamps a funding
+    // source; `initiateRepayment` must NOT fire a debit.
+    //
+    // What used to finish this test — a manager's manual "the money arrived"
+    // confirmation — no longer exists (2026-08-14). The rail with a real
+    // bounce path is Stripe's, and that is what settles the charge here.
     const t = newT();
     const s = await setupChapter(t);
     await seedActiveAccount(s);
-    // The caller is the payer AND a manager (one person row) — the payer links,
-    // the same person later confirms receipt via the manager-only markRepaymentPaid.
+    // The caller is the payer AND a manager (one person row) — the payer
+    // links; the manager role is what the link gate's sibling tests vary.
     const holder = await seedPerson(s, { name: "Holder", userId: s.userId });
     await grantRole(s, holder, "manager");
     const cardId = await seedCard(s, { cardholderPersonId: holder });
@@ -1309,12 +1345,10 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
     expect(out.status).toBe("pending");
     expect(out.creditTransactionId).toBeNull();
 
-    // The manual confirmation still settles it, exactly as before this PR.
-    const settled = await s.as.mutation(api.cards.markRepaymentPaid, {
-      repaymentId: rep.id,
-    });
-    expect(settled.status).toBe("paid");
-    expect(settled.creditTransactionId).toBeTruthy();
+    // A real payment settles it — one credit, same core as every other rail.
+    const settled = await settleThroughStripe(s, rep.id, 4200);
+    expect(settled?.status).toBe("paid");
+    expect(settled?.creditTransactionId).toBeTruthy();
 
     const credits = await run(s.t, (ctx) =>
       ctx.db
@@ -1372,7 +1406,7 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
     const rep = await s.as.mutation(api.cards.flagPersonalCharge, {
       transactionId: txnId,
     });
-    await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id });
+    await settleThroughStripe(s, rep.id, 1000);
 
     process.env.INCREASE_API_KEY = "test_key";
     globalThis.fetch = (() => {
@@ -1390,8 +1424,8 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
 
   test("TOCTOU: attachRepaymentExternalAccount no-ops if the repayment settled mid-link", async () => {
     // IMPORTANT 5: the link gate saw an unsettled repayment, then the slow
-    // Increase call ran; if a manager confirmed receipt (markRepaymentPaid) in
-    // the meantime, a funding source must NOT be stamped onto the settled row.
+    // Increase call ran; if a payment settled the repayment in the meantime,
+    // a funding source must NOT be stamped onto the settled row.
     const t = newT();
     const s = await setupChapter(t);
     // The caller is the payer AND a manager (one person row).
@@ -1407,8 +1441,9 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
     globalThis.fetch = (async (input: RequestInfo | URL) => {
       const path = String(input);
       if (path.includes("/external_accounts")) {
-        // A manager settles the repayment while the External Account is created.
-        await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id });
+        // The repayment settles (a card payment lands) while the External
+        // Account is being created.
+        await settleThroughStripe(s, rep.id, 1000);
         return new Response(JSON.stringify({ id: "extacct_race_rep" }), {
           status: 200,
           headers: { "Content-Type": "application/json" },
@@ -1430,9 +1465,9 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
   });
 
   test("TOCTOU: applyRepaymentPaid does NOT double-post if already settled (flags for manual refund)", async () => {
-    // IMPORTANT 5: if markRepaymentPaid settled the repayment between beginRepayment
-    // and the debit landing, applyRepaymentPaid must not post a SECOND credit — the
-    // real debit is flagged for manual review/refund instead.
+    // IMPORTANT 5: if another rail settled the repayment between beginRepayment
+    // and the debit landing, applyRepaymentPaid must not post a SECOND credit —
+    // the real debit is flagged for manual review/refund instead.
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
@@ -1453,8 +1488,8 @@ describe("linkRepaymentBankAccount + initiateRepayment (real ACH once linked)", 
     });
     await s.t.finishAllScheduledFunctions(vi.runAllTimers);
     vi.useRealTimers();
-    // Already settled by the manual path.
-    await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: rep.id });
+    // Already settled by another rail (a card payment landed first).
+    await settleThroughStripe(s, rep.id, 1000);
     const before = await run(s.t, (ctx) => ctx.db.get(rep.id));
 
     // A late debit-settle arrives — must NOT post a second offsetting credit.

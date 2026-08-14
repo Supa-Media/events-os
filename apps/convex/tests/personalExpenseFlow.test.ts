@@ -284,9 +284,13 @@ describe("listPersonalRepayments", () => {
       expect(rows[1].payerName).toBe("Alice");
 
       // A settled row stays in the list (it moves to the "Repaid" section
-      // rather than vanishing) and carries the offsetting credit.
-      await s.as.mutation(api.cards.markRepaymentPaid, {
-        repaymentId: secondRep.id,
+      // rather than vanishing) and carries the offsetting credit. Settled
+      // through the Stripe webhook, the only path to `paid` since the manual
+      // "mark repaid" was removed (2026-08-14).
+      await t.mutation(internal.cards.applyRepaymentPaidFromStripe, {
+        repaymentIds: [secondRep.id],
+        sessionId: "cs_list_settle",
+        amountTotalCents: 900,
       });
       const after = await s.as.query(api.cards.listPersonalRepayments, {});
       const settled = after.find((r) => r.id === secondRep.id);
@@ -542,6 +546,7 @@ describe("Stripe repayment — prepare / attach / apply", () => {
 
     const prepared = await s.as.mutation(internal.cards.prepareRepaymentCheckout, {
       repaymentIds: [outstanding.repaymentId, alreadyPaid.repaymentId],
+      method: "card",
     });
     expect(prepared.lines).toHaveLength(1);
     expect(prepared.lines[0].repaymentId).toBe(outstanding.repaymentId);
@@ -552,6 +557,7 @@ describe("Stripe repayment — prepare / attach / apply", () => {
     try {
       await s.as.mutation(internal.cards.prepareRepaymentCheckout, {
         repaymentIds: [alreadyPaid.repaymentId],
+        method: "card",
       });
     } catch (err) {
       caught = err;
@@ -605,22 +611,25 @@ describe("Stripe repayment — prepare / attach / apply", () => {
     expect(credits).toHaveLength(2); // exactly one credit per repayment, never doubled
   });
 
-  test("OUT-OF-ORDER delivery: a repayment already settled via markRepaymentPaid before the webhook arrives is skipped, not double-settled", async () => {
+  test("OUT-OF-ORDER delivery: a repayment already settled by another rail before the webhook arrives is skipped, not double-settled", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    // The caller (`s.as`) is the MANAGER here — `markRepaymentPaid` is
-    // manager-only. `payer` is a separate, unlinked roster row (just who's
-    // owed, not who's acting).
+    // `payer` is a separate, unlinked roster row (just who's owed, not who's
+    // acting) — both settlements below arrive from rails, not from a caller.
     await seedManager(s);
     const payer = await seedPerson(s, { name: "Payer" });
     const a = await seedRepayment(s, payer, 1000);
 
-    // A manager confirms receipt manually BEFORE the (late/out-of-order)
-    // Stripe webhook lands.
-    await s.as.mutation(api.cards.markRepaymentPaid, { repaymentId: a.repaymentId });
-    const afterManual = await run(s.t, (ctx) => ctx.db.get(a.repaymentId));
-    const manualCredit = afterManual?.creditTransactionId;
-    expect(manualCredit).toBeTruthy();
+    // The Increase ACH debit lands BEFORE the (late/out-of-order) Stripe
+    // webhook — two real rails racing, which is the case that survives now
+    // that a manager cannot assert a settlement by hand.
+    await t.mutation(internal.cards.applyRepaymentPaid, {
+      repaymentId: a.repaymentId,
+      increaseRef: "ach_first",
+    });
+    const afterFirstRail = await run(s.t, (ctx) => ctx.db.get(a.repaymentId));
+    const firstCredit = afterFirstRail?.creditTransactionId;
+    expect(firstCredit).toBeTruthy();
 
     await t.mutation(internal.cards.applyRepaymentPaidFromStripe, {
       repaymentIds: [a.repaymentId],
@@ -632,7 +641,7 @@ describe("Stripe repayment — prepare / attach / apply", () => {
     const after = await run(s.t, (ctx) => ctx.db.get(a.repaymentId));
     // Same credit as before — the late webhook found it already settled and
     // skipped it (never a second credit).
-    expect(after?.creditTransactionId).toBe(manualCredit);
+    expect(after?.creditTransactionId).toBe(firstCredit);
     const creditRows = (
       await run(s.t, (ctx) =>
         ctx.db

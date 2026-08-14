@@ -854,6 +854,7 @@ async function settleCheckoutSession(
 async function cancelCheckoutSession(
   ctx: ActionCtx,
   sessionId: string,
+  outcome: "failed" | "expired",
 ): Promise<void> {
   // `failed`, not `settled`: this leaves the row behind as a TOMBSTONE. No
   // gift exists to act as the key on this path — the bank refused the money —
@@ -865,6 +866,16 @@ async function cancelCheckoutSession(
   });
   await ctx.runMutation(internal.ticketing.cancelPendingOrder, { sessionId });
   await ctx.runMutation(internal.giving.cancelPendingDonation, { sessionId });
+  // A repayment's bank debit that was refused or abandoned: put the charges
+  // back to outstanding so the payer can try again. `failed` on a refusal
+  // (the payer needs telling), plain `pending` on an expiry (nothing was ever
+  // attempted). Scoped to the rows THIS session is holding — see
+  // `cards.releaseRepaymentCheckout`. No-ops when the session wasn't a
+  // repayment's, like every other line here.
+  await ctx.runMutation(internal.cards.releaseRepaymentCheckout, {
+    sessionId,
+    outcome,
+  });
 }
 
 /**
@@ -1004,6 +1015,21 @@ http.route({
         // none of those). AWAITED, unlike the email below: it is a single
         // bounded mutation, and a digest that silently missed in-flight money
         // would be indistinguishable from there being none.
+        // A personal-charge repayment paid by BANK DEBIT. The payer has
+        // authorised it and the money has not moved, so the debt stays
+        // outstanding — but it moves to `processing` so their repayments page
+        // says "on its way" instead of "you owe this", which is what stops
+        // them paying the same charge twice while it clears. No credit is
+        // posted until `async_payment_succeeded`. See
+        // `cards.markRepaymentsProcessing`.
+        if (obj.metadata?.repaymentIds) {
+          await ctx.runMutation(internal.cards.markRepaymentsProcessing, {
+            repaymentIds: obj.metadata.repaymentIds.split(",") as Id<
+              "personalRepayments"
+            >[],
+            sessionId,
+          });
+        }
         const intendedMeta = Number(obj.metadata?.giveIntendedCents);
         await ctx.runMutation(internal.givingPending.recordPendingGift, {
           sessionId,
@@ -1041,7 +1067,7 @@ http.route({
     } else if (event.type === "checkout.session.async_payment_failed") {
       // The bank refused the debit (no funds, closed account, blocked debit).
       // Nothing was ever recorded, so this only releases the pending rows.
-      await cancelCheckoutSession(ctx, sessionId);
+      await cancelCheckoutSession(ctx, sessionId, "failed");
       // The donor was told days ago that this was on its way, so they are
       // owed the other half of that sentence — plus a link to try again.
       // `onAchFailed` also pulls any activity-wall entry down.
@@ -1052,7 +1078,7 @@ http.route({
       }
     } else if (event.type === "checkout.session.expired") {
       // Same fan-out for the abandoned-checkout case — each no-ops if not theirs.
-      await cancelCheckoutSession(ctx, sessionId);
+      await cancelCheckoutSession(ctx, sessionId, "expired");
     } else if (event.type === "invoice.paid") {
       // A backer's billing cycle settled — record ONE gift for it (idempotent on
       // the invoice id) + bump the donor rollups. No-op if the subscription

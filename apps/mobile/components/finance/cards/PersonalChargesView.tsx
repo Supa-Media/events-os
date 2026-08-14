@@ -12,20 +12,34 @@
  * no caller in the app at all. This screen is that missing surface:
  *
  *  - **Outstanding** — every flagged, not-yet-repaid charge: who owes it, the
- *    merchant and date, the amount, and whether they've linked a bank account
- *    for the ACH rail. A manager can "Mark repaid" (confirm-first —
- *    `MarkRepaidModal`) or "Un-mark" a mis-flag.
- *  - **Repaid** — the settled history, so a confirmation visibly LANDS
- *    somewhere instead of the row just vanishing.
+ *    merchant and date, the amount, and whether a payment is already in
+ *    flight. A manager can "Un-mark" a mis-flag.
+ *  - **Repaid** — the settled history, so a payment visibly LANDS somewhere
+ *    instead of the row just vanishing.
  *
- * Reads `api.cards.listPersonalRepayments` (viewer+). Settling is
- * manager-only server-side (`markRepaymentPaid` — a member must not be able to
- * flag their own charge and then zero it out); this screen hides the write
- * affordances for a non-manager rather than offering buttons that throw.
+ * ── THIS SCREEN CANNOT SETTLE A DEBT (founder, 2026-08-14) ──────────────────
+ * "We should only mark repaid when you actually pay through the platform. No
+ * manual mark as paid."
  *
- * A MEMBER paying their OWN charge doesn't come here — that's `OwedBanner`
- * ("Pay by card" / "Pay by bank (ACH)") on the Cards and Reimbursements tabs.
- * This is the collection side of the same debt.
+ * It used to carry a "Mark repaid" button (confirm-first, via a modal) backed
+ * by `cards.markRepaymentPaid`. Both are deleted. A repayment reaches `paid`
+ * only when a rail this app started reports money landing — Stripe Checkout
+ * today, the Increase debit when its bounce handling exists — which is what
+ * makes a settled row provable rather than remembered, and what removes the
+ * race where a manager cleared a debt while its payer sat in checkout.
+ *
+ * So this is a COLLECTIONS desk, not a settlement one. What a manager can
+ * still do here is un-flag a charge that was never personal, which reverses
+ * the flag rather than asserting a payment. Someone who genuinely handed over
+ * cash pays through the app instead; there is deliberately no button for
+ * asserting otherwise.
+ *
+ * Reads `api.cards.listPersonalRepayments` (viewer+); un-flagging is
+ * manager-gated server-side and hidden here for a non-manager rather than
+ * offered as a button that throws.
+ *
+ * A MEMBER paying their OWN charge doesn't come here — that's
+ * `/finances/repayments`. This is the collection side of the same debt.
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
@@ -46,7 +60,6 @@ import {
   ToastView,
 } from "../../ui";
 import { FinanceBoundary } from "../dashboard/parts";
-import { MarkRepaidModal } from "../modals/MarkRepaidModal";
 import { shortDate } from "../reimbursements/helpers";
 import { useActionRunner } from "../../../lib/useActionToast";
 
@@ -54,14 +67,20 @@ type Repayment = FunctionReturnType<
   typeof api.cards.listPersonalRepayments
 >[number];
 
-/** Status → badge, over the three `REPAYMENT_STATUSES`. `failed` is called out
- *  separately from plain `pending`: an attempted repayment that bounced needs
- *  a different conversation than one nobody has started yet. */
+/** Status → badge, over all four `REPAYMENT_STATUSES`. Each of the three
+ *  unpaid ones is called out separately because each is a different
+ *  conversation: nobody has started (`pending`), the bank is still moving it
+ *  (`processing`), or an attempt bounced (`failed`). */
 function statusBadge(
   r: Repayment,
-): { label: string; tone: "warn" | "danger" | "success" } {
+): { label: string; tone: "warn" | "danger" | "success" | "info" } {
   if (r.status === "paid") return { label: "Repaid", tone: "success" };
   if (r.status === "failed") return { label: "Payment failed", tone: "danger" };
+  // A bank debit the payer has authorised and the bank hasn't yet delivered.
+  // Its own badge on purpose: a collector chasing this row would be chasing
+  // somebody who has already paid, which is the fastest way to make the
+  // person who did the right thing feel accused.
+  if (r.status === "processing") return { label: "Clearing", tone: "info" };
   return { label: "Owed", tone: "warn" };
 }
 
@@ -78,14 +97,12 @@ function NoFinanceAccess() {
 function RepaymentRow({
   row,
   isManager,
-  onMarkRepaid,
   onUnmark,
   busy,
   isLast,
 }: {
   row: Repayment;
   isManager: boolean;
-  onMarkRepaid: () => void;
   onUnmark: () => void;
   busy: boolean;
   isLast: boolean;
@@ -114,32 +131,30 @@ function RepaymentRow({
         <Badge label={badge.label} tone={badge.tone} />
       </View>
 
-      {/* Actions — manager only (the server gates both again regardless). A
-          settled row keeps no actions: `unflagPersonalCharge` refuses once the
-          credit is posted, and re-confirming a paid repayment is a no-op. */}
+      {/* The one action left — manager only, and the server gates it again
+          regardless. A settled row keeps none: `unflagPersonalCharge` refuses
+          once the credit is posted. */}
       {isManager && !settled ? (
         <View className="flex-row flex-wrap items-center justify-between gap-2">
           <Text className="text-2xs text-faint">
-            {row.hasExternalAccount
-              ? "Bank account linked for ACH"
-              : "No bank account linked yet"}
+            {row.status === "processing"
+              ? "Bank payment clearing — usually about 4 business days"
+              : row.status === "failed"
+                ? "Their last payment attempt was refused"
+                : "Not paid yet"}
             {" · flagged "}
             {shortDate(row.flaggedAt)}
           </Text>
           <View className="flex-row gap-2">
+            {/* Un-flagging is the only write left here — see the file
+                header on why there is no "Mark repaid". */}
             <Button
-              title="Un-mark"
-              variant="ghost"
+              title="Not personal"
+              variant="secondary"
               size="sm"
+              icon="rotate-ccw"
               disabled={busy}
               onPress={onUnmark}
-            />
-            <Button
-              title="Mark repaid"
-              size="sm"
-              icon="check"
-              disabled={busy}
-              onPress={onMarkRepaid}
             />
           </View>
         </View>
@@ -156,11 +171,9 @@ function PersonalChargesBody() {
   // settle debts.
   const isManager = seats.some((s) => s.role === "manager");
 
-  const markRepaid = useMutation(api.cards.markRepaymentPaid);
   const unflag = useMutation(api.cards.unflagPersonalCharge);
   const { run, toast, dismiss } = useActionRunner();
 
-  const [confirming, setConfirming] = useState<Repayment | null>(null);
   const [busyId, setBusyId] = useState<string | null>(null);
 
   const { outstanding, repaid, owedCents } = useMemo(() => {
@@ -172,17 +185,6 @@ function PersonalChargesBody() {
       owedCents: out.reduce((sum, r) => sum + r.amountCents, 0),
     };
   }, [rows]);
-
-  async function confirmMarkRepaid() {
-    if (!confirming) return;
-    const id = confirming.id;
-    setBusyId(id);
-    await run(() => markRepaid({ repaymentId: id }), {
-      errorTitle: "Couldn't mark it repaid",
-      onSuccess: () => setConfirming(null),
-    });
-    setBusyId(null);
-  }
 
   async function handleUnmark(row: Repayment) {
     setBusyId(row.id);
@@ -249,7 +251,6 @@ function PersonalChargesBody() {
                 isManager={isManager}
                 busy={busyId === r.id}
                 isLast={i === outstanding.length - 1}
-                onMarkRepaid={() => setConfirming(r)}
                 onUnmark={() => void handleUnmark(r)}
               />
             ))}
@@ -267,7 +268,6 @@ function PersonalChargesBody() {
                   isManager={isManager}
                   busy={false}
                   isLast={i === repaid.length - 1}
-                  onMarkRepaid={() => {}}
                   onUnmark={() => {}}
                 />
               ))}
@@ -276,15 +276,6 @@ function PersonalChargesBody() {
         ) : null}
       </View>
 
-      {confirming ? (
-        <MarkRepaidModal
-          payerName={confirming.payerName}
-          amount={formatCents(confirming.amountCents)}
-          submitting={busyId === confirming.id}
-          onCancel={() => setConfirming(null)}
-          onConfirm={() => void confirmMarkRepaid()}
-        />
-      ) : null}
       <ToastView toast={toast} onDismiss={dismiss} />
     </>
   );

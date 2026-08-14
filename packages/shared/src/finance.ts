@@ -1691,8 +1691,43 @@ export function parseRelayReference(
 export const REPAYMENT_METHODS = ["card", "ach"] as const;
 export type RepaymentMethod = (typeof REPAYMENT_METHODS)[number];
 
-export const REPAYMENT_STATUSES = ["pending", "paid", "failed"] as const;
+/**
+ * `processing` (added 2026-08-14 with the Stripe ACH repayment rail) is the
+ * state a bank debit sits in for the ~4 business days between the payer
+ * authorising it and the money arriving. It is deliberately NOT `paid`: a
+ * debit can be refused, and marking the debt settled on authorisation would
+ * clear a flag against money that may never exist — the exact class of bug the
+ * giving side already refuses to ship (`http.ts#checkoutSessionHasSettled`).
+ *
+ * It is also not `pending`, which would be worse in the other direction: a
+ * payer looking at a charge they authorised yesterday, still reading "you owe
+ * this", pays it a second time.
+ *
+ * `personalExpenseState` treats it as UNPAID, alongside `pending` and
+ * `failed` — the debt is genuinely still outstanding until the bank says
+ * otherwise, and only a `paid` repayment reads as reimbursed.
+ */
+export const REPAYMENT_STATUSES = [
+  "pending",
+  "processing",
+  "paid",
+  "failed",
+] as const;
 export type RepaymentStatus = (typeof REPAYMENT_STATUSES)[number];
+
+/** Outstanding: the payer still owes this. Everything that isn't settled —
+ *  never authored as `!== "paid"` at a call site, so a status added to the
+ *  union above has to be classified here rather than silently reading as
+ *  outstanding (or, worse, as settled). */
+export function isRepaymentOutstanding(status: RepaymentStatus): boolean {
+  return status !== "paid";
+}
+
+/** In flight through a rail: authorised, not yet arrived. The payer should be
+ *  told to wait rather than invited to pay again. */
+export function isRepaymentInFlight(status: RepaymentStatus): boolean {
+  return status === "processing";
+}
 
 // ── Personal expense state (derived — deliberately NOT a persisted field) ───
 // Founder ask: mark a charge as a personal expense / needing repayment,
@@ -1726,7 +1761,10 @@ export type PersonalExpenseState = (typeof PERSONAL_EXPENSE_STATES)[number];
  * `isPersonal` flag and its linked repayment's status (`null`/`undefined`
  * when unflagged, or a flagged row whose repayment can't be resolved). A
  * `"failed"` repayment attempt still reads as `"personal_unpaid"` — the debt
- * stays outstanding either way; only `"paid"` clears it.
+ * stays outstanding either way; only `"paid"` clears it. So does
+ * `"processing"`, an ACH debit still clearing: the payer has authorised it and
+ * the money has not arrived, and a ledger that called that reimbursed would be
+ * describing money the org does not have.
  */
 export function personalExpenseState(
   isPersonal: boolean | null | undefined,

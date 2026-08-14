@@ -3,6 +3,7 @@ import {
   autoExplainedKind,
   autoExplanationLine,
   personalExpenseState,
+  REPAYMENT_STATUSES,
   TRANSACTION_STATUSES,
   TRANSACTION_STATUS_LABELS,
   documentationState,
@@ -56,6 +57,14 @@ describe("personalExpenseState", () => {
     expect(personalExpenseState(true, "failed")).toBe("personal_unpaid");
   });
 
+  test("an ACH debit still clearing reads unpaid — authorised is not arrived", () => {
+    // `processing` is the ~4-business-day window between the payer authorising
+    // a bank debit and the money landing. Calling that reimbursed would have
+    // the ledger describe money the org does not have, and a refused debit
+    // would then need a second write to take it back.
+    expect(personalExpenseState(true, "processing")).toBe("personal_unpaid");
+  });
+
   test("only a paid repayment reads reimbursed", () => {
     expect(personalExpenseState(true, "paid")).toBe("personal_reimbursed");
   });
@@ -73,7 +82,14 @@ describe("personalExpenseState", () => {
   // future edit to either side that breaks the correspondence fails HERE.
   test("invariant: personalExpenseState !== 'not_personal' iff isSpend would exclude on isPersonal", () => {
     const isPersonalValues = [true, false, undefined, null] as const;
-    const repaymentStatusValues = ["pending", "paid", "failed", null, undefined] as const;
+    // Every member of REPAYMENT_STATUSES, derived rather than transcribed, so
+    // a status added to the tuple is covered here the day it lands instead of
+    // whenever somebody remembers this list exists.
+    const repaymentStatusValues = [
+      ...REPAYMENT_STATUSES,
+      null,
+      undefined,
+    ] as const;
     for (const isPersonal of isPersonalValues) {
       for (const repaymentStatus of repaymentStatusValues) {
         const state = personalExpenseState(isPersonal, repaymentStatus);
