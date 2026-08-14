@@ -51,7 +51,12 @@
 import { internalMutation } from "./_generated/server";
 import { v } from "convex/values";
 import type { Id } from "./_generated/dataModel";
-import { ROLLUP_SCAN_LIMIT, budgetDisplayName, cascadeDeleteBudget } from "./finances";
+import {
+  ROLLUP_SCAN_LIMIT,
+  budgetDisplayName,
+  cascadeDeleteBudget,
+  effectiveRefKind,
+} from "./finances";
 import { formatCents } from "@events-os/shared";
 
 const orphanRow = v.object({
@@ -69,18 +74,36 @@ export const sweepOrphanedRefBudgets = internalMutation({
   returns: v.object({
     dryRun: v.boolean(),
     scanned: v.number(),
+    /** True when the budget scan hit its cap — the run covered only a prefix. */
+    truncated: v.boolean(),
     deleted: v.array(orphanRow),
     kept: v.array(orphanRow),
   }),
   handler: async (ctx, { execute }) => {
     const write = execute ?? false;
     const budgets = await ctx.db.query("budgets").take(ROLLUP_SCAN_LIMIT);
+    // A truncated scan that reports like a complete one is how an orphan
+    // survives a cleanup nobody thinks to re-run. Surfaced, never assumed away.
+    const truncated = budgets.length === ROLLUP_SCAN_LIMIT;
+    if (truncated) {
+      console.warn(
+        `[finances] sweepOrphanedRefBudgets hit ROLLUP_SCAN_LIMIT (${ROLLUP_SCAN_LIMIT}); ` +
+          `budgets beyond it were never examined — this run is NOT a complete sweep.`,
+      );
+    }
     const deleted: (typeof orphanRow.type)[] = [];
     const kept: (typeof orphanRow.type)[] = [];
     let scanned = 0;
 
     for (const budget of budgets) {
-      const refKind = budget.refKind;
+      // Through `effectiveRefKind`, not the raw field: a pre-v2 budget carries
+      // its link in the legacy `scope` field with `refKind` unset, and reading
+      // the raw field would skip it BEFORE the liveness check — neither
+      // deleted, nor reported in `kept`, nor counted in `scanned`, so the log
+      // would read as a clean complete sweep. This module is the backstop for
+      // exactly those rows: `releaseBudgetsForDeletedRef` uses the `by_ref`
+      // INDEX and structurally cannot see them.
+      const refKind = effectiveRefKind(budget);
       const scopeRefId = budget.scopeRefId;
       if ((refKind !== "event" && refKind !== "project") || !scopeRefId) continue;
       scanned++;
@@ -134,6 +157,6 @@ export const sweepOrphanedRefBudgets = internalMutation({
         `${scanned} ref-linked budgets, ${deleted.length} orphaned + empty, ` +
         `${kept.length} orphaned but kept.`,
     );
-    return { dryRun: !write, scanned, deleted, kept };
+    return { dryRun: !write, scanned, truncated, deleted, kept };
   },
 });

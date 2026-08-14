@@ -22,6 +22,38 @@ import type { Id } from "../_generated/dataModel";
  * what to do about it (owner decision, 2026-08-14).
  */
 
+/** The caller as a `people` row — the anchor every finance grant hangs off. */
+async function seedSelfPerson(s: ChapterSetup): Promise<Id<"people">> {
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: "Caller",
+      userId: s.userId,
+      isTeamMember: true,
+      createdAt: Date.now(),
+    }),
+  );
+}
+
+/** Grant the caller a finance role at a level. Mirrors
+ *  `financeLinksToBudgets.test.ts#asChapterManager`. */
+async function grantFinance(
+  s: ChapterSetup,
+  opts: { role: "viewer" | "bookkeeper" | "manager"; scope: "chapter" | "central" },
+): Promise<Id<"people">> {
+  const personId = await seedSelfPerson(s);
+  await run(s.t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: s.chapterId,
+      personId,
+      role: opts.role,
+      scope: opts.scope,
+      createdAt: Date.now(),
+    }),
+  );
+  return personId;
+}
+
 async function seedEventType(s: ChapterSetup): Promise<Id<"eventTypes">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("eventTypes", {
@@ -121,6 +153,7 @@ async function codeSpend(
 describe("events.remove — the budget goes with the event", () => {
   test("an empty budget is deleted along with its event", async () => {
     const s = await setupChapter(newT());
+    await grantFinance(s, { role: "manager", scope: "chapter" });
     const { eventId, budgetId } = await seedEventWithBudget(s);
 
     await s.as.mutation(api.events.remove, { eventId });
@@ -137,6 +170,7 @@ describe("events.remove — the budget goes with the event", () => {
 
   test("the budget's tag links go too — no orphan rows behind it", async () => {
     const s = await setupChapter(newT());
+    await grantFinance(s, { role: "manager", scope: "chapter" });
     const { eventId, budgetId } = await seedEventWithBudget(s);
     await run(s.t, async (ctx) => {
       const tagId = await ctx.db.insert("budgetTags", {
@@ -165,6 +199,7 @@ describe("events.remove — the budget goes with the event", () => {
 
   test("spend on the budget refuses the delete, and says what to do", async () => {
     const s = await setupChapter(newT());
+    await grantFinance(s, { role: "manager", scope: "chapter" });
     const { eventId, budgetId } = await seedEventWithBudget(s);
     await codeSpend(s, budgetId, 32_500);
 
@@ -182,6 +217,7 @@ describe("events.remove — the budget goes with the event", () => {
 
   test("a refused delete leaves the event and everything on it intact", async () => {
     const s = await setupChapter(newT());
+    await grantFinance(s, { role: "manager", scope: "chapter" });
     const { eventId, budgetId } = await seedEventWithBudget(s);
     await codeSpend(s, budgetId, 32_500);
     const itemId = await run(s.t, (ctx) =>
@@ -235,6 +271,7 @@ describe("events.remove — the budget goes with the event", () => {
 describe("projects.remove — the same rule, same reason", () => {
   test("an empty budget is deleted along with its project", async () => {
     const s = await setupChapter(newT());
+    await grantFinance(s, { role: "manager", scope: "chapter" });
     const { projectId, budgetId } = await seedProjectWithBudget(s);
 
     await s.as.mutation(api.projects.remove, { projectId });
@@ -249,6 +286,7 @@ describe("projects.remove — the same rule, same reason", () => {
 
   test("spend on the budget refuses the delete", async () => {
     const s = await setupChapter(newT());
+    await grantFinance(s, { role: "manager", scope: "chapter" });
     const { projectId, budgetId } = await seedProjectWithBudget(s);
     await codeSpend(s, budgetId, 50_000);
 
@@ -261,5 +299,116 @@ describe("projects.remove — the same rule, same reason", () => {
     expect(data.code).toBe("BUDGET_HAS_SPEND");
     expect(data.message).toContain("$500.00");
     expect(data.message).toContain("project");
+  });
+});
+
+/**
+ * Both callers are gated on tenancy alone — `events.remove` → `requireEvent` →
+ * `requireOwned` is chapter membership, nothing more. Without a finance gate on
+ * the cascade, deleting an event became a way for any member to destroy an
+ * approved budget that `deleteBudget` would have required manager rank to
+ * touch. `by_ref` sharpened it: it resolves a ref's budget wherever that budget
+ * now lives, so a chapter-side event delete could reach a CENTRAL-owned one.
+ */
+describe("the cascade can't delete a budget the caller couldn't delete directly", () => {
+  test("a plain member is refused — the budget and event both survive", async () => {
+    const s = await setupChapter(newT());
+    await seedSelfPerson(s); // a member, with no finance grant at all
+    const { eventId, budgetId } = await seedEventWithBudget(s);
+
+    const err = await s.as
+      .mutation(api.events.remove, { eventId })
+      .catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(ConvexError);
+    expect((err as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+    const [event, budget] = await run(s.t, async (ctx) => [
+      await ctx.db.get(eventId),
+      await ctx.db.get(budgetId),
+    ]);
+    expect(event).not.toBeNull();
+    expect(budget).not.toBeNull();
+  });
+
+  test("a bookkeeper is refused too — deleting a budget is manager work", async () => {
+    const s = await setupChapter(newT());
+    await grantFinance(s, { role: "bookkeeper", scope: "chapter" });
+    const { eventId } = await seedEventWithBudget(s);
+
+    const err = await s.as
+      .mutation(api.events.remove, { eventId })
+      .catch((e: unknown) => e);
+
+    expect((err as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+  });
+
+  test("a chapter manager cannot destroy a CENTRAL-owned budget", async () => {
+    const s = await setupChapter(newT());
+    await grantFinance(s, { role: "manager", scope: "chapter" });
+    const { eventId, budgetId } = await seedEventWithBudget(s);
+    // What `transferEventScope(…, "central")` leaves behind: the event stays
+    // chapter-scoped, its BUDGET moves to Central.
+    await run(s.t, (ctx) => ctx.db.patch(budgetId, { chapterId: "central" }));
+
+    const err = await s.as
+      .mutation(api.events.remove, { eventId })
+      .catch((e: unknown) => e);
+
+    expect((err as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+    expect(await run(s.t, (ctx) => ctx.db.get(budgetId))).not.toBeNull();
+  });
+
+  test("a $0 placeholder with no plan needs no finance rank — an ordinary leader can still delete an ordinary event", async () => {
+    const s = await setupChapter(newT());
+    await seedSelfPerson(s); // no finance grant
+    // The shape `backfillEventBudgets` (#125) minted for every budget-less
+    // event, and which `removeEmptyAutoBudgets` deletes as clutter ungated.
+    const { eventId, budgetId } = await seedEventWithBudget(s, 0);
+
+    await s.as.mutation(api.events.remove, { eventId });
+
+    expect(await run(s.t, (ctx) => ctx.db.get(eventId))).toBeNull();
+    expect(await run(s.t, (ctx) => ctx.db.get(budgetId))).toBeNull();
+  });
+
+  test("authorization is answered before the books are read", async () => {
+    const s = await setupChapter(newT());
+    await seedSelfPerson(s); // no finance grant
+    const { eventId, budgetId } = await seedEventWithBudget(s);
+    await codeSpend(s, budgetId, 32_500);
+
+    const err = await s.as
+      .mutation(api.events.remove, { eventId })
+      .catch((e: unknown) => e);
+
+    // FORBIDDEN, not BUDGET_HAS_SPEND: someone who may not act on this budget
+    // shouldn't be handed a reading of the chapter's books on the way out.
+    expect((err as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
+    expect((err as ConvexError<{ message: string }>).data.message).not.toContain("$325.00");
+  });
+});
+
+describe("the deletion leaves a record behind", () => {
+  test("a budget_delete audit row outlives the budget it describes", async () => {
+    const s = await setupChapter(newT());
+    const personId = await grantFinance(s, { role: "manager", scope: "chapter" });
+    const { eventId, budgetId } = await seedEventWithBudget(s);
+
+    await s.as.mutation(api.events.remove, { eventId });
+
+    const entries = await run(s.t, (ctx) =>
+      ctx.db
+        .query("financeAuditLog")
+        .filter((q) => q.eq(q.field("subjectId"), budgetId))
+        .collect(),
+    );
+    expect(entries).toHaveLength(1);
+    expect(entries[0].action).toBe("budget_delete");
+    expect(entries[0].actorPersonId).toBe(personId);
+    expect(entries[0].before).toContain("Love Thy Neighbor 2026");
+    expect(entries[0].before).toContain("$6,000.00");
+    expect(entries[0].reason).toBe("deleted with its event");
+    // The budget is gone; its record is not.
+    expect(await run(s.t, (ctx) => ctx.db.get(budgetId))).toBeNull();
   });
 });

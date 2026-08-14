@@ -2370,7 +2370,8 @@ function tagAllocationForDash(
  * DATES" doc comment for why `startDate`/`createdAt` are never substituted).
  * Falls back to the budget's OWN stored `label`/type-word
  * (`budgetDisplayName`) when the budget carries no ref, OR the ref has
- * vanished (a deleted event/project doesn't cascade to its budget) — the
+ * vanished (a legacy orphan, from before `events.remove`/`projects.remove`
+ * cascaded to the budget) — the
  * fallback is never a raw "null"/blank card.
  *
  * The SINGLE resolver for every dashboard/tag/picker surface that shows a
@@ -2385,8 +2386,8 @@ function tagAllocationForDash(
  *
  * `live` (review fix — dead-link parity): true only when a ref was actually
  * resolved from a real event/project doc, false for the no-ref AND the
- * vanished-ref fallback alike (`events.remove` doesn't cascade to a linked
- * budget, so a deleted event's budget keeps a dead `scopeRefId` forever).
+ * vanished-ref fallback alike (a budget stranded before
+ * `releaseBudgetsForDeletedRef` existed keeps a dead `scopeRefId` forever).
  * Callers that offer an "open ref" link (`oneTimeBudgets`/`centralBudgets`
  * cards) gate `refKind`/`scopeRefId` on this — never show a link for a ref
  * that doesn't (or no longer) resolves, same rule `dashboardChapter`'s
@@ -2860,6 +2861,34 @@ export async function getBudgetForRef(
  * enforced at creation by `createBudget`'s dedup guard — but legacy data can
  * carry a duplicate from before that guard, and deleting one while leaving the
  * other is how you mint the exact orphan this prevents.
+ *
+ * ── AUTHORIZATION: THE CALLER MUST BE ABLE TO DELETE THE BUDGET ITSELF ──────
+ * Both callers are gated on TENANCY ONLY — `events.remove` via `requireEvent`
+ * → `requireOwned` (chapter membership), `projects.remove` via the owner's
+ * manager chain. Neither is a finance gate, so without the check below any
+ * chapter member could permanently destroy an APPROVED budget by deleting its
+ * event. `by_ref` makes that worse rather than better: it finds a ref's budget
+ * at whatever level it currently lives, so after `transferEventScope(…,
+ * "central")` a chapter-side event delete would reach a CENTRAL-owned budget
+ * that `deleteBudget` itself would have required central reach to touch.
+ *
+ * A SUBSTANTIVE budget — nonzero amount, or a `budgetLines` plan breakdown —
+ * therefore demands exactly the rank `deleteBudget` demands, and refuses with
+ * `FORBIDDEN` otherwise. A $0 budget with no plan is deliberately NOT gated:
+ * that is the auto-created placeholder `backfillEventBudgets` (#125) minted for
+ * every budget-less event, which `removeEmptyAutoBudgets` already deletes as
+ * clutter with no gate at all. Gating it would mean an ordinary leader could no
+ * longer delete an ordinary event — a worse regression than the hole being
+ * closed. A CENTRAL-owned budget is gated regardless of amount: attributing an
+ * event to Central took central reach, so undoing it should too.
+ *
+ * ── AND IT IS LOGGED ────────────────────────────────────────────────────────
+ * `deleteBudget` writes a `budget_delete` row BEFORE cascading, precisely so
+ * the record outlives the doc. This path does the same, because it is now the
+ * likelier way a budget disappears. (Its sibling one-off runners can't —
+ * `logFinanceAudit` anchors on `requireUserId` and an `internalMutation` has no
+ * caller to resolve — but these two callers are ordinary authenticated
+ * mutations, so the excuse doesn't apply here.)
  */
 export async function releaseBudgetsForDeletedRef(
   ctx: MutationCtx,
@@ -2867,6 +2896,13 @@ export async function releaseBudgetsForDeletedRef(
   scopeRefId: string,
   entityWord: "event" | "project",
 ): Promise<void> {
+  // NOTE: an index lookup on the LITERAL `refKind`, so a pre-v2 budget carrying
+  // only the legacy `scope` field (see `effectiveRefKind`) is not found here.
+  // Deliberate: `scope` is dead in production — 0 of 37 budgets carry it — and
+  // catching those rows would cost a chapter-wide scan on every event deletion.
+  // `sweepOrphanedRefBudgets`, which scans everything anyway, DOES resolve
+  // through `effectiveRefKind`, so a legacy row that ever did strand is still
+  // findable.
   const budgets = await ctx.db
     .query("budgets")
     .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
@@ -2874,6 +2910,7 @@ export async function releaseBudgetsForDeletedRef(
   if (budgets.length === 0) return;
 
   const blocked: { name: string; count: number; totalCents: number }[] = [];
+  const substantive: Doc<"budgets">[] = [];
   for (const budget of budgets) {
     const linked = await ctx.db
       .query("transactions")
@@ -2886,6 +2923,29 @@ export async function releaseBudgetsForDeletedRef(
         totalCents: linked.reduce((sum, tr) => sum + tr.amountCents, 0),
       });
     }
+    const planLine = await ctx.db
+      .query("budgetLines")
+      .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
+      .first();
+    if (budget.amountCents !== 0 || planLine || budget.chapterId === CENTRAL) {
+      substantive.push(budget);
+    }
+  }
+
+  // AUTHORIZATION BEFORE EXPLANATION. The finance gate runs first, so a caller
+  // who may not destroy this budget is told that — rather than being handed a
+  // reading of the chapter's books ("$325.00 is coded to…") on their way to
+  // being refused anyway. Only when there is something substantive to destroy;
+  // resolved ONCE for the whole set (a ref has one budget in practice) so a
+  // caller isn't re-authorized per row.
+  let actorPersonId: Id<"people"> | null = null;
+  if (substantive.length > 0) {
+    const callerChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const needsCentral = substantive.some((b) => b.chapterId === CENTRAL);
+    const access = needsCentral
+      ? await requireFinanceCentral(ctx, callerChapterId)
+      : await requireFinanceManager(ctx, callerChapterId);
+    actorPersonId = access.personId;
   }
 
   if (blocked.length > 0) {
@@ -2906,7 +2966,22 @@ export async function releaseBudgetsForDeletedRef(
     });
   }
 
-  for (const budget of budgets) await cascadeDeleteBudget(ctx, budget._id);
+  for (const budget of budgets) {
+    // Logged before the cascade, while the row still exists to describe —
+    // `subjectId` is a plain string, so the entry outlives the deleted doc.
+    await logFinanceAudit(ctx, {
+      chapterId: budget.chapterId,
+      subjectType: "budget",
+      subjectId: budget._id,
+      action: "budget_delete",
+      actorPersonId,
+      field: "budget",
+      before: `${budgetDisplayName(budget)} (${formatCents(budget.amountCents)})`,
+      reason: `deleted with its ${entityWord}`,
+      amountCents: budget.amountCents,
+    });
+    await cascadeDeleteBudget(ctx, budget._id);
+  }
 }
 
 /**
@@ -5826,9 +5901,9 @@ const glanceBudgetRow = v.object({
   dateLabel: v.union(v.string(), v.null()),
   type: typeValidator,
   cadence: cadenceValidator,
-  // The linked event/project, but ONLY when the ref still resolves — a deleted
-  // event leaves its budget's `scopeRefId` dangling (`events.remove` doesn't
-  // cascade), and the glance card's "Open event" link must never 404. Both
+  // The linked event/project, but ONLY when the ref still resolves — a budget
+  // stranded before `releaseBudgetsForDeletedRef` existed keeps a dangling
+  // `scopeRefId`, and the glance card's "Open event" link must never 404. Both
   // fields are null together for a recurring bucket, an unlinked one-time
   // budget, and a dead ref alike, which is what lets the client gate the link
   // on `refKind != null` without a second `refLive` flag to remember.
@@ -7129,8 +7204,9 @@ export async function setBudgetAmount(
   const mirrorDollars = amountCents > 0 ? amountCents / 100 : undefined;
   if (refKind === "event") {
     const ev = await ctx.db.get(budget.scopeRefId as Id<"events">);
-    // A budget row can outlive its ref (a deleted event doesn't cascade to
-    // its budget) — nothing to mirror onto then; the row write above stands.
+    // A budget row can outlive its ref (a legacy orphan, stranded before
+    // `releaseBudgetsForDeletedRef` existed) — nothing to mirror onto then;
+    // the row write above stands.
     if (ev) await ctx.db.patch(ev._id, { budget: mirrorDollars });
   } else {
     const project = await ctx.db.get(budget.scopeRefId as Id<"projects">);
