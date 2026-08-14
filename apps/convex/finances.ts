@@ -2057,6 +2057,44 @@ export function txnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): b
 }
 
 /**
+ * A BUDGET'S OWN DECLARED WINDOW — and the rule for when it counts.
+ *
+ * A budget row can carry `month`/`quarter`. For a `per_instance` / `one_off`
+ * budget that is the whole point: "the May retreat's budget" is May's, whatever
+ * month you happen to be looking at.
+ *
+ * For a REPEATING cadence it is a contradiction. "Quarterly, but only Q1" is
+ * not a quarterly budget — it is a one-off for Q1 wearing the wrong cadence.
+ * Honoring the pin there froze the bucket to a single window forever: Culture
+ * Fund, a $400-a-quarter bucket carrying a stray `quarter` from the day it was
+ * created, reported "$0.00 of $400.00 THIS QUARTER" while real money was
+ * spent in Q2 and Q3 (founder, 2026-08-14 — "Culture Fund does not show
+ * anything even though there are Q1 and Q3 spendings"). The label was the
+ * worst part: it named the current quarter while reporting a different one.
+ *
+ * `budgetEffectivePeriod`'s own doc already assumed this — "a MONTHLY budget
+ * stored as `$2,000/mo` carries no `month`" — so the pin on a repeating
+ * cadence was always data outside the model rather than a feature. This makes
+ * the assumption enforced instead of assumed.
+ *
+ * Every windowing site goes through these two, so "what pins a budget's
+ * window?" has exactly one answer.
+ */
+function cadenceRepeats(b: Doc<"budgets">): boolean {
+  return (
+    b.cadence === "monthly" || b.cadence === "quarterly" || b.cadence === "yearly"
+  );
+}
+
+function pinnedMonth(b: Doc<"budgets">): number | undefined {
+  return cadenceRepeats(b) ? undefined : b.month ?? undefined;
+}
+
+function pinnedQuarter(b: Doc<"budgets">): number | undefined {
+  return cadenceRepeats(b) ? undefined : b.quarter ?? undefined;
+}
+
+/**
  * The period a budget's spend is measured over, resolved against the dashboard's
  * `contextMonth`. A MONTHLY budget stored as "$2,000/mo" carries no `month`, so
  * without this it would (wrongly) match all 12 months — its spend is scoped to
@@ -2079,12 +2117,13 @@ function budgetEffectivePeriod(
   const year = b.year;
   switch (b.cadence) {
     case "monthly": {
-      const month = b.month ?? contextMonth;
+      const month = pinnedMonth(b) ?? contextMonth;
       return month != null ? { year, month } : { year };
     }
     case "quarterly": {
       const quarter =
-        b.quarter ?? (contextMonth != null ? quarterOfMonth(contextMonth) : undefined);
+        pinnedQuarter(b) ??
+        (contextMonth != null ? quarterOfMonth(contextMonth) : undefined);
       return quarter != null ? { year, quarter } : { year };
     }
     case "yearly":
@@ -2092,8 +2131,8 @@ function budgetEffectivePeriod(
     case "per_instance":
     case "one_off":
     default: {
-      const month = b.month ?? contextMonth;
-      return { year, month: month ?? undefined, quarter: b.quarter ?? undefined };
+      const month = pinnedMonth(b) ?? contextMonth;
+      return { year, month: month ?? undefined, quarter: pinnedQuarter(b) };
     }
   }
 }
@@ -2184,8 +2223,10 @@ function inYtdBudgetWindow(postedAt: number, b: Doc<"budgets">, throughMonth: nu
   const p = easternParts(postedAt);
   if (p.year !== b.year) return false;
   if (p.month > throughMonth) return false;
-  if (b.month != null && p.month !== b.month) return false;
-  if (b.quarter != null && quarterOfMonth(p.month) !== b.quarter) return false;
+  const pinM = pinnedMonth(b);
+  const pinQ = pinnedQuarter(b);
+  if (pinM != null && p.month !== pinM) return false;
+  if (pinQ != null && quarterOfMonth(p.month) !== pinQ) return false;
   return true;
 }
 
@@ -2275,8 +2316,9 @@ function ytdCadenceAllocationCents(b: Doc<"budgets">, dp: DashPeriod): number | 
   const capCents = effectiveCapCents(b);
   if (b.cadence === "yearly") return capCents;
   if (b.cadence === "quarterly") {
-    if (b.quarter != null) {
-      const quarterStartMonth = (b.quarter - 1) * 3 + 1;
+    const pinQ = pinnedQuarter(b);
+    if (pinQ != null) {
+      const quarterStartMonth = (pinQ - 1) * 3 + 1;
       return quarterStartMonth <= dp.month ? capCents : 0;
     }
     const quartersElapsed = Math.ceil(dp.month / 3);
@@ -3161,7 +3203,7 @@ function oneTimeCardAppliesToDash(
   if (dp.ytd) return true;
   if (refDate != null) {
     if (inPeriod(refDate, dp.year, dp.month)) return true;
-  } else if (b.month != null && b.month === dp.month) {
+  } else if (pinnedMonth(b) === dp.month) {
     return true;
   }
   return yearTxns.some(
@@ -3176,8 +3218,10 @@ function recurringAppliesToMonth(
   month: number,
 ): boolean {
   if (b.year !== year) return false;
-  if (b.month != null && b.month !== month) return false;
-  if (b.quarter != null && quarterOfMonth(month) !== b.quarter) return false;
+  const pinM = pinnedMonth(b);
+  const pinQ = pinnedQuarter(b);
+  if (pinM != null && pinM !== month) return false;
+  if (pinQ != null && quarterOfMonth(month) !== pinQ) return false;
   return true;
 }
 
@@ -3197,11 +3241,14 @@ function monthEquivalentBudgetCents(
   month: number,
 ): number {
   if (b.year !== year) return 0;
-  if (b.quarter != null && quarterOfMonth(month) !== b.quarter) return 0;
+  const pinQ = pinnedQuarter(b);
+  if (pinQ != null && quarterOfMonth(month) !== pinQ) return 0;
   const capCents = effectiveCapCents(b);
   switch (b.cadence) {
     case "monthly":
-      if (b.month != null && b.month !== month) return 0;
+      // A monthly bucket's allocation IS one month, every month of its year —
+      // a stored `month` on a repeating cadence no longer narrows it (see
+      // `pinnedMonth`).
       return capCents;
     case "quarterly":
       return Math.round(capCents / 3);
@@ -3209,9 +3256,11 @@ function monthEquivalentBudgetCents(
       return Math.round(capCents / 12);
     case "per_instance":
     case "one_off":
-    default:
-      if (b.month != null && b.month !== month) return 0;
+    default: {
+      const pinM = pinnedMonth(b);
+      if (pinM != null && pinM !== month) return 0;
       return capCents;
+    }
   }
 }
 
@@ -5776,10 +5825,12 @@ const glanceBudgetRow = v.object({
    * The year broken into this bucket's own cadence windows — see
    * `glanceRecurringPeriod`. Present only for a REPEATING monthly/quarterly
    * bucket: a `yearly` bucket's window already IS the page ("for the yearly
-   * budgets it's fine because obviously each page is a year"), a one-time
-   * budget has no cadence to repeat, and a bucket pinned to one specific
-   * month/quarter (`b.month`/`b.quarter` set) is a single window wearing a
-   * recurring cadence — a strip of twelve for it would be eleven empty bars.
+   * budgets it's fine because obviously each page is a year"), and a one-time
+   * budget has no cadence to repeat.
+   *
+   * A stored `month`/`quarter` does NOT exclude a bucket here — see
+   * `pinnedMonth`. It used to, which is why a $400-a-quarter bucket carrying a
+   * stray `quarter` charted nothing at all.
    *
    * OPTIONAL on the wire on purpose: the backend deploys ahead of the client
    * bundles, and a field an old bundle has never heard of is ignored, where a
@@ -5821,36 +5872,10 @@ function recurringPeriodRows(
 
   const count = monthly ? 12 : 4;
   const currentIndex = monthly ? throughMonth : quarterOfMonth(throughMonth);
-  // PINNED to one window (`b.month`/`b.quarter` set) — a cadence that names its
-  // own window governs exactly that one, and `txnCountsTowardBudget` ignores
-  // the context month entirely for it, so every bar in a twelve-bar strip
-  // would show the SAME total. One window is the truthful strip.
-  //
-  // It still has to be A strip rather than nothing: returning `null` here was
-  // why a bucket with no charge in the current window rendered no chart at all
-  // (founder, 2026-08-14 — "not seeing previous quarters if there is no charge
-  // this quarter"), which reads as a broken card rather than as a budget that
-  // covers one window.
-  const pinned = monthly ? b.month : b.quarter;
-  if (pinned != null) {
-    const spentCents = txns.reduce(
-      (sum, tr) => (txnCountsTowardBudget(tr, b) ? sum + tr.amountCents : sum),
-      0,
-    );
-    const pct = pctOf(spentCents, capCents);
-    return [
-      {
-        key: monthly ? `m${pinned}` : `q${pinned}`,
-        label: monthly ? MONTH_NAMES[pinned - 1].slice(0, 3) : `Q${pinned}`,
-        month: monthly ? pinned : (pinned - 1) * 3 + 1,
-        spentCents,
-        capCents,
-        pct,
-        status: statusFor(pct),
-        state: pinned >= currentIndex ? "current" : "past",
-      },
-    ];
-  }
+  // NOTE: a stored `month`/`quarter` no longer narrows a repeating cadence
+  // (see `pinnedMonth`), so every monthly/quarterly bucket charts its whole
+  // year here. That is the fix for a bucket rendering NO chart at all because
+  // a stray pin had frozen it to a single window.
   // The month to hand `txnCountsTowardBudget` so it resolves window `i` — its
   // own month for monthly, the quarter's first month for quarterly.
   const contextMonth = (i: number) => (monthly ? i : (i - 1) * 3 + 1);

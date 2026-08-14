@@ -760,21 +760,21 @@ describe("a recurring bucket is broken into its own windows", () => {
     expect(row?.spentCents).toBe(1_636);
   });
 
-  test("a bucket pinned to ONE month charts that one window, not a series of twelve", async () => {
+  test("a stray `month` does NOT freeze a monthly bucket to one window", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const thisYear = new Date().getFullYear();
-    // A "monthly" cadence with its own `month` set governs exactly one window.
-    // Twelve bars would be eleven empty ones plus a claim it repeats — and
-    // worse, `txnCountsTowardBudget` ignores the context month for a pinned
-    // budget, so all twelve would show the SAME total.
+    // "Monthly, but only February" is a contradiction — a repeating cadence
+    // whose window never moves. `budgetEffectivePeriod`'s own doc assumes a
+    // monthly budget carries no `month`; when one does anyway (stamped at
+    // creation), honoring it froze the bucket to a single window forever.
     const budgetId = await seedBudget(s, {
       amountCents: 20_000,
       year: thisYear,
       month: 2,
       cadence: "monthly",
       type: "recurring",
-      label: "February push",
+      label: "Operating Expenses",
     });
     await seedCharge(s, {
       budgetId,
@@ -783,13 +783,17 @@ describe("a recurring bucket is broken into its own windows", () => {
     });
 
     const glance = await s.as.query(api.finances.budgetsGlance, {});
-    const periods = glance.recurring.find((r) => r.id === budgetId)?.periods;
-    // One window — but a window, not nothing. Returning no periods here is
-    // what made a bucket with no charge in the current window render no chart
-    // at all, which reads as a broken card.
-    expect(periods).toHaveLength(1);
-    expect(periods![0].label).toBe("Feb");
-    expect(periods![0].spentCents).toBe(5_000);
+    const row = glance.recurring.find((r) => r.id === budgetId)!;
+    const byLabel = new Map(row.periods!.map((p) => [p.label, p.spentCents]));
+    // Every elapsed month is charted, and February's charge sits in FEBRUARY
+    // rather than being repeated into every window.
+    expect(row.periods!.length).toBeGreaterThan(1);
+    expect(byLabel.get("Feb")).toBe(5_000);
+    expect(byLabel.get("Jan")).toBe(0);
+    // …and the headline reports the CURRENT month, which is what its "this
+    // month" label has always claimed. Before the fix it reported February's
+    // spend under that label whatever month you opened it in.
+    if (glance.month !== 2) expect(row.spentCents).toBe(0);
   });
 
   test("a one-time budget never carries windows", async () => {
@@ -981,33 +985,42 @@ describe("the drop-down can report a window other than today's", () => {
     expect(bad!.windowLabel).toBe(today!.windowLabel);
   });
 
-  test("a bucket PINNED to one window still charts — one bar, not nothing", async () => {
+  test("THE CULTURE FUND BUG: a stray `quarter` no longer hides a quarterly bucket's year", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const thisYear = new Date().getFullYear();
-    // The founder's report: "not seeing previous quarters if there is no
-    // charge this quarter." A pinned bucket used to return no windows at all,
-    // so its card rendered no chart — which reads as broken rather than as a
-    // budget that covers exactly one window.
+    // Founder, 2026-08-14: "Culture Fund does not show anything even though
+    // there are Q1 and Q3 spendings." A $400-a-quarter bucket carrying a
+    // `quarter` from the day it was created reported "$0.00 of $400.00 THIS
+    // QUARTER" — the pin froze its window to Q1 while the label kept naming
+    // the current quarter, so real spend in later quarters was invisible and
+    // the bucket looked unused.
     const budgetId = await seedBudget(s, {
       amountCents: 40_000,
       year: thisYear,
       quarter: 1,
       cadence: "quarterly",
       type: "recurring",
-      label: "Q1 push",
+      label: "Culture Fund",
     });
+    // Spend in Q1 and in Q2 — neither of which is the current quarter for most
+    // of the year.
     await seedCharge(s, { budgetId, amountCents: 15_000, postedAt: tsOn(thisYear, 2, 10) });
+    await seedCharge(s, { budgetId, amountCents: 9_000, postedAt: tsOn(thisYear, 5, 4) });
 
     const glance = await s.as.query(api.finances.budgetsGlance, {});
-    const periods = glance.recurring.find((r) => r.id === budgetId)?.periods;
-    // ONE window — a pinned budget's spend doesn't move between windows
-    // (`txnCountsTowardBudget` ignores the context month once `quarter` is
-    // set), so four bars would show the same total four times.
-    expect(periods).toHaveLength(1);
-    expect(periods![0].label).toBe("Q1");
-    expect(periods![0].spentCents).toBe(15_000);
-    expect(periods![0].month).toBe(1);
+    const row = glance.recurring.find((r) => r.id === budgetId)!;
+    const byLabel = new Map(row.periods!.map((p) => [p.label, p.spentCents]));
+    const nowQuarter = Math.ceil(glance.month / 3);
+    // The whole year is charted, and each charge sits in the quarter it was
+    // posted in rather than all of them landing in Q1.
+    expect(row.periods!.length).toBeGreaterThan(1);
+    expect(byLabel.get("Q1")).toBe(15_000);
+    expect(byLabel.get("Q2")).toBe(nowQuarter >= 2 ? 9_000 : undefined);
+    // The headline now means what it says: the CURRENT quarter's spend.
+    const expectedNow =
+      nowQuarter === 1 ? 15_000 : nowQuarter === 2 ? 9_000 : 0;
+    expect(row.spentCents).toBe(expectedNow);
   });
 
   test("every window carries the month the drop-down needs to ask for it", async () => {
@@ -1038,5 +1051,37 @@ describe("the drop-down can report a window other than today's", () => {
     // which is what makes `expenses({month})` resolve back to the same window.
     expect(monthly.slice(0, 3).map((p) => p.month)).toEqual([1, 2, 3]);
     expect(quarterly.slice(0, 3).map((p) => p.month)).toEqual([1, 4, 7]);
+  });
+});
+
+/**
+ * THE OTHER HALF OF THE PIN RULE.
+ *
+ * Making a repeating cadence ignore `month`/`quarter` is only right because a
+ * NON-repeating one still honors it. "The May retreat's budget" is May's
+ * whatever month you open it in, and that is what `per_instance` / `one_off`
+ * cadences are for. Without this test the fix reads as "pins don't work",
+ * which is a much bigger and wrong change.
+ */
+describe("a one-off budget still owns its declared window", () => {
+  test("a one_off budget pinned to a month counts only that month's charges", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const budgetId = await seedBudget(s, {
+      amountCents: 30_000,
+      year: thisYear,
+      month: 3,
+      cadence: "one_off",
+      type: "recurring", // legacy shape: cadence is what pins it, not `type`
+      label: "March mailing",
+    });
+    await seedCharge(s, { budgetId, amountCents: 4_000, postedAt: tsOn(thisYear, 3, 12) });
+    await seedCharge(s, { budgetId, amountCents: 8_000, postedAt: tsOn(thisYear, 6, 12) });
+
+    const detail = await s.as.query(api.budgetGlance.expenses, { budgetId });
+    // March's charge only — the June one is outside the budget's own window,
+    // and asking in August doesn't move that window to August.
+    expect(detail!.spentCents).toBe(4_000);
   });
 });
