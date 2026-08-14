@@ -193,37 +193,3 @@ export function groupSegments(
   }
   return segments;
 }
-
-/** What the explained-progress strip is allowed to say. */
-export type ExplainedStripMode = "progress" | "remaining" | "hidden";
-
-/**
- * THE HONESTY RULE FOR THE PROGRESS STRIP.
- *
- * `explainedProgress` describes the MATCH SET. That is correct, and it means
- * selecting `needs_explaining` — a filter whose whole predicate is "not yet
- * explained" — removes every explained row from the denominator, so the strip
- * reads "0 of N explained · $0 of $X" BY CONSTRUCTION. The figure is right and
- * the sentence is a lie: it reads as "nobody has explained anything", which is
- * exactly backwards from the state that produced it (the explained rows are
- * missing because they're DONE).
- *
- * This is pinned server-side on purpose (`reconcileGridConsolidation.test.ts`,
- * "selecting needs_explaining makes the meter read 0 of N"), so the fix belongs
- * here. It is a RELABEL, not a suppression: the same numbers describe the same
- * rows, but as what they actually are — the work left ("N still to explain ·
- * $X"), which is the true and useful reading of a match set that is by
- * definition entirely unexplained.
- *
- * `hidden` covers the other case a progress figure has nothing to say about: a
- * selection with nothing explainable in it at all (a transfers-only view, an
- * inflow-only search). "0 of 0" is not progress, it's noise.
- */
-export function explainedStripMode(
-  progress: { explainableCount: number },
-  activeFilters: readonly string[],
-): ExplainedStripMode {
-  if (progress.explainableCount <= 0) return "hidden";
-  if (activeFilters.includes("needs_explaining")) return "remaining";
-  return "progress";
-}

@@ -9063,6 +9063,26 @@ export const listReconcile = query({
        *  / already-counted payout deposit). Lets the grid explain a $0 total
        *  over a non-empty selection instead of looking broken. */
       neutralCount: v.number(),
+      /** ── HOW MANY OF THESE ROWS ARE CLOSED ───────────────────────────────
+       *
+       *  Over the same whole-scope match set as the money above, never the
+       *  page. Founder, on the deployed grid: "the goal would be to close
+       *  every row", and the figure the header used to carry instead was
+       *  "2 of 22 of this month's rows explained" — a progress bar for a
+       *  different question, over a window the grid was not actually showing.
+       *
+       *  NOT a facet count. `counts.reconciled` narrows with the active
+       *  filters and ignores the search, so it answers "how many closed rows
+       *  are in this book" rather than "how many of the rows in front of me
+       *  are done" — and the second is the one a number sitting beside In /
+       *  Out / Net is read as. Summed here off `selected` so it describes
+       *  exactly the population every other figure in this strip describes.
+       *
+       *  Excluded rows appear in NEITHER this count nor `matchedCount` — the
+       *  queue drops them before the sum, since an intentionally-excluded
+       *  charge was never inbox work. So the ratio's two halves describe one
+       *  population, which is exactly what a facet count could not promise. */
+      closedCount: v.number(),
     }),
     // HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS — "142 of 418
     // explained · $61k of $88k", over ANY filter rather than only a month.
@@ -9297,7 +9317,13 @@ export const listReconcile = query({
         counts: zero,
         matchedCount: 0,
         hasMore: false,
-        selectionTotals: { inCents: 0, outCents: 0, netCents: 0, neutralCount: 0 },
+        selectionTotals: {
+          inCents: 0,
+          outCents: 0,
+          netCents: 0,
+          neutralCount: 0,
+          closedCount: 0,
+        },
         explainedProgress: zeroExplainProgress(),
         searchIgnoredState: false,
         truncated: false,
@@ -9948,12 +9974,28 @@ export const listReconcile = query({
 
     // Totals over the WHOLE match set, before paging — see `selectionTotals`
     // in the returns validator for why this uses `signedBookCents`.
-    const selectionTotals = { inCents: 0, outCents: 0, netCents: 0, neutralCount: 0 };
+    const selectionTotals = {
+      inCents: 0,
+      outCents: 0,
+      netCents: 0,
+      neutralCount: 0,
+      closedCount: 0,
+    };
     for (const tr of selected) {
       const signed = signedBookCents(tr);
       if (signed > 0) selectionTotals.inCents += signed;
       else if (signed < 0) selectionTotals.outCents += -signed;
       else selectionTotals.neutralCount += 1;
+      // The same predicate the `reconciled` filter key uses, so this figure
+      // and that filter can never describe different rows.
+      //
+      // No `excluded` branch, deliberately: an intentionally-excluded charge
+      // is never part of the reconcile inbox in the first place (the scan
+      // drops it before this loop), so it is in neither this count nor
+      // `matchedCount` — and a ratio whose numerator and denominator agree
+      // about their population is the whole point of computing it here rather
+      // than reading a facet.
+      if (tr.status === "reconciled") selectionTotals.closedCount += 1;
     }
     selectionTotals.netCents = selectionTotals.inCents - selectionTotals.outCents;
 
