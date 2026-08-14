@@ -274,18 +274,39 @@ export type RowMarking<P extends string = string> =
   | { kind: "transfer" }
   | { kind: "payout"; processor: P }
   | { kind: "personal" }
-  | { kind: "repaid" };
+  | { kind: "repaid" }
+  | { kind: "gift"; coveredCents: number; fullyCovered: boolean };
 
 export function rowMarkings<P extends string>(row: {
   isMarkedTransfer: boolean;
   payoutProcessor: P | null;
   isPersonal: boolean;
   repaymentStatus: string | null;
+  /** Optional so every caller that predates gift matching — and every test
+   *  that builds the narrowest row that answers its own question — stays
+   *  valid. Absent means uncovered, which is the truth for such a row. */
+  amountCents?: number;
+  giftCoveredCents?: number;
 }): RowMarking<P>[] {
   const out: RowMarking<P>[] = [];
   if (row.isMarkedTransfer) out.push({ kind: "transfer" });
   else if (row.payoutProcessor != null) {
     out.push({ kind: "payout", processor: row.payoutProcessor });
+  }
+  // A credit the giving layer has already counted. Beside the markings above
+  // rather than instead of them, for the same reason `personal` is: it is a
+  // separate fact, and the pair is only ever contradictory if the data is.
+  //
+  // `fullyCovered` is the difference between "this row is settled" and "part
+  // of it is". A wire matched to only one gift of a split is NOT finished, and
+  // a badge that read the same either way would say it was.
+  const covered = row.giftCoveredCents ?? 0;
+  if (covered > 0) {
+    out.push({
+      kind: "gift",
+      coveredCents: covered,
+      fullyCovered: covered >= (row.amountCents ?? covered),
+    });
   }
   if (row.isPersonal) {
     out.push({ kind: row.repaymentStatus === "paid" ? "repaid" : "personal" });
@@ -316,6 +337,8 @@ export function showsMarkedColumn(
     payoutProcessor: string | null;
     isPersonal: boolean;
     repaymentStatus: string | null;
+    amountCents?: number;
+    giftCoveredCents?: number;
   }[],
 ): boolean {
   return rows.some((row) => rowMarkings(row).length > 0);

@@ -2045,7 +2045,15 @@ export type AutoExplainedKind =
   | "refunded_charge"
   | "refund_credit"
   | "repayment_credit"
-  | "interest";
+  | "interest"
+  // A bank credit a confirmed gift claims (`gifts.transactionId`). NOT
+  // returned by `autoExplainedKind` — that function is pure on the
+  // transaction, and this fact lives in another table — so the caller that
+  // has already resolved coverage (`lib/giftCoverage.ts`) passes the kind to
+  // `autoExplanationLine` itself. It belongs in this union anyway: the
+  // sentence is the same KIND of thing as the others, and keeping it here is
+  // what stops a second, divergent copy being written at the call site.
+  | "gift_credit";
 
 /** Increase's `source.category` values the classification keys on — POSITIVE
  *  markers stored verbatim at ingestion, never description-text inferences
@@ -2147,6 +2155,9 @@ export function autoExplanationLine(
   }
   if (kind === "interest") {
     return "Interest paid by the bank on the account balance. Not a gift and not a sale.";
+  }
+  if (kind === "gift_credit") {
+    return "A gift arriving in the bank — counted once, in the giving roll below. The deposit itself adds nothing on top, which is why it reads as zero here.";
   }
   return personalState === "personal_reimbursed"
     ? "Accidental personal charge — paid back."

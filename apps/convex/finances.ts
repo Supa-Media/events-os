@@ -100,6 +100,7 @@ import { readSandbox } from "./financeSettings";
 // worklist that padded itself with internal movements would be asking people
 // to explain transfers between the org's own accounts.
 import { signedBookCents } from "./lib/bookBalance";
+import { giftCoverageCents } from "./lib/giftCoverage";
 // Same gate as the publish console: this worklist reads exactly the rows that
 // console is about to publish.
 import { hasLedgerConsole, requireLedgerConsole } from "./lib/publicLedgerAccess";
@@ -382,6 +383,18 @@ const txnSummaryFields = {
     ...PAYOUT_PROCESSORS.map((p) => v.literal(p)),
     v.null(),
   ),
+  // Cents of this bank credit already counted as giving — the sum of the
+  // gifts pointing at it (`lib/giftCoverage.ts`), in ANY book. Zero for
+  // everything else.
+  //
+  // The grid has a badge for every other row that is accounted for somewhere
+  // else — Transfer, the processor payouts, Personal, Repaid — and had none
+  // for this one. So a founder's wire, correctly recorded as its gifts and
+  // correctly contributing nothing, still sat in Reconcile reading
+  // "Uncategorized · None · No receipt": indistinguishable from work nobody
+  // had done. The row belongs in the ledger (the bank really did receive it);
+  // what it needed was to say so.
+  giftCoveredCents: v.number(),
   // The card's last-4 (parsed out of the sync description), for display.
   cardLast4: v.union(v.string(), v.null()),
   // Receipt-reminder timeline stage ("none" until a day-1/day-3 nudge fires;
@@ -1112,7 +1125,7 @@ async function logRecodeAudit(
   }
 }
 
-function toTxnSummary(tr: Doc<"transactions">) {
+function toTxnSummary(tr: Doc<"transactions">, giftCoveredCents = 0) {
   return {
     id: tr._id,
     postedAt: tr.postedAt,
@@ -1137,6 +1150,10 @@ function toTxnSummary(tr: Doc<"transactions">) {
     payoutProcessor: tr.payoutProcessor ?? null,
     cardLast4: tr.cardLast4 ?? null,
     reminderStage: tr.receiptReminderStage ?? ("none" as const),
+    // Resolved by the caller where it matters (the Reconcile grid); 0 is the
+    // honest default everywhere else, since every non-credit row and every
+    // unmatched credit really is covered by nothing.
+    giftCoveredCents,
   };
 }
 
@@ -2418,7 +2435,8 @@ function tagAllocationForDash(
  * DATES" doc comment for why `startDate`/`createdAt` are never substituted).
  * Falls back to the budget's OWN stored `label`/type-word
  * (`budgetDisplayName`) when the budget carries no ref, OR the ref has
- * vanished (a deleted event/project doesn't cascade to its budget) — the
+ * vanished (a legacy orphan, from before `events.remove`/`projects.remove`
+ * cascaded to the budget) — the
  * fallback is never a raw "null"/blank card.
  *
  * The SINGLE resolver for every dashboard/tag/picker surface that shows a
@@ -2433,8 +2451,8 @@ function tagAllocationForDash(
  *
  * `live` (review fix — dead-link parity): true only when a ref was actually
  * resolved from a real event/project doc, false for the no-ref AND the
- * vanished-ref fallback alike (`events.remove` doesn't cascade to a linked
- * budget, so a deleted event's budget keeps a dead `scopeRefId` forever).
+ * vanished-ref fallback alike (a budget stranded before
+ * `releaseBudgetsForDeletedRef` existed keeps a dead `scopeRefId` forever).
  * Callers that offer an "open ref" link (`oneTimeBudgets`/`centralBudgets`
  * cards) gate `refKind`/`scopeRefId` on this — never show a link for a ref
  * that doesn't (or no longer) resolves, same rule `dashboardChapter`'s
@@ -2868,6 +2886,167 @@ export async function getBudgetForRef(
     .query("budgets")
     .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
     .first();
+}
+
+/**
+ * A ref (event/project) is being DELETED: take its budget with it, or refuse
+ * the deletion outright when money is already coded there.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ * Neither `events.remove` nor `projects.remove` used to touch the linked
+ * budget, so every deletion could strand one: a `refKind:"event"` budget whose
+ * `scopeRefId` resolves to nothing renders as its raw label with no event link
+ * (`budgetDetail.ts` reports `refLive:false`), counts toward nothing, and
+ * CANNOT BE DELETED FROM THE APP — `finances.deleteBudget` has no caller, so
+ * "Love Thy Neighbor 2026" ($6,000) took a one-off runner to remove. Three
+ * project-side orphans were sitting in production alongside it.
+ *
+ * ── WHY SPEND BLOCKS RATHER THAN UNLINKS ────────────────────────────────────
+ * `deleteBudget` unlinks linked transactions into Unattributed, which is the
+ * right call for a budget someone deliberately deleted. It is the WRONG call
+ * here, because deleting an event is not a decision about money, and the person
+ * tidying up an old event is usually not the person who can put that spend
+ * somewhere else. That same "Love Thy Neighbor 2026" carried a $325 receipted
+ * charge until days before it was cleaned up — had anyone deleted the event
+ * then, real coded spend would have quietly lost its home.
+ *
+ * So: empty → deleted with its ref; ANY attribution → the whole deletion is
+ * refused, and the message names the money and what to do about it (owner
+ * decision, 2026-08-14). The refusal is recoverable by recoding; the silent
+ * unlink would not have been noticed at all.
+ *
+ * BLOCKS ON ANY LINKED TRANSACTION, not just `isSpend` ones. An excluded,
+ * personal, or fully-refunded row is not spend, but it IS an attribution
+ * someone made, and it would be dropped just as silently. The reported total
+ * sums what is actually there rather than filtering, so the sentence can't
+ * claim "$0.00" about a row that plainly exists.
+ *
+ * Unions EVERY budget on the ref rather than taking the first (same reasoning
+ * as `actualsForRef`): a ref should only ever have one — the D8 invariant,
+ * enforced at creation by `createBudget`'s dedup guard — but legacy data can
+ * carry a duplicate from before that guard, and deleting one while leaving the
+ * other is how you mint the exact orphan this prevents.
+ *
+ * ── AUTHORIZATION: THE CALLER MUST BE ABLE TO DELETE THE BUDGET ITSELF ──────
+ * Both callers are gated on TENANCY ONLY — `events.remove` via `requireEvent`
+ * → `requireOwned` (chapter membership), `projects.remove` via the owner's
+ * manager chain. Neither is a finance gate, so without the check below any
+ * chapter member could permanently destroy an APPROVED budget by deleting its
+ * event. `by_ref` makes that worse rather than better: it finds a ref's budget
+ * at whatever level it currently lives, so after `transferEventScope(…,
+ * "central")` a chapter-side event delete would reach a CENTRAL-owned budget
+ * that `deleteBudget` itself would have required central reach to touch.
+ *
+ * A SUBSTANTIVE budget — nonzero amount, or a `budgetLines` plan breakdown —
+ * therefore demands exactly the rank `deleteBudget` demands, and refuses with
+ * `FORBIDDEN` otherwise. A $0 budget with no plan is deliberately NOT gated:
+ * that is the auto-created placeholder `backfillEventBudgets` (#125) minted for
+ * every budget-less event, which `removeEmptyAutoBudgets` already deletes as
+ * clutter with no gate at all. Gating it would mean an ordinary leader could no
+ * longer delete an ordinary event — a worse regression than the hole being
+ * closed. A CENTRAL-owned budget is gated regardless of amount: attributing an
+ * event to Central took central reach, so undoing it should too.
+ *
+ * ── AND IT IS LOGGED ────────────────────────────────────────────────────────
+ * `deleteBudget` writes a `budget_delete` row BEFORE cascading, precisely so
+ * the record outlives the doc. This path does the same, because it is now the
+ * likelier way a budget disappears. (Its sibling one-off runners can't —
+ * `logFinanceAudit` anchors on `requireUserId` and an `internalMutation` has no
+ * caller to resolve — but these two callers are ordinary authenticated
+ * mutations, so the excuse doesn't apply here.)
+ */
+export async function releaseBudgetsForDeletedRef(
+  ctx: MutationCtx,
+  refKind: BudgetRefKind,
+  scopeRefId: string,
+  entityWord: "event" | "project",
+): Promise<void> {
+  // NOTE: an index lookup on the LITERAL `refKind`, so a pre-v2 budget carrying
+  // only the legacy `scope` field (see `effectiveRefKind`) is not found here.
+  // Deliberate: `scope` is dead in production — 0 of 37 budgets carry it — and
+  // catching those rows would cost a chapter-wide scan on every event deletion.
+  // `sweepOrphanedRefBudgets`, which scans everything anyway, DOES resolve
+  // through `effectiveRefKind`, so a legacy row that ever did strand is still
+  // findable.
+  const budgets = await ctx.db
+    .query("budgets")
+    .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
+    .take(ROLLUP_SCAN_LIMIT);
+  if (budgets.length === 0) return;
+
+  const blocked: { name: string; count: number; totalCents: number }[] = [];
+  const substantive: Doc<"budgets">[] = [];
+  for (const budget of budgets) {
+    const linked = await ctx.db
+      .query("transactions")
+      .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (linked.length > 0) {
+      blocked.push({
+        name: budgetDisplayName(budget),
+        count: linked.length,
+        totalCents: linked.reduce((sum, tr) => sum + tr.amountCents, 0),
+      });
+    }
+    const planLine = await ctx.db
+      .query("budgetLines")
+      .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
+      .first();
+    if (budget.amountCents !== 0 || planLine || budget.chapterId === CENTRAL) {
+      substantive.push(budget);
+    }
+  }
+
+  // AUTHORIZATION BEFORE EXPLANATION. The finance gate runs first, so a caller
+  // who may not destroy this budget is told that — rather than being handed a
+  // reading of the chapter's books ("$325.00 is coded to…") on their way to
+  // being refused anyway. Only when there is something substantive to destroy;
+  // resolved ONCE for the whole set (a ref has one budget in practice) so a
+  // caller isn't re-authorized per row.
+  let actorPersonId: Id<"people"> | null = null;
+  if (substantive.length > 0) {
+    const callerChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const needsCentral = substantive.some((b) => b.chapterId === CENTRAL);
+    const access = needsCentral
+      ? await requireFinanceCentral(ctx, callerChapterId)
+      : await requireFinanceManager(ctx, callerChapterId);
+    actorPersonId = access.personId;
+  }
+
+  if (blocked.length > 0) {
+    const count = blocked.reduce((n, b) => n + b.count, 0);
+    const totalCents = blocked.reduce((sum, b) => sum + b.totalCents, 0);
+    const where =
+      blocked.length === 1
+        ? `its budget "${blocked[0].name}"`
+        : `its budgets (${blocked.map((b) => `"${b.name}"`).join(", ")})`;
+    throw new ConvexError({
+      code: "BUDGET_HAS_SPEND",
+      message:
+        `Can't delete this ${entityWord} — ${count} transaction${count === 1 ? "" : "s"} ` +
+        `totalling ${formatCents(totalCents)} ${count === 1 ? "is" : "are"} coded to ` +
+        `${where}. Deleting it would leave that money with nowhere to sit. Ask your ` +
+        `treasurer to recode that spending onto another budget (or to move the budget ` +
+        `itself), then delete this ${entityWord} — until then it has to stay.`,
+    });
+  }
+
+  for (const budget of budgets) {
+    // Logged before the cascade, while the row still exists to describe —
+    // `subjectId` is a plain string, so the entry outlives the deleted doc.
+    await logFinanceAudit(ctx, {
+      chapterId: budget.chapterId,
+      subjectType: "budget",
+      subjectId: budget._id,
+      action: "budget_delete",
+      actorPersonId,
+      field: "budget",
+      before: `${budgetDisplayName(budget)} (${formatCents(budget.amountCents)})`,
+      reason: `deleted with its ${entityWord}`,
+      amountCents: budget.amountCents,
+    });
+    await cascadeDeleteBudget(ctx, budget._id);
+  }
 }
 
 /**
@@ -5794,9 +5973,9 @@ const glanceBudgetRow = v.object({
   dateLabel: v.union(v.string(), v.null()),
   type: typeValidator,
   cadence: cadenceValidator,
-  // The linked event/project, but ONLY when the ref still resolves — a deleted
-  // event leaves its budget's `scopeRefId` dangling (`events.remove` doesn't
-  // cascade), and the glance card's "Open event" link must never 404. Both
+  // The linked event/project, but ONLY when the ref still resolves — a budget
+  // stranded before `releaseBudgetsForDeletedRef` existed keeps a dangling
+  // `scopeRefId`, and the glance card's "Open event" link must never 404. Both
   // fields are null together for a recurring bucket, an unlinked one-time
   // budget, and a dead ref alike, which is what lets the client gate the link
   // on `refKind != null` without a second `refLive` flag to remember.
@@ -7073,8 +7252,9 @@ export async function setBudgetAmount(
   const mirrorDollars = amountCents > 0 ? amountCents / 100 : undefined;
   if (refKind === "event") {
     const ev = await ctx.db.get(budget.scopeRefId as Id<"events">);
-    // A budget row can outlive its ref (a deleted event doesn't cascade to
-    // its budget) — nothing to mirror onto then; the row write above stands.
+    // A budget row can outlive its ref (a legacy orphan, stranded before
+    // `releaseBudgetsForDeletedRef` existed) — nothing to mirror onto then;
+    // the row write above stands.
     if (ev) await ctx.db.patch(ev._id, { budget: mirrorDollars });
   } else {
     const project = await ctx.db.get(budget.scopeRefId as Id<"projects">);
@@ -10706,7 +10886,13 @@ export const listReconcile = query({
     // is harmless (same id, same answer) and much cheaper than serializing.
     const rows: (typeof reconcileRow.type)[] = await Promise.all(
       page.map(async (tr) => ({
-        ...toTxnSummary(tr),
+        // One index read per CREDIT on the page (`giftCoverageCents` skips
+        // everything else without asking the database), so the grid can badge
+        // a credit the giving layer has already counted.
+        ...toTxnSummary(
+          tr,
+          tr.flow === "inflow" ? await giftCoverageCents(ctx, tr._id) : 0,
+        ),
         correctable: isTransactionCorrectable(tr),
         isReconstructed: isReconstructedHistory({
           externalId: tr.externalId ?? null,

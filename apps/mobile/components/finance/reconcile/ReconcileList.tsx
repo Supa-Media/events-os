@@ -174,6 +174,7 @@ import {
   DOCUMENTATION_EXEMPTION_LABELS,
   documentationExemptionLine,
   displayMerchantName,
+  formatCents,
   providerMerchantName,
   type DocumentationExemption,
 } from "@events-os/shared";
@@ -1592,6 +1593,24 @@ function ReconcileRow({
                   />
                 ) : marking.kind === "repaid" ? (
                   <Badge key="repaid" label="Repaid" tone="success" />
+                ) : marking.kind === "gift" ? (
+                  /* Counted at the giving layer, so this credit contributes
+                     nothing to book value — the same "accounted for somewhere
+                     else" fact Transfer and the payout badges carry. Without
+                     it the founder's wire, correctly recorded as its two
+                     gifts, sat here reading "Uncategorized · None · No
+                     receipt" and was indistinguishable from work nobody had
+                     done. A PARTLY matched deposit says so rather than
+                     claiming to be settled. */
+                  <Badge
+                    key="gift"
+                    label={
+                      marking.fullyCovered
+                        ? "Gift"
+                        : `Gift · ${formatCents(marking.coveredCents)} of it`
+                    }
+                    tone="success"
+                  />
                 ) : (
                   <Badge key="personal" label="Personal" tone="accent" />
                 ),

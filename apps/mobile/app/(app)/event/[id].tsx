@@ -504,16 +504,24 @@ export default function EventDetailScreen() {
     if (Platform.OS === "web") {
       if (
         typeof window !== "undefined" &&
-        window.confirm("Delete this event and all its items? This can't be undone.")
+        window.confirm(
+          "Delete this event, all its items, and its budget? This can't be undone. " +
+            "If any spending is already coded to the budget, the delete will be refused.",
+        )
       ) {
         void doDelete();
       }
       return;
     }
-    Alert.alert("Delete event?", "This removes the event and all its items.", [
-      { text: "Cancel", style: "cancel" },
-      { text: "Delete", style: "destructive", onPress: doDelete },
-    ]);
+    Alert.alert(
+      "Delete event?",
+      "This removes the event, all its items, and its budget. If any spending is " +
+        "already coded to the budget, the delete will be refused.",
+      [
+        { text: "Cancel", style: "cancel" },
+        { text: "Delete", style: "destructive", onPress: doDelete },
+      ],
+    );
   }
 
   // Enrich each tab into a plan-overview row: its phase/progress (already on the

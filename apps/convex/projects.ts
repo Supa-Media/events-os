@@ -33,6 +33,7 @@ import {
   assertIntegerCents,
   createProjectBudget,
   getBudgetForRef,
+  releaseBudgetsForDeletedRef,
   setBudgetAmount,
   syncBudgetIdentityForRef,
 } from "./finances";
@@ -962,6 +963,12 @@ export const remove = mutation({
       effOwner,
       "Only the owner's manager chain (or an admin) can delete a project.",
     );
+    // The project's budget goes with it, and coded spend refuses the whole
+    // delete — same rule and same reasoning as `events.remove`; see
+    // `finances.ts#releaseBudgetsForDeletedRef`. Runs before anything is
+    // destroyed.
+    await releaseBudgetsForDeletedRef(ctx, "project", projectId, "project");
+
     const children = await ctx.db
       .query("projects")
       .withIndex("by_parent", (q) => q.eq("parentProjectId", projectId))

@@ -302,9 +302,10 @@ export const expenses = query({
 
 /**
  * The budget's display name plus its ref — but ONLY when the ref still
- * resolves. A deleted event leaves its budget's `scopeRefId` dangling
- * (`events.remove` doesn't cascade), and a drop-down that offered "Open event"
- * for one would be a link that 404s; returning `null` for both fields is what
+ * resolves. A budget stranded before `releaseBudgetsForDeletedRef` existed
+ * keeps a dangling `scopeRefId` (the cascade prevents new ones; rows orphaned
+ * before it remain), and a drop-down that offered "Open event" for one would
+ * be a link that 404s; returning `null` for both fields is what
  * makes the client's link conditional correct by construction rather than by
  * remembering to check a separate `refLive` flag.
  */

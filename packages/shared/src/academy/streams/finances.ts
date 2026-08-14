@@ -2094,7 +2094,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reconcile at Ready:** every charge has a receipt, a category, and a budget link — the Ready filter's count climbs toward all of them.",
+          "**Everything closed:** every charge has a receipt, a category and a budget link, and has been marked Closed — the closed count in the Transactions header climbs toward the whole month.",
           "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on — the submission email is a nudge, not a substitute for actually clearing the queue.",
           "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready (it's a separate flag, not a status), so it's easy to close a month while real debts sit uncollected — check the Personal (unpaid) pill directly and nudge anyone who still owes. When someone's paid you back, confirm it on Cards → \"Personal to repay\" with \"Mark repaid\", or the debt stays open on the books no matter what landed in the account.",
           "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation — that trust IS the north-star metric this whole system is built around.",
@@ -2225,7 +2225,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "try_ready",
         criteria: [
-          "The month is closed — Reconcile at Ready, receipts chased, queue clear",
+          "The month is closed — every charge Closed, receipts chased, queue clear",
           "You have read the preview's disclosure lines and can defend each one out loud",
           "The \"everyone here is a volunteer\" line is still true — if anyone is now paid, it changes before you publish",
           "Someone other than you is available to review and publish it",
