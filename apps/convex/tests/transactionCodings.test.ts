@@ -566,6 +566,79 @@ describe("review loop", () => {
       }),
     ).rejects.toMatchObject({ data: { code: "REASON_REQUIRED" } });
   });
+
+  /**
+   * UNDO IS THE REAL REOPEN, not a UI illusion.
+   *
+   * `CodingWorkbenchPanel` shows a ~10s "Undo" after an approval. It calls
+   * `requestChanges` — this mutation, with the same note requirement and the
+   * same separation-of-duties rule — because approving PUBLISHES and an undo
+   * that only hid a button would leave the record approved while the person
+   * believed they had taken it back. These tests are the contract that
+   * affordance stands on: the row really returns to `changes_requested`, the
+   * denorm follows, and the coding is EDITABLE again (which is the whole
+   * point — an approved coding is immutable, so undo has to be a state
+   * change, not a cosmetic one).
+   */
+  test("undo right after approving reopens the coding for real", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s);
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    await reattributeAuthor(s, txnId);
+    await s.as.mutation(api.transactionCodings.approve, { transactionId: txnId });
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.codingState).toBe(
+      "approved",
+    );
+    // While it stands approved it is IMMUTABLE — the state undo exists to
+    // escape.
+    await expect(
+      s.as.mutation(api.transactionCodings.submit, {
+        transactionId: txnId,
+        expenseType: "general",
+        businessPurpose: GOOD_PURPOSE + " — corrected",
+      }),
+    ).rejects.toMatchObject({ data: { code: "CODING_APPROVED" } });
+
+    // THE UNDO.
+    await s.as.mutation(api.transactionCodings.requestChanges, {
+      transactionId: txnId,
+      reviewNote: "Undone by the approver moments after approving — reopened.",
+    });
+
+    const coding = await run(s.t, async (ctx) =>
+      (await ctx.db.query("transactionCodings").collect())[0],
+    );
+    expect(coding.status).toBe("changes_requested");
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.codingState).toBe(
+      "changes_requested",
+    );
+    // …and it really is editable again.
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE + " — corrected after the undo",
+    });
+    const reopened = await run(s.t, (ctx) => ctx.db.get(coding._id));
+    expect(reopened?.status).toBe("submitted");
+    expect(reopened?.businessPurpose).toContain("corrected after the undo");
+
+    // The whole round trip is audited — approve, then the reopen, with the
+    // undo's own reason. An undo is a decision, not an erasure.
+    const decisions = (
+      await run(s.t, (ctx) => ctx.db.query("financeAuditLog").collect())
+    ).filter((a) => a.action === "coding_decide");
+    expect(decisions.map((a) => a.after)).toEqual([
+      "Approved",
+      "Changes requested",
+    ]);
+    expect(decisions[1].reason).toContain("Undone by the approver");
+  });
 });
 
 describe("the CODING_REQUIRED gate and the Reconcile facets", () => {

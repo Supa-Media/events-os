@@ -730,6 +730,30 @@ describe("solo-operator self-approval — superuser only, and it leaves a trace"
       "Travel to NY to film the event with the team",
     );
   });
+
+  test("the solo operator can UNDO their own approval — the panel's 10s undo, in the one case it matters most", async () => {
+    // Separation of duties is NOT relaxed by the undo affordance: it calls
+    // `requestChanges`, which carries the same SoD rule as `approve` and the
+    // same solo-operator carve-out. That matters here because the founder
+    // grinding 400 rows IS the author and the approver, so if the carve-out
+    // didn't cover the reopen the undo would be dead exactly where it was
+    // designed to be used.
+    const s = await seatSetup({ email: "seyi@publicworship.life" });
+    const selfPersonId = await seedPerson(s, "Owner", { self: true });
+    const txnId = await seedTxn(s, s.chapterId);
+    await seedSubmittedCoding(s, txnId, s.chapterId, selfPersonId);
+
+    await s.as.mutation(api.transactionCodings.approve, { transactionId: txnId });
+    expect((await selfCodingRow(s, txnId))?.status).toBe("approved");
+
+    await s.as.mutation(api.transactionCodings.requestChanges, {
+      transactionId: txnId,
+      reviewNote: "Undone right after approving — reopening to fix the wording.",
+    });
+    const reopened = await selfCodingRow(s, txnId);
+    expect(reopened?.status).toBe("changes_requested");
+    expect(reopened?.reviewNote).toContain("Undone right after approving");
+  });
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
