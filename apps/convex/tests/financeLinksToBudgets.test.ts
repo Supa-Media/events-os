@@ -1004,6 +1004,14 @@ describe("dashboardChapter recentTransactions.codedTo is budget-first", () => {
     expect(card?.codedTo?.scopeRefId).toBeNull();
   });
 
+  // LEGACY DATA, not a state the app can still reach. `events.remove` now
+  // takes the linked budget with it, and REFUSES outright when spend is coded
+  // there (`finances.ts#releaseBudgetsForDeletedRef`) — so this exact fixture
+  // can no longer be built through the mutation, and the event row is deleted
+  // directly instead. The read-side guard stays because the orphans it
+  // describes were really in production: "Love Thy Neighbor 2026" plus three
+  // project-side ones, all created before the cascade existed. A budget
+  // pointing at a vanished ref must still never render a dead link.
   test("a deleted event's orphaned budget never offers a dead 'open ref' link (card or digest)", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -1025,9 +1033,10 @@ describe("dashboardChapter recentTransactions.codedTo is budget-first", () => {
       budgetId,
     });
 
-    // `events.remove` does NOT cascade to the linked budget — the budget's
-    // own `refKind`/`scopeRefId` stay stored, now pointing at nothing.
-    await s.as.mutation(api.events.remove, { eventId });
+    // The event row goes; the budget's own `refKind`/`scopeRefId` stay stored,
+    // now pointing at nothing. Direct delete rather than `events.remove` —
+    // see this test's header comment.
+    await run(t, (ctx) => ctx.db.delete(eventId));
 
     const dash = await s.as.query(api.finances.dashboardChapter, {});
     // Review fix (dead-link parity): the ONE-TIME BUDGET CARD (the row the

@@ -2823,6 +2823,93 @@ export async function getBudgetForRef(
 }
 
 /**
+ * A ref (event/project) is being DELETED: take its budget with it, or refuse
+ * the deletion outright when money is already coded there.
+ *
+ * ── WHY THIS EXISTS ─────────────────────────────────────────────────────────
+ * Neither `events.remove` nor `projects.remove` used to touch the linked
+ * budget, so every deletion could strand one: a `refKind:"event"` budget whose
+ * `scopeRefId` resolves to nothing renders as its raw label with no event link
+ * (`budgetDetail.ts` reports `refLive:false`), counts toward nothing, and
+ * CANNOT BE DELETED FROM THE APP — `finances.deleteBudget` has no caller, so
+ * "Love Thy Neighbor 2026" ($6,000) took a one-off runner to remove. Three
+ * project-side orphans were sitting in production alongside it.
+ *
+ * ── WHY SPEND BLOCKS RATHER THAN UNLINKS ────────────────────────────────────
+ * `deleteBudget` unlinks linked transactions into Unattributed, which is the
+ * right call for a budget someone deliberately deleted. It is the WRONG call
+ * here, because deleting an event is not a decision about money, and the person
+ * tidying up an old event is usually not the person who can put that spend
+ * somewhere else. That same "Love Thy Neighbor 2026" carried a $325 receipted
+ * charge until days before it was cleaned up — had anyone deleted the event
+ * then, real coded spend would have quietly lost its home.
+ *
+ * So: empty → deleted with its ref; ANY attribution → the whole deletion is
+ * refused, and the message names the money and what to do about it (owner
+ * decision, 2026-08-14). The refusal is recoverable by recoding; the silent
+ * unlink would not have been noticed at all.
+ *
+ * BLOCKS ON ANY LINKED TRANSACTION, not just `isSpend` ones. An excluded,
+ * personal, or fully-refunded row is not spend, but it IS an attribution
+ * someone made, and it would be dropped just as silently. The reported total
+ * sums what is actually there rather than filtering, so the sentence can't
+ * claim "$0.00" about a row that plainly exists.
+ *
+ * Unions EVERY budget on the ref rather than taking the first (same reasoning
+ * as `actualsForRef`): a ref should only ever have one — the D8 invariant,
+ * enforced at creation by `createBudget`'s dedup guard — but legacy data can
+ * carry a duplicate from before that guard, and deleting one while leaving the
+ * other is how you mint the exact orphan this prevents.
+ */
+export async function releaseBudgetsForDeletedRef(
+  ctx: MutationCtx,
+  refKind: BudgetRefKind,
+  scopeRefId: string,
+  entityWord: "event" | "project",
+): Promise<void> {
+  const budgets = await ctx.db
+    .query("budgets")
+    .withIndex("by_ref", (q) => q.eq("refKind", refKind).eq("scopeRefId", scopeRefId))
+    .take(ROLLUP_SCAN_LIMIT);
+  if (budgets.length === 0) return;
+
+  const blocked: { name: string; count: number; totalCents: number }[] = [];
+  for (const budget of budgets) {
+    const linked = await ctx.db
+      .query("transactions")
+      .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
+      .take(ROLLUP_SCAN_LIMIT);
+    if (linked.length > 0) {
+      blocked.push({
+        name: budgetDisplayName(budget),
+        count: linked.length,
+        totalCents: linked.reduce((sum, tr) => sum + tr.amountCents, 0),
+      });
+    }
+  }
+
+  if (blocked.length > 0) {
+    const count = blocked.reduce((n, b) => n + b.count, 0);
+    const totalCents = blocked.reduce((sum, b) => sum + b.totalCents, 0);
+    const where =
+      blocked.length === 1
+        ? `its budget "${blocked[0].name}"`
+        : `its budgets (${blocked.map((b) => `"${b.name}"`).join(", ")})`;
+    throw new ConvexError({
+      code: "BUDGET_HAS_SPEND",
+      message:
+        `Can't delete this ${entityWord} — ${count} transaction${count === 1 ? "" : "s"} ` +
+        `totalling ${formatCents(totalCents)} ${count === 1 ? "is" : "are"} coded to ` +
+        `${where}. Deleting it would leave that money with nowhere to sit. Ask your ` +
+        `treasurer to recode that spending onto another budget (or to move the budget ` +
+        `itself), then delete this ${entityWord} — until then it has to stay.`,
+    });
+  }
+
+  for (const budget of budgets) await cascadeDeleteBudget(ctx, budget._id);
+}
+
+/**
  * WRITE-THROUGH identity sync (budget identity & dates, item 2): when a
  * linked event/project's NAME or PERIOD-DEFINING DATE changes, repoint the
  * budget's STORED `label`/`year`/`month` at the entity's new identity — a

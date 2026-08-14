@@ -63,6 +63,7 @@ import {
   assertIntegerCents,
   createEventBudget,
   getBudgetForRef,
+  releaseBudgetsForDeletedRef,
   setBudgetAmount,
   syncBudgetIdentityForRef,
 } from "./finances";
@@ -1379,11 +1380,22 @@ export const setStatus = mutation({
   },
 });
 
-/** Delete an event and all its columns, items, and role assignments. */
+/**
+ * Delete an event and all its columns, items, and role assignments — AND the
+ * budget linked to it, which is refused outright if money is already coded
+ * there. See `finances.ts#releaseBudgetsForDeletedRef` for why the budget goes
+ * with the event (a budget whose event is gone can't be deleted from the app at
+ * all) and why spend blocks instead of unlinking.
+ */
 export const remove = mutation({
   args: { eventId: v.id("events") },
   handler: async (ctx, { eventId }) => {
     await requireEvent(ctx, eventId);
+
+    // FIRST, before anything is destroyed: this throws on coded spend. The
+    // mutation is transactional so a later throw would roll the cascade back
+    // anyway, but a guard that runs before the damage is easier to trust.
+    await releaseBudgetsForDeletedRef(ctx, "event", eventId, "event");
 
     const items = await ctx.db
       .query("eventItems")
