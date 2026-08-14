@@ -1060,7 +1060,15 @@ export const personalRepayments = defineTable({
   // transfer_id`) back to the repayment whose ACH debit it settles, so
   // `increaseLedger.applyIncreaseAccountTransaction` can skip it — the
   // offsetting credit already posts as `source:"repayment"` at settle.
-  .index("by_increase_ref", ["increaseRef"]);
+  .index("by_increase_ref", ["increaseRef"])
+  // Find the repayments one Stripe Checkout session is holding, so a refused
+  // bank debit or an abandoned session can release exactly those rows back to
+  // outstanding (`cards.releaseRepaymentCheckout`). NOT unique — one bundled
+  // session settles several charges at once, which is the whole point of the
+  // multi-select. The webhook that settles a session reads its ids from Stripe
+  // metadata instead; this index is for the failure paths, where the only
+  // thing the event carries is the session id.
+  .index("by_stripe_session", ["stripeCheckoutSessionId"]);
 
 // ── Payouts (ACH from the chapter's Increase account) ────────────────────────
 /** An ACH payout originating from the chapter's Increase account. Idempotency-

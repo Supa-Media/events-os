@@ -3274,27 +3274,31 @@ export const myPersonalRepayments = query({
  * A manager paying on a member's behalf uses the checkout path's own OR-gate;
  * this read deliberately answers only for yourself.
  */
+const railQuoteValidator = v.object({
+  /** What covering Stripe's cut adds on this rail. */
+  feeCents: v.number(),
+  /** What the payer is charged: the debt plus the fee. */
+  chargeCents: v.number(),
+  /** "2.9% + $0.30" / "0.8% capped at $5.00" — the rate as a person reads it. */
+  rateLabel: v.union(v.string(), v.null()),
+});
+
 export const quoteRepayment = query({
   args: { repaymentIds: v.array(v.id("personalRepayments")) },
   returns: v.object({
     /** How many of the submitted ids were actually billable. */
     count: v.number(),
-    /** The debt — what the org nets. */
+    /** The debt — what the org nets, whichever rail is used. */
     totalCents: v.number(),
-    /** What covering Stripe's cut adds. */
-    feeCents: v.number(),
-    /** What the card is charged: `totalCents + feeCents`. */
-    chargeCents: v.number(),
-    feeRateLabel: v.union(v.string(), v.null()),
+    /** BOTH rails, always. The payer's page shows them side by side, and a
+     *  quote-per-toggle would mean a round-trip (and a flash of stale
+     *  arithmetic) every time they compare. */
+    card: railQuoteValidator,
+    ach: railQuoteValidator,
   }),
   handler: async (ctx, { repaymentIds }) => {
-    const none = {
-      count: 0,
-      totalCents: 0,
-      feeCents: 0,
-      chargeCents: 0,
-      feeRateLabel: null,
-    };
+    const noRail = { feeCents: 0, chargeCents: 0, rateLabel: null };
+    const none = { count: 0, totalCents: 0, card: noRail, ach: noRail };
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return none;
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -3310,20 +3314,43 @@ export const quoteRepayment = query({
       if (!repayment) continue;
       if (repayment.chapterId !== chapterId) continue;
       if (repayment.payerPersonId !== person._id) continue;
-      if (repayment.status === "paid" || repayment.creditTransactionId) continue;
+      if (!isBillableRepayment(repayment)) continue;
       totalCents += repayment.amountCents;
       count += 1;
     }
-    const { feeCents, feeRateLabel } = await repaymentFeeQuote(ctx, totalCents);
     return {
       count,
       totalCents,
-      feeCents,
-      chargeCents: totalCents + feeCents,
-      feeRateLabel,
+      card: await railQuote(ctx, totalCents, "card"),
+      ach: await railQuote(ctx, totalCents, "ach"),
     };
   },
 });
+
+async function railQuote(
+  ctx: QueryCtx,
+  totalCents: number,
+  method: RepaymentMethod,
+): Promise<{ feeCents: number; chargeCents: number; rateLabel: string | null }> {
+  const { feeCents, feeRateLabel } = await repaymentFeeQuote(ctx, totalCents, method);
+  return { feeCents, chargeCents: totalCents + feeCents, rateLabel: feeRateLabel };
+}
+
+/**
+ * Can this repayment be put into a NEW checkout?
+ *
+ * Settled ones obviously not. `processing` ones also not, and that is the
+ * clause worth having a name for: a bank debit takes about four business days,
+ * during which the debt is genuinely still outstanding — so every "do they owe
+ * this?" check says yes — while a SECOND checkout for it would collect the
+ * money twice. "Outstanding" and "billable" are different questions, and
+ * conflating them is how you double-charge a volunteer.
+ */
+function isBillableRepayment(repayment: Doc<"personalRepayments">): boolean {
+  if (repayment.status === "paid" || repayment.creditTransactionId) return false;
+  if (repayment.status === "processing") return false;
+  return true;
+}
 
 /**
  * Chapter-scope aggregate of OUTSTANDING (not yet paid) personal-charge
@@ -3515,26 +3542,39 @@ async function settleRepayment(
   return (await ctx.db.get(repayment._id))!;
 }
 
-/**
- * Confirm a personal repayment was RECEIVED and post the offsetting
- * `flow:"transfer"` credit (the working / degraded path, mirroring
- * `increase.markPaidManually`). MANAGER-ONLY on purpose: this is the manual
- * "the money arrived" confirmation, NOT self-serve — a member must not be able
- * to flag their own charge personal and then zero it out here without actually
- * paying. The member's own path is `initiateRepayment` (a real card/ACH charge).
- * IDEMPOTENT: a re-call posts no second credit.
- */
-export const markRepaymentPaid = mutation({
-  args: { repaymentId: v.id("personalRepayments") },
-  returns: repaymentSummaryValidator,
-  handler: async (ctx, { repaymentId }): Promise<RepaymentSummary> => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
-    const repayment = await ctx.db.get(repaymentId);
-    await requireInChapter(ctx, chapterId, repayment, "Repayment");
-    return toRepaymentSummary(await settleRepayment(ctx, repayment!));
-  },
-});
+// ── THERE IS NO MANUAL "MARK REPAID" (founder, 2026-08-14) ───────────────────
+// "We should only mark repaid when you actually pay through the platform. No
+// manual mark as paid."
+//
+// `markRepaymentPaid` used to live here: a manager-only mutation that posted
+// the offsetting credit on a human's say-so, for the case where somebody
+// handed over cash or sent a Venmo. It is deleted, and the deletion is the
+// feature. Three things it was quietly costing:
+//
+//  · A DOUBLE-PAY RACE. A manager clicking it while the payer sat in Stripe
+//    Checkout meant the payer paid for a debt that no longer existed. The
+//    webhook could only log the discrepancy loudly and leave a human to sort
+//    out a refund. With settlement reachable ONLY through a rail this app
+//    itself started, that race cannot be constructed.
+//  · AN UNPROVABLE LEDGER. A `paid` repayment now always has a payment behind
+//    it — a Stripe PaymentIntent or an Increase transfer — so "was this
+//    actually repaid?" is answerable from the row rather than from whoever
+//    remembers the conversation. That is the same standard the public ledger
+//    is published against.
+//  · A TEMPTING SHORTCUT. It was the fastest way to make an awkward row go
+//    away, which is exactly what you do not want the fastest way to be.
+//
+// What replaces it depends on which thing is true:
+//  · They owe it → they pay through the app (`/finances/repayments`), by card
+//    or by bank debit. That is the only path to `paid`.
+//  · It was never a personal charge → `unflagPersonalCharge` reverses the
+//    flag and the charge goes back to being org spend, which is the honest
+//    correction for a mis-flag and still refuses once a repayment has settled.
+//
+// A charge somebody genuinely paid back in cash last month has no button. That
+// is deliberate: the answer is to run it through the app, or to unflag it and
+// record the cash as its own ledger entry — not to assert a settlement the
+// books cannot show.
 
 // ── linkRepaymentBankAccount (action, the payer) — ACH destination capture ───
 
@@ -3859,7 +3899,10 @@ interface RepaymentCheckoutLine {
  * `financeRepaymentFee.test.ts` asserts exactly this.
  */
 export const prepareRepaymentCheckout = internalMutation({
-  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    method: repaymentMethodValidator,
+  },
   returns: v.object({
     lines: v.array(
       v.object({
@@ -3870,19 +3913,24 @@ export const prepareRepaymentCheckout = internalMutation({
     ),
     /** The debt itself — what the org must NET. */
     totalCents: v.number(),
-    /** What covering Stripe's cut adds on top. 0 when no card rail is
-     *  configured, in which case the org simply eats the fee as it did
-     *  before — never a blocked repayment over a missing rate row. */
+    /** What covering Stripe's cut adds on top, on the CHOSEN rail. 0 when
+     *  that rail has no configured rate, in which case the org simply eats
+     *  the fee as it did before — never a blocked repayment over a missing
+     *  rate row. */
     feeCents: v.number(),
-    /** `totalCents + feeCents` — what Stripe actually charges the card. */
+    /** `totalCents + feeCents` — what Stripe actually charges. */
     chargeCents: v.number(),
-    /** "2.9% + $0.30" — the rate as a person reads it, for the line item's
-     *  own label so the payer sees WHY, not just how much. */
+    /** "2.9% + $0.30" / "0.8% capped at $5.00" — the rate as a person reads
+     *  it, for the fee line item's own label so the payer sees WHY on
+     *  Stripe's page, not just how much. */
     feeRateLabel: v.union(v.string(), v.null()),
+    /** Stripe Checkout's `payment_method_types`, or null to take Stripe's
+     *  default (card + whatever wallets the account accepts). */
+    paymentMethodTypes: v.union(v.array(v.string()), v.null()),
     payerEmail: v.union(v.string(), v.null()),
     payerName: v.string(),
   }),
-  handler: async (ctx, { repaymentIds }) => {
+  handler: async (ctx, { repaymentIds, method }) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const access = await getFinanceRole(ctx, chapterId);
 
@@ -3900,7 +3948,11 @@ export const prepareRepaymentCheckout = internalMutation({
         });
       }
       payerPersonId = repayment.payerPersonId;
-      if (repayment.status === "paid" || repayment.creditTransactionId) continue;
+      // Skips settled rows AND ones with a bank debit already in flight — see
+      // `isBillableRepayment`. A stale button click that raced another
+      // checkout degrades to "bill whatever is still billable" rather than
+      // collecting the same debt twice.
+      if (!isBillableRepayment(repayment)) continue;
       const txn = await ctx.db.get(repayment.transactionId);
       lines.push({
         repaymentId: repayment._id,
@@ -3916,13 +3968,21 @@ export const prepareRepaymentCheckout = internalMutation({
     }
     const payer = payerPersonId ? await ctx.db.get(payerPersonId) : null;
     const totalCents = lines.reduce((sum, l) => sum + l.amountCents, 0);
-    const { feeCents, feeRateLabel } = await repaymentFeeQuote(ctx, totalCents);
+    const { feeCents, feeRateLabel } = await repaymentFeeQuote(ctx, totalCents, method);
+    // The chosen method is stamped on every row NOW, not at settlement: it is
+    // what the payer picked, and a repayment whose stored `method` still said
+    // "card" while a bank debit cleared against it would misdescribe the one
+    // record anybody looks at afterwards.
+    for (const line of lines) {
+      await ctx.db.patch(line.repaymentId, { method, updatedAt: Date.now() });
+    }
     return {
       lines,
       totalCents,
       feeCents,
       chargeCents: totalCents + feeCents,
       feeRateLabel,
+      paymentMethodTypes: stripePaymentMethodTypes(method),
       payerEmail: payer?.pwEmail ?? payer?.email ?? null,
       payerName: payer?.name ?? "Repayment",
     };
@@ -3930,26 +3990,33 @@ export const prepareRepaymentCheckout = internalMutation({
 });
 
 /**
- * What covering Stripe's card fee adds to a repayment of `intendedCents`, and
- * the rate that produced it — the ONE place that arithmetic happens, shared by
- * the checkout preparer above and the `quoteRepayment` read the payer's page
- * shows before they commit. Two implementations of this would agree right up
- * until someone edited the fee schedule.
+ * What covering Stripe's fee adds to a repayment of `intendedCents`, and the
+ * rate that produced it — the ONE place that arithmetic happens, shared by the
+ * checkout preparer above and the `quoteRepayment` read the payer's page shows
+ * before they commit. Two implementations of this would agree right up until
+ * someone edited the fee schedule.
  *
- * Degrades to `{ feeCents: 0 }` when no `stripe:card` rail resolves at all.
- * That is deliberate: a missing rate row must not block a member from paying
- * the org back, and eating the fee is exactly the behavior that shipped before
- * this feature existed. It is a quiet, recoverable loss, not a broken screen.
+ * WHICH RAIL MATTERS A LOT. Card is 2.9% + 30¢; bank debit is 0.8% capped at
+ * $5.00. On a $248 charge that is $7.49 against $1.98, and since 2026-08-14
+ * the fee is the PAYER'S — a volunteer correcting their own mistake should not
+ * be quietly routed onto the expensive rail because it was the only one built.
+ *
+ * Degrades to `{ feeCents: 0 }` when the rail doesn't resolve at all. That is
+ * deliberate: a missing rate row must not block a member from paying the org
+ * back, and eating the fee is exactly the behavior that shipped before fee
+ * coverage existed. A quiet, recoverable loss, not a broken screen.
  */
 async function repaymentFeeQuote(
   ctx: QueryCtx,
   intendedCents: number,
+  method: RepaymentMethod,
 ): Promise<{ feeCents: number; feeRateLabel: string | null }> {
   if (intendedCents <= 0) return { feeCents: 0, feeRateLabel: null };
-  const rate = await resolveFeeRate(ctx, "stripe", "card");
+  const feeMethod = feeMethodFor(method);
+  const rate = await resolveFeeRate(ctx, "stripe", feeMethod);
   if (!rate) {
     console.warn(
-      "[cards] repaymentFeeQuote: no stripe:card rail resolved — billing the " +
+      `[cards] repaymentFeeQuote: no stripe:${feeMethod} rail resolved — billing the ` +
         "repayment at face value and absorbing the processing fee.",
     );
     return { feeCents: 0, feeRateLabel: null };
@@ -3958,6 +4025,30 @@ async function repaymentFeeQuote(
     feeCents: feeCoverageCents(intendedCents, rate),
     feeRateLabel: describeFeeRate(rate),
   };
+}
+
+/**
+ * `personalRepayments.method` → the fee schedule's rail name. Two vocabularies
+ * that mean the same thing and are NOT the same string: `"ach"` is what this
+ * codebase has stored on repayments since the Increase rail, `"ach_debit"` is
+ * what `FEE_METHODS` calls it (and what Stripe's own docs call the product).
+ * Mapping in one function beats a `method === "ach" ? "ach_debit" : "card"`
+ * at each of the four call sites that need it.
+ */
+function feeMethodFor(method: RepaymentMethod): "card" | "ach_debit" {
+  return method === "ach" ? "ach_debit" : "card";
+}
+
+/**
+ * Stripe Checkout's `payment_method_types` for a repayment method.
+ *
+ * Card sessions deliberately pass NOTHING (Stripe's default), matching
+ * `createCheckout`/`createDonationCheckout` — pinning the list would silently
+ * switch off wallets (Apple/Google Pay) that the account already accepts and
+ * that cost the same as a card.
+ */
+function stripePaymentMethodTypes(method: RepaymentMethod): string[] | null {
+  return method === "ach" ? ["us_bank_account"] : null;
 }
 
 /** Stamp the Checkout Session id onto every repayment it bundled — best
@@ -3975,6 +4066,97 @@ export const attachRepaymentStripeSession = internalMutation({
       if (!repayment || repayment.status === "paid") continue;
       await ctx.db.patch(id, {
         stripeCheckoutSessionId: sessionId,
+        updatedAt: Date.now(),
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * A BANK DEBIT IS ON ITS WAY — move every repayment in the session to
+ * `processing`.
+ *
+ * Called from `http.ts` when `checkout.session.completed` arrives with the
+ * money NOT yet settled (`checkoutSessionHasSettled` false), which today means
+ * ACH direct debit: the payer authorised it, and about four business days
+ * later one of `async_payment_succeeded` / `async_payment_failed` says what
+ * actually happened.
+ *
+ * The state exists for exactly one reason. Left `pending`, the payer opens
+ * their repayments page the next morning, reads "you owe $248", and pays it
+ * again — a real double-collection caused by telling the truth badly. Marked
+ * `paid`, the org would be clearing a debt against money that may never
+ * arrive, which is the failure the giving side already refuses to ship. So:
+ * still outstanding for every accounting purpose (`personalExpenseState`,
+ * `isRepaymentOutstanding`), not billable again (`isBillableRepayment`), and
+ * visibly in flight on screen.
+ *
+ * No credit is posted here. Nothing about the ledger moves until the money
+ * does. Idempotent, and it never touches a repayment that has already settled
+ * through another rail.
+ */
+export const markRepaymentsProcessing = internalMutation({
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    sessionId: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { repaymentIds, sessionId }) => {
+    for (const id of repaymentIds) {
+      const repayment = await ctx.db.get(id);
+      if (!repayment) continue;
+      if (repayment.status === "paid" || repayment.creditTransactionId) continue;
+      await ctx.db.patch(id, {
+        status: "processing",
+        stripeCheckoutSessionId: sessionId,
+        updatedAt: Date.now(),
+      });
+    }
+    return null;
+  },
+});
+
+/**
+ * NO MONEY IS COMING FROM THIS SESSION — put the debt back where it was.
+ *
+ * Shared by `checkout.session.async_payment_failed` (the bank refused the
+ * debit) and `checkout.session.expired` (the payer walked away), mirroring
+ * `http.ts#cancelCheckoutSession`'s own pairing of those two events: both mean
+ * the same thing, and writing them as two paths is how they drift.
+ *
+ * A REFUSED debit lands on `failed`, not back on `pending`. The distinction is
+ * the payer's, not the ledger's — `personalExpenseState` reads both as unpaid
+ * and `isRepaymentOutstanding` covers both — but "your bank refused this"
+ * needs saying, and a row that quietly reverted to `pending` would leave
+ * somebody wondering why a payment they made never happened. An EXPIRED
+ * session never charged anything, so it goes back to `pending` with nothing
+ * to report.
+ *
+ * Scoped by `stripeCheckoutSessionId`: only rows this exact session is holding
+ * are released. A repayment that was re-checked-out under a newer session in
+ * the meantime keeps that newer session's state, so a late failure event for
+ * an abandoned session cannot knock a live payment back to pending.
+ *
+ * Never touches a settled repayment. Idempotent.
+ */
+export const releaseRepaymentCheckout = internalMutation({
+  args: {
+    sessionId: v.string(),
+    outcome: v.union(v.literal("failed"), v.literal("expired")),
+  },
+  returns: v.null(),
+  handler: async (ctx, { sessionId, outcome }) => {
+    const held = await ctx.db
+      .query("personalRepayments")
+      .withIndex("by_stripe_session", (q) =>
+        q.eq("stripeCheckoutSessionId", sessionId),
+      )
+      .take(CHAPTER_REPAYMENTS_LIMIT);
+    for (const repayment of held) {
+      if (repayment.status === "paid" || repayment.creditTransactionId) continue;
+      await ctx.db.patch(repayment._id, {
+        status: outcome === "failed" ? "failed" : "pending",
         updatedAt: Date.now(),
       });
     }
