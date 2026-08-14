@@ -78,11 +78,12 @@ import {
   Platform,
   useWindowDimensions,
 } from "react-native";
-import { useQuery, useMutation } from "convex/react";
+import { useAction, useQuery, useMutation } from "convex/react";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
+  Badge,
   Button,
   EmptyState,
   FilterSelect,
@@ -116,6 +117,18 @@ import {
   type BookView,
 } from "../../../components/finance/reconcile/ViewMenu";
 import { GroupByControl } from "../../../components/finance/reconcile/GroupByControl";
+// The SAME four constants the publish console's "Explain them now" link and the
+// `/finances/explain` redirect build their URL from — "By month" is three axes
+// of this grid, and all three surfaces read one definition of them.
+import { UNATTRIBUTED_GROUP_KEY } from "../../../components/finance/reconcile/gridView";
+import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
+import type { SingleBookScope } from "../../../components/finance/bookScope";
+import {
+  BY_MONTH_DIR,
+  BY_MONTH_FILTER,
+  BY_MONTH_GROUP,
+  BY_MONTH_SORT,
+} from "../../../components/finance/byMonthHref";
 import { ExplainedProgressStrip } from "../../../components/finance/reconcile/ExplainedProgressStrip";
 import {
   DEFAULT_SORT_DIR,
@@ -149,6 +162,9 @@ import {
   displayMerchantName,
   formatCents,
   parseReconcileFilters,
+  parsePeriodKey,
+  PUBLICATION_STATUS_LABELS,
+  type PublicationStatus,
   serializeReconcileFilters,
   type PayoutProcessor,
   type ReconcileFilterKey,
@@ -408,10 +424,32 @@ function ReconcileGrid() {
     parsedMonth != null && !Number.isNaN(parsedMonth) ? parsedMonth : undefined;
   const periodMode: "month" | "ytd" = params.period === "ytd" ? "ytd" : "month";
   const hasPeriodScope = periodYear != null;
-  // Fixed for the life of this deep-linked visit — there's no picker for it
-  // here (unlike the dashboards' own `MonthStepper`/`PeriodSwitch`); "Clear"
-  // drops back to the ordinary, unscoped Reconcile view.
+  // "Clear" drops back to the ordinary, unscoped Reconcile view.
   const clearPeriodScope = () => router.replace("/finances/reconcile" as never);
+  // ── STEP THE MONTH ────────────────────────────────────────────────────────
+  // The period scope used to be fixed for the life of a deep-linked visit, on
+  // the reasoning that this screen is not a dashboard and has no period picker.
+  // That was true right up until the Explain screen was retired into this grid:
+  // working a month is a LOOP — finish March, go to April — and the whole
+  // 2024-25 backfill is eighteen turns of it. Without a stepper, "next month"
+  // meant hand-editing a query string, and the workflow the Explain screen
+  // existed to serve would have been dropped rather than absorbed.
+  //
+  // Deliberately NOT a full period picker: it only appears on a MONTH-scoped
+  // view (a `ytd` or whole-year scope has no next month to step to), and it
+  // moves the one axis it can move honestly. Everything else about the scope —
+  // the books, the filters, the search — is left exactly where it was, so
+  // stepping is the same question asked about a different month.
+  const canStepMonth = hasPeriodScope && periodMonth != null && periodMode === "month";
+  const stepMonth = (delta: 1 | -1) => {
+    if (!canStepMonth) return;
+    const y = periodYear as number;
+    const m = periodMonth as number;
+    const next = m + delta;
+    const nextYear = next < 1 ? y - 1 : next > 12 ? y + 1 : y;
+    const nextMonth = next < 1 ? 12 : next > 12 ? 1 : next;
+    router.setParams({ year: String(nextYear), month: String(nextMonth) });
+  };
 
   // WP-2.1: central-seat holders can switch which BOOKS this grid reads.
   // `mySeats` resolves their real seats; a central seat unlocks the selector
@@ -579,17 +617,183 @@ function ReconcileGrid() {
   // report. One authority, no drift.
   const isManager = reconcile?.viewerIsManager ?? false;
 
-  // The Chase-receipts destination, carrying this grid's CURRENT scope as
-  // route params — mirrors the args object above (minus `filter`, which
-  // `receipt-chase.tsx` has no use for) so `receiptChase` resolves the exact
-  // same bucket `listReconcile` just counted for the missing_receipt pill.
-  const chaseHref = allBooksScope
-    ? "/finances/receipt-chase?scope=all"
-    : centralScope
-      ? "/finances/receipt-chase?scope=central"
-      : targetChapterId
-        ? `/finances/receipt-chase?chapterId=${targetChapterId}`
-        : "/finances/receipt-chase";
+  // ── THE RECEIPT CHASE, IN THE GRID ─────────────────────────────────────────
+  // Founder, on the deployed build: "Chase receipts — I actually do like the
+  // way it looks because it does it by person, and this is actually very
+  // helpful. So maybe keep that. But why can't I see the header?" So the
+  // presentation moves onto the person bands and the whole of the nudge
+  // machinery moves with it. All five pieces, none of them softened:
+  //
+  //  1. MANAGER-ONLY, not any finance seat. `receipt-chase.tsx` derived this
+  //     from `financeRoles.mySeats` (`role === "manager"`); the grid uses
+  //     `listReconcile.viewerIsManager`, which is the SAME
+  //     `getFinanceRole(...).isManager` the server gates the action on — and
+  //     is strictly better, because the local derivation missed a
+  //     CENTRAL-scope manager (an ED / Financial Manager holds no chapter
+  //     seat and is manager-everywhere server-side).
+  //  2. THE 24h RATE LIMIT, rendered. `getManualNudgeStatus` answers who has
+  //     already been nudged today; their button reads "Nudged today" and is
+  //     disabled rather than silently no-op'ing.
+  //  3. "REMIND ALL", the page-level action.
+  //  4. SCOPE, threaded. The nudge takes the same `scope`/`chapterId` pair the
+  //     grid is currently reading, so a central desk nudges the book on
+  //     screen and never falls back to the caller's own chapter.
+  //  5. The per-row `outstanding` label, which now rides on `reconcileRow`.
+  //
+  // Hiding the buttons is a UX nicety, never the gate: `sendReceiptNudge` and
+  // `getManualNudgeStatus` re-assert manager rank AND the same scope branch
+  // server-side.
+  //
+  // The nudge args mirror the grid's own book resolution exactly — one
+  // derivation of "which book is on screen", so the list, the count and the
+  // email cannot point at three different places.
+  //
+  // ONE BOOK AT A TIME, AND SAID OUT LOUD. `cards.getManualNudgeTargets` reads
+  // a SINGLE book (`scope: Id<"chapters"> | "central"`) — it has no "all"
+  // branch, and giving it one is a change to a manager-gated WRITE path, not a
+  // rendering decision. So in the merged all-books queue the buttons are
+  // withheld and the reason is printed, rather than nudging a narrower set than
+  // the bands on screen describe.
+  //
+  // That is deliberately NOT what the screen it replaces did: `receipt-chase.tsx`
+  // silently degraded `?scope=all` to the caller's own chapter for BOTH the list
+  // and the nudge, so a dual-hat FM looking at "everyone who owes a receipt"
+  // was in fact looking at, and reminding, one book. Withholding a button beats
+  // firing a narrower one than the page implies.
+  const nudgeArgs = useMemo(
+    () =>
+      centralScope
+        ? { scope: "central" as const }
+        : targetChapterId
+          ? { chapterId: targetChapterId }
+          : {},
+    [centralScope, targetChapterId],
+  );
+  /** Can this view nudge at all? Manager rank AND a single book — see
+   *  `nudgeArgs`. */
+  const canNudgeHere = isManager && !allBooksScope;
+  // Only while actually grouped by person — a month band has nobody to nudge,
+  // and probing the rate limit for a view that shows no buttons is a query per
+  // keystroke for nothing.
+  const chasingByPerson = groupBy === "person";
+  const nudgeablePersonIds = useMemo(
+    () =>
+      chasingByPerson && canNudgeHere
+        ? (reconcile?.groups ?? [])
+            .map((g) => g.key)
+            .filter((k) => k !== UNATTRIBUTED_GROUP_KEY)
+            .map((k) => k as Id<"people">)
+        : [],
+    [chasingByPerson, canNudgeHere, reconcile?.groups],
+  );
+  const nudgeStatus = useQuery(
+    api.cards.getManualNudgeStatus,
+    nudgeablePersonIds.length > 0 ? { personIds: nudgeablePersonIds } : "skip",
+  );
+  const nudgedToday = useMemo(
+    () => new Set((nudgeStatus ?? []).map((n) => n.personId)),
+    [nudgeStatus],
+  );
+  const sendReceiptNudge = useAction(api.cards.sendReceiptNudge);
+  // "all" for the page-level button, else the cardholder's own personId —
+  // decides which button shows its spinner while a nudge is in flight.
+  const [sendingKey, setSendingKey] = useState<string | null>(null);
+  // A NEUTRAL summary of the last nudge's outcome, separate from `toast`, which
+  // `useActionRunner` reserves for genuine failures — "no email on file" is not
+  // an error and must not render red.
+  const [nudgeNotice, setNudgeNotice] = useState<string | null>(null);
+
+  async function sendNudge(personId: Id<"people"> | undefined, key: string) {
+    setSendingKey(key);
+    setNudgeNotice(null);
+    const res = await run(
+      () =>
+        sendReceiptNudge(
+          personId ? { ...nudgeArgs, personId } : { ...nudgeArgs },
+        ),
+      { errorTitle: "Couldn't send reminder" },
+    );
+    setSendingKey(null);
+    if (!res) return; // a real error already surfaced through `toast`.
+    if (res.results.length === 0) {
+      setNudgeNotice("Nobody currently owes a receipt.");
+      return;
+    }
+    setNudgeNotice(
+      res.results
+        .map((r) =>
+          r.outcome === "already_nudged"
+            ? `${r.cardholderName} was already nudged today`
+            : r.outcome === "no_email"
+              ? `${r.cardholderName} has no email on file — nothing sent`
+              : `Nudged ${r.cardholderName}`,
+        )
+        .join(" · "),
+    );
+  }
+
+  // ── PUBLISHING, SEEN FROM THE MONTH IT IS ABOUT ────────────────────────────
+  // Founder: "I should be able to see the publish stuff in By month, because
+  // it's the same thing. I'm publishing by month. So I just need a preview and
+  // a place to publish. I should see whether it's published when I look at
+  // things by month."
+  //
+  // So each month band carries that month's publication STATUS and the two
+  // acts that belong beside it. What the band does with each is deliberately
+  // different, and the difference is about guards, not effort:
+  //
+  //  - PREVIEW happens HERE. It needs only console access, mints a scoped
+  //    token and opens a page; it changes nothing. `useLedgerPreview` is the
+  //    same hook the console uses, so the artifact is identical.
+  //  - PUBLISH ROUTES to the console. It is the end of a two-approver state
+  //    machine — separation of duties (the submitter may not approve),
+  //    the amendment-reason record on a re-publish, and the SNAPSHOT_TRUNCATED
+  //    refusal that stops a partial month going public. Those are not
+  //    disclosures to skip past; they ARE the act. A one-tap "Publish" on a
+  //    band would either drop them or reimplement them, and reimplementing a
+  //    separation-of-duties check is how one gets quietly weakened.
+  //
+  // So the band answers "where is this month up to, and what does its page look
+  // like" without leaving the grid, and hands off only the irreversible part.
+  //
+  // MOUNTED ONLY WHEN THE SERVER SAYS THE CALLER MAY READ THE CONSOLE.
+  // `publicLedger.console_` THROWS for anyone else, and this screen is inside
+  // a `FinanceBoundary` — a speculative call would degrade the whole grid to
+  // "Restricted" for every reconciler who cannot publish, which is precisely
+  // the failure that locked the founder out for a night (2026-08-11/12).
+  const canUseLedgerConsole = reconcile?.viewerCanUseLedgerConsole ?? false;
+  const showPublishInBands = groupBy === "month" && canUseLedgerConsole;
+  // The one book the console is about. `null` means "the caller's own desk",
+  // which is what both `console_` and the preview mint default to.
+  const consoleScope: SingleBookScope | null = centralScope
+    ? "central"
+    : (targetChapterId ?? null);
+  const ledgerConsole = useQuery(
+    api.publicLedger.console_,
+    showPublishInBands
+      ? consoleScope
+        ? { scope: consoleScope }
+        : {}
+      : "skip",
+  );
+  const publicationByPeriod = useMemo(() => {
+    const m = new Map<string, { status: PublicationStatus; liveRevision: number | null }>();
+    for (const month of ledgerConsole?.months ?? []) {
+      m.set(month.periodKey, {
+        status: month.status,
+        liveRevision: month.liveRevision,
+      });
+    }
+    return m;
+  }, [ledgerConsole]);
+  const previewPage = useLedgerPreview();
+
+  /** How many person bands there is actually somebody to nudge on — gates the
+   *  page-level "Remind all", which would otherwise offer to remind nobody. */
+  const nudgeableGroupCount = chasingByPerson
+    ? (reconcile?.groups ?? []).filter((g) => g.key !== UNATTRIBUTED_GROUP_KEY)
+        .length
+    : 0;
 
   // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
@@ -649,46 +853,31 @@ function ReconcileGrid() {
   const rows = reconcile?.rows ?? [];
   const counts = reconcile?.counts;
 
-  // The scope suffix every cross-screen destination in the view menu carries,
-  // built from the SAME resolution `chaseHref` above uses. Threaded, never
-  // re-derived at the target: a page that resolves its own scope is how two
-  // finance surfaces end up showing different books under the same heading.
-  //
-  // "ALL BOOKS" IS NOT A BOOK, and these destinations only take one.
-  // `monthCodingWorklist` and `publicLedger`'s `scopeValidator` both accept
-  // `v.id("chapters") | "central"` and nothing else, so forwarding
-  // `?scope=all` failed ARGUMENT VALIDATION before the handler ran and the
-  // screen died with a bare "Server Error" — on By month and Publish alike,
-  // for every dual-hat holder, because "All books" is their default landing
-  // scope. (`chaseHref` below is unaffected: `receiptChase` mirrors
-  // `listReconcile`'s scope args, which DO include "all".)
-  //
-  // Omitted rather than guessed: with no `scope`, each target falls back to
-  // the caller's own desk — exactly what it did before these menu entries
-  // existed. Picking `central` on their behalf would silently point a
-  // chapter treasurer at the wrong book, which is the failure this whole
-  // area threads scope to prevent.
-  const singleBookScopeQuery = centralScope
-    ? "?scope=central"
-    : targetChapterId
-      ? `?scope=${targetChapterId}`
-      : "";
 
   /**
    * THE VIEWS — saved questions about this one book.
    *
-   * The first four re-filter the grid in place. The last three are separate
-   * screens because they GROUP or paginate differently (a month biggest-first
-   * with a progress meter; the chase list grouped by cardholder; a period's
-   * publish console) — not because they're a different subject. Both kinds
-   * read as "where do I want to be looking", which is the only question the
-   * person opening this menu is asking.
+   * EVERY ENTRY RE-FILTERS THIS GRID IN PLACE. Nothing here navigates.
+   *
+   * Three of them used to: a month's worklist, the chase list, the publish
+   * console — each a separate screen on the reasoning that it GROUPED or
+   * paginated differently. The grid can group and sort now, so the reasoning
+   * expired, and what the routing actually cost was the thing the founder
+   * named: "It takes away the header. Doesn't even show the database view. It
+   * should be the same exact view... Now I need to click back. I don't even
+   * see the dropdown anymore."
+   *
+   * So a view is a QUESTION about the same grid — a filter set, an order and a
+   * grouping — and the chrome never moves. The one thing still routed is the
+   * publish state machine itself, from a month band, and only because it is an
+   * irreversible two-approver act rather than a way of looking (see the band's
+   * own comment).
    *
    * Counts come from `counts`, which is server-side and truthful across the
    * whole scope rather than the loaded page — so every number here is one you
-   * can actually get to. The routed entries carry no count on purpose: this
-   * screen has no honest figure for them, and a guessed one is the exact
-   * defect this area keeps repairing.
+   * can actually get to. An entry carries no count only when this screen has no
+   * honest figure for it; a guessed one is the exact defect this area keeps
+   * repairing.
    */
   const views: BookView[] = [
     {
@@ -704,13 +893,36 @@ function ReconcileGrid() {
       label: "Waiting on me",
       detail:
         "Explanations somebody submitted and you haven't decided yet — approve, or send back with a note.",
-      // Routed, not filtered, even though `coding_review` IS a filter on this
-      // grid. The review queue is a purpose-built surface — oldest first
-      // (the 60-day clock runs against the ones that have waited longest) and
-      // a send-back note field per row — and half-replacing it with a
-      // filtered grid would quietly drop both. The filter stays available in
-      // the State dropdown for anyone who wants these rows in the grid.
-      href: "/finances/coding",
+      // FILTERED, NOT ROUTED. This used to route to `/finances/coding` on the
+      // reasoning that the review queue is a purpose-built surface — oldest
+      // first, and a send-back note per row — and that half-replacing it with
+      // a filter would drop both.
+      //
+      // Both are now expressible here, and the routing cost more than it
+      // bought. Founder, on the deployed build: "click Waiting on me. It takes
+      // away the header. Doesn't even show the database view. It should be the
+      // same exact view... Now I need to click back. I don't even see the
+      // dropdown anymore." Leaving the grid is the defect; the two features
+      // were the excuse.
+      //
+      //  - OLDEST FIRST is `sort:"date"` + `dir:"asc"`, applied by the server
+      //    across the whole match set before paging. The 60-day
+      //    accountable-plan clock runs against whatever has waited longest, so
+      //    the ordering is load-bearing and is set by the view rather than
+      //    left to whatever the last view used.
+      //  - APPROVE / SEND BACK WITH A NOTE is `CodingWorkbenchPanel`, which
+      //    this grid opens as its row detail — the same component, with the
+      //    receipt visible while the note is typed, which the standalone queue
+      //    could not do.
+      //
+      // `/finances/coding` is untouched and still the cardholder's own desk
+      // (its first half); this only stops the Book's view menu from throwing
+      // the reviewer out of the grid to reach rows the grid can show.
+      filters: ["coding_review"],
+      sort: "date",
+      dir: "asc",
+      group: null,
+      count: counts?.coding_review,
     },
     {
       key: "close",
@@ -725,31 +937,119 @@ function ReconcileGrid() {
       label: "Everything",
       detail: "The whole book for this desk, newest first, no filter applied.",
       filters: [],
+      // DECLARED, not left open. "Publish a month" is also the unfiltered book
+      // — banded by month — so without naming its own shape this entry would
+      // claim that view's title too (`activeView` returns the first match, and
+      // an undeclared axis matches anything). "Newest first, no grouping" is
+      // what the label already promises.
+      sort: DEFAULT_SORT_KEY,
+      dir: DEFAULT_SORT_DIR,
+      group: null,
       count: counts?.all,
     },
     {
       key: "month",
       label: "By month",
       detail:
-        "Work one month biggest-first, with a progress meter — the backfill view, and where a month gets published from.",
-      href: `/finances/explain${singleBookScopeQuery}`,
+        "Every line that will publish blank, biggest-first, banded by month with each month's own progress — the backfill view.",
+      // ABSORBED, not routed. This was `/finances/explain` — a separate screen
+      // that existed because the grid could not ask the publishing question
+      // (its `uncoded` facet grandfathers pre-policy history, so the ~450
+      // reconstructed 2024-25 rows were unreachable), could not sort by amount,
+      // could not group by month, and had no per-month meter. It can do all
+      // four now, so the view is three axes of THIS grid rather than a
+      // destination: `needs_explaining` (no policy date), biggest money first,
+      // one band per month carrying that month's own progress.
+      filters: [BY_MONTH_FILTER],
+      sort: BY_MONTH_SORT,
+      dir: BY_MONTH_DIR,
+      group: BY_MONTH_GROUP,
     },
     {
       key: "chase",
       label: "Chase receipts",
       detail:
-        "Everything still owed a receipt, grouped by who spent it, with a nudge button per person.",
-      href: chaseHref,
+        "Everything still owed a receipt or a coding, grouped by who spent it, with a nudge button per person.",
+      // FILTERED AND GROUPED, NOT ROUTED — founder: "why can't I see the
+      // header? The header that has the dropdown." The presentation they liked
+      // (by person, with a nudge each) is now what a person band renders; the
+      // chrome they lost is the point of moving it.
+      //
+      // `needs_chasing`, NOT `missing_receipt`. The chase is a UNION —
+      // `needsDocumentation || chargeOutstanding != null` — and the
+      // documentation pill is only its first half: it misses a charge whose
+      // receipt is on and whose coding isn't, and it is what the nudge email
+      // would have covered anyway. Building this view on the pill would have
+      // produced a plausible, wrong list. See the key's own doc comment.
+      filters: ["needs_chasing"],
+      group: "person",
+      sort: "amount",
+      dir: "desc",
+      count: counts?.needs_chasing,
     },
     {
       key: "publish",
       label: "Publish a month",
       detail:
-        "Close a month, hand it to a second person, and put it on publicworship.life.",
-      href: `/finances/publish${singleBookScopeQuery}`,
+        "Every month banded, with its publication status and a preview — and the console one tap from the month it's about.",
+      // BANDED, NOT ROUTED — founder: "Publish a month, same thing. Should be
+      // in database view... I should see whether it's published when I look at
+      // things by month."
+      //
+      // Publishing IS a month-at-a-time act, so it is the month view with the
+      // publication status on each band: where the month is up to, a Preview
+      // that opens the actual page, and a hand-off to the console for the
+      // irreversible part. Same three axes as "By month" minus the
+      // `needs_explaining` narrowing — a month you are about to publish is the
+      // WHOLE month, not just its unexplained rows.
+      //
+      // The console stays the destination for the state machine itself. See
+      // the band's own comment for why that half is routed rather than
+      // reimplemented on a band.
+      filters: [],
+      group: "month",
+      sort: BY_MONTH_SORT,
+      dir: BY_MONTH_DIR,
     },
   ];
-  const currentView = activeView(views, filters);
+  /** The chase view, by key — the header's "Chase receipts" button applies the
+   *  SAME view the menu offers rather than a second hand-rolled copy of its
+   *  filters, so the two can never point at different populations. */
+  const chaseView = views.find((v) => v.key === "chase") ?? views[0];
+  const currentView = activeView(views, {
+    filters,
+    sort: sortKey,
+    dir: sortDir,
+    group: groupBy,
+  });
+  /**
+   * APPLY A WHOLE SAVED VIEW — filters, sort and grouping in one act.
+   *
+   * Every axis the view does NOT name is RESET to the grid's default rather
+   * than inherited. A saved view that kept whatever grouping the last one left
+   * behind would render differently depending on where the user came from,
+   * which is precisely what "saved view" is supposed to rule out.
+   */
+  function applyView(view: BookView) {
+    const nextSort = view.sort ?? DEFAULT_SORT_KEY;
+    const nextDir = view.dir ?? DEFAULT_SORT_DIR;
+    const nextGroup = view.group ?? null;
+    setSortKey(nextSort);
+    setSortDir(nextDir);
+    setGroupBy(nextGroup);
+    const isDefaultSort =
+      nextSort === DEFAULT_SORT_KEY && nextDir === DEFAULT_SORT_DIR;
+    // One `setParams`, not four — `applyFilters` writes `?filters=` itself, so
+    // the sort/group params are folded into a single navigation beside it.
+    setFilters([...(view.filters ?? [])]);
+    clearSelectionRef.current?.();
+    router.setParams({
+      filters: serializeReconcileFilters([...(view.filters ?? [])]) ?? "",
+      sort: isDefaultSort ? "" : nextSort,
+      dir: isDefaultSort ? "" : nextDir,
+      group: nextGroup ?? "",
+    });
+  }
 
   // The server has already applied the filter set AND the search, so the grid
   // renders exactly what it was sent. This used to be
@@ -876,6 +1176,14 @@ function ReconcileGrid() {
     explainableCents: 0,
     explainedCount: 0,
     explainedCents: 0,
+    liveExplainableCount: 0,
+    liveExplainableCents: 0,
+    liveExplainedCount: 0,
+    liveExplainedCents: 0,
+    backlogExplainableCount: 0,
+    backlogExplainableCents: 0,
+    backlogExplainedCount: 0,
+    backlogExplainedCents: 0,
   };
   // Group headers, in render order, over the WHOLE match set — present only
   // while `groupBy` is set. Passed straight through to the grid, which slices
@@ -884,6 +1192,14 @@ function ReconcileGrid() {
   // The server stood the State/roll-up filters down to run this search. Said
   // out loud below: a filter that silently stops applying is the whole defect.
   const searchIgnoredState = reconcile?.searchIgnoredState ?? false;
+  // THE SCAN HIT ITS CAP. Every figure on this screen — the facet counts, the
+  // group bands, the totals, the progress strip — then describes a PREFIX of
+  // the book rather than the whole of it, which is a different claim from the
+  // one they all otherwise make. Said out loud below rather than left in a
+  // server log; a silently-short list is the dead-number failure this screen
+  // keeps repairing, and the Explain screen it replaces has warned about
+  // exactly this since it shipped.
+  const truncated = reconcile?.truncated ?? false;
   // Whether the coding policy has started — gates the two coding filter
   // options, which can't return a row before it does. See the option build.
   const codingArmed = reconcile?.codingArmed ?? false;
@@ -1374,19 +1690,70 @@ function ReconcileGrid() {
               views={views}
               active={currentView}
               subtitle={searching ? `${matchedCount} found` : undefined}
-              onPickFilters={(next) => applyFilters([...next])}
+              onPickView={applyView}
               onNavigate={(href) => router.navigate(href as never)}
             />
+            {/* THE ENTRY POINT, which no longer leaves the grid. It used to
+                navigate to `/finances/receipt-chase`; it now applies the chase
+                view in place — same population (`chaseCount` is `isChaseable`
+                over the whole scope, the exact predicate the `needs_chasing`
+                facet uses), same by-person presentation, header intact.
+
+                Still gated on `chaseCount` rather than the facet count: that
+                figure ignores the current selection AND counts the hidden
+                transfer legs, so a book whose only receipt-owing rows are
+                marked transfers keeps its route to them. */}
             {chaseCount > 0 ? (
               <Button
-                title="Chase receipts"
+                title={`Chase receipts (${chaseCount})`}
                 variant="ghost"
                 size="sm"
                 icon="bell"
-                onPress={() => router.navigate(chaseHref as never)}
+                onPress={() => applyView(chaseView)}
+              />
+            ) : null}
+            {/* REMIND ALL — the page-level nudge, manager-only, and only while
+                the chase view is actually up. It reminds whoever the CURRENT
+                view found, in the CURRENT book. */}
+            {canNudgeHere && chasingByPerson && nudgeableGroupCount > 0 ? (
+              <Button
+                title="Remind all"
+                variant="secondary"
+                size="sm"
+                icon="send"
+                loading={sendingKey === "all"}
+                onPress={() => void sendNudge(undefined, "all")}
               />
             ) : null}
           </View>
+
+          {/* The nudge's own outcome line. Deliberately NOT the error toast:
+              "has no email on file" is information, not a failure, and
+              rendering it red would teach people to distrust the button. */}
+          {/* WHY THERE IS NO BUTTON. A manager looking at the by-person chase in
+              the merged queue would otherwise just find the reminders missing,
+              with nothing on screen saying that picking a book brings them
+              back. The books selector is directly below. */}
+          {isManager && chasingByPerson && allBooksScope ? (
+            <View className="mb-3 flex-row items-center gap-2">
+              <Icon name="info" size={14} color={colors.muted} />
+              <Text className="flex-1 text-xs text-muted">
+                Reminders go to one book&apos;s cardholders at a time — pick
+                Central or a chapter below to send them.
+              </Text>
+            </View>
+          ) : null}
+          {nudgeNotice ? (
+            <View className="mb-3 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2.5">
+              <Text className="flex-1 text-sm text-ink">{nudgeNotice}</Text>
+              <Button
+                title="Dismiss"
+                variant="ghost"
+                size="sm"
+                onPress={() => setNudgeNotice(null)}
+              />
+            </View>
+          ) : null}
 
           {/* THE HEADER CHIPS — what replaced "127 to clear".
 
@@ -1424,11 +1791,47 @@ function ReconcileGrid() {
               actions) stays fully interactive either way. */}
           {hasPeriodScope ? (
             <View className="mb-3 flex-row items-center gap-2">
+              {/* ← / → step the month WITHOUT touching anything else about the
+                  view — carried over from the Explain screen, whose whole job
+                  was working one month and then the next. Only on a month
+                  scope: a year or ytd window has no next month. */}
+              {canStepMonth ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  title="← Prev month"
+                  onPress={() => stepMonth(-1)}
+                />
+              ) : null}
               <Pill
                 label={`Scoped to ${periodLabel(periodYear as number, periodMonth ?? 1, periodMode)} · Clear`}
                 selected
                 onPress={clearPeriodScope}
               />
+              {canStepMonth ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  title="Next month →"
+                  onPress={() => stepMonth(1)}
+                />
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* THE READ WAS CAPPED. Everything else on this screen claims to
+              describe the whole scope; when the scan hits its limit, it
+              describes a prefix instead. Saying so is the only honest option —
+              the alternative is a screen full of numbers that are all quietly
+              answering a smaller question than the one they name. */}
+          {truncated ? (
+            <View className="mb-3 flex-row items-center gap-2">
+              <Icon name="alert-triangle" size={14} color={colors.danger} />
+              <Text className="flex-1 text-xs text-danger">
+                This book is larger than one read returns — the rows and every
+                count on this page are a prefix of it, not the whole. Narrow to
+                a month or a period to see a book this size completely.
+              </Text>
             </View>
           ) : null}
 
@@ -1735,6 +2138,11 @@ function ReconcileGrid() {
               ownChapterId={ownChapterId}
               centralForItems={centralForItems}
               isManager={isManager}
+              // Bookkeeper+, server-answered — this grid's own floor is a
+              // finance VIEWER, and a viewer must not be handed a live rename
+              // box the server would refuse (the guarantee the Explain screen
+              // got from `monthCodingWorklist.canRename`).
+              canRename={reconcile?.viewerCanRename ?? false}
               viewerPersonId={reconcile?.viewerPersonId ?? null}
               // The panel seam. `onOpenRow` present ⇔ wide, which is what
               // makes a row's open affordances select instead of opening the
@@ -1749,6 +2157,92 @@ function ReconcileGrid() {
               sortDir={sortDir}
               onSort={applySort}
               groups={groups}
+              groupBy={groupBy}
+              // ONE NUDGE BUTTON PER PERSON — the chase list's own affordance,
+              // rendered on the band instead of on a separate screen. Null for
+              // every month band, for Unattributed (a marked transfer owes a
+              // statement, not a person — there is nobody to remind), and for
+              // any caller who isn't a finance manager.
+              renderGroupAction={(group) => {
+                // ── MONTH BANDS: where this month is up to, and its page ──
+                if (showPublishInBands) {
+                  const pub = publicationByPeriod.get(group.key);
+                  if (!pub) return null;
+                  const parsed = parsePeriodKey(group.key);
+                  return (
+                    <View className="flex-row items-center gap-2">
+                      <Badge
+                        label={
+                          pub.status === "published" && pub.liveRevision != null
+                            ? `Published · rev ${pub.liveRevision}`
+                            : PUBLICATION_STATUS_LABELS[pub.status]
+                        }
+                        tone={
+                          pub.status === "published"
+                            ? "success"
+                            : pub.status === "changes_requested"
+                              ? "danger"
+                              : pub.status === "in_review" ||
+                                  pub.status === "amending"
+                                ? "warn"
+                                : "neutral"
+                        }
+                      />
+                      {/* LOOKING, not committing — a mint and an open, which is
+                          why it can happen right here. */}
+                      <Button
+                        title="Preview"
+                        variant="ghost"
+                        size="sm"
+                        icon="eye"
+                        loading={previewPage.loading}
+                        onPress={() =>
+                          void previewPage.open({
+                            scope: consoleScope,
+                            periodKey: group.key,
+                          })
+                        }
+                      />
+                      {/* COMMITTING — routed to the console, deliberately. The
+                          two-approver handoff, the amendment reason and the
+                          truncated-snapshot refusal are the act itself, not
+                          paperwork in front of it. */}
+                      <Button
+                        title={pub.status === "published" ? "Amend" : "Publish"}
+                        variant="ghost"
+                        size="sm"
+                        icon="arrow-up-right"
+                        onPress={() =>
+                          router.navigate(
+                            `/finances/publish${
+                              consoleScope ? `?scope=${consoleScope}` : ""
+                            }${parsed ? `${consoleScope ? "&" : "?"}period=${group.key}` : ""}` as never,
+                          )
+                        }
+                      />
+                    </View>
+                  );
+                }
+                if (!chasingByPerson || !canNudgeHere) return null;
+                if (group.key === UNATTRIBUTED_GROUP_KEY) return null;
+                const personId = group.key as Id<"people">;
+                // The 24h server-side rate limit, RENDERED rather than
+                // discovered by pressing: a second nudge inside the window is
+                // refused server-side, and a button that looks live and does
+                // nothing is worse than one that says why.
+                const already = nudgedToday.has(personId);
+                return (
+                  <Button
+                    title={already ? "Nudged today" : "Send reminder"}
+                    variant="secondary"
+                    size="sm"
+                    icon={already ? undefined : "send"}
+                    disabled={already}
+                    loading={sendingKey === personId}
+                    onPress={() => void sendNudge(personId, personId)}
+                  />
+                );
+              }}
             />
             {/* PAGING. The server ships `limit` rows and reports how many
                 matched across the whole scope, so this footer states both —

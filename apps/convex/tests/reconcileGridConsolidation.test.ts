@@ -354,11 +354,24 @@ describe("ANTI-DRIFT: one predicate, two callers", () => {
     await txn(s, { amountCents: 4_000 });
 
     const whole = await s.as.query(api.finances.listReconcile, {});
+    // Asserted whole rather than field by field, so the live/backlog split is
+    // pinned alongside the combined figure. These rows are all LIVE (nothing
+    // reconstructed), so `live* === total*` and `backlog*` is flat zero — which
+    // is exactly what keeps the grid from rendering a "+ 0 of 0 reconstructed"
+    // second line under an ordinary book.
     expect(whole.explainedProgress).toEqual({
       explainableCount: 3,
       explainableCents: 7_000,
       explainedCount: 1,
       explainedCents: 1_000,
+      liveExplainableCount: 3,
+      liveExplainableCents: 7_000,
+      liveExplainedCount: 1,
+      liveExplainedCents: 1_000,
+      backlogExplainableCount: 0,
+      backlogExplainableCents: 0,
+      backlogExplainedCount: 0,
+      backlogExplainedCents: 0,
     });
 
     // Filtered to the work itself, the meter describes the work: three rows
@@ -373,6 +386,14 @@ describe("ANTI-DRIFT: one predicate, two callers", () => {
       explainableCents: 6_000,
       explainedCount: 0,
       explainedCents: 0,
+      liveExplainableCount: 2,
+      liveExplainableCents: 6_000,
+      liveExplainedCount: 0,
+      liveExplainedCents: 0,
+      backlogExplainableCount: 0,
+      backlogExplainableCents: 0,
+      backlogExplainedCount: 0,
+      backlogExplainedCents: 0,
     });
   });
 
@@ -392,6 +413,14 @@ describe("ANTI-DRIFT: one predicate, two callers", () => {
       explainableCents: 40_000,
       explainedCount: 1,
       explainedCents: 10_000,
+      liveExplainableCount: 2,
+      liveExplainableCents: 40_000,
+      liveExplainedCount: 1,
+      liveExplainedCents: 10_000,
+      backlogExplainableCount: 0,
+      backlogExplainableCents: 0,
+      backlogExplainedCount: 0,
+      backlogExplainedCents: 0,
     });
   });
 
@@ -645,5 +674,356 @@ describe("absent args change nothing", () => {
 
     const res = await s.as.query(api.finances.listReconcile, { filter: "to_review" });
     expect(res.rows.map((r) => r.id)).toEqual([open]);
+  });
+});
+
+describe("the live/backlog split — the last thing the Explain screen could say and the grid couldn't", () => {
+  /**
+   * A month holding 450 rows reconstructed from the org's imported 2024-25
+   * records and 3 rows of its own live spend reads as "3% explained" if the two
+   * populations share one meter. `monthCodingWorklist` grew `live*`/`backlog*`
+   * for exactly that reason; retiring that screen into this grid means the
+   * grid's own strip and every month band have to carry the same distinction,
+   * or the number regresses the day the screen is deleted.
+   */
+  test("a backlog row is counted apart from a live one, and the two sum to the whole", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    // This month's own work: one done, one not.
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024, codingState: "approved" });
+    await txn(s, { amountCents: 2_000, postedAt: JUNE_2024 });
+    // Reconstructed from an import — same month, same population, different
+    // meter.
+    await txn(s, {
+      amountCents: 400_000,
+      postedAt: JUNE_2024,
+      historicalImportBatch: "genesis-2024",
+    });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      year: 2024,
+      month: 6,
+      limit: 500,
+    });
+    const p = res.explainedProgress;
+
+    // The live half is the one "did I finish THIS month" is asking about: one
+    // of two, not one of three — and not one of a denominator dominated by
+    // $4,000 of imported history.
+    expect(p.liveExplainableCount).toBe(2);
+    expect(p.liveExplainedCount).toBe(1);
+    expect(p.liveExplainableCents).toBe(3_000);
+    expect(p.backlogExplainableCount).toBe(1);
+    expect(p.backlogExplainedCount).toBe(0);
+    expect(p.backlogExplainableCents).toBe(400_000);
+
+    // THE INVARIANT. Every row in the population lands in exactly one bucket,
+    // so the two halves reconstruct the combined figure. If they ever don't,
+    // one of the three numbers on screen is lying and there'd otherwise be no
+    // way to tell which.
+    expect(p.liveExplainableCount + p.backlogExplainableCount).toBe(p.explainableCount);
+    expect(p.liveExplainedCount + p.backlogExplainedCount).toBe(p.explainedCount);
+    expect(p.liveExplainableCents + p.backlogExplainableCents).toBe(p.explainableCents);
+    expect(p.liveExplainedCents + p.backlogExplainedCents).toBe(p.explainedCents);
+  });
+
+  test("an ordinary book puts everything in `live` and nothing in `backlog`", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 5_000, codingState: "approved" });
+    await txn(s, { amountCents: 6_000 });
+
+    const p = (await s.as.query(api.finances.listReconcile, {})).explainedProgress;
+    // The client's `showsBacklogSplit` reads exactly this to decide whether the
+    // split earns a second line — a nonzero backlog on a book that has no
+    // imported history would put "+ 0 of 0 reconstructed" under every meter.
+    expect(p.backlogExplainableCount).toBe(0);
+    expect(p.liveExplainableCount).toBe(p.explainableCount);
+  });
+
+  test("a month BAND carries its own split, not the whole selection's", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    // June: all reconstructed. July: all live. Grouped, neither band may
+    // report the other's figures — the failure mode a single whole-set meter
+    // has by construction.
+    await txn(s, {
+      amountCents: 100_000,
+      postedAt: JUNE_2024,
+      historicalImportBatch: "genesis-2024",
+    });
+    await txn(s, { amountCents: 7_000, postedAt: JULY_2024, codingState: "approved" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      groupBy: "month",
+      limit: 500,
+    });
+    const june = res.groups?.find((g) => g.key === "2024-06");
+    const july = res.groups?.find((g) => g.key === "2024-07");
+
+    expect(june?.backlogExplainableCount).toBe(1);
+    expect(june?.liveExplainableCount).toBe(0);
+    expect(july?.liveExplainableCount).toBe(1);
+    expect(july?.liveExplainedCount).toBe(1);
+    expect(july?.backlogExplainableCount).toBe(0);
+  });
+
+  test("the groups' splits sum to the whole selection's split", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024 });
+    await txn(s, {
+      amountCents: 2_000,
+      postedAt: JUNE_2024,
+      historicalImportBatch: "genesis-2024",
+    });
+    await txn(s, { amountCents: 4_000, postedAt: JULY_2024, codingState: "approved" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      groupBy: "month",
+      limit: 500,
+    });
+    const groups = res.groups ?? [];
+    const sum = (pick: (g: (typeof groups)[number]) => number) =>
+      groups.reduce((acc, g) => acc + pick(g), 0);
+
+    // Same guarantee #705 pinned for the combined figure, extended to the two
+    // halves: a band and the strip above it cannot disagree without a test
+    // failing.
+    expect(sum((g) => g.liveExplainableCount)).toBe(
+      res.explainedProgress.liveExplainableCount,
+    );
+    expect(sum((g) => g.backlogExplainableCount)).toBe(
+      res.explainedProgress.backlogExplainableCount,
+    );
+    expect(sum((g) => g.liveExplainedCents)).toBe(
+      res.explainedProgress.liveExplainedCents,
+    );
+    expect(sum((g) => g.backlogExplainedCents)).toBe(
+      res.explainedProgress.backlogExplainedCents,
+    );
+  });
+});
+
+describe("what else the Explain screen said that the grid now has to", () => {
+  test("`truncated` is false on a book that fits in one read", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000 });
+
+    // The positive case needs ROLLUP_SCAN_LIMIT (5,000) rows to provoke and is
+    // deliberately not seeded here — inserting 5,000 transactions to assert one
+    // boolean would add minutes to every run of this suite. What matters for
+    // the regression is that the field EXISTS and is honest on the ordinary
+    // path: a `truncated: true` that nobody ever cleared would put a permanent
+    // red warning on every grid.
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.truncated).toBe(false);
+  });
+
+  test("`viewerCanRename` follows the rank `renameMerchant` enforces, not the rank that opened the grid", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const personId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "A viewer",
+        userId: s.userId,
+        isTeamMember: true,
+        createdAt: Date.now(),
+      }),
+    );
+    // A finance VIEWER: enough to read this grid, never enough to rename a
+    // merchant. Before this field the Merchant cell offered them a live text
+    // box every keystroke of which the server would refuse — the exact thing
+    // `monthCodingWorklist.canRename` existed to prevent on the screen these
+    // viewers are now being sent to.
+    const roleId = await run(s.t, (ctx) =>
+      ctx.db.insert("financeRoles", {
+        chapterId: s.chapterId,
+        personId,
+        role: "viewer",
+        scope: "chapter",
+        createdAt: Date.now(),
+      }),
+    );
+    await txn(s, { amountCents: 1_000 });
+
+    const asViewer = await s.as.query(api.finances.listReconcile, {});
+    expect(asViewer.viewerCanRename).toBe(false);
+
+    // Same caller, promoted to bookkeeper — the rank `renameMerchant` actually
+    // gates on.
+    await run(s.t, (ctx) => ctx.db.patch(roleId, { role: "bookkeeper" }));
+    const asBookkeeper = await s.as.query(api.finances.listReconcile, {});
+    expect(asBookkeeper.viewerCanRename).toBe(true);
+  });
+});
+
+describe("the chase, in the grid — `needs_chasing` is the UNION, not the receipt pill", () => {
+  /**
+   * The chase page's predicate is `needsDocumentation || chargeOutstanding !=
+   * null`. Building a by-person view on `missing_receipt` alone would produce a
+   * plausible, wrong list — which is the whole risk of moving the chase into
+   * the grid.
+   */
+  test("the facet is exactly `chaseCount`'s population, and both are `receiptChase`'s", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    // Owes documentation and nothing else.
+    await txn(s, { amountCents: 1_000 });
+    // A MARKED internal transfer: `flow:"transfer"`, so the default queue hides
+    // it — and it owes a receipt, so the chase must still find it.
+    await txn(s, { amountCents: 2_000, flow: "transfer", preMarkFlow: "outflow" });
+    // Closed with nothing behind it — nobody left to chase.
+    await txn(s, { amountCents: 4_000, status: "reconciled" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_chasing"],
+      limit: 500,
+    });
+    const chase = await s.as.query(api.finances.receiptChase, {});
+
+    // The number the "Chase receipts" entry point is gated on, the facet
+    // count, and the chase list's own count are one population.
+    expect(res.counts.needs_chasing).toBe(res.chaseCount);
+    expect(res.chaseCount).toBe(chase.count);
+    // And the rows the grid actually SHOWS are that population, not a subset
+    // of it.
+    expect(res.matchedCount).toBe(chase.count);
+  });
+
+  test("a MARKED TRANSFER is hidden from the default queue and still reachable through the chase", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const leg = await txn(s, {
+      amountCents: 9_000,
+      flow: "transfer",
+      preMarkFlow: "outflow",
+    });
+
+    // Hidden by default — a transfer leg is not queue work.
+    const plain = await s.as.query(api.finances.listReconcile, { limit: 500 });
+    expect(plain.rows.map((r) => r.id)).not.toContain(leg);
+
+    // THE FOUNDER RULE: marking a row must never be a way to make it stop
+    // being chased. Selecting the chase has to un-hide the legs, or the
+    // by-person view would silently omit exactly the rows a TREASURER (rather
+    // than a cardholder) has to act on.
+    const chasing = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_chasing"],
+      limit: 500,
+    });
+    expect(chasing.rows.map((r) => r.id)).toContain(leg);
+  });
+
+  test("a charge whose receipt is on and whose coding is not is in the chase but not the receipt pill", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // `changes_requested` — a coding a reviewer sent back. `chargeOutstanding`
+    // says the cardholder owes an edit; `needsDocumentation` is the wrong half
+    // to ask, which is why the union exists.
+    await txn(s, { amountCents: 3_000, codingState: "changes_requested" });
+
+    const res = await s.as.query(api.finances.listReconcile, { limit: 500 });
+    expect(res.counts.needs_chasing).toBeGreaterThanOrEqual(
+      res.counts.missing_receipt,
+    );
+    // The row carries the debt in the SAME words the cardholder's email uses,
+    // so a person band can't say "1 charge" while the reminder names something
+    // the grid never showed.
+    expect(res.rows[0].outstanding).toBeTruthy();
+  });
+
+  test("a processor fee is chased by neither half", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 500, feeOrigin: "stripe_processing" });
+
+    const res = await s.as.query(api.finances.listReconcile, { limit: 500 });
+    // No receipt exists and none ever will — the processor's own ledger is the
+    // record. Both halves of the union carve it out, and the row's own label
+    // agrees rather than asking for a document that doesn't exist.
+    expect(res.counts.needs_chasing).toBe(0);
+    expect(res.rows[0].outstanding).toBeNull();
+  });
+
+  test("person bands carry the identity a nudge button needs", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const alice = await seedPerson(s, "Alice");
+    await txn(s, { amountCents: 5_000, personId: alice });
+    // No cardholder — a marked transfer, chased with a statement rather than a
+    // person. Its band must be the `unattributed` sentinel so the UI knows
+    // there is nobody to remind.
+    await txn(s, { amountCents: 6_000, flow: "transfer", preMarkFlow: "outflow" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_chasing"],
+      groupBy: "person",
+      limit: 500,
+    });
+    const groups = res.groups ?? [];
+    // The band's KEY is the personId itself, which is what lets the button
+    // nudge without a second lookup.
+    expect(groups.find((g) => g.key === alice)?.label).toBe("Alice");
+    expect(groups.some((g) => g.key === "unattributed")).toBe(true);
+    // Unattributed pinned LAST — the chase list's rule, kept: those rows have
+    // nobody attached, so a person-by-person read shouldn't open on them.
+    expect(groups[groups.length - 1].key).toBe("unattributed");
+    // The avatar field exists on every band (null where there's no image), so
+    // the person header can look like the chase list it replaces.
+    expect(groups.every((g) => "imageUrl" in g)).toBe(true);
+  });
+});
+
+describe("the publish console, seen from the month it is about", () => {
+  /**
+   * The month bands show each month's publication status and offer a preview.
+   * Both need `publicLedger.console_`, which THROWS for a caller without the
+   * console power — and the grid lives inside a `FinanceBoundary`, so one
+   * speculative call would degrade the entire reconcile screen to "Restricted"
+   * for every reconciler who cannot publish. That exact shape locked the
+   * founder out for a night (2026-08-11/12), so the capability is probed once
+   * from the query the grid already runs.
+   */
+  test("a caller who may read the console is told so, and the console agrees", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000 });
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.viewerCanUseLedgerConsole).toBe(true);
+    // The probe and the gate are the same rule — `hasLedgerConsole` is the
+    // non-throwing half of `requireLedgerConsole`. If the probe said yes, the
+    // query it guards must not throw.
+    await expect(s.as.query(api.publicLedger.console_, {})).resolves.not.toBeNull();
+  });
+
+  test("the merged all-books queue reports NO console — there is no console for a merged book", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000 });
+
+    // `console_` takes ONE book (`scope: Id<"chapters"> | "central"`), and
+    // publishing is a per-book act. Reporting `true` here would have the bands
+    // firing a query with no scope to give it.
+    const merged = await s.as.query(api.finances.listReconcile, { scope: "all" });
+    expect(merged.viewerCanUseLedgerConsole).toBe(false);
   });
 });

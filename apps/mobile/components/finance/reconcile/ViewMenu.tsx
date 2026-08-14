@@ -35,6 +35,28 @@ import { Pressable, Text, View } from "react-native";
 import { Icon, Popover, useAnchor } from "../../ui";
 import { colors } from "../../../lib/theme";
 import type { ReconcileFilterKey } from "@events-os/shared";
+import type {
+  ReconcileGroupBy,
+  ReconcileSortDir,
+  ReconcileSortKey,
+} from "./gridView";
+
+/**
+ * THE WHOLE OF WHAT A SAVED VIEW SETS — filters, and now the sort and the
+ * grouping alongside them.
+ *
+ * The three arrived separately (filters first, sort/grouping with #704) and
+ * were separate state until a saved view needed all three at once: "By month"
+ * is `needs_explaining` + biggest-first + grouped by month, and expressing it
+ * as a filter set alone would have produced a view that silently did a third
+ * of what its name promises.
+ */
+export type BookViewState = {
+  filters: readonly ReconcileFilterKey[];
+  sort: ReconcileSortKey;
+  dir: ReconcileSortDir;
+  group: ReconcileGroupBy | null;
+};
 
 export interface BookView {
   key: string;
@@ -44,6 +66,14 @@ export interface BookView {
   detail: string;
   /** Re-filter the grid in place. Empty array = the unfiltered book. */
   filters?: readonly ReconcileFilterKey[];
+  /** …and, optionally, re-sort and re-group it. Omitted means "leave that axis
+   *  alone" for `activeView`'s comparison, but picking the view still RESETS
+   *  the axis to the grid's default — a saved view that inherited whatever the
+   *  last one left behind would render differently depending on where you came
+   *  from, which is the opposite of saved. */
+  sort?: ReconcileSortKey;
+  dir?: ReconcileSortDir;
+  group?: ReconcileGroupBy | null;
   /** Or go somewhere. Built by the caller WITH scope already threaded. */
   href?: string;
   /** Live count, when the screen has a truthful one. Omitted rather than
@@ -52,20 +82,34 @@ export interface BookView {
   count?: number;
 }
 
-/** Which view the current filter selection IS, by exact set equality. A
- *  hand-rolled combination from the dropdowns below matches nothing, and
- *  falls back to `null` so the title says "Custom view" rather than claiming
- *  to be a saved one. */
+/**
+ * Which saved view the current grid state IS.
+ *
+ * Filters match by exact SET equality; sort/dir/group match only where the view
+ * declares them, so a view that says nothing about grouping is not un-matched
+ * by someone grouping the grid by hand. A hand-rolled combination matches
+ * nothing and falls back to `null`, so the title says "Custom view" rather than
+ * claiming to be a saved one.
+ *
+ * The sort/group half exists because two views can now share a filter set and
+ * differ only in shape: "By month" is `needs_explaining` grouped by month,
+ * biggest-first, and without comparing those axes it would claim the title from
+ * a plain `needs_explaining` selection the moment anybody picked that filter
+ * out of the State dropdown.
+ */
 export function activeView(
   views: readonly BookView[],
-  filters: readonly ReconcileFilterKey[],
+  state: BookViewState,
 ): BookView | null {
   return (
     views.find(
       (v) =>
         v.filters != null &&
-        v.filters.length === filters.length &&
-        v.filters.every((f) => filters.includes(f)),
+        v.filters.length === state.filters.length &&
+        v.filters.every((f) => state.filters.includes(f)) &&
+        (v.sort == null || v.sort === state.sort) &&
+        (v.dir == null || v.dir === state.dir) &&
+        (v.group === undefined || v.group === state.group),
     ) ?? null
   );
 }
@@ -74,14 +118,15 @@ export function ViewMenu({
   views,
   active,
   subtitle,
-  onPickFilters,
+  onPickView,
   onNavigate,
 }: {
   views: readonly BookView[];
   active: BookView | null;
   /** Rendered beside the title — the screen's own count line. */
   subtitle?: string;
-  onPickFilters: (filters: readonly ReconcileFilterKey[]) => void;
+  /** Apply the WHOLE view, not just its filters — see `BookView.sort`. */
+  onPickView: (view: BookView) => void;
   onNavigate: (href: string) => void;
 }) {
   const { ref, anchor, visible, open, close } = useAnchor();
@@ -120,7 +165,7 @@ export function ViewMenu({
                 onPress={() => {
                   close();
                   if (v.href) onNavigate(v.href);
-                  else onPickFilters(v.filters ?? []);
+                  else onPickView(v);
                 }}
                 accessibilityRole="menuitem"
                 className={`px-3 py-2 active:opacity-70 web:hover:bg-sunken ${

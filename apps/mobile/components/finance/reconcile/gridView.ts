@@ -55,23 +55,80 @@ export function nextSortState(
   return { sort: column, dir: current.dir === "desc" ? "asc" : "desc" };
 }
 
-/** A `listReconcile` group header, verbatim off the wire. `count` and
- *  `totalCents` are over the WHOLE match set, never the loaded page. */
-export type GroupSummary = {
-  key: string;
-  label: string;
-  count: number;
-  totalCents: number;
-  /** The group's OWN explaining progress, server-computed over the whole
-   *  match set in the same loop that built the group — never the loaded page,
-   *  and not derivable here (the denominator reads transaction fields
-   *  `reconcileRow` doesn't ship). This is what lets a month band carry the
-   *  meter the Explain screen carries. */
+/**
+ * HOW FAR THROUGH THE EXPLAINING A SET OF ROWS IS, verbatim off the wire —
+ * `listReconcile`'s `explainedProgress` (the whole selection) and every entry
+ * of its `groups` (one month band, one person) carry exactly these fields, from
+ * exactly the same server-side accumulator (`tallyExplainProgress`).
+ *
+ * Server-computed over the whole match set, never the loaded page, and NOT
+ * derivable here: the denominator reads `feeOrigin`/`source`/`sourceCategory`
+ * and both refund pointers off the transaction, and the live/backlog split
+ * reads `source` and `importBatchId` — none of which `reconcileRow` ships.
+ */
+export type ExplainProgress = {
   explainableCount: number;
   explainableCents: number;
   explainedCount: number;
   explainedCents: number;
+  /** Live rows only — the population observed as it happened, which is what
+   *  "did I finish this month" is actually asking about. */
+  liveExplainableCount: number;
+  liveExplainableCents: number;
+  liveExplainedCount: number;
+  liveExplainedCents: number;
+  /** Rows reconstructed from the org's imported 2024-25 records. Still owe a
+   *  human explanation; just not counted against the same meter. */
+  backlogExplainableCount: number;
+  backlogExplainableCents: number;
+  backlogExplainedCount: number;
+  backlogExplainedCents: number;
 };
+
+/**
+ * DOES THE LIVE/BACKLOG SPLIT EARN A SECOND LINE?
+ *
+ * Only when BOTH populations actually have rows. When one is empty the combined
+ * figure IS the other one by construction, so a second line reading "+ 0 of 0
+ * reconstructed" under it would be noise — and a "0 of 0" is the same class of
+ * dishonest number as the "3% explained" the split exists to prevent, pointing
+ * the other way.
+ *
+ * The rule the Explain screen applied to its own meter (`hasBoth`), moved here
+ * so the progress strip and the month band apply ONE rule rather than two
+ * copies of it.
+ */
+export function showsBacklogSplit(progress: {
+  liveExplainableCount: number;
+  backlogExplainableCount: number;
+}): boolean {
+  return (
+    progress.liveExplainableCount > 0 && progress.backlogExplainableCount > 0
+  );
+}
+
+/** A `listReconcile` group header, verbatim off the wire. `count` and
+ *  `totalCents` are over the WHOLE match set, never the loaded page — and so
+ *  is the {@link ExplainProgress} tally it carries, which is what lets a month
+ *  band carry the meter the Explain screen carried. */
+export type GroupSummary = {
+  /** `YYYY-MM` for a month band; for a person band the cardholder's OWN
+   *  `personId`, or the `"unattributed"` sentinel — which is what lets the band
+   *  offer a nudge without a second lookup. */
+  key: string;
+  label: string;
+  /** The cardholder's avatar (person bands only). */
+  imageUrl: string | null;
+  count: number;
+  totalCents: number;
+} & ExplainProgress;
+
+/** The person-band group key for rows that resolve to nobody — a bank
+ *  transfer, a processor deposit, a genesis-imported row with no card. Mirrors
+ *  the server's `UNATTRIBUTED_GROUP_KEY`; a band with this key names a debt
+ *  that is owed to the books rather than by a person, so there is nobody to
+ *  nudge and the button must not render. */
+export const UNATTRIBUTED_GROUP_KEY = "unattributed";
 
 /** Where one group's rows sit inside the loaded page. */
 export type GroupSegment = {

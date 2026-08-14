@@ -46,6 +46,7 @@ import {
   formatCents,
   INCOME_STREAM_LABELS,
   MIN_AMENDMENT_NOTE_LENGTH,
+  parsePeriodKey,
   PUBLICATION_STATUS_LABELS,
   type AmendmentReason,
   type PublicationStatus,
@@ -66,6 +67,7 @@ import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { useChapterContext } from "../../../lib/ChapterContext";
 import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
 import { resolveBookScope } from "../../../components/finance/bookScope";
+import { byMonthHref } from "../../../components/finance/byMonthHref";
 import { BookScopeNotice } from "../../../components/finance/BookScopeNotice";
 
 function NoAccess() {
@@ -98,7 +100,7 @@ export default function PublishScreen() {
 }
 
 function Body() {
-  const params = useLocalSearchParams<{ scope?: string }>();
+  const params = useLocalSearchParams<{ scope?: string; period?: string }>();
   const router = useRouter();
   const { context } = useChapterContext();
   // WHICH BOOK ARE WE PUBLISHING? Resolved the same way every other finance
@@ -135,7 +137,19 @@ function Body() {
   // site rather than production doing it. `null` OMITS the field — an
   // explicit null fails `v.optional`.
   const data = useQuery(api.publicLedger.console_, scope ? { scope } : {});
-  const [open, setOpen] = useState<string | null>(null);
+  // WHICH MONTH OPENS EXPANDED. `?period=` is honoured so a link that meant one
+  // month lands ON that month rather than on a list of eighteen with the reader
+  // left to find it — the reconcile grid's month bands now link straight here
+  // from a band that already named the month, and dropping that context at the
+  // door is how a one-tap handoff turns into a scroll.
+  //
+  // Validated, not trusted: an unparseable `?period=` collapses to "nothing
+  // expanded", which is exactly the state this screen has always opened in.
+  // Read once as the INITIAL state rather than as a controlled value, so
+  // expanding a different month afterwards isn't fought by the URL.
+  const [open, setOpen] = useState<string | null>(() =>
+    params.period && parsePeriodKey(params.period) ? params.period : null,
+  );
 
   if (data === undefined) return <Screen loading />;
   if (data === null) {
@@ -355,14 +369,31 @@ function MonthDetail({
               />
               {/* The disclosure and the fix, one tap apart. Reading "61 lines
                   will publish blank" and having nowhere to go from it is how a
-                  warning becomes wallpaper. */}
+                  warning becomes wallpaper.
+
+                  POINTS AT THE GRID DIRECTLY, not through the `/finances/explain`
+                  redirect that still stands in for old bookmarks. This is the
+                  only path from the publish console to fixing these lines, and
+                  routing the org's own live link through a compatibility shim is
+                  how a shim becomes permanent. The three params are the same
+                  three the redirect writes: the publishing population (no policy
+                  date, so it reaches this month's reconstructed history),
+                  biggest money first, banded by month.
+
+                  `scope` is translated the same way the redirect translates it —
+                  a chapter id is not one of the grid's three scope words and
+                  would silently fall back to the caller's own desk, so it goes
+                  to `chapterId`. */}
               <Button
                 variant="secondary"
                 size="sm"
                 title="Explain them now"
                 onPress={() =>
                   router.push(
-                    `/finances/explain?period=${month.periodKey}&scope=${scope}` as never,
+                    byMonthHref({
+                      period: parsePeriodKey(month.periodKey),
+                      scope: scope == null ? null : String(scope),
+                    }) as never,
                   )
                 }
               />

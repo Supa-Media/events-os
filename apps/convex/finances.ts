@@ -93,7 +93,7 @@ import { readSandbox } from "./financeSettings";
 import { signedBookCents } from "./lib/bookBalance";
 // Same gate as the publish console: this worklist reads exactly the rows that
 // console is about to publish.
-import { requireLedgerConsole } from "./lib/publicLedgerAccess";
+import { hasLedgerConsole, requireLedgerConsole } from "./lib/publicLedgerAccess";
 import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import {
@@ -511,6 +511,21 @@ const reconcileRow = v.object({
     }),
     v.null(),
   ),
+  // WHAT THIS ROW STILL OWES, in the SAME words the cardholder's own digest
+  // uses (`lib/codingReminders.ts#chargeOutstanding`): "needs coding", "needs a
+  // receipt", "needs coding and a receipt", "sent back — needs your edit".
+  //
+  // `null` when nothing is owed, AND for a row that owes only DOCUMENTATION and
+  // carries no cardholder to chase — a marked transfer or payout, which the
+  // chase still lists (under Unattributed) and which owes a statement rather
+  // than a person. So `outstanding == null` is not the same as "not chaseable";
+  // `needs_chasing` is the predicate for that.
+  //
+  // On the row because the chase is TWO debts now. A person band that says
+  // "3 charges" while the reminder email names a coding debt the grid never
+  // showed is the same dead-number failure this query keeps repairing — and
+  // it's what `receipt-chase.tsx` grew this exact field to fix.
+  outstanding: v.union(v.string(), v.null()),
 });
 
 // The reconcile filter pills (server-side, correct across ALL rows).
@@ -546,6 +561,10 @@ const reconcileFilterValidator = v.union(
   v.literal("spend"),
   v.literal("needs_budget"),
   v.literal("missing_receipt"),
+  // The CHASE union — `needsDocumentation || chargeOutstanding != null`, the
+  // population `receiptChase` lists and `chaseCount` counts. Deliberately not
+  // the `missing_receipt` pill: see `RECONCILE_FILTER_LABELS.needs_chasing`.
+  v.literal("needs_chasing"),
   v.literal("uncoded"),
   // The PUBLISHING population — `needsExplaining`, no policy date. `uncoded`
   // beside it is the POLICY question and grandfathers pre-policy history, so
@@ -572,6 +591,7 @@ const reconcileCounts = v.object({
   spend: v.number(),
   needs_budget: v.number(),
   missing_receipt: v.number(),
+  needs_chasing: v.number(),
   uncoded: v.number(),
   needs_explaining: v.number(),
   coding_review: v.number(),
@@ -584,6 +604,26 @@ const reconcileCounts = v.object({
   needs_attention: v.number(),
   ready_to_close: v.number(),
 });
+
+// THE EXPLAINING TALLY, on the wire — see `ExplainProgressTally` for what each
+// field means and why the live/backlog split rides along with the combined
+// figure. Spread into BOTH `listReconcile.explainedProgress` (the whole
+// selection) and every entry of its `groups` (one month band, one person), so
+// the two can never describe the same rows with different field sets.
+const explainProgressFields = {
+  explainableCount: v.number(),
+  explainableCents: v.number(),
+  explainedCount: v.number(),
+  explainedCents: v.number(),
+  liveExplainableCount: v.number(),
+  liveExplainableCents: v.number(),
+  liveExplainedCount: v.number(),
+  liveExplainedCents: v.number(),
+  backlogExplainableCount: v.number(),
+  backlogExplainableCents: v.number(),
+  backlogExplainedCount: v.number(),
+  backlogExplainedCents: v.number(),
+};
 
 // Per-fund SPEND for the dashboard period (period reads are naturally bounded;
 // all-time balance is deferred to the Increase sync in Phase 4).
@@ -1554,6 +1594,150 @@ export function explanationPopulation(tr: Doc<"transactions">): boolean {
  *  the Explain worklist lists and the `needs_explaining` facet selects. */
 export function needsExplaining(tr: Doc<"transactions">): boolean {
   return explanationPopulation(tr) && tr.codingState !== "approved";
+}
+
+/**
+ * DOES ANYBODY STILL OWE SOMETHING ON THIS ROW? — the chase population, in ONE
+ * place.
+ *
+ * ## Why it is a union, and why neither half may be dropped
+ *
+ * The chase started as "missing a receipt" and absorbed CODING when the coding
+ * policy landed. Two predicates cover it, and they cover deliberately different
+ * populations:
+ *
+ *  - {@link needsDocumentation} — a spend charge, a MARKED internal transfer or
+ *    a MARKED processor payout with nothing attached and not yet closed. The
+ *    two marked classes have NO CARDHOLDER (a bank transfer and a processor
+ *    deposit carry no `cardId`/`personId`); they are chased with a statement
+ *    rather than a person, and are exactly what the chase list's "Unattributed"
+ *    bundle holds.
+ *  - `chargeOutstanding` (`lib/codingReminders.ts`) — what the cardholder's own
+ *    digest and the manual FM nudge ask them for, which is cardholder-shaped
+ *    (outflow spend only) but covers the CODING debt the documentation
+ *    predicate knows nothing about.
+ *
+ * Keying the chase on documentation alone shows "3 charges" and then emails
+ * somebody about a fourth. Swapping in `chargeOutstanding` wholesale silently
+ * drops every row that has nobody to chase — which is the half the treasurer,
+ * not the cardholder, has to act on.
+ *
+ * ## Why a function
+ *
+ * There are three callers — `listReconcile`'s `needs_chasing` facet, that same
+ * query's selection-independent `chaseCount` (the gate on the entry point), and
+ * `receiptChase` itself. A hand-copied two-line expression across three callers
+ * is precisely how the fee carve-out went missing from `chaseEligible` for a
+ * release while `needsDocumentation` already had it, so the documentation
+ * predicate said a Stripe fee row owed nothing while the chase demanded two
+ * things from it. One expression, three callers, no drift.
+ */
+export function isChaseable(
+  tr: Doc<"transactions">,
+  codingSinceMs: number,
+): boolean {
+  return needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null;
+}
+
+/**
+ * HOW FAR THROUGH THE EXPLAINING A SET OF ROWS IS — the whole tally, live and
+ * backlog kept apart, in ONE accumulator.
+ *
+ * ## Why the split rides along instead of being a second pass
+ *
+ * The combined figure alone is a number this area has already had to repair
+ * once. A month holding 450 rows reconstructed from the org's imported 2024–25
+ * records and 3 rows of its own live spend reads as "3% explained", and the
+ * founder trying to answer "did I finish THIS month" is looking at a meter
+ * that a backlog nobody is working today has swamped. `monthCodingWorklist`
+ * fixed that for the Explain screen by shipping `live*` and `backlog*`
+ * alongside `total*`; this is the same fix, for the grid that now has to carry
+ * the same meter — per selection AND per month band.
+ *
+ * `isReconstructedHistory` (`@events-os/shared`) is the split, the same
+ * function the worklist calls. `live* + backlog* === total*` always, by
+ * construction: every row in the population lands in exactly one bucket, which
+ * is what {@link tallyExplainProgress} does in a single branch.
+ *
+ * ## Why a function and not three copies of a nine-line loop
+ *
+ * Because there are now three callers — `listReconcile`'s whole-set
+ * `explainedProgress`, the same query's per-group tally, and the tests that
+ * pin them against each other — and a hand-copied tally is exactly how the
+ * `requiresCoding` mirrors drifted (see `explanationPopulation`'s doc).
+ * Costs nothing: every field it reads is already in memory, so it adds no
+ * database read to either caller.
+ */
+export type ExplainProgressTally = {
+  /** Rows that could carry an explanation at all — the denominator. */
+  explainableCount: number;
+  explainableCents: number;
+  /** Of those, the ones with an APPROVED coding. */
+  explainedCount: number;
+  explainedCents: number;
+  /** The same four figures over LIVE rows only — the population observed as
+   *  it happened, which is what "did I finish this month" is asking about. */
+  liveExplainableCount: number;
+  liveExplainableCents: number;
+  liveExplainedCount: number;
+  liveExplainedCents: number;
+  /** And over RECONSTRUCTED rows only (`isReconstructedHistory`). Never
+   *  auto-explained and never exempt — a backlog row still owes a human
+   *  purpose, it just isn't counted against the same meter. */
+  backlogExplainableCount: number;
+  backlogExplainableCents: number;
+  backlogExplainedCount: number;
+  backlogExplainedCents: number;
+};
+
+export function zeroExplainProgress(): ExplainProgressTally {
+  return {
+    explainableCount: 0,
+    explainableCents: 0,
+    explainedCount: 0,
+    explainedCents: 0,
+    liveExplainableCount: 0,
+    liveExplainableCents: 0,
+    liveExplainedCount: 0,
+    liveExplainedCents: 0,
+    backlogExplainableCount: 0,
+    backlogExplainableCents: 0,
+    backlogExplainedCount: 0,
+    backlogExplainedCents: 0,
+  };
+}
+
+/** Fold one row into a {@link ExplainProgressTally}. A row outside
+ *  `explanationPopulation` contributes nothing at all — not even to a
+ *  denominator, which is what keeps a month of processor fees reporting zero
+ *  EXPLAINABLE rather than zero explained. */
+export function tallyExplainProgress(
+  acc: ExplainProgressTally,
+  tr: Doc<"transactions">,
+): void {
+  if (!explanationPopulation(tr)) return;
+  const explained = tr.codingState === "approved";
+  acc.explainableCount += 1;
+  acc.explainableCents += tr.amountCents;
+  if (explained) {
+    acc.explainedCount += 1;
+    acc.explainedCents += tr.amountCents;
+  }
+  if (isReconstructedHistory(tr)) {
+    acc.backlogExplainableCount += 1;
+    acc.backlogExplainableCents += tr.amountCents;
+    if (explained) {
+      acc.backlogExplainedCount += 1;
+      acc.backlogExplainedCents += tr.amountCents;
+    }
+  } else {
+    acc.liveExplainableCount += 1;
+    acc.liveExplainableCents += tr.amountCents;
+    if (explained) {
+      acc.liveExplainedCount += 1;
+      acc.liveExplainedCents += tr.amountCents;
+    }
+  }
 }
 
 /**
@@ -8809,19 +8993,16 @@ export const listReconcile = query({
     // identical to the worklist's denominator, by calling the same function —
     // so a month filtered here and the same month on the Explain screen
     // cannot report different progress.
-    explainedProgress: v.object({
-      /** Matched rows that could carry an explanation at all — the
-       *  denominator. Excludes inflows, internal movements, excluded rows and
-       *  the auto-explained kinds, exactly as the worklist does. */
-      explainableCount: v.number(),
-      /** Their `amountCents` sum (unsigned, matching the worklist's
-       *  `totalCents` — this is "how much money is on the page", not a book
-       *  effect; `selectionTotals` above is the signed arithmetic). */
-      explainableCents: v.number(),
-      /** Of those, the ones with an APPROVED coding. */
-      explainedCount: v.number(),
-      explainedCents: v.number(),
-    }),
+    // The cents figures are unsigned `amountCents` sums, matching the
+    // worklist's `totalCents` — this is "how much money is on the page", not a
+    // book effect; `selectionTotals` above is the signed arithmetic.
+    //
+    // THE LIVE/BACKLOG SPLIT rides along (`live*` / `backlog*`, summing to the
+    // combined figure by construction). Without it a selection holding 450
+    // reconstructed 2024–25 rows and 3 live ones reads as "3% explained" — the
+    // dishonest number `monthCodingWorklist` already had to grow a split to
+    // stop reporting. See `ExplainProgressTally`.
+    explainedProgress: v.object(explainProgressFields),
     // GROUP HEADERS, in render order — present only when `groupBy` is set.
     // `rows` is ordered so each group's rows are contiguous and appear in this
     // same order, so the grid can render headers by walking the page once.
@@ -8842,21 +9023,29 @@ export const listReconcile = query({
           /** What the header prints — "June 2024", a person's name, or
            *  "Unattributed". */
           label: v.string(),
+          /** The cardholder's avatar, for `groupBy:"person"` — `null` for a
+           *  month band, for Unattributed, and for a person with no image.
+           *
+           *  Present because the person band has to LOOK like the chase list it
+           *  replaces (founder, on the deployed build: "Chase receipts — I
+           *  actually do like the way it looks because it does it by person").
+           *  Bounded by the number of DISTINCT people in the match set, not by
+           *  the row count: the resolver memoizes the signed URL per image, so
+           *  grouping 400 rows mints one URL per person, not 400. */
+          imageUrl: v.union(v.string(), v.null()),
           count: v.number(),
           /** `signedBookCents` summed over the group — the same arithmetic
            *  `selectionTotals` uses, so the groups add up to
            *  `selectionTotals.netCents` instead of being a second, subtly
            *  different summation. */
           totalCents: v.number(),
-          /** THIS GROUP'S OWN explaining progress, same four fields and same
-           *  two predicates as `explainedProgress` above but scoped to the
-           *  group — what lets a month band carry the meter the Explain
-           *  screen carries, instead of staying silent about it. Over the
-           *  whole match set like `count`, never the loaded page. */
-          explainableCount: v.number(),
-          explainableCents: v.number(),
-          explainedCount: v.number(),
-          explainedCents: v.number(),
+          /** THIS GROUP'S OWN explaining progress — the same fields, the same
+           *  accumulator (`tallyExplainProgress`) and the same predicates as
+           *  `explainedProgress` above, scoped to the group. What lets a month
+           *  band carry the meter the Explain screen carried, live and backlog
+           *  kept apart, instead of staying silent about it. Over the whole
+           *  match set like `count`, never the loaded page. */
+          ...explainProgressFields,
         }),
       ),
     ),
@@ -8864,6 +9053,19 @@ export const listReconcile = query({
     // dropped for this request. The grid shows this; a filter that silently
     // stops applying is the defect this whole change exists to remove.
     searchIgnoredState: v.boolean(),
+    // THE SCAN HIT ITS CAP and the rows below are a PREFIX of the scope, not
+    // the whole of it. Every figure in this response — the facet counts, the
+    // group totals, `matchedCount`, `explainedProgress` — is then computed over
+    // that prefix, which is a different claim from the one they normally make
+    // ("over the whole scope, never the page").
+    //
+    // Reported rather than logged. `loadPeriodTxns` already `console.warn`s on
+    // truncation, which tells a developer reading production logs and tells the
+    // treasurer nothing; `monthCodingWorklist` has surfaced the same fact to its
+    // own screen since it shipped, and retiring that screen into this grid means
+    // carrying the warning with it. A silently-short list is exactly the class
+    // of dead number this query keeps repairing.
+    truncated: v.boolean(),
     // Whether the transaction-coding policy has STARTED
     // (`codingRequiredSinceMs <= now`). The grid hides the "Needs coding" and
     // "Coding review" options until it has: before that date `requiresCoding`
@@ -8900,6 +9102,35 @@ export const listReconcile = query({
     // — but produces no `scope:"chapter"` seat, so the UI silently hid the flag
     // from them on every row but their own. One authority, no drift.
     viewerIsManager: v.boolean(),
+    // Whether the caller may RENAME a merchant (`finances.renameMerchant`,
+    // bookkeeper+). Resolved server-side from the same `getFinanceRole` rank
+    // the mutation itself enforces, for the reason `monthCodingWorklist`
+    // resolved its own `canRename`: this grid's floor is a finance VIEWER, and
+    // a viewer must not be shown an editable field every keystroke of which the
+    // server would refuse. The Merchant cell's existing `readOnly` answers a
+    // different question — whether the row's BOOK is writable at all — so a
+    // viewer in their own chapter passed it and got a live text box backed by
+    // nothing. Retiring the Explain screen moves those viewers onto this grid,
+    // so the guarantee has to move with them.
+    viewerCanRename: v.boolean(),
+    // Whether the caller may read the PUBLISH CONSOLE for the book on screen
+    // (`lib/publicLedgerAccess.ts#hasLedgerConsole` — the non-throwing half of
+    // the gate `publicLedger.console_` enforces).
+    //
+    // THE GRID MUST NOT SPECULATIVELY FIRE THAT QUERY. `console_` throws a
+    // ConvexError for a caller without the power, and this whole screen sits
+    // inside a `FinanceBoundary` — so one speculative call would degrade the
+    // ENTIRE reconcile grid to "Restricted" for anybody who can reconcile but
+    // not publish. That exact shape is on this area's record: a returns-
+    // validator failure inside `publicLedger.preview` was dressed as
+    // "Restricted" and locked the founder out for a night (2026-08-11/12).
+    //
+    // So the capability is probed ONCE, here, from the query the grid already
+    // runs — the same discipline as `receipts.canViewList` on this screen, for
+    // the same reason — and the month bands mount the console query only when
+    // it says yes. Always `false` on a merged queue: the console reads ONE
+    // book, and "all books" is not one.
+    viewerCanUseLedgerConsole: v.boolean(),
   }),
   handler: async (ctx, args) => {
     // The selection, as a SET. `filters` is the real input; the singular
@@ -8919,6 +9150,7 @@ export const listReconcile = query({
       spend: 0,
       needs_budget: 0,
       missing_receipt: 0,
+      needs_chasing: 0,
       uncoded: 0,
       needs_explaining: 0,
       coding_review: 0,
@@ -8956,18 +9188,16 @@ export const listReconcile = query({
         matchedCount: 0,
         hasMore: false,
         selectionTotals: { inCents: 0, outCents: 0, netCents: 0, neutralCount: 0 },
-        explainedProgress: {
-          explainableCount: 0,
-          explainableCents: 0,
-          explainedCount: 0,
-          explainedCents: 0,
-        },
+        explainedProgress: zeroExplainProgress(),
         searchIgnoredState: false,
+        truncated: false,
         codingArmed: false,
         toClearCount: 0,
         chaseCount: 0,
         viewerPersonId: null,
         viewerIsManager: false,
+        viewerCanRename: false,
+        viewerCanUseLedgerConsole: false,
       };
     // Resolve the BOOKS this queue reads. One book in every scope except
     // `"all"`, which merges central + every active chapter (see the `scope`
@@ -9024,6 +9254,13 @@ export const listReconcile = query({
     // not book-by-book. Single-book scopes take the identical path they always
     // did (one iteration), so nothing about them changes.
     const perBook: Doc<"transactions">[][] = [];
+    // A book whose read came back FULL — the cap, not the end of the data.
+    // Measured on the raw `.take()` result before any filtering, because that
+    // is the only place the distinction still exists: once the excluded rows and
+    // the wrong-period rows are dropped, a truncated read and a complete one are
+    // indistinguishable. See the `truncated` field in the returns validator for
+    // why this is reported rather than only logged.
+    let truncated = false;
     for (const book of books) {
       if (args.year != null) {
         // Period-scoped (no-dead-numbers): the SAME year/month/ytd window a
@@ -9039,20 +9276,21 @@ export const listReconcile = query({
           sandboxMode,
           !ytd ? args.month : undefined,
         );
+        if (yearTxns.length >= ROLLUP_SCAN_LIMIT) truncated = true;
         perBook.push(
           yearTxns
             .filter((tr) => inDashRange(tr.postedAt, dp))
             .filter((tr) => tr.status !== "excluded"),
         );
       } else {
+        const raw = await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
+          .order("desc")
+          .take(ROLLUP_SCAN_LIMIT);
+        if (raw.length >= ROLLUP_SCAN_LIMIT) truncated = true;
         perBook.push(
-          (
-            await ctx.db
-              .query("transactions")
-              .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
-              .order("desc")
-              .take(ROLLUP_SCAN_LIMIT)
-          )
+          raw
             .filter((tr) => txnMatchesMode(tr, sandboxMode))
             // An intentionally-excluded charge is never part of the reconcile inbox.
             .filter((tr) => tr.status !== "excluded"),
@@ -9131,6 +9369,19 @@ export const listReconcile = query({
       // `needsDocumentation` has always done. THE PREDICATE IS UNCHANGED.
       needs_budget: needsBudget(tr) && open,
       missing_receipt: needsDocumentation(tr),
+      // ── THE CHASE, AS ONE EXPRESSION ────────────────────────────────────
+      // Byte for byte what `receiptChase` filters on and what `chaseCount`
+      // counts below — `isChaseable`, called by all three, so the facet, the
+      // number on the "Chase receipts" entry point and the chase list itself
+      // cannot describe different populations.
+      //
+      // It is a UNION and neither half is redundant: `missing_receipt` above
+      // is only `needsDocumentation`, which misses a charge whose receipt is
+      // attached and whose CODING is not (the chase absorbed coding when the
+      // policy landed); and `chargeOutstanding` alone would miss the marked
+      // transfers and marked payouts that have no cardholder and are chased
+      // with a statement. See the key's doc in `@events-os/shared`.
+      needs_chasing: isChaseable(tr, codingSinceMs),
       // The substantiation chase (`docs/plans/transaction-coding.md`):
       // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
       // `coding_review` waits on a REVIEWER — deliberately keyed off
@@ -9223,7 +9474,26 @@ export const listReconcile = query({
     // number you can get to.
     const isHiddenTransferLeg = (tr: Doc<"transactions">): boolean =>
       tr.flow === "transfer";
-    const transfersRequested = activeFilters.includes("transfers");
+    // WHICH SELECTIONS BRING THE HIDDEN LEGS BACK.
+    //
+    // `transfers` is the obvious one — it is the queue's inclusion filter and
+    // exists for exactly this.
+    //
+    // `needs_chasing` is the one that would otherwise be quietly wrong. A
+    // MARKED internal transfer owes its receipt, is `flow:"transfer"`, and is
+    // therefore hidden from the default queue — so a chase view built on the
+    // ordinary queue population would omit precisely the rows the treasurer,
+    // rather than a cardholder, has to act on. That is the founder rule
+    // `needsDocumentation` is built around ("marking a row must never be a way
+    // to make it stop being chased"), and it survived until now only because
+    // the chase lived on a separate surface with its own scan. Bringing the
+    // chase INTO the grid means bringing its population with it.
+    //
+    // This widens where a row is LISTED, never what it owes: no predicate
+    // moves, and `counts.all` still excludes hidden legs, so the header's
+    // backlog figure is unchanged.
+    const transfersRequested =
+      activeFilters.includes("transfers") || activeFilters.includes("needs_chasing");
 
     // Cardholder resolution, built HERE rather than beside the row projection
     // because a search has to match a cardholder's NAME across every row in
@@ -9279,9 +9549,11 @@ export const listReconcile = query({
     let chaseCount = 0;
     for (const tr of all) {
       const flags = flagsFor(tr);
-      if (needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null) {
-        chaseCount += 1;
-      }
+      // `isChaseable`, the same function the `needs_chasing` facet and
+      // `receiptChase` call — see its doc for why the union has to stay a
+      // union. Counted over EVERY row including the hidden transfer legs, and
+      // ignoring the selection.
+      if (isChaseable(tr, codingSinceMs)) chaseCount += 1;
       if (isHiddenTransferLeg(tr)) {
         // A hidden leg contributes exactly ONE thing to the unfiltered view:
         // the `transfers` facet count, so the dropdown can advertise the rows
@@ -9291,7 +9563,20 @@ export const listReconcile = query({
         // zero rows is the dead number this whole area exists to prevent. What
         // a hidden row still OWES is unaffected and is counted by `chaseCount`
         // above, which is what the chase page and its button read.
+        // A hidden leg advertises itself in exactly the facets that can BRING
+        // IT BACK, and no others.
+        //
+        // `transfers` is the original one — the queue's inclusion filter.
+        // `needs_chasing` is the second, and leaving it out was a dead number
+        // caught by test: the chase un-hides these legs (see
+        // `transfersRequested` above), so a book whose marked transfer owed a
+        // receipt advertised "Owes a receipt or coding 1" and then rendered 2
+        // rows when you picked it. The count and the selection have to describe
+        // the same population or the pill is a lie.
         if (countsTowardFacet(flags, activeFilters, "transfers")) counts.transfers += 1;
+        if (countsTowardFacet(flags, activeFilters, "needs_chasing")) {
+          counts.needs_chasing += 1;
+        }
         // A SEARCH un-hides these. The hiding rule exists because a transfer
         // leg is not queue work, which is an argument about browsing — it is
         // not an argument for making a $1,000 movement unfindable by name when
@@ -9329,25 +9614,13 @@ export const listReconcile = query({
 
     // ── HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS ────────────────────
     // Over the WHOLE match set (never the page), and over the SAME population
-    // `monthCodingWorklist` counts — by calling its predicate, not by
+    // `monthCodingWorklist` counts — by calling its accumulator, not by
     // restating it. Costs one pass over rows already in memory and no reads at
     // all, which is why it can be unconditional rather than a flag the client
-    // has to remember to ask for.
-    const explainedProgress = {
-      explainableCount: 0,
-      explainableCents: 0,
-      explainedCount: 0,
-      explainedCents: 0,
-    };
-    for (const tr of selected) {
-      if (!explanationPopulation(tr)) continue;
-      explainedProgress.explainableCount += 1;
-      explainedProgress.explainableCents += tr.amountCents;
-      if (tr.codingState === "approved") {
-        explainedProgress.explainedCount += 1;
-        explainedProgress.explainedCents += tr.amountCents;
-      }
-    }
+    // has to remember to ask for. The live/backlog split comes free with it,
+    // for the reason `ExplainProgressTally` documents.
+    const explainedProgress = zeroExplainProgress();
+    for (const tr of selected) tallyExplainProgress(explainedProgress, tr);
 
     // ── SORT, ACROSS THE WHOLE MATCH SET ────────────────────────────────────
     // `selected` is every matching row in scope, not a page of them — the scan
@@ -9387,16 +9660,13 @@ export const listReconcile = query({
     // DISTINCT people and cards in the book, not by the row count, so grouping
     // adds no per-row read and stays inside the page cap's intent.
     let groups:
-      | {
+      | ({
           key: string;
           label: string;
+          imageUrl: string | null;
           count: number;
           totalCents: number;
-          explainableCount: number;
-          explainableCents: number;
-          explainedCount: number;
-          explainedCents: number;
-        }[]
+        } & ExplainProgressTally)[]
       | undefined;
     if (args.groupBy != null) {
       const byKey = new Map<
@@ -9404,39 +9674,40 @@ export const listReconcile = query({
         {
           key: string;
           label: string;
+          imageUrl: string | null;
           count: number;
           totalCents: number;
-          explainableCount: number;
-          explainableCents: number;
-          explainedCount: number;
-          explainedCents: number;
           rows: Doc<"transactions">[];
-        }
+        } & ExplainProgressTally
       >();
       for (const tr of ordered) {
         let key: string;
         let label: string;
+        // A month band has no avatar; only the person grouping sets one.
+        let imageUrl: string | null = null;
         if (args.groupBy === "month") {
           const p = easternParts(tr.postedAt);
           key = `${p.year}-${String(p.month).padStart(2, "0")}`;
           label = periodLabel(key);
         } else {
-          const holder = await cardholders.resolveRef(tr);
+          // `resolve`, not `resolveRef`: the person band carries an avatar, and
+          // the resolver caches the signed URL per image, so this costs one
+          // `storage.getUrl` per DISTINCT person rather than one per row.
+          const holder = await cardholders.resolve(tr);
           key = holder?.personId ?? UNATTRIBUTED_GROUP_KEY;
           label = holder?.name ?? "Unattributed";
+          imageUrl = holder?.imageUrl ?? null;
         }
         let group = byKey.get(key);
         if (!group) {
           group = {
             key,
             label,
+            imageUrl,
             count: 0,
             totalCents: 0,
-            explainableCount: 0,
-            explainableCents: 0,
-            explainedCount: 0,
-            explainedCents: 0,
             rows: [],
+            ...zeroExplainProgress(),
           };
           byKey.set(key, group);
         }
@@ -9445,25 +9716,22 @@ export const listReconcile = query({
         // group totals ADD UP to `selectionTotals.netCents` rather than being a
         // second summation that disagrees with the header above them.
         group.totalCents += signedBookCents(tr);
-        // THE GROUP'S OWN PROGRESS — the same two tests the whole-set
+        // THE GROUP'S OWN PROGRESS — the SAME accumulator the whole-set
         // `explainedProgress` block above runs, on the same rows, so a month
-        // band here and that month on the Explain screen cannot report
-        // different numbers. Free: this loop already visits every matched row
-        // and both predicates read fields already in memory.
+        // band here and the strip above it cannot report different numbers,
+        // and neither can disagree with the meter the Explain screen used to
+        // carry. Free: this loop already visits every matched row and every
+        // field the tally reads is in memory.
         //
         // It has to be computed HERE rather than by the client, because the
         // denominator is `explanationPopulation`, which reads `feeOrigin`,
         // `source`, `sourceCategory` and both refund pointers — none of which
         // `reconcileRow` ships. That is why the group header shipped silent
         // about progress in #704 rather than guessing from the loaded page.
-        if (explanationPopulation(tr)) {
-          group.explainableCount += 1;
-          group.explainableCents += tr.amountCents;
-          if (tr.codingState === "approved") {
-            group.explainedCount += 1;
-            group.explainedCents += tr.amountCents;
-          }
-        }
+        // The live/backlog split has the same problem twice over
+        // (`isReconstructedHistory` reads `source` and `importBatchId`), which
+        // is why it rides along here rather than being derived downstream.
+        tallyExplainProgress(group, tr);
         group.rows.push(tr);
       }
       const ordering = [...byKey.values()];
@@ -9491,16 +9759,11 @@ export const listReconcile = query({
         });
       }
       ordered = ordering.flatMap((g) => g.rows);
-      groups = ordering.map(({ key, label, count, totalCents, ...progress }) => ({
-        key,
-        label,
-        count,
-        explainableCount: progress.explainableCount,
-        explainableCents: progress.explainableCents,
-        explainedCount: progress.explainedCount,
-        explainedCents: progress.explainedCents,
-        totalCents,
-      }));
+      // `rows` dropped — it's the working accumulator's own scratch space and
+      // is not on the wire. Everything else (including the whole
+      // `ExplainProgressTally`) passes through, so adding a field to the tally
+      // never needs a matching line here.
+      groups = ordering.map(({ rows: _rows, ...group }) => group);
     }
 
     // PAGE the rows. `ordered` is the full match set across the scope — that's
@@ -9637,6 +9900,10 @@ export const listReconcile = query({
         chargedTo: await resolveChargedTo(tr),
         repaymentStatus: await resolveRepaymentStatus(tr),
         explanation: await resolveExplanation(tr),
+        // Pure, no read — the same function the digest and the manual nudge
+        // read, so a row's label and the email somebody gets about it are the
+        // same sentence.
+        outstanding: chargeOutstanding(tr, codingSinceMs),
       })),
     );
     // Resolved off the caller's HOME chapter (not `scope`, which can be a
@@ -9659,11 +9926,23 @@ export const listReconcile = query({
       explainedProgress,
       groups,
       searchIgnoredState,
+      truncated,
       codingArmed: codingSinceMs <= Date.now(),
       toClearCount,
       chaseCount,
       viewerPersonId: viewer?._id ?? null,
       viewerIsManager: access.isManager,
+      // The rank `renameMerchant` itself enforces, answered here rather than
+      // inferred from the fact that the grid loaded at all — see the field's
+      // doc in the returns validator.
+      viewerCanRename: financeRoleAtLeast(access.role, "bookkeeper"),
+      // Single-book scopes only — `console_` takes one book and there is no
+      // console for a merged queue. `books.length === 1` is the honest test:
+      // it also covers `scope:"all"` collapsing to a single active chapter.
+      viewerCanUseLedgerConsole:
+        books.length === 1
+          ? await hasLedgerConsole(ctx, homeChapterId, books[0])
+          : false,
     };
   },
 });
@@ -9827,10 +10106,10 @@ export const receiptChase = query({
     const owing = perBook
       .flat()
       .filter((tr) => txnMatchesMode(tr, sandboxMode))
-      .filter(
-        (tr) =>
-          needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null,
-      );
+      // `isChaseable` — the SAME function the grid's `needs_chasing` facet and
+      // its `chaseCount` call, so this list and the number that sent the caller
+      // here cannot describe different populations.
+      .filter((tr) => isChaseable(tr, codingSinceMs));
 
     const resolveCardholder = makeCardholderResolver(ctx).resolve;
     const byHolder = new Map<string, typeof chaseGroup.type>();

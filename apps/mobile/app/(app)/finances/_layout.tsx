@@ -95,12 +95,16 @@ function isActive(pathname: string, path: string): boolean {
   return pathname === path || pathname.startsWith(`${path}/`);
 }
 
-/** The Book's menu leads to screens that are still their own routes (a
- *  month's worklist, the chase list, the publish console). Standing on one of
- *  those must keep the Book chip lit, or the bar would say you had left
- *  finance's main tab by using its own menu. */
+/** The Book's menu leads to screens that are still their own routes (the chase
+ *  list, the publish console, the review queue). Standing on one of those must
+ *  keep the Book chip lit, or the bar would say you had left finance's main tab
+ *  by using its own menu.
+ *
+ *  `/finances/explain` is deliberately absent: it is no longer a screen but a
+ *  redirect INTO `/finances/reconcile` (the grid absorbed it — see that file),
+ *  so nobody is ever standing on it long enough for the chip to matter, and
+ *  listing it would claim a satellite that no longer exists. */
 const BOOK_SATELLITES = [
-  "/finances/explain",
   "/finances/receipt-chase",
   "/finances/publish",
   "/finances/coding",

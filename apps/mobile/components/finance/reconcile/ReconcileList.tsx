@@ -90,7 +90,7 @@
  * anyone" and "payer flags themselves" are both covered, exactly mirroring
  * the server's own OR-gate. Server authz stays the source of truth either way.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -140,6 +140,7 @@ import { ReconcileGroupHeader } from "./ReconcileGroupHeader";
 import {
   groupSegments,
   type GroupSummary,
+  type ReconcileGroupBy,
   type ReconcileSortDir,
   type ReconcileSortKey,
 } from "./gridView";
@@ -224,6 +225,7 @@ export function ReconcileList({
   ownChapterId = null,
   centralForItems,
   isManager = false,
+  canRename = false,
   viewerPersonId = null,
   onOpenRow,
   openRowId = null,
@@ -232,6 +234,8 @@ export function ReconcileList({
   sortDir = "desc",
   onSort,
   groups,
+  groupBy = null,
+  renderGroupAction,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
@@ -267,6 +271,15 @@ export function ReconcileList({
   // the "Mark personal" row action, which mirrors `cards.flagPersonalCharge`'s
   // own server-side manager-or-cardholder authz.
   isManager?: boolean;
+  // Whether the caller may RENAME a merchant at all (`listReconcile`'s
+  // `viewerCanRename` — the bookkeeper+ rank `finances.renameMerchant` itself
+  // enforces). Separate from the row's own `readOnly`, which answers a
+  // different question: whether this row's BOOK is writable. A finance VIEWER
+  // in their own chapter passes that test and still cannot rename anything, so
+  // without this they were shown a live text box every keystroke of which the
+  // server would refuse — the guarantee `monthCodingWorklist.canRename` gave
+  // the Explain screen, carried onto the grid that replaces it.
+  canRename?: boolean;
   // Founder feedback review: the caller's OWN roster person id
   // (`listReconcile`'s `viewerPersonId`) — widens "Mark personal" to a
   // cardholder's OWN row, mirroring the server's cardholder-or-manager gate.
@@ -312,6 +325,18 @@ export function ReconcileList({
    *  ABSENT → one flat list, byte-for-byte the grid this file already
    *  rendered. */
   groups?: readonly GroupSummary[];
+  /** WHICH grouping produced them — the bands render differently for people
+   *  (an avatar, and a nudge button when the host supplies one) than for
+   *  months. Derivable from the group keys in principle; passed explicitly
+   *  because "does this key parse as YYYY-MM" is not a question a renderer
+   *  should be answering. */
+  groupBy?: ReconcileGroupBy | null;
+  /** Per-band trailing control, built by the host. Returning `null` (or
+   *  omitting this) leaves the band exactly what it was.
+   *
+   *  A slot rather than a `onNudge` prop: the nudge is seat-gated, rate-limited
+   *  and in-flight-aware, and none of that belongs in a grid renderer. */
+  renderGroupAction?: (group: GroupSummary) => ReactNode;
 }) {
   // "Select all" only ever means the rows this caller can actually act on —
   // an uneditable row (a foreign chapter's, in the merged queue) has no
@@ -391,6 +416,7 @@ export function ReconcileList({
       ownChapterId={ownChapterId}
       centralForItems={centralForItems}
       isManager={isManager}
+      canRename={canRename}
       viewerPersonId={viewerPersonId}
       widths={widths}
       showCardholder={showCardholder}
@@ -512,8 +538,18 @@ export function ReconcileList({
                     count={seg.group.count}
                     totalCents={seg.group.totalCents}
                     shownCount={seg.shownCount}
-                    explainableCount={seg.group.explainableCount}
-                    explainedCount={seg.group.explainedCount}
+                    // The whole tally, passed through rather than picked
+                    // apart: the band needs the live/backlog split as well as
+                    // the combined figure, and `GroupSummary` already IS an
+                    // `ExplainProgress`.
+                    progress={seg.group}
+                    imageUrl={seg.group.imageUrl}
+                    showAvatar={groupBy === "person"}
+                    // The screen decides whether this band gets a nudge button
+                    // — it owns the seat check, the 24h rate-limit status and
+                    // the action itself. `null` for every month band and for
+                    // any caller who may not nudge.
+                    action={renderGroupAction?.(seg.group) ?? null}
                   />
                   {rows
                     .slice(seg.startIndex, seg.startIndex + seg.shownCount)
@@ -548,6 +584,7 @@ function ReconcileRow({
   ownChapterId,
   centralForItems,
   isManager,
+  canRename,
   viewerPersonId,
   widths,
   showCardholder,
@@ -568,6 +605,7 @@ function ReconcileRow({
   ownChapterId: Id<"chapters"> | null;
   centralForItems?: PickerItem[];
   isManager: boolean;
+  canRename: boolean;
   viewerPersonId: Id<"people"> | null;
   widths: ColWidths;
   /** The side panel renders these three itself — see `hidesForPanel`. */
@@ -863,7 +901,11 @@ function ReconcileRow({
           belongs inside the wrapper; if a future cell wants out, the question
           is whether it can change data, not whether it's inconvenient. */}
       <Cell width={widths.merchant}>
-        <MerchantCell row={row} readOnly={readOnly} />
+        {/* TWO independent reasons the name goes flat, OR'd here rather than
+            inside the cell: this row's book isn't writable, or this caller
+            holds no rank to rename with anywhere. Both leave the history icon
+            live — reading what a row used to be called is a read. */}
+        <MerchantCell row={row} readOnly={readOnly || !canRename} />
       </Cell>
 
       {/* Everything from here on is the editable body. Wrapping it in one
