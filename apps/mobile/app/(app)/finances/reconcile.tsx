@@ -850,11 +850,29 @@ function ReconcileGrid() {
   // it, and reimplementing a separation-of-duties check on a band is how one
   // gets quietly weakened.
   const showPublishInBands = groupBy === "month" && canUseLedgerConsole;
-  // The one book the console is about. `null` means "the caller's own desk",
-  // which is what both `console_` and the preview mint default to.
+  // ── THE ONE BOOK THE CONSOLE IS ABOUT ─────────────────────────────────────
+  // `null` means "this grid is showing several books at once", and ONLY that.
+  //
+  // It used to mean "the caller's own desk", because `console_` and the
+  // preview mint both default to the caller's home chapter when handed no
+  // scope. That was fine while `null` only fed those defaults — and became a
+  // bug the moment the month band started BRANCHING on it (#724, to stop the
+  // merged queue printing one book's publication status over rows from
+  // several). A treasurer standing on their own chapter has
+  // `centralScope === false` and `targetChapterId === null` — the peek param
+  // is only set when looking at SOMEBODY ELSE's chapter — so the band read
+  // them as the ambiguous case and withheld the status badge and Preview from
+  // the commonest scope in the app. Founder: "I can't see a quick preview
+  // button anymore."
+  //
+  // So the caller's own chapter is now named explicitly. The only scope that
+  // still resolves to `null` is the merged all-books queue, where a month band
+  // genuinely spans books and no single publication status is true of it.
   const consoleScope: SingleBookScope | null = centralScope
     ? "central"
-    : (targetChapterId ?? null);
+    : allBooksScope
+      ? null
+      : (targetChapterId ?? ownChapterId);
   const ledgerConsole = useQuery(
     api.publicLedger.console_,
     showPublishInBands
