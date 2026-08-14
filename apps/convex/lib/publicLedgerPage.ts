@@ -89,6 +89,12 @@ export type PublicLedgerEntry = {
   affiliationMix: Record<string, number> | null;
   groupDescription: string | null;
   documentation: DocumentationState | null;
+  /** Why this row owed no document, or null when it owed one. A plain string
+   *  rather than the `DocumentationExemption` union: a published revision is
+   *  frozen evidence that must keep validating after a key is retired, so the
+   *  page resolves the label through the shared list and prints nothing for a
+   *  key it no longer recognises. */
+  documentationExempt: string | null;
   reconstructed: boolean;
   nonDiscretionaryFee: boolean;
 };

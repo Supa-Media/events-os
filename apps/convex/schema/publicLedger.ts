@@ -409,6 +409,18 @@ export const financePublicationEntries = defineTable({
   documentation: v.optional(
     v.union(...DOCUMENTATION_STATES.map((d) => v.literal(d))),
   ),
+  /** WHY THIS ROW OWED NO DOCUMENT, when it owed none — a processor fee, a
+   *  payout, an internal transfer, a payer's fee coverage, a personal charge,
+   *  or a deposit already recorded as giving.
+   *
+   *  A LOOSE STRING, not a union, for the same reason `documentation` above is
+   *  a union of a frozen tuple but `method` is not: a published revision is
+   *  immutable evidence and must keep validating years later, so a key retired
+   *  from `DOCUMENTATION_EXEMPTIONS` cannot be allowed to invalidate the
+   *  months that were published while it existed. The page resolves the label
+   *  through the shared list and falls back to printing nothing for a key it
+   *  no longer knows. */
+  documentationExempt: v.optional(v.string()),
   /** Rebuilt from a spreadsheet rather than watched as it happened. */
   reconstructed: v.optional(v.boolean()),
   /** A processor/bank fee that was charged, not chosen (`feeOrigin`). Flagged

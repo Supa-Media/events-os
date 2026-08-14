@@ -503,6 +503,9 @@ const reconcileRow = v.object({
       v.literal("processor_fee"),
       v.literal("processor_payout"),
       v.literal("internal_transfer"),
+      v.literal("fee_coverage"),
+      v.literal("personal_charge"),
+      v.literal("recorded_giving"),
       v.null(),
     ),
   }),
@@ -1626,10 +1629,37 @@ export function owesDocumentation(tr: Doc<"transactions">): boolean {
  */
 export function documentationExemption(
   tr: Doc<"transactions">,
+  /**
+   * How much of this row a confirmed gift already claims (`lib/giftCoverage.ts`).
+   * PASSED IN rather than read here, exactly as `autoExplainedKind`'s
+   * `gift_credit` is: the fact lives in another table and this function is pure
+   * on the transaction. Omitted ⇒ "not resolved", which is treated as "no
+   * coverage" — a caller that hasn't looked cannot be given an exemption it
+   * didn't establish.
+   */
+  opts?: { giftCoveredCents?: number },
 ): DocumentationExemption | null {
   if (isNonDiscretionaryFee(tr)) return "processor_fee";
+  // The payer's own fee coverage on a repayment. Ahead of the personal test
+  // below only for tidiness — a coverage row is never `isPersonal`.
+  if (tr.feeCoverageOrigin != null) return "fee_coverage";
   if (isProcessorPayout(tr)) return "processor_payout";
   if (isMarkedTransfer(tr)) return "internal_transfer";
+  // ── A PERSONAL CHARGE OWES MONEY, NOT PAPER ───────────────────────────────
+  // It is not the org's purchase (`isSpend` has said so since the feature
+  // shipped), so a receipt for it documents nothing the org did. What settles
+  // it is the money coming back, and the repayment record is that evidence.
+  //
+  // THIS DOES NOT MAKE AN UNREPAID CHARGE LOOK SETTLED. The exemption is about
+  // the DOCUMENTATION axis only; the row keeps its own status line — "awaiting
+  // repayment" until the money lands (`autoExplanationLine("personal", …)`) —
+  // and that line is what a reader is meant to act on. Founder, 2026-08-14:
+  // "awaiting repayments should still be loud."
+  if (tr.isPersonal === true) return "personal_charge";
+  // A bank credit a confirmed gift already claims. The gift record names what
+  // arrived and which book it belongs to; asking for a receipt on top of it
+  // asks a donor to invoice us for their donation.
+  if ((opts?.giftCoveredCents ?? 0) > 0) return "recorded_giving";
   return null;
 }
 
@@ -10826,13 +10856,14 @@ export const listReconcile = query({
     // neither a receipt nor an approved exception (the undocumented tail).
     const resolveDocumentation = async (
       tr: Doc<"transactions">,
+      giftCoveredCents: number,
     ): Promise<(typeof reconcileRow.type)["documentation"]> => {
       // WHY THIS ROW OWES NOTHING, carried on every state rather than only on
       // the undocumented one. A payout somebody attached a settlement PDF to
       // still isn't owed anything, and a cell that only learned the exemption
       // when the row was bare would go back to nagging the moment evidence
       // showed up. Costs no read — it's three field tests on the doc.
-      const exemptReason = documentationExemption(tr);
+      const exemptReason = documentationExemption(tr, { giftCoveredCents });
       if (tr.receiptStorageId != null) {
         return {
           state: "receipt",
@@ -10909,20 +10940,23 @@ export const listReconcile = query({
     // above are plain Maps, so concurrent misses can duplicate a read — which
     // is harmless (same id, same answer) and much cheaper than serializing.
     const rows: (typeof reconcileRow.type)[] = await Promise.all(
-      page.map(async (tr) => ({
+      page.map(async (tr) => {
         // One index read per CREDIT on the page (`giftCoverageCents` skips
         // everything else without asking the database), so the grid can badge
-        // a credit the giving layer has already counted.
-        ...toTxnSummary(
-          tr,
-          tr.flow === "inflow" ? await giftCoverageCents(ctx, tr._id) : 0,
-        ),
+        // a credit the giving layer has already counted. Resolved ONCE and
+        // shared with the documentation cell below, which needs the same fact
+        // to know a gift-recorded deposit owes no receipt — two reads for one
+        // answer is how the badge and the cell would come to disagree.
+        const giftCovered =
+          tr.flow === "inflow" ? await giftCoverageCents(ctx, tr._id) : 0;
+        return {
+        ...toTxnSummary(tr, giftCovered),
         correctable: isTransactionCorrectable(tr),
         isReconstructed: isReconstructedHistory({
           externalId: tr.externalId ?? null,
           historicalImportBatch: tr.historicalImportBatch ?? null,
         }),
-        documentation: await resolveDocumentation(tr),
+        documentation: await resolveDocumentation(tr, giftCovered),
         cardholder: await cardholders.resolve(tr),
         book: bookOf(tr),
         chargedTo: await resolveChargedTo(tr),
@@ -10932,7 +10966,8 @@ export const listReconcile = query({
         // read, so a row's label and the email somebody gets about it are the
         // same sentence.
         outstanding: chargeOutstanding(tr, codingSinceMs),
-      })),
+        };
+      }),
     );
     // Resolved off the caller's HOME chapter (not `scope`, which can be a
     // central/peeked chapter the caller may not have a roster row in) — the
