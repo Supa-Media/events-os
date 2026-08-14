@@ -35,6 +35,7 @@ import { colors } from "../../../lib/theme";
 import { GOLD, GOLD_DIM } from "../dashboard/chartColors";
 import { chartScaleMaxCents, heightPct } from "../dashboard/monthBarsGeometry";
 import { meterTone } from "../dashboard/meterTone";
+import { recurringPeriodSummary } from "./recurringPeriodSummary";
 
 type GlanceRow = FunctionReturnType<
   typeof api.finances.budgetsGlance
@@ -42,10 +43,6 @@ type GlanceRow = FunctionReturnType<
 type Period = NonNullable<GlanceRow["periods"]>[number];
 
 const CHART_HEIGHT = 56;
-
-/** How many windows a cadence has in a year — the denominator for "the year",
- *  which the periods array itself can't supply once projection is withheld. */
-const WINDOWS_PER_YEAR: Record<string, number> = { monthly: 12, quarterly: 4 };
 
 /** A real window's fill follows the SAME meter tone the card's own bar uses,
  *  so a window that ran over is red here and red there. */
@@ -66,12 +63,17 @@ export function RecurringPeriodStrip({
 }) {
   if (periods.length === 0) return null;
 
-  const actual = periods.filter((p) => p.state !== "projected");
-  const projected = periods.filter((p) => p.state === "projected");
-  const spentToDateCents = actual.reduce((s, p) => s + p.spentCents, 0);
-  const projectedYearCents = periods.reduce((s, p) => s + p.spentCents, 0);
-  const windows = WINDOWS_PER_YEAR[cadence] ?? periods.length;
-  const yearCapCents = capCents * windows;
+  const {
+    spentToDateCents,
+    projectedYearCents,
+    yearCapCents,
+    elapsedCount,
+    projectedCount,
+    completedCount,
+    overYearCents,
+  } = recurringPeriodSummary(periods, capCents, cadence);
+  const unit = cadence === "quarterly" ? "quarter" : "month";
+  const units = `${unit}s`;
 
   // The cap line shares the bars' scale, so "over the line" means over cap.
   const scaleMax = chartScaleMaxCents(
@@ -117,35 +119,28 @@ export function RecurringPeriodStrip({
           <Text className="font-semibold text-ink">
             {formatCents(spentToDateCents)}
           </Text>{" "}
-          spent across {actual.length}{" "}
-          {cadence === "quarterly"
-            ? actual.length === 1
-              ? "quarter"
-              : "quarters"
-            : actual.length === 1
-              ? "month"
-              : "months"}
+          spent across {elapsedCount} {elapsedCount === 1 ? unit : units}
         </Text>
-        {projected.length > 0 ? (
-          <Text className="text-xs text-muted">
-            On track for{" "}
-            <Text className="font-semibold text-ink">
-              {formatCents(projectedYearCents)}
-            </Text>{" "}
-            of {formatCents(yearCapCents)} this year
-            {projectedYearCents > yearCapCents ? (
-              <Text className="font-semibold text-danger">
-                {" "}
-                · {formatCents(projectedYearCents - yearCapCents)} over
-              </Text>
-            ) : null}
-          </Text>
-        ) : null}
-        {projected.length > 0 ? (
-          <Text className="text-2xs text-faint">
-            Faded bars are an estimate from the {actual.length - 1} completed{" "}
-            {cadence === "quarterly" ? "quarters" : "months"}, not spend.
-          </Text>
+        {projectedCount > 0 ? (
+          <>
+            <Text className="text-xs text-muted">
+              On track for{" "}
+              <Text className="font-semibold text-ink">
+                {formatCents(projectedYearCents)}
+              </Text>{" "}
+              of {formatCents(yearCapCents)} this year
+              {overYearCents > 0 ? (
+                <Text className="font-semibold text-danger">
+                  {" "}
+                  · {formatCents(overYearCents)} over
+                </Text>
+              ) : null}
+            </Text>
+            <Text className="text-2xs text-faint">
+              Faded bars are an estimate from the {completedCount} completed{" "}
+              {completedCount === 1 ? unit : units}, not spend.
+            </Text>
+          </>
         ) : null}
       </View>
     </View>
