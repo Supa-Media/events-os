@@ -54,7 +54,17 @@
  * settlement entries. Manual `recordTransfer` pairs are never executed (they
  * record movements that already happened outside the app). With the toggle
  * off, every write is a ledger entry and the LEDGER alone states each book's
- * true value.
+ * true value — EXCEPT `settleChapterBalances`' `balance_settlement` pairs,
+ * which contribute nothing to book value by construction
+ * (`bookBalance.ts#signedBookCents`) and exist ONLY to be executed. With the
+ * toggle off nothing ever executes one, so `settleChapterBalances` books
+ * NOTHING and instead reports each chapter's book-vs-bank gap through its
+ * `notes` — booking a $0 pair nobody will move would just re-book the
+ * identical row every morning forever (founder: "it creates actual things on
+ * the ledger which is just wrong and cluttered"). Both that gate and step 5's
+ * execution filter read `financeSettings.autoTransferRealMovementSinceMs`
+ * through the one shared `resolveRealMovementSinceMs` helper so they can
+ * never disagree about whether movement is on.
  *
  * SAFETY PROPERTIES:
  *  - Idempotent everywhere: deterministic transfer group ids, `stripePayouts`
@@ -839,6 +849,26 @@ export const retryDepositMatch = internalMutation({
   },
 });
 
+/**
+ * THE resolution of "is real cash movement on, and since when" —
+ * `financeSettings.autoTransferRealMovementSinceMs`, stamped by
+ * `setRealMovementEnabled` every time the FM flips the toggle ON (never
+ * cleared on OFF; see that mutation's comment). `null` means never enabled.
+ *
+ * Both `settleChapterBalances` (should it book a `balance_settlement` pair at
+ * all — see that function's doc for why an unexecutable settlement is not a
+ * ledger event) and `listUnexecutedEnginePairs` (should it execute booked
+ * pairs, and which ones) call this SAME helper so the two can never disagree
+ * about whether movement is on. Do not re-read `financeSettings` inline at
+ * either call site — extend this helper instead.
+ */
+async function resolveRealMovementSinceMs(
+  ctx: QueryCtx | MutationCtx,
+): Promise<number | null> {
+  const settings = await ctx.db.query("financeSettings").first();
+  return settings?.autoTransferRealMovementSinceMs ?? null;
+}
+
 // ── Auto settlement (internal — network-free) ────────────────────────────────
 
 /**
@@ -888,6 +918,25 @@ export const retryDepositMatch = internalMutation({
  * `MIN_SETTLEMENT_CENTS` stops the engine booking a pair every morning to chase
  * a few cents of rounding — a ledger row costs a reader's attention, and $5 of
  * drift is not worth one.
+ *
+ * ── ONLY BOOKED WHEN REAL CASH MOVEMENT IS ON ───────────────────────────────
+ * A `balance_settlement` pair contributes ZERO to book value by construction
+ * (`bookBalance.ts#signedBookCents`) — the whole point of the origin is to be
+ * EXECUTED, moving real cash so the bank catches up to the book. With
+ * `financeSettings.autoTransferRealMovement` off, nothing ever executes it
+ * (`listUnexecutedEnginePairs` never returns it), so it is not a deferred
+ * economic event, it is a no-op decoration: it never closes the gap it
+ * measures, so the identical gap reappears tomorrow and the engine books the
+ * identical pair again, forever. That is the exact bug the founder flagged —
+ * "it creates actual things on the ledger which is just wrong and cluttered"
+ * (five near-duplicate rows for one chapter in five days, movement off the
+ * whole time). So: this only calls `recordTransferPair` when
+ * `resolveRealMovementSinceMs` says movement is ON — the SAME resolution
+ * `listUnexecutedEnginePairs` uses, so booking and execution can never
+ * disagree about whether a settlement is real. With movement off, the gap is
+ * still measured and still reported via `notes` (the run-summary channel the
+ * accounts page renders) — nothing is silently dropped, it just isn't written
+ * to the ledger until there's a mechanism that will act on it.
  */
 export const settleChapterBalances = internalMutation({
   args: { dateStr: v.string() },
@@ -900,6 +949,14 @@ export const settleChapterBalances = internalMutation({
     const notes: string[] = [];
     let settlementsBooked = 0;
     let movedCents = 0;
+
+    // THE gate: booked only when this is non-null, i.e. real cash movement is
+    // ON — same resolution `listUnexecutedEnginePairs` uses to decide what to
+    // execute, so the two can never disagree about whether a settlement pair
+    // is a real economic event or a $0 ledger decoration. See this
+    // function's doc for why.
+    const realMovementSinceMs = await resolveRealMovementSinceMs(ctx);
+    const realMovementOn = realMovementSinceMs != null;
 
     const balances = await computeBookBalances(ctx);
     const accountRows = await ctx.db
@@ -935,6 +992,21 @@ export const settleChapterBalances = internalMutation({
 
     for (const chapter of shortfalls) {
       if (Math.abs(chapter.owed) < MIN_SETTLEMENT_CENTS) continue;
+
+      if (!realMovementOn) {
+        // Real cash movement is off, so a `balance_settlement` pair here
+        // would be a $0 ledger entry nothing ever executes — see this
+        // function's doc. Report the gap through the run-summary `notes`
+        // channel instead of booking it, so the finding isn't lost, but
+        // `settlementsBooked`/`movedCents` stay honest at 0.
+        notes.push(
+          `${chapter.scopeName}: book ${formatCents(chapter.bookBalanceCents)} vs bank ${formatCents(chapter.bank)} ` +
+            `— ${formatCents(Math.abs(chapter.owed))} ${chapter.owed > 0 ? "below" : "above"} book. ` +
+            `Not booked: real cash movement is off, so a settlement pair here would never execute. ` +
+            `Turn on real cash movement (accounts page) to have the engine move it.`,
+        );
+        continue;
+      }
 
       // A chapter holding MORE than its book returns the excess — the same
       // true-up in reverse, and central is where the surplus belongs.
@@ -1133,8 +1205,7 @@ export const listUnexecutedEnginePairs = internalQuery({
     }),
   ),
   handler: async (ctx) => {
-    const settings = await ctx.db.query("financeSettings").first();
-    const enabledSinceMs = settings?.autoTransferRealMovementSinceMs;
+    const enabledSinceMs = await resolveRealMovementSinceMs(ctx);
     if (enabledSinceMs == null) return []; // never enabled — nothing executes
 
     /** True iff the deposit row backing an allocation is cash that actually
