@@ -83,6 +83,7 @@ import {
   FINANCE_AUDIT_ACTIONS,
   EXPENSE_TYPES,
   publishedPurpose,
+  type DocumentationExemption,
   type BudgetType,
   type BudgetRefKind,
   type BudgetApprovalStatus,
@@ -453,6 +454,29 @@ const reconcileRow = v.object({
     reasonLabel: v.union(v.string(), v.null()),
     /** Human label of a PENDING exception's reason, if one is open. */
     pendingReason: v.union(v.string(), v.null()),
+    /**
+     * WHY THIS ROW OWES NOTHING (`documentationExemption`), or null when it
+     * owes a document or is simply outside the population.
+     *
+     * Carried as the KEY, not a resolved string, so the cell can render both
+     * the short label and the full sentence off ONE shared list
+     * (`DOCUMENTATION_EXEMPTION_LABELS` / `documentationExemptionLine`)
+     * without the server shipping two strings per row. Widening
+     * `DOCUMENTATION_EXEMPTIONS` therefore fails to typecheck here until this
+     * union is widened too, which is the point: a new exemption cannot reach
+     * the counts without also reaching what the row SAYS.
+     *
+     * `state` stays exactly `documentationState`'s three values — an exempt
+     * row genuinely has no receipt and no exception, and mirroring that
+     * function is what keeps this projection and the public ledger honest
+     * about the same row.
+     */
+    exemptReason: v.union(
+      v.literal("processor_fee"),
+      v.literal("processor_payout"),
+      v.literal("internal_transfer"),
+      v.null(),
+    ),
   }),
   cardholder: v.union(cardholderRef, v.null()),
   // Which book PAID for this charge — custody, i.e. whose card/account the
@@ -546,10 +570,10 @@ const reconcileRow = v.object({
   // receipt", "needs coding and a receipt", "sent back — needs your edit".
   //
   // `null` when nothing is owed, AND for a row that owes only DOCUMENTATION and
-  // carries no cardholder to chase — a marked transfer or payout, which the
-  // chase still lists (under Unattributed) and which owes a statement rather
-  // than a person. So `outstanding == null` is not the same as "not chaseable";
-  // `needs_chasing` is the predicate for that.
+  // carries no cardholder to chase — a bank withdrawal with no card behind it,
+  // which the chase still lists (under Unattributed) and which owes a statement
+  // rather than a person. So `outstanding == null` is not the same as "not
+  // chaseable"; `needs_chasing` is the predicate for that.
   //
   // On the row because the chase is TWO debts now. A person band that says
   // "3 charges" while the reminder email names a coding debt the grid never
@@ -1501,20 +1525,22 @@ export function isProcessorPayout(tr: Doc<"transactions">): boolean {
  * ask this.
  *
  * ── WHO OWES ─────────────────────────────────────────────────────────────────
- *  - a SPEND charge (the original rule, `isSpend`);
- *  - a MARKED INTERNAL TRANSFER — it's `flow:"transfer"`, so `isSpend` is
- *    false and it would otherwise vanish from the chase the instant someone
- *    marked it (the same disappearing act the Academy's old "just mark it
- *    Excluded" advice caused). Founder ask with the marking feature, and it
- *    stands: marking a row must never be a way to stop being chased.
+ * A SPEND charge, and nothing else (`isSpend`). Somebody chose it, somebody
+ * outside the org was paid, and a document of that purchase either exists or
+ * has to be accounted for.
  *
  * ── WHO DOESN'T, AND WHY EACH EXEMPTION IS BY POSITIVE MARKER ────────────────
+ * Every exemption is a key from {@link documentationExemption} below, never an
+ * inline test here — the cell that has to SAY why a row owes nothing reads the
+ * same list that decides it, so the two cannot drift.
  *  - a PROCESSOR FEE (`isNonDiscretionaryFee`): no receipt exists and none
  *    ever will — the processor's own ledger is the record, kept row by row in
  *    `processorFeeEntries` exactly so the number is never taken on faith
  *    (founder, 2026-08-12: "I literally dont have receipts").
  *  - a MARKED PROCESSOR PAYOUT (`isProcessorPayout`) — REVERSED 2026-08-14,
  *    see below.
+ *  - a MARKED INTERNAL TRANSFER (`isMarkedTransfer`) — REVERSED 2026-08-14 in
+ *    the same breath, and with a protection given up; see below.
  *
  * ── THE PAYOUT REVERSAL (founder, 2026-08-14) ────────────────────────────────
  * This function used to end `|| isProcessorPayout(tr)`, added deliberately
@@ -1559,11 +1585,79 @@ export function isProcessorPayout(tr: Doc<"transactions">): boolean {
  * payout is an `inflow`, so `canCarryExplanation`/`isSpend` already keeps it
  * out of `explanationPopulation`; adding a kind would buy nothing and would
  * put a second, weaker test in front of a row the zero test already handles.
+ *
+ * ── THE TRANSFER REVERSAL (founder, 2026-08-14) — AND WHAT IT COSTS ──────────
+ * "All payouts and transfers should be bank record only. No need for
+ * documentation." So `isMarkedTransfer` left the population too, and this is
+ * the one exemption here that gives something up rather than merely admitting
+ * a truth about the money.
+ *
+ * WHAT WAS PROTECTED. A marked transfer was in this population BY EXCEPTION: a
+ * `flow:"transfer"` row is not `isSpend`, so before the transfer marking
+ * existed it owed nothing, and adding `|| isMarkedTransfer(tr)` was a
+ * deliberate founder ask at the time — *"marking a row must never be a way to
+ * stop being chased"*, written against the disappearing act the Academy's old
+ * "just mark it Excluded" advice used to cause. It is the reason
+ * `markAsTransfer` is not an escape hatch: a bookkeeper facing an awkward
+ * outflow could not make the chase forget it by relabelling it as an internal
+ * movement, because both legs kept owing a statement.
+ *
+ * WHAT IS TRUE NOW. That hatch is open. `markAsTransfer` requires a matching
+ * counterpart leg and rewrites BOTH rows' `flow`, and the pair is logged
+ * (`transfer_mark`, actor and before/after per leg) and un-markable — so the
+ * move is neither cheap nor silent — but a pair of rows a human marked as an
+ * internal transfer now leaves the receipt chase, both facets, and the
+ * publishing gate, with nobody asked for the statement that shows the money
+ * moved. Two same-amount rows on the same day are exactly the shape a marking
+ * would fit, and no predicate downstream of here will notice.
+ *
+ * THE NARROWER VERSION, recorded because it was considered and NOT taken: exempt
+ * only the transfers the app itself booked (`transferOrigin != null` — the
+ * morning engine's settlement and allocation pairs, which really are machine
+ * postings with nothing to attach) and keep the HAND-marked pair owing its
+ * statement. That satisfies "no need for documentation" for every row a person
+ * never touched, while leaving the escape hatch shut. It is not what was asked
+ * for, and the founder's sentence was unqualified, so the exemption here is the
+ * broad one — but the narrow one is a two-line change to
+ * {@link documentationExemption} if the hatch ever gets used.
  */
 export function owesDocumentation(tr: Doc<"transactions">): boolean {
-  if (isNonDiscretionaryFee(tr)) return false;
-  if (isProcessorPayout(tr)) return false;
-  return isSpend(tr) || isMarkedTransfer(tr);
+  if (documentationExemption(tr) != null) return false;
+  return isSpend(tr);
+}
+
+/**
+ * WHY a row owes no documentation — the exemption itself, as a value.
+ *
+ * `owesDocumentation` above is "no key". Everything that renders a row's
+ * documentation reads THIS, so a row dropped from the backlog can say what it
+ * is instead of rendering an upload affordance and the words "No receipt" —
+ * which is what the Reconcile grid was doing to marked payouts an hour after
+ * the chase stopped counting them (founder, 2026-08-14: "For Stripe payouts
+ * it's saying no receipts still, but it should literally show that it's a
+ * payout — bank record only").
+ *
+ * Returning the reason from the same function that decides the exemption is
+ * the point: the alternative is a second list in the UI layer, which is the
+ * hand-copied-carve-out defect this file has repaired three times.
+ *
+ * ORDER IS SIGNIFICANT ONLY ON PAPER — the three markers are mutually
+ * exclusive on real rows (a fee is an `outflow`, a payout an `inflow`, a
+ * marked transfer a `transfer`) — but `feeOrigin` leads because it is the one
+ * marker written by machine sync rather than by a human's marking.
+ *
+ * A row that simply isn't in the population (an ordinary donation inflow) is
+ * NOT exempt and returns null: it owes nothing and has nothing to explain
+ * about that, and labelling it would put a "Bank record only" chip on every
+ * deposit in the book. Callers must treat null as "say nothing here".
+ */
+export function documentationExemption(
+  tr: Doc<"transactions">,
+): DocumentationExemption | null {
+  if (isNonDiscretionaryFee(tr)) return "processor_fee";
+  if (isProcessorPayout(tr)) return "processor_payout";
+  if (isMarkedTransfer(tr)) return "internal_transfer";
+  return null;
 }
 
 /**
@@ -1575,8 +1669,9 @@ export function owesDocumentation(tr: Doc<"transactions">): boolean {
  * Who owes anything at all is {@link owesDocumentation}. What this adds is the
  * CHASE semantics: `reconciled` ends the chase for every class (a treasurer who
  * closed a row document-less made a call — there's nobody left to chase), and
- * `excluded` never enters it. A transfer/payout that was never marked is
- * untouched: an unmarked inflow still owes nothing, exactly as before.
+ * `excluded` never enters it. An UNMARKED transfer or deposit is untouched:
+ * an unmarked inflow still owes nothing, exactly as before — and since
+ * 2026-08-14 a MARKED one owes nothing either (see {@link owesDocumentation}).
  */
 export function needsDocumentation(tr: Doc<"transactions">): boolean {
   if (tr.receiptStorageId != null) return false;
@@ -1598,9 +1693,9 @@ export function needsDocumentation(tr: Doc<"transactions">): boolean {
  * This is the PUBLISHING predicate and the historical-cleanup worklist: a row
  * a treasurer closed document-less years ago is invisible to the chase and
  * loudly visible here, which is the whole point. Scoped to the rows that OWE
- * documentation in the first place ({@link owesDocumentation} — so the fee and
- * payout exemptions land here identically, and an ordinary donation inflow
- * doesn't read as an undocumented gap).
+ * documentation in the first place ({@link owesDocumentation} — so the fee,
+ * payout and transfer exemptions land here identically, and an ordinary
+ * donation inflow doesn't read as an undocumented gap).
  *
  * The shared population is what makes the founder's payout call land on the
  * dashboard's not-publishable count too: `publishability.ts` reads THIS
@@ -1732,13 +1827,13 @@ export function needsExplaining(tr: Doc<"transactions">): boolean {
  * policy landed. Two predicates cover it, and they cover deliberately different
  * populations:
  *
- *  - {@link needsDocumentation} — a spend charge or a MARKED internal transfer
- *    with nothing attached and not yet closed. (A marked PAYOUT was in this
- *    half until 2026-08-14 and no longer owes anything — see
- *    {@link owesDocumentation}.) A marked transfer has NO CARDHOLDER — a bank
- *    transfer carries no `cardId`/`personId` — so it is chased with a
- *    statement rather than a person, and is exactly what the chase list's
- *    "Unattributed" bundle holds.
+ *  - {@link needsDocumentation} — a spend charge with nothing attached and not
+ *    yet closed. Marked PAYOUTS and marked internal TRANSFERS were both in
+ *    this half until 2026-08-14 and now owe nothing at all (see
+ *    {@link owesDocumentation}, including what the transfer half gives up).
+ *    A spend charge with no cardholder — a bank withdrawal carrying no
+ *    `cardId`/`personId` — is chased with a statement rather than a person,
+ *    and is what the chase list's "Unattributed" bundle still holds.
  *  - `chargeOutstanding` (`lib/codingReminders.ts`) — what the cardholder's own
  *    digest and the manual FM nudge ask them for, which is cardholder-shaped
  *    (outflow spend only) but covers the CODING debt the documentation
@@ -8993,10 +9088,10 @@ export const listTransactions = query({
  *                       NOT sum to that tile's figure the way this does
  *   - `needs_budget`   a spend row with no budget yet (`isSpend && budgetId == null`)
  *   - `missing_receipt` a row that still owes a receipt / supporting document
- *     and isn't yet `reconciled` — `needsDocumentation`, which covers spend
- *     charges PLUS marked internal transfers and marked processor payouts (a
- *     marked row must not vanish from the chase just because it stopped being
- *     spend; see that predicate's doc comment). A treasurer who closed a row
+ *     and isn't yet `reconciled` — `needsDocumentation`, i.e. spend charges.
+ *     Processor fees, marked processor payouts and marked internal transfers
+ *     are all exempt: nobody bought anything, and the bank/processor record is
+ *     the evidence (see `owesDocumentation`). A treasurer who closed a row
  *     document-less made a call, so it drops out of the chase-worthy count
  *     (the row stays visible under `reconciled`, just not counted here).
  *     `receiptChase` calls the SAME function (same scope resolution too), so
@@ -9589,12 +9684,13 @@ export const listReconcile = query({
      * EVERY FACET CHANGE IN THIS FUNCTION IS A QUEUE-POPULATION CHANGE, NOT A
      * PREDICATE CHANGE. `needsBudget`, `needsDocumentation` and `isUndocumented`
      * are untouched and stay untouched: they feed the dashboards' dollar tiles,
-     * the receipt chase and the publishing gate, and they encode a founder rule
-     * (a marked internal transfer still owes a receipt, so marking a row can
-     * never be a way to stop being chased) that is pinned by
-     * `markTransferPayout.test.ts` and `receiptChase.test.ts`. A marked PAYOUT
-     * was in that rule until the founder took it out on 2026-08-14 — that too
-     * is a change to `owesDocumentation`, never to a facet here.
+     * the receipt chase and the publishing gate, and what they encode is pinned
+     * by `markTransferPayout.test.ts` and `receiptChase.test.ts`. Marked
+     * PAYOUTS and marked internal TRANSFERS both left that population on
+     * 2026-08-14 (founder: "all payouts and transfers should be bank record
+     * only") — and both are changes to `owesDocumentation`, never to a facet
+     * here. If a facet ever needs a carve-out the predicate doesn't have, that
+     * is the signal the carve-out belongs in the predicate.
      *
      * The gates live HERE, next to the other facet logic, precisely so the drift
      * risk is visible in one place rather than hidden behind a second predicate
@@ -9612,8 +9708,8 @@ export const listReconcile = query({
       // survivable while they sat in the default queue; it isn't now that the
       // queue hides them (see `isHiddenTransferLeg` below), because Kind →
       // Transfers is what brings them back. `isMarkedTransfer` still decides
-      // what a row OWES (`needsDocumentation`) and whether Un-mark is offered —
-      // widening the FILTER doesn't widen either of those.
+      // whether Un-mark is offered, and (since 2026-08-14) that the row owes no
+      // documentation at all — widening the FILTER doesn't touch either.
       transfers: tr.flow === "transfer",
       payouts: isProcessorPayout(tr),
       to_review: tr.status === "unreviewed",
@@ -9634,9 +9730,9 @@ export const listReconcile = query({
       // It is a UNION and neither half is redundant: `missing_receipt` above
       // is only `needsDocumentation`, which misses a charge whose receipt is
       // attached and whose CODING is not (the chase absorbed coding when the
-      // policy landed); and `chargeOutstanding` alone would miss the marked
-      // transfers and marked payouts that have no cardholder and are chased
-      // with a statement. See the key's doc in `@events-os/shared`.
+      // policy landed); and `chargeOutstanding` alone drops a fully-refunded
+      // charge and every spend row with no cardholder behind it. See the key's
+      // doc in `@events-os/shared`.
       needs_chasing: isChaseable(tr, codingSinceMs),
       // The substantiation chase (`docs/plans/transaction-coding.md`):
       // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
@@ -9724,18 +9820,16 @@ export const listReconcile = query({
     // 2026-08, pointing at both a hand-marked balance transfer and the
     // engine's own "Auto: settlement of cross-book card spend" legs).
     //
-    // MARKED legs are hidden too, and that is safe — the point deserves stating
-    // because it looks like it contradicts `needsDocumentation`'s founder rule
-    // ("marking a row must never be a way to make it stop being chased"). It
-    // doesn't. THE RECEIPT CHASE IS A SEPARATE SURFACE: `receiptChase` runs its
-    // own scan and its own `needsDocumentation(tr) || chargeOutstanding(...)`
-    // union, with no reference to this list or its filters, and it's where a
-    // cardholder-less row (a bank transfer, a processor deposit) is chased with
-    // a statement rather than a person. So a marked transfer hidden from HERE
-    // still owes its receipt, still returns true from `needsDocumentation`, and
-    // still appears on the treasurer's chase page. Marking still changes
-    // nothing about what a row owes — only where it is listed. Neither
-    // `needsDocumentation` nor `isMarkedTransfer` is touched by any of this.
+    // MARKED legs are hidden too. This used to need a careful defence — the
+    // hiding looked like it contradicted the founder rule `needsDocumentation`
+    // was built around ("marking a row must never be a way to make it stop
+    // being chased"), and the answer was that the chase ran on a separate
+    // surface and still listed them. Since 2026-08-14 that defence is moot in
+    // the other direction: a marked transfer OWES NOTHING (founder: "all
+    // payouts and transfers should be bank record only"), so hiding it from
+    // the queue hides nothing anybody is waiting on. The escape hatch that
+    // rule closed is now open on purpose, and `owesDocumentation` is where
+    // that decision — and its cost — is written down.
     //
     // Hidden, not gone: Kind → Transfers lifts the exclusion, and the hidden
     // rows still feed that key's facet count below, so the number beside it is a
@@ -9747,21 +9841,22 @@ export const listReconcile = query({
     // `transfers` is the obvious one — it is the queue's inclusion filter and
     // exists for exactly this.
     //
-    // `needs_chasing` is the one that would otherwise be quietly wrong. A
-    // MARKED internal transfer owes its receipt, is `flow:"transfer"`, and is
-    // therefore hidden from the default queue — so a chase view built on the
-    // ordinary queue population would omit precisely the rows the treasurer,
-    // rather than a cardholder, has to act on. That is the founder rule
-    // `needsDocumentation` is built around ("marking a row must never be a way
-    // to make it stop being chased"), and it survived until now only because
-    // the chase lived on a separate surface with its own scan. Bringing the
-    // chase INTO the grid means bringing its population with it.
+    // `needs_chasing` USED TO BE THE SECOND ONE, and no longer is. It was added
+    // because a marked internal transfer owed its receipt, is `flow:"transfer"`,
+    // and was therefore hidden — so a chase built on the ordinary queue
+    // population omitted exactly the rows the treasurer, rather than a
+    // cardholder, had to act on. As of 2026-08-14 no `flow:"transfer"` row can
+    // be chaseable at all: `isChaseable` is `needsDocumentation ||
+    // chargeOutstanding`, the first now stops at `isSpend` (outflow only) and
+    // the second at `chaseEligible` (outflow only). Un-hiding legs for this key
+    // would bring back rows that then fail the very filter that brought them,
+    // which is a route to nothing — removed rather than left as machinery whose
+    // stated reason is no longer true.
     //
     // This widens where a row is LISTED, never what it owes: no predicate
     // moves, and `counts.all` still excludes hidden legs, so the header's
     // backlog figure is unchanged.
-    const transfersRequested =
-      activeFilters.includes("transfers") || activeFilters.includes("needs_chasing");
+    const transfersRequested = activeFilters.includes("transfers");
 
     // Cardholder resolution, built HERE rather than beside the row projection
     // because a search has to match a cardholder's NAME across every row in
@@ -9810,10 +9905,11 @@ export const listReconcile = query({
     // over EVERY row including the hidden transfer legs, and ignoring the
     // selection. This is `receiptChase`'s own population, expression for
     // expression, and it exists because the "Chase receipts" button used to be
-    // gated on `counts.missing_receipt`: a facet count that (a) narrows with the
-    // selection and (b) no longer sees a marked transfer, since the queue hides
-    // it. A book whose only receipt-owing rows are marked transfers would have
-    // lost its only route to a chase page that still lists them.
+    // gated on `counts.missing_receipt`: a facet count that narrows with the
+    // selection, which made the entry point disappear on a filtered grid that
+    // still had a chase behind it. Counted over every row for the same reason
+    // `receiptChase` scans every row — the button and the list it opens have to
+    // describe one population.
     let chaseCount = 0;
     // ── EVERY MONTH'S WHOLE SIZE, BEFORE ANY FILTER ──────────────────────────
     // Keyed `YYYY-MM`, exactly like the month bands below. Accumulated in the
@@ -9847,17 +9943,15 @@ export const listReconcile = query({
         // A hidden leg advertises itself in exactly the facets that can BRING
         // IT BACK, and no others.
         //
-        // `transfers` is the original one — the queue's inclusion filter.
-        // `needs_chasing` is the second, and leaving it out was a dead number
-        // caught by test: the chase un-hides these legs (see
-        // `transfersRequested` above), so a book whose marked transfer owed a
-        // receipt advertised "Owes a receipt or coding 1" and then rendered 2
-        // rows when you picked it. The count and the selection have to describe
-        // the same population or the pill is a lie.
+        // `transfers` is the only one — the queue's inclusion filter.
+        // `needs_chasing` was the second while a marked transfer still owed a
+        // receipt; it is gone from both sides together (see
+        // `transfersRequested` above), which is what keeps the pair honest. A
+        // hidden leg is no longer chaseable, so counting it here would advertise
+        // "Owes a receipt or coding 1" over a selection that renders nothing —
+        // the count and the selection have to describe the same population or
+        // the pill is a lie.
         if (countsTowardFacet(flags, activeFilters, "transfers")) counts.transfers += 1;
-        if (countsTowardFacet(flags, activeFilters, "needs_chasing")) {
-          counts.needs_chasing += 1;
-        }
         // A SEARCH un-hides these. The hiding rule exists because a transfer
         // leg is not queue work, which is an argument about browsing — it is
         // not an argument for making a $1,000 movement unfindable by name when
@@ -10163,8 +10257,19 @@ export const listReconcile = query({
     const resolveDocumentation = async (
       tr: Doc<"transactions">,
     ): Promise<(typeof reconcileRow.type)["documentation"]> => {
+      // WHY THIS ROW OWES NOTHING, carried on every state rather than only on
+      // the undocumented one. A payout somebody attached a settlement PDF to
+      // still isn't owed anything, and a cell that only learned the exemption
+      // when the row was bare would go back to nagging the moment evidence
+      // showed up. Costs no read — it's three field tests on the doc.
+      const exemptReason = documentationExemption(tr);
       if (tr.receiptStorageId != null) {
-        return { state: "receipt", reasonLabel: null, pendingReason: null };
+        return {
+          state: "receipt",
+          reasonLabel: null,
+          pendingReason: null,
+          exemptReason,
+        };
       }
       if (tr.approvedReceiptExceptionId != null) {
         const ex = await ctx.db.get(tr.approvedReceiptExceptionId);
@@ -10174,6 +10279,7 @@ export const listReconcile = query({
             ? RECEIPT_EXCEPTION_REASON_LABELS[ex.reason]
             : null,
           pendingReason: null,
+          exemptReason,
         };
       }
       const open = await pendingExceptionForTransaction(ctx, tr._id);
@@ -10183,6 +10289,7 @@ export const listReconcile = query({
         pendingReason: open
           ? RECEIPT_EXCEPTION_REASON_LABELS[open.reason]
           : null,
+        exemptReason,
       };
     };
 
@@ -10314,8 +10421,8 @@ const chaseTxn = v.object({
   // uses (`lib/codingReminders.ts#chargeOutstanding`) — "needs coding",
   // "needs a receipt", "needs coding and a receipt", "sent back — needs your
   // edit". Null for a row that owes only documentation and carries no
-  // cardholder to chase (a marked transfer or payout), which the chase list
-  // still shows under Unattributed.
+  // cardholder to chase (a bank withdrawal with no card behind it), which the
+  // chase list still shows under Unattributed.
   //
   // Surfaced because the FM now chases TWO debts from one screen: without it
   // the page can say "3 charges" while the person on the other end is being
@@ -10352,13 +10459,14 @@ const chaseGroup = v.object({
  * treasurer owes those a statement or settlement report, not a person owing a
  * receipt for a card charge.
  *
- * THIS IS WHY THE RECONCILE QUEUE CAN HIDE A MARKED TRANSFER. `listReconcile`
- * drops every `flow:"transfer"` leg from its default view — there's nothing to
- * code on one and nothing to close. That is purely a question of where a row is
- * LISTED: this query is a separate surface with its own scan and its own
- * predicate union, so a marked transfer hidden there still owes its receipt,
- * still returns true from `needsDocumentation`, and still shows up right here.
- * Marking a row remains no way to stop it being chased.
+ * NO TRANSFER LEG REACHES THIS LIST ANY MORE. `listReconcile` drops every
+ * `flow:"transfer"` leg from its default view — there's nothing to code on one
+ * and nothing to close — and that used to be purely about where a row is
+ * LISTED, because a MARKED transfer still owed its statement and this separate
+ * scan still found it. Since 2026-08-14 a marked transfer owes nothing
+ * (`owesDocumentation`), so the two surfaces now agree by predicate rather than
+ * by careful wiring. The rows still chased here with a statement rather than a
+ * person are spend charges with no card behind them.
  *
  * `scope`/`chapterId` mirror `listReconcile`'s args and resolution byte for
  * byte (central desk / central drill-down / caller's own chapter, same authz
@@ -11430,8 +11538,13 @@ export const attachReceipt = mutation({
 //    no other leg to mark"), because donations live in `gifts` and never reach
 //    this table. Marking one as a transfer would erase the org's income.
 //
-// Both classes keep owing a receipt (`needsDocumentation`) — marking a row must
-// never be a way to make it stop being chased.
+// NEITHER CLASS OWES A RECEIPT ANY MORE (founder, 2026-08-14: "all payouts and
+// transfers should be bank record only. No need for documentation"). This
+// REVERSES what shipped with the marking feature — "marking a row must never be
+// a way to make it stop being chased" — and it is the one place in this file
+// where a marking now removes an obligation instead of only moving a number.
+// What that gives up, and the narrower version that wouldn't have, is written
+// out at `owesDocumentation`. Read it before adding a third marking.
 
 /** Bookkeeper+ is the floor for every marking mutation below: this moves a row
  *  in and out of spend totals, which is the same weight class as

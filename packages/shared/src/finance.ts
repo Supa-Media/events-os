@@ -733,6 +733,65 @@ export function documentationState(
   return "undocumented";
 }
 
+// ── Rows that owe no documentation at all ────────────────────────────────────
+// `documentationState` above answers "what backs this row up". This answers the
+// question that comes BEFORE it: is anything owed in the first place?
+//
+// It exists because the two were being conflated on screen. A processor fee, a
+// marked payout and a marked internal transfer all owe nothing
+// (`finances.ts#owesDocumentation`), and every COUNT in the app already knew
+// that — but the Documentation cell only knew "no receipt, no exception", so it
+// rendered an upload affordance and the words "No receipt" on rows the same
+// screen had already dropped from the backlog. Founder, 2026-08-14: "For Stripe
+// payouts it's saying no receipts still, but it should literally show that it's
+// a payout — bank record only."
+//
+// SO THE EXEMPTION IS A VALUE, NOT AN ABSENCE. `finances.ts#documentationExemption`
+// returns one of these keys, `owesDocumentation` is defined as "no key", and the
+// cell renders that key's label. ONE list decides both, so "this row owes
+// nothing" and "here is why" cannot drift apart — which is precisely how the
+// grid came to contradict its own counts.
+//
+// NO NEW VOCABULARY. Each key resolves to something the app already says out
+// loud: `bank_record_only` and `no_receipt_issued` are two of the five
+// `RECEIPT_EXCEPTION_REASONS` a human can attest by hand, and the fee sentence
+// is the one the public ledger already prints (`autoExplanationLine("fee")`). A
+// row exempt BY CONSTRUCTION should read exactly like one somebody attested —
+// the difference is who had to do the work, not what is true about the money.
+export const DOCUMENTATION_EXEMPTIONS = [
+  "processor_fee", // `feeOrigin` — charged, not chosen; the processor's ledger is the record
+  "processor_payout", // a marked settlement deposit — already-counted revenue arriving
+  "internal_transfer", // a marked internal transfer — our own money between our own accounts
+] as const;
+export type DocumentationExemption = (typeof DOCUMENTATION_EXEMPTIONS)[number];
+
+/** The one-line label the Documentation cell shows in place of an upload
+ *  affordance the row could never satisfy. */
+export const DOCUMENTATION_EXEMPTION_LABELS: Record<
+  DocumentationExemption,
+  string
+> = {
+  processor_fee: RECEIPT_EXCEPTION_REASON_LABELS.no_receipt_issued,
+  processor_payout: RECEIPT_EXCEPTION_REASON_LABELS.bank_record_only,
+  internal_transfer: RECEIPT_EXCEPTION_REASON_LABELS.bank_record_only,
+};
+
+/** The full sentence behind that label — the row explaining itself, for a
+ *  screen reader and for anywhere with room to print it. Derived from
+ *  structured state, never composed testimony (the same rule
+ *  {@link autoExplanationLine} follows — and its fee sentence is reused
+ *  verbatim here rather than written a second time, where it could drift from
+ *  the one the public page prints). */
+export function documentationExemptionLine(
+  kind: DocumentationExemption,
+): string {
+  if (kind === "processor_fee") return autoExplanationLine("fee");
+  if (kind === "processor_payout") {
+    return "A processor payout — donation and ticket money the org already counted, arriving in one batch. Nobody bought anything, so there is no receipt to produce; the bank record is the evidence, alongside the processor's own settlement report.";
+  }
+  return "An internal transfer between the org's own accounts. No purchase and no outside counterparty — the bank record on both legs is the evidence.";
+}
+
 // ── Transaction coding (IRS-grade substantiation) ────────────────────────────
 // A CODING is the structured, human-authored, reviewed answer to "what was
 // this, why, and who was involved" — the §274(d) substantiation elements a
@@ -1526,16 +1585,66 @@ export interface MerchantNameSource {
    *  written by a rename — see `renameMerchant`'s doc comment on why an
    *  engine-written sentence keeps showing here after a row is renamed. */
   description?: string | null;
+  /** `transactions.payoutProcessor` — set once a deposit is MARKED as a
+   *  processor settlement (`finances.markAsPayout`, or the morning engine for
+   *  Stripe). Optional so a projection that doesn't carry it keeps the plain
+   *  provider chain; see `displayMerchantName` for what it changes. */
+  payoutProcessor?: PayoutProcessor | null;
+}
+
+/**
+ * WHAT A MARKED PAYOUT ROW IS CALLED — "Stripe payout", "Givebutter payout",
+ * "Processor payout".
+ *
+ * Not a new convention: this is the phrase `markAsPayout` already writes into
+ * the allocation leg's note ("Stripe payout allocated to Central"), built from
+ * the same {@link PAYOUT_PROCESSOR_LABELS} the row's own badge renders. "Other
+ * processor" is special-cased because "Other processor payout" reads as a
+ * different processor rather than an unnamed one.
+ */
+export function payoutRowName(processor: PayoutProcessor): string {
+  return processor === "other"
+    ? "Processor payout"
+    : `${PAYOUT_PROCESSOR_LABELS[processor]} payout`;
 }
 
 /**
  * What to SHOW in a merchant slot: the bookkeeper's rename if there is one,
- * else the provider's merchant string, else its description, else `fallback`.
+ * then — on a MARKED PAYOUT — what the row actually is, else the provider's
+ * merchant string, else its description, else `fallback`.
  *
  * The provider fallback chain is exactly what every merchant-rendering call
  * site already did by hand (`merchantName ?? description ?? "…"`); the only
  * new thing in front of it is the override. Centralized so "renamed rows show
  * their new name" is one decision rather than one decision per screen.
+ *
+ * ── WHY A PAYOUT OUTRANKS THE PROVIDER STRING ────────────────────────────────
+ * Founder, 2026-08-14: *"Stripe payouts still have my name — the merchant is
+ * being called Oluseyi Olujide as a default… I know I'm the one that initiated
+ * the payout, but come on, that can't mean I'm the merchant."*
+ *
+ * Nothing in this app ever wrote that name. A Stripe payout arrives as an
+ * inbound ACH credit, and the bank feed hands us the ORIGINATOR as the
+ * counterparty — `originator_company_name` / `originator_name` on Increase's
+ * `inbound_ach_transfer` (`lib/increaseExtract.ts`), the statement string on
+ * the Relay/FC feeds. For a Stripe account whose payouts originate under the
+ * account holder rather than a company descriptor, that string is a PERSON'S
+ * NAME. It is a true record of what the statement said and a false answer to
+ * "who is the merchant on this row", because a payout has no merchant: it is
+ * the processor handing over money the org already earned.
+ *
+ * So this is fixed HERE, at the display layer, and deliberately not by
+ * rewriting the row. `merchantName` is the provider's own claim and this
+ * module's opening comment forbids destroying it ("an auditor asking 'what did
+ * the statement say' must always be able to get the original back"); the
+ * `payoutProcessor` marking is also reversible, and `unmarkPayout` has to
+ * restore the bank's own string without a second write. Un-naming stays
+ * "clear the override", provenance stays intact BY CONSTRUCTION, and
+ * {@link providerMerchantName} — the rename editor and the audit trail — still
+ * reports exactly what the bank said.
+ *
+ * THE RENAME STILL WINS. A bookkeeper who typed a name over a payout row meant
+ * it; this only replaces the string nobody chose.
  */
 /**
  * Strip the STRUCTURAL noise a card descriptor carries without touching the
@@ -1566,6 +1675,7 @@ export function displayMerchantName(
   fallback = "Unlabeled charge",
 ): string {
   if (row.merchantNameOverride != null) return row.merchantNameOverride;
+  if (row.payoutProcessor != null) return payoutRowName(row.payoutProcessor);
   if (row.merchantName != null) return cleanCardDescriptor(row.merchantName);
   return row.description ?? fallback;
 }
@@ -1591,10 +1701,11 @@ export function rawBankLine(row: MerchantNameSource): string | null {
 }
 
 /**
- * The provider's own name for a row, ignoring any rename — what the statement
- * says. Used by the rename editor (to show what is being renamed FROM) and by
- * the audit trail's `before` on a first rename, so the trail's opening line is
- * always the original rather than "—".
+ * The provider's own name for a row, ignoring any rename AND ignoring the
+ * payout label {@link displayMerchantName} puts in front of it — what the
+ * statement says, full stop. Used by the rename editor (to show what is being
+ * renamed FROM) and by the audit trail's `before` on a first rename, so the
+ * trail's opening line is always the original rather than "—".
  */
 export function providerMerchantName(
   row: MerchantNameSource,

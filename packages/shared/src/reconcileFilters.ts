@@ -209,23 +209,26 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   // pill — the FM would see "3 charges" and email a fourth person about a row
   // the screen never showed.
   //
-  // And the second half cannot simply REPLACE the first: `chargeOutstanding` is
-  // cardholder-shaped (outflow spend only), while `needsDocumentation` also
-  // covers MARKED internal transfers — rows with no cardholder at all, chased
-  // with a statement rather than a person, which are exactly what the chase
-  // list's "Unattributed" bundle holds. (A MARKED PROCESSOR PAYOUT was in that
-  // second class until 2026-08-14 and owes nothing now — founder: "Payouts
-  // shouldn't need documentation." See `finances.ts#owesDocumentation`.)
+  // And the second half cannot simply REPLACE the first: `chargeOutstanding`
+  // stops at `chaseEligible`, which lets through a charge the merchant refunded
+  // in full and knows nothing about the closed-row rule, so the two disagree on
+  // real rows. The "Unattributed" bundle — rows chased with a statement rather
+  // than a person — is now spend charges with no card behind them. MARKED
+  // PAYOUTS and MARKED INTERNAL TRANSFERS were both in that bundle until
+  // 2026-08-14 and owe nothing now (founder: "all payouts and transfers should
+  // be bank record only"). See `finances.ts#owesDocumentation` — the transfer
+  // half of that gives up a real protection, and says so.
   //
   // Server-side this is ONE expression shared with `finances.receiptChase` and
   // the grid's own `chaseCount`, never a fourth hand-copy — copying it is how
   // `requiresCoding` drifted, and how the fee carve-out went missing from
   // `chaseEligible` for a release.
   //
-  // SELECTING IT ALSO UN-HIDES THE TRANSFER LEGS the default queue drops (see
-  // `isHiddenTransferLeg`). A marked transfer owes its receipt and must never
-  // stop being chased just because the queue stopped listing it — the founder
-  // rule `needsDocumentation` is built around.
+  // IT NO LONGER UN-HIDES THE TRANSFER LEGS the default queue drops (see
+  // `isHiddenTransferLeg`). It did, while a marked transfer still owed its
+  // statement; now that no `flow:"transfer"` row can be chaseable at all, the
+  // un-hide brought back rows that immediately failed this very filter. Kind →
+  // Transfers is how you reach them.
   needs_chasing: "Owes a receipt or coding",
   // The substantiation chase (transaction coding — see
   // `docs/plans/transaction-coding.md`). `uncoded` is a row the POLICY says

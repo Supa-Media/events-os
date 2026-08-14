@@ -485,6 +485,43 @@
  * the 5-question cap, where a swap would have cost real coverage to restate
  * what the rule blocks already say. No title, slug, minutes or quiz length
  * moved.
+ *
+ * 2026-08-14, the same founder report's other half — TRANSFERS JOIN PAYOUTS,
+ * and a payout stops being named after a person. Both land in
+ * `finance-transfers-and-payouts`; no title, slug, minutes, quiz length or
+ * order moved.
+ *  - "All payouts and transfers should be bank record only. No need for
+ *    documentation." So the split drawn earlier the same day — transfer owes,
+ *    payout doesn't — is gone: "Marked still means documented" is now "Both
+ *    markings are bank record only", and it teaches the Documentation column's
+ *    actual words. (It keeps the Marked-column / ⋯-menu sentence the note
+ *    above added; only the obligation half was rewritten.) This is the SECOND reversal of the
+ *    same rule in one day and it costs something the first one didn't —
+ *    marking a pair as a transfer is now the one move in Reconcile that
+ *    removes a row from the chase, which is precisely the escape hatch
+ *    "marking must never be a way to stop being chased" existed to shut. The
+ *    lesson says that out loud rather than presenting the exemption as free:
+ *    mark a row because it IS a transfer, never because it is awkward, and
+ *    every marking is logged and reversible. `apps/convex/finances.ts`'s
+ *    `owesDocumentation` carries the same warning for whoever reads the code.
+ *    The quiz's fourth question taught the retired rule as its correct answer,
+ *    so it was SWAPPED (still four): the old right answer is now a distractor
+ *    and "Bank record only" is the answer. Two prose lines that said excluding
+ *    drops a transfer out of the receipt chase were corrected — it isn't in
+ *    one — and `finance-reconcile-grid`'s filter table lost its claim that the
+ *    chase keeps marked transfers.
+ *  - A MARKED PAYOUT ISN'T NAMED AFTER A PERSON ("Stripe payouts still have my
+ *    name… I know I'm the one that initiated the payout, but come on, that
+ *    can't mean I'm the merchant"). Bank feeds hand us the ACH ORIGINATOR as
+ *    the counterparty, and on a Stripe payout that string can be a human
+ *    being's name; a marked row now reads "Stripe payout" / "Givebutter
+ *    payout" instead. Taught as a paragraph on the existing "A payout is NOT a
+ *    transfer" rule rather than as a new block, because it is the same fact
+ *    the rule already teaches — a payout has no merchant — finally showing up
+ *    in the merchant cell. It says the bank's original string is kept (the
+ *    rename editor and the name history still show it) and that a
+ *    bookkeeper's own rename still wins, so nobody reads this as the app
+ *    quietly editing the statement.
  */
 
 import type {
@@ -1519,7 +1556,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Open, categorized, and still not linked to a budget. A row somebody already closed isn't queue work, so it doesn't count here. Processor and bank fees are deliberately absent — a fee is charged, not chosen, so there is no decision for a budget to control. That covers every processor fee we book: Stripe and Givebutter each book one monthly row, and Cash App's fees are marked per payment from a one-off backfill rather than rolled up. None of them will ever ask you for a budget — or for a coding or a receipt: a fee has no testimony to give and no receipt exists, so the processor's own itemized ledger is its record and the public page prints the fee's standing explanation for it. The exemption is by ORIGIN, not by category — a Givebutter paid tier or any other subscription you chose to buy is a decision, so it stays budgeted (and coded) even though it lands in Bank & Fees alongside them"],
           ["Needs documentation", "Still open, still owing a receipt or an acknowledged reason there isn't one"],
-          ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It also keeps the marked internal transfers that owe a statement rather than a person — the Book hides those from the default queue, and picking this brings them back. Marked payouts are NOT in it: a payout owes no documentation at all. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
+          ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It does NOT contain marked internal transfers or marked payouts: neither owes documentation at all, and both read Bank record only. The rows in it with nobody to email are spend charges with no card behind them, chased with a statement rather than a person. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
           ["Closed without documentation", "Somebody marked it Closed with neither a receipt nor an approved exception behind it. Nobody left to nudge, and a published ledger still can't tell that row from a documented one"],
           ["Needs explaining", "Every row that will publish with a BLANK where its explanation should be — the whole backlog, including the 2024-25 history the coding policy grandfathers out. This is the one that ignores the policy date on purpose: \"Needs coding\" answers what policy demands of whom, this answers what a stranger will see a gap next to when the month publishes. Fees, refunded pairs and personal charges are already excluded — they explain themselves"],
           ["Explained", "The other half of the row above — everything in the same population that HAS an approved explanation. It exists because approving one publishes it and takes the row out of \"Needs explaining\", which used to mean the sentence you had just written became unreachable. This is how you re-read what you published, spot-check twenty of them a week later, or hand somebody the month you finished"],
@@ -1691,17 +1728,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "A payout is NOT a transfer — it's your revenue arriving",
-        text: "When Givebutter or Stripe pays out, that deposit is donation and ticket money you've ALREADY earned — the gifts live in the donor records, and that's where the org counts its revenue (the Accounts page's book value = everything earned — donations, ticket sales, in-person sales and course registrations — minus spend). So \"Mark as payout\" tells the books this bank credit is the arrival of already-counted revenue: it keeps the deposit honest and stops the same dollars being counted twice. Never mark a payout as a transfer — a transfer is money between two of OUR accounts, and this money came from outside.",
+        text: "When Givebutter or Stripe pays out, that deposit is donation and ticket money you've ALREADY earned — the gifts live in the donor records, and that's where the org counts its revenue (the Accounts page's book value = everything earned — donations, ticket sales, in-person sales and course registrations — minus spend). So \"Mark as payout\" tells the books this bank credit is the arrival of already-counted revenue: it keeps the deposit honest and stops the same dollars being counted twice. Never mark a payout as a transfer — a transfer is money between two of OUR accounts, and this money came from outside.\n\nA marked payout also stops pretending to have a merchant. Bank feeds hand us whoever ORIGINATED the deposit, and for a Stripe payout that string can be the name of the person whose account sent it — which is a true record of the statement and a nonsense answer to \"who did we buy this from\" (\"I know I'm the one that initiated the payout, but come on, that can't mean I'm the merchant\"). Once marked, the row reads **Stripe payout** or **Givebutter payout**. The bank's original string isn't lost — it's what the rename editor shows you and what the name history keeps — it just stops being the headline. And if you rename a payout row yourself, your name still wins; this only replaces the one nobody chose.",
       },
       {
         kind: "rule",
-        title: "Marked still means documented",
-        text: "Marking a row is not a way to make it go away. A marked TRANSFER still appears under Needs documentation until you attach something — a bank statement. That's our own money moving between our own accounts, and the statement is what shows it moved.\n\n**A payout is the exception, and it owes nothing.** Nobody bought anything: a payout is donation and ticket money you already counted at the donor and order records, arriving in one batch. There is no receipt to chase, and asking for one just parks the row in a backlog that can never clear — which is what it was doing (\"nine rows not publishable, no documentation — and most of them are quite literally payouts\"). What substantiates a payout is the processor's settlement report. For STRIPE we already hold that ourselves: the payout id, the amount, the arrival date and each book's share, linked both ways to the bank row. For Givebutter and hand-marked \"other\" payouts we don't — there the record lives in the processor's own dashboard, so if you ever need to prove one out, that's where you go.\n\nEvery marking is logged with who did it and what changed, so a reclassification is always traceable, and any marking can be undone. You'll see what a row has been marked as in the **Marked** column on Transactions — \"Transfer\", or the processor's name — and the undo lives in that row's **⋯** menu (\"Un-mark internal transfer\" takes BOTH legs; a payout has no leg to pair with, so it un-marks alone).",
+        title: "Both markings are bank record only",
+        text: "Neither a marked transfer nor a marked payout is chased for a receipt. Nobody bought anything on either one, so there is no receipt that could ever exist, and asking for one only parks the row in a backlog that can never clear — which is exactly what it was doing (\"nine rows not publishable, no documentation — and most of them are quite literally payouts\"). Both now read **Bank record only** in the Documentation column, which is what they are: the bank statement line is the evidence.\n\n**A transfer** is our own money moving between our own accounts, and both legs are already in the ledger. **A payout** is donation and ticket money you already counted at the donor and order records, arriving in one batch — and what substantiates it beyond the bank line is the processor's settlement report. For STRIPE we hold that ourselves: the payout id, the amount, the arrival date and each book's share, linked both ways to the bank row. For Givebutter and hand-marked \"other\" payouts we don't — there the record lives in the processor's own dashboard, so if you ever need to prove one out, that's where you go.\n\nThis is why marking is a decision, not a shortcut. It is the ONE thing in Reconcile that takes a row out of the documentation chase, so mark a row a transfer because it IS one — never because it's awkward. Every marking is logged with who did it and what changed, and any marking can be undone. You'll see what a row has been marked as in the **Marked** column on Transactions — \"Transfer\", or the processor's name — and the undo lives in that row's **⋯** menu (\"Un-mark internal transfer\" takes BOTH legs; a payout has no leg to pair with, so it un-marks alone).",
       },
       {
         kind: "rule",
         title: "Don't reach for Excluded",
-        text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, only ever fixes one of the two legs, and drops it out of the receipt chase. Using it on a payout hides the settlement record your books need — and for a deposit nobody marked yet, it erases real income. Both now have a marking that keeps the row honest and visible.",
+        text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, and only ever fixes one of the two legs. Using it on a payout hides the settlement record your books need — and for a deposit nobody marked yet, it erases real income. Both now have a marking that keeps the row honest and visible, and neither marking costs you a receipt.",
       },
       {
         kind: "tip",
@@ -1725,7 +1762,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           {
             text: "Exclude all three so nothing double-counts",
             feedback:
-              "Excluding hides rather than explains, and it drops the transfer pair out of the receipt chase. The payout deposit isn't chased for a receipt either way — but it still needs its marking, because that's what tells the books it's settled, already-counted donation revenue rather than new income.",
+              "Excluding hides rather than explains — and on a transfer it only ever fixes one of the two legs, leaving the other stranded. Neither of these is chased for a receipt once marked, but both still need their marking: it's what tells the books the $5,000 moved rather than left, and that the $2,400 is settled, already-counted donation revenue rather than new income.",
           },
           {
             text: "Mark only the $5,000 withdrawal — the deposit side is obvious",
@@ -1773,16 +1810,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "A transfer is a pair by definition. Marking only the side that left would leave the arriving side sitting there as income with no source — swapping one wrong number for another.",
       },
       {
-        prompt: "You mark a transfer. What happens to its receipt obligation?",
+        prompt: "You mark a pair of rows as an internal transfer. What does the Documentation column say about them afterwards?",
         options: [
-          "It disappears — marked rows aren't chased",
-          "It stays: both legs still show under Needs documentation until you attach a statement",
-          "Only the outgoing leg still needs one",
-          "It becomes optional after 30 days",
+          "Needs documentation, until you attach a bank statement to each leg",
+          "Bank record only — a marked transfer owes nothing, and neither does a marked payout",
+          "Only the outgoing leg still owes something",
+          "Nothing at all — marked rows leave the grid",
         ],
         answerIndex: 1,
         explanation:
-          "Marking changes how a row COUNTS, never whether it must be explained. Both legs keep owing documentation until something is attached — that's the difference between marking and hiding.",
+          "Nobody bought anything on either leg, so there is no receipt that could exist — the bank statement line IS the record, and the column says exactly that instead of nagging for an upload. It also means marking is the one move in Reconcile that takes a row out of the documentation chase, so mark a pair because it really is money between our own accounts, never because the row is awkward. Every marking is logged with who did it, and any of them can be undone.",
       },
     ],
   },

@@ -79,6 +79,8 @@ import {
   formatCents,
   displayMerchantName,
   type BudgetRefKind,
+  type DocumentationExemption,
+  type PayoutProcessor,
   type TransactionFlow,
   type TransactionStatus,
 } from "@events-os/shared";
@@ -143,6 +145,22 @@ type Normalized = {
   scopeRefId: string | null;
   personName: string | null;
   hasReceipt: boolean;
+  /** The payout marking, so the header names the row for what it is rather
+   *  than for whoever the bank feed reports as the ACH originator — see
+   *  `displayMerchantName`. Null on the `detail` path, which reads
+   *  `budgetTransactions` and doesn't carry it (a marked payout is an inflow
+   *  and never sits under a budget). */
+  payoutProcessor: PayoutProcessor | null;
+  /** What backs this row up, when the source knows (`listReconcile` does).
+   *  `undefined` on the `detail` path — `ReceiptCell` then keeps its
+   *  receipt-only rendering rather than guessing a state it wasn't given, the
+   *  same discipline its own prop doc describes. */
+  documentation?: {
+    state: "receipt" | "exception" | "undocumented";
+    reasonLabel: string | null;
+    pendingReason: string | null;
+    exemptReason: DocumentationExemption | null;
+  };
   reminderStage: "none" | "flagged" | "escalated";
   /** `null` = unknown (the "lookup" path's source query doesn't carry this
    *  field) — the Personal toggle is omitted in that case, not guessed. */
@@ -205,6 +223,7 @@ export function TransactionDetailModal({
           scopeRefId: source.scopeRefId,
           personName: source.txn.personName,
           hasReceipt: source.txn.hasReceipt,
+          payoutProcessor: null, // not carried by `budgetTransactions` — see the field's doc
           reminderStage: "none", // not carried by `budgetTransactions` — see module doc
           isPersonal: source.txn.isPersonal,
           note: source.txn.note,
@@ -230,6 +249,8 @@ export function TransactionDetailModal({
               scopeRefId: source.fallback.scopeRefId,
               personName: row.cardholder?.name ?? null,
               hasReceipt: row.hasReceipt,
+              payoutProcessor: row.payoutProcessor,
+              documentation: row.documentation,
               reminderStage: row.reminderStage,
               isPersonal: null, // not in `reconcileRow` — see module doc
               note: row.note,
@@ -541,6 +562,12 @@ function TransactionDetailBody({
         ) : (
           <ReceiptCell
             hasReceipt={hasReceipt}
+            // A row that owes nothing says so here too. The drill-down is
+            // where the founder was standing when he reported "for Stripe
+            // payouts it's saying no receipts still" — the dashboard's
+            // not-publishable count opens into it — so the grid and this
+            // modal have to give the same answer about the same row.
+            documentation={txn.documentation}
             reminderStage={txn.reminderStage}
             isPersonal={isPersonal === true}
             transactionId={txn.id}
