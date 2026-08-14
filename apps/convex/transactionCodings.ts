@@ -700,13 +700,36 @@ export const submit = mutation({
  * write here, which is the whole point of routing an inline edit through the
  * same door.
  *
- * ## It EDITS; it does not CREATE
+ * ## It also CREATES, as `general` — reversed 2026-08-14
  *
- * With no coding on the row there is nothing to preserve and no type to keep,
- * and inventing `general` for a restaurant charge would be writing a coding
- * that fails substantiation on a screen with no way to say who was there. Those
- * rows keep their route into the full sheet — which is also where the bulk
- * Explain flow sends a selection, for the same reason. `NO_CODING` says so.
+ * This first shipped refusing a row with no coding (`NO_CODING`), on the
+ * reasoning that inventing `general` for a restaurant charge writes a coding
+ * that fails substantiation from a control with nowhere to say who was there.
+ * The founder overruled it looking at the deployed grid: "when I click on an
+ * empty 'what was this for', it doesn't let me edit, it opens a side panel...
+ * there should be a little text box that allows me to just type out what it
+ * was for. But for things like coding you still have to do that as well."
+ *
+ * He is right that the refusal cost more than it bought. The blank rows are
+ * most of the backlog, and sending every one of them through the full sheet is
+ * exactly the friction that makes the cheap dishonest option — close it blank —
+ * win on effort. This is the same trade `submitBulk` already makes: it writes
+ * `general` codings across a selection and refuses only `meal`, because a
+ * meal's proof is who was at it.
+ *
+ * So a row with no coding gets a `general` one, and the substantiation
+ * argument is answered where it actually bites rather than by a blanket
+ * refusal:
+ *
+ *  - `general` carries no type-specific §274(d) fields, so a typed sentence IS
+ *    a complete coding of that type. Nothing is half-written.
+ *  - The row still goes through the same `submitCoding`: the documentation
+ *    gate, the length floor and the policy-date scoping all still apply, so an
+ *    undocumented charge is refused here exactly as it is everywhere else.
+ *  - A charge that is really a meal, a trip or a stay still needs the sheet,
+ *    and the cell says so — retyping it there sets the type and drops the
+ *    `general` shape (`normalizeCodingFields` clears type-irrelevant fields on
+ *    the way in), so nothing stale survives the correction.
  *
  * The audit entry is the ordinary `coding_submit` round, carrying the new
  * sentence as its reason exactly as `submit` does: this IS a revision of the
@@ -725,19 +748,12 @@ export const setPurpose = mutation({
       args.transactionId,
     );
     const existing = await codingForTransaction(ctx, args.transactionId);
-    if (!existing) {
-      throw new ConvexError({
-        code: "NO_CODING",
-        message:
-          "This charge has no coding yet. Open it and say what kind of expense it was — a meal needs who was there, travel needs where from and to, and none of that fits in one line.",
-      });
-    }
     // Refused HERE as well as inside `submitCoding`, so the message names the
     // inline edit rather than arriving as a generic write failure on a cell
     // that should not have offered a cursor in the first place. The cell hides
     // its input on these rows; this is the guarantee behind that, for a stale
     // client or a direct call.
-    if (existing.status === "approved") {
+    if (existing?.status === "approved") {
       throw new ConvexError({
         code: "CODING_APPROVED",
         message:
@@ -751,11 +767,12 @@ export const setPurpose = mutation({
       scope,
       // EVERY OTHER FIELD CARRIED FORWARD VERBATIM — see
       // `codingWriteFieldsFrom` for why a partial set here would be a silent
-      // deletion rather than a partial update.
-      fields: {
-        ...codingWriteFieldsFrom(existing),
-        businessPurpose: args.businessPurpose,
-      },
+      // deletion rather than a partial update. With no coding to carry
+      // forward, `general` is the type: it owns no type-specific fields, so a
+      // sentence alone is a complete coding of it.
+      fields: existing
+        ? { ...codingWriteFieldsFrom(existing), businessPurpose: args.businessPurpose }
+        : { expenseType: "general", businessPurpose: args.businessPurpose },
       namesMaxHeadcount,
       codingRequiredSinceMs: sinceMs,
       codedByPersonId: actorPersonId,
@@ -768,10 +785,11 @@ export const setPurpose = mutation({
       action: "coding_submit",
       actorPersonId,
       field: "coding",
-      before:
-        TRANSACTION_CODING_STATUS_LABELS[
-          existing.status as TransactionCodingStatus
-        ],
+      before: existing
+        ? TRANSACTION_CODING_STATUS_LABELS[
+            existing.status as TransactionCodingStatus
+          ]
+        : "Uncoded",
       after: resubmission ? "Resubmitted" : "Awaiting review",
       reason: args.businessPurpose.trim(),
       amountCents: txn.amountCents,

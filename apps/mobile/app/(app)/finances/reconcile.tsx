@@ -2284,46 +2284,82 @@ function ReconcileGrid() {
               renderGroupAction={(group) => {
                 // ── MONTH BANDS: where this month is up to, and its page ──
                 if (showPublishInBands) {
-                  const pub = publicationByPeriod.get(group.key);
-                  if (!pub) return null;
+                  // ── A MONTH WITH NO PUBLICATION ROW IS THE COMMONEST MONTH,
+                  // NOT AN ERROR ────────────────────────────────────────────
+                  // This used to `return null` when the console had no entry
+                  // for the band's period, which took Preview and Publish away
+                  // from precisely the months that have never been published —
+                  // the ones the buttons exist for. Founder, on the deployed
+                  // build: "when I go to the month view, somehow some way all
+                  // the publishing stuff disappeared."
+                  //
+                  // A missing row means `draft`: nothing has been built, so
+                  // there is no revision and nothing is live. That is a real
+                  // status the badge can state, and both actions still apply.
+                  const pub = publicationByPeriod.get(group.key) ?? null;
+                  const status: PublicationStatus = pub?.status ?? "draft";
                   const parsed = parsePeriodKey(group.key);
                   return (
                     <View className="flex-row items-center gap-2">
-                      <Badge
-                        label={
-                          pub.status === "published" && pub.liveRevision != null
-                            ? `Published · rev ${pub.liveRevision}`
-                            : PUBLICATION_STATUS_LABELS[pub.status]
-                        }
-                        tone={
-                          pub.status === "published"
-                            ? "success"
-                            : pub.status === "changes_requested"
-                              ? "danger"
-                              : pub.status === "in_review" ||
-                                  pub.status === "amending"
-                                ? "warn"
-                                : "neutral"
-                        }
-                      />
+                      {/* ── ONE BOOK'S STATUS, OR NONE ─────────────────────
+                          `console_` answers about ONE book, and on the merged
+                          all-books queue a month band spans several — so the
+                          status it would print there belongs to whichever book
+                          the console happened to answer about (the caller's
+                          own desk), not to the rows under the band. Printing
+                          it would be the dead-number defect wired to the
+                          publish button.
+
+                          So the badge is withheld in the merged queue and the
+                          ACTIONS stay: Publish routes to the console, which is
+                          where a book gets chosen anyway. Pick a book in the
+                          Book dropdown and the status comes back. */}
+                      {consoleScope ? (
+                        <Badge
+                          label={
+                            status === "published" && pub?.liveRevision != null
+                              ? `Published · rev ${pub.liveRevision}`
+                              : PUBLICATION_STATUS_LABELS[status]
+                          }
+                          tone={
+                            status === "published"
+                              ? "success"
+                              : status === "changes_requested"
+                                ? "danger"
+                                : status === "in_review" || status === "amending"
+                                  ? "warn"
+                                  : "neutral"
+                          }
+                        />
+                      ) : null}
                       {/* LOOKING, not committing — a mint and an open, which
                           is why it can happen right here, and why it is offered
                           on a narrowed grid too: the preview renders the WHOLE
-                          month, which is now exactly what the band beside it
-                          says it is about. */}
-                      <Button
-                        title="Preview"
-                        variant="ghost"
-                        size="sm"
-                        icon="eye"
-                        loading={previewPage.loading}
-                        onPress={() =>
-                          void previewPage.open({
-                            scope: consoleScope,
-                            periodKey: group.key,
-                          })
-                        }
-                      />
+                          month, which is exactly what the band beside it says
+                          it is about.
+
+                          SINGLE BOOK ONLY, for the same reason the badge is:
+                          a preview renders ONE book's page, and on the merged
+                          queue this band's rows come from several. Minting one
+                          anyway would open a page that silently answered about
+                          the caller's own desk while the reader was looking at
+                          everyone's rows. Publish stays, because it routes to
+                          the console, where a book is chosen explicitly. */}
+                      {consoleScope ? (
+                        <Button
+                          title="Preview"
+                          variant="ghost"
+                          size="sm"
+                          icon="eye"
+                          loading={previewPage.loading}
+                          onPress={() =>
+                            void previewPage.open({
+                              scope: consoleScope,
+                              periodKey: group.key,
+                            })
+                          }
+                        />
+                      ) : null}
                       {/* COMMITTING — routed to the console, deliberately. The
                           two-approver handoff, the amendment reason and the
                           truncated-snapshot refusal are the act itself, not
@@ -2332,7 +2368,7 @@ function ReconcileGrid() {
                           inability to say which rows it meant, and the band
                           says so now. */}
                       <Button
-                        title={pub.status === "published" ? "Amend" : "Publish"}
+                        title={status === "published" ? "Amend" : "Publish"}
                         variant="ghost"
                         size="sm"
                         icon="arrow-up-right"
