@@ -224,7 +224,11 @@ export function centsToDollarsInput(cents: number | undefined): string {
 
 /** How a rule's floor reads in the list. An absent floor — and an explicit
  *  zero, which the backend accepts and which matches everything — both say
- *  "every gift" rather than "$0.00 and up". */
+ *  "every gift" rather than "$0.00 and up".
+ *
+ *  The floor also judges NEW BACKERS, at their annual value — that is stated on
+ *  the form's threshold field rather than crammed into this badge, which has to
+ *  sit on one line beside the book and the schedule. */
 export function thresholdLabel(minAmountCents: number | undefined): string {
   if (minAmountCents === undefined || minAmountCents === 0) return "Every gift";
   return `${formatCents(minAmountCents)} and up`;
@@ -233,7 +237,11 @@ export function thresholdLabel(minAmountCents: number | undefined): string {
 // ── The schedule, in words ───────────────────────────────────────────────────
 
 export const CADENCE_OPTIONS: { value: RuleCadence; label: string }[] = [
-  { value: "immediate", label: "As each gift arrives" },
+  // "…or a new backer" is not padding. Every rule now also announces somebody
+  // starting a monthly pledge, weighed at its ANNUAL value — so a rule with a
+  // $500 threshold hears about a $50/month backer. A picker that still said
+  // "gifts" would make that arrive as a surprise.
+  { value: "immediate", label: "As each gift or new backer arrives" },
   { value: "daily", label: "Daily digest" },
   { value: "weekly", label: "Weekly digest" },
 ];
@@ -291,7 +299,7 @@ export function scheduleSummary(rule: {
   sendHourLocal?: number;
   sendWeekday?: number;
 }): string {
-  if (rule.cadence === "immediate") return "As each gift arrives";
+  if (rule.cadence === "immediate") return "As each gift or new backer arrives";
   const at = `${hourLabel(rule.sendHourLocal ?? DEFAULT_SEND_HOUR_LOCAL)} ET`;
   if (rule.cadence === "daily") return `Every day at ${at}`;
   return `Every ${weekdayLabel(rule.sendWeekday)} at ${at}`;

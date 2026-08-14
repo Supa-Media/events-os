@@ -1,5 +1,6 @@
 /**
- * Turning a `gifts` row into the facts a notification email needs.
+ * Turning a `gifts` row — or a `pledges` row, for a new backer — into the facts
+ * a notification email needs.
  *
  * Read-only, `QueryCtx`-only — it never patches a gift or a donor. Those five
  * derived things (donor lifetime, gift count, donor status, the scope
@@ -19,14 +20,16 @@
  * order (`ticketOrders.by_rsvp`, an indexed read) and see whether an add-on of
  * that amount was actually bought there.
  */
+import { BACKER_UNIT_CENTS } from "@events-os/shared";
 import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 import { appUrl } from "./siteUrl";
 import type {
+  NotificationBacker,
   NotificationDonor,
   NotificationGift,
 } from "./givingNotificationEmails";
-import { isBackdatedGift } from "./givingNotificationRules";
+import { backerAnnualCents, isBackdatedGift } from "./givingNotificationRules";
 import type { GiftScope, RuleScope } from "./givingNotificationRules";
 
 /** Path of a donor's record in the app — `apps/mobile/app/(app)/giving/donor/
@@ -166,6 +169,63 @@ export async function buildNotificationGift(
     ...(eventName ? { eventName } : {}),
     provenance: await giftProvenance(ctx, gift),
     isBackdated: isBackdatedGift(gift.receivedAt, now),
+    donor: donorFacts(donor),
+  };
+}
+
+/**
+ * Everything an email needs about one NEW BACKER. Returns `null` when the donor
+ * is gone (a merge or a delete raced the notification) — same posture as
+ * `buildNotificationGift`: drop the row rather than mail a record with no name
+ * on it.
+ *
+ * ── THE ANNUAL FIGURE IS DERIVED HERE, ONCE ────────────────────────────────
+ * `backerAnnualCents` is the only place a monthly pledge is turned into a year,
+ * and this is the only place a template gets it from — so the number a rule's
+ * FLOOR was tested against and the number the email PRINTS can never be two
+ * different arithmetics. Both figures travel together for the same reason: an
+ * email that showed only the annual one would read as money that has arrived.
+ *
+ * `isFirstPledge` is about the DONOR, not the pledge: someone upgrading from a
+ * one-off gift to monthly backing is a different sentence from a brand-new
+ * name, and the desk wants to know which one it is before picking up the phone.
+ */
+export async function buildNotificationBacker(
+  ctx: QueryCtx,
+  pledge: Doc<"pledges">,
+  chapterNames?: Map<string, string>,
+): Promise<NotificationBacker | null> {
+  const donor = await ctx.db.get(pledge.donorId);
+  if (!donor) return null;
+
+  let label: string;
+  const memoKey = pledge.scope as string;
+  if (chapterNames?.has(memoKey)) {
+    label = chapterNames.get(memoKey) as string;
+  } else {
+    label = await scopeLabel(ctx, pledge.scope);
+    chapterNames?.set(memoKey, label);
+  }
+
+  // Bounded: the donor's pledges, capped at two — all this asks is "is there
+  // one other?", and a donor with a dozen is still one read.
+  const pledges = await ctx.db
+    .query("pledges")
+    .withIndex("by_donor", (q) => q.eq("donorId", pledge.donorId))
+    .take(2);
+
+  return {
+    pledgeId: pledge._id,
+    monthlyCents: pledge.amountCents,
+    annualCents: backerAnnualCents(pledge.amountCents),
+    startedAt: pledge.startedAt ?? pledge.createdAt,
+    scopeLabel: label,
+    isFirstPledge: pledges.length <= 1,
+    // The org's vocabulary, resolved in ONE place: the pledge floor is $5 and
+    // the BACKER floor is $50 (`BACKER_UNIT_CENTS`), and only the second one
+    // counts toward a chapter's public backer count and its milestone ladder.
+    // See `NotificationBacker.isBacker`.
+    isBacker: pledge.amountCents >= BACKER_UNIT_CENTS,
     donor: donorFacts(donor),
   };
 }

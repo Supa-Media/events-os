@@ -873,6 +873,18 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         explanation:
           "Headcount, not dollars, drives the tier — consistent with the same principle taught on the finance side of the house.",
       },
+      {
+        prompt: "A notification rule tells the team about gifts of $500 and up. Someone starts a $50/month pledge. Does the team hear about it?",
+        options: [
+          "No — $50 is well under the $500 threshold",
+          "Yes — a signup is judged by its ANNUAL value ($600), because a backer is a big gift arriving twelve payments at a time",
+          "Only if someone on the desk records it manually",
+          "Only in the weekly digest, never right away",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Judging a signup by the monthly charge would let the most consequential event on the giving desk slip under every threshold the team actually sets, while a one-off $500 cheque rang the bell. The notification prints both figures — $50/month and $600 a year — so nobody mistakes the annual number for money in the bank.",
+      },
     ],
   },
 
@@ -881,7 +893,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "dev-backer-lifecycle",
     title: "A backer's lifecycle: subscribe, pay, sometimes falter",
     subtitle: "incomplete → active → past_due → canceled (+ a manual pause), and who does what",
-    minutes: 4,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
@@ -905,12 +917,33 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "The moment someone becomes a backer, two emails go out",
+        text: "Becoming a backer is the biggest single thing anyone does on the giving side, and the system treats it that way. **The backer gets a welcome** — a real thank-you naming what monthly giving makes possible and promising to keep them in the loop — instead of the routine monthly receipt on that first cycle. (Every cycle AFTER the first gets the ordinary receipt; a welcome that arrives monthly stops being a welcome.) **The giving desk gets a notification**, through the same notification rules that announce gifts. Both fire exactly once per backer, whichever Stripe event lands first — so a redelivered webhook can never thank somebody twice.",
+      },
+      {
+        kind: "rule",
+        title: "A new backer counts as a BIG gift — at their annual value",
+        text: "A notification rule's dollar threshold judges a signup by what they've committed over a year, not by the monthly charge. A $50/month backer is a $600 decision, so they clear a \"$500 and up\" rule that their $50 first cycle never would. That's deliberate: without it, the most consequential event on the giving desk would slip under every threshold the team actually sets while a one-off $500 cheque rang the bell. The emails always print BOTH figures — the monthly amount and the annual one — and new backers are reported in the daily/weekly digest as their own section, deliberately NOT added into the money total, because a commitment is a promise and the total is what actually arrived.",
+      },
+      {
+        kind: "tip",
+        text: "**Vocabulary matters here, and the emails hold it.** A pledge under the $50 backer floor produces the same warm welcome, but it says \"monthly giver\", not \"backer\" — because that person doesn't appear in the chapter's public backer count or move its milestone ladder. Never tell a $10/month giver they're a backer of a city; it's a promise about a page they're not on.",
+      },
+      {
+        kind: "rule",
         title: "Pause is manual; the rest is Stripe",
         text: "Every status EXCEPT paused is driven by Stripe (checkout, successful charges, failed charges, cancellation). Paused is the one the development desk sets by hand — for a backer who asks to take a break — and it's deliberately \"sticky\": a routine Stripe re-sync won't quietly flip a paused pledge back to active, so a manual pause never fights the billing cycle. A paused pledge doesn't count toward the chapter's tier, but it never leaves the backers list — the relationship and its whole timeline are preserved. The desk can also correct a pledge's \"Since\" date or delete a pledge outright; each of those, like a pause or resume, is written to the pledge's history with who did it and why.",
       },
       {
         kind: "tip",
         text: "**Self-serve, always.** A backer manages their own card, changes their pledge amount, or cancels through a Stripe billing-portal link — we never store card numbers or build our own card-management screen. If someone emails asking you to update their card, the answer is the portal link, not a request for their card number.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A new backer's first monthly cycle is paid. What lands in their inbox — the welcome, the standard receipt, or both?",
+        answer:
+          "The welcome, and only the welcome. It carries the first cycle's details (amount, that the first month is in, how to change it) precisely so it can stand in for the receipt exactly once. Two emails in the same minute about the same $50 — one saying \"this matters enormously\", one saying \"your monthly gift came through\" — is how a thank-you gets read as an auto-reply. Every cycle after the first gets the ordinary receipt.",
       },
       {
         kind: "reveal",

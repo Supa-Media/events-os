@@ -174,6 +174,63 @@ export function meetsAmountFloor(
   return amountCents >= minAmountCents;
 }
 
+/**
+ * How many cycles of a monthly pledge a rule weighs a NEW BACKER at.
+ *
+ * ── WHY A SIGNUP IS TESTED AT ITS ANNUAL VALUE ─────────────────────────────
+ * A rule's floor is the desk's answer to "what is big enough to tell me about
+ * today", and against a backer signup the monthly figure answers a different
+ * question than the one being asked. Someone starting a $50/month pledge has
+ * committed $600 over the year ahead; tested at $50 they fall under every floor
+ * the org actually sets, and the single most consequential thing that happens on
+ * the giving desk — a person deciding to fund the work every month from now on —
+ * arrives as silence, while a one-off $500 cheque rings the bell.
+ *
+ * The owner's framing, and it is the right one: a backer IS a big gift, it just
+ * arrives twelve payments at a time. So the floor test sees the commitment, and
+ * every email that results prints BOTH figures so nobody mistakes the annual
+ * number for money in the bank.
+ *
+ * The cost, named: a rule set at $500 now hears about a $42/month backer
+ * ($504/yr). That is the intended behaviour, not a leak — and it is bounded by
+ * the $20 pledge floor, so the smallest signup any rule can hear about at $500
+ * is one worth $240/yr, which is under it.
+ */
+export const BACKER_ANNUAL_MONTHS = 12;
+
+/** A monthly pledge's value over a year, in integer cents. Never used as an
+ *  amount of money that has arrived — only as the weight a floor is tested
+ *  against, and as a figure emails print beside the monthly one. */
+export function backerAnnualCents(monthlyCents: number): number {
+  return monthlyCents * BACKER_ANNUAL_MONTHS;
+}
+
+/**
+ * The whole eligibility test for one NEW BACKER against one rule — the same
+ * shape as `ruleMatchesGift`, differing in exactly one place: the floor is
+ * tested against the ANNUAL commitment (see `BACKER_ANNUAL_MONTHS`) rather than
+ * the monthly amount.
+ *
+ * Deliberately a separate function rather than a flag on `ruleMatchesGift`: the
+ * gift test is called on every gift write and in the middle of the digest
+ * window scan, and a boolean that changes what a floor MEANS is the kind of
+ * argument that gets passed wrong once and silently mis-reports money forever.
+ */
+export function ruleMatchesBackerSignup(
+  rule: Pick<
+    Doc<"givingNotificationRules">,
+    "isActive" | "scope" | "minAmountCents"
+  >,
+  signup: Pick<Doc<"pledges">, "scope" | "amountCents">,
+): boolean {
+  if (!rule.isActive) return false;
+  if (!ruleCoversScope(rule.scope, signup.scope)) return false;
+  return meetsAmountFloor(
+    rule.minAmountCents,
+    backerAnnualCents(signup.amountCents),
+  );
+}
+
 /** The whole eligibility test for one gift against one rule. Inactive rules
  *  match nothing; there is no other exclusion (see the module doc). */
 export function ruleMatchesGift(
@@ -472,12 +529,17 @@ export function clampSubjectName(name: string, max = 80): string {
 }
 
 /**
- * Does a digest with this many gifts get sent at all? The asymmetry lives
+ * Does a digest carrying this many ITEMS get sent at all? The asymmetry lives
  * here and nowhere else — see the module doc for why.
+ *
+ * "Items" is deliberately broader than gifts: it is everything the window found
+ * worth reporting — settled gifts, in-flight ACH, and new backers. A week whose
+ * only news is that two people started monthly pledges is emphatically not an
+ * empty week, and skipping it as one would hide the best thing that happened.
  */
 export function shouldSendDigest(
   cadence: string,
-  giftCount: number,
+  itemCount: number,
   windowTruncated = false,
 ): boolean {
   // A CUT WINDOW ALWAYS SENDS, whatever it matched. "Nothing matched" is not a
@@ -486,6 +548,6 @@ export function shouldSendDigest(
   // import's prefix would re-read the same prefix every day and never send
   // again. Sending breaks that wedge and tells the humans the total is a floor.
   if (windowTruncated) return true;
-  if (giftCount > 0) return true;
+  if (itemCount > 0) return true;
   return cadence === "weekly";
 }

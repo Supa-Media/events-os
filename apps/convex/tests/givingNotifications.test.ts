@@ -20,6 +20,7 @@ import {
   renderDigestEmail,
   renderImmediateGiftEmail,
   type DigestPendingGift,
+  type NotificationBacker,
   type NotificationGift,
 } from "../lib/givingNotificationEmails";
 import {
@@ -111,6 +112,18 @@ const NO_PENDING = {
   pendingCount: 0,
   pending: [] as DigestPendingGift[],
   pendingOmittedCount: 0,
+};
+
+/**
+ * The new-backer half of a digest payload, empty — the same convenience
+ * `NO_PENDING` is, for the same reason. The signup tests live in
+ * `backerSignupNotifications.test.ts` and set these themselves.
+ */
+const NO_BACKERS = {
+  newBackers: [] as NotificationBacker[],
+  newBackerOmittedCount: 0,
+  newBackerMonthlyCents: 0,
+  newBackerAnnualCents: 0,
 };
 
 function sampleGift(over: Partial<NotificationGift> = {}): NotificationGift {
@@ -900,6 +913,7 @@ describe("escaping — donor names come from a public form", () => {
       byType: [{ label: XSS, cents: 50_000, count: 1 }],
       gifts: [nasty],
       ...NO_PENDING,
+      ...NO_BACKERS,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -938,6 +952,7 @@ describe("the digest email", () => {
       byType: [],
       gifts: [],
       ...NO_PENDING,
+      ...NO_BACKERS,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -984,6 +999,7 @@ describe("the digest email", () => {
       ],
       gifts: [big, small],
       ...NO_PENDING,
+      ...NO_BACKERS,
       omittedCount: 3,
       countTruncated: false,
     });
@@ -1025,6 +1041,7 @@ describe("the digest email", () => {
       byType: [{ label: "One-time", cents: 33_000, count: 1 }],
       gifts: [sampleGift({ amountCents: 33_000 })],
       ...NO_PENDING,
+      ...NO_BACKERS,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -1047,6 +1064,7 @@ describe("the digest email", () => {
       byType: [],
       gifts: [],
       ...NO_PENDING,
+      ...NO_BACKERS,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -1071,6 +1089,7 @@ describe("the digest email", () => {
       byType: [{ label: "One-time", cents: 1_000, count: 1 }],
       gifts: [sampleGift({ amountCents: 1_000 })],
       ...NO_PENDING,
+      ...NO_BACKERS,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -1107,6 +1126,7 @@ describe("the digest email", () => {
       ],
       gifts: [],
       ...NO_PENDING,
+      ...NO_BACKERS,
       omittedCount: 0,
       countTruncated: false,
     });
@@ -2447,6 +2467,7 @@ describe("digests", () => {
       byType: [],
       gifts: [],
       ...NO_PENDING,
+      ...NO_BACKERS,
       omittedCount: 0,
       countTruncated: true,
     });
