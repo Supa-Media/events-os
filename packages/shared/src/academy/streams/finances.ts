@@ -486,6 +486,38 @@
  * what the rule blocks already say. No title, slug, minutes or quiz length
  * moved.
  *
+ * APPROVAL NOW EMAILS THE CLAIMANT (2026-08-14; founder: "when their
+ * reimbursement was approved and it's coming to them, there's no email sent…
+ * we just need to make sure people know that their money is coming once it's
+ * approved"). Approval really was the one decision in the reimbursement state
+ * machine that reached the person waiting on it through no channel at all, and
+ * `finance-reimbursements-and-flags` is the lesson that teaches the flow, so it
+ * carries the change. Content-only — no section added, moved or removed, and
+ * minutes stay 5.
+ *
+ *  · ONE BULLET ADDED, "You'll be told when it's approved — and approved is
+ *    not paid": the notice goes to the address on the REQUEST rather than an
+ *    account (most claimants are accountless), it names the approved amount
+ *    and, on a partial approval, the submitted one too, and it deliberately
+ *    stops short of saying the money has moved. The state pair matters more
+ *    than the email: `approve` records a decision, and the payout is the step
+ *    after it. The existing "Reimbursement — Public Worship owes you" bullet
+ *    already taught the auto-ACH-on-approval mechanic and needed no change.
+ *  · ONE QUIZ QUESTION SWAPPED, never grown — this quiz is at the 5-question
+ *    cap `apps/convex/tests/academy.test.ts` enforces. IN: what an approval
+ *    email does and does not mean about your money (approved ≠ paid, and
+ *    partial approvals exist). OUT: "you spot a charge you don't recognize",
+ *    whose answer is stated verbatim in the bullet a few lines above it and
+ *    which was the only question here not about the two flows this lesson is
+ *    named for. Its doctrine was NOT dropped — flagging says YOU made the
+ *    charge, so a mystery charge is a freeze plus a phone call, not a flag —
+ *    it moved into the explanation of the flagging question that was already
+ *    in this quiz, which is its natural home.
+ *  · The one-shot catch-up mailing to everyone approved before this shipped
+ *    (`reimbursementApprovedNoticeBackfill`) is deliberately NOT taught: it is
+ *    an operator action that runs once and then means nothing, not a durable
+ *    rule anybody needs to learn.
+ *
  * 2026-08-14, the same founder report's other half — TRANSFERS JOIN PAYOUTS,
  * and a payout stops being named after a person. Both land in
  * `finance-transfers-and-payouts`; no title, slug, minutes, quiz length or
@@ -1369,6 +1401,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
+          "**You'll be told when it's approved — and approved is not paid:** the moment a reviewer approves your request, an email goes out saying so and naming the amount. It goes to the address you put ON THE REQUEST, not to wherever your account lives, because plenty of claimants have no account at all. Read the amount before you celebrate: a reviewer can approve SOME of your lines and not others, so when the approved figure differs from what you submitted the email names both, and your Treasurer can tell you which lines didn't make it and why. What that email will never tell you is that the money has already moved — approved and paid are two different states, and sending the payout is the step after. If nothing has landed within a week or so, contact your Treasurer; that's the right person to ask, and asking is welcome.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Book (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Closed AND an unpaid personal expense at the same time.",
           "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
@@ -1492,7 +1525,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 3,
         explanation:
-          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt.",
+          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt. And the mirror rule: flagging says YOU made the charge, so a charge you genuinely don't recognize is not a flag — freeze the card yourself (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager right away so it gets investigated.",
       },
       {
         prompt: "Your chapter's Treasurer submits a reimbursement request for their own out-of-pocket purchase. Who can approve it?",
@@ -1507,16 +1540,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Approver ≠ requester is identity-based — even a Treasurer can't approve their own request. A Chapter Director's finance access doesn't reach reimbursement approval, so the Financial Manager — whose grant covers every chapter — is the real failsafe.",
       },
       {
-        prompt: "You spot a charge on the Public Worship card you genuinely don't recognize. What's the right move?",
+        prompt:
+          "An email lands saying your $240 reimbursement was approved. What does that actually mean about your money?",
         options: [
-          "Flag it as a personal charge so it's tracked as an owed balance",
-          "Freeze the card yourself right away, then tell your Treasurer or the Financial Manager immediately",
-          "Wait to see if it happens again before doing anything",
-          "Ignore it — the 7-day receipt rule will catch it automatically",
+          "It's been sent — approved and paid are the same event, so it's already left the account",
+          "It's approved but not yet paid: sending the payout is the next step, and the request moves to Paid when the money settles",
+          "Nothing yet — approval emails go out before anyone has really reviewed it",
+          "It means the full amount you submitted was approved, since partial approvals aren't possible",
         ],
         answerIndex: 1,
         explanation:
-          "Flagging \"personal\" says you made the charge — wrong move for a genuine mystery. Freezing your own card is instant and self-serve, and looping in your Treasurer or the Financial Manager gets it actually investigated.",
+          "Approved and paid are separate states, and the email is careful never to claim otherwise — it tells you the decision, not that the money has moved. Read the figure too: a reviewer can approve some of your lines and not others, and when the approved amount differs from what you submitted the email names both. If nothing arrives within a week or so, contact your Treasurer.",
       },
       {
         prompt:

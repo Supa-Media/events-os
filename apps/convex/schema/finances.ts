@@ -881,6 +881,24 @@ export const reimbursementRequests = defineTable({
   submittedAt: v.optional(v.number()),
   approvedAt: v.optional(v.number()),
   paidAt: v.optional(v.number()),
+  // When the "your reimbursement was approved" notice to the CLAIMANT was
+  // claimed for sending — the exactly-once guard, exactly as
+  // `purchaseFollowUpSentAt` above is for the receipt follow-up. `undefined` =
+  // this row has never had its shot; a timestamp = one send was claimed and no
+  // other code path may take another.
+  //
+  // Written ONLY by `reimbursements.markApprovedNoticeSent`, which no-ops when
+  // it's already set. Both senders — the live `approve` path and the one-shot
+  // `reimbursementApprovedNoticeBackfill` sweep — call that mutation FIRST and
+  // send only when it reports the claim was theirs, so the two can never
+  // double-mail one claimant and neither can double-mail on a re-run.
+  //
+  // Absent on every row approved before this shipped, which is precisely what
+  // the backfill sweeps for. Deliberately NOT cleared by
+  // `reverseSettledPayout`'s paid→approved walk-back: the claimant already
+  // knows it was approved, and a bounced ACH is its own (unbuilt) notice, not
+  // a reason to re-send this one.
+  approvedNoticeSentAt: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })

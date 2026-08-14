@@ -315,6 +315,7 @@ import type * as receipts from "../receipts.js";
 import type * as reconcileSuggest from "../reconcileSuggest.js";
 import type * as reconciliation from "../reconciliation.js";
 import type * as registrations from "../registrations.js";
+import type * as reimbursementApprovedNoticeBackfill from "../reimbursementApprovedNoticeBackfill.js";
 import type * as reimbursementBackfill from "../reimbursementBackfill.js";
 import type * as repaymentLinks from "../repaymentLinks.js";
 import type * as reimbursements from "../reimbursements.js";
@@ -713,6 +714,7 @@ declare const fullApi: ApiFromModules<{
   reconcileSuggest: typeof reconcileSuggest;
   reconciliation: typeof reconciliation;
   registrations: typeof registrations;
+  reimbursementApprovedNoticeBackfill: typeof reimbursementApprovedNoticeBackfill;
   reimbursementBackfill: typeof reimbursementBackfill;
   repaymentLinks: typeof repaymentLinks;
   reimbursements: typeof reimbursements;

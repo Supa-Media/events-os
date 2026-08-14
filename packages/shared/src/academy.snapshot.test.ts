@@ -571,6 +571,21 @@
  * nothing was swapped. No title, slug, minutes, quizLength, section or course
  * order moved: every table below is unchanged.
  *
+ * 2026-08-14 — approving a reimbursement now emails the claimant (founder:
+ * "there's no email sent… we just need to make sure people know that their
+ * money is coming once it's approved"). Content-only on
+ * `finance-reimbursements-and-flags`: one bullet added on the notice itself
+ * and on the state pair behind it — the email goes to the address on the
+ * REQUEST, names the approved amount (and the submitted one when a partial
+ * approval makes them differ), and never claims the money has moved, because
+ * approved and paid are different states. Its quiz was at the 5-question cap,
+ * so one question was SWAPPED, not added (in: what an approval email does and
+ * does not mean about your money; out: the "charge you don't recognize"
+ * question, whose answer is stated verbatim in a bullet above the quiz — its
+ * doctrine moved into the flagging question's explanation). Minutes stay 5 and
+ * quizLength stays 5, so every table below is unchanged; no slugs, sections or
+ * courses moved. See `streams/finances.ts`'s header comment for the reasoning.
+ *
  * 2026-08-14 — the other half of that same founder report, content-only again.
  * "All payouts and transfers should be bank record only. No need for
  * documentation": marked internal transfers join marked payouts in owing
