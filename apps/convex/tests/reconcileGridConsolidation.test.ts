@@ -543,6 +543,73 @@ describe("grouping — contiguous rows, honest headers", () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+describe("each group carries its OWN progress", () => {
+  // This is what lets a month band stand in for the Explain screen's meter.
+  // It has to be computed server-side: the denominator is
+  // `explanationPopulation`, which reads fields `reconcileRow` deliberately
+  // doesn't ship, so a client could not derive it even from a full page.
+  test("a month's explained figures are its own, not the whole selection's", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    // June: two explainable, one approved. July: one explainable, none.
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024, codingState: "approved" });
+    await txn(s, { amountCents: 3_000, postedAt: JUNE_2024 });
+    await txn(s, { amountCents: 5_000, postedAt: JULY_2024 });
+
+    const res = await s.as.query(api.finances.listReconcile, { groupBy: "month" });
+    const july = res.groups!.find((g) => g.key === "2024-07")!;
+    const june = res.groups!.find((g) => g.key === "2024-06")!;
+
+    expect(june.explainableCount).toBe(2);
+    expect(june.explainedCount).toBe(1);
+    expect(june.explainableCents).toBe(4_000);
+    expect(june.explainedCents).toBe(1_000);
+
+    expect(july.explainableCount).toBe(1);
+    expect(july.explainedCount).toBe(0);
+
+    // AND THE GROUPS RECONCILE TO THE WHOLE-SET FIGURE — if they didn't, one
+    // of the two meters would be lying and there'd be no way to tell which.
+    const sum = (f: "explainableCount" | "explainedCount") =>
+      res.groups!.reduce((n, g) => n + g[f], 0);
+    expect(sum("explainableCount")).toBe(res.explainedProgress.explainableCount);
+    expect(sum("explainedCount")).toBe(res.explainedProgress.explainedCount);
+  });
+
+  test("a group of rows that owe nothing reports zero explainable, not zero explained", async () => {
+    // A month of processor fees. The band must be able to tell "nothing to do
+    // here" apart from "nothing done here" — the UI hides progress entirely on
+    // the former, and showing "0 of 0" would read as failure.
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 289, postedAt: JUNE_2024, feeOrigin: "stripe_processing" });
+    await txn(s, { amountCents: 315, postedAt: JUNE_2024, feeOrigin: "stripe_processing" });
+
+    const res = await s.as.query(api.finances.listReconcile, { groupBy: "month" });
+    const june = res.groups!.find((g) => g.key === "2024-06")!;
+    expect(june.count).toBe(2);
+    expect(june.explainableCount).toBe(0);
+    expect(june.explainedCount).toBe(0);
+  });
+
+  test("person groups carry it too", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const personId = await seedPerson(s, "Marcus");
+    await txn(s, { amountCents: 1_000, personId, codingState: "approved" });
+    await txn(s, { amountCents: 2_000, personId });
+
+    const res = await s.as.query(api.finances.listReconcile, { groupBy: "person" });
+    const mine = res.groups!.find((g) => g.key === personId)!;
+    expect(mine.explainableCount).toBe(2);
+    expect(mine.explainedCount).toBe(1);
+  });
+});
+
 describe("absent args change nothing", () => {
   test("no sort, no groupBy: identical rows, order, counts and totals", async () => {
     const t = newT();

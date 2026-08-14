@@ -15,30 +15,24 @@
  * so ("12 shown") instead of quietly printing either figure as if it were the
  * other.
  *
- * ── WHAT THIS HEADER CANNOT SAY YET, AND WHY IT DOESN'T GUESS ─────────────
- * A month band should carry that month's own explained progress — that is what
- * would let month grouping retire the Explain screen's per-month meter. It
- * doesn't, because the figure is not derivable from what the backend returns:
- * `groups[]` carries `key`/`label`/`count`/`totalCents` and no explained
- * fields, and `explainedProgress` is a single total over the entire match set,
- * not per group.
+ * ── THE MONTH'S OWN PROGRESS ──────────────────────────────────────────────
+ * A month band carries that month's explained progress, which is what lets
+ * month grouping stand in for the Explain screen's per-month meter.
  *
- * The two ways to fake it are both worse than the absence:
- *   - Counting the page's own rows would be wrong the moment a group exceeds
- *     the 100-row page, which is every real month.
- *   - Recomputing the population client-side is not even possible: the
- *     denominator is `explanationPopulation`, which reads `feeOrigin`,
- *     `source`, `sourceCategory` and both refund pointers off the transaction
- *     — none of which `reconcileRow` ships (by design; see `txnSummaryFields`).
+ * It comes from the SERVER (`groups[].explainable*` / `explained*`), computed
+ * in the same loop that builds the group and with the same two predicates the
+ * whole-set `explainedProgress` uses — so this band and that month on the
+ * Explain screen cannot report different numbers.
  *
- * The fix is ~8 lines in `finances.ts#listReconcile`, entirely inside the
- * grouping loop that already visits every matched row: accumulate
- * `explainableCount`/`explainableCents`/`explainedCount`/`explainedCents` per
- * group with the same `explanationPopulation(tr)` / `codingState === "approved"`
- * test the whole-set `explainedProgress` block runs three lines earlier, and
- * add the four fields to the `groups` element validator. Zero extra reads.
- * Until that lands this band stays silent about progress rather than shipping
- * a number that would have to be unlearned.
+ * It is not computed here, and could not be. Counting the page's own rows
+ * would be wrong the moment a group exceeds the 100-row page, which is every
+ * real month; and recomputing the population client-side is impossible, since
+ * the denominator reads `feeOrigin`, `source`, `sourceCategory` and both
+ * refund pointers off the transaction — none of which `reconcileRow` ships,
+ * by design.
+ *
+ * A group with nothing explainable in it (all fees, all transfers) shows no
+ * progress at all rather than "0 of 0", which reads as failure.
  */
 import { View, Text } from "react-native";
 import { formatCents } from "@events-os/shared";
@@ -48,6 +42,8 @@ export function ReconcileGroupHeader({
   count,
   totalCents,
   shownCount,
+  explainableCount,
+  explainedCount,
 }: {
   label: string;
   /** Over the whole match set — see the module doc. */
@@ -55,8 +51,16 @@ export function ReconcileGroupHeader({
   totalCents: number;
   /** How many of `count` are on the loaded page. */
   shownCount: number;
+  /** This group's own progress, server-computed over the whole match set. */
+  explainableCount: number;
+  explainedCount: number;
 }) {
   const partial = shownCount < count;
+  // Nothing in this group can carry an explanation (a month of fees and
+  // transfers) — say nothing rather than "0 of 0", which reads as a failure
+  // to do work that was never owed.
+  const showProgress = explainableCount > 0;
+  const done = showProgress && explainedCount >= explainableCount;
   return (
     <View
       // `border-b` only: the row (or column header) above already draws its
@@ -84,6 +88,16 @@ export function ReconcileGroupHeader({
       >
         {formatCents(totalCents)}
       </Text>
+      {showProgress ? (
+        <Text
+          className={`text-2xs ${done ? "font-semibold text-success" : "text-muted"}`}
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {done
+            ? "✓ all explained"
+            : `${explainedCount} of ${explainableCount} explained`}
+        </Text>
+      ) : null}
     </View>
   );
 }

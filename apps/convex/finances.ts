@@ -8848,6 +8848,15 @@ export const listReconcile = query({
            *  `selectionTotals.netCents` instead of being a second, subtly
            *  different summation. */
           totalCents: v.number(),
+          /** THIS GROUP'S OWN explaining progress, same four fields and same
+           *  two predicates as `explainedProgress` above but scoped to the
+           *  group — what lets a month band carry the meter the Explain
+           *  screen carries, instead of staying silent about it. Over the
+           *  whole match set like `count`, never the loaded page. */
+          explainableCount: v.number(),
+          explainableCents: v.number(),
+          explainedCount: v.number(),
+          explainedCents: v.number(),
         }),
       ),
     ),
@@ -9378,12 +9387,31 @@ export const listReconcile = query({
     // DISTINCT people and cards in the book, not by the row count, so grouping
     // adds no per-row read and stays inside the page cap's intent.
     let groups:
-      | { key: string; label: string; count: number; totalCents: number }[]
+      | {
+          key: string;
+          label: string;
+          count: number;
+          totalCents: number;
+          explainableCount: number;
+          explainableCents: number;
+          explainedCount: number;
+          explainedCents: number;
+        }[]
       | undefined;
     if (args.groupBy != null) {
       const byKey = new Map<
         string,
-        { key: string; label: string; count: number; totalCents: number; rows: Doc<"transactions">[] }
+        {
+          key: string;
+          label: string;
+          count: number;
+          totalCents: number;
+          explainableCount: number;
+          explainableCents: number;
+          explainedCount: number;
+          explainedCents: number;
+          rows: Doc<"transactions">[];
+        }
       >();
       for (const tr of ordered) {
         let key: string;
@@ -9399,7 +9427,17 @@ export const listReconcile = query({
         }
         let group = byKey.get(key);
         if (!group) {
-          group = { key, label, count: 0, totalCents: 0, rows: [] };
+          group = {
+            key,
+            label,
+            count: 0,
+            totalCents: 0,
+            explainableCount: 0,
+            explainableCents: 0,
+            explainedCount: 0,
+            explainedCents: 0,
+            rows: [],
+          };
           byKey.set(key, group);
         }
         group.count += 1;
@@ -9407,6 +9445,25 @@ export const listReconcile = query({
         // group totals ADD UP to `selectionTotals.netCents` rather than being a
         // second summation that disagrees with the header above them.
         group.totalCents += signedBookCents(tr);
+        // THE GROUP'S OWN PROGRESS — the same two tests the whole-set
+        // `explainedProgress` block above runs, on the same rows, so a month
+        // band here and that month on the Explain screen cannot report
+        // different numbers. Free: this loop already visits every matched row
+        // and both predicates read fields already in memory.
+        //
+        // It has to be computed HERE rather than by the client, because the
+        // denominator is `explanationPopulation`, which reads `feeOrigin`,
+        // `source`, `sourceCategory` and both refund pointers — none of which
+        // `reconcileRow` ships. That is why the group header shipped silent
+        // about progress in #704 rather than guessing from the loaded page.
+        if (explanationPopulation(tr)) {
+          group.explainableCount += 1;
+          group.explainableCents += tr.amountCents;
+          if (tr.codingState === "approved") {
+            group.explainedCount += 1;
+            group.explainedCents += tr.amountCents;
+          }
+        }
         group.rows.push(tr);
       }
       const ordering = [...byKey.values()];
@@ -9434,10 +9491,14 @@ export const listReconcile = query({
         });
       }
       ordered = ordering.flatMap((g) => g.rows);
-      groups = ordering.map(({ key, label, count, totalCents }) => ({
+      groups = ordering.map(({ key, label, count, totalCents, ...progress }) => ({
         key,
         label,
         count,
+        explainableCount: progress.explainableCount,
+        explainableCents: progress.explainableCents,
+        explainedCount: progress.explainedCount,
+        explainedCents: progress.explainedCents,
         totalCents,
       }));
     }
