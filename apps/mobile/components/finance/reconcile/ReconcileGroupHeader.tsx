@@ -39,8 +39,10 @@
  * `showsBacklogSplit` and the block that reads it below. A combined "3 of 453
  * explained" is the figure that makes a finished month look abandoned.
  */
+import type { ReactNode } from "react";
 import { View, Text } from "react-native";
 import { formatCents } from "@events-os/shared";
+import { Avatar } from "../../ui";
 import { showsBacklogSplit, type ExplainProgress } from "./gridView";
 
 export function ReconcileGroupHeader({
@@ -49,6 +51,9 @@ export function ReconcileGroupHeader({
   totalCents,
   shownCount,
   progress,
+  imageUrl = null,
+  showAvatar = false,
+  action = null,
 }: {
   label: string;
   /** Over the whole match set — see the module doc. */
@@ -58,6 +63,22 @@ export function ReconcileGroupHeader({
   shownCount: number;
   /** This group's own progress, server-computed over the whole match set. */
   progress: ExplainProgress;
+  /** PERSON BANDS ONLY — the cardholder's face and, when the caller may send
+   *  one, their nudge button.
+   *
+   *  The chase list this band replaces put a person's avatar, their name, their
+   *  outstanding tally and a "Send reminder" beside each other, and the founder
+   *  named that presentation as the thing worth keeping ("I actually do like
+   *  the way it looks because it does it by person"). The band has to look like
+   *  it, or moving the chase into the grid trades a screen people like for one
+   *  they don't.
+   *
+   *  `action` is a slot rather than a nudge prop: this component knows nothing
+   *  about seats, rate limits or Convex actions, and shouldn't start to. The
+   *  screen owns all of that and hands down a rendered button. */
+  imageUrl?: string | null;
+  showAvatar?: boolean;
+  action?: ReactNode;
 }) {
   const partial = shownCount < count;
   // ── THE LIVE/BACKLOG SPLIT, IN A BAND ────────────────────────────────────
@@ -88,6 +109,7 @@ export function ReconcileGroupHeader({
       className="flex-row items-center gap-2 border-b border-border bg-sunken px-3 py-1.5"
       accessibilityRole="header"
     >
+      {showAvatar ? <Avatar name={label || "?"} size={20} uri={imageUrl} /> : null}
       <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
         {label}
       </Text>
@@ -128,6 +150,15 @@ export function ReconcileGroupHeader({
         >
           {`+ ${progress.backlogExplainedCount} of ${progress.backlogExplainableCount} imported`}
         </Text>
+      ) : null}
+      {/* Pushed to the far end, so the band's numbers stay left-aligned with
+          every other band's and the button lands in one predictable place down
+          a column of people. */}
+      {action ? (
+        <>
+          <View className="flex-1" />
+          {action}
+        </>
       ) : null}
     </View>
   );

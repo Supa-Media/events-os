@@ -112,11 +112,23 @@ export function showsBacklogSplit(progress: {
  *  is the {@link ExplainProgress} tally it carries, which is what lets a month
  *  band carry the meter the Explain screen carried. */
 export type GroupSummary = {
+  /** `YYYY-MM` for a month band; for a person band the cardholder's OWN
+   *  `personId`, or the `"unattributed"` sentinel — which is what lets the band
+   *  offer a nudge without a second lookup. */
   key: string;
   label: string;
+  /** The cardholder's avatar (person bands only). */
+  imageUrl: string | null;
   count: number;
   totalCents: number;
 } & ExplainProgress;
+
+/** The person-band group key for rows that resolve to nobody — a bank
+ *  transfer, a processor deposit, a genesis-imported row with no card. Mirrors
+ *  the server's `UNATTRIBUTED_GROUP_KEY`; a band with this key names a debt
+ *  that is owed to the books rather than by a person, so there is nobody to
+ *  nudge and the button must not render. */
+export const UNATTRIBUTED_GROUP_KEY = "unattributed";
 
 /** Where one group's rows sit inside the loaded page. */
 export type GroupSegment = {

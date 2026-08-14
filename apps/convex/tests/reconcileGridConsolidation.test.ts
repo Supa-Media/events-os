@@ -866,3 +866,126 @@ describe("what else the Explain screen said that the grid now has to", () => {
     expect(asBookkeeper.viewerCanRename).toBe(true);
   });
 });
+
+describe("the chase, in the grid — `needs_chasing` is the UNION, not the receipt pill", () => {
+  /**
+   * The chase page's predicate is `needsDocumentation || chargeOutstanding !=
+   * null`. Building a by-person view on `missing_receipt` alone would produce a
+   * plausible, wrong list — which is the whole risk of moving the chase into
+   * the grid.
+   */
+  test("the facet is exactly `chaseCount`'s population, and both are `receiptChase`'s", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    // Owes documentation and nothing else.
+    await txn(s, { amountCents: 1_000 });
+    // A MARKED internal transfer: `flow:"transfer"`, so the default queue hides
+    // it — and it owes a receipt, so the chase must still find it.
+    await txn(s, { amountCents: 2_000, flow: "transfer", preMarkFlow: "outflow" });
+    // Closed with nothing behind it — nobody left to chase.
+    await txn(s, { amountCents: 4_000, status: "reconciled" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_chasing"],
+      limit: 500,
+    });
+    const chase = await s.as.query(api.finances.receiptChase, {});
+
+    // The number the "Chase receipts" entry point is gated on, the facet
+    // count, and the chase list's own count are one population.
+    expect(res.counts.needs_chasing).toBe(res.chaseCount);
+    expect(res.chaseCount).toBe(chase.count);
+    // And the rows the grid actually SHOWS are that population, not a subset
+    // of it.
+    expect(res.matchedCount).toBe(chase.count);
+  });
+
+  test("a MARKED TRANSFER is hidden from the default queue and still reachable through the chase", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const leg = await txn(s, {
+      amountCents: 9_000,
+      flow: "transfer",
+      preMarkFlow: "outflow",
+    });
+
+    // Hidden by default — a transfer leg is not queue work.
+    const plain = await s.as.query(api.finances.listReconcile, { limit: 500 });
+    expect(plain.rows.map((r) => r.id)).not.toContain(leg);
+
+    // THE FOUNDER RULE: marking a row must never be a way to make it stop
+    // being chased. Selecting the chase has to un-hide the legs, or the
+    // by-person view would silently omit exactly the rows a TREASURER (rather
+    // than a cardholder) has to act on.
+    const chasing = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_chasing"],
+      limit: 500,
+    });
+    expect(chasing.rows.map((r) => r.id)).toContain(leg);
+  });
+
+  test("a charge whose receipt is on and whose coding is not is in the chase but not the receipt pill", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // `changes_requested` — a coding a reviewer sent back. `chargeOutstanding`
+    // says the cardholder owes an edit; `needsDocumentation` is the wrong half
+    // to ask, which is why the union exists.
+    await txn(s, { amountCents: 3_000, codingState: "changes_requested" });
+
+    const res = await s.as.query(api.finances.listReconcile, { limit: 500 });
+    expect(res.counts.needs_chasing).toBeGreaterThanOrEqual(
+      res.counts.missing_receipt,
+    );
+    // The row carries the debt in the SAME words the cardholder's email uses,
+    // so a person band can't say "1 charge" while the reminder names something
+    // the grid never showed.
+    expect(res.rows[0].outstanding).toBeTruthy();
+  });
+
+  test("a processor fee is chased by neither half", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 500, feeOrigin: "stripe_processing" });
+
+    const res = await s.as.query(api.finances.listReconcile, { limit: 500 });
+    // No receipt exists and none ever will — the processor's own ledger is the
+    // record. Both halves of the union carve it out, and the row's own label
+    // agrees rather than asking for a document that doesn't exist.
+    expect(res.counts.needs_chasing).toBe(0);
+    expect(res.rows[0].outstanding).toBeNull();
+  });
+
+  test("person bands carry the identity a nudge button needs", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const alice = await seedPerson(s, "Alice");
+    await txn(s, { amountCents: 5_000, personId: alice });
+    // No cardholder — a marked transfer, chased with a statement rather than a
+    // person. Its band must be the `unattributed` sentinel so the UI knows
+    // there is nobody to remind.
+    await txn(s, { amountCents: 6_000, flow: "transfer", preMarkFlow: "outflow" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      filters: ["needs_chasing"],
+      groupBy: "person",
+      limit: 500,
+    });
+    const groups = res.groups ?? [];
+    // The band's KEY is the personId itself, which is what lets the button
+    // nudge without a second lookup.
+    expect(groups.find((g) => g.key === alice)?.label).toBe("Alice");
+    expect(groups.some((g) => g.key === "unattributed")).toBe(true);
+    // Unattributed pinned LAST — the chase list's rule, kept: those rows have
+    // nobody attached, so a person-by-person read shouldn't open on them.
+    expect(groups[groups.length - 1].key).toBe("unattributed");
+    // The avatar field exists on every band (null where there's no image), so
+    // the person header can look like the chase list it replaces.
+    expect(groups.every((g) => "imageUrl" in g)).toBe(true);
+  });
+});

@@ -18,6 +18,8 @@ const g = (
 ): GroupSummary => ({
   key,
   label: key,
+  // Month bands carry none; only a person band does.
+  imageUrl: null,
   count,
   totalCents: -100 * count,
   // Defaults to "every row explainable, none explained" so a segment test

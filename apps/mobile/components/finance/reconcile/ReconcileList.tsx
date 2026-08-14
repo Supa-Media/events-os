@@ -90,7 +90,7 @@
  * anyone" and "payer flags themselves" are both covered, exactly mirroring
  * the server's own OR-gate. Server authz stays the source of truth either way.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -140,6 +140,7 @@ import { ReconcileGroupHeader } from "./ReconcileGroupHeader";
 import {
   groupSegments,
   type GroupSummary,
+  type ReconcileGroupBy,
   type ReconcileSortDir,
   type ReconcileSortKey,
 } from "./gridView";
@@ -233,6 +234,8 @@ export function ReconcileList({
   sortDir = "desc",
   onSort,
   groups,
+  groupBy = null,
+  renderGroupAction,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
@@ -322,6 +325,18 @@ export function ReconcileList({
    *  ABSENT → one flat list, byte-for-byte the grid this file already
    *  rendered. */
   groups?: readonly GroupSummary[];
+  /** WHICH grouping produced them — the bands render differently for people
+   *  (an avatar, and a nudge button when the host supplies one) than for
+   *  months. Derivable from the group keys in principle; passed explicitly
+   *  because "does this key parse as YYYY-MM" is not a question a renderer
+   *  should be answering. */
+  groupBy?: ReconcileGroupBy | null;
+  /** Per-band trailing control, built by the host. Returning `null` (or
+   *  omitting this) leaves the band exactly what it was.
+   *
+   *  A slot rather than a `onNudge` prop: the nudge is seat-gated, rate-limited
+   *  and in-flight-aware, and none of that belongs in a grid renderer. */
+  renderGroupAction?: (group: GroupSummary) => ReactNode;
 }) {
   // "Select all" only ever means the rows this caller can actually act on —
   // an uneditable row (a foreign chapter's, in the merged queue) has no
@@ -528,6 +543,13 @@ export function ReconcileList({
                     // the combined figure, and `GroupSummary` already IS an
                     // `ExplainProgress`.
                     progress={seg.group}
+                    imageUrl={seg.group.imageUrl}
+                    showAvatar={groupBy === "person"}
+                    // The screen decides whether this band gets a nudge button
+                    // — it owns the seat check, the 24h rate-limit status and
+                    // the action itself. `null` for every month band and for
+                    // any caller who may not nudge.
+                    action={renderGroupAction?.(seg.group) ?? null}
                   />
                   {rows
                     .slice(seg.startIndex, seg.startIndex + seg.shownCount)

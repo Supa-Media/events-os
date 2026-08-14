@@ -70,6 +70,7 @@ export const RECONCILE_FILTER_KEYS = [
   "to_review",
   "needs_budget",
   "missing_receipt",
+  "needs_chasing",
   "uncoded",
   "needs_explaining",
   "coding_review",
@@ -105,6 +106,7 @@ export const RECONCILE_FILTER_GROUPS: readonly {
       "to_review",
       "needs_budget",
       "missing_receipt",
+      "needs_chasing",
       "uncoded",
       "needs_explaining",
       "coding_review",
@@ -186,6 +188,34 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   // (documentation) rather than one way of reaching it (a receipt) is what
   // keeps the backlog honest AND small (owner ask, 2026-08-05).
   missing_receipt: "Needs documentation",
+  // ── THE CHASE, AND WHY IT IS NOT THE PILL ABOVE IT ────────────────────────
+  // "Owes somebody something" — every row a cardholder or a treasurer can still
+  // be chased about. Its predicate is a UNION and neither half can be dropped:
+  //
+  //   needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null
+  //
+  // `missing_receipt` is only the first half. The chase absorbed CODING when
+  // the coding policy landed, so a charge whose receipt is attached and whose
+  // coding is not is owed by somebody and is invisible to the documentation
+  // pill — the FM would see "3 charges" and email a fourth person about a row
+  // the screen never showed.
+  //
+  // And the second half cannot simply REPLACE the first: `chargeOutstanding` is
+  // cardholder-shaped (outflow spend only), while `needsDocumentation` also
+  // covers MARKED internal transfers and MARKED processor payouts — rows with
+  // no cardholder at all, chased with a statement rather than a person, which
+  // are exactly what the chase list's "Unattributed" bundle holds.
+  //
+  // Server-side this is ONE expression shared with `finances.receiptChase` and
+  // the grid's own `chaseCount`, never a fourth hand-copy — copying it is how
+  // `requiresCoding` drifted, and how the fee carve-out went missing from
+  // `chaseEligible` for a release.
+  //
+  // SELECTING IT ALSO UN-HIDES THE TRANSFER LEGS the default queue drops (see
+  // `isHiddenTransferLeg`). A marked transfer owes its receipt and must never
+  // stop being chased just because the queue stopped listing it — the founder
+  // rule `needsDocumentation` is built around.
+  needs_chasing: "Owes a receipt or coding",
   // The substantiation chase (transaction coding — see
   // `docs/plans/transaction-coding.md`). `uncoded` is a row the POLICY says
   // owes a coding (spend posted at/after `codingRequiredSinceMs`) that has

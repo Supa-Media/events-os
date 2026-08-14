@@ -545,6 +545,12 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       spend: 2, // t1, t2 (t4 is inflow, not spend)
       needs_budget: 1, // t1
       missing_receipt: 1, // t1
+      // THE CHASE UNION (`needsDocumentation || chargeOutstanding != null`).
+      // Equal to `missing_receipt` here rather than larger: every row is pinned
+      // PRE-policy (see `insertTxn`), so the coding half of the union is silent
+      // and t1's documentation debt is the only thing anybody is owed. t2 is
+      // closed with a receipt, t4 is an inflow, t3 is excluded.
+      needs_chasing: 1, // t1
       to_review: 2, // t1, t4
       reconciled: 1, // t2
       // "Closed without documentation" — the CLOSED tail only, and disjoint

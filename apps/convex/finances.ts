@@ -511,6 +511,21 @@ const reconcileRow = v.object({
     }),
     v.null(),
   ),
+  // WHAT THIS ROW STILL OWES, in the SAME words the cardholder's own digest
+  // uses (`lib/codingReminders.ts#chargeOutstanding`): "needs coding", "needs a
+  // receipt", "needs coding and a receipt", "sent back — needs your edit".
+  //
+  // `null` when nothing is owed, AND for a row that owes only DOCUMENTATION and
+  // carries no cardholder to chase — a marked transfer or payout, which the
+  // chase still lists (under Unattributed) and which owes a statement rather
+  // than a person. So `outstanding == null` is not the same as "not chaseable";
+  // `needs_chasing` is the predicate for that.
+  //
+  // On the row because the chase is TWO debts now. A person band that says
+  // "3 charges" while the reminder email names a coding debt the grid never
+  // showed is the same dead-number failure this query keeps repairing — and
+  // it's what `receipt-chase.tsx` grew this exact field to fix.
+  outstanding: v.union(v.string(), v.null()),
 });
 
 // The reconcile filter pills (server-side, correct across ALL rows).
@@ -546,6 +561,10 @@ const reconcileFilterValidator = v.union(
   v.literal("spend"),
   v.literal("needs_budget"),
   v.literal("missing_receipt"),
+  // The CHASE union — `needsDocumentation || chargeOutstanding != null`, the
+  // population `receiptChase` lists and `chaseCount` counts. Deliberately not
+  // the `missing_receipt` pill: see `RECONCILE_FILTER_LABELS.needs_chasing`.
+  v.literal("needs_chasing"),
   v.literal("uncoded"),
   // The PUBLISHING population — `needsExplaining`, no policy date. `uncoded`
   // beside it is the POLICY question and grandfathers pre-policy history, so
@@ -572,6 +591,7 @@ const reconcileCounts = v.object({
   spend: v.number(),
   needs_budget: v.number(),
   missing_receipt: v.number(),
+  needs_chasing: v.number(),
   uncoded: v.number(),
   needs_explaining: v.number(),
   coding_review: v.number(),
@@ -1574,6 +1594,49 @@ export function explanationPopulation(tr: Doc<"transactions">): boolean {
  *  the Explain worklist lists and the `needs_explaining` facet selects. */
 export function needsExplaining(tr: Doc<"transactions">): boolean {
   return explanationPopulation(tr) && tr.codingState !== "approved";
+}
+
+/**
+ * DOES ANYBODY STILL OWE SOMETHING ON THIS ROW? — the chase population, in ONE
+ * place.
+ *
+ * ## Why it is a union, and why neither half may be dropped
+ *
+ * The chase started as "missing a receipt" and absorbed CODING when the coding
+ * policy landed. Two predicates cover it, and they cover deliberately different
+ * populations:
+ *
+ *  - {@link needsDocumentation} — a spend charge, a MARKED internal transfer or
+ *    a MARKED processor payout with nothing attached and not yet closed. The
+ *    two marked classes have NO CARDHOLDER (a bank transfer and a processor
+ *    deposit carry no `cardId`/`personId`); they are chased with a statement
+ *    rather than a person, and are exactly what the chase list's "Unattributed"
+ *    bundle holds.
+ *  - `chargeOutstanding` (`lib/codingReminders.ts`) — what the cardholder's own
+ *    digest and the manual FM nudge ask them for, which is cardholder-shaped
+ *    (outflow spend only) but covers the CODING debt the documentation
+ *    predicate knows nothing about.
+ *
+ * Keying the chase on documentation alone shows "3 charges" and then emails
+ * somebody about a fourth. Swapping in `chargeOutstanding` wholesale silently
+ * drops every row that has nobody to chase — which is the half the treasurer,
+ * not the cardholder, has to act on.
+ *
+ * ## Why a function
+ *
+ * There are three callers — `listReconcile`'s `needs_chasing` facet, that same
+ * query's selection-independent `chaseCount` (the gate on the entry point), and
+ * `receiptChase` itself. A hand-copied two-line expression across three callers
+ * is precisely how the fee carve-out went missing from `chaseEligible` for a
+ * release while `needsDocumentation` already had it, so the documentation
+ * predicate said a Stripe fee row owed nothing while the chase demanded two
+ * things from it. One expression, three callers, no drift.
+ */
+export function isChaseable(
+  tr: Doc<"transactions">,
+  codingSinceMs: number,
+): boolean {
+  return needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null;
 }
 
 /**
@@ -8960,6 +9023,16 @@ export const listReconcile = query({
           /** What the header prints — "June 2024", a person's name, or
            *  "Unattributed". */
           label: v.string(),
+          /** The cardholder's avatar, for `groupBy:"person"` — `null` for a
+           *  month band, for Unattributed, and for a person with no image.
+           *
+           *  Present because the person band has to LOOK like the chase list it
+           *  replaces (founder, on the deployed build: "Chase receipts — I
+           *  actually do like the way it looks because it does it by person").
+           *  Bounded by the number of DISTINCT people in the match set, not by
+           *  the row count: the resolver memoizes the signed URL per image, so
+           *  grouping 400 rows mints one URL per person, not 400. */
+          imageUrl: v.union(v.string(), v.null()),
           count: v.number(),
           /** `signedBookCents` summed over the group — the same arithmetic
            *  `selectionTotals` uses, so the groups add up to
@@ -9059,6 +9132,7 @@ export const listReconcile = query({
       spend: 0,
       needs_budget: 0,
       missing_receipt: 0,
+      needs_chasing: 0,
       uncoded: 0,
       needs_explaining: 0,
       coding_review: 0,
@@ -9276,6 +9350,19 @@ export const listReconcile = query({
       // `needsDocumentation` has always done. THE PREDICATE IS UNCHANGED.
       needs_budget: needsBudget(tr) && open,
       missing_receipt: needsDocumentation(tr),
+      // ── THE CHASE, AS ONE EXPRESSION ────────────────────────────────────
+      // Byte for byte what `receiptChase` filters on and what `chaseCount`
+      // counts below — `isChaseable`, called by all three, so the facet, the
+      // number on the "Chase receipts" entry point and the chase list itself
+      // cannot describe different populations.
+      //
+      // It is a UNION and neither half is redundant: `missing_receipt` above
+      // is only `needsDocumentation`, which misses a charge whose receipt is
+      // attached and whose CODING is not (the chase absorbed coding when the
+      // policy landed); and `chargeOutstanding` alone would miss the marked
+      // transfers and marked payouts that have no cardholder and are chased
+      // with a statement. See the key's doc in `@events-os/shared`.
+      needs_chasing: isChaseable(tr, codingSinceMs),
       // The substantiation chase (`docs/plans/transaction-coding.md`):
       // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
       // `coding_review` waits on a REVIEWER — deliberately keyed off
@@ -9368,7 +9455,26 @@ export const listReconcile = query({
     // number you can get to.
     const isHiddenTransferLeg = (tr: Doc<"transactions">): boolean =>
       tr.flow === "transfer";
-    const transfersRequested = activeFilters.includes("transfers");
+    // WHICH SELECTIONS BRING THE HIDDEN LEGS BACK.
+    //
+    // `transfers` is the obvious one — it is the queue's inclusion filter and
+    // exists for exactly this.
+    //
+    // `needs_chasing` is the one that would otherwise be quietly wrong. A
+    // MARKED internal transfer owes its receipt, is `flow:"transfer"`, and is
+    // therefore hidden from the default queue — so a chase view built on the
+    // ordinary queue population would omit precisely the rows the treasurer,
+    // rather than a cardholder, has to act on. That is the founder rule
+    // `needsDocumentation` is built around ("marking a row must never be a way
+    // to make it stop being chased"), and it survived until now only because
+    // the chase lived on a separate surface with its own scan. Bringing the
+    // chase INTO the grid means bringing its population with it.
+    //
+    // This widens where a row is LISTED, never what it owes: no predicate
+    // moves, and `counts.all` still excludes hidden legs, so the header's
+    // backlog figure is unchanged.
+    const transfersRequested =
+      activeFilters.includes("transfers") || activeFilters.includes("needs_chasing");
 
     // Cardholder resolution, built HERE rather than beside the row projection
     // because a search has to match a cardholder's NAME across every row in
@@ -9424,9 +9530,11 @@ export const listReconcile = query({
     let chaseCount = 0;
     for (const tr of all) {
       const flags = flagsFor(tr);
-      if (needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null) {
-        chaseCount += 1;
-      }
+      // `isChaseable`, the same function the `needs_chasing` facet and
+      // `receiptChase` call — see its doc for why the union has to stay a
+      // union. Counted over EVERY row including the hidden transfer legs, and
+      // ignoring the selection.
+      if (isChaseable(tr, codingSinceMs)) chaseCount += 1;
       if (isHiddenTransferLeg(tr)) {
         // A hidden leg contributes exactly ONE thing to the unfiltered view:
         // the `transfers` facet count, so the dropdown can advertise the rows
@@ -9436,7 +9544,20 @@ export const listReconcile = query({
         // zero rows is the dead number this whole area exists to prevent. What
         // a hidden row still OWES is unaffected and is counted by `chaseCount`
         // above, which is what the chase page and its button read.
+        // A hidden leg advertises itself in exactly the facets that can BRING
+        // IT BACK, and no others.
+        //
+        // `transfers` is the original one — the queue's inclusion filter.
+        // `needs_chasing` is the second, and leaving it out was a dead number
+        // caught by test: the chase un-hides these legs (see
+        // `transfersRequested` above), so a book whose marked transfer owed a
+        // receipt advertised "Owes a receipt or coding 1" and then rendered 2
+        // rows when you picked it. The count and the selection have to describe
+        // the same population or the pill is a lie.
         if (countsTowardFacet(flags, activeFilters, "transfers")) counts.transfers += 1;
+        if (countsTowardFacet(flags, activeFilters, "needs_chasing")) {
+          counts.needs_chasing += 1;
+        }
         // A SEARCH un-hides these. The hiding rule exists because a transfer
         // leg is not queue work, which is an argument about browsing — it is
         // not an argument for making a $1,000 movement unfindable by name when
@@ -9520,7 +9641,13 @@ export const listReconcile = query({
     // DISTINCT people and cards in the book, not by the row count, so grouping
     // adds no per-row read and stays inside the page cap's intent.
     let groups:
-      | ({ key: string; label: string; count: number; totalCents: number } & ExplainProgressTally)[]
+      | ({
+          key: string;
+          label: string;
+          imageUrl: string | null;
+          count: number;
+          totalCents: number;
+        } & ExplainProgressTally)[]
       | undefined;
     if (args.groupBy != null) {
       const byKey = new Map<
@@ -9528,6 +9655,7 @@ export const listReconcile = query({
         {
           key: string;
           label: string;
+          imageUrl: string | null;
           count: number;
           totalCents: number;
           rows: Doc<"transactions">[];
@@ -9536,20 +9664,27 @@ export const listReconcile = query({
       for (const tr of ordered) {
         let key: string;
         let label: string;
+        // A month band has no avatar; only the person grouping sets one.
+        let imageUrl: string | null = null;
         if (args.groupBy === "month") {
           const p = easternParts(tr.postedAt);
           key = `${p.year}-${String(p.month).padStart(2, "0")}`;
           label = periodLabel(key);
         } else {
-          const holder = await cardholders.resolveRef(tr);
+          // `resolve`, not `resolveRef`: the person band carries an avatar, and
+          // the resolver caches the signed URL per image, so this costs one
+          // `storage.getUrl` per DISTINCT person rather than one per row.
+          const holder = await cardholders.resolve(tr);
           key = holder?.personId ?? UNATTRIBUTED_GROUP_KEY;
           label = holder?.name ?? "Unattributed";
+          imageUrl = holder?.imageUrl ?? null;
         }
         let group = byKey.get(key);
         if (!group) {
           group = {
             key,
             label,
+            imageUrl,
             count: 0,
             totalCents: 0,
             rows: [],
@@ -9746,6 +9881,10 @@ export const listReconcile = query({
         chargedTo: await resolveChargedTo(tr),
         repaymentStatus: await resolveRepaymentStatus(tr),
         explanation: await resolveExplanation(tr),
+        // Pure, no read — the same function the digest and the manual nudge
+        // read, so a row's label and the email somebody gets about it are the
+        // same sentence.
+        outstanding: chargeOutstanding(tr, codingSinceMs),
       })),
     );
     // Resolved off the caller's HOME chapter (not `scope`, which can be a
@@ -9941,10 +10080,10 @@ export const receiptChase = query({
     const owing = perBook
       .flat()
       .filter((tr) => txnMatchesMode(tr, sandboxMode))
-      .filter(
-        (tr) =>
-          needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null,
-      );
+      // `isChaseable` — the SAME function the grid's `needs_chasing` facet and
+      // its `chaseCount` call, so this list and the number that sent the caller
+      // here cannot describe different populations.
+      .filter((tr) => isChaseable(tr, codingSinceMs));
 
     const resolveCardholder = makeCardholderResolver(ctx).resolve;
     const byHolder = new Map<string, typeof chaseGroup.type>();
