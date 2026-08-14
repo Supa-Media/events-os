@@ -170,6 +170,26 @@ crons.interval(
   {},
 );
 
+// Hourly: the giving that belongs to NO event — the org's own Givebutter
+// campaign, where recurring givers land. The sweep above only ever looked at
+// campaigns an event page claims, so a donation to the general Public Worship
+// campaign was never booked, while its money still counted on the cash side of
+// the reconciliation (that figure is derived from Givebutter's transactions,
+// not from ours). $50.00 of real recurring giving sat on the accounts page as
+// "unaccounted for" with nothing naming it.
+//
+// HOURLY, not every 15 minutes. It reads Givebutter's whole transaction feed
+// rather than one campaign's, and recurring giving arrives on a monthly
+// schedule — a quarter-hour cadence would be four times the API traffic to
+// find the same nothing. Idempotent (dedup on the Givebutter transaction id),
+// so a missed hour costs nothing but an hour.
+crons.interval(
+  "givebutter general giving sync",
+  { hours: 1 },
+  internal.givebutterSync.syncGeneralGivebutterGiving,
+  {},
+);
+
 // Every 15 min: safety net for stuck email-campaign sends
 // (`campaigns.ts#sweepStuckSends`) — reschedules any campaign still
 // "sending" whose `updatedAt` has gone quiet for 10+ minutes (a crash inside

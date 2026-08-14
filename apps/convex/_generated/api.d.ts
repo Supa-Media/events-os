@@ -149,6 +149,7 @@ import type * as lib_giftAudit from "../lib/giftAudit.js";
 import type * as lib_giftCoverage from "../lib/giftCoverage.js";
 import type * as lib_giftLabels from "../lib/giftLabels.js";
 import type * as lib_giveApiRoutes from "../lib/giveApiRoutes.js";
+import type * as lib_giveHowItWorksPage from "../lib/giveHowItWorksPage.js";
 import type * as lib_givePage from "../lib/givePage.js";
 import type * as lib_givePageClient from "../lib/givePageClient.js";
 import type * as lib_givePageSections from "../lib/givePageSections.js";
@@ -331,6 +332,7 @@ import type * as migrations_0072_fold_fee_coverage_into_gifts from "../migration
 import type * as migrations_0073_book_known_repayment_fee_coverage from "../migrations/0073_book_known_repayment_fee_coverage.js";
 import type * as migrations_0074_book_repayment_coverage_by_session from "../migrations/0074_book_repayment_coverage_by_session.js";
 import type * as migrations_0075_label_fee_coverage_rows from "../migrations/0075_label_fee_coverage_rows.js";
+import type * as migrations_0076_backfill_wall_from_gifts from "../migrations/0076_backfill_wall_from_gifts.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -591,6 +593,7 @@ declare const fullApi: ApiFromModules<{
   "lib/giftCoverage": typeof lib_giftCoverage;
   "lib/giftLabels": typeof lib_giftLabels;
   "lib/giveApiRoutes": typeof lib_giveApiRoutes;
+  "lib/giveHowItWorksPage": typeof lib_giveHowItWorksPage;
   "lib/givePage": typeof lib_givePage;
   "lib/givePageClient": typeof lib_givePageClient;
   "lib/givePageSections": typeof lib_givePageSections;
@@ -773,6 +776,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0073_book_known_repayment_fee_coverage": typeof migrations_0073_book_known_repayment_fee_coverage;
   "migrations/0074_book_repayment_coverage_by_session": typeof migrations_0074_book_repayment_coverage_by_session;
   "migrations/0075_label_fee_coverage_rows": typeof migrations_0075_label_fee_coverage_rows;
+  "migrations/0076_backfill_wall_from_gifts": typeof migrations_0076_backfill_wall_from_gifts;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;

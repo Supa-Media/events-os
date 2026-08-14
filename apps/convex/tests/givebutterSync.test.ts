@@ -1543,6 +1543,105 @@ async function seedConvertedDonation(
   );
 }
 
+describe("general giving — the money no event claims", () => {
+  /**
+   * THE $50 THAT READ AS UNACCOUNTED FOR.
+   *
+   * `syncAllGivebutterCampaigns` only ever swept campaigns an event page
+   * claims, so a donation to the org's own Givebutter campaign — where
+   * recurring givers land — was never booked at all. Its money still counted
+   * on the cash side, because `fetchGivebutterUndepositedCents` derives that
+   * from Givebutter's transactions rather than from our records. The
+   * reconciliation therefore reported real giving as money nobody could
+   * explain (founder, 2026-08-14: "our system doesn't count recurring giving
+   * or stuff like that from Givebutter").
+   *
+   * The fix routes that giving through the SAME mutation, with `general: true`
+   * instead of an event — so what these tests guard is that the shared guards
+   * still apply, and that it lands in the right book.
+   */
+  const generalDonations = (s: ChapterSetup, donations: GbDonation[]) =>
+    s.t.mutation(internal.givebutterSync.applyGivebutterDonations, {
+      general: true,
+      donations,
+    });
+
+  const centralGifts = (s: ChapterSetup) =>
+    run(s.t, (ctx) =>
+      ctx.db
+        .query("gifts")
+        .filter((q) => q.eq(q.field("scope"), "central"))
+        .collect(),
+    ) as Promise<Doc<"gifts">[]>;
+
+  test("a general donation books as CENTRAL giving, attached to no event", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+
+    const res = await generalDonations(s, [
+      gbDonation({
+        externalId: "txn_recurring_1",
+        donationCents: 2500,
+        email: "recurring@x.com",
+      }),
+    ]);
+
+    expect(res).toMatchObject({ inserted: 1, skipped: 0 });
+    const gifts = await centralGifts(s);
+    expect(gifts).toHaveLength(1);
+    expect(gifts[0].amountCents).toBe(2500);
+    expect(gifts[0].method).toBe("givebutter");
+    // No event to belong to — the org's campaign is not a chapter's campaign,
+    // and this must not attach itself to whatever event happens to exist.
+    expect(gifts[0].eventId).toBeUndefined();
+    expect(gifts[0].scope).toBe("central");
+  });
+
+  test("the transaction-id dedup still holds across a re-run", async () => {
+    // The whole reason this can sit on a cron.
+    const t = newT();
+    const s = await setupChapter(t);
+    const d = [gbDonation({ externalId: "txn_recurring_2", donationCents: 5000 })];
+
+    await generalDonations(s, d);
+    const second = await generalDonations(s, d);
+
+    expect(second).toMatchObject({ inserted: 0, skipped: 1 });
+    expect(await centralGifts(s)).toHaveLength(1);
+  });
+
+  test("a donation already booked to an EVENT is not booked again as central", async () => {
+    // The double-count this must never cause: one payment, two books.
+    const t = newT();
+    const s = await setupChapter(t);
+    const eventId = await seedEvent(s);
+    await seedPage(s, eventId);
+    const d = [gbDonation({ externalId: "txn_shared", donationCents: 7500 })];
+
+    await applyDonations(s, eventId, d);
+    const asGeneral = await generalDonations(s, d);
+
+    expect(asGeneral).toMatchObject({ inserted: 0, skipped: 1 });
+    expect(await centralGifts(s)).toHaveLength(0);
+    expect(await giftRows(s, eventId)).toHaveLength(1);
+  });
+
+  test("neither an event nor general books nothing at all", async () => {
+    // A donation with no provenance cannot be filed, and guessing a book would
+    // put somebody's giving somewhere arbitrary.
+    const t = newT();
+    const s = await setupChapter(t);
+
+    const res = await s.t.mutation(
+      internal.givebutterSync.applyGivebutterDonations,
+      { donations: [gbDonation({ externalId: "txn_orphan", donationCents: 100 })] },
+    );
+
+    expect(res).toMatchObject({ inserted: 0, skipped: 1 });
+    expect(await centralGifts(s)).toHaveLength(0);
+  });
+});
+
 describe("applyGivebutterDonations — a reclassified donation is never resurrected", () => {
   const CONVERTED_REF = "gb_txn_converted";
   const CONVERTED_CENTS = 82_000;
