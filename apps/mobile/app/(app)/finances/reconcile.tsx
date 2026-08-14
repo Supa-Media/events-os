@@ -1786,11 +1786,19 @@ function ReconcileGrid() {
               ))}
             </View>
           ) : null}
-          <Text className="mb-4 text-sm text-muted">
-            {allBooksScope
-              ? "Every book at once — the Book column says which. Code each charge, confirm the receipt, mark it reconciled."
-              : "Code each charge, confirm the receipt, mark it reconciled. Edit any cell inline."}
-          </Text>
+          {/* NO STANDING INSTRUCTIONS. A sentence used to sit here telling the
+              reader to "code each charge, confirm the receipt, mark it
+              reconciled" — a caption that is read once, on day one, and is
+              then a permanent line of prose above the thing people actually
+              came for. Founder, on the deployed build: "There's still a bit of
+              clutter."
+
+              Nothing was lost with it. The grid's own column headers name
+              every one of those acts, the Book column already says which book
+              a row is from on the merged queue, and the vocabulary question a
+              newcomer actually has ("what counts as Undocumented?") is
+              answered by the tooltip in the filter row below, where it is
+              asked. */}
 
           {/* Search + filter on ONE row — the standard pairing, and the shape a
               filter bar takes in every other CRM-ish screen in this app (the
@@ -1872,15 +1880,6 @@ function ReconcileGrid() {
             </View>
           ) : null}
 
-          {/* HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS — one line,
-              above the money totals it belongs beside. What the Explain
-              screen could only say about one book-month, said about whatever
-              the grid is currently showing. */}
-          <ExplainedProgressStrip
-            progress={explainedProgress}
-            activeFilters={filters}
-          />
-
           {/* WHAT THIS SELECTION ADDS UP TO (founder ask 2026-08-12: "I want
               to see the total figure on the reconcile," not only on the
               dashboard). Server-computed over the WHOLE match set — the same
@@ -1939,6 +1938,24 @@ function ReconcileGrid() {
                   />
                 </View>
               ) : null}
+              {/* HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS — the last
+                  item in this bar rather than a second bar above it.
+
+                  It used to be its own block, stacked between the filter row
+                  and this one. Two rows of small figures in a column, both
+                  describing the same match set, is exactly the clutter the
+                  founder was still seeing after the view menu and the chips
+                  came out — and they are one thought, not two: what this
+                  selection adds up to, and how much of it has been explained.
+
+                  It renders nothing when there is nothing explainable in the
+                  selection (a transfers-only view), so this bar is never left
+                  with a trailing "0 of 0". */}
+              <ExplainedProgressStrip
+                progress={explainedProgress}
+                activeFilters={filters}
+                inline
+              />
             </View>
           ) : null}
 
