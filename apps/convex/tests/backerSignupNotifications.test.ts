@@ -546,6 +546,7 @@ describe("renderBackerWelcomeEmail", () => {
       chapterName: "New York",
       isBacker: true,
       givePageUrl: "https://publicworship.life/give/new-york",
+      portalUrl: "https://publicworship.life/backer",
     });
     expect(subject).toBe("You're a backer of New York 🎉");
     expect(html).toContain("Thank you, Ada.");
@@ -562,6 +563,7 @@ describe("renderBackerWelcomeEmail", () => {
       chapterName: "New York",
       isBacker: true,
       givePageUrl: null,
+      portalUrl: "https://publicworship.life/backer",
     });
     // $600.00 is the number the DESK weighs a signup by. Saying it back to the
     // person reads as an invoice for eleven payments they haven't made.
@@ -575,6 +577,7 @@ describe("renderBackerWelcomeEmail", () => {
       chapterName: null,
       isBacker: false,
       givePageUrl: null,
+      portalUrl: "https://publicworship.life/backer",
     });
     expect(subject).toBe("You're giving monthly to Public Worship 🎉");
     expect(html).toContain("Thank you, friend.");
@@ -590,6 +593,7 @@ describe("renderBackerWelcomeEmail", () => {
       chapterName: "<script>x</script>",
       isBacker: true,
       givePageUrl: null,
+      portalUrl: "https://publicworship.life/backer",
     });
     expect(html).not.toContain("<script>x</script>");
     expect(html).toContain("&lt;b&gt;Ada&lt;/b&gt;");

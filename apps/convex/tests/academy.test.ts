@@ -175,7 +175,7 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("one hundred three ordered sections; six capstones; one optional bonus", () => {
+  test("one hundred thirteen ordered sections; six capstones; one optional bonus", () => {
     // 79 + 5 (the "Leading a project" course: works-defining-a-project,
     // works-planning-the-work, works-the-project-budget,
     // works-tracking-and-escalating, works-finishing-well — all required,
@@ -251,12 +251,23 @@ describe("curriculum content", () => {
     // (Giving → Wall, central `giving.manage` take down / restore), so it is
     // taught rather than left to be inferred. Placed right after the gifts
     // ledger so the private record is taught before its public echo.)
-    expect(ACADEMY_SECTION_COUNT).toBe(112);
+    // + 1 (dev-backer-portal, 2026-08-14, inserted into the-backer-model
+    // course between dev-backer-lifecycle and dev-givebutter-migration —
+    // required. Backers now sign into a page of their own, which is a real
+    // user-facing surface the development team gets asked about out loud: how
+    // somebody signs in (an email code, no account, and a donor with no email
+    // on file therefore can't), what they can change themselves (card and
+    // cancellation on Stripe; the AMOUNT is ours because Stripe's page can't
+    // hold a minimum, so a backer can't quietly drop below the $50 that makes
+    // them one), that a declined card now emails the backer instead of only
+    // flipping a status, and where the line falls between "your own record is
+    // always yours" and the backer-only view of the org.)
+    expect(ACADEMY_SECTION_COUNT).toBe(113);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 112 }, (_v, i) => i + 1),
+      Array.from({ length: 113 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(111);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(112);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

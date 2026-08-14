@@ -37,6 +37,14 @@ import {
 import { registerTicketApiRoutes } from "./lib/ticketApiRoutes";
 import { registerReimburseApiRoutes } from "./lib/reimburseApiRoutes";
 import { registerGiveApiRoutes } from "./lib/giveApiRoutes";
+import {
+  registerBackerApiRoutes,
+  sessionTokenFromRequest,
+} from "./lib/backerApiRoutes";
+import {
+  renderBackerPortal,
+  renderBackerSignIn,
+} from "./lib/backerPortalPage";
 import { registerBlogApiRoutes } from "./lib/blogApiRoutes";
 import {
   renderReimburseForm,
@@ -115,6 +123,9 @@ registerGiveApiRoutes(http);
 
 // JSON API for the marketing blog's emoji reactions (/api/blog/reactions).
 registerBlogApiRoutes(http);
+
+// JSON API for the signed-in backer portal (/api/backer/*).
+registerBackerApiRoutes(http);
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -259,6 +270,63 @@ http.route({
         "Cache-Control": "public, max-age=60",
       },
     });
+  }),
+});
+
+// ── The backer portal: /backer (sign in, then your own record) ──────────────
+//
+// ONE ROUTE, TWO PAGES. With no live session it renders the sign-in screen;
+// with one it renders the portal. Same URL either way, which is what lets every
+// email in this backend link to `/backer` without knowing whether the person
+// opening it is signed in — and what makes the sign-in redirect at the end of
+// the flow a plain reload rather than a dance with return paths.
+//
+// NEVER CACHEABLE, AND NEVER INDEXED. The signed-in page is one person's giving
+// history reached with a cookie; `no-store, private` is the same rule the
+// `/finances` preview-token branch documents, and the page itself carries
+// `noindex,nofollow`. A session-bearing page in a shared cache is somebody
+// else's record on somebody else's screen.
+http.route({
+  path: "/backer",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const token = sessionTokenFromRequest(req);
+    const privateHtml = (body: string, status = 200) =>
+      new Response(body, {
+        status,
+        headers: {
+          "Content-Type": "text/html; charset=utf-8",
+          "Cache-Control": "no-store, private",
+        },
+      });
+
+    if (!token) return privateHtml(renderBackerSignIn());
+    // An EXPIRED or REVOKED session renders the sign-in screen rather than an
+    // error: from the reader's side those are the same event ("I need to sign
+    // in again"), and the payload query throws for both.
+    try {
+      const view = await ctx.runQuery(internal.backerPortal.portalPayload, {
+        token,
+      });
+      // Bookkeeping only, and deliberately after the read — a page that
+      // rendered must never fail because a `lastSeenAt` stamp didn't.
+      try {
+        await ctx.runMutation(internal.backerPortal.markSeen, { token });
+      } catch (err) {
+        console.error("[backerPortal] couldn't stamp lastSeenAt", err);
+      }
+      return privateHtml(
+        renderBackerPortal({ ...view, siteBase: siteUrl() }),
+      );
+    } catch (err) {
+      // An expired or revoked session and a genuine fault both land here, and
+      // the reader gets the same page either way — from their side "sign in
+      // again" is the only useful answer. LOGGED, though, so the second case
+      // isn't invisible: a portal that silently renders sign-in for everybody
+      // would look exactly like this.
+      console.error("[backerPortal] falling back to sign-in", err);
+      return privateHtml(renderBackerSignIn());
+    }
   }),
 });
 

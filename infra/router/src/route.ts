@@ -104,6 +104,16 @@ function isConvexPath(pathname: string): boolean {
   // Same exact-path + prefix pair as /give: `/finances` (no slash) is the
   // redirect-to-newest-month route, `/finances/...` the statement pages.
   if (pathname === "/finances") return true;
+  // The backer portal (`apps/convex/http.ts`'s `/backer` GET; its posts are
+  // already covered by `/api/`). An EXACT path with nothing beneath it — one
+  // route renders the sign-in screen or the portal depending on the session
+  // cookie, which is what lets every email link to a single URL.
+  //
+  // Without this entry the Worker serves the Astro landing build's 404 and
+  // Convex is never consulted — the same edge-level miss that took the whole
+  // finance ledger down on 2026-08-12 and that `drift.test.ts` exists to
+  // catch. It caught this one before it shipped.
+  if (pathname === "/backer") return true;
   return CONVEX_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 

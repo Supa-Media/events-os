@@ -1017,7 +1017,97 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 91 · The backer model: the Givebutter migration ─────────────────────
+  // ── 91 · The backer portal: what a backer can see ───────────────────────
+  {
+    slug: "dev-backer-portal",
+    title: "The backer portal: their own page",
+    subtitle: "What a backer signs into, what they can change, and what we show them about us",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Backers have their own page now — `publicworship.life/backer`. They sign in with their email and a six-digit code (no password, no account in the OS), and land on their own record: what they give monthly, their whole giving history, and where their city stands.",
+      },
+      {
+        kind: "rule",
+        title: "Signing in proves an email, and that's all it is",
+        text: "There's no backer account and no password. Enter an email, get a code, and that code mints a session that lasts a month. It follows that a donor with NO email on file — a desk-entered cash or check giver — can't use the portal at all, because we have no way to prove they're them. The page also never confirms whether an address is on file: an email we know and one we've never seen get the identical answer, so nobody can use it to fish for who gives to us.",
+      },
+      {
+        kind: "rule",
+        title: "They can change their card and their amount themselves",
+        text: "Updating a card and stopping a monthly gift both happen on Stripe's own page — we never see card numbers. The AMOUNT is ours, on purpose: Stripe's page can't hold a minimum, and someone already giving $50 a month or more can't drop below $50 through the portal, because that would silently take them out of their city's backer count and move its milestone ladder backwards. Going below the backer floor, or stopping altogether, is a conversation — the page points them at the stop button and at us.",
+      },
+      {
+        kind: "rule",
+        title: "A declined card now tells the backer, not just us",
+        text: "When a monthly charge fails, the backer gets one warm email: nothing has been cancelled, the bank will be tried again, here's the button to update your card. Before this the status flipped silently — the chapter's public backer count dropped, its ladder moved backwards, and the person whose card it was heard nothing until the cancellation. Stripe still does the retrying; we do the telling.",
+      },
+      {
+        kind: "tip",
+        text: "**Your own record is always yours.** Anyone who has ever given — backer or not — can sign in and see their own giving history and manage their own monthly gift. What's BACKER-ONLY is what we show about the ORG: the city's ladder, what's coming up, the books. That line is the whole design.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A backer emails asking you to lower their monthly gift from $50 to $20. What do you tell them?",
+        answer:
+          "That they can change it themselves on their page — but the page will hold them at $50 or more, because that's the line where they stop counting as a backer of their city. If $20 is genuinely what works right now, that's a real and welcome thing: they can stop the $50 and start again at the amount they want, or reply and we'll do it. Never make somebody feel caught by the rule — it exists so nobody drops out of a city's count by accident, not to trap them.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "How does a backer sign into their portal?",
+        options: [
+          "With a Chapter OS account we create for them",
+          "With their email and a six-digit code we send them — no password, no OS account",
+          "With a permanent link we email once",
+          "They can't sign in; the desk sends them a PDF",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A code proves the email, and the session it mints can be revoked. A permanent link was rejected deliberately: a forwarded or archived email would become standing access to somebody's whole giving history.",
+      },
+      {
+        prompt: "A backer giving $50/month tries to change their amount to $25. What happens?",
+        options: [
+          "It goes through — any amount is allowed",
+          "The page refuses, because dropping below $50 would take them out of their city's backer count — and it points them at stopping instead",
+          "It silently cancels their backing",
+          "Only a superuser can change a pledge amount",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The rule is a ratchet, not a cage: it only holds people who are already backers, and stopping altogether is one button away with no minimum at all. Someone already giving under $50 can move freely.",
+      },
+      {
+        prompt: "Which part of the portal is backer-only?",
+        options: [
+          "All of it — non-backers can't sign in",
+          "Their own giving history",
+          "What we show about the ORG — the city's ladder, what's coming up, the books. Anyone who has given can always see their OWN record",
+          "Nothing is restricted",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Telling a $20/month giver they're not important enough to see their own receipts would be the most alienating thing the page could do. The backer-only half is what we disclose about ourselves.",
+      },
+      {
+        prompt: "A backer's card is declined. What does the backer receive?",
+        options: [
+          "Nothing — the status just changes internally",
+          "One warm email saying nothing has been cancelled, the bank will be retried, and here's how to update the card",
+          "A weekly invoice until they pay",
+          "A cancellation notice",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A failed card is far more often an expiry or a bank being cautious than a decision, so the email assumes the best. The silence it replaced was the actual bug: the chapter's public count dropped while the backer heard nothing.",
+      },
+    ],
+  },
+
+  // ── 92 · The backer model: the Givebutter migration ─────────────────────
   {
     slug: "dev-givebutter-migration",
     title: "The Givebutter migration: history in, recurring gifts re-signed",
@@ -1116,7 +1206,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 92 · Sponsorships: package tiers ─────────────────────────────────────
+  // ── 93 · Sponsorships: package tiers ─────────────────────────────────────
   {
     slug: "dev-sponsor-packages",
     title: "Sponsor packages: benefits we give, commitments we keep",
@@ -1578,6 +1668,7 @@ export const DEVELOPMENT_COURSES: Course[] = [
     moduleSlugs: [
       "dev-backer-floor-and-ladder",
       "dev-backer-lifecycle",
+      "dev-backer-portal",
       "dev-givebutter-migration",
     ],
   },

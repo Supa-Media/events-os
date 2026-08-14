@@ -2218,6 +2218,9 @@ export * from "./contractorPayments";
 // ── Org-chart seat taxonomy (template constants + capability vocabulary) ─────
 export * from "./seats";
 
+// ── The backer portal's module vocabulary + its post-cancel grace window ─────
+export * from "./backerPortal";
+
 // ── SMS segment estimation + pricing (Attendance F cost preview/ledger) ──────
 export * from "./sms";
 

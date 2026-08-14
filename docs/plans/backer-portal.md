@@ -25,6 +25,37 @@ it into the reachable table).
 
 ---
 
+## Settled decisions (owner, 2026-08-14)
+
+These replace the defaults this document originally proposed. They are
+decisions, not open questions.
+
+1. **Every chapter, not just yours.** A backer sees all chapters — Central, New
+   York, and the prospect/proposed ones — each with its backer count. The
+   portal is not scoped to the city you back.
+2. **Name the people.** Names and positions ship: who runs the chapter, who
+   manages the money. The consent concern is noted and overruled; module 9 is
+   now a spec for doing it responsibly rather than an argument against it.
+3. **A backer editing their amount may not drop below $50/mo**
+   (`BACKER_UNIT_CENTS`). See module 1 — this is a real technical constraint,
+   because Stripe's portal has no concept of a minimum.
+4. **Access after pause/cancel: 60 days**, then giving-history-only.
+5. **Dunning is a weekly escalating sequence**, not a single email. See module 2.
+
+## A note on register
+
+On-screen copy states what the thing is. It does not defend itself. "Roles, not
+names — nobody has agreed to be listed" is an argument the reader never asked
+for and did not know they needed; it makes the product sound guilty. The
+reasoning belongs in this document, where the people building it can find it —
+the screen says "Who runs New York" and lists them.
+
+Applies throughout: no captions that explain a design constraint, no
+apologising for a missing number, no "we believe in transparency." Show the
+number; the transparency is the fact that it's there.
+
+---
+
 ## What a backer sees — modules, prioritised
 
 Cost key: **S** = a day or two inside one PR. **M** = a PR of its own.
@@ -68,6 +99,68 @@ Update your card, change the amount, or stop — right here, right now."
      link and read their card last-4 and invoice history, or cancel their
      giving. It is unreachable today only because nothing links to it. The
      moment we wire it up it must take a portal session instead of a raw email.
+
+#### The $50 floor problem — and the answer
+
+**Decision 3 cannot be enforced inside Stripe's billing portal.** Concretely:
+
+- **Stripe has no "minimum amount" setting.** The only lever
+  `billing_portal.configurations` offers is
+  `features.subscription_update.products` — an **allow-list of specific
+  Products and their Prices** the customer may switch to, plus
+  `default_allowed_updates` (`price` / `quantity` / `promotion_code`). There is
+  no floor, no range, no validation hook. You either enumerate the exact prices
+  or you allow whatever the subscription already permits.
+- **Our subscriptions aren't on enumerable prices.**
+  `startPledgeCheckout` builds an **inline ad-hoc price** —
+  `line_items[0][price_data][unit_amount] = prepared.amountCents`, with
+  `price_data[product_data][name] = "Monthly backer — <Chapter>"`
+  (`givingPledges.ts` ~L722–732). Every backer therefore sits on their own
+  one-off Price attached to their own one-off Product. An allow-list can't
+  name them, so `subscription_update` cannot be made to work over the existing
+  book without first migrating everyone onto real, reusable `Price` objects.
+- **And the floor we'd be defending is not the floor the code has.**
+  `PLEDGE_FLOOR_CENTS = 500` — **$5**, not $20 (`schema/givingPlatform.ts`
+  still says "int ≥ 2000 ($20 floor)"; that comment is stale and should be
+  fixed). So an unrestricted portal genuinely will accept $5, and
+  `syncPledgeSubscription` will dutifully patch `amountCents` down and drop the
+  chapter's `backerCount`. The owner's worry is precisely correct.
+
+**Recommendation — split the portal's job in two:**
+
+- **Stripe keeps card + cancel.** Create one `billing_portal.configuration`
+  with `features.payment_method_update.enabled = true`,
+  `features.subscription_cancel.enabled = true`, and
+  **`features.subscription_update.enabled = false`**. Pass its `bpc_…` id as
+  `configuration` on the `billing_portal/sessions` call the existing action
+  already makes — a one-line addition to that `URLSearchParams` body. Cancel
+  still flows home through `customer.subscription.deleted` →
+  `cancelPledgeSubscription`, untouched.
+- **We keep amount changes.** A small "change your amount" step in our own UI,
+  validated server-side, then `POST /v1/subscriptions/{id}` with
+  `items[0][id]` (the existing item) + `items[0][price_data]` — the *same*
+  ad-hoc price shape `startPledgeCheckout` already posts, so no migration and
+  no Price catalogue — plus an explicit `proration_behavior`. Written as a new
+  action in `givingPledges.ts` in the house style (REST over `fetch`, no SDK).
+  `customer.subscription.updated` then lands on `syncPledgeSubscription`, which
+  already patches `amountCents` and recomputes `backerCount` — so the write
+  path we'd be adding is the *only* new code, and the read path is free.
+- **The rule that action enforces:** if the pledge is currently at or above
+  `BACKER_UNIT_CENTS`, the new amount must also be ≥ `BACKER_UNIT_CENTS`.
+  Below that floor it may move freely down to `PLEDGE_FLOOR_CENTS` — because a
+  $30/mo monthly giver is a real, supported thing this codebase distinguishes
+  on purpose (`backerWelcomeEmail.ts` even changes the noun: "backer" above
+  the floor, "giving monthly" below it). Decision 3 is "a backer must stay a
+  backer", not "nobody may give less than $50".
+- **The alternative, rejected:** migrate every pledge onto a fixed ladder of
+  real Prices ($50/$75/$100/$150/$250) and let the portal do it. Cleaner
+  long-term, but it needs a Price catalogue per chapter, a migration of live
+  subscriptions, and it kills arbitrary amounts at signup — which the `/give`
+  form deliberately supports. Revisit only if we ever want tiers as a product.
+- **Backstop either way:** `syncPledgeSubscription` should notice a pledge
+  crossing below `BACKER_UNIT_CENTS` and flag it, because a Stripe dashboard
+  edit by staff can still do it. Detection is cheap; it's the only guard that
+  survives someone bypassing our UI.
 - **Honesty/PII risk:** `origin: "imported"` pledges (Givebutter recurrences
   whose card lives in Givebutter's Stripe) have no `stripeCustomerId`; the
   action already throws `NO_STRIPE_CUSTOMER`. The portal must render that as
@@ -115,16 +208,56 @@ we'll retry — your backing of Brooklyn hasn't stopped."
   | `incomplete` | "We never received a first payment." | Finish signing up (→ `/give/<slug>`) |
   | `origin: "imported"` | "This monthly gift is on our old platform." | Move it over → `/give/<slug>` |
 
-- **The email alongside it:** recommend a new `lib/backerPaymentFailedEmail.ts`
-  scheduled from `markPledgePastDue`, built exactly like
-  `lib/backerWelcomeEmail.ts` — pure (payload in, `{subject, html}` out),
-  painted with `emailShell`, and **transactional**: no unsubscribe footer, no
-  `emailSuppressions` consult, per the split `givingComms.ts` documents. It
-  should read like `givingComms.ts#onAchFailed`, whose doc already gets the
-  tone right: a declined payment is a typo or an expiry, never an accusation,
-  and a bare bank code (`R01`) must never reach a donor. One send per dunning
-  episode — key it on the pledge's transition into `past_due` so Stripe's
-  retry sequence can't produce four emails.
+#### The dunning sequence (decision 5)
+
+A weekly ladder that runs **alongside** Stripe Smart Retries, not against it.
+Stripe's default retry schedule fires roughly on days 3, 5 and 7 and then gives
+up, at which point the subscription's `cancel`-or-leave-unpaid behaviour
+applies. Ours is a *conversation* on a slower clock, so the two never collide:
+Stripe is trying the card, we are asking the person.
+
+| # | When | Subject register | What it says | CTA |
+|---|---|---|---|---|
+| 1 | Day 0 (on entering `past_due`) | Neutral, practical | "Your September payment didn't go through — probably an expired card. Your backing of New York is still on; we'll keep trying for a few days." | Update your card |
+| 2 | Day 7 | Warmer, personal | "Still no luck with the card. New York is 8 backers from Eden and you're one of them — two taps and you're back." | Update your card |
+| 3 | Day 14 | Direct, asks the real question | "Do you still want to back what New York is doing? Totally fine either way — just tell us, and we'll stop asking." | Update your card · **Stop my backing** |
+| 4 | Day 21 | Final, gracious, no guilt | "We're going to stop emailing about this. Your backing is paused. Thank you for the 14 months — the door's open whenever." | Start again |
+
+**Stop conditions — any one of them ends the sequence immediately:**
+- **Recovered.** `invoice.paid` → `recordPledgeInvoice` already flips
+  `past_due` → `active` and refreshes `currentPeriodEnd`. That transition is
+  the cancel signal; nothing further sends.
+- **Cancelled.** `customer.subscription.deleted` → `cancelPledgeSubscription`.
+- **Paused by staff.** `setPledgeStatus` → `paused`.
+- **They replied.** These are transactional sends from a real reply-to address;
+  a human answering means a human takes over. Not automatable — call it out in
+  the runbook rather than pretending a flag exists.
+
+**How to schedule it without inventing a scheduler.** Do **not** chain
+`ctx.scheduler.runAfter` calls three weeks deep — a pledge that recovers on day
+6 would still have live timers. Instead, `crons.ts` runs a daily sweep that
+reads pledges `by_scope_and_status` at `past_due`, computes days-since from the
+`pledgeEvents` row recording the `→ past_due` transition, and sends the rung
+that matches. Re-entering `past_due` after a recovery starts the ladder at #1
+again, because the `pledgeEvents` trail gives a fresh transition timestamp. The
+sweep is idempotent per (pledge, rung) — stamp the rung on send so a double run
+can't double-mail.
+
+**One warning worth stating plainly:** *never email about a charge that has
+already succeeded.* The daily sweep must re-read the pledge's **current**
+status at send time, not trust the row it selected — Stripe's retry can succeed
+between the sweep's read and its send, and "your payment failed" arriving after
+"your monthly gift came through" is the single worst email in this whole
+design.
+
+- **The emails themselves:** a new `lib/backerDunningEmails.ts`, pure (payload
+  in, `{subject, html}` out) and painted with `emailShell`, exactly like
+  `lib/backerWelcomeEmail.ts`. **Transactional** — no unsubscribe footer, no
+  `emailSuppressions` consult, per the split `givingComms.ts` documents. Tone
+  is set by `givingComms.ts#onAchFailed`, whose doc already gets it right: a
+  declined payment is a typo or an expiry, never an accusation, and a raw bank
+  code (`R01`) must never reach a donor. Rung 4 must not read as punishment —
+  it is the org being easy to leave, which is what makes it worth staying in.
 - **Where the portal link comes from:** add `backerPortalUrl()` beside
   `givePageUrl()` in `lib/siteUrl.ts` (same `siteUrl()` base, degrading to
   `null` when unset, as `appUrl` already does). Because a sign-in code is
@@ -157,8 +290,13 @@ and the one time a bank took $500 back, and why."
   table is documented as never reachable by a public query, and the portal is
   a semi-public surface.
 
-### 4. Your city's books, per chapter  · **M**
-**Pitch:** "Brooklyn, August: $4,120 in, $3,780 out. Here is every line."
+### 4. The books — every chapter  · **M**
+**Pitch:** "Brooklyn, August: $4,120 in, $3,780 out. Here is every line — and
+here's Central, and New York, and every city on the map."
+
+**Decision 1:** not scoped to the city you back. A chapter picker at the top,
+defaulting to the backer's own city, with Central and every other chapter — 
+including prospect/proposed ones — one tap away, each showing its backer count.
 
 - **Feeds:** `financePublications` + `financePublicationRevisions` +
   `financePublicationEntries` — already frozen, already approved for
@@ -224,49 +362,315 @@ You're $180 clear. 10 more backers unlocks Eden."
   Skip `event.isTraining` rows, as that query already does.
 - **Honesty/PII risk:** None. Published event pages are public by definition.
 
-### 8. "You were there" — attendance  · **M**, and read the caveat
+### 8. The identity join — which records count as "yours"  · **S**, foundational
+**Not a screen.** The resolver every personal module (3, 12, 13) reads through.
+Specified once here so three modules can't each invent their own rule.
+
+The portal authenticates **one email**. That email has to fan out to every
+record the person owns, across books and across addresses, without ever
+reaching a record that isn't theirs.
+
+- **The fan-out, in order of strength:**
+  1. `donorIdentities.by_email` → its `donors` rows (`by_identity`) → their
+     `gifts` and `pledges`. This is the money side, and it is exact: the
+     identity layer exists precisely to group one human's scope-partitioned
+     donor rows (`lib/donorIdentity.ts`).
+  2. `personEmails.by_email` (with `verified`) → `personId` → **every other
+     address that person owns**. This is what catches a backer who gives with
+     `sam@gmail.com` and bought a ticket with `sam@work.com`. Trust order is
+     `SOURCE_RANK` (`manual` > `pw` > `roster` > `donor` > `rsvp`).
+  3. Direct email equality on the record itself — `tickets.attendeeEmail`,
+     `ticketOrders.email`, `registrations.email`, `rsvps.email`. Simple, exact,
+     and (per module 12) far more useful than this document first assumed.
+  4. `donors.personId` / `rsvps.personId` — the best-effort roster links
+     stamped by `lib/givingDonors.ts#linkDonorToPerson` and
+     `lib/rsvpPeople.ts#linkRsvpToPerson`. Use these to **widen** a match,
+     never as the sole basis for a claim about a person.
+- **Where it is genuinely lossy, and what follows:** `donors.personId` is never
+  set for `"central"` donors (central donors are CRM-only, by design); the RSVP
+  backfill deliberately leaves divergent-name matches unlinked rather than
+  guessing; `rsvps.email` is optional, so imported name-only guests can never
+  be matched at all. **Consequence:** a missing record is normal and must
+  render as absence, never as "you have never been to a night."
+- **The rule:** normalize with `normalizeEmail` (`lib/access.ts`) everywhere —
+  it is the same trim+lowercase every one of these tables keys on. Never match
+  on name. Ever. Two people share a name; that is how a stranger's giving ends
+  up on somebody's screen.
+- **Honesty/PII risk:** this resolver is the single highest-leverage place to
+  get authorization wrong, which is exactly why it is one function
+  (`lib/backerAccess.ts`) and not a join repeated in four queries.
+
+### 9. Who runs this chapter — named  · **M**
+**Pitch:** "New York is run by five volunteers. Here's who does what, and who
+looks after the money."
+
+**Decision 2: names ship.** Below is how to do it without leaking a roster.
+
+- **The right source is `seatAssignments`, and it is remarkably clean.** The
+  table is `{ seatDefId, scope, personId, grantedBy, createdAt }`
+  (`schema/seats.ts` L104) — no PII of its own. `seats.chart({ scope })` already
+  walks it and returns `seatNodeValidator` nodes of
+  `{ defId, slug, title, parentSlug, maxHolders, derived, sortOrder, holders,
+  vacant }`, where each holder resolves to `{ personId, name, imageUrl, … }`
+  via a helper that **already skips `isPlaceholder` rows**. So the safe
+  projection — title, display name, photo — is a projection the codebase
+  computes today for the internal org chart.
+- **Do NOT read `people` directly for this.** That row carries `email`,
+  `phone`, `pwEmail`, `address`-adjacent fields, `vettingStatus`, `notes`,
+  `status: "transitioning_out"`, `consentedAt`, and `isContactOnly` flags. The
+  portal query must select **exactly four fields** — `seatDefs.title`,
+  `people.name` (or `firstName` alone, see below), the resolved photo URL, and
+  the seat's `scope` — and must be written as an explicit allow-list, never a
+  spread of the person doc. Same discipline `financePublicationEntries`
+  documents: the safety shouldn't depend on every future reader remembering to
+  drop a field.
+- **`userProfiles` is the wrong table** — it is the *authenticated user's* own
+  profile (name + phone, written at onboarding), keyed by `userId`, and most
+  chapter volunteers are `people` rows with no user account at all. It would
+  both miss people and carry a phone number.
+- **Never travels:** email, phone, address, `vettingStatus`, `notes`,
+  `status`, `consentedAt`, `personEmails`, `grantedBy`, `assignmentId`,
+  `createdAt` (when someone got a seat is nobody's business), and any seat the
+  person no longer holds. Also never: `SEAT_DEFS[].capabilities` — "this person
+  can approve payments" is an attack surface, not a bio.
+- **Which seats to show:** the chapter chart's leadership seats
+  (`chapter_director`, `treasurer`, `music_lead`, `event_lead`,
+  `marketing_lead`) plus Central's (`executive_director`,
+  `financial_manager`, `development_director`). Skip multi-holder roster seats
+  (`musicians`, `artists`, `event_organizers` — `maxHolders ===
+  MULTI_HOLDER_CAP`): listing forty volunteers is a roster dump, and those
+  seats are where the churn is. **Vacant seats render as vacant** — "Treasurer
+  — open" is honest and doubles as recruiting.
+- **First name or full name?** Recommend **full name for leadership seats,
+  first name only for anyone else**, because the money seats are the ones a
+  funder is entitled to identify and the rest are volunteers. `people.firstName`
+  exists and is backfilled where the split was unambiguous
+  (`splitPersonName`); fall back to the first token of `name`.
+- **The opt-out — propose it, don't block on it.** One boolean on `people`,
+  `hideFromPublicChart`, default false, editable by the person or their chapter
+  director, checked by the portal query. It costs one schema field and one
+  filter; it is the difference between "we published a volunteer's name and
+  face" and "we published it and they could have said no." Ships in the same PR
+  as the module. Not a gate — nothing waits on it.
+- **Honesty/PII risk after the above:** low, and comparable to what any
+  non-profit puts on a "Our team" page. The residual risks are real but small:
+  a photo of a volunteer is biometric-adjacent and some people will not want
+  it (the opt-out covers this), and a seat change becomes visible to donors
+  (acceptable — it is an org fact, and we show no reason).
+- **Copy on screen:** "Who runs New York" · "Ada Lee — Chapter Director" ·
+  "Treasurer — open". No caption explaining the policy.
+
+### 10. The year's plan — budget and progress against it  · **M–L**
+**Pitch:** "New York planned $18,400 for 2026. Here's what it's for, line by
+line, and here's the $11,200 raised toward it."
+
+- **Feeds:** `budgets` (`schema/finances.ts` L177) — `amountCents`,
+  `approvedCents`, `label`, `type` (`one_time`/`recurring`), `cadence`
+  (`per_instance`/`monthly`/`quarterly`/`yearly`/`one_off`), `year`, `month`,
+  `quarter`, `categoryId`, `fundId`, and `approvalStatus`. Line items are
+  `budgetLines` (`by_budget`) — `{ description, plannedCents, categoryId,
+  sortOrder }`. Actuals come from `transactions.budgetId` through
+  `finances.ts`'s exported `txnCountsTowardBudget` / `effectiveCapCents` /
+  `isSpend`, which is exactly what `budgetGlance.ts` and `budgetDetail.ts`
+  already do — reuse those primitives, never re-derive.
+- **The fiscal period is a calendar year.** There is no separate fiscal-year
+  concept: `budgets.year` is a plain number with optional `month`/`quarter`
+  narrowing, all bucketed in America/New_York (`easternParts`). "The year's
+  budget" is therefore `by_chapter_and_period` at `(chapterId, year)`.
+- **Show `effectiveCapCents`, never bare `amountCents`.** A budget mid-increase
+  has `amountCents` already moved to the requested figure while
+  `approvedCents` holds the cap actually in force. Every internal surface
+  compares against the effective cap; the portal must too, or it will publish a
+  number nobody approved.
+- **Only show approved budgets.** Filter to `approvalStatus === "approved"` (or
+  grandfathered-legacy, per `effectiveBudgetApprovalStatus`). A `submitted` or
+  `changes_requested` budget is a proposal, and publishing proposals as plans
+  is the same error as publishing the live ledger instead of the frozen one.
+- **Precedent that this is already sanctioned:**
+  `financePublicationRevisions.spendByBudget` **already publishes
+  `allocatedCents` beside `spentCents` per budget label**, to the open
+  internet, with a schema doc explaining that plan-vs-actual in two columns of
+  one row is precisely the question a reader is asking. The portal version is
+  the same shape, live and forward-looking rather than frozen and monthly.
+- **⚠ The line-item risk, and it is real.** `budgetLines.description` is
+  **free text**, written by a treasurer for internal use. Nothing stops it
+  saying "Marcus — sound engineer, $400/night" or "Pastor J honorarium." That
+  is compensation for a named person, which the public ledger goes out of its
+  way never to publish (contractor spend appears under the constant
+  `CONTRACTOR_LEDGER_COUNTERPARTY`). **Do not publish `budgetLines.description`
+  verbatim.** Two options: (a) show line items grouped by `categoryId` only —
+  category label + planned total, no free text; or (b) add an explicit
+  `publicDescription` on `budgetLines` mirroring the `publicPurpose ??
+  businessPurpose` resolution `financePublicationEntries.purpose` already uses,
+  and show only lines that have one. **Recommend (a) for Phase 2** — it needs
+  no new field, no back-filling, and category labels are already curated. (b)
+  is the Phase 3 upgrade if the owner wants the detail.
+- **"Raised toward it"** is a different question from "spent against it" and
+  the module should show both. Raised = the revenue side for that scope and
+  year (gifts + tickets + sales + registrations, the four streams
+  `INCOME_STREAMS` names); spent = `transactions` linked to those budgets.
+  Reuse `lib/bookBalance.ts`'s definition of revenue rather than summing
+  `gifts` by hand, or the portal and `/finances` will disagree.
+- **Honesty/PII risk:** medium, entirely concentrated in the free-text line
+  descriptions. With option (a) it drops to low.
+
+### 11. Share your city  · **S** unattributed · **M** attributed
+**Pitch:** "New York is 8 backers from Eden. Send this to someone."
+
+- **What exists:** nothing. There is **no referral, share, or attribution
+  primitive anywhere in this repo.** Checkout metadata carries only
+  `pledgeId`, `giveDonation`, `giveDonorId`, `giveScope`, `giveShowOnWall`
+  (`givingPledges.ts` L714–735, `givingDonations.ts` L198–208); there is no
+  UTM parsing in `giveApiRoutes.ts` or `givePageClient.ts`, and
+  `givingActivity` records the gift, not where the giver came from.
+- **Unattributed — cheap, ship it.** A share block with the city's
+  `/give/<slug>` URL (`givePageUrl(slug)`), a copy button, and
+  `navigator.share()` where available. Pre-written copy the backer can send as
+  is: *"I back Public Worship New York — they're 8 backers from putting on
+  Eden. $50/mo. <link>"* The numbers come from `territories.getPublicTerritory`
+  (`backerCount`, `targetBackers`, `nextMilestone`), which is already public.
+  Cost: one block, no backend.
+- **Attributed — real work, and mostly Stripe plumbing.** Mint a per-backer
+  referral code, append it as `?ref=<code>` on the shared link, have
+  `givePageClient.ts` carry it into the `/api/give/pledge` POST, thread it into
+  `startPledgeCheckout` as `metadata[giveRef]`, and read it back on settle in
+  the webhook fan-out to write an attribution row. That is four files plus a
+  table — genuinely **M**, and it changes the checkout payload, which is the
+  most safety-critical path in the codebase.
+- **Recommendation:** ship unattributed in Phase 1 (it is a button), and only
+  build attribution if the owner actually wants leaderboards. "You brought 3
+  backers" is a lovely thing to show and a poor thing to be wrong about.
+- **Honesty/PII risk:** none unattributed. Attributed, one to watch: never show
+  *who* someone referred — a name and an amount is another person's giving.
+  Counts only.
+
+### 12. Events you've attended  · **M**
 **Pitch:** "You've been to four Public Worship nights. Here they are."
 
-- **Feeds:** `rsvps` (`schema/ticketing.ts`) — `checkedInAt` / `checkedInBy`
-  are the only fields that mean *attended*; `personId` is the roster link
-  stamped best-effort by `lib/rsvpPeople.ts#linkRsvpToPerson`. Donor→person is
-  `donors.personId` (chapter-scope only, `lib/givingDonors.ts#linkDonorToPerson`),
-  and `personEmails` is the multi-address bridge.
-- **Honesty/PII risk:** **The linkage is explicitly best-effort and lossy.**
-  `donors.personId` is never set for `"central"` donors; the RSVP backfill
-  deliberately leaves divergent-name matches unlinked rather than guessing;
-  `rsvps.email` is optional (imported rows have none). So we can honestly say
-  "you attended" only where a check-in exists on an RSVP whose `personId`
-  matches the donor's `personId`, **or** whose normalized email matches a
-  verified `personEmails` row. Everything else must be silent. A portal that
-  tells someone they attended a night they didn't destroys the credibility of
-  every other number on the page. Prefer under-claiming.
+The owner wants this listed, not hedged. Here is exactly how far the data goes.
 
-### 9. The people running your city  · **L** — blocked on consent
-**Pitch:** "Brooklyn is run by five volunteers. Here's who does what."
+- **Ticketed events — provable, and the join is trivial.** `tickets`
+  (`schema/ticketing.ts` L359) carries **`attendeeEmail` on every admission**,
+  plus `status: "checked_in"` and `checkedInAt`/`checkedInBy`. So "did this
+  person walk through the door" is a **direct email match** — no fragile
+  person link needed at all. This is much stronger than this document
+  originally assumed.
+- **Free RSVP events — we know they said yes, not that they came.**
+  `checkedInAt` exists **only** on `tickets`. `rsvps` has no check-in field of
+  any kind (`status` is `going`/`maybe`/`not_going`). There is no attendance
+  table. So for a free night the honest claim is "you RSVP'd", full stop.
+- **Classes:** `registrations` carries `email` + optional `personId` and a
+  `paid` status — that is a *registration*, not an attendance, and should read
+  as "you registered for Worship Beyond The Walls."
+- **`checkIns.ts` is not attendance.** Despite the name it is the manager's 1:1
+  log. Never join to it.
+- **The honest render, and it needs no hedging language:**
+  - checked-in ticket → **"You were there."** with the date and venue.
+  - valid ticket, never scanned → "You had a ticket." (Door scanning is not
+    universal; absence of a scan is not absence of a person.)
+  - RSVP `going` → "You RSVP'd."
+  - registration `paid` → "You registered."
+  Four plain statements, each true. No asterisks, no "we think".
+- **Identity reach:** match on every address the person owns —
+  `donorIdentities.by_email` for the giving side, and `personEmails`
+  (`by_email`, with `verified`) to catch a backer who gave with one address
+  and bought a ticket with another. `donors.personId` /
+  `lib/rsvpPeople.ts#linkRsvpToPerson` are the weaker, best-effort links; use
+  them to *widen* the match, never as the only basis for a claim.
+- **Honesty/PII risk:** low — it is the backer's own history. One caveat:
+  `tickets.attendeeName`/`attendeeEmail` can be a *guest* the buyer assigned a
+  ticket to. Match on `attendeeEmail` for "you were there" and on
+  `ticketOrders.email` for "you bought these" — they are different questions
+  and conflating them will tell someone they attended a night they gifted to a
+  friend.
 
-- **Feeds:** `seats.chart` + `SEAT_DEFS` (chapter chart:
-  `chapter_director`, `treasurer`, `music_lead`, `event_lead`,
-  `marketing_lead`, …) with `lib/seatStructure.ts#effectiveCapabilities`;
-  `people` (`name`, `firstName`, profile photo storageId);
-  `CHAPTER_CORE_ROLES` in `packages/shared/src/finance.ts` for the generic
-  version that needs no consent at all.
-- **Honesty/PII risk:** **The highest in this document.** `people` rows are a
-  volunteer roster containing `email`, `phone`, `vettingStatus`, `notes`,
-  `status: "transitioning_out"`, and placeholder/contact-only rows
-  (`isPlaceholder`, `isContactOnly`). Nobody on that roster consented to being
-  shown to donors. Seat assignments also change for reasons (someone was
-  removed) that are nobody's business.
-- **Recommendation:** ship the generic version (`CHAPTER_CORE_ROLES` — "every
-  chapter runs on these five roles") in Phase 1 at zero risk, and gate the
-  *named* version behind a new explicit per-person opt-in flag on `people`
-  plus an active `status`. Never render email, phone, vetting, or a seat the
-  person no longer holds.
+### 13. Things you've bought  · **S–M**
+**Pitch:** "Two tickets to Field Day, a class registration, and a shirt. Thank
+you."
 
-### 10. A note from your chapter director  · **L** — no data exists
+- **Ticket orders — clean and complete.** `ticketOrders` carries `email`,
+  `name`, `items[]` (`{ticketTypeId, name, quantity, unitPriceCents}`),
+  `totalCents`, `status`, `createdAt`, plus `donationCents` for a bundled gift.
+  Indexed `by_rsvp` and `by_event`; an email match across events is the
+  portal's read. Precedent: the RSVP page **already renders a signed-in
+  guest's own tickets** (`ticketing.ts` ~L1017 `myTickets`, resolved through
+  `getViewerRsvp` by guest token) — but **per event only**. A cross-event
+  purchase history would be the first of its kind.
+- **Class registrations** — `registrations` (`email`, `projectId`,
+  `amountCents`, `status`), also a clean email match.
+- **⚠ Merch cannot be attributed, structurally.** `sales`
+  (`schema/ticketing.ts` L544) has **no buyer identity at all** — no name, no
+  email, no `rsvpId`, no `personId`. It is an in-person Tap-to-Pay row
+  (`com.pocketvendor.payment`) carrying `grossCents`, `feeCents`, `items[]`
+  and a `channel`. The processor never sends us who paid. So "you bought a
+  shirt" is **not buildable** for in-person sales and no amount of joining will
+  fix it — the data was never captured. Say so to the owner plainly rather
+  than shipping a history that silently omits merch.
+  - `sales.donationCents` / `donationGiftId` is the one exception: where a
+    bundled gift was split out of a sale, the resulting `gifts` row **is**
+    attributed, and already appears in module 3. So the money shows up; the
+    shirt doesn't.
+- **Honesty/PII risk:** low. Show `items[].name` and quantities — these are
+  product names the buyer chose, not free text an operator wrote. Do not show
+  `feeCents` (our processing cost is not their business and reads as a
+  deduction from their gift).
+
+### 14. Does it add up?  · **S** — the best "inner workings" module we have
+**Pitch:** "Our books say $47,312. The bank says $47,312. Difference: $0.00."
+
+- **Feeds:** `reconciliation.reconciliationSummary` (`reconciliation.ts`
+  ~L3786) and the pure arithmetic in `lib/reconciliationGap.ts` — book value
+  vs bank available + pending + Stripe balance, org-wide.
+- **Why it's the strongest one:** it is the single number that proves the rest
+  of the portal isn't theatre, it is PII-free by construction (account totals,
+  no rows), and the module doc already explains why it is an **org total and
+  never per-book** — per-book "book vs bank" is meaningless because every
+  processor payout lands in Central's account. Show the org figure; do not
+  offer a per-chapter cut.
+- **Honesty/PII risk:** low, with one judgement call — a non-zero gap is a real
+  possibility and showing it is the whole point. Render it plainly ("Difference:
+  $312 — being investigated"), never hidden, never spun. Do **not** surface the
+  actionable "leads" the internal query returns alongside it (unrecorded
+  inflows, per-account anomalies) — those are a work queue.
+
+### 15. The gear your backing bought  · **S**
+**Pitch:** "New York owns 34 of the 41 things a chapter needs. Here's what's
+still missing."
+
+- **Feeds:** `assets` (`schema/inventory.ts` L27) — `name`, `tags`,
+  `quantity`, **`acquired`** ("on the list, not yet acquired" — a Chapter Kit
+  target), `condition`, `photoStorageId`, all `by_chapter`. Pair with
+  `LAUNCH_EQUIPMENT_LINES` in `packages/shared/src/finance.ts` (the ~$4,287
+  starter kit) for the target list and prices.
+- **Why it's good:** it is the most *tangible* thing money buys — four SM58s, a
+  mixer, two speakers — and `acquired: false` gives a genuine, honest gap list
+  that doubles as an ask. Photos already exist.
+- **Honesty/PII risk:** none. No person appears in this table. Skip
+  `note`/`stateNote` (free text, operational: "charge the battery").
+
+### 16. The map — every city's progress  · **S**
+**Pitch:** "Nine cities. Three launched, four raising, two proposed."
+
+- **Feeds:** `territories.getPublicMapData` (already public, already powers
+  `/give`) — per-territory `stage`, `backerCount`, `targetBackers`, `slug`,
+  `region`; plus `getPublicTerritory` for `launchFund { cents, targetCents,
+  months[] }` and `nextMilestone`.
+- **Why it's here:** it is decision 1's natural home — the fleet view a backer
+  gets *because* they back one city. Every figure is already rendered to
+  anonymous visitors, so it is a re-composition, not a disclosure.
+- **Honesty/PII risk:** none.
+
+### 17. A note from your chapter director  · **L** — no data exists
 There is no backer-update table. `campaigns.ts` is the email machine and
 `campaigns.approve` already exists as an outside-audience power. Deliberately
 deferred; do not invent a CMS for it in Phase 1.
+
+**Two more "inner workings" candidates, considered and rejected for now:**
+*Campaign/blast cadence* ("we sent 14 emails last month") — computable from
+`campaigns`/`blasts`, but it measures our activity, not our impact, and invites
+"why are you emailing so much." *Chapter readiness*
+(`territories.prelaunchReadiness`) — genuinely interesting, but it is an
+internal checklist whose unchecked items read as unpreparedness to a funder.
 
 ---
 
@@ -325,7 +729,13 @@ schema. Nothing in this document adds a PCI surface.
 | Unsettled / disputed money | others' `pendingGifts`, `givingCandidates`, `dismissedGiftCandidates` | Money that has not arrived, or a human judgement that a deposit was not a gift. |
 | 1:1 records | `checkIns.ts` | Despite the name this is the manager's 1:1 log — pulse notes and follow-up plans. Not attendance. Not for donors. Not even for the subject. |
 | Unpublished statements | `financePublications` where `isLive !== true`, plus `reviewNote` / `amendmentNote` drafts | A draft is not a statement. |
-| Seat politics | `seatProposals`, `seatStructureLog`, `responsibilities` | Org changes in flight. |
+| Seat politics | `seatProposals`, `seatStructureLog`, `responsibilities`, `seatAssignments.createdAt`/`grantedBy` | Org changes in flight, and when someone got a seat. Module 9 shows the seat and the person — never the history. |
+| Seat powers | `SEAT_DEFS[].capabilities` | "This person can approve payments" is an attack surface, not a bio. |
+| Budget line free text | `budgetLines.description` | Written by a treasurer for internal use; can name a person's pay. See module 10 — publish category groupings, not the text. |
+| Unapproved budgets | `budgets` where `approvalStatus !== "approved"` | A proposal is not a plan. |
+| Processing costs | `sales.feeCents`, `gifts.feeCoverageCents` as a deduction | Our cost of doing business; reads as a haircut on someone's gift. |
+| Reconciliation leads | the per-account anomalies and unrecorded-inflow list in `reconciliationSummary` | Module 14 shows the gap. The leads behind it are a work queue. |
+| Chapter readiness | `territories.prelaunchReadiness` | An internal checklist; unchecked items read as unpreparedness. |
 
 **Where the owner's instinct collides with a real risk:**
 
@@ -475,44 +885,69 @@ org are made, so nothing needs an owner policy decision first.
    **security fix in the same PR** — it stops taking `{ email, chapterId }`
    from anyone and takes a portal session instead; `return_url` → `/backer`.
    Handle `NO_STRIPE_CUSTOMER` and `origin: "imported"` as copy, not errors.
-5. **Dunning (module 2).** All five `pledges.status` states rendered, with
-   `past_due` as a top-of-page banner; `lib/backerPaymentFailedEmail.ts`
-   scheduled from `markPledgePastDue`, once per episode.
-6. Modules 3, 6, 7 (giving history / ladder / upcoming in your city) and the
-   *generic* `CHAPTER_CORE_ROLES` version of module 9.
-7. `backerPortalUrl()` in `lib/siteUrl.ts`; replace the "just reply to this
+5. **Amount changes, ours (module 1).** New `changePledgeAmount` action:
+   validate ≥ `BACKER_UNIT_CENTS` when the pledge is already at/above it, then
+   `POST /v1/subscriptions/{id}` with `items[0][price_data]`. Create the
+   `billing_portal.configuration` with `subscription_update.enabled = false`
+   and pass its id on the session call. Fix the stale "$20 floor" comment on
+   `pledges.amountCents`.
+6. **Dunning rung 1 only (module 2).** `lib/backerDunningEmails.ts` with the
+   day-0 email, scheduled from `markPledgePastDue`; all five
+   `pledges.status` states rendered, `past_due` as a top-of-page banner. The
+   weekly ladder is Phase 2 — one honest email beats a half-built sequence.
+7. **Module 8 — the identity join** in `lib/backerAccess.ts` (foundational;
+   modules 3, 12 and 13 all read through it), then modules 3, 6, 7 and
+   11-unattributed (giving history / ladder / upcoming / share button).
+8. `backerPortalUrl()` in `lib/siteUrl.ts`; replace the "just reply to this
    email" sentence in `lib/backerWelcomeEmail.ts` and
    `ticketingEmails.sendPledgeReceiptEmail` with a real button. The portal is
    worthless if backers never learn it exists — and the welcome email, which
    already lands on this branch, is the single best place to say so.
+9. 60-day post-cancel access window (decision 4) in `lib/backerAccess.ts`.
 
-### Phase 2 — the books
+### Phase 2 — the books, the map, the people
 1. `publicLedger.publicScopeStatement({ scope, periodKey })` over the frozen
    `financePublication*` rows (reusable by the public page too).
-2. Module 4 (per-city statement, income by stream, spend by category /
-   project / budget, with the disclosure counters carried through) and module
-   5 (affordability + the gap + the milestone distance).
-3. Per-chapter `books` module flag, flipped by `giving.portal.edit`.
-4. "As published on X" + a visible note when `staleSince` is set.
-5. Billing follow-ups the first phase deliberately skips: a real Stripe
-   `pause_collection` so `paused` stops being a local-only overlay (the
-   documented follow-up in `setPledgeStatus`), and a "change your amount"
-   affordance that shows what the new amount does to the ladder before
-   handing off to Stripe.
+2. **Module 4 with the chapter picker (decision 1)** — every book, not just
+   yours, with the disclosure counters carried through; plus module 5
+   (affordability + the gap + the milestone distance) and **module 16** (the
+   map), which is a re-composition of already-public territory data.
+3. **Module 9 — named people (decision 2).** Allow-list projection off
+   `seats.chart`; leadership seats only; `hideFromPublicChart` opt-out on
+   `people` shipped in the same PR.
+4. **Module 14 — does it add up.** Org-wide gap from `reconciliationSummary`.
+5. **Dunning rungs 2–4 (decision 5).** The `crons.ts` daily sweep, the
+   rung stamp, and the re-read-status-at-send-time guard.
+6. "As published on X" + a visible note when `staleSince` is set.
+7. Per-chapter `books` module flag, flipped by `giving.portal.edit`.
 
-### Phase 3 — the room
-1. Module 8 (attendance), only on the strict linkage rule above.
-2. Named chapter team — needs the per-person opt-in field on `people` first.
-3. Backer-only updates (likely a `campaigns` audience rather than a new CMS).
-4. Optional: `grantedVia: "backer"` allowlist graduation, if and only if a
-   backer needs to write something.
+### Phase 3 — the record and the plan
+1. **Module 10 — the year's budget and progress**, with line items grouped by
+   category (option (a)); `budgetLines.description` stays internal.
+2. **Module 12 — events you've attended**, on the four-statement render.
+3. **Module 13 — things you've bought** (tickets + registrations; merch is
+   structurally unattributable and is simply absent).
+4. **Module 15 — the gear**, from `assets.acquired` against
+   `LAUNCH_EQUIPMENT_LINES`.
+5. Billing follow-ups deliberately skipped earlier: a real Stripe
+   `pause_collection` so `paused` stops being a local-only overlay (the
+   documented follow-up in `setPledgeStatus`).
+6. Optional / on demand: attributed sharing (module 11), a
+   `budgetLines.publicDescription` field (module 10 option (b)), backer-only
+   updates (module 17), and the `grantedVia: "backer"` allowlist graduation
+   if a backer ever needs to write something.
 
 ---
 
-## Screens (Phase 1) — blocks in render order
+## Screens — blocks in render order
 
-Four screens. Server-rendered, one column, max ~640px, `landingPageStyles`
-cream/dark-red palette and `FONTS`/`FAVICON`, same as `/give` and `/contract`.
+Server-rendered, one column, max ~640px, `landingPageStyles` cream/dark-red
+palette and `FONTS`/`FAVICON`, same as `/give` and `/contract`. Screens A–D are
+Phase 1; E–H are the later phases, drawn to the same level so the mockup can
+carry them.
+
+**Copy rule throughout:** headings name the thing, numbers stand alone, no
+caption defends a decision. See "A note on register" above.
 
 ### Screen A — Sign in  (`GET /backer`, no session)
 
@@ -547,8 +982,9 @@ again in a bit." — the exact string `assertContractNotRateLimited` already use
    - City: `chapters.name` for `pledges.scope`
    - "Backing since <`startedAt`>" · "Next charge <`currentPeriodEnd`>"
    - Status pill: Active / Past due / On hold / Ended
-   - Two buttons: **Manage card & amount** (→ Stripe portal) and a quiet
-     **Cancel** that goes to the same place (Stripe owns cancellation).
+   - **Three buttons, and note the split** (module 1): **Change amount** opens
+     our own step (block 3a); **Update card** and a quiet **Cancel** both go to
+     Stripe's portal. Stripe never shows an amount control.
    - *Empty state* (a giver with no pledge): "You've given to Brooklyn, but
      you're not backing it monthly yet." → **Become a backer** (`/give/<slug>`).
    - *`canceled`*: "Your monthly backing ended on <`canceledAt`>. Thank you for
@@ -556,6 +992,16 @@ again in a bit." — the exact string `assertContractNotRateLimited` already use
    - *`incomplete`*: "We never received a first payment." → **Finish signing up**.
    - *`origin: "imported"`*: "This monthly gift is on our old platform, so we
      can't manage it here." → **Move it over**.
+3a. **"Change your amount" — our own step**, revealed inline (not a Stripe
+   redirect). Preset chips $50 / $75 / $100 / $150 / $250 + a custom field,
+   then **Confirm**. The **minimum selectable is $50** for a backer: chips
+   below it don't render, and the custom field's inline hint reads "Backers
+   give $50 a month or more." Server re-validates — the field is not the guard.
+   Below the chips, live: "At $75/month you'd be part of getting New York to
+   Eden." *Non-backer at $30/mo:* the floor shown is $5 and the copy says
+   "Give $50 a month or more to become a backer." *On success:* the hero
+   re-renders with the new amount and a quiet "Updated — your next charge is
+   $75 on Sep 12."
 4. **Stat strip — three tiles.** Lifetime given (`donors.lifetimeCents`, or
    `donorIdentities.lifetimeCents` across books) · Gifts (`giftCount`) · Backing
    since (`firstGiftAt`).
@@ -572,11 +1018,17 @@ again in a bit." — the exact string `assertContractNotRateLimited` already use
    we'll email you."
 7. **"Your giving" preview.** Last 3 gifts (date · amount · method label) and a
    **See all** link to Screen C.
-8. **"How a chapter runs" card** — the generic `CHAPTER_CORE_ROLES` five roles
-   (Chapter Director / Music Lead / Event Lead / Marketing Lead / Treasurer)
-   with what each owns. No names, no photos, no PII.
-9. **Footer.** "Our books are public, every month → `/finances`" · "Questions?
-   Reply to any email from us."
+8. **"Send this to someone" card** (module 11, unattributed). One line —
+   "New York is 8 backers from Eden." — the `/give/<slug>` link in a read-only
+   field, **Copy link**, and a **Share** button where `navigator.share` exists.
+   Pre-written text sits beneath, selectable: *"I back Public Worship New York
+   — they're 8 backers from putting on Eden. $50/mo."*
+9. **"How a chapter runs" card** — Phase 1 only, the generic
+   `CHAPTER_CORE_ROLES` five roles with what each owns. **Replaced outright by
+   Screen F's named block in Phase 2** — this is a placeholder, not a
+   companion.
+10. **Footer.** "Our books, every month → `/finances`" · "Questions? Reply to
+   any email from us."
 
 ### Screen C — Your giving  (`GET /backer/giving`)
 
@@ -598,40 +1050,137 @@ again in a bit." — the exact string `assertContractNotRateLimited` already use
 
 ### Screen D — Payment failed  (email → `/backer`)
 
-Not a separate URL — it is Screen B with block 2 present and blocks 5–8
+Not a separate URL — it is Screen B with block 2 present and blocks 5–9
 collapsed below the fold. Worth drawing separately because it is the screen a
-declined backer actually lands on from
-`lib/backerPaymentFailedEmail.ts`, and the whole page should read as one
-question with one button.
+declined backer actually lands on from `lib/backerDunningEmails.ts`, and the
+whole page should read as one question with one button. At rung 3 the banner
+gains a second, quieter action — **Stop my backing** — sitting beside "Update
+your card". Rung 4's banner reads "Your backing is paused." with **Start
+again**.
+
+### Screen E — The books  (`GET /backer/books`) — Phase 2
+
+1. **Back link** + H1 "The books."
+2. **Chapter picker — a horizontal scroll of chips**, the backer's own city
+   first and pre-selected, then Central, then every other chapter. Each chip
+   carries name + backer count: `New York · 22` / `Central` / `Atlanta · 9` /
+   `Denver · proposed`. Prospect/raising chapters render with their stage word
+   instead of a count where `backerCount` is 0.
+3. **Month picker** — a plain `<select>` of published months for the selected
+   book, newest first, defaulting to the latest. Falls back to "Not published
+   yet" when a chapter has no live publication, which is a real and honest
+   state for a new city.
+4. **Headline row — three big numbers.** In · Out · Net, for that book and
+   month. Beneath, small: "Published <date> · revision N."
+5. **"Where it came from"** — `incomeByStream` as a labelled bar list.
+6. **"Where it went"** — two toggling views over the same money, **By
+   category** and **By project**, each a bar list with amount and count.
+7. **"Against the plan"** — `spendByBudget` rows: label, allocated, spent, and
+   a bar. Rows with no allocation show "—", never "$0".
+8. **Disclosure strip.** Small, plain, always present when non-zero:
+   "3 lines reconstructed from records · 2 with no receipt · 1 with no
+   explanation." No apology, no expansion of what it means.
+9. **"Every line"** — the entry table, scrollable in its own container: date ·
+   counterparty · purpose · category · amount · direction. Internal transfers
+   and payouts render greyed with a "not counted" marker. **Download CSV**.
+10. **Stale note** — only when `staleSince` is set: "The live books have moved
+   since this was published."
+11. **Footer link** — "Every book, every month → `/finances`."
+
+### Screen F — Who runs it  (`GET /backer/people`) — Phase 2
+
+1. **Back link** + H1 "Who runs New York." (Chapter picker as Screen E,
+   block 2.)
+2. **The chapter's leadership grid** — one card per seat, in chart order:
+   photo (or initials), **name**, **seat title**. Five cards for a full
+   chapter. A vacant seat renders in the same grid, greyed: "Treasurer — open."
+3. **"Central"** — the same grid for `executive_director`,
+   `financial_manager`, `development_director`, labelled "The people behind
+   every chapter."
+4. **One line, plain:** "Chapter leadership is volunteer." (This is a fact
+   about the org, not a defence of the page.)
+5. *No block explaining what is or isn't shown.*
+
+### Screen G — The plan  (`GET /backer/plan`) — Phase 3
+
+1. **Back link** + H1 "New York's 2026 plan." (Chapter picker; year select.)
+2. **Headline pair.** "Planned $18,400" · "Raised so far $11,200", with a
+   single progress bar between them.
+3. **"What it's for"** — the approved budgets for that `(chapter, year)`, one
+   row each: label, planned (`effectiveCapCents`), spent, bar. Sorted by
+   planned, descending.
+4. **Line items, grouped by category** — expandable under each budget row:
+   category label + planned total only. **No free-text descriptions.**
+5. **"The monthly floor"** — `MONTHLY_OPERATING_LINES` as a labelled list
+   summing to ~$670, with one line: "What it costs to run a chapter for a
+   month."
+6. **Empty state:** "New York hasn't published a 2026 plan yet."
+
+### Screen H — Your history  (`GET /backer/history`) — Phase 3
+
+One screen, three stacked sections — it is all "what you've done with us".
+
+1. **"Nights you've been to"** (module 12). One row per event: cover thumb,
+   name, date, venue, and one of four plain labels — **"You were there"**
+   (checked-in ticket) · "You had a ticket" · "You RSVP'd" · "You registered".
+   Newest first. *Empty:* "We'll list nights here once you've been to one."
+2. **"Things you've bought"** (module 13). Ticket orders and class
+   registrations: date, event/class, items and quantities, total. *No merch* —
+   and no note explaining its absence.
+3. **"The gear your backing bought"** (module 15). A two-column list against
+   the chapter kit: owned items with photo thumbs, then a **"Still needed"**
+   sub-list from `assets.acquired === false` with the target price from
+   `LAUNCH_EQUIPMENT_LINES`. Header line: "New York owns 34 of 41."
+
+### Shared block — "Does it add up?" (module 14) — Phase 2
+
+A single strip, rendered at the foot of Screen B **and** Screen E:
+
+> **Does it add up?**
+> Books say **$47,312** · We can point at **$47,312** · Difference **$0.00**
+
+Three numbers on one line, the difference in the accent colour. When non-zero
+it reads "Difference **$312** — being investigated" in the same plain register.
+Org-wide only; no per-chapter cut, ever.
 
 ---
 
 ## Open questions for the owner
 
-1. **Portal for backers only, or every giver?**
-   *Default:* every giver with an email gets sign-in + their own giving
-   history; the **books, the gap and the ladder are backer-only**
-   (active pledge ≥ $50/mo). It keeps "backer-only" meaningful without telling
-   a $20/mo giver we don't know who they are.
-2. **Do we show a city's gap, including when it's negative?**
-   *Default:* yes. It is the most honest and most motivating number we have.
-   Framed as the org's position, never as a team's failure — and never with
-   the bookkeeping-hygiene counters attached.
-3. **Every chapter's books, or only the one you back?**
-   *Default:* your own city by default, with an explicit "see every city" link
-   — because `/finances` is already public, refusing would be theatre.
-4. **Do we name the volunteers running a chapter?**
-   *Default:* no, not in Phase 1 — ship the five generic roles. Named people
-   only after a per-person opt-in exists, and never with contact details.
-5. **What happens when a backer pauses or cancels?**
-   *Default:* 90 days of full read-only access after the last active day, then
-   giving-history-only. Cutting someone off the day their card fails is the
-   opposite of a relationship, and `past_due` is usually a bank, not a decision.
-6. **When a card fails, do we email the backer — and how hard do we push?**
-   Today we send **nothing**; `markPledgePastDue` flips the status in silence
-   while `chapters.backerCount` quietly drops.
-   *Default:* one email per dunning episode, warm and non-accusatory (the
-   `givingComms.ts#onAchFailed` register), with the portal as the only CTA —
-   and no second email, no SMS, no chase. Stripe Smart Retries does the
-   retrying; we do the telling, once. If it turns out backers routinely miss
-   it, a single 7-day follow-up is the next lever, not a sequence.
+The five previously-open questions are now answered — see "Settled decisions".
+These are what the new scope opened up.
+
+1. **Portal for backers only, or every giver?** Still open, and it now matters
+   more: decision 1 means the portal shows *every* chapter's books, so "who
+   gets in" is the only remaining gate on that.
+   *Recommended:* every giver with an email signs in and sees their own giving;
+   the books, the plan, the people and the gap need an active pledge ≥ $50/mo.
+   It keeps "backer-only" meaningful without telling a $30/mo giver we don't
+   know who they are.
+2. **Do we show a city's gap when it's negative?**
+   *Recommended:* yes — the most honest and most motivating number we have.
+   Framed as the org's position, never as a team's failure, and never with the
+   bookkeeping-hygiene counters attached.
+3. **Full names, or first names, for the chapter team?** (Decision 2 settled
+   *that* we name them, not *how*.)
+   *Recommended:* full name for the leadership seats a funder is entitled to
+   identify — Chapter Director, Treasurer, and the three central seats — and
+   first name only for anyone else. Photos for all, with the
+   `hideFromPublicChart` opt-out.
+4. **Budget line items: categories now, or free text later?**
+   *Recommended:* categories only (module 10, option (a)). Free-text
+   descriptions can name a person's pay, and publishing them would undo the
+   care the public ledger takes to keep contractor identities out. If the
+   detail is genuinely wanted, it's a `publicDescription` field and a pass by
+   the treasurer — a Phase 3 decision, not a Phase 2 shortcut.
+5. **Attributed sharing — do we want to know who brought whom?**
+   *Recommended:* not yet. The share button is free; attribution is four files
+   and a change to the checkout payload, which is the most safety-critical path
+   in the codebase. Build it when there's a reason to show the number, and even
+   then show counts only — never who.
+6. **Merch history can't be built. Is that acceptable, or worth fixing at the
+   till?** `sales` captures no buyer identity at all, because the Tap-to-Pay
+   app sends none.
+   *Recommended:* accept it. The fix is asking for an email at a merch table
+   mid-event, which costs more in friction than the module is worth — and the
+   giving half of a bundled sale is already attributed via `donationGiftId`.

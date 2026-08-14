@@ -4,6 +4,10 @@ import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schem
 import { chapters, userProfiles, userChapters } from "./schema/chapters";
 import { accessAllowlist } from "./schema/accessAllowlist";
 import { backerMilestones } from "./schema/backerMilestones";
+import {
+  backerPortalCodes,
+  backerPortalSessions,
+} from "./schema/backerPortal";
 import { templateRoles, eventRoles } from "./schema/roles";
 import { templateModules, eventModules } from "./schema/modules";
 import { eventTypes, templateColumns, templateItems } from "./schema/templates";
@@ -398,6 +402,13 @@ const schema = defineSchema({
   // from + falls back to `AFFORDABILITY_TIERS` (`@events-os/shared`). See
   // `schema/backerMilestones.ts` + `backerMilestones.ts`.
   backerMilestones,
+
+  // The backer portal's two capability tables — a pending 6-digit sign-in code
+  // per email, and the live sessions a verified code mints. Hashes and expiries
+  // only; every fact the portal renders is read from the giving tables at
+  // request time. See `schema/backerPortal.ts` + `lib/backerAccess.ts`.
+  backerPortalCodes,
+  backerPortalSessions,
 
   // Giving Platform (F-6, P1) — the development team's donor CRM: `donors`
   // (chapter/central-scoped relationship records) + `gifts` (giving history,

@@ -51,6 +51,26 @@ export function givePageUrl(slug?: string): string {
 }
 
 /**
+ * The signed-in backer portal — where a giver manages their own backing and
+ * reads their own record (`lib/backerPortalPage.ts`).
+ *
+ * A SITE path, not an APP one: the portal is server-rendered off this backend
+ * like `/give` and `/finances`, deliberately outside the Expo bundle at `/os`.
+ * A backer is not a staff user and must never need to be one to see their own
+ * giving — see `docs/plans/backer-portal.md`'s auth section for the whole
+ * argument.
+ */
+export const BACKER_PATH = "backer";
+
+export function backerPortalPath(): string {
+  return `/${BACKER_PATH}`;
+}
+
+export function backerPortalUrl(): string {
+  return `${siteUrl()}${backerPortalPath()}`;
+}
+
+/**
  * Deep link into the authenticated app (the Expo web build) at `path`, when
  * APP_URL is configured. Null otherwise — callers omit the link entirely
  * rather than sending a dead one. In prod, APP_URL is

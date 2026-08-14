@@ -41,7 +41,7 @@ import { internalMutation as triggerInternalMutation } from "./lib/peopleAggrega
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Doc, Id } from "./_generated/dataModel";
-import { BACKER_UNIT_CENTS } from "@events-os/shared";
+import { BACKER_UNIT_CENTS, formatCents } from "@events-os/shared";
 import { normalizeEmail } from "./lib/access";
 import {
   requireGivingManage,
@@ -50,8 +50,18 @@ import {
 } from "./lib/givingAccess";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 import { PLEDGE_STATUSES } from "./schema/givingPlatform";
-import { siteUrl, givePagePath, givePageUrl } from "./lib/siteUrl";
-import { renderBackerWelcomeEmail } from "./lib/backerWelcomeEmail";
+import {
+  siteUrl,
+  givePagePath,
+  givePageUrl,
+  backerPortalUrl,
+} from "./lib/siteUrl";
+import {
+  requireBackerModule,
+  requireBackerSession,
+} from "./lib/backerAccess";
+import { greetingName, renderBackerWelcomeEmail } from "./lib/backerWelcomeEmail";
+import { renderPaymentFailedEmail } from "./lib/backerPortalEmails";
 import {
   MAX_RULES,
   ruleMatchesBackerSignup,
@@ -244,6 +254,34 @@ export const getBackerWelcomePayload = internalQuery({
 });
 
 /**
+ * Tell a backer their card was declined — rung one of the dunning ladder.
+ * Scheduled by `markPledgePastDue`, only on the transition into `past_due`.
+ *
+ * Reuses `getBackerWelcomePayload`: it already resolves exactly the four facts
+ * this email needs (address, name, amount, city) behind one bounded read, and
+ * two resolvers for one shape is how they drift.
+ */
+export const sendPaymentFailedEmail = internalAction({
+  args: { pledgeId: v.id("pledges") },
+  returns: v.null(),
+  handler: async (ctx, { pledgeId }) => {
+    const payload = await ctx.runQuery(
+      internal.givingPledges.getBackerWelcomePayload,
+      { pledgeId },
+    );
+    if (!payload) return null;
+    const { subject, html } = renderPaymentFailedEmail({
+      firstName: greetingName(payload.name),
+      monthlyCents: payload.monthlyCents,
+      chapterName: payload.chapterName,
+      portalUrl: backerPortalUrl(),
+    });
+    await sendEmail(ctx, { to: payload.email, subject, html });
+    return null;
+  },
+});
+
+/**
  * Welcome a brand-new backer — the email the owner asked for, and the one this
  * flow was missing entirely. Scheduled exactly once per pledge by
  * `claimBackerAnnouncement`.
@@ -271,6 +309,7 @@ export const sendBackerWelcomeEmail = internalAction({
       givePageUrl: payload.territorySlug
         ? givePageUrl(payload.territorySlug)
         : null,
+      portalUrl: backerPortalUrl(),
     });
     await sendEmail(ctx, { to: payload.email, subject, html });
     return null;
@@ -1058,6 +1097,25 @@ export const markPledgePastDue = internalMutation({
       await ctx.db.patch(pledge._id, { status: "past_due" });
       await logPledgeStatus(ctx, pledge, pledge.status, "past_due");
       await recomputePledgeCounters(ctx, pledge);
+      // AND TELL THEM. Until this line, a declined card flipped the status,
+      // dropped the chapter's public backer count and moved its milestone
+      // ladder BACKWARDS on a page anyone can read — while the person whose
+      // card it was heard nothing at all, sometimes until the cancellation
+      // weeks later. Scheduled, so a mail failure can never fail the webhook
+      // that recorded the decline (`givingNotifications.ts`'s module doc makes
+      // the same argument for gifts).
+      //
+      // Only on the TRANSITION into past_due, which is what this branch
+      // already is: Stripe retries a failed charge several times and each
+      // retry re-delivers `invoice.payment_failed`, so mailing on every
+      // delivery would be four emails about one decline. The weekly ladder
+      // (rungs 2–4) is Phase 2 and needs a sweep of its own — see
+      // `lib/backerPortalEmails.ts`.
+      await ctx.scheduler.runAfter(
+        0,
+        internal.givingPledges.sendPaymentFailedEmail,
+        { pledgeId: pledge._id },
+      );
     }
     return true;
   },
@@ -1137,52 +1195,95 @@ export const cancelPledgeSubscription = internalMutation({
   },
 });
 
-// ── Self-serve management (Stripe billing portal) ─────────────────────────────
+// ── Self-serve management (the backer portal + Stripe) ───────────────────────
 
-/** Resolve the Stripe customer id behind a donor's pledge in a chapter, by
- *  email. Prefers an `active` pledge's customer, else any pledge that has one. */
-export const portalCustomerId = internalQuery({
-  args: { email: v.string(), chapterId: v.id("chapters") },
+/**
+ * The pledge behind a portal request, PROVEN to belong to the caller.
+ *
+ * ── THIS REPLACED AN OPEN DOOR ─────────────────────────────────────────────
+ * The old resolver took `{ email, chapterId }` from anybody and returned that
+ * person's Stripe customer id, which `createPortalSession` then turned into a
+ * live billing-portal link: card last four, invoice history, the cancel button.
+ * Anyone who knew a backer's email address could mint it. It was unreachable
+ * only because nothing linked to it — which is not a security control, it is an
+ * absence of one, and the moment the portal shipped it would have become a real
+ * hole. It is closed here, in the same change that gives the portal a door.
+ *
+ * The proof is the session: `requireBackerSession` resolves the token to a set
+ * of `donors` rows (every book the proven email gives in), and the pledge must
+ * belong to one of them. A session for one person can therefore never reach
+ * another person's subscription, whatever id the client posts.
+ */
+async function pledgeForSession(
+  ctx: QueryCtx,
+  sessionToken: string,
+  pledgeId: Id<"pledges">,
+): Promise<Doc<"pledges">> {
+  const session = await requireBackerSession(ctx, sessionToken);
+  requireBackerModule(session, "backing");
+  const pledge = await ctx.db.get(pledgeId);
+  // ONE MESSAGE FOR BOTH CASES — "no such pledge" and "not yours" are the same
+  // sentence on purpose, so this can't be used to test whether a pledge id
+  // exists.
+  if (!pledge || !session.donorIds.includes(pledge.donorId)) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "We couldn't find that monthly gift on your record.",
+    });
+  }
+  return pledge;
+}
+
+/** The Stripe customer behind one of the caller's own pledges, or `null` when
+ *  it has none (an imported pledge that never moved onto our rails). */
+export const portalCustomerForSession = internalQuery({
+  args: { sessionToken: v.string(), pledgeId: v.id("pledges") },
   returns: v.union(v.string(), v.null()),
   handler: async (ctx, args) => {
-    const email = normalizeEmail(args.email);
-    if (!email) return null;
-    const donor = await ctx.db
-      .query("donors")
-      .withIndex("by_scope_and_email", (q) =>
-        q.eq("scope", args.chapterId).eq("email", email),
-      )
-      .first();
-    if (!donor) return null;
-    const pledges = await ctx.db
-      .query("pledges")
-      .withIndex("by_donor", (q) => q.eq("donorId", donor._id))
-      .take(DONOR_PLEDGE_LIMIT);
-    const chosen =
-      pledges.find((p) => p.status === "active" && p.stripeCustomerId) ??
-      pledges.find((p) => p.stripeCustomerId);
-    return chosen?.stripeCustomerId ?? null;
+    const pledge = await pledgeForSession(ctx, args.sessionToken, args.pledgeId);
+    return pledge.stripeCustomerId ?? null;
+  },
+});
+
+/** The Stripe subscription behind one of the caller's own pledges, for the
+ *  cancel flow. Same proof, same refusal. */
+export const subscriptionForSession = internalQuery({
+  args: { sessionToken: v.string(), pledgeId: v.id("pledges") },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, args) => {
+    const pledge = await pledgeForSession(ctx, args.sessionToken, args.pledgeId);
+    return pledge.stripeSubscriptionId ?? null;
   },
 });
 
 /**
- * PUBLIC self-serve management (no auth — email lookup, like the donation flow):
- * open a Stripe billing portal session so a backer can update their card, change
- * the amount, or cancel — we never store card data or build a card UI. Returns a
- * typed error the UI can show when no Stripe customer is on file.
+ * Open a Stripe-hosted billing flow for one of the caller's own pledges — the
+ * card, or the cancellation. We never store card data and never build a card
+ * UI; that half of the job is Stripe's and stays Stripe's.
+ *
+ * The AMOUNT is deliberately not among the flows offered here — see the
+ * `flow_data` comment in the body, and `changePledgeAmount` below.
  */
 export const createPortalSession = action({
-  args: { email: v.string(), chapterId: v.id("chapters") },
+  args: {
+    sessionToken: v.string(),
+    pledgeId: v.id("pledges"),
+    /** Which Stripe-hosted flow to open. See the `flow_data` comment below —
+     *  the portal is entered for one job at a time, deliberately. */
+    flow: v.union(v.literal("card"), v.literal("cancel")),
+  },
   handler: async (ctx, args): Promise<{ url: string }> => {
+    // THE SESSION IS THE AUTHORIZATION. See this function's doc — it used to
+    // take `{ email, chapterId }` from anybody at all.
     const customerId: string | null = await ctx.runQuery(
-      internal.givingPledges.portalCustomerId,
-      { email: args.email, chapterId: args.chapterId },
+      internal.givingPledges.portalCustomerForSession,
+      { sessionToken: args.sessionToken, pledgeId: args.pledgeId },
     );
     if (!customerId) {
       throw new ConvexError({
         code: "NO_STRIPE_CUSTOMER",
         message:
-          "We couldn't find a backing subscription for that email in this city.",
+          "This monthly gift isn't billed through us, so there's nothing to manage here.",
       });
     }
     const secretKey = process.env.STRIPE_SECRET_KEY;
@@ -1194,7 +1295,43 @@ export const createPortalSession = action({
     }
     const body = new URLSearchParams();
     body.set("customer", customerId);
-    body.set("return_url", `${siteUrl()}/`);
+    body.set("return_url", backerPortalUrl());
+    // ── THE PORTAL IS ENTERED FOR ONE JOB AT A TIME ────────────────────────
+    // AMOUNT CHANGES ARE NOT STRIPE'S TO TAKE. Stripe's portal has no
+    // minimum-amount setting — the only lever is an allow-list of catalogue
+    // `Price` objects, and `startPledgeCheckout` mints an INLINE ad-hoc price
+    // per backer (`price_data`), so there is no catalogue to list. Left on the
+    // default configuration, the portal's "update subscription" would happily
+    // accept $5 and quietly drop somebody below the floor that makes them a
+    // backer at all. `changePledgeAmount` below owns the amount instead, where
+    // the rule can actually be enforced.
+    //
+    // `flow_data` rather than a stored `billing_portal.configuration`: a
+    // configuration is dashboard state that has to be created, referenced by
+    // id, and kept in sync across two Stripe accounts (test and live), and if
+    // it ever drifts the failure is silent and expensive. A flow is decided
+    // per session, here, in code that can be read.
+    if (args.flow === "cancel") {
+      const subscriptionId: string | null = await ctx.runQuery(
+        internal.givingPledges.subscriptionForSession,
+        { sessionToken: args.sessionToken, pledgeId: args.pledgeId },
+      );
+      if (!subscriptionId) {
+        throw new ConvexError({
+          code: "NO_SUBSCRIPTION",
+          message: "There's no live subscription on this monthly gift to stop.",
+        });
+      }
+      body.set("flow_data[type]", "subscription_cancel");
+      body.set("flow_data[subscription_cancel][subscription]", subscriptionId);
+    } else {
+      body.set("flow_data[type]", "payment_method_update");
+    }
+    body.set("flow_data[after_completion][type]", "redirect");
+    body.set(
+      "flow_data[after_completion][redirect][return_url]",
+      backerPortalUrl(),
+    );
     const response = await fetch(`${STRIPE_API}/billing_portal/sessions`, {
       method: "POST",
       headers: {
@@ -1212,6 +1349,214 @@ export const createPortalSession = action({
     }
     const session = (await response.json()) as { url: string };
     return { url: session.url };
+  },
+});
+
+/**
+ * Parse a monthly amount as a human types it — "50", "$50", "1,200", "12.50" —
+ * into integer cents.
+ *
+ * Off the DIGITS, never `Math.round(Number(x) * 100)`: `1.005 * 100` is
+ * 100.49999999999999 in binary floating point and rounds DOWN, which on a
+ * threshold field is exactly the off-by-one nobody ever finds. Same arithmetic,
+ * and the same reasoning, as the notification-rules form's
+ * `parseDollarsToCents`.
+ */
+export function parseMonthlyAmountCents(raw: string): number {
+  const cleaned = raw.trim().replace(/^\$/, "").replace(/,/g, "").trim();
+  const bad = new ConvexError({
+    code: "INVALID_AMOUNT",
+    message: "Enter a dollar amount, like 50.",
+  });
+  if (!/^(\d+(\.\d*)?|\.\d+)$/.test(cleaned)) throw bad;
+  const [whole, fraction = ""] = cleaned.split(".");
+  const centsPart = `${fraction}00`.slice(0, 2);
+  const beyond = fraction.slice(2);
+  let cents = Number(whole) * 100 + Number(centsPart);
+  if (beyond.length > 0 && Number(beyond[0]) >= 5) cents += 1;
+  if (!Number.isSafeInteger(cents)) throw bad;
+  return cents;
+}
+
+/**
+ * Decide whether a backer may move to a new monthly amount, and say why not.
+ *
+ * ── THE ONE RULE THE OWNER ASKED FOR, IN ONE PURE FUNCTION ─────────────────
+ * "Make sure people can't update it under $50 or else they're not a backer."
+ * Held here rather than at the call site so it is testable without Stripe, and
+ * so the page, the API and the action can never disagree about it.
+ *
+ * It is a RATCHET, not a floor for everybody: somebody already at or above
+ * `BACKER_UNIT_CENTS` cannot drop below it through this door, because doing so
+ * silently removes them from a city's public backer count and from the
+ * milestone ladder that count feeds — a consequence no amount field explains.
+ * Somebody giving $30 a month is a real, supported, deliberately-distinguished
+ * thing in this codebase (see `PLEDGE_FLOOR_CENTS`), and they can move freely
+ * below the backer floor; they simply aren't counted as backers, which was
+ * already true.
+ *
+ * Stopping altogether is not this function's business and never should be —
+ * that is Stripe's cancel flow, one button away, with no minimum at all. The
+ * rule must not become a trap.
+ */
+export function checkAmountChange(
+  currentCents: number,
+  nextCents: number,
+): { ok: true } | { ok: false; message: string } {
+  if (!Number.isInteger(nextCents) || nextCents < PLEDGE_FLOOR_CENTS) {
+    return {
+      ok: false,
+      message: `A monthly gift is at least ${formatCents(PLEDGE_FLOOR_CENTS)}.`,
+    };
+  }
+  if (currentCents >= BACKER_UNIT_CENTS && nextCents < BACKER_UNIT_CENTS) {
+    return {
+      ok: false,
+      message: `Backers give ${formatCents(BACKER_UNIT_CENTS)} a month or more — going below that would take you out of your city's backer count. To stop your monthly gift altogether, use "Stop my monthly gift".`,
+    };
+  }
+  if (nextCents === currentCents) {
+    return { ok: false, message: "That's already your monthly amount." };
+  }
+  return { ok: true };
+}
+
+/**
+ * Change a backer's monthly amount — OURS, not Stripe's.
+ *
+ * Stripe's billing portal cannot hold a minimum (no such setting exists; the
+ * only lever is an allow-list of catalogue `Price` objects, and every pledge
+ * here rides an inline ad-hoc price), so leaving amount changes to the portal
+ * would mean a backer could quietly become a non-backer with no warning and no
+ * record. Taking it ourselves costs one Stripe call and buys the rule.
+ *
+ * The subscription is updated with the SAME ad-hoc `price_data` shape
+ * `startPledgeCheckout` creates, so there is no Price catalogue to build and no
+ * migration for existing subscriptions. `proration_behavior=none` — a person
+ * adjusting their monthly giving is not asking to be billed a strange amount
+ * today; the new figure starts at the next cycle, which is what the page says.
+ *
+ * OUR ROW IS NOT PATCHED HERE. The `customer.subscription.updated` webhook is
+ * the single writer of a pledge's amount (`syncPledgeSubscription`), and going
+ * behind it would create the one state nobody can debug: a local amount that
+ * disagrees with what Stripe will actually charge. If the webhook is delayed
+ * the page shows the old figure for a moment, which is a cosmetic lag rather
+ * than a lie.
+ */
+export const changePledgeAmount = action({
+  args: {
+    sessionToken: v.string(),
+    pledgeId: v.id("pledges"),
+    /** As typed — parsed and validated server-side, never trusted as cents. */
+    amount: v.string(),
+  },
+  returns: v.object({ amountCents: v.number() }),
+  handler: async (ctx, args): Promise<{ amountCents: number }> => {
+    const nextCents = parseMonthlyAmountCents(args.amount);
+    const pledge: {
+      amountCents: number;
+      status: string;
+      stripeSubscriptionId: string | null;
+    } = await ctx.runQuery(internal.givingPledges.pledgeForAmountChange, {
+      sessionToken: args.sessionToken,
+      pledgeId: args.pledgeId,
+    });
+
+    const verdict = checkAmountChange(pledge.amountCents, nextCents);
+    if (!verdict.ok) {
+      throw new ConvexError({ code: "AMOUNT_REFUSED", message: verdict.message });
+    }
+    if (!pledge.stripeSubscriptionId) {
+      throw new ConvexError({
+        code: "NO_SUBSCRIPTION",
+        message:
+          "This monthly gift isn't billed through us, so its amount can't be changed here.",
+      });
+    }
+    if (pledge.status === "canceled") {
+      throw new ConvexError({
+        code: "PLEDGE_ENDED",
+        message: "This monthly gift has ended. Start a new one to give again.",
+      });
+    }
+
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      throw new ConvexError({
+        code: "PAYMENTS_NOT_CONFIGURED",
+        message: "Backing management isn't available yet.",
+      });
+    }
+
+    // The subscription's single item, re-priced. Stripe needs the item's id to
+    // replace its price, so read the subscription first.
+    const subRes = await fetch(
+      `${STRIPE_API}/subscriptions/${pledge.stripeSubscriptionId}`,
+      { headers: { Authorization: `Bearer ${secretKey}` } },
+    );
+    if (!subRes.ok) {
+      console.error("[stripe] subscription read failed:", await subRes.text());
+      throw new ConvexError({
+        code: "STRIPE_ERROR",
+        message: "Couldn't change the amount. Please try again.",
+      });
+    }
+    const sub = (await subRes.json()) as {
+      items?: { data?: { id: string }[] };
+    };
+    const itemId = sub.items?.data?.[0]?.id;
+    if (!itemId) {
+      throw new ConvexError({
+        code: "STRIPE_ERROR",
+        message: "Couldn't change the amount. Please try again.",
+      });
+    }
+
+    const body = new URLSearchParams();
+    body.set("items[0][id]", itemId);
+    body.set("items[0][price_data][currency]", "usd");
+    body.set("items[0][price_data][unit_amount]", String(nextCents));
+    body.set("items[0][price_data][recurring][interval]", "month");
+    body.set("items[0][price_data][product_data][name]", "Monthly backer");
+    body.set("proration_behavior", "none");
+    const updateRes = await fetch(
+      `${STRIPE_API}/subscriptions/${pledge.stripeSubscriptionId}`,
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${secretKey}`,
+          "Content-Type": "application/x-www-form-urlencoded",
+        },
+        body: body.toString(),
+      },
+    );
+    if (!updateRes.ok) {
+      console.error("[stripe] amount change failed:", await updateRes.text());
+      throw new ConvexError({
+        code: "STRIPE_ERROR",
+        message: "Couldn't change the amount. Please try again.",
+      });
+    }
+    return { amountCents: nextCents };
+  },
+});
+
+/** The three facts `changePledgeAmount` needs, behind the same session proof
+ *  every other portal read uses. */
+export const pledgeForAmountChange = internalQuery({
+  args: { sessionToken: v.string(), pledgeId: v.id("pledges") },
+  returns: v.object({
+    amountCents: v.number(),
+    status: v.string(),
+    stripeSubscriptionId: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, args) => {
+    const pledge = await pledgeForSession(ctx, args.sessionToken, args.pledgeId);
+    return {
+      amountCents: pledge.amountCents,
+      status: pledge.status,
+      stripeSubscriptionId: pledge.stripeSubscriptionId ?? null,
+    };
   },
 });
 
