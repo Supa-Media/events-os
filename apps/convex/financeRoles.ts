@@ -80,7 +80,7 @@ const specializedTitleValidator = v.union(
  * `role: "viewer"`, not `"manager"` — deliberately the HONEST floor, not the
  * seat's peak power. This seat carries no `finance.manager` CAPABILITY, and
  * every WRITE gate `lib/finance.ts#getFinanceRole` backs (reconcile writes,
- * `updateBudget`, `receipt-chase.tsx`'s `isManager` check,
+ * `updateBudget`, the Reconcile grid's coding-chase `isManager` check,
  * `PersonalChargesView`'s own) is UNCHANGED by the console/prepare widening
  * — only `hasLedgerConsole`/`hasLedgerPrepare` were widened. Synthesizing
  * `"manager"` here would light up manager-only UI this caller cannot

@@ -153,8 +153,12 @@ import {
   codingOverdueMs,
   isDocumented,
   isUncodedCharge,
+  reminderChargeValidator,
   stageForAge,
+  type ChaseTarget,
+  type ReminderCharge,
 } from "./lib/codingReminders";
+import { reconcileFilterValidator } from "./lib/reconcileArgs";
 import { listCodingReviewerPersonIds } from "./lib/transactionCodingAccess";
 import { listActiveChapters } from "./lib/chapters";
 import { codingForTransaction, codingPolicy } from "./lib/transactionCoding";
@@ -4724,27 +4728,6 @@ export const advanceReceiptReminders = internalMutation({
   },
 });
 
-/** One line per outstanding charge in a cardholder's reminder digest. */
-const reminderChargeValidator = v.object({
-  amountCents: v.number(),
-  merchantName: v.union(v.string(), v.null()),
-  escalated: v.boolean(),
-  // What this charge still owes, in the words the digest prints
-  // (`lib/codingReminders.ts#outstandingLabel`) — the ONE string the email,
-  // the escalation stages and the FM's nudge all read, so they can't drift on
-  // what "still owes something" means.
-  outstanding: v.string(),
-  // Whether the RECEIPT is (part of) what's missing. The day-7 card auto-lock
-  // acts on receipts and nothing else, so the "your card locks" warning has to
-  // know the difference between a charge missing its document and one merely
-  // missing its coding — otherwise the email threatens a lock that will never
-  // come, which is how a warning stops being believed.
-  missingReceipt: v.boolean(),
-  // Whether the CODING is (part of) what's missing — i.e. whether the 60-day
-  // accountable-plan clock is the thing running on this row.
-  needsCoding: v.boolean(),
-});
-
 /**
  * Group the charges that transitioned a reminder stage THIS pass by cardholder,
  * so `sendReceiptReminders` sends ONE digest email per person listing
@@ -5224,190 +5207,63 @@ export const sendCodingReviewReminders = internalAction({
   },
 });
 
-// ── Manual nudge (Chase Receipts "Send reminder" / "Remind all") ────────────
+// ── The coding chase (the grid's "Chase" / "Chase everyone") ────────────────
 //
-// The tester-requested on-demand counterpart to the automated day-1/day-3
-// digest above: an FM/Treasurer viewing `/finances/receipt-chase` can nudge
-// ONE cardholder's group ("Send reminder") or every group at once ("Remind
-// all") without waiting for the next cron pass. Reuses `notifyReceiptDigest`
-// verbatim for the email (same subject/body shape the automated reminder
-// sends) and adds a best-effort SMS pointing at the text-to-receipt number
-// (`smsReceipts.ts`) — email is the required channel; SMS never blocks it.
+// The manager's on-demand counterpart to the automated day-1/day-3 digest
+// above: an FM/Treasurer looking at Transactions grouped by Person can chase
+// ONE cardholder's band, or every band at once, without waiting for the next
+// cron pass.
 //
-// Like the automated digest, the nudge chases CODINGS, not receipts (owner
-// decision, 2026-08-08): a charge whose receipt is filed but whose purpose
-// was never written is exactly as nudgeable as one with no receipt at all.
+// ONE CHASE, AND IT IS THE CODING ONE (founder, 2026-08-14: *"Instead of
+// receipt chase, I want a coding chase, because coding includes receipts"*).
+// This used to be `sendReceiptNudge`, and the rename is not cosmetic:
+// `transactionCodings.submitCoding` REFUSES TO SUBMIT WITHOUT A RECEIPT OR A
+// FILED EXCEPTION, so nobody can finish coding a charge without documenting it
+// — a coding chase therefore subsumes a receipt chase and there is no longer a
+// second one to keep in step. `/finances/receipt-chase` redirects into the grid
+// grouped by person.
 //
-// Manager-gated (`requireFinanceManager`, same floor as `lockCard`/
-// `cancelCard`) and RATE-LIMITED to one nudge per cardholder per
-// `MANUAL_NUDGE_WINDOW_MS` (24h) via `receiptNudgeAttempts` — the same
-// checked-and-recorded-atomically pattern `beginRevealCardDetails` uses for
-// its own rate limit, just with a "skip, don't error" outcome instead of a
-// thrown `RATE_LIMITED`: a second click inside the window comes back
-// `outcome:"already_nudged"` so the UI can show "Nudged today" instead of an
-// error toast.
+// WHO AND WHAT IT CHASES IS THE SERVER'S CALL; WHICH ROWS IS THE SCREEN'S.
+// `finances.getCodingChaseTargets` owns the population (the union — everything
+// owing a coding PLUS anything owing only a receipt), the scoping precedence
+// (selection > filters+search > everything owed) and the gate
+// (`lib/chaseAccess.ts#requireCodingChase`). Read its doc comment before
+// changing anything here; this file's job is only to MAIL what it resolves.
+//
+// RATE-LIMITED to one chase per cardholder per `MANUAL_NUDGE_WINDOW_MS` (24h)
+// via `receiptNudgeAttempts` — the same checked-and-recorded-atomically pattern
+// `beginRevealCardDetails` uses, just with a "skip, don't error" outcome
+// instead of a thrown `RATE_LIMITED`: a second click inside the window comes
+// back `outcome:"already_nudged"` so the UI can show "Chased today" instead of
+// an error toast.
+//
+// ── WHY THE LIMIT IS PER PERSON AND NOT PER PERSON-PER-SCOPE ────────────────
+// The chase is scoped now, so the obvious question is whether a manager who
+// chases three of somebody's rows should be free to chase the other two
+// minutes later — i.e. whether the window should key on the SET of rows as well
+// as the person.
+//
+// It should not, for a reason that is about the key and not about the policy:
+// the chaseable set is a function of DATA THE MANAGER DOES NOT CONTROL. A
+// cardholder who codes one of five charges changes it. So a per-scope key would
+// let the window be reopened by the cardholder being responsive — chase five,
+// they code one, chase again, they code another — which is not a weaker rate
+// limit, it is no rate limit at all, aimed precisely at the person who is
+// already cooperating.
+//
+// The limit exists to protect an INBOX, and an inbox belongs to a person, not
+// to a filter set. So: one email per cardholder per day, whatever the scope,
+// and the narrowing is something the manager does BEFORE they press the button
+// (which is exactly what the scoping is for). The cost is real and accepted —
+// a manager who chases everything and then wants to chase a different subset an
+// hour later is told the person was already chased today, by name, rather than
+// silently sending nothing.
 
-// Mirrors finances.ts's `ROLLUP_SCAN_LIMIT` (currently 5000) — duplicated as
-// a literal rather than imported: finances.ts already imports several
-// helpers FROM this file (`isMissingReceiptCharge` etc.), and importing back
-// from it here would add a second edge to that same cycle. Keep in sync by
-// hand if that constant's value ever changes.
-const RECEIPT_NUDGE_SCAN_LIMIT = 5000;
-// At most one manual nudge per cardholder per this window.
+// At most one chase email per cardholder per this window.
 const MANUAL_NUDGE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
-// A Chase Receipts page realistically has, at most, a few dozen cardholder
-// groups — bounds the per-group nudge-status lookup defensively.
+// A person-banded grid realistically has, at most, a few dozen cardholder
+// bands — bounds the per-band chase-status lookup defensively.
 const CHASE_NUDGE_STATUS_LIMIT = 200;
-
-/**
- * MIRRORS finances.ts's `txnMatchesMode` (line ~855) exactly — duplicated for
- * the same reason as `RECEIPT_NUDGE_SCAN_LIMIT` above (avoiding a fresh
- * cards.ts↔finances.ts import edge). Any change to the mode-matching rule
- * must be mirrored in both places.
- */
-function chaseTxnMatchesMode(tr: Doc<"transactions">, sandboxMode: boolean): boolean {
-  if (tr.source !== "increase_card" && tr.source !== "increase_ach") return true;
-  return matchesMode(tr.externalId ?? tr.sourceAccountId ?? null, sandboxMode);
-}
-
-/**
- * MIRRORS finances.ts's `makeCardholderResolver`: the txn's own `personId`,
- * else the person who owns its `cardId`. Duplicated rather than imported for
- * the same reason as the two helpers above.
- */
-async function resolveChaseCardholderId(
-  ctx: QueryCtx,
-  tr: Doc<"transactions">,
-): Promise<Id<"people"> | null> {
-  if (tr.personId) return tr.personId;
-  if (!tr.cardId) return null;
-  const card = await ctx.db.get(tr.cardId);
-  return card?.cardholderPersonId ?? null;
-}
-
-/** One cardholder's currently-outstanding bundle, resolved for a manual nudge
- *  — the SAME shape `getReceiptReminderDigests` builds for the automated
- *  digest, plus `personId`/`phone` so the caller can rate-limit and SMS. */
-type ManualNudgeTarget = {
-  personId: Id<"people">;
-  email: string | null;
-  phone: string | null;
-  cardholderName: string;
-  anyEscalated: boolean;
-  charges: Array<Infer<typeof reminderChargeValidator>>;
-};
-
-const manualNudgeTargetValidator = v.object({
-  personId: v.id("people"),
-  email: v.union(v.string(), v.null()),
-  phone: v.union(v.string(), v.null()),
-  cardholderName: v.string(),
-  anyEscalated: v.boolean(),
-  charges: v.array(reminderChargeValidator),
-});
-
-/**
- * Resolve who to nudge + what they currently owe: EVERY cardholder (or just
- * `personId`, when given) with at least one charge that still OWES something
- * RIGHT NOW — a receipt, a coding, or an answer to a reviewer's send-back
- * (`chargeOutstanding`, the one predicate the automated digest and the
- * escalation stages read too). The "Unattributed" bucket (no resolvable
- * cardholder) is silently skipped — mirrors `receiptChase`'s own doc comment:
- * there's no one to chase for it.
- *
- * NOTE the chase page (`finances.receiptChase`) counts the DOCUMENTATION
- * backlog; this counts everything a cardholder is on the hook for, which is a
- * superset the day the coding policy arms. Keep the two moving together — an
- * FM who nudges from that page should recognize what the email says.
- *
- * `scope`/`chapterId` are the SAME pair `receiptChase` takes (#383) — a
- * manager nudging from a central/peeked-chapter Chase Receipts view must
- * nudge THAT scope's cardholders, never silently the caller's own chapter.
- * The branch structure below is `receiptChase`'s byte-for-byte, upgraded from
- * its viewer floor to a MANAGER floor at every branch (nudging is a write,
- * not a read) — `requireFinanceManager`/`requireCentralFinanceRole` resolve
- * the caller's role via their OWN home chapter (which already unions in any
- * central grant), never the peeked scope itself, exactly like
- * `receiptChase`'s `requireFinanceCentral(ctx, homeChapterId)` calls.
- *
- * Manager-gated. Internal — only `sendReceiptNudge` (the public action)
- * calls this.
- */
-export const getManualNudgeTargets = internalQuery({
-  args: {
-    personId: v.optional(v.id("people")),
-    scope: v.optional(v.literal("central")),
-    chapterId: v.optional(v.id("chapters")),
-  },
-  returns: v.array(manualNudgeTargetValidator),
-  handler: async (
-    ctx,
-    { personId, scope: scopeArg, chapterId: chapterIdArg },
-  ): Promise<ManualNudgeTarget[]> => {
-    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    let scope: Id<"chapters"> | "central";
-    if (scopeArg === "central") {
-      await requireCentralFinanceRole(ctx, homeChapterId, "manager");
-      scope = "central";
-    } else if (chapterIdArg != null && chapterIdArg !== homeChapterId) {
-      await requireCentralFinanceRole(ctx, homeChapterId, "manager");
-      scope = chapterIdArg;
-    } else {
-      await requireFinanceManager(ctx, homeChapterId);
-      scope = chapterIdArg ?? homeChapterId;
-    }
-
-    const sandboxMode = await readSandbox(ctx);
-    const { sinceMs } = await codingPolicy(ctx);
-    const owing = (
-      await ctx.db
-        .query("transactions")
-        .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
-        .order("desc")
-        .take(RECEIPT_NUDGE_SCAN_LIMIT)
-    )
-      .filter((tr) => chaseTxnMatchesMode(tr, sandboxMode))
-      .map((tr) => ({ tr, outstanding: chargeOutstanding(tr, sinceMs) }))
-      .filter(
-        (row): row is { tr: Doc<"transactions">; outstanding: string } =>
-          row.outstanding != null,
-      );
-
-    const byPerson = new Map<string, ManualNudgeTarget>();
-    for (const { tr, outstanding } of owing) {
-      const holderId = await resolveChaseCardholderId(ctx, tr);
-      if (!holderId) continue; // Unattributed — nobody to nudge.
-      if (personId && holderId !== personId) continue;
-      const key = holderId as string;
-      let entry = byPerson.get(key);
-      if (!entry) {
-        const person = await ctx.db.get(holderId);
-        if (!person) continue;
-        entry = {
-          personId: holderId,
-          email: person.pwEmail ?? person.email ?? null,
-          phone: person.phone ?? null,
-          cardholderName: person.name,
-          anyEscalated: false,
-          charges: [],
-        };
-        byPerson.set(key, entry);
-      }
-      entry.charges.push({
-        amountCents: tr.amountCents,
-        merchantName: tr.merchantName ?? null,
-        escalated: tr.receiptReminderStage === "escalated",
-        outstanding,
-        missingReceipt: !isDocumented(tr),
-        needsCoding: isUncodedCharge(tr, sinceMs),
-      });
-    }
-    return [...byPerson.values()].map((e) => ({
-      ...e,
-      anyEscalated: e.charges.some((c) => c.escalated),
-    }));
-  },
-});
 
 /**
  * Checks-and-records the manual-nudge rate limit ATOMICALLY for ONE
@@ -5418,7 +5274,12 @@ export const getManualNudgeTargets = internalQuery({
  * caller skips sending and reports `outcome:"already_nudged"` instead of
  * throwing. Re-asserts the manager gate itself (defense in depth — mirrors
  * every other `beginX` internal mutation in this file, e.g. `beginCancelCard`)
- * even though its only caller already checked via `getManualNudgeTargets`.
+ * even though its only caller already checked via
+ * `finances.getCodingChaseTargets`.
+ *
+ * KEYED ON THE PERSON ALONE (`person:<id>`), deliberately, now that the chase
+ * is scoped — see the section header above for why a per-scope key would be no
+ * rate limit at all.
  */
 export const beginManualNudgeAttempt = internalMutation({
   args: { personId: v.id("people") },
@@ -5441,12 +5302,15 @@ export const beginManualNudgeAttempt = internalMutation({
   },
 });
 
-/** The Chase Receipts page's per-cardholder "already nudged" state: every
- *  `personId` (from `personIds`) currently inside its 24h manual-nudge
- *  window, with the timestamp of that nudge — lets the UI render "Nudged
- *  today" for a group without the caller having to attempt (and get told
- *  "already_nudged" by) `sendReceiptNudge` first. Manager-gated, same floor
- *  as the nudge action itself; bounded to a page's worth of groups. */
+/** The grid's per-cardholder "already chased" state: every `personId` (from
+ *  `personIds`) currently inside its 24h chase window, with the timestamp of
+ *  that chase — lets the UI render "Chased today" for a band without the caller
+ *  having to press the button and be told `already_nudged`. Manager-gated, same
+ *  floor as the chase action itself; bounded to a page's worth of bands.
+ *
+ *  Scope-blind, and correct that way: the window is per PERSON, so "has this
+ *  person been chased today" has one answer regardless of which rows the
+ *  manager is currently looking at. */
 export const getManualNudgeStatus = query({
   args: { personIds: v.array(v.id("people")) },
   returns: v.array(v.object({ personId: v.id("people"), lastManualNudgeAt: v.number() })),
@@ -5469,19 +5333,19 @@ export const getManualNudgeStatus = query({
   },
 });
 
-/** Best-effort SMS nudge pointing at the text-to-receipt number
- *  (`smsReceipts.ts`) — mirrors `replyToSmsSender`'s shape (no-op without
- *  Twilio configured, swallows its own failures, never throws). Returns
- *  whether it actually attempted (and didn't error on) a send.
+/** Best-effort SMS alongside the chase email, pointing at the text-to-receipt
+ *  number (`smsReceipts.ts`) — mirrors `replyToSmsSender`'s shape (no-op
+ *  without Twilio configured, swallows its own failures, never throws).
+ *  Returns whether it actually attempted (and didn't error on) a send.
  *
  *  The reply-with-a-photo instruction is only appended when a RECEIPT is
  *  actually part of what's missing: texting a photo can't write a business
  *  purpose, and telling someone it will is how a channel loses its
  *  credibility. Coding-only debts point at the app instead. */
-async function sendManualNudgeSms(
+async function sendCodingChaseSms(
   ctx: ActionCtx,
   phone: string,
-  charges: Array<Infer<typeof reminderChargeValidator>>,
+  charges: ReminderCharge[],
 ): Promise<boolean> {
   const creds = await resolveTwilioCredentials(ctx);
   if (!creds) return false;
@@ -5502,7 +5366,7 @@ async function sendManualNudgeSms(
     await sendSms(creds, { to, body });
     return true;
   } catch (err) {
-    console.log(`[cards] sendReceiptNudge: SMS failed: ${String(err)}`);
+    console.log(`[cards] sendCodingChase: SMS failed: ${String(err)}`);
     return false;
   }
 }
@@ -5517,47 +5381,158 @@ const nudgeResultValidator = v.object({
   ),
   emailSent: v.boolean(),
   smsSent: v.boolean(),
+  /** How many charges this person was chased about — what the manager scoped
+   *  the chase down to, echoed back so the UI can say "Chased Ada (3)" rather
+   *  than leaving them to trust that the narrowing took. */
+  chargeCount: v.number(),
 });
 type NudgeResult = typeof nudgeResultValidator.type;
 
 /**
- * Manual, on-demand receipt nudge — the Chase Receipts page's "Send
- * reminder" (`personId` set, one cardholder) and "Remind all" (`personId`
- * omitted, every cardholder currently owing a receipt) buttons both call
- * this SAME action.
+ * THE CHASE EMAIL — "click this button to code your charges."
+ *
+ * Founder, 2026-08-14, on what it has to say: *"sends an email like 'hey, click
+ * this button to code all your charges, tell us what it was for, so we can
+ * comply with IRS guidelines and also publish this in the public ledger for our
+ * donors.'"* All three beats are here, in that order, and none of them is
+ * decoration:
+ *
+ *  · THE BUTTON. One link, to `/code` — the cardholder's own list, no finance
+ *    seat required, no app chrome. The ask is a tap, not a navigation.
+ *  · WHAT WE WANT. "What it was for" is the whole job in the words a volunteer
+ *    uses, ahead of any rule.
+ *  · WHY. TWO reasons, and the second is the one this org actually runs on: the
+ *    IRS substantiation rule (spending we can't account for in time becomes
+ *    taxable income to the person who spent it), and the PUBLIC LEDGER — every
+ *    dollar published for donors to read. A compliance-only email says "or
+ *    you'll be taxed"; this one says "and it goes on the page our donors read",
+ *    which is the sentence that makes coding feel like the point rather than
+ *    the paperwork.
+ *
+ * NOT the automated digest (`notifyReceiptDigest`), and deliberately a separate
+ * composer. That one is a TIMELINE artifact — it leads with the day-1/day-3
+ * stage, warns about the day-7 card lock, and lists only what transitioned this
+ * pass. This one is a PERSON asking, about a set that person chose, and it must
+ * not inherit the lock threat for rows whose only debt is a coding. They share
+ * the per-charge shape (`reminderChargeValidator`) and the shell helpers, which
+ * is the part worth sharing.
+ *
+ * Best-effort like every other sender here: logs + no-ops without
+ * `RESEND_API_KEY` (dev), and never sends an EMPTY chase — a zero-charge target
+ * cannot reach this, and it returns early if one somehow does.
+ */
+async function notifyCodingChase(
+  ctx: ActionCtx,
+  chase: {
+    email: string;
+    cardholderName: string;
+    charges: ReminderCharge[];
+  },
+): Promise<void> {
+  const count = chase.charges.length;
+  if (count === 0) return;
+  const fmt = (c: { amountCents: number; merchantName: string | null }) =>
+    `$${(c.amountCents / 100).toFixed(2)}${c.merchantName ? ` at ${c.merchantName}` : ""}`;
+  const headline = count === 1 ? "1 charge to code" : `${count} charges to code`;
+  const subject =
+    count === 1
+      ? `Code your ${fmt(chase.charges[0])} charge`
+      : `Code your ${count} card charges`;
+  const intro =
+    count === 1
+      ? `your ${escapeHtml(fmt(chase.charges[0]))} charge ${escapeHtml(chase.charges[0].outstanding)}. Tell us what it was for and it's done.`
+      : `${count} of your card charges are waiting on you. Tell us what each one was for and they're done:`;
+  const list =
+    count === 1
+      ? ""
+      : emailList(
+          chase.charges.map(
+            (c) => `${escapeHtml(fmt(c))} — ${escapeHtml(c.outstanding)}`,
+          ),
+        );
+  // THE TWO REASONS, in one paragraph, always — unlike the automated digest's
+  // `whyNote`, which prints the tax rule only when a coding is part of what's
+  // missing. A chase asks for the CODING by name whatever each row currently
+  // owes (a receipt with no purpose written is still a charge nobody can
+  // publish), so both reasons apply to every chase that gets sent.
+  //
+  // No day count on purpose: `codingOverdueDays` is an org setting, and an
+  // email that hard-codes "60 days" is one settings change away from lying.
+  const whyNote = emailParagraph(
+    `Two reasons we ask. Under IRS rules, spending we can't substantiate in time counts as taxable income to the person who spent it — so a charge left uncoded eventually gets billed back to you. And every dollar we spend gets published in our public ledger for our donors to read: your sentence is what goes on that page, so a blank one is a line our donors can't see the point of.`,
+  );
+  // Same destination the automated digest uses — the cardholder's own list,
+  // pre-filtered to what they owe. Null (the row is omitted) when APP_URL is
+  // unset, which is the dev default.
+  const link = appUrl("/code?filter=uncoded");
+  await sendEmail(ctx, {
+    to: chase.email,
+    subject,
+    html: emailShell(`
+      ${emailHeading(headline)}
+      ${emailParagraph(`Hi ${escapeHtml(chase.cardholderName)} — ${intro}`, {
+        margin: `0 0 ${count === 1 ? 16 : 8}px`,
+      })}
+      ${list}
+      ${whyNote}
+      ${link ? emailButtonRow(link, `Code ${count === 1 ? "it" : "them"} →`) : ""}`),
+  });
+}
+
+/**
+ * THE CODING CHASE — the grid's per-person "Chase" (`personId` set) and
+ * page-level "Chase everyone" (`personId` omitted) buttons, both calling this
+ * SAME action with the SAME view arguments.
+ *
+ * That sameness is the point of the shape: "Chase everyone" is exactly "Chase"
+ * with the person left off, so the two can never describe different
+ * populations. Whatever the manager has narrowed to — filters, search, ticked
+ * rows, the period window — is what BOTH buttons act on.
+ *
+ * Every argument except `personId` is forwarded verbatim to
+ * `finances.getCodingChaseTargets`, which owns the gate, the population and the
+ * scoping precedence (selection > filters+search > everything owed) and does
+ * NOT trust the id list it is handed. Read its doc comment first.
  *
  * Per target cardholder:
- *  1. Skip with `outcome:"no_email"` if they have no reachable email at all
- *     — email is the required channel (mirrors `getReceiptReminderDigests`
- *     dropping an unreachable cardholder from the automated digest); nothing
- *     is sent and the 24h rate-limit slot is NOT consumed.
+ *  1. Skip with `outcome:"no_email"` if they have no reachable email at all —
+ *     email is the required channel (mirrors `getReceiptReminderDigests`
+ *     dropping an unreachable cardholder from the automated digest). REPORTED,
+ *     never silent: the manager gets their name back so they can go find an
+ *     address, and the 24h rate-limit slot is NOT consumed.
  *  2. Otherwise check-and-record the 24h rate limit
- *     (`beginManualNudgeAttempt`); `outcome:"already_nudged"` (no send) if
- *     one was already recorded.
- *  3. Send the SAME digest email `notifyReceiptDigest` sends for the
- *     automated reminder (best-effort — a failed send still counts as
- *     "sent" for rate-limiting purposes, matching how the automated digest
- *     treats its own failures: logged, never thrown).
+ *     (`beginManualNudgeAttempt`); `outcome:"already_nudged"` (no send) if one
+ *     was already recorded. Per PERSON — see the section header.
+ *  3. Send the chase email (`notifyCodingChase`) — best-effort: a failed send
+ *     still counts as "sent" for rate-limiting purposes, matching how the
+ *     automated digest treats its own failures (logged, never thrown).
  *  4. Best-effort SMS if a phone is on file + Twilio resolves
- *     (`sendManualNudgeSms`) — never blocks or fails the email path.
+ *     (`sendCodingChaseSms`) — never blocks or fails the email path.
  *
- * Manager-gated: `getManualNudgeTargets` (step 0) throws `FORBIDDEN` for a
- * non-manager caller before anything else runs. `scope`/`chapterId` are
- * forwarded straight through to it — the SAME pair the Chase Receipts page
- * passes to `finances.receiptChase` (#383), so a nudge from a central/
- * peeked-chapter view targets that scope, not the caller's own chapter.
+ * NOTHING TO CHASE SENDS NOTHING. A target with zero chaseable charges cannot
+ * be produced by the query, and the guard below is belt-and-braces; a scope
+ * that resolves to no targets at all comes back `results: []`, which the grid
+ * renders as "Nothing in this view is waiting on a cardholder" rather than an
+ * email nobody needed.
  */
-export const sendReceiptNudge = action({
+export const sendCodingChase = action({
   args: {
     personId: v.optional(v.id("people")),
     scope: v.optional(v.literal("central")),
     chapterId: v.optional(v.id("chapters")),
+    // THE VIEW, forwarded verbatim — see `finances.getCodingChaseTargets`.
+    filters: v.optional(v.array(reconcileFilterValidator)),
+    search: v.optional(v.string()),
+    year: v.optional(v.number()),
+    month: v.optional(v.number()),
+    period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
+    selectedIds: v.optional(v.array(v.id("transactions"))),
   },
   returns: v.object({ results: v.array(nudgeResultValidator) }),
-  handler: async (ctx, { personId, scope, chapterId }): Promise<{ results: NudgeResult[] }> => {
-    const targets: ManualNudgeTarget[] = await ctx.runQuery(
-      internal.cards.getManualNudgeTargets,
-      { personId, scope, chapterId },
+  handler: async (ctx, args): Promise<{ results: NudgeResult[] }> => {
+    const targets: ChaseTarget[] = await ctx.runQuery(
+      internal.finances.getCodingChaseTargets,
+      args,
     );
 
     const results: NudgeResult[] = [];
@@ -5571,6 +5546,7 @@ export const sendReceiptNudge = action({
           outcome: "no_email",
           emailSent: false,
           smsSent: false,
+          chargeCount: target.charges.length,
         });
         continue;
       }
@@ -5585,25 +5561,25 @@ export const sendReceiptNudge = action({
           outcome: "already_nudged",
           emailSent: false,
           smsSent: false,
+          chargeCount: target.charges.length,
         });
         continue;
       }
 
       let emailSent = false;
       try {
-        await notifyReceiptDigest(ctx, {
+        await notifyCodingChase(ctx, {
           email: target.email,
           cardholderName: target.cardholderName,
-          anyEscalated: target.anyEscalated,
           charges: target.charges,
         });
         emailSent = true;
       } catch (err) {
-        console.error("[cards] sendReceiptNudge: email failed", target.email, err);
+        console.error("[cards] sendCodingChase: email failed", target.email, err);
       }
 
       const smsSent = target.phone
-        ? await sendManualNudgeSms(ctx, target.phone, target.charges)
+        ? await sendCodingChaseSms(ctx, target.phone, target.charges)
         : false;
 
       results.push({
@@ -5612,6 +5588,7 @@ export const sendReceiptNudge = action({
         outcome: "sent",
         emailSent,
         smsSent,
+        chargeCount: target.charges.length,
       });
     }
     return { results };
