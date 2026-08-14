@@ -73,6 +73,7 @@ import {
   CENTRAL_PROJECT_KEYWORDS,
   matchesAnyKeyword,
   autoExplainedKind,
+  isNonDiscretionaryFee,
   REASSIGN_BATCH_CAP,
   chapterAffordability as chapterAffordabilityCalc,
   effectiveBudgetApprovalStatus,
@@ -1306,25 +1307,18 @@ export function isSpend(tr: Doc<"transactions">): boolean {
 
 /**
  * True iff this row is a per-transaction processor or bank fee — a cost that
- * was CHARGED, not chosen.
+ * was CHARGED, not chosen. Same rule `preMarkFlow` follows for transfers, and
+ * for the same reason: a positive marker, never an inference.
  *
- * Written by `processorFees.ts` (sweeping Stripe's balance transactions) and,
- * on the Cash App rows, by a 2026-08 backfill since removed — and read here.
- * A POSITIVE MARKER, never an inference: the alternative was
- * matching on the `stripe-fees:` external-id prefix, which would silently miss
- * Cash App's rows (a different prefix) and would break the moment a key format
- * changed. Same rule `preMarkFlow` follows for transfers, and for the same
- * reason.
- *
- * DELIBERATELY NARROW. It marks the fee taken out of an individual payment,
- * nothing else. A monthly platform subscription, a paid Givebutter tier, an
- * accounting service — those are real decisions somebody makes, they belong to
- * whoever decided, and they stay budgeted. Being coded to "Bank & Fees" does
- * not exempt anything; carrying a `feeOrigin` does.
+ * MOVED TO `@events-os/shared` (`finance.ts#isNonDiscretionaryFee`), which
+ * carries the full rationale, and re-exported here so every existing
+ * `finances.isNonDiscretionaryFee` reference keeps working. It had to move:
+ * `lib/codingReminders.ts` — the cardholder chase — needs the same carve-out
+ * and cannot import this module without closing a cycle (this module imports
+ * `chargeOutstanding` FROM it), so it went without one and chased fee rows for
+ * receipts that do not exist. Shared predicate, not a fourth hand-copy.
  */
-export function isNonDiscretionaryFee(tr: Doc<"transactions">): boolean {
-  return tr.feeOrigin != null;
-}
+export { isNonDiscretionaryFee };
 
 /**
  * True iff a spend transaction still needs a budget attached — the Reconcile

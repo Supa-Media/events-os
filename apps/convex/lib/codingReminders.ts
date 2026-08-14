@@ -13,6 +13,7 @@
 import {
   DEFAULT_CODING_OVERDUE_DAYS,
   RECEIPT_ESCALATE_DAYS,
+  isNonDiscretionaryFee,
   type TransactionCodingStatus,
 } from "@events-os/shared";
 import type { Doc } from "../_generated/dataModel";
@@ -104,8 +105,28 @@ export function isDocumented(tr: Doc<"transactions">): boolean {
  * money being repaid rather than an expense awaiting substantiation. Both are
  * the same carve-outs `cards.isMissingReceiptCharge` has always made; this
  * predicate is the coding-era superset of it.
+ *
+ * A PROCESSOR FEE IS NOT CHASEABLE AT ALL — the carve-out this predicate was
+ * missing. `finances.needsDocumentation`, `isUndocumented` and `requiresCoding`
+ * all exempt `feeOrigin` rows; this one did not, so a Stripe/Givebutter fee row
+ * (written `flow:"outflow"`, `status:"categorized"`, receipt-less by nature —
+ * `processorFees.ts`) came back from `chargeOutstanding` as "needs a receipt"
+ * (pre-policy) or "needs coding and a receipt" (post-policy) and entered
+ * `receiptChase`, `chaseCount`, `manualNudgeTargets` and the digest. The
+ * documentation predicate said the row owed nothing while the chase demanded
+ * two things from it. It owes neither: nobody chose the fee, and the
+ * processor's own itemized ledger (`processorFeeEntries`) IS its record —
+ * there is no receipt to send, ever (founder, 2026-08-12: "I literally dont
+ * have receipts").
+ *
+ * BY ORIGIN, NOT BY CATEGORY: a Givebutter paid subscription the org CHOSE to
+ * buy lands in the same "Bank & Fees" category and is still budgeted, coded and
+ * chased. `isNonDiscretionaryFee` (`@events-os/shared`) is the one place that
+ * distinction is drawn — shared rather than re-copied here precisely because
+ * copying it is how these three predicates drifted apart.
  */
 function chaseEligible(tr: Doc<"transactions">): boolean {
+  if (isNonDiscretionaryFee(tr)) return false;
   return (
     tr.flow === "outflow" &&
     tr.status !== "excluded" &&
@@ -133,6 +154,11 @@ export function chargeOutstanding(
   return outstandingLabel({
     hasDocumentation: isDocumented(tr),
     codingState: tr.codingState,
+    // The POLICY DATE only. The other half of `finances.requiresCoding` — the
+    // spend test and the processor-fee exemption — is `chaseEligible` above,
+    // which has already run. Keep it that way: a fee exemption written HERE
+    // would still leave a fee row answering "needs a receipt", because the
+    // receipt half of the label doesn't consult this flag at all.
     requiresCoding: tr.postedAt >= sinceMs,
   });
 }
@@ -146,6 +172,12 @@ export function chargeOutstanding(
  * this module's only consumer, and importing back would close that cycle —
  * the same reason `cards.ts` keeps its own copies of `txnMatchesMode` et al.
  * The two must be kept in sync by hand.
+ *
+ * The processor-fee exemption is NOT hand-kept: it comes from `chaseEligible`,
+ * which reads the shared `isNonDiscretionaryFee`. Hand-keeping that one is
+ * exactly what failed — it was mirrored into `finances.requiresCoding` and into
+ * `transactionCodings.getForTransaction` and missed here, so the coding chase
+ * nagged for fees the coding editor said needed no coding.
  */
 export function isUncodedCharge(
   tr: Doc<"transactions">,
