@@ -87,29 +87,19 @@ async function seedCardTxn(
   );
 }
 
-/** Seed a spend category (under a fresh fund) in the given chapter. */
+/** Seed an ORG-WIDE spend category (no chapter, no fund — 2026-08-14). */
 async function seedCategory(
   s: ChapterSetup,
-  chapterId?: Id<"chapters">,
+  name = "Supplies",
 ): Promise<Id<"budgetCategories">> {
-  const cid = chapterId ?? s.chapterId;
-  return await run(s.t, async (ctx) => {
-    const fundId = await ctx.db.insert("funds", {
-      chapterId: cid,
-      name: "General",
-      restriction: "unrestricted",
-      sortOrder: 0,
-      createdAt: Date.now(),
-    });
-    return await ctx.db.insert("budgetCategories", {
-      chapterId: cid,
-      fundId,
-      name: "Supplies",
+  return await run(s.t, (ctx) =>
+    ctx.db.insert("budgetCategories", {
+      name,
       kind: "lineItem",
       sortOrder: 0,
       createdAt: Date.now(),
-    });
-  });
+    }),
+  );
 }
 
 async function getTxn(s: ChapterSetup, id: Id<"transactions">) {
@@ -178,22 +168,23 @@ describe("finances.submitOwnCharge", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("a category from ANOTHER chapter is rejected", async () => {
+  // Was "a category from ANOTHER chapter is rejected". There is one org list
+  // now, and it is the SAME list `myChargeCategories` hands the cardholder — so
+  // a picker option can no longer be refused by the mutation behind it. What is
+  // still refused is an id with no category behind it.
+  test("a category that no longer exists is rejected", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const me = await seedCaller(s);
     const card = await seedCard(s, me);
     const txnId = await seedCardTxn(s, { cardId: card, personId: me });
-    // A category living in a different chapter.
-    const otherChapter = await run(s.t, (ctx) =>
-      ctx.db.insert("chapters", { name: "Boston", isActive: true, createdAt: Date.now() }),
-    );
-    const foreignCategory = await seedCategory(s, otherChapter);
+    const goneCategory = await seedCategory(s, "Deleted");
+    await run(s.t, (ctx) => ctx.db.delete(goneCategory));
 
     await expect(
       s.as.mutation(api.finances.submitOwnCharge, {
         transactionId: txnId,
-        categoryId: foreignCategory,
+        categoryId: goneCategory,
       }),
     ).rejects.toThrow(ConvexError);
   });
@@ -306,17 +297,14 @@ describe("finances.submitOwnCharge", () => {
     // A second, hint-less category — the common case — must NOT surface a
     // stray `expenseTypeHint` key (the client reads its absence as "nothing
     // picks it for you").
-    const unhinted = await run(s.t, async (ctx) => {
-      const cat = await ctx.db.get(hinted);
-      return await ctx.db.insert("budgetCategories", {
-        chapterId: s.chapterId,
-        fundId: cat!.fundId,
+    const unhinted = await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
         name: "Other",
         kind: "category",
         sortOrder: 1,
         createdAt: Date.now(),
-      });
-    });
+      }),
+    );
 
     const cats = await s.as.query(api.finances.myChargeCategories, {});
     expect(cats.find((c) => c.id === hinted)?.expenseTypeHint).toBe("travel");

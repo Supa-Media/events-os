@@ -132,7 +132,6 @@ import {
   parseHiddenColumns,
   parseSortKey,
   serializeHiddenColumns,
-  showsCategoryColumn,
   showsMarkedColumn,
   toggleHiddenColumn,
   type ReconcileColumnKey,
@@ -1442,8 +1441,9 @@ function ReconcileGrid() {
         .join(" · "),
     );
   }
-  // Category never applies to a central row; "For" needs the matching list.
-  const bulkHideCategory = centralScope || selectionHasCentral;
+  // Category applies to every row in every book now (org-wide list), so there
+  // is nothing to hide. "For" still needs the list matching the selection's
+  // book — a central charge takes central's budgets.
   const bulkForItems = selectionHasCentral ? centralForItems : forItems;
 
   async function bulkSetCategory(categoryId: string | null) {
@@ -2222,15 +2222,14 @@ function ReconcileGrid() {
             <ColumnsControl
               hidden={hiddenColumns}
               // Only what THIS scope can render at all, so no tick box ever
-              // does nothing: no Book outside the merged queue, no Category
-              // where central money has none, and none of the three the side
-              // panel is currently rendering itself, and no Marked where
-              // nothing on the page is actually marked. One rule per column,
-              // shared with the grid (`showsCategoryColumn` /
-              // `showsMarkedColumn`), not a second copy of either here.
+              // does nothing: no Book outside the merged queue, none of the
+              // three the side panel is currently rendering itself, and no
+              // Marked where nothing on the page is actually marked. One rule
+              // per column, shared with the grid (`showsMarkedColumn`), not a
+              // second copy of it here. Category is unconditional since
+              // categories went org-wide — every row can carry one.
               offered={offerableColumns({
                 showBook: allBooksScope || viewingForeignChapter,
-                showCategory: showsCategoryColumn(centralScope, displayed),
                 showMarked: showsMarkedColumn(displayed),
                 panelOpen: showPanel,
               })}
@@ -2256,7 +2255,6 @@ function ReconcileGrid() {
             onSetFor={bulkSetFor}
             onMarkReconciled={bulkMarkClosed}
             onClear={clearSelection}
-            hideCategory={bulkHideCategory}
             spansBooks={selectionSpansBooks}
             reassignItems={reassignItems}
             onReassign={hasCentralSeat ? setMoveBookTarget : undefined}
@@ -2407,9 +2405,7 @@ function ReconcileGrid() {
               selected={selected}
               onToggle={toggle}
               onToggleAll={toggleAll}
-              centralScope={centralScope}
               showBook={allBooksScope || viewingForeignChapter}
-              ownChapterId={ownChapterId}
               centralForItems={centralForItems}
               isManager={isManager}
               // Bookkeeper+, server-answered — this grid's own floor is a

@@ -20,6 +20,12 @@ import type { Id } from "../_generated/dataModel";
  *  - the sentinel never crashes a chapter-doc join / row resolution;
  *  - central has no funds, so a central txn stays fund-less.
  *
+ * "CHAPTER-SCOPED LINKS" NO LONGER INCLUDES THE CATEGORY (2026-08-14).
+ * Categories are org-wide, so a central row takes one exactly like a chapter
+ * row does — that refusal is what left central spend showing an inert dash in
+ * Reconcile's Category cell. Fund, team and person are still refused: a fund
+ * asserts whose RESTRICTED money paid, and a person is a chapter roster row.
+ *
  * A superuser (`seyi@publicworship.life`) is an implicit CENTRAL manager; a plain
  * chapter caller with a `manager` grant is chapter-only.
  */
@@ -170,6 +176,34 @@ describe("createManualTransaction: central-owned txns", () => {
         personId,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("central:true ACCEPTS an org-wide category, and codes the row on entry", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const categoryId = await run(t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        name: "Software & Subscriptions",
+        kind: "category",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const txnId = await s.as.mutation(api.finances.createManualTransaction, {
+      flow: "outflow",
+      amountCents: 1000,
+      postedAt: Date.now(),
+      central: true,
+      categoryId,
+    });
+
+    const txn = await run(t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.chapterId).toBe("central");
+    expect(txn?.categoryId).toBe(categoryId);
+    // Saying what kind of spend it was IS coding it — same rule as a chapter row.
+    expect(txn?.status).toBe("categorized");
+    // ...and it still draws on no fund.
+    expect(txn?.fundId).toBeUndefined();
   });
 
   test("a non-central caller creates a normal CHAPTER txn (unchanged)", async () => {
@@ -442,33 +476,54 @@ describe("reconcile writes: central-owned txns", () => {
     expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
   });
 
-  test("categorizing a central txn with a chapter-scoped link is rejected", async () => {
+  // A CENTRAL TXN TAKES A CATEGORY (2026-08-14). This test used to assert the
+  // opposite — that a category was a "chapter-scoped link" a central row must
+  // refuse — which is the refusal that left central spend rendering an inert
+  // dash in Reconcile's Category cell. Categories are org-wide now; the FUND is
+  // still refused, and is asserted separately below, because a fund says whose
+  // RESTRICTED money paid and central's card drew on nobody's.
+  test("categorizing a central txn with an org-wide category is allowed", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: "seyi@publicworship.life" });
     const now = Date.now();
     const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
-    // Seed a chapter fund + category to attempt (illegally) on a central txn.
-    const categoryId = await run(t, async (ctx) => {
-      const fundId = await ctx.db.insert("funds", {
+    const categoryId = await run(t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        name: "Supplies",
+        kind: "category",
+        createdAt: Date.now(),
+      }),
+    );
+
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: centralTxn,
+      categoryId,
+    });
+
+    const txn = await run(t, (ctx) => ctx.db.get(centralTxn));
+    expect(txn?.categoryId).toBe(categoryId);
+    expect(txn?.chapterId).toBe("central");
+  });
+
+  test("categorizing a central txn with a chapter FUND is still rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: "seyi@publicworship.life" });
+    const now = Date.now();
+    const centralTxn = await seedCentralTxn(s, { amountCents: 4200, postedAt: now });
+    const fundId = await run(t, (ctx) =>
+      ctx.db.insert("funds", {
         chapterId: s.chapterId,
         name: "General Fund",
         restriction: "unrestricted",
         sortOrder: 0,
         createdAt: Date.now(),
-      });
-      return await ctx.db.insert("budgetCategories", {
-        chapterId: s.chapterId,
-        fundId,
-        name: "Supplies",
-        kind: "category",
-        createdAt: Date.now(),
-      });
-    });
+      }),
+    );
 
     await expect(
       s.as.mutation(api.finances.categorizeTransaction, {
         transactionId: centralTxn,
-        categoryId,
+        fundId,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });

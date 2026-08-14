@@ -133,12 +133,10 @@ describe("funds / categories / teams CRUD", () => {
       restriction: "unrestricted",
     });
     const parent = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Parent",
       kind: "category",
     });
     const child = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Child",
       kind: "category",
       parentCategoryId: parent,
@@ -188,7 +186,6 @@ describe("budgets + budgetVsActual (Estimated ≠ Actual)", () => {
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Food",
       kind: "lineItem",
     });
@@ -380,7 +377,6 @@ describe("transactions: categorize, integer-cents, pagination", () => {
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Software",
       kind: "lineItem",
     });
@@ -861,7 +857,6 @@ describe("categorizeTransaction defaults the fund", () => {
       sortOrder: 1,
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId: generalFundId,
       name: "Software",
       kind: "lineItem",
     });
@@ -982,7 +977,6 @@ describe("bulkCategorize defaults the fund", () => {
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId: generalFundId,
       name: "Supplies",
       kind: "lineItem",
     });
@@ -1060,7 +1054,6 @@ describe("enriched dashboards (prototype shapes)", () => {
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Food",
       kind: "lineItem",
     });
@@ -1159,7 +1152,6 @@ describe("enriched dashboards (prototype shapes)", () => {
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Software",
       kind: "lineItem",
     });
@@ -1254,7 +1246,6 @@ describe("enriched dashboards (prototype shapes)", () => {
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Ad spend",
       kind: "lineItem",
     });
@@ -1461,7 +1452,6 @@ describe("money-math regression fixes", () => {
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Ad spend",
       kind: "lineItem",
     });

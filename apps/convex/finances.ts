@@ -182,6 +182,11 @@ import {
   ensureDefaultFunds,
   insertDefaultExpenseCategories,
 } from "./lib/seed/finance";
+import {
+  requireBudgetCategory,
+  requireBudgetCategoryManage,
+  requireBudgetCategoryView,
+} from "./lib/budgetCategoryAccess";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { emailButtonRow, emailHeading, emailParagraph } from "./lib/emailShell";
 import { escapeHtml } from "./lib/html";
@@ -212,9 +217,11 @@ const repaymentStatusValidator = v.union(
 );
 
 // ── Row-shape validators (the read projections) ──────────────────────────────
+// ORG-WIDE (see `schema/finances.ts#budgetCategories`): no `fundId` and no
+// chapter — a category is a label, and the only thing a reader needs from it is
+// its name, its place in the tree, and whether it's still offered.
 const categorySummary = v.object({
   id: v.id("budgetCategories"),
-  fundId: v.id("funds"),
   parentCategoryId: v.union(v.id("budgetCategories"), v.null()),
   name: v.string(),
   kind: categoryKindValidator,
@@ -856,7 +863,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 function toCategorySummary(c: Doc<"budgetCategories">) {
   return {
     id: c._id,
-    fundId: c.fundId,
     parentCategoryId: c.parentCategoryId ?? null,
     name: c.name,
     kind: c.kind,
@@ -1152,7 +1158,11 @@ export function assertIntegerCents(amountCents: number, label = "Amount"): void 
  * "central"`, the CENTRAL sentinel) or a central finance team (absent
  * `chapterId`, the legacy financeTeams convention, kept until its own PR).
  */
-async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "financeTeams" | "budgets" | "budgetTags" | "transactions" | "events" | "projects" | "people">(
+// `budgetCategories` is deliberately ABSENT from this union: a category is
+// org-wide and carries no chapter to compare against, so "is it in the caller's
+// chapter?" is a question with no referent. Category links verify existence
+// only, via `lib/budgetCategoryAccess.ts#requireBudgetCategory`.
+async function requireInCallerChapter<T extends "funds" | "financeTeams" | "budgets" | "budgetTags" | "transactions" | "events" | "projects" | "people">(
   ctx: QueryCtx,
   // A real chapter, or the org level (`"central"`) for a central-scoped verify
   // (e.g. attributing a central-owned txn to a central budget) — WP-2.1.
@@ -1287,57 +1297,28 @@ async function loadExtraBudgetTxns(
   return out;
 }
 
-/**
- * Resolve + authorize a CATEGORY on a central-owned transaction.
+/*
+ * GONE (2026-08-14): `requireCategoryForCentralTxn`.
  *
- * Central has no categories of its own — `budgetCategories` is chapter-scoped —
- * so for most central rows the answer is still "no category". But a CROSS-BOOK
- * charge (central's card, a chapter's budget) is economically that chapter's
- * spend, and it lands on that chapter's budget card. Refusing a category there
- * produced a hole nobody could close:
+ * It existed to thread a needle that no longer exists. Categories were
+ * chapter-scoped, so a central-owned transaction had none of its own — but a
+ * CROSS-BOOK charge (central's card, a chapter's budget) is economically that
+ * chapter's spend and lands on that chapter's budget card, so refusing a
+ * category there left spend sitting in an "Uncategorized" bar that nobody could
+ * close: the central FM was refused here, and the receiving chapter's treasurer
+ * can't write a row that lives in central's book. The helper's answer was to
+ * allow a category ONLY on a cross-book charge, and only from the absorbing
+ * chapter's list.
  *
- *  - the central FM was refused outright by `categorizeTransaction`;
- *  - the receiving chapter's treasurer can't write the row at all, because it
- *    lives in CENTRAL's book and `requireReconcileTxn` scopes writes to the
- *    caller's own chapter.
- *
- * So the spend sat permanently in the "Uncategorized" bar of a budget belonging
- * to a chapter with no way to fix it. That's not a post-split hypothetical: the
- * refusal keys off the transaction's BOOK, not the person, so it bit even a
- * treasurer holding both seats.
- *
- * The category must belong to the BUDGET's chapter — not the caller's. Those
- * are the same chapter today (one chapter, dual-hatted treasurer) and will not
- * be after the split, so binding it to the budget is the rule that survives.
- * Deliberately narrower than `verifyTxnRefs`, which validates refs against the
- * TRANSACTION's own scope — exactly the assumption cross-book breaks.
+ * Categories are now ORG-WIDE, so all three of its clauses are unaskable: there
+ * is no chapter on the label to match against a budget's, no "central has none
+ * of its own", and no reason a central charge needs a chapter's budget attached
+ * before it may say what kind of spend it was. A central-book charge takes a
+ * category the same way a chapter's does — the link is verified for EXISTENCE
+ * (`requireBudgetCategory`) and nothing else. The paired invariant in
+ * `categorizeTransaction` that dropped the category when a row stopped being
+ * cross-book is gone with it.
  */
-async function requireCategoryForCentralTxn(
-  ctx: MutationCtx,
-  categoryId: Id<"budgetCategories">,
-  budgetId: Id<"budgets"> | null,
-): Promise<void> {
-  const unsupported = (message: string) =>
-    new ConvexError({ code: "UNSUPPORTED", message });
-  if (!budgetId) {
-    throw unsupported(
-      "Attribute this charge to a chapter's budget first — a central charge only takes a category when a chapter is absorbing it.",
-    );
-  }
-  const budget = await ctx.db.get(budgetId);
-  if (!budget || budget.chapterId === CENTRAL) {
-    throw unsupported(
-      "A charge on a central budget has no category — categories belong to chapters.",
-    );
-  }
-  const category = await ctx.db.get(categoryId);
-  if (!category || category.chapterId !== budget.chapterId) {
-    throw new ConvexError({
-      code: "NOT_FOUND",
-      message: "Category not found in the chapter this charge is attributed to.",
-    });
-  }
-}
 
 async function requireBudgetForCentralTxn(
   ctx: MutationCtx,
@@ -4008,10 +3989,9 @@ export const dashboardChapter = query({
       }
     }
 
-    // Category-name map (chapter-wide, bounded) for budget breakdowns.
+    // Category-name map (the org's whole list, bounded) for budget breakdowns.
     const categoryDocs = await ctx.db
       .query("budgetCategories")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .take(ROLLUP_SCAN_LIMIT);
     const catName = new Map(categoryDocs.map((c) => [c._id, c.name] as const));
     const getEvent = nameCache(ctx, "events");
@@ -4871,10 +4851,10 @@ export const dashboardCentral = query({
     const centralRefDateById = new Map<Id<"budgets">, number | null>();
     const centralModeMatchedById = new Map<Id<"budgets">, Doc<"transactions">[]>();
     // Projects-category-breakdown: category-name resolution for the central
-    // cards' own category mini-bars. A central budget's linked txns can come
-    // from ANY chapter, so there's no single-chapter `budgetCategories` list
-    // to preload (`dashboardChapter`'s `catName` pattern) — instead resolve
-    // each distinct categoryId once, read-through, shared across the loop.
+    // cards' own category mini-bars. Read-through per distinct categoryId,
+    // shared across the loop — kept as-is after the org-wide cutover because
+    // it's still the cheaper read here: this loop touches only the handful of
+    // categories the linked txns actually use, not the whole list.
     // A vanished category falls back to `spendBreakdownFor`'s own
     // "Uncategorized" bucket (id absent from the map), same as everywhere else.
     const centralCatName = new Map<Id<"budgetCategories">, string>();
@@ -6037,7 +6017,7 @@ export const personTransactions = query({
 });
 
 /**
- * Member-visible spend-category list for the caller's OWN chapter — powers the
+ * Member-visible spend-category list — the ORG's list, powering the
  * cardholder's `submitOwnCharge` category picker on the "My transactions" tab.
  * DELIBERATELY NOT finance-role gated (same posture as `budgetsGlance`): a
  * cardholder with no finance seat still needs a category list to pre-fill the
@@ -6066,11 +6046,12 @@ export const myChargeCategories = query({
   ): Promise<
     { id: Id<"budgetCategories">; name: string; expenseTypeHint?: (typeof EXPENSE_TYPES)[number] }[]
   > => {
+    // Membership is still the gate — `readChapterId` proves the caller belongs
+    // to a chapter. What they then see is the org's one list.
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
     const cats = await ctx.db
       .query("budgetCategories")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .take(ROLLUP_SCAN_LIMIT);
     return cats
       .filter((c) => c.isActive !== false)
@@ -6636,35 +6617,44 @@ export const updateFund = mutation({
 
 // ── Categories ────────────────────────────────────────────────────────────────
 
+/**
+ * THE ORG'S CATEGORY LIST — one list, every chapter, no fund filter.
+ *
+ * The `fundId` argument is gone rather than ignored. It narrowed the list to a
+ * chapter-owned fund's own categories, and there is no such thing now: funds
+ * stay chapter-scoped (they hold real, restricted money) but categories don't
+ * hang off them any more. A silently-ignored filter argument is worse than a
+ * removed one — the caller believes it narrowed something.
+ */
 export const listCategories = query({
-  args: { fundId: v.optional(v.id("funds")) },
+  args: {},
   returns: v.array(categorySummary),
-  handler: async (ctx, args) => {
+  handler: async (ctx) => {
     const chapterId = await readChapterId(ctx);
     if (!chapterId) return [];
-    await requireFinanceRole(ctx, chapterId, "viewer");
-    let categories: Doc<"budgetCategories">[];
-    if (args.fundId) {
-      await requireInCallerChapter(ctx, chapterId, "funds", args.fundId, "Fund");
-      categories = await ctx.db
-        .query("budgetCategories")
-        .withIndex("by_fund", (q) => q.eq("fundId", args.fundId!))
-        .take(ROLLUP_SCAN_LIMIT);
-    } else {
-      categories = await ctx.db
-        .query("budgetCategories")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .take(ROLLUP_SCAN_LIMIT);
-    }
+    await requireBudgetCategoryView(ctx, chapterId);
+    const categories = await ctx.db
+      .query("budgetCategories")
+      .take(ROLLUP_SCAN_LIMIT);
     return categories
       .sort((a, b) => (a.sortOrder ?? 0) - (b.sortOrder ?? 0))
       .map(toCategorySummary);
   },
 });
 
+/**
+ * Add a label to the ORG's list. Reachable by any finance manager — see
+ * `lib/budgetCategoryAccess.ts` for why that stayed as it was and how it
+ * narrows later.
+ *
+ * The parent/child nesting survives the cutover intact (still acyclic, enforced
+ * on the update path by `categoryAncestorHits`). What did NOT survive is the
+ * "a category's parent must be in the same fund" rule — it was a statement
+ * about two chapter-owned pots of money, and neither the child nor the parent
+ * belongs to one now.
+ */
 export const createCategory = mutation({
   args: {
-    fundId: v.id("funds"),
     name: v.string(),
     kind: categoryKindValidator,
     parentCategoryId: v.optional(v.id("budgetCategories")),
@@ -6673,30 +6663,14 @@ export const createCategory = mutation({
   returns: v.id("budgetCategories"),
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
-    await requireInCallerChapter(ctx, chapterId, "funds", args.fundId, "Fund");
+    await requireBudgetCategoryManage(ctx, chapterId);
     if (args.parentCategoryId) {
-      const parent = await requireInCallerChapter(
-        ctx,
-        chapterId,
-        "budgetCategories",
-        args.parentCategoryId,
-        "Parent category",
-      );
-      if (parent.fundId !== args.fundId) {
-        throw new ConvexError({
-          code: "INVALID_PARENT",
-          message: "A category's parent must be in the same fund.",
-        });
-      }
+      await requireBudgetCategory(ctx, args.parentCategoryId, "Parent category");
     }
     const existing = await ctx.db
       .query("budgetCategories")
-      .withIndex("by_fund", (q) => q.eq("fundId", args.fundId))
       .take(ROLLUP_SCAN_LIMIT);
     return await ctx.db.insert("budgetCategories", {
-      chapterId,
-      fundId: args.fundId,
       parentCategoryId: args.parentCategoryId,
       name: args.name,
       kind: args.kind,
@@ -6735,30 +6709,16 @@ async function findGeneralFundId(
 }
 
 /**
- * Shared: seed one chapter's default fund + expense categories. First ensures
- * the chapter's default fund exists (General Fund — the only fund, see
- * WP-1.4) — so a chapter created before the finance seed (zero funds) is fixed
- * in one shot — then seeds the default categories under its General Fund.
- * Idempotent (skips funds / categories whose names already exist). Returns the
- * count of categories inserted (0 if, unexpectedly, no General Fund can be
- * resolved).
- */
-async function seedDefaultCategoriesForChapter(
-  ctx: MutationCtx,
-  chapterId: Id<"chapters">,
-  now: number,
-): Promise<number> {
-  await ensureDefaultFunds(ctx, chapterId, now);
-  const fundId = await findGeneralFundId(ctx, chapterId);
-  if (!fundId) return 0;
-  return await insertDefaultExpenseCategories(ctx, chapterId, fundId, now);
-}
-
-/**
- * Superuser-gated backfill: seed the default expense categories for ONE chapter
- * (the caller's, or an explicit `chapterId` — lets central admins fix existing /
- * prod chapters). Idempotent: names that already exist are skipped, so a chapter
- * that already has the set is a no-op. Reuses {@link seedDefaultCategoriesForChapter}.
+ * Superuser-gated backfill: make sure the ORG's default expense categories
+ * exist. Idempotent — names already on the list are skipped, so a re-run is a
+ * no-op.
+ *
+ * `chapterId` is accepted and IGNORED, deliberately. Callers (and the ops
+ * runbook) pass one out of habit from when this seeded a single chapter's list;
+ * there is one list now, so narrowing it to a chapter is not something this can
+ * do. Taking the argument away outright would 400 an ops call that is otherwise
+ * exactly right. It still ensures the NAMED (or caller's) chapter has its
+ * General Fund, because that part never stopped being chapter-scoped.
  */
 export const seedDefaultExpenseCategories = mutation({
   args: { chapterId: v.optional(v.id("chapters")) },
@@ -6771,19 +6731,19 @@ export const seedDefaultExpenseCategories = mutation({
     if (!chapter) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Chapter not found." });
     }
-    const inserted = await seedDefaultCategoriesForChapter(
-      ctx,
-      chapterId,
-      Date.now(),
-    );
+    const now = Date.now();
+    // Funds ARE still chapter-scoped — a chapter created before the finance
+    // seed (zero funds) is fixed in the same shot, exactly as before.
+    await ensureDefaultFunds(ctx, chapterId, now);
+    const inserted = await insertDefaultExpenseCategories(ctx, now);
     return { inserted };
   },
 });
 
 /**
- * CLI-runnable (no auth) sibling of {@link seedDefaultExpenseCategories}: seed
- * the defaults for EVERY chapter that currently has no categories. Bounded +
- * idempotent — re-runs skip already-seeded chapters.
+ * CLI-runnable (no auth) sibling of {@link seedDefaultExpenseCategories}: make
+ * sure every chapter has its General Fund, and that the ORG's default category
+ * list exists. Bounded + idempotent — a re-run inserts nothing.
  *
  * Run locally:  npx convex run finances:runSeedDefaultExpenseCategories
  * Run on prod:  npx convex run --prod finances:runSeedDefaultExpenseCategories
@@ -6794,21 +6754,14 @@ export const runSeedDefaultExpenseCategories = internalMutation({
   handler: async (ctx) => {
     const now = Date.now();
     const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
-    let chaptersSeeded = 0;
-    let inserted = 0;
     for (const c of chapters) {
-      const existing = await ctx.db
-        .query("budgetCategories")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", c._id))
-        .take(1);
-      if (existing.length > 0) continue;
-      const n = await seedDefaultCategoriesForChapter(ctx, c._id, now);
-      if (n > 0) {
-        chaptersSeeded++;
-        inserted += n;
-      }
+      await ensureDefaultFunds(ctx, c._id, now);
     }
-    return { chaptersSeeded, inserted };
+    const inserted = await insertDefaultExpenseCategories(ctx, now);
+    // The category list is org-wide now, so "how many chapters got seeded" has
+    // one honest answer: all of them, or none. Kept in the return shape so the
+    // ops call's output doesn't change type mid-runbook.
+    return { chaptersSeeded: inserted > 0 ? chapters.length : 0, inserted };
   },
 });
 
@@ -6843,14 +6796,8 @@ export const updateCategory = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
-    const category = await requireInCallerChapter(
-      ctx,
-      chapterId,
-      "budgetCategories",
-      args.categoryId,
-      "Category",
-    );
+    await requireBudgetCategoryManage(ctx, chapterId);
+    await requireBudgetCategory(ctx, args.categoryId);
     const newParent = args.patch.parentCategoryId;
     if (newParent) {
       if (newParent === args.categoryId) {
@@ -6859,19 +6806,7 @@ export const updateCategory = mutation({
           message: "A category cannot be its own parent.",
         });
       }
-      const parent = await requireInCallerChapter(
-        ctx,
-        chapterId,
-        "budgetCategories",
-        newParent,
-        "Parent category",
-      );
-      if (parent.fundId !== category.fundId) {
-        throw new ConvexError({
-          code: "INVALID_PARENT",
-          message: "A category's parent must be in the same fund.",
-        });
-      }
+      await requireBudgetCategory(ctx, newParent, "Parent category");
       // Reject a parent that is itself a descendant of this category (a cycle).
       if (await categoryAncestorHits(ctx, newParent, args.categoryId)) {
         throw new ConvexError({
@@ -7182,8 +7117,9 @@ async function verifyBudgetRefs(
     throw new ConvexError({ code: "INVALID_PERIOD", message: "Quarter must be 1–4." });
   }
   if (b.fundId) await requireInCallerChapter(ctx, chapterId, "funds", b.fundId, "Fund");
-  if (b.categoryId)
-    await requireInCallerChapter(ctx, chapterId, "budgetCategories", b.categoryId, "Category");
+  // Categories are org-wide: existence is the whole check (see
+  // `lib/budgetCategoryAccess.ts#requireBudgetCategory`).
+  if (b.categoryId) await requireBudgetCategory(ctx, b.categoryId);
   if (b.scopeRefId) {
     if (b.refKind === "project") {
       await requireInCallerChapter(
@@ -9555,6 +9491,9 @@ const fundMergeResult = v.object({
   // down to its General Fund).
   chaptersMerged: v.number(),
   fundsDeleted: v.number(),
+  // Always 0 since categories went org-wide (2026-08-14) — a category no longer
+  // points at a fund, so a fund merge has nothing to repoint on this table.
+  // Kept in the result shape so an ops runbook reading this JSON doesn't break.
   categoriesRepointed: v.number(),
   budgetsRepointed: v.number(),
   transactionsRepointed: v.number(),
@@ -9566,10 +9505,13 @@ const fundMergeResult = v.object({
  * Merge every extra fund in ONE chapter into its General Fund (resolved via
  * {@link findGeneralFundId} — by name, else lowest-sortOrder unrestricted,
  * else lowest-sortOrder). Repoints every `fundId`/`defaultFundId` reference
- * (`budgetCategories` — required field, so a dangling extra-fund reference
- * would otherwise break category display; `budgets`; `transactions`;
- * `reimbursementLineItems`; `legacyAccounts.defaultFundId`), then deletes the
- * now-empty extra fund docs.
+ * (`budgets`; `transactions`; `reimbursementLineItems`;
+ * `legacyAccounts.defaultFundId`), then deletes the now-empty extra fund docs.
+ *
+ * `budgetCategories` USED to be on that list, and had to be: `fundId` was
+ * required there, so deleting a fund out from under a category broke its
+ * display outright. Categories are org-wide now and carry no fund at all, so
+ * there is nothing here to repoint — `categoriesRepointed` is permanently 0.
  *
  * A chapter with 0 or 1 funds is a no-op (nothing to merge) — this is what
  * makes a re-run of the whole migration idempotent.
@@ -9605,7 +9547,9 @@ async function runMergeFundsIntoGeneralForChapter(
   const extras = funds.filter((f) => f._id !== keeperId);
   if (extras.length === 0) return zero; // already down to one fund
 
-  let categoriesRepointed = 0;
+  // Permanently 0 — see the doc comment. Kept as a named local so the returned
+  // shape reads the same as its siblings rather than a bare literal.
+  const categoriesRepointed = 0;
   let budgetsRepointed = 0;
   let transactionsRepointed = 0;
   let reimbursementLineItemsRepointed = 0;
@@ -9627,17 +9571,6 @@ async function runMergeFundsIntoGeneralForChapter(
     .take(ROLLUP_SCAN_LIMIT);
 
   for (const extra of extras) {
-    // budgetCategories.fundId is REQUIRED — a dangling reference here would
-    // break category display/grouping the instant the fund doc is deleted.
-    const categories = await ctx.db
-      .query("budgetCategories")
-      .withIndex("by_fund", (q) => q.eq("fundId", extra._id))
-      .take(ROLLUP_SCAN_LIMIT);
-    for (const c of categories) {
-      await ctx.db.patch(c._id, { fundId: keeperId });
-      categoriesRepointed++;
-    }
-
     for (const b of chapterBudgets) {
       if (b.fundId === extra._id) {
         await ctx.db.patch(b._id, { fundId: keeperId });
@@ -11511,8 +11444,9 @@ async function verifyTxnRefs(
   },
 ): Promise<void> {
   if (refs.fundId) await requireInCallerChapter(ctx, chapterId, "funds", refs.fundId, "Fund");
-  if (refs.categoryId)
-    await requireInCallerChapter(ctx, chapterId, "budgetCategories", refs.categoryId, "Category");
+  // Org-wide: existence only. A chapter comparison here has no referent since
+  // the label stopped belonging to a chapter.
+  if (refs.categoryId) await requireBudgetCategory(ctx, refs.categoryId);
   if (refs.teamId)
     await requireInCallerChapter(ctx, chapterId, "financeTeams", refs.teamId, "Team", {
       allowCentral: true,
@@ -11842,17 +11776,23 @@ export const createManualTransaction = mutation({
       });
     };
     if (args.central) {
-      // Central desk: org-wide reach, and NONE of the chapter-scoped links
-      // apply (central has no funds/categories/teams; a person is a chapter
-      // roster row). Reject them loudly rather than silently drop.
+      // Central desk: org-wide reach, and none of the CHAPTER-SCOPED links
+      // apply (central has no funds or chapter teams; a person is a chapter
+      // roster row). Reject those loudly rather than silently drop.
+      //
+      // CATEGORY IS NOT ONE OF THEM ANY MORE. It's an org-wide label — "what
+      // kind of spend was this" — and a central charge has that answer as much
+      // as a chapter charge does. It used to be refused here purely because
+      // there were no central categories to name.
       const access = await requireFinanceCentral(ctx, homeChapterId);
-      if (args.fundId || args.categoryId || args.teamId || args.personId) {
+      if (args.fundId || args.teamId || args.personId) {
         throw new ConvexError({
           code: "UNSUPPORTED",
           message:
-            "A central transaction can't carry chapter-scoped links (fund/category/team/person).",
+            "A central transaction can't carry chapter-scoped links (fund/team/person).",
         });
       }
+      if (args.categoryId) await requireBudgetCategory(ctx, args.categoryId);
       if (args.budgetId) {
         // Central's own budget, or — cross-book — a chapter's, when central is
         // fronting that chapter's spend. Same gate the reconcile path uses.
@@ -11870,9 +11810,12 @@ export const createManualTransaction = mutation({
         description: args.description,
         merchantName: args.merchantName,
         budgetId: args.budgetId,
+        categoryId: args.categoryId,
         // Central has no funds (WP-1.4/2.1) — stays fund-less. Coded on entry
-        // when a budget was explicitly given, else unreviewed.
-        status: args.budgetId ? "categorized" : "unreviewed",
+        // when a budget or a category was explicitly given, else unreviewed —
+        // the same "coded = something was actually said about this row" rule
+        // the chapter branch below applies.
+        status: args.budgetId || args.categoryId ? "categorized" : "unreviewed",
         createdBy: userId,
         createdAt: Date.now(),
       });
@@ -11962,20 +11905,14 @@ export const categorizeTransaction = mutation({
             "A central transaction can't carry a fund or team — those are chapter-scoped.",
         });
       }
-      // CATEGORY is now allowed, but ONLY on a cross-book charge, and only from
-      // the receiving chapter's own categories. See
-      // `requireCategoryForCentralTxn` for why this had to change: without it,
-      // a chapter's budget card showed cross-book spend in an "Uncategorized"
-      // bar that literally nobody could fix — not the central FM (refused here)
-      // and not the chapter's treasurer (the row lives in central's book, so
-      // `requireReconcileTxn` denies them the write).
-      if (args.categoryId) {
-        await requireCategoryForCentralTxn(
-          ctx,
-          args.categoryId,
-          args.budgetId !== undefined ? args.budgetId : txn.budgetId ?? null,
-        );
-      }
+      // CATEGORY is plainly allowed now, on any central row, with or without a
+      // budget attached — it's the org's one taxonomy, and "what kind of spend
+      // was this" is a question a central charge answers the same way a
+      // chapter's does. The old cross-book-only carve-out (and the invariant
+      // that stripped the category back off when a row stopped being
+      // cross-book) existed solely because there were no central categories to
+      // give it; see the note where `requireCategoryForCentralTxn` used to be.
+      if (args.categoryId) await requireBudgetCategory(ctx, args.categoryId);
     } else {
       await verifyTxnRefs(ctx, scope, {
         fundId: args.fundId ?? undefined,
@@ -12001,25 +11938,15 @@ export const categorizeTransaction = mutation({
       const def = await defaultFundId(ctx, scope);
       if (def) patch.fundId = def;
     }
-    // INVARIANT: a central-book row may carry a category ONLY while it's
-    // charged to that category's chapter budget (see
-    // `requireCategoryForCentralTxn`). Re-pointing it at a central budget — or
-    // clearing the budget entirely — must therefore drop the category with it,
-    // or a correction leaves behind a chapter category on a row that is once
-    // again purely central's. Assigned `undefined` (Convex's "remove this
-    // optional field" in a patch) — the same value `cleanPatch` translates a
-    // caller's explicit `null` into; a literal `null` would fail validation,
-    // since `transactions.categoryId` is `v.optional(v.id(...))`, not nullable.
-    if (scope === CENTRAL && args.categoryId == null) {
-      const nextBudgetId =
-        args.budgetId !== undefined ? args.budgetId : txn.budgetId ?? null;
-      const nextBudget = nextBudgetId ? await ctx.db.get(nextBudgetId) : null;
-      const stillCrossBook = nextBudget != null && nextBudget.chapterId !== CENTRAL;
-      if (!stillCrossBook && txn.categoryId != null) patch.categoryId = undefined;
-    }
-    // Advance an unreviewed transaction to categorized once coded. For a chapter
-    // txn "coded" = fund/category; a central txn is coded by its central budget
-    // link (its only attribution).
+    // GONE with the category cutover: the invariant that dropped a central
+    // row's category whenever it stopped being charged to a chapter's budget.
+    // It enforced "a central row may only borrow the absorbing chapter's
+    // category", which is not a rule any more — the label is the org's, so
+    // re-pointing the budget (or clearing it) leaves nothing stale behind.
+    //
+    // Advance an unreviewed transaction to categorized once coded. "Coded"
+    // now reads identically in both books: fund or category, plus (central
+    // only) its budget link.
     const nowCoded =
       (patch.fundId ?? txn.fundId) ||
       (patch.categoryId ?? txn.categoryId) ||
@@ -12076,13 +12003,19 @@ export const bulkCategorize = mutation({
     let updated = 0;
     for (const id of args.transactionIds) {
       const { txn, scope, actorPersonId } = await requireReconcileTxn(ctx, id, "bookkeeper");
-      if (scope === CENTRAL && (args.fundId || args.categoryId)) {
-        throw new ConvexError({
-          code: "UNSUPPORTED",
-          message:
-            "A central transaction can't take a chapter fund/category — only a central budget.",
-        });
-      } else if (scope !== CENTRAL) {
+      if (scope === CENTRAL) {
+        // FUND stays refused (it asserts whose RESTRICTED money paid, and
+        // central's card didn't draw on a chapter's). CATEGORY no longer is —
+        // it's the org's label, valid on any row in any book, which is what
+        // lets one bulk selection code a mixed-book batch in one pass.
+        if (args.fundId) {
+          throw new ConvexError({
+            code: "UNSUPPORTED",
+            message: "A central transaction can't take a chapter fund.",
+          });
+        }
+        if (args.categoryId) await requireBudgetCategory(ctx, args.categoryId);
+      } else {
         await verifyTxnRefs(ctx, scope, {
           fundId: args.fundId ?? undefined,
           categoryId: args.categoryId ?? undefined,
@@ -13471,22 +13404,11 @@ export const setTransactionCategory = mutation({
           "This transaction is closed by your treasurer — ask them to reopen it before changing its category.",
       });
     }
+    // One org-wide list, so a central row takes a category exactly like a
+    // chapter row does — the book-based refusal that used to sit here is gone
+    // (mirrors `categorizeTransaction`'s own central branch).
     if (args.categoryId) {
-      // Central txns carry no chapter-scoped category (mirrors
-      // `categorizeTransaction`'s own central branch).
-      if (txn.chapterId === CENTRAL) {
-        throw new ConvexError({
-          code: "UNSUPPORTED",
-          message: "A central transaction can't be given a chapter-scoped category.",
-        });
-      }
-      await requireInCallerChapter(
-        ctx,
-        txn.chapterId,
-        "budgetCategories",
-        args.categoryId,
-        "Category",
-      );
+      await requireBudgetCategory(ctx, args.categoryId);
     }
     const patch: Record<string, unknown> = { categoryId: args.categoryId ?? undefined };
     // Advance unreviewed -> categorized the same way `categorizeTransaction`
@@ -13597,15 +13519,11 @@ export const submitOwnCharge = mutation({
     } = {};
     if (args.categoryId !== undefined) {
       if (args.categoryId) {
-        // Category must belong to the caller's OWN chapter (never central, never
-        // another chapter's) — the same verify pattern the reconcile paths use.
-        await requireInCallerChapter(
-          ctx,
-          chapterId,
-          "budgetCategories",
-          args.categoryId,
-          "Category",
-        );
+        // The category must exist — the same verify the reconcile paths use.
+        // There is no chapter to match it against: it's the org's list, which
+        // is also why a cardholder's picker (`myChargeCategories`) and their
+        // treasurer's (`listCategories`) can no longer disagree.
+        await requireBudgetCategory(ctx, args.categoryId);
         patch.categoryId = args.categoryId;
       } else {
         patch.categoryId = undefined; // clear
@@ -13747,8 +13665,15 @@ async function keepTargetOwnedPerson(
  *  - `fundId`     → funds are chapter-scoped (NO central funds): → central clears
  *                   it; → chapter reassigns the TARGET chapter's General Fund
  *                   (never inherit the source chapter's fund).
- *  - `categoryId` → categories are chapter-scoped (source chapter's fund tree) →
- *                   ALWAYS clear (the receiving treasurer recodes).
+ *  - `categoryId` → KEPT, always. Categories are ORG-WIDE (2026-08-14), so
+ *                   "Supplies" means the same thing in the destination book as
+ *                   it did in the source and there is nothing stale to strip.
+ *                   This used to ALWAYS clear, on the reasoning that the label
+ *                   came out of the source chapter's own fund tree — true then,
+ *                   meaningless now, and the clearing was pure damage: moving a
+ *                   miscoded row between books threw away a coding decision
+ *                   somebody had already made correctly, and the receiving
+ *                   treasurer had to redo it from the merchant name.
  *  - `teamId`     → financeTeams MAY be central (absent chapterId): keep a
  *                   central team or a target-owned team; clear a source-chapter
  *                   team (a central txn carries no chapter-scoped link — the same
@@ -13787,7 +13712,7 @@ async function computeReassignmentPatch(
   patch.fundId =
     target === CENTRAL ? undefined : ((await defaultFundId(ctx, target)) ?? undefined);
 
-  patch.categoryId = undefined;
+  // `categoryId` is deliberately absent from this patch — see the doc comment.
 
   if (txn.teamId != null) {
     const team = (await ctx.db.get(txn.teamId)) as { chapterId?: Id<"chapters"> } | null;
@@ -13911,16 +13836,17 @@ export const reassignTransactions = mutation({
 
 /**
  * Move a budget's scope as part of a project transfer. Central budgets carry no
- * chapter-scoped narrowers, so → central clears fund/category/team; → chapter
- * rebases the fund default and drops the source category/team. The budget↔tag
- * links get their denormalized `chapterId` updated, and a link whose tag is
- * invalid at the new level (a chapter tag on a central budget) is dropped.
+ * chapter-scoped narrowers, so → central clears fund/team; → chapter rebases
+ * the fund default and drops the source team. The budget↔tag links get their
+ * denormalized `chapterId` updated, and a link whose tag is invalid at the new
+ * level (a chapter tag on a central budget) is dropped.
  *
- * A WP-3.1 `budgetLines` row's own `categoryId` is chapter-scoped the same way
- * the budget's is (`budgetLines.ts#verifyCategory`) — a category from the
- * source chapter's tree is meaningless (or invalid) at the new scope, so it's
- * cleared on every line too. `description`/`plannedCents` are untouched — the
- * PLAN survives the move, only the stale chapter-scoped ref does not.
+ * CATEGORY IS KEPT, on the budget and on every `budgetLines` row under it.
+ * Both used to be cleared, because a category came out of the source chapter's
+ * own fund tree and meant nothing at the new scope. Categories are org-wide as
+ * of 2026-08-14, so the label survives the move exactly like `description` and
+ * `plannedCents` always have — the whole PLAN crosses intact now, not just the
+ * parts that never referenced a chapter.
  *
  * M1 (review): a budget that's `"approved"` or `"submitted"` at the SOURCE
  * scope carries a decision (or a pending one) from an approver who no longer
@@ -13946,8 +13872,8 @@ async function moveBudgetScope(
   await ctx.db.patch(budget._id, {
     chapterId: target,
     fundId: target === CENTRAL ? undefined : ((await defaultFundId(ctx, target)) ?? undefined),
-    // Category + team belong to the source chapter's tree — clear on any move.
-    categoryId: undefined,
+    // Team belongs to the source chapter — clear on any move. Category does
+    // NOT: it's org-wide and reads the same at either scope (see the doc).
     teamId: undefined,
     ...(resetsProvenance
       ? {
@@ -13976,13 +13902,9 @@ async function moveBudgetScope(
     if (link.chapterId !== target) await ctx.db.patch(link._id, { chapterId: target });
   }
 
-  const lines = await ctx.db
-    .query("budgetLines")
-    .withIndex("by_budget", (q) => q.eq("budgetId", budget._id))
-    .take(ROLLUP_SCAN_LIMIT);
-  for (const line of lines) {
-    if (line.categoryId !== undefined) await ctx.db.patch(line._id, { categoryId: undefined });
-  }
+  // `budgetLines` used to have their `categoryId` cleared here for the same
+  // (now-retired) reason the budget's own was. Nothing to do: an org-wide label
+  // is valid at every scope, so the lines cross the boundary untouched.
 }
 
 /**

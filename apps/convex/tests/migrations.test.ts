@@ -355,6 +355,7 @@ const REGISTRY_NAMES = [
   "0073_book_known_repayment_fee_coverage",
   "0074_book_repayment_coverage_by_session",
   "0075_label_fee_coverage_rows",
+  "0076_org_wide_budget_categories",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

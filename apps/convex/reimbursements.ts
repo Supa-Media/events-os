@@ -1053,12 +1053,15 @@ async function createReimbursement(
         });
       }
     }
+    // Categories are ORG-WIDE (2026-08-14) — every chapter's claimants pick
+    // from the same list, so existence is the whole check. The FUND above
+    // stays chapter-scoped: it's real, restricted money.
     if (line.categoryId) {
       const cat = await ctx.db.get(line.categoryId);
-      if (!cat || cat.chapterId !== chapterId) {
+      if (!cat) {
         throw new ConvexError({
           code: "INVALID_INPUT",
-          message: "That category isn't part of this chapter.",
+          message: "That category doesn't exist.",
         });
       }
     }
@@ -1242,25 +1245,25 @@ async function assertNotRateLimited(
  * SUGGESTION from an unauthenticated caller, not a decision: a finance
  * manager still corrects it at review if wrong (see `reimbursements.ts#get`'s
  * line projection, unchanged), and this function is what keeps a malformed or
- * out-of-chapter id from ever reaching a write — SILENTLY, because an
- * unauthenticated form throwing a distinct error for "wrong chapter" vs
- * "inactive" vs "not a real id" would make it an oracle for probing category
- * ids that don't belong to it. `createReimbursement`'s own per-line check
- * (shared with the AUTHENTICATED path, which SHOULD throw on a bad id — see
- * its own doc) never sees an unsanitized id from this path, because this
+ * retired id from ever reaching a write — SILENTLY, because an unauthenticated
+ * form throwing a distinct error for "inactive" vs "not a real id" would make
+ * it an oracle for probing category ids. `createReimbursement`'s own per-line
+ * check (shared with the AUTHENTICATED path, which SHOULD throw on a bad id —
+ * see its own doc) never sees an unsanitized id from this path, because this
  * runs first.
+ *
+ * The "wrong chapter" clause is gone: categories are org-wide as of
+ * 2026-08-14, so every chapter's public form offers — and accepts — the same
+ * list. Existence and ACTIVE are what's left.
  */
 async function sanitizePublicCategoryId(
   ctx: MutationCtx,
-  chapterId: Id<"chapters">,
   categoryId: Id<"budgetCategories"> | undefined,
 ): Promise<Id<"budgetCategories"> | undefined> {
   if (!categoryId) return undefined;
   try {
     const cat = await ctx.db.get(categoryId);
-    if (!cat || cat.chapterId !== chapterId || cat.isActive === false) {
-      return undefined;
-    }
+    if (!cat || cat.isActive === false) return undefined;
     return categoryId;
   } catch {
     // Not even a well-formed id for this deployment — same silent drop.
@@ -1416,7 +1419,7 @@ export const submitPublicReimbursement = mutation({
     const sanitizedLines = await Promise.all(
       args.lines.map(async (l) => ({
         ...l,
-        categoryId: await sanitizePublicCategoryId(ctx, chapterId, l.categoryId),
+        categoryId: await sanitizePublicCategoryId(ctx, l.categoryId),
         fundId: undefined,
       })),
     );

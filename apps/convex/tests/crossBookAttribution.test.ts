@@ -415,21 +415,29 @@ describe("Reconcile shows both facts", () => {
   });
 });
 
-describe("the receiving chapter's category", () => {
+describe("a central-book charge takes a category", () => {
   /**
-   * Why this is allowed at all: a cross-book charge lands on a CHAPTER's budget
-   * card, and `spendBreakdownFor` buckets a category-less row into an explicit
-   * "Uncategorized" bar. The totals still add up — but that bar was
-   * unfixable-by-anyone: the central FM was refused outright, and the receiving
-   * chapter's treasurer can't write the row because it lives in central's book.
+   * The bug this whole area exists to close: a cross-book charge lands on a
+   * CHAPTER's budget card, and `spendBreakdownFor` buckets a category-less row
+   * into an explicit "Uncategorized" bar. The totals still added up — but that
+   * bar was unfixable-by-anyone, because the central FM was refused outright
+   * and the receiving chapter's treasurer can't write a row living in central's
+   * book.
+   *
+   * The first fix threaded a needle (allow a category, but ONLY on a cross-book
+   * charge, and only from the absorbing chapter's list). Categories are ORG-WIDE
+   * as of 2026-08-14, so the needle is gone: a central row takes a category the
+   * same way a chapter row does, with or without a budget attached, and the
+   * three refusals this suite used to assert are deleted rather than relaxed.
+   * FUND stays refused — it asserts whose restricted money paid.
    */
   async function setup() {
     const t = newT();
     const s = await setupChapter(t);
     await asDualHatManager(s);
     const budgetId = await makeChapterBudget(s, 200_000);
-    // Inserted directly rather than via `createCategory` (which requires a
-    // fundId) — this suite is about the category's CHAPTER, not fund plumbing.
+    // The fund is still needed for the "fund stays refused" case below; the
+    // category no longer hangs off it (or off any chapter).
     const fundId = await run(s.t, (ctx) =>
       ctx.db.insert("funds", {
         chapterId: s.chapterId,
@@ -441,8 +449,6 @@ describe("the receiving chapter's category", () => {
     );
     const categoryId = await run(s.t, (ctx) =>
       ctx.db.insert("budgetCategories", {
-        chapterId: s.chapterId,
-        fundId,
         name: "Venue",
         kind: "category",
         createdAt: Date.now(),
@@ -451,7 +457,7 @@ describe("the receiving chapter's category", () => {
     return { s, budgetId, categoryId, fundId };
   }
 
-  test("a cross-book charge takes the receiving chapter's category", async () => {
+  test("a cross-book charge takes a category", async () => {
     const { s, budgetId, categoryId } = await setup();
     const txnId = await centralCharge(s, 50_000);
 
@@ -463,8 +469,8 @@ describe("the receiving chapter's category", () => {
 
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
     expect(txn?.categoryId).toBe(categoryId);
-    // Custody still untouched — the category says which of NEW YORK's buckets
-    // absorbed it, not who paid.
+    // Custody still untouched — the category says what KIND of spend it was,
+    // not who paid.
     expect(txn?.chapterId).toBe(CENTRAL);
 
     // ...and it now shows under a real category on New York's budget card
@@ -476,18 +482,28 @@ describe("the receiving chapter's category", () => {
     expect(cats.some((c) => c.name === "Uncategorized")).toBe(false);
   });
 
-  test("a category WITHOUT a chapter budget is refused — there is no book to categorize in", async () => {
+  // THE BUG THAT STARTED THIS, in one assertion: a central charge with NO
+  // budget attached used to be refused a category outright ("attribute this
+  // charge to a chapter's budget first"), which is why Reconcile drew an inert
+  // dash in the Category cell of every unattributed central row.
+  test("a central charge with NO budget still takes a category", async () => {
     const { s, categoryId } = await setup();
     const txnId = await centralCharge(s, 50_000);
-    await expect(
-      s.as.mutation(api.finances.categorizeTransaction, {
-        transactionId: txnId,
-        categoryId,
-      }),
-    ).rejects.toThrow(ConvexError);
+
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      categoryId,
+    });
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.categoryId).toBe(categoryId);
+    expect(txn?.budgetId).toBeUndefined();
+    // Coding it advanced the row out of "unreviewed", exactly as a category
+    // does on a chapter row.
+    expect(txn?.status).toBe("categorized");
   });
 
-  test("a category on a charge attributed to a CENTRAL budget is refused", async () => {
+  test("a charge on CENTRAL's OWN budget takes a category too", async () => {
     const { s, categoryId } = await setup();
     const centralBudgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 100_000,
@@ -500,13 +516,16 @@ describe("the receiving chapter's category", () => {
       ctx.db.patch(centralBudgetId, { approvalStatus: "approved" }),
     );
     const txnId = await centralCharge(s, 10_000);
-    await expect(
-      s.as.mutation(api.finances.categorizeTransaction, {
-        transactionId: txnId,
-        budgetId: centralBudgetId,
-        categoryId,
-      }),
-    ).rejects.toThrow(ConvexError);
+
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId: centralBudgetId,
+      categoryId,
+    });
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.categoryId).toBe(categoryId);
+    expect(txn?.budgetId).toBe(centralBudgetId);
   });
 
   test("fund and team stay refused on a cross-book charge", async () => {
@@ -524,7 +543,13 @@ describe("the receiving chapter's category", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("re-pointing at a central budget clears the stranded chapter category", async () => {
+  // The mirror of the two deleted refusals. These used to assert that moving a
+  // central row OFF a chapter's budget stripped its category with it, because
+  // the label was borrowed from that chapter and would otherwise be stranded.
+  // Nothing is borrowed now, so re-budgeting a row is a budget change and only
+  // a budget change — which also means a treasurer fixing a mis-attribution no
+  // longer silently loses the coding they got right.
+  test("re-pointing at a central budget KEEPS the category", async () => {
     const { s, budgetId, categoryId } = await setup();
     const centralBudgetId = await s.as.mutation(api.finances.createBudget, {
       amountCents: 100_000,
@@ -545,18 +570,16 @@ describe("the receiving chapter's category", () => {
     });
     expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.categoryId).toBe(categoryId);
 
-    // Correcting a miscode must not strand New York's category on a row that
-    // is once again purely central's.
     await s.as.mutation(api.finances.categorizeTransaction, {
       transactionId: txnId,
       budgetId: centralBudgetId,
     });
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    expect(txn?.categoryId).toBeUndefined();
+    expect(txn?.categoryId).toBe(categoryId);
     expect(txn?.budgetId).toBe(centralBudgetId);
   });
 
-  test("clearing the budget entirely also clears the category", async () => {
+  test("clearing the budget entirely KEEPS the category", async () => {
     const { s, budgetId, categoryId } = await setup();
     const txnId = await centralCharge(s, 50_000);
     await s.as.mutation(api.finances.categorizeTransaction, {
@@ -570,7 +593,26 @@ describe("the receiving chapter's category", () => {
       budgetId: null,
     });
     const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
-    expect(txn?.categoryId).toBeUndefined();
+    expect(txn?.categoryId).toBe(categoryId);
     expect(txn?.budgetId).toBeUndefined();
+  });
+
+  // ...and clearing the CATEGORY is still its own explicit act.
+  test("passing categoryId: null clears the category and nothing else", async () => {
+    const { s, budgetId, categoryId } = await setup();
+    const txnId = await centralCharge(s, 50_000);
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      budgetId,
+      categoryId,
+    });
+
+    await s.as.mutation(api.finances.categorizeTransaction, {
+      transactionId: txnId,
+      categoryId: null,
+    });
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn?.categoryId).toBeUndefined();
+    expect(txn?.budgetId).toBe(budgetId);
   });
 });

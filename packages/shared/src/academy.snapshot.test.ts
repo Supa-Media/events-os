@@ -687,6 +687,24 @@
  * the PR that lands this: `apps/convex/tests/academy.test.ts` pins
  * ACADEMY_SECTION_COUNT (109 → 111) and ACADEMY_REQUIRED_SECTION_COUNT
  * (108 → 110), and that file is outside this package.
+ *
+ * 2026-08-14 — budget categories went ORG-WIDE (owner: "the category should be
+ * the same across all chapters — unwire the category scope to a specific
+ * chapter"). Content-only on `finance-cross-chapter-audit`, the one lesson
+ * teaching the old rule AS a rule: its "Whose card paid ≠ whose budget it
+ * counts against" block told an FM to give a cross-book row the receiving
+ * chapter's category because "it's the only chance anyone gets" — true while a
+ * Central charge had no category list of its own, and the reason cross-book
+ * spend could sit in an "Uncategorized" bar nobody could close. That paragraph
+ * now teaches one org list, every charge in every book taking one, and the
+ * asymmetry that still stands: funds stay chapter-owned because a fund is real
+ * restricted money and a category is a word. One quiz question was SWAPPED at
+ * the 5-cap — in, whose categories a Central card's charge picks from; out,
+ * "what's the FM's actual relationship to a chapter's spending", which the
+ * "Trust, not permission" rule directly above it already answered verbatim
+ * (its content survives inside the new question's explanation). No title,
+ * slug, minutes, quizLength, section or course order moved: every table below
+ * is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

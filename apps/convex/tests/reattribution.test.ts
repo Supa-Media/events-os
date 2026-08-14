@@ -86,15 +86,11 @@ async function seedFund(
   );
 }
 
-async function seedCategory(
-  s: ChapterSetup,
-  chapterId: Id<"chapters">,
-  fundId: Id<"funds">,
-): Promise<Id<"budgetCategories">> {
+/** An ORG-WIDE category (no chapter, no fund — see `schema/finances.ts`). The
+ *  `chapterId`/`fundId` parameters are gone with the scoping they named. */
+async function seedCategory(s: ChapterSetup): Promise<Id<"budgetCategories">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("budgetCategories", {
-      chapterId,
-      fundId,
       name: "Supplies",
       kind: "category",
       createdAt: Date.now(),
@@ -226,13 +222,13 @@ async function seedTxn(
 // ── reassignTransactions: per-field clearing rules ───────────────────────────
 
 describe("reassignTransactions: chapter → central clears chapter-scoped links", () => {
-  test("clears fund/category/team/person + a source-chapter budget; leaves the legacy project/event FK untouched; keeps amount/flow", async () => {
+  test("clears fund/team/person + a source-chapter budget; KEEPS the org-wide category; leaves the legacy project/event FK untouched; keeps amount/flow", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: SUPER });
     await seedSelfPerson(s);
 
     const fundId = await seedFund(s, s.chapterId);
-    const categoryId = await seedCategory(s, s.chapterId, fundId);
+    const categoryId = await seedCategory(s);
     const projectId = await seedProject(s, s.chapterId, "Outreach");
     const eventId = await seedEvent(s, s.chapterId);
     const teamId = await seedTeam(s, s.chapterId);
@@ -260,7 +256,10 @@ describe("reassignTransactions: chapter → central clears chapter-scoped links"
     const txn = await run(t, (ctx) => ctx.db.get(txnId));
     expect(txn?.chapterId).toBe("central");
     expect(txn?.fundId).toBeUndefined();
-    expect(txn?.categoryId).toBeUndefined();
+    // KEPT (2026-08-14): a category is an org-wide label, so it reads the same
+    // in central's book as it did in the chapter's. Clearing it used to throw
+    // away a correct coding decision every time a row crossed the boundary.
+    expect(txn?.categoryId).toBe(categoryId);
     expect(txn?.teamId).toBeUndefined();
     expect(txn?.personId).toBeUndefined();
     // A source-chapter budget doesn't belong to central → cleared.
@@ -409,7 +408,7 @@ describe("reassignTransactions: audit trail", () => {
     const t = newT();
     const s = await setupChapter(t, { email: SUPER });
     const fundId = await seedFund(s, s.chapterId);
-    const categoryId = await seedCategory(s, s.chapterId, fundId);
+    const categoryId = await seedCategory(s);
     const projectId = await seedProject(s, s.chapterId, "Outreach");
     const chapterBudget = await seedBudget(s, s.chapterId);
 
@@ -436,11 +435,12 @@ describe("reassignTransactions: audit trail", () => {
     expect(prior.projectId).toBe(projectId);
     expect(prior.budgetId).toBe(chapterBudget);
 
-    // Meanwhile the live txn has fund/category/budget cleared by the forward
-    // move — but `projectId` (vestigial, WP-U) is left untouched.
+    // Meanwhile the live txn has fund/budget cleared by the forward move —
+    // `categoryId` survives it (org-wide label) and `projectId` (vestigial,
+    // WP-U) is left untouched.
     const txn = await run(t, (ctx) => ctx.db.get(txnId));
     expect(txn?.fundId).toBeUndefined();
-    expect(txn?.categoryId).toBeUndefined();
+    expect(txn?.categoryId).toBe(categoryId);
     expect(txn?.projectId).toBe(projectId);
     expect(txn?.budgetId).toBeUndefined();
     expect(res.auditId).toBe(rows[0]._id);
@@ -477,7 +477,7 @@ describe("restoreReattribution: full round-trip", () => {
     const t = newT();
     const s = await setupChapter(t, { email: SUPER });
     const fundId = await seedFund(s, s.chapterId);
-    const categoryId = await seedCategory(s, s.chapterId, fundId);
+    const categoryId = await seedCategory(s);
     const projectId = await seedProject(s, s.chapterId, "Outreach");
     const eventId = await seedEvent(s, s.chapterId);
     const teamId = await seedTeam(s, s.chapterId);
@@ -500,12 +500,13 @@ describe("restoreReattribution: full round-trip", () => {
     });
 
     // Forward move landed as expected — every CHAPTER-SCOPED link cleared
-    // (fund/category/team/person/budget); `projectId`/`eventId` (vestigial,
+    // (fund/team/person/budget). `categoryId` is NOT one of them any more
+    // (org-wide label, 2026-08-14), and `projectId`/`eventId` (vestigial,
     // WP-U) are left untouched by the move.
     const moved = await run(t, (ctx) => ctx.db.get(txnId));
     expect(moved?.chapterId).toBe("central");
     expect(moved?.fundId).toBeUndefined();
-    expect(moved?.categoryId).toBeUndefined();
+    expect(moved?.categoryId).toBe(categoryId);
     expect(moved?.teamId).toBeUndefined();
     expect(moved?.personId).toBeUndefined();
     expect(moved?.budgetId).toBeUndefined();
@@ -777,14 +778,18 @@ describe("transferProjectScope", () => {
     expect((caught as ConvexError<{ code: string }>).data.code).toBe("FORBIDDEN");
   });
 
-  test("clears categoryId on the transferred budget's WP-3.1 budgetLines, keeps description/plannedCents", async () => {
+  // Was "clears categoryId on the transferred budget's budgetLines". It no
+  // longer does: a category is an org-wide label, valid at either scope, so
+  // the WHOLE plan crosses the boundary intact instead of arriving stripped of
+  // the coding somebody had already done.
+  test("KEEPS categoryId on the transferred budget's WP-3.1 budgetLines, along with description/plannedCents", async () => {
     const t = newT();
     const s = await setupChapter(t, { email: SUPER });
     await seedSelfPerson(s);
 
     const project = await seedProject(s, s.chapterId, "Music Recording");
     const fundId = await seedFund(s, s.chapterId);
-    const categoryId = await seedCategory(s, s.chapterId, fundId);
+    const categoryId = await seedCategory(s);
     const projectBudget = await seedBudget(s, s.chapterId, {
       type: "one_time",
       refKind: "project",
@@ -821,9 +826,14 @@ describe("transferProjectScope", () => {
     expect(res.budgetsMoved).toBe(1);
 
     const line1 = await run(t, (ctx) => ctx.db.get(lineWithCategory));
-    expect(line1?.categoryId).toBeUndefined(); // stale chapter-scoped ref cleared
+    expect(line1?.categoryId).toBe(categoryId); // org-wide label survives
     expect(line1?.description).toBe("Studio time"); // plan content survives
     expect(line1?.plannedCents).toBe(40000);
+
+    // ...and so does the BUDGET's own category, for the same reason.
+    expect((await run(t, (ctx) => ctx.db.get(projectBudget)))?.categoryId).toBe(
+      categoryId,
+    );
 
     const line2 = await run(t, (ctx) => ctx.db.get(lineWithoutCategory));
     expect(line2?.categoryId).toBeUndefined(); // already uncategorized, still fine

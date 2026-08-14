@@ -75,20 +75,10 @@ async function seedPerson(
   );
 }
 
+/** An ORG-WIDE category (no chapter, no fund — see `schema/finances.ts`). */
 async function seedCategory(s: ChapterSetup, name: string): Promise<Id<"budgetCategories">> {
-  const fundId = await run(s.t, (ctx) =>
-    ctx.db.insert("funds", {
-      chapterId: s.chapterId,
-      name: "General Fund",
-      restriction: "unrestricted",
-      sortOrder: 0,
-      createdAt: Date.now(),
-    }),
-  );
   return await run(s.t, (ctx) =>
     ctx.db.insert("budgetCategories", {
-      chapterId: s.chapterId,
-      fundId,
       name,
       kind: "category",
       sortOrder: 0,
@@ -155,31 +145,14 @@ describe("submitReimbursement (authed, in-app) persists a line's categoryId", ()
     expect(stored.categoryId).toBe(categoryId);
   });
 
-  test("a category from ANOTHER chapter is rejected (untrusted input)", async () => {
+  test("a category that no longer exists is rejected (untrusted input)", async () => {
     const s = await setupChapter(newT());
     await seedPerson(s, { name: "Dana Rivers", email: "dana@example.com", userId: s.userId });
-    const otherChapterId = await run(s.t, (ctx) =>
-      ctx.db.insert("chapters", { name: "Other", isActive: true, createdAt: Date.now() }),
-    );
-    const otherFundId = await run(s.t, (ctx) =>
-      ctx.db.insert("funds", {
-        chapterId: otherChapterId,
-        name: "General Fund",
-        restriction: "unrestricted",
-        sortOrder: 0,
-        createdAt: Date.now(),
-      }),
-    );
-    const foreignCategoryId = await run(s.t, (ctx) =>
-      ctx.db.insert("budgetCategories", {
-        chapterId: otherChapterId,
-        fundId: otherFundId,
-        name: "Not Yours",
-        kind: "category",
-        sortOrder: 0,
-        createdAt: Date.now(),
-      }),
-    );
+    // Was a category belonging to ANOTHER chapter. Categories are org-wide as
+    // of 2026-08-14, so that id is now a perfectly good category; what the
+    // authed path still throws on is an id with no category behind it.
+    const goneCategoryId = await seedCategory(s, "Soon Gone");
+    await run(s.t, (ctx) => ctx.db.delete(goneCategoryId));
     const bank = await s.as.action(api.reimbursements.linkBankAccount, {
       routingNumber: "011000015",
       accountNumber: "0987654321",
@@ -189,7 +162,7 @@ describe("submitReimbursement (authed, in-app) persists a line's categoryId", ()
       s.as.mutation(api.reimbursements.submitReimbursement, {
         purpose: "Event supplies",
         externalAccountId: bank.externalAccountId!,
-        lines: [await line(s, { categoryId: foreignCategoryId })] as never,
+        lines: [await line(s, { categoryId: goneCategoryId })] as never,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
@@ -231,36 +204,23 @@ describe("submitPublicReimbursement's category — a suggestion, sanitized serve
     expect(persisted).toBe(categoryId);
   });
 
-  test("a FOREIGN-CHAPTER category id is dropped, silently (no throw)", async () => {
+  // Was "a FOREIGN-CHAPTER category id is dropped". Categories are ORG-WIDE
+  // since 2026-08-14, so a category somebody created while standing in another
+  // chapter is THIS chapter's category too — the public form offers it, and
+  // the sanitizer keeps it. Nothing about that widens what an unauthenticated
+  // caller can learn: the public form was already handed the whole list, and
+  // category names are public on the ledger anyway.
+  test("a category created in another chapter is KEPT — one org list", async () => {
     const s = await setupChapter(newT());
     await setSlug(s, "nyc");
-    const otherChapterId = await run(s.t, (ctx) =>
-      ctx.db.insert("chapters", { name: "Other", isActive: true, createdAt: Date.now() }),
-    );
-    const otherFundId = await run(s.t, (ctx) =>
-      ctx.db.insert("funds", {
-        chapterId: otherChapterId,
-        name: "General Fund",
-        restriction: "unrestricted",
-        sortOrder: 0,
-        createdAt: Date.now(),
-      }),
-    );
-    const foreignCategoryId = await run(s.t, (ctx) =>
-      ctx.db.insert("budgetCategories", {
-        chapterId: otherChapterId,
-        fundId: otherFundId,
-        name: "Not Yours",
-        kind: "category",
-        sortOrder: 0,
-        createdAt: Date.now(),
-      }),
-    );
+    const orgCategoryId = await seedCategory(s, "Shared Label");
 
-    await expect(submitAndReadCategoryId(s, foreignCategoryId)).resolves.toBeUndefined();
+    await expect(submitAndReadCategoryId(s, orgCategoryId)).resolves.toBe(
+      orgCategoryId,
+    );
   });
 
-  test("an INACTIVE same-chapter category is dropped, silently (no throw)", async () => {
+  test("an INACTIVE category is dropped, silently (no throw)", async () => {
     const s = await setupChapter(newT());
     await setSlug(s, "nyc");
     const inactiveCategoryId = await seedCategory(s, "Retired Category");

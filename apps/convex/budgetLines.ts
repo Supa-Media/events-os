@@ -54,6 +54,7 @@ import {
   requireEvent,
 } from "./lib/context";
 import { requireFinanceRole, requireCentralFinanceRoleOrEdSeat } from "./lib/finance";
+import { requireBudgetCategory } from "./lib/budgetCategoryAccess";
 
 // A generous bound on lines-per-budget: a plan breakdown is a human-authored
 // list of categories, not a synced feed, so this is far above any real usage.
@@ -121,25 +122,17 @@ async function requireLineWriteAccess(
 }
 
 /**
- * A budget line's category, if any, must belong to the CALLER's own chapter —
- * categories are always chapter-scoped (no central categories exist), the
- * same rule `finances.ts#verifyBudgetRefs` applies to a BUDGET's own
- * `categoryId`, central or not (a central budget's caller still has a real
- * home chapter).
+ * A budget line's category, if any, must be a real category. Categories are
+ * ORG-WIDE (2026-08-14), so the chapter comparison this used to make is gone —
+ * there is nothing on the label to compare. Same rule
+ * `finances.ts#verifyBudgetRefs` applies to a BUDGET's own `categoryId`.
  */
 async function verifyCategory(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
   categoryId: Id<"budgetCategories"> | null | undefined,
 ): Promise<void> {
   if (!categoryId) return;
-  const category = await ctx.db.get(categoryId);
-  if (!category || category.chapterId !== chapterId) {
-    throw new ConvexError({
-      code: "NOT_FOUND",
-      message: "Category not found in your chapter.",
-    });
-  }
+  await requireBudgetCategory(ctx, categoryId);
 }
 
 /** All of a budget's lines, ordered by `sortOrder` (bounded, see `LINE_SCAN_LIMIT`). */
@@ -258,7 +251,7 @@ export const addLine = mutation({
       });
     }
     assertPlannedCents(args.plannedCents);
-    await verifyCategory(ctx, chapterId, args.categoryId);
+    await verifyCategory(ctx, args.categoryId);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const existing = await loadLines(ctx, args.budgetId);
     const nextSortOrder =
@@ -311,7 +304,7 @@ export const updateLine = mutation({
     }
     if (args.patch.categoryId !== undefined) {
       if (args.patch.categoryId !== null) {
-        await verifyCategory(ctx, chapterId, args.patch.categoryId);
+        await verifyCategory(ctx, args.patch.categoryId);
       }
       patch.categoryId = args.patch.categoryId ?? undefined;
     }
@@ -441,18 +434,17 @@ export const mergeLineIntoItem = mutation({
     // The one cross-file write: patching eventItems' plan-view category from
     // budgetLines.ts is data, not code ownership (see PR6a scope note). Must
     // clear the SAME bar `items.ts#updateEventItem` enforces on this exact
-    // field (tenancy AND active) — not just this file's own (tenancy-only)
-    // `verifyCategory`, which governs a LINE's own categoryId, a looser
-    // invariant than an ITEM's. Two proven exploit shapes without this:
-    // (a) a central budget's line can carry a category from a DIFFERENT
-    // chapter than the event's (verified against the CALLER's chapter at
-    // add-time, not the event's), and (b) a category can be deactivated
-    // after the line was created. Re-verify against the ITEM's own chapter
-    // right here rather than trusting the line's stored categoryId.
+    // field — which since the org-wide cutover is EXISTENCE AND ACTIVE, where
+    // this file's own `verifyCategory` checks existence alone. The
+    // cross-chapter exploit shape this used to guard against is gone with the
+    // chapter (a label is valid everywhere now); the deactivation one is not:
+    // a category can be retired after the line was created, and an item must
+    // never be pointed at a retired one. So the `isActive` re-check below
+    // stays, and it stays here rather than trusting the line's stored id.
     if (line.categoryId && !item.budgetCategoryId) {
       let categoryUsable = false;
       try {
-        await verifyCategory(ctx, event.chapterId, line.categoryId);
+        await verifyCategory(ctx, line.categoryId);
         const category = await ctx.db.get(line.categoryId);
         categoryUsable = category?.isActive !== false;
       } catch {

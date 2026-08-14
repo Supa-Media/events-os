@@ -224,22 +224,14 @@ export const getBudgetDetail = query({
       refName ?? (budget.label?.trim() || BUDGET_TYPE_LABELS[type]),
     );
 
-    // Category names, resolved through the budget's OWN chapter — bounded
-    // chapter-wide read, same convention `finances.ts` rollups use.
-    // `budgetCategories.chapterId` is a real chapter id ONLY (never the
-    // `"central"` sentinel — categories, like funds, are chapter-scoped), so
-    // a central budget has no categories table to read; `categoryChapterId`
-    // is captured into its own `const` (rather than narrowing `budget.
-    // chapterId` inline) because TypeScript doesn't retain a narrowed member
-    // expression's type inside the nested `withIndex` callback closure below.
-    const categoryChapterId = budget.chapterId;
-    const categoryDocs =
-      categoryChapterId === CENTRAL
-        ? []
-        : await ctx.db
-            .query("budgetCategories")
-            .withIndex("by_chapter", (q) => q.eq("chapterId", categoryChapterId))
-            .take(ROLLUP_SCAN_LIMIT);
+    // Category names — the ORG's one list, bounded read, same convention
+    // `finances.ts` rollups use. This used to branch on the budget's own
+    // chapter and hand a CENTRAL budget an empty list, because categories were
+    // chapter-scoped and central had none; that is exactly what put central
+    // spend into an unnameable "Uncategorized" bar. One list, no branch.
+    const categoryDocs = await ctx.db
+      .query("budgetCategories")
+      .take(ROLLUP_SCAN_LIMIT);
     const catName = new Map(categoryDocs.map((c) => [c._id, c.name] as const));
 
     const sandboxMode = await readSandbox(ctx);

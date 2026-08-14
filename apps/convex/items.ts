@@ -30,6 +30,7 @@ import {
   type LinkedAssetState,
 } from "@events-os/shared";
 import { assertNonNegInt, insertAsset } from "./lib/assets";
+import { requireActiveBudgetCategory } from "./lib/budgetCategoryAccess";
 import {
   requireChapterId,
   requireEvent,
@@ -85,31 +86,20 @@ async function requireActiveTemplateModule(
 }
 
 /**
- * A `budgetCategoryId` override, if any, must belong to the CALLER's own
- * chapter (categories are always chapter-scoped) AND be active — mirrors
- * `budgetLines.ts#verifyCategory`, plus the active check the Money-page plan
- * view (a follow-up PR) needs: a row shouldn't silently point at a category a
- * chapter retired.
+ * A `budgetCategoryId` override, if any, must be a real, ACTIVE category —
+ * mirrors `budgetLines.ts#verifyCategory` plus the active check the Money-page
+ * plan view needs: a row shouldn't silently point at a retired category.
+ *
+ * The chapter half of the old rule is gone: categories went org-wide on
+ * 2026-08-14, so there is no chapter on the label to compare the caller's
+ * against.
  */
 async function verifyCategory(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
   categoryId: Id<"budgetCategories"> | null | undefined,
 ): Promise<void> {
   if (!categoryId) return;
-  const category = await ctx.db.get(categoryId);
-  if (!category || category.chapterId !== chapterId) {
-    throw new ConvexError({
-      code: "NOT_FOUND",
-      message: "Category not found in your chapter.",
-    });
-  }
-  if (category.isActive === false) {
-    throw new ConvexError({
-      code: "INACTIVE_CATEGORY",
-      message: "This category is no longer active.",
-    });
-  }
+  await requireActiveBudgetCategory(ctx, categoryId);
 }
 
 /** Merge a `fields` patch into existing fields (so single-cell edits don't wipe). */
@@ -636,7 +626,7 @@ export const updateEventItem = mutation({
       fields.rowHeight = patch.rowHeight ?? undefined;
     if (patch.budgetCategoryId !== undefined) {
       if (patch.budgetCategoryId !== null) {
-        await verifyCategory(ctx, event.chapterId, patch.budgetCategoryId);
+        await verifyCategory(ctx, patch.budgetCategoryId);
       }
       fields.budgetCategoryId = patch.budgetCategoryId ?? undefined;
     }
@@ -1086,7 +1076,7 @@ export const convertItemToVendor = triggerMutation({
     let budgetCategoryId = item.budgetCategoryId;
     if (budgetCategoryId) {
       try {
-        await verifyCategory(ctx, event.chapterId, budgetCategoryId);
+        await verifyCategory(ctx, budgetCategoryId);
       } catch {
         budgetCategoryId = undefined;
       }

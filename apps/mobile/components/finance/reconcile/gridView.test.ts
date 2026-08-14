@@ -12,7 +12,6 @@ import {
   parseSortKey,
   serializeHiddenColumns,
   rowMarkings,
-  showsCategoryColumn,
   showsMarkedColumn,
   toggleHiddenColumn,
   type GroupSummary,
@@ -164,7 +163,6 @@ describe("column visibility — `?cols=` is the HIDDEN set", () => {
 describe("offerableColumns — capability, before anyone's preference", () => {
   const ordinary = {
     showBook: false,
-    showCategory: true,
     showMarked: true,
     panelOpen: false,
   };
@@ -193,8 +191,11 @@ describe("offerableColumns — capability, before anyone's preference", () => {
     expect(offerableColumns({ ...ordinary, showBook: true })).toContain("book");
   });
 
-  test("a scope with no Category column offers no tick box for it", () => {
-    expect(offerableColumns({ ...ordinary, showCategory: false })).not.toContain(
+  // Category is UNCONDITIONAL since categories went org-wide (2026-08-14):
+  // every row in every book can carry one, so the tick box is always offered
+  // and there is no `showCategory` capability flag left to pass.
+  test("Category is offered in every scope, central included", () => {
+    expect(offerableColumns({ ...ordinary, showBook: true })).toContain(
       "category",
     );
   });
@@ -216,22 +217,7 @@ describe("offerableColumns — capability, before anyone's preference", () => {
   });
 });
 
-describe("showsCategoryColumn", () => {
-  const chapterRow = { book: { id: "ch1" }, chargedTo: { id: "ch1" } };
-  const centralRow = { book: { id: "central" }, chargedTo: null };
-  const crossBookRow = { book: { id: "central" }, chargedTo: { id: "ch1" } };
 
-  test("a chapter scope always has one", () => {
-    expect(showsCategoryColumn(false, [])).toBe(true);
-    expect(showsCategoryColumn(false, [chapterRow])).toBe(true);
-  });
-
-  test("central scope: only when a cross-book row is actually in view", () => {
-    expect(showsCategoryColumn(true, [centralRow])).toBe(false);
-    expect(showsCategoryColumn(true, [])).toBe(false);
-    expect(showsCategoryColumn(true, [centralRow, crossBookRow])).toBe(true);
-  });
-});
 
 describe("rowMarkings — the STATE half of the old Actions column", () => {
   const unmarked = {

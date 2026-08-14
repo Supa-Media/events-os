@@ -20,11 +20,15 @@ import { Id } from "../../_generated/dataModel";
 import type { ExpenseType } from "@events-os/shared";
 
 /**
- * The out-of-the-box use-case categories every chapter gets under its General
- * Fund, so transactions can be coded to a use-case (and the AI coder has options
- * to suggest) from day one. Editable per chapter afterward — these are just
- * defaults. Kept in insertion order; each becomes a `budgetCategories` row with
- * `kind: "category"`.
+ * The out-of-the-box use-case categories the ORG gets, so transactions can be
+ * coded to a use-case (and the AI coder has options to suggest) from day one.
+ * Editable afterward — these are just defaults. Kept in insertion order; each
+ * becomes a `budgetCategories` row with `kind: "category"`.
+ *
+ * ONE set for the whole org, not one per chapter (2026-08-14 — see
+ * `schema/finances.ts#budgetCategories`). Seeding these per chapter is what
+ * produced thirteen "Supplies" rows that meant the same thing and rolled up
+ * separately; migration 0076 collapsed them.
  */
 export const DEFAULT_EXPENSE_CATEGORIES = [
   "Food & Meals",
@@ -64,34 +68,32 @@ export const DEFAULT_EXPENSE_CATEGORY_HINTS: Partial<
   "Travel & Lodging": "travel",
 };
 
-// A generous bound on a single chapter's categories (they number in the dozens);
-// mirrors the reads elsewhere in the finance layer.
+// A generous bound on the org's categories (they number in the dozens); mirrors
+// the reads elsewhere in the finance layer.
 const CATEGORY_SCAN_LIMIT = 5000;
 
 /**
- * Insert the {@link DEFAULT_EXPENSE_CATEGORIES} under `fundId` (the chapter's
- * General Fund) as `kind: "category"` rows. Idempotent: any name already present
- * in the chapter is skipped, so re-runs (and partially-seeded chapters) are safe.
- * Returns the number of categories inserted.
+ * Insert the {@link DEFAULT_EXPENSE_CATEGORIES} as org-wide `kind: "category"`
+ * rows. Idempotent: any name already on the list is skipped (matched the same
+ * trimmed/case-insensitive way migration 0076 collapses duplicates, so a
+ * "supplies" typed by hand doesn't earn a second "Supplies"), which makes
+ * re-runs and partially-seeded orgs safe. Returns the number inserted.
  */
 export async function insertDefaultExpenseCategories(
   ctx: any,
-  chapterId: Id<"chapters">,
-  fundId: Id<"funds">,
   now: number,
 ): Promise<number> {
   const existing = await ctx.db
     .query("budgetCategories")
-    .withIndex("by_chapter", (q: any) => q.eq("chapterId", chapterId))
     .take(CATEGORY_SCAN_LIMIT);
-  const existingNames = new Set<string>(existing.map((c: any) => c.name));
+  const existingNames = new Set<string>(
+    existing.map((c: any) => String(c.name).trim().toLowerCase()),
+  );
   let sortOrder = existing.length;
   let inserted = 0;
   for (const name of DEFAULT_EXPENSE_CATEGORIES) {
-    if (existingNames.has(name)) continue;
+    if (existingNames.has(name.trim().toLowerCase())) continue;
     await ctx.db.insert("budgetCategories", {
-      chapterId,
-      fundId,
       name,
       kind: "category",
       sortOrder: sortOrder++,
@@ -101,6 +103,7 @@ export async function insertDefaultExpenseCategories(
         ? { expenseType: DEFAULT_EXPENSE_CATEGORY_HINTS[name] }
         : {}),
     });
+    existingNames.add(name.trim().toLowerCase());
     inserted++;
   }
   return inserted;
@@ -178,10 +181,12 @@ export async function seedChapterFinance(
     createdAt: now,
   })) as Id<"funds">;
 
-  // ── Default expense categories (under the General Fund) ─────────────────────
-  // Gives a fresh chapter usable use-case categories so transactions can be
-  // coded (and the AI coder can suggest) out of the box.
-  await insertDefaultExpenseCategories(ctx, chapterId, generalFundId, now);
+  // ── Default expense categories (ORG-WIDE) ──────────────────────────────────
+  // Gives a fresh org usable use-case categories so transactions can be coded
+  // (and the AI coder can suggest) out of the box. Idempotent, so seeding the
+  // SECOND chapter finds the list already there and adds nothing — which is the
+  // whole point of the org-wide cutover.
+  await insertDefaultExpenseCategories(ctx, now);
 
   // ── Finance teams / departments ────────────────────────────────────────────
   const teamNames = ["Development", "Marketing", "Operations"];

@@ -94,6 +94,7 @@ import { foldFeeCoverageIntoGifts } from "./0072_fold_fee_coverage_into_gifts";
 import { bookKnownRepaymentFeeCoverage } from "./0073_book_known_repayment_fee_coverage";
 import { bookRepaymentCoverageBySession } from "./0074_book_repayment_coverage_by_session";
 import { labelFeeCoverageRows } from "./0075_label_fee_coverage_rows";
+import { orgWideBudgetCategories } from "./0076_org_wide_budget_categories";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -464,4 +465,19 @@ export const MIGRATIONS: Migration[] = [
   // row carrying the marker rather than pinning one — and it only ever fills
   // an absence, never overwrites a human's choice. See 0075.
   labelFeeCoverageRows,
+  // Every chapter kept its own copy of the same thirteen category names, so
+  // "Supplies" was N rows meaning one thing — and a CENTRAL charge could carry
+  // no category at all, because central owned none. That put a Public Worship
+  // card's New York spend in an "Uncategorized" bar nobody could close: the
+  // central FM was refused, and New York's treasurer can't write a row in
+  // central's book. Owner: "the category should be the same across all
+  // chapters." This collapses same-named categories (trimmed,
+  // case-insensitive) into one, repoints EVERY reference to the survivor —
+  // transactions, budgets, budget lines, reimbursement lines, event items,
+  // engagements, the reattribution undo snapshots, and the nesting link
+  // itself — then deletes the duplicates and clears the now-dead
+  // `chapterId`/`fundId`. Funds are deliberately untouched: a fund is real,
+  // restricted, chapter-owned money; a category is a word. Idempotent by
+  // construction (its output is a fixed point), so no flag. See 0076.
+  orgWideBudgetCategories,
 ];

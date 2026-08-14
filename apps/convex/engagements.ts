@@ -16,6 +16,7 @@ import {
   getChapterIdOrNull,
 } from "./lib/context";
 import { deleteEventPlacementsForRef } from "./lib/placements";
+import { requireActiveBudgetCategory } from "./lib/budgetCategoryAccess";
 import { resolveServiceLabels } from "./lib/serviceCatalog";
 // `mutation` is the triggers-wrapped builder, not `./_generated/server`'s —
 // every mutation here writes `engagements`, whose `personId`/`type` feed the
@@ -23,29 +24,17 @@ import { resolveServiceLabels } from "./lib/serviceCatalog";
 import { mutation } from "./lib/peopleAggregate";
 
 /**
- * A `budgetCategoryId` override, if any, must belong to the CALLER's own
- * chapter (categories are always chapter-scoped) AND be active — mirrors
- * `budgetLines.ts#verifyCategory` / `items.ts#verifyCategory`.
+ * A `budgetCategoryId` override, if any, must be a real, ACTIVE category —
+ * mirrors `budgetLines.ts#verifyCategory` / `items.ts#verifyCategory`. The
+ * chapter half of the old rule went away with the org-wide cutover
+ * (2026-08-14): the label carries no chapter to compare against.
  */
 async function verifyCategory(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
   categoryId: Id<"budgetCategories"> | null | undefined,
 ): Promise<void> {
   if (!categoryId) return;
-  const category = await ctx.db.get(categoryId);
-  if (!category || category.chapterId !== chapterId) {
-    throw new ConvexError({
-      code: "NOT_FOUND",
-      message: "Category not found in your chapter.",
-    });
-  }
-  if (category.isActive === false) {
-    throw new ConvexError({
-      code: "INACTIVE_CATEGORY",
-      message: "This category is no longer active.",
-    });
-  }
+  await requireActiveBudgetCategory(ctx, categoryId);
 }
 
 const engagementType = v.union(v.literal("volunteer"), v.literal("paid"));
@@ -188,7 +177,7 @@ export const update = mutation({
     if (patch.notes !== undefined) fields.notes = patch.notes ?? undefined;
     if (patch.budgetCategoryId !== undefined) {
       if (patch.budgetCategoryId !== null) {
-        await verifyCategory(ctx, eng.chapterId, patch.budgetCategoryId);
+        await verifyCategory(ctx, patch.budgetCategoryId);
       }
       fields.budgetCategoryId = patch.budgetCategoryId ?? undefined;
     }

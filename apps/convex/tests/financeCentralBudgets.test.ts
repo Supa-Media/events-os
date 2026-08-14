@@ -228,7 +228,6 @@ describe("budget attribution: explicit link only — no derive-matching", () => 
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Food",
       kind: "lineItem",
     });

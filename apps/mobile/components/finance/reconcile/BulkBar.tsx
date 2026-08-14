@@ -19,7 +19,6 @@ export function BulkBar({
   onSetFor,
   onMarkReconciled,
   onClear,
-  hideCategory = false,
   spansBooks = false,
   reassignItems,
   onReassign,
@@ -36,16 +35,17 @@ export function BulkBar({
   onSetFor: (value: string | null) => void;
   onMarkReconciled: () => void;
   onClear: () => void;
-  // WP-2.1: hide "Set category" in central scope — central txns have no
-  // categories (chapter-only), so only For + Mark closed apply.
-  hideCategory?: boolean;
   // The selection spans BOOKS (central + at least one chapter) — only possible
-  // in the merged all-books queue. Coding is book-specific: a central charge
-  // takes no category and only a central budget, a chapter charge the reverse.
-  // There's no option list that's correct for both, so rather than offer one
-  // that half-fails, the two coding pickers step aside and say why. Every
-  // book-agnostic action (Mark closed, Reassign, transfer/payout marking)
-  // stays exactly where it was.
+  // in the merged all-books queue. What is still book-specific is the BUDGET:
+  // a central charge takes central's budgets, a chapter charge its own. There's
+  // no "For" list correct for both, so rather than offer one that half-fails
+  // that picker steps aside and says why.
+  //
+  // "Set category" no longer steps aside with it. Categories are ORG-WIDE
+  // (2026-08-14), so one category list is correct for every row in the
+  // selection whatever book it came from — which makes a mixed-book batch
+  // codable in one pass instead of two. Every book-agnostic action (Mark
+  // closed, Reassign, transfer/payout marking) is where it always was.
   spansBooks?: boolean;
   // WP-2.2: central-seat holders can move the selection to another BOOK (→
   // Central or a chapter). Absent for chapter-only reconcilers.
@@ -102,27 +102,27 @@ export function BulkBar({
         {count} selected
       </Text>
       <View className="flex-row flex-wrap items-center gap-2">
+        {/* OUTSIDE the `spansBooks` guard, unlike everything below it: one
+            org-wide category list is correct for every row in the selection,
+            so a mixed-book batch really can be categorized in one pass. */}
+        <BulkPicker
+          label="Set category"
+          items={categoryItems}
+          onPick={onSetCategory}
+        />
         {spansBooks ? (
           <Text className="text-xs text-muted">
-            Mixed books — select one book&apos;s charges to code them
+            Mixed books — select one book&apos;s charges to budget them
           </Text>
         ) : (
           <>
-            {!hideCategory ? (
-              <BulkPicker
-                label="Set category"
-                items={categoryItems}
-                onPick={onSetCategory}
-              />
-            ) : null}
             <BulkPicker
               label="Set for"
               items={forItems}
               onPick={onSetFor}
             />
-            {/* Beside the other two coding actions, and inside the same
-                `spansBooks` guard, because it is one: a coding belongs to a
-                book. */}
+            {/* Beside the budget picker, and inside the same `spansBooks`
+                guard, because it is one: a coding belongs to a book. */}
             {onExplain ? (
               <Button
                 title="Explain"

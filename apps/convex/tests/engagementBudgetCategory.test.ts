@@ -58,31 +58,22 @@ async function seedEngagement(
   });
 }
 
-/** Insert a fund + category directly (bypassing the finance-manager gate on
- *  `finances.createCategory`, which is out of scope for this write path). */
+/** Insert a category directly (bypassing the finance-manager gate on
+ *  `finances.createCategory`, which is out of scope for this write path).
+ *  Categories are ORG-WIDE since 2026-08-14 — no chapter, no fund. */
 async function seedCategory(
   setup: ChapterSetup,
-  opts: { chapterId?: Id<"chapters">; isActive?: boolean } = {},
+  opts: { name?: string; isActive?: boolean } = {},
 ): Promise<Id<"budgetCategories">> {
   const { t } = setup;
-  const chapterId = opts.chapterId ?? setup.chapterId;
-  return await run(t, async (ctx) => {
-    const fundId = await ctx.db.insert("funds", {
-      chapterId,
-      name: "General",
-      restriction: "unrestricted",
-      sortOrder: 0,
-      createdAt: Date.now(),
-    });
-    return await ctx.db.insert("budgetCategories", {
-      chapterId,
-      fundId,
-      name: "Professional Services",
+  return await run(t, async (ctx) =>
+    ctx.db.insert("budgetCategories", {
+      name: opts.name ?? "Professional Services",
       kind: "lineItem",
       isActive: opts.isActive ?? true,
       createdAt: Date.now(),
-    });
-  });
+    }),
+  );
 }
 
 describe("engagements.update budgetCategoryId", () => {
@@ -140,25 +131,21 @@ describe("engagements.update budgetCategoryId", () => {
     expect(eng?.notes).toBe("Confirmed load-in time");
   });
 
-  test("a category from another chapter is rejected", async () => {
+  // Was "a category from another chapter is rejected". Categories went ORG-WIDE
+  // on 2026-08-14, so a foreign chapter's category is simply the org's
+  // category; what a vendor row still can't take is an id with no category
+  // behind it.
+  test("a category that no longer exists is rejected", async () => {
     const t = newT();
     const setup = await setupChapter(t);
     const engagementId = await seedEngagement(setup);
-    const otherChapterId = await run(t, (ctx) =>
-      ctx.db.insert("chapters", {
-        name: "Boston",
-        isActive: true,
-        createdAt: Date.now(),
-      }),
-    );
-    const foreignCategoryId = await seedCategory(setup, {
-      chapterId: otherChapterId,
-    });
+    const goneCategoryId = await seedCategory(setup, { name: "Deleted" });
+    await run(t, (ctx) => ctx.db.delete(goneCategoryId));
 
     await expect(
       setup.as.mutation(api.engagements.update, {
         engagementId,
-        budgetCategoryId: foreignCategoryId,
+        budgetCategoryId: goneCategoryId,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
 
