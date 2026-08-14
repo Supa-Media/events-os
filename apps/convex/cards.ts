@@ -3446,6 +3446,15 @@ const chapterRepaymentValidator = v.object({
   // manager can see they already chased it — the alternative is sending a
   // second reminder because nothing on screen said the first one went.
   lastNudgedAt: v.union(v.number(), v.null()),
+  // Receipt state, for the "Send receipt" / "Resend receipt" row action on a
+  // settled repayment (`PersonalChargesView.tsx`'s Repaid section) — a
+  // manager needs to see "did this person ever actually get one?" at a
+  // glance, not guess. `receiptSentAt` alone means an attempt was made, not
+  // that it landed; `receiptDeliveredAt` is the one that means delivered.
+  receiptSentAt: v.union(v.number(), v.null()),
+  receiptDeliveredAt: v.union(v.number(), v.null()),
+  receiptDeliveryFailedAt: v.union(v.number(), v.null()),
+  lastReceiptError: v.union(v.string(), v.null()),
 });
 
 /**
@@ -3514,6 +3523,10 @@ export const listPersonalRepayments = query({
           hasExternalAccount: !!r.payerExternalAccountId,
           creditTransactionId: r.creditTransactionId ?? null,
           lastNudgedAt: r.lastNudgedAt ?? null,
+          receiptSentAt: r.receiptSentAt ?? null,
+          receiptDeliveredAt: r.receiptDeliveredAt ?? null,
+          receiptDeliveryFailedAt: r.receiptDeliveryFailedAt ?? null,
+          lastReceiptError: r.lastReceiptError ?? null,
         };
       }),
     );
@@ -4088,6 +4101,125 @@ export const sendRepaymentReceiptEmail = internalAction({
       }
     } catch (err) {
       console.error("sendRepaymentReceiptEmail: failed", repaymentIds, err);
+    }
+    return null;
+  },
+});
+
+// ── Manual "Send receipt" (a manager, on demand) ──────────────────────────────
+//
+// Founder: "add an email button for already paid reimbursements or whatever.
+// Allowing me to manually send a receipt to someone that needs it. Say they
+// forgot it, or they just need it resent. Or, you know, it's in the past. So
+// let me do that, because there's some payments that I want to send receipts
+// for, or repayments I want to send receipts for."
+//
+// The automatic path above is deliberately AT MOST ONCE, and that guarantee
+// stays exactly as strict as it was — `claimRepaymentReceipts` still refuses
+// anything with `receiptSentAt` set. This is a SEPARATE, deliberately
+// UNLIMITED path: a manager choosing to (re)send is the whole feature,
+// including for a repayment that settled long before receipts existed at all
+// (`receiptSentAt` already set from that era) or one whose one automatic
+// attempt simply failed. It reuses every piece of the automatic path's send
+// machinery — `getRepaymentReceiptPayload`, `buildRepaymentReceipt`,
+// `sendOneRepaymentReceiptGroup`, `markRepaymentReceiptOutcome` — so there is
+// still exactly one composer and one sender, just two ways to reach them.
+//
+// WHAT `receiptSentAt` MEANS AFTER A MANUAL SEND: "the most recent attempt",
+// not "the first attempt ever" — the same meaning `claimRepaymentReceiptForRetry`
+// already gives it when the backfill retries a stale send. It is re-stamped
+// to `Date.now()` on every manual send, live or not. `receiptDeliveredAt` /
+// `receiptDeliveryFailedAt` are still the fields that answer "did the payer
+// actually get one" — those come only from `markRepaymentReceiptOutcome`,
+// exactly as before.
+
+/**
+ * The mutation half of a manual send: gate, verify the repayment is genuinely
+ * settled and in the caller's chapter, and stamp `receiptSentAt` — all in ONE
+ * transaction, the same shape `claimRepaymentReceipts` uses. Deliberately
+ * does NOT check `receiptSentAt` first; see this section's header for why
+ * re-sending on purpose is the point, not a bug to guard against.
+ */
+export const claimRepaymentReceiptManual = internalMutation({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.object({
+    repaymentId: v.id("personalRepayments"),
+    payerPersonId: v.id("people"),
+  }),
+  handler: async (ctx, { repaymentId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireRepaymentsCollect(ctx, chapterId);
+
+    const r = await ctx.db.get(repaymentId);
+    await requireInChapter(ctx, chapterId, r, "Repayment");
+    if (!r!.creditTransactionId || r!.status !== "paid") {
+      throw new ConvexError({
+        code: "NOT_SETTLED",
+        message:
+          "This repayment hasn't been paid yet — there's nothing to email a receipt for.",
+      });
+    }
+
+    await ctx.db.patch(repaymentId, { receiptSentAt: Date.now() });
+    return { repaymentId: r!._id, payerPersonId: r!.payerPersonId };
+  },
+});
+
+/** The claimed row's most recent failure reason, so a manual send's failure
+ *  can tell a manager something real ("payer has no email on file") instead
+ *  of a generic "try again" — the backlog's most common actual cause is
+ *  exactly that, and it's actionable. */
+export const getRepaymentReceiptFailureReason = internalQuery({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, { repaymentId }) => {
+    const r = await ctx.db.get(repaymentId);
+    return r?.lastReceiptError ?? null;
+  },
+});
+
+/**
+ * "Send receipt" / "Resend receipt" — the manual, per-row action behind the
+ * Repaid section's button (`PersonalChargesView.tsx`). Manager-gated
+ * (`requireRepaymentsCollect`, re-checked inside the claim mutation — the
+ * same rung `nudgeOutstandingRepayments` uses, because this is also an
+ * outbound email with somebody's name and an amount on it, just to the
+ * person who already paid instead of the person who still owes).
+ *
+ * Synchronous, unlike the automatic path (which schedules and returns
+ * immediately): a manager pressing this button is watching for the outcome,
+ * so it sends inline and THROWS on failure — never reports success either
+ * way. `useActionRunner` on the client turns that throw into a real error
+ * toast instead of a silent no-op that leaves a manager believing an email
+ * went out when it didn't.
+ */
+export const sendRepaymentReceiptManually = action({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.null(),
+  handler: async (ctx, { repaymentId }) => {
+    const claimed: {
+      repaymentId: Id<"personalRepayments">;
+      payerPersonId: Id<"people">;
+    } = await ctx.runMutation(internal.cards.claimRepaymentReceiptManual, {
+      repaymentId,
+    });
+
+    const outcome = await sendOneRepaymentReceiptGroup(
+      ctx,
+      [claimed.repaymentId],
+      0,
+    );
+    if (outcome === "failed") {
+      const reason: string | null = await ctx.runQuery(
+        internal.cards.getRepaymentReceiptFailureReason,
+        { repaymentId: claimed.repaymentId },
+      );
+      throw new ConvexError({
+        code: "SEND_FAILED",
+        message: reason
+          ? `Couldn't send the receipt: ${reason}`
+          : "Couldn't send the receipt — try again in a moment.",
+      });
     }
     return null;
   },
