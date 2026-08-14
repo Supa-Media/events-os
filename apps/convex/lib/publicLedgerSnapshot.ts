@@ -658,11 +658,11 @@ export async function buildSnapshot(
       entries.push({
         kind: "gift",
         occurredAt: gift.receivedAt,
-        // `amountCents` is what the donor MEANT to give; `feeCoverageCents`
-        // is the extra they added so the processor's cut wouldn't come out of
-        // it. Publishing the gift figure keeps the public total comparable
-        // year on year as fee-coverage adoption changes — the invariant
-        // `schema/givingPlatform.ts#gifts` exists to protect.
+        // `amountCents` is the whole charge, fee coverage included — what
+        // the donor actually gave. `feeCoverageCents` notes how much of it
+        // they added to absorb the processor's cut and is NOT subtracted
+        // here; see `schema/givingPlatform.ts#gifts` for why the public
+        // total is the gross.
         amountCents: gift.amountCents,
         direction: "in",
         countsInTotals: true,

@@ -95,44 +95,49 @@ export function assertPositiveGiftCents(amountCents: number): void {
 }
 
 /**
- * Split one Stripe charge into the GIFT and the FEE COVERAGE the donor added
- * on top of it. Pure.
+ * How much of one Stripe charge was the fee coverage the donor chose to add on
+ * top of what they typed. Pure.
  *
- * The gift is what the donor MEANT to give; the coverage is the extra they paid
- * so the processor's cut wouldn't come out of it. Splitting rather than booking
- * the whole charge is what keeps total giving comparable across the launch of
- * fee coverage: the same donors giving the same amounts report the same
- * numbers, and only the org's NET moves. See `gifts.feeCoverageCents`.
+ * THE GIFT IS THE WHOLE CHARGE — this function does not decide the gift, it
+ * only annotates it. A donor who typed $300, ticked "cover the fee" and was
+ * charged $302.42 GAVE $302.42: every cent of it left their account for us,
+ * none of it came back to them, and the processor's $2.42 is our cost of
+ * banking it, exactly like the fee on the $300 gift beside it that nobody
+ * covered. Booking $300 and parking $2.42 outside the gift understated
+ * contribution revenue by the one figure the donor was most deliberate about,
+ * and made a receipt disagree with the ledger (#732 — Charisma's $309.27
+ * charge reported as a $300 gift).
  *
- * EVERY GUARD IS AGAINST THE SPLIT BEING WRONG RATHER THAN MERELY ABSENT. An
- * `intendedCents` that isn't a sane integer strictly inside the charge is
- * IGNORED, falling back to "the whole charge was the gift" — the pre-feature
- * behaviour, which can only ever understate the org's net and can never invent
- * a gift larger than what was actually paid.
+ * SO WHY KEEP THE FIGURE AT ALL? Because "they covered the fee" is worth
+ * knowing — for the thank-you copy, for the donor's own receipt, and for
+ * measuring whether offering the option is working. It is a NOTE ON the gift,
+ * never a subtraction from it, and nothing sums it into or out of a total.
  *
- * SHARED, because two paths have to agree about it: `recordGiveDonationPaid`
- * books the gift with it, and `givingPending.recordPendingGift` reports the
- * in-flight figure with it. If those two ever disagreed, a digest's "still
- * clearing" line and the gift that later replaced it would differ by the fee
- * coverage — the pending money would appear to shrink on arrival, every time.
+ * EVERY GUARD IS AGAINST THE ANNOTATION BEING WRONG RATHER THAN MERELY ABSENT.
+ * An `intendedCents` that isn't a sane integer inside the charge is IGNORED and
+ * the charge is booked with no coverage note — the figure that can only ever
+ * lose a footnote, never move money.
  *
- * `splitIsSane` is returned rather than swallowed so a caller that books money
- * can log the malformed metadata; a caller that only reports can stay quiet.
+ * SHARED, because two paths have to agree: `recordGiveDonationPaid` books the
+ * gift, and `givingPending.recordPendingGift` reports the in-flight figure. Both
+ * now report the CHARGE, so a digest's "still clearing" line and the gift that
+ * replaces it are the same number by construction.
+ *
+ * `coverageIsSane` is returned rather than swallowed so a caller that books
+ * money can log malformed metadata; a caller that only reports can stay quiet.
  */
-export function splitIntendedGift(
+export function coverageOnCharge(
   amountTotalCents: number,
   intendedCents: number | undefined,
-): { giftCents: number; coverageCents: number; splitIsSane: boolean } {
-  const splitIsSane =
+): { coverageCents: number; coverageIsSane: boolean } {
+  const coverageIsSane =
     intendedCents !== undefined &&
     Number.isInteger(intendedCents) &&
     intendedCents > 0 &&
     intendedCents <= amountTotalCents;
-  const giftCents = splitIsSane ? (intendedCents as number) : amountTotalCents;
   return {
-    giftCents,
-    coverageCents: amountTotalCents - giftCents,
-    splitIsSane,
+    coverageCents: coverageIsSane ? amountTotalCents - (intendedCents as number) : 0,
+    coverageIsSane,
   };
 }
 
@@ -512,11 +517,12 @@ export async function recordGiftForDonor(
     note?: string;
     recordedBy?: Id<"users">;
     /**
-     * The extra the donor paid to absorb the processor's cut. Rides along on
-     * the gift row and is deliberately NOT added to `amountCents` — see
+     * How much of `amountCents` the donor added to absorb the processor's cut.
+     * A NOTE ON the gift, already INSIDE `amountCents` — see
      * `schema/givingPlatform.ts`'s `gifts.feeCoverageCents`. Every rollup below
-     * moves by `amountCents` alone, so covering fees changes what the org NETS
-     * and never what the giving reports say was given.
+     * moves by `amountCents`, which is the whole charge, so nothing here needs
+     * to add this back or take it off; subtracting it anywhere would understate
+     * a gift the donor deliberately made larger.
      */
     feeCoverageCents?: number;
     // P2 recurring: a gift written from a Stripe subscription billing cycle
@@ -572,7 +578,16 @@ export async function recordGiftForDonor(
     ...(args.eventId ? { eventId: args.eventId } : {}),
     ...(args.donationId ? { donationId: args.donationId } : {}),
     ...(args.externalRef ? { externalRef: args.externalRef } : {}),
-    ...(args.feeCoverageCents ? { feeCoverageCents: args.feeCoverageCents } : {}),
+    // The coverage note, and the STAMP saying it is already inside the amount
+    // above. The stamp is what lets migration 0072 tell a row written under
+    // this rule from one written under the old split — see
+    // `gifts.feeCoverageInAmount`. Written together, always.
+    ...(args.feeCoverageCents
+      ? {
+          feeCoverageCents: args.feeCoverageCents,
+          feeCoverageInAmount: true,
+        }
+      : {}),
     ...(args.note ? { note: args.note } : {}),
     ...(args.recordedBy ? { recordedBy: args.recordedBy } : {}),
     ...(args.pledgeId ? { pledgeId: args.pledgeId } : {}),

@@ -86,7 +86,15 @@ var G=window.__GIVE__||{mode:"map",slug:null,oneTimePresetsCents:[2500,5000,1000
 
 function $(id){return document.getElementById(id);}
 function qsa(sel){return document.querySelectorAll(sel);}
-function money(c){return '$'+(c/100).toFixed(c%100===0?0:2);}
+/* Whole dollars when it divides evenly, and GROUPED — a five-figure gift is
+   exactly where the fee surfaces matter most, and '$5149.64' is the moment a
+   donor stops trusting the arithmetic. */
+function money(c){
+  var s=(c/100).toFixed(c%100===0?0:2);
+  var parts=s.split('.');
+  parts[0]=parts[0].replace(/\\B(?=(\\d{3})+(?!\\d))/g,',');
+  return '$'+parts.join('.');
+}
 
 /** Wire one amount-picker form (presets + custom + name/email + submit).
  *  No-ops if the form isn't on this page (its preset buttons won't exist). */
@@ -126,15 +134,58 @@ function wireAmountForm(opts){
     if(note)note.style.display=(opts.isMonthly&&c>0&&c<opts.unitCents)?'block':'none';
     refreshFees(c);
   }
-  /* The fee surfaces, both driven off the SAME amount the submit button shows,
-     so the three can never disagree. Everything here degrades to hidden when
-     the rates aren't available — a fee question must never be the reason the
-     giving form looks broken. */
+  /* WHICH RAIL IS SELECTED, and therefore which rate every figure below is
+     quoted at. The radios only exist on the one-time form; anywhere else this
+     answers 'card', which is what the server defaults to as well. */
+  function currentMethod(){
+    var picked=document.querySelector('input[name="'+prefix+'_method"]:checked');
+    return (picked&&picked.value==='ach_debit')?'ach_debit':'card';
+  }
+  function currentRate(){
+    return currentMethod()==='ach_debit'?G.achRate:G.cardRate;
+  }
+  /* The rate as a person reads it — the browser half of the shared
+     describeFeeRate. Display only: it never decides a charge. */
+  function describeRate(r){
+    if(!r)return '';
+    var pct=(r.percentBps/100).toFixed(r.percentBps%100===0?0:1)+'%';
+    var s=pct+(r.fixedCents>0?' + '+money(r.fixedCents):'');
+    return (r.capCents!=null)?s+', capped at '+money(r.capCents):s;
+  }
+  /* The fee surfaces, all driven off the SAME amount the submit button shows
+     and the SAME rail the radios say, so they can never disagree with each
+     other or with what the server charges. Everything here degrades to hidden
+     when the rates aren't available — a fee question must never be the reason
+     the giving form looks broken. */
   function refreshFees(c){
+    var method=currentMethod();
+    var rate=currentRate();
+    /* The rate under each option, and the selected-row highlight. */
+    var cardLbl=$(prefix+'_rate_card');
+    if(cardLbl)cardLbl.textContent=describeRate(G.cardRate);
+    var achLbl=$(prefix+'_rate_ach');
+    if(achLbl){
+      achLbl.textContent=G.achRate
+        ?describeRate(G.achRate)+' · 2–4 days'
+        :'';
+    }
+    var opts_=qsa('#'+prefix+'_paypick .payopt');
+    for(var j=0;j<opts_.length;j++){
+      var input=opts_[j].querySelector('input');
+      opts_[j].classList.toggle('sel',!!(input&&input.checked));
+    }
+    /* What bank transfer means for THIS gift, under the submit button. Only
+       the one-time form has the picker; the monthly form keeps its footnote. */
+    var paynote=$(prefix+'_paynote');
+    if(paynote){
+      paynote.textContent=method==='ach_debit'
+        ?"Bank transfers take about 2–4 business days to clear — we'll email you when it does."
+        :"Card, Apple Pay, Link or bank transfer — all offered at checkout. We'll email you a receipt.";
+    }
     var cov=$(prefix+'_covline');
     var box=$(prefix+'_covfees');
-    if(cov&&box&&G.cardRate&&c>0){
-      var extra=feeCoverageCents(c,G.cardRate);
+    if(cov&&box&&rate&&c>0){
+      var extra=feeCoverageCents(c,rate);
       cov.textContent=box.checked
         ?"You'll be charged "+money(c+extra)+", and "+money(c)+" reaches us."
         :"Adds "+money(extra)+", so the full "+money(c)+" reaches us.";
@@ -145,16 +196,18 @@ function wireAmountForm(opts){
     /* The ACH suggestion. NOT a break-even — ACH is cheaper at every amount;
        the threshold is a friction judgement about when authorising a bank
        account and waiting a few days is worth interrupting someone for. See
-       ACH_NUDGE_THRESHOLD_CENTS. */
+       ACH_NUDGE_THRESHOLD_CENTS. Hidden once they've already picked bank:
+       arguing for a choice somebody has made is noise, not help. */
     var ach=$(prefix+'_achnote');
     if(ach){
-      var show=!opts.isMonthly&&G.achThresholdCents!=null&&c>=G.achThresholdCents
+      var show=!opts.isMonthly&&method==='card'
+        &&G.achThresholdCents!=null&&c>=G.achThresholdCents
         &&G.cardRate&&G.achRate;
       if(show){
         var saving=feeOnCents(c,G.cardRate)-feeOnCents(c,G.achRate);
         ach.textContent='Paying by bank transfer instead of card keeps about '
-          +money(saving)+' more of this with us. It takes 2–4 business days to clear; '
-          +'you can pick it on the next screen.';
+          +money(saving)+' more of this with us. Pick it above to price the fee '
+          +'for it. It takes 2–4 business days to clear.';
       }
       ach.style.display=show?'block':'none';
     }
@@ -185,6 +238,10 @@ function wireAmountForm(opts){
   }
   var covBox=$(prefix+'_covfees');
   if(covBox)covBox.addEventListener('change',refresh);
+  var methodRadios=qsa('input[name="'+prefix+'_method"]');
+  for(var m=0;m<methodRadios.length;m++){
+    methodRadios[m].addEventListener('change',refresh);
+  }
   refresh();
 
   var form=$(prefix+'_form');
@@ -216,9 +273,13 @@ function wireAmountForm(opts){
       if(wallMessage)payload.message=wallMessage;
     }
     /* A yes/no, never the amount. The server recomputes what covering costs
-       from the live schedule, so the page cannot quote one number and the card
-       be charged another. */
+       from the live schedule — at the rail named below — so the page cannot
+       quote one number and the card be charged another. */
     if((($(prefix+'_covfees')||{}).checked))payload.coverFees=true;
+    /* The rail, which decides BOTH what the coverage costs and what Stripe's
+       checkout will accept. Sent even when it's the default, so the payment
+       carries the answer rather than an assumption. */
+    if(!opts.isMonthly)payload.method=currentMethod();
     fetch(opts.endpoint,{
       method:'POST',
       headers:{'Content-Type':'application/json'},
