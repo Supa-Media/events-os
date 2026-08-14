@@ -142,3 +142,75 @@ export async function requireContractorTaxDocView(
 ): Promise<void> {
   await requireFinanceRole(ctx, chapterId, "manager");
 }
+
+// ── The contractor roster (who we have paid before) ─────────────────────────
+/** Non-throwing form, for deciding whether to OFFER the "pick a contractor"
+ *  affordance on the composer. */
+export async function hasContractorRosterView(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<boolean> {
+  const access = await getFinanceRole(ctx, chapterId);
+  return access.isManager || access.isCentral;
+}
+
+/**
+ * May the caller browse the chapter's contractor roster — everyone it has paid
+ * before, with what is on file for each?
+ *
+ * A RUNG ABOVE the payment queue's viewer floor, deliberately. The queue is a
+ * list of transactions; this is a durable list of PEOPLE we pay, each row one
+ * step from a tax document, and it is the object a curious member would most
+ * like to browse and least need to. Graduates to
+ * `finance.contractors.roster.view`.
+ *
+ * NOTE what this does NOT imply: roster access is not tax-document access.
+ * `requireContractorTaxDocView` is unchanged and still gates the file itself —
+ * making it easier to find a contractor must not make it easier to open their
+ * W-9.
+ */
+export async function requireContractorRosterView(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<void> {
+  await requireFinanceRole(ctx, chapterId, "manager");
+}
+
+/**
+ * May the caller create or edit a contractor profile — save someone as a
+ * returning contractor, correct their business name, record how they're
+ * organised?
+ *
+ * Same rank as compose today: someone who can commit the org to paying a
+ * contractor can also record who that contractor is. Graduates to
+ * `finance.contractors.roster.manage`.
+ */
+export async function requireContractorRosterManage(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<void> {
+  await requireFinanceRole(ctx, chapterId, "manager");
+}
+
+/**
+ * May the caller FORGET a contractor — destroy the remembered bank reference
+ * and tax document ahead of the retention clock?
+ *
+ * Its own power because it is the one irreversible thing on this surface, and
+ * because it is the request a contractor is entitled to make ("stop keeping my
+ * details"). Held at the same rank today; graduates to
+ * `finance.contractors.forget`, at which point it belongs to a NARROWER set
+ * than roster management — deleting evidence and tidying a roster are not the
+ * same act.
+ *
+ * It deliberately CANNOT destroy a document still inside the retention window
+ * of a payment that actually paid out — see `contractorProfiles.forget`. A
+ * power to delete records the org is required to keep is not one this resolver
+ * should be able to grant.
+ */
+export async function requireContractorForget(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<void> {
+  await requireFinanceRole(ctx, chapterId, "manager");
+}

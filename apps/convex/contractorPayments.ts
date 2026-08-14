@@ -79,8 +79,13 @@ import {
   contractorAmountProblems,
   contractorCanEdit,
   publicTextProblems,
+  contractorDescriptionProblems,
   isForeignTaxDoc,
   taxDocPurgeAfter,
+  extendedTaxDocPurgeAfter,
+  unpaidTaxDocPurgeAfter,
+  taxDocIsCurrent,
+  taxDocReuseProblem,
   type ContractorPaymentStatus,
   type ContractorPaymentOrigin,
   type ContractorTaxDocKind,
@@ -108,6 +113,12 @@ import {
   defaultFundId,
   listChapterFinanceManagerPersonIds,
 } from "./lib/finance";
+import {
+  profileFor,
+  latestTaxDocFor,
+  matchPersonByEmail,
+  touchUnpaidTaxDoc,
+} from "./contractorProfiles";
 import {
   requireContractorPaymentsView,
   requireContractorPaymentsCompose,
@@ -189,17 +200,19 @@ function assertAmount(amountCents: number): void {
  */
 function assertPublicDescription(text: string): string {
   const out = cap(text, CONTRACTOR_SERVICE_DESCRIPTION_MAX);
-  if (out.length < 3) {
-    throw new ConvexError({
-      code: "INVALID_INPUT",
-      message: "Say what the work was — this appears on the public ledger.",
-    });
-  }
-  const problems = publicTextProblems(out);
+  // The SHARED rule — length and PII in one call, so the public page, the
+  // in-app composer and this server all refuse the same strings. The length
+  // half is the coding validator's own minimum: see
+  // `CONTRACTOR_SERVICE_DESCRIPTION_MIN` for why accepting anything shorter
+  // builds a payment that only fails at the moment somebody presses Pay.
+  const problems = contractorDescriptionProblems(out);
   if (problems.length > 0) {
+    const isPii = publicTextProblems(out).length > 0;
     throw new ConvexError({
-      code: "PUBLIC_PII",
-      message: `${problems[0]} This description is published publicly, so please reword it without personal details.`,
+      code: isPii ? "PUBLIC_PII" : "INVALID_INPUT",
+      message: isPii
+        ? `${problems[0]} This description is published publicly, so please reword it without personal details.`
+        : problems[0],
     });
   }
   return out;
@@ -941,13 +954,28 @@ export const approve = mutation({
       });
     }
 
-    const taxDoc = await ctx.db
-      .query("contractorTaxDocuments")
-      .withIndex("by_payment", (q) =>
-        q.eq("contractorPaymentId", contractorPaymentId),
-      )
-      .order("desc")
-      .first();
+    const taxDoc = row.taxDocumentId
+      ? await ctx.db.get(row.taxDocumentId)
+      : await ctx.db
+          .query("contractorTaxDocuments")
+          .withIndex("by_payment", (q) =>
+            q.eq("contractorPaymentId", contractorPaymentId),
+          )
+          .order("desc")
+          .first();
+    // An EXPIRED form establishes nothing. A W-9 never expires, but a W-8 does,
+    // and reuse makes a lapsed one reachable in a way it never was when every
+    // payment collected its own — so the gate belongs here, not only at the
+    // moment of collection.
+    if (taxDoc) {
+      const problem = taxDocReuseProblem(taxDoc);
+      if (problem) {
+        throw new ConvexError({
+          code: "TAX_DOC_EXPIRED",
+          message: `${problem} Ask them for a current form before approving.`,
+        });
+      }
+    }
     if (taxDoc && isForeignTaxDoc(taxDoc.kind)) {
       throw new ConvexError({
         code: "FOREIGN_PAYEE_REVIEW",
@@ -1143,6 +1171,23 @@ export const viewTaxDocument = mutation({
       });
     }
 
+    // RATE-LIMITED, which the roster made necessary. When every tax document
+    // was reachable only by opening its own payment, scraping the chapter's
+    // forms meant hunting them down one at a time. A durable contractor list
+    // turns that into a scroll and N taps — same permission, same log, wholly
+    // different effort. The log says who looked; this bounds how many they can
+    // look at before somebody notices.
+    //
+    // Modelled on `cardDetailsRevealAttempts`, the codebase's existing answer
+    // to "a legitimate power that becomes dangerous in bulk", and keyed on the
+    // CALLER rather than an IP: this endpoint is authenticated, so the person
+    // is the thing worth limiting.
+    await assertContractNotRateLimited(
+      ctx,
+      `taxdoc_view:${String(callerPersonId)}`,
+      TAX_DOC_VIEW_MAX_PER_HOUR,
+    );
+
     // EVERY VIEW IS LOGGED, before the URL is handed out.
     await ctx.db.insert("approvals", {
       chapterId,
@@ -1319,6 +1364,10 @@ const CONTRACT_RATE_WINDOW_MS = 60 * 60 * 1000; // 1 hour
 const CONTRACT_SUBMIT_MAX = 10;
 const CONTRACT_UPLOAD_MAX = 20;
 const CONTRACT_BANK_MAX = 20;
+/** How many tax documents one person may open in an hour. Generous for the
+ *  real job — a treasurer reconciling a month opens a handful — and far below
+ *  what emptying the roster into a folder would take. */
+const TAX_DOC_VIEW_MAX_PER_HOUR = 15;
 
 async function assertContractNotRateLimited(
   ctx: MutationCtx,
@@ -1387,11 +1436,34 @@ export const publicByToken = query({
     const row = await paymentByToken(ctx, token);
     if (!row) return null;
     const chapter = await ctx.db.get(row.chapterId);
-    const taxDoc = await ctx.db
-      .query("contractorTaxDocuments")
-      .withIndex("by_payment", (q) => q.eq("contractorPaymentId", row._id))
-      .order("desc")
-      .first();
+    const taxDoc = row.taxDocumentId
+      ? await ctx.db.get(row.taxDocumentId)
+      : await ctx.db
+          .query("contractorTaxDocuments")
+          .withIndex("by_payment", (q) => q.eq("contractorPaymentId", row._id))
+          .order("desc")
+          .first();
+
+    // What this PERSON already has with us, independent of this payment. Only
+    // resolved when the payment is linked to a roster person — a payee we have
+    // never paid before has nothing on file by definition.
+    const profile = row.personId
+      ? await profileFor(ctx, row.chapterId, row.personId)
+      : null;
+    const priorDoc = row.personId
+      ? await latestTaxDocFor(ctx, row.chapterId, row.personId)
+      : null;
+    const onFile =
+      profile || priorDoc
+        ? {
+            doc: priorDoc,
+            bankAccountLast4: profile?.externalAccountId
+              ? profile.bankAccountLast4
+              : undefined,
+            lastPaidAt: profile?.lastPaidAt,
+          }
+        : null;
+
     return {
       reference: contractorReferenceFor(row._id),
       chapterName: chapter?.name ?? "",
@@ -1425,6 +1497,20 @@ export const publicByToken = query({
       bankAccountLast4: row.bankAccountLast4,
       hasTaxDocument: taxDoc != null,
       taxDocumentKind: taxDoc?.kind,
+      // ── What we already hold for this person, so the page can offer
+      // "welcome back" instead of the whole form again. METADATA ONLY: a kind,
+      // a date, a last-four. Never a storage id, never an account reference.
+      // A stranger with a guessed token learns nothing they could use.
+      onFile: onFile
+        ? {
+            taxDocKind: onFile.doc?.kind ?? null,
+            taxDocCollectedAt: onFile.doc?.uploadedAt ?? null,
+            taxDocIsCurrent: onFile.doc ? taxDocIsCurrent(onFile.doc) : false,
+            taxDocProblem: onFile.doc ? taxDocReuseProblem(onFile.doc) : null,
+            bankAccountLast4: onFile.bankAccountLast4 ?? null,
+            lastPaidAt: onFile.lastPaidAt ?? null,
+          }
+        : null,
       paidAt: row.paidAt,
     };
   },
@@ -1498,6 +1584,7 @@ async function attachTaxDocument(
   storageId: Id<"_storage">,
   kind: ContractorTaxDocKind,
   fileName?: string,
+  signedAt?: number,
 ): Promise<void> {
   const meta = await ctx.db.system.get(storageId);
   if (!meta) {
@@ -1539,19 +1626,75 @@ async function attachTaxDocument(
   // work done in December substantiates the prior year, and the retention clock
   // has to run from the year the money is reportable in.
   const taxYear = new Date(row.serviceDate ?? Date.now()).getUTCFullYear();
-  await ctx.db.insert("contractorTaxDocuments", {
+  const now = Date.now();
+  const docId = await ctx.db.insert("contractorTaxDocuments", {
     chapterId: row.chapterId,
     contractorPaymentId: row._id,
     ...(row.personId ? { personId: row.personId } : {}),
     payeeName: row.payeeName,
     kind,
+    ...(signedAt != null ? { signedAt } : {}),
     storageId,
     ...(fileName ? { fileName: cap(fileName, 200) } : {}),
     ...(meta.contentType ? { contentType: meta.contentType } : {}),
     sizeBytes: meta.size,
     taxYear,
-    purgeAfter: taxDocPurgeAfter(taxYear),
-    uploadedAt: Date.now(),
+    // A freshly collected document has substantiated nothing yet — no payment
+    // using it has paid out. It gets the SHORT unpaid window until one does
+    // (`contractorProfiles.rememberPaidContractor` hands it over to the
+    // four-year rule). A form collected for a job that fell through is the one
+    // we have least right to keep.
+    purgeAfter: unpaidTaxDocPurgeAfter(now),
+    lastUsedAt: now,
+    uploadedAt: now,
+  });
+  // CITE IT from the payment. Before reuse a payment's document was found by
+  // scanning `by_payment`; a reused document belongs to an earlier payment, so
+  // the citation has to be explicit on the row that relies on it.
+  await ctx.db.patch(row._id, { taxDocumentId: docId, updatedAt: now });
+}
+
+/**
+ * Cite a tax document ALREADY on file for this payment, instead of collecting a
+ * new one.
+ *
+ * The mechanism behind not re-asking. Three things happen, and each of them is
+ * load-bearing:
+ *
+ *  1. The payment cites the document, so "is there a form on file?" stays
+ *     answerable from the payment row.
+ *  2. The document's `lastTaxYear` advances to THIS payment's service year, and
+ *     `purgeAfter` is extended monotonically from it. Without this the sweep
+ *     would destroy the document four years after the FIRST payment that used
+ *     it, taking the substantiation for every later payment with it — silently,
+ *     years later, with nothing to notice at the time.
+ *  3. The reuse is recorded (`reusedFromProfile`), so the audit trail can say
+ *     whether this person actually filled anything in for this job.
+ *
+ * Refuses an expired form. A W-9 never expires, but a W-8 does, and reusing a
+ * lapsed one would mean paying a foreign contractor against a document that no
+ * longer establishes anything.
+ */
+async function citeExistingTaxDocument(
+  ctx: MutationCtx,
+  row: Doc<"contractorPayments">,
+  doc: Doc<"contractorTaxDocuments">,
+): Promise<void> {
+  const problem = taxDocReuseProblem(doc);
+  if (problem) {
+    throw new ConvexError({ code: "TAX_DOC_EXPIRED", message: problem });
+  }
+  const now = Date.now();
+  const taxYear = new Date(row.serviceDate ?? now).getUTCFullYear();
+  await ctx.db.patch(doc._id, {
+    lastTaxYear: Math.max(doc.lastTaxYear ?? doc.taxYear, taxYear),
+    purgeAfter: extendedTaxDocPurgeAfter(doc.purgeAfter, taxYear),
+    lastUsedAt: now,
+  });
+  await ctx.db.patch(row._id, {
+    taxDocumentId: doc._id,
+    reusedFromProfile: true,
+    updatedAt: now,
   });
 }
 
@@ -1577,13 +1720,34 @@ export const completeAgreement = mutation({
     payeeEmail: v.string(),
     payeePhone: v.optional(v.string()),
     payeeBusinessName: v.optional(v.string()),
-    taxDocStorageId: v.id("_storage"),
-    taxDocKind: v.union(...CONTRACTOR_TAX_DOC_KINDS.map((k) => v.literal(k))),
+    // ── Either a NEW form, or a confirmation that the one on file still
+    // stands. Exactly one of these two shapes; `reuseTaxDoc` is what a
+    // returning contractor sends.
+    taxDocStorageId: v.optional(v.id("_storage")),
+    taxDocKind: v.optional(
+      v.union(...CONTRACTOR_TAX_DOC_KINDS.map((k) => v.literal(k))),
+    ),
     taxDocFileName: v.optional(v.string()),
+    // When they signed it. Required for the W-8 kinds, which expire; a W-9
+    // never does, so it is meaningless there.
+    taxDocSignedAt: v.optional(v.number()),
+    // "The form you have is still accurate." A W-9 stops being valid when the
+    // FACTS change and only the payee knows that, so we ask rather than expire
+    // it on a timer — and the asking is this flag, which the server requires
+    // rather than infers.
+    reuseTaxDoc: v.optional(v.boolean()),
     // Set by the orchestrating httpAction AFTER it linked the account with
     // Increase — never raw digits, which do not appear anywhere in this file.
-    externalAccountId: v.string(),
-    bankAccountLast4: v.string(),
+    // OPTIONAL now: a returning contractor who confirms the account on file
+    // sends `reuseBankDetails` instead, and no bank call is made at all.
+    externalAccountId: v.optional(v.string()),
+    bankAccountLast4: v.optional(v.string()),
+    // "Yes, still the account ending 6789." Required to reuse — never inferred
+    // from the absence of new details, because a blank bank section and an
+    // affirmative "that account is still mine" are not the same statement, and
+    // only one of them is a person taking responsibility for where their money
+    // goes.
+    reuseBankDetails: v.optional(v.boolean()),
     // The typed-name signature and the accepted-terms acknowledgement.
     signature: v.string(),
     clientIp: v.optional(v.string()),
@@ -1618,13 +1782,65 @@ export const completeAgreement = mutation({
       });
     }
 
-    await attachTaxDocument(
-      ctx,
-      row,
-      args.taxDocStorageId,
-      args.taxDocKind,
-      args.taxDocFileName,
-    );
+    // WHAT IS ON FILE, if anything. Resolved server-side rather than trusted
+    // from the request: the page says what it believes, the server decides.
+    const onFile = row.personId
+      ? await latestTaxDocFor(ctx, row.chapterId, row.personId)
+      : null;
+    const profile = row.personId
+      ? await profileFor(ctx, row.chapterId, row.personId)
+      : null;
+
+    if (args.reuseTaxDoc) {
+      if (!onFile) {
+        throw new ConvexError({
+          code: "NO_TAX_DOC_ON_FILE",
+          message:
+            "We don't have a tax form on file for you — please upload one.",
+        });
+      }
+      await citeExistingTaxDocument(ctx, row, onFile);
+    } else {
+      if (!args.taxDocStorageId || !args.taxDocKind) {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "Attach your tax form.",
+        });
+      }
+      await attachTaxDocument(
+        ctx,
+        row,
+        args.taxDocStorageId,
+        args.taxDocKind,
+        args.taxDocFileName,
+        args.taxDocSignedAt,
+      );
+    }
+
+    // THE BANK. Reuse requires an explicit confirmation and a real account on
+    // file; anything else needs freshly linked details.
+    let externalAccountId: string;
+    let bankAccountLast4: string;
+    if (args.reuseBankDetails) {
+      if (!profile?.externalAccountId) {
+        throw new ConvexError({
+          code: "NO_BANK_ON_FILE",
+          message:
+            "We don't have bank details on file for you — please enter them.",
+        });
+      }
+      externalAccountId = profile.externalAccountId;
+      bankAccountLast4 = profile.bankAccountLast4 ?? "";
+    } else {
+      if (!args.externalAccountId || !args.bankAccountLast4) {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "Tell us where the money should go.",
+        });
+      }
+      externalAccountId = args.externalAccountId;
+      bankAccountLast4 = args.bankAccountLast4;
+    }
 
     const now = Date.now();
     await ctx.db.patch(row._id, {
@@ -1637,8 +1853,8 @@ export const completeAgreement = mutation({
       ...(capOptional(args.payeeBusinessName, 200)
         ? { payeeBusinessName: capOptional(args.payeeBusinessName, 200) }
         : {}),
-      externalAccountId: args.externalAccountId,
-      bankAccountLast4: cap(args.bankAccountLast4, 4),
+      externalAccountId,
+      bankAccountLast4: cap(bankAccountLast4, 4),
       acceptedAt: now,
       acceptedTermsVersion: row.agreementTermsVersion,
       acceptedSignature: signature,
@@ -2210,12 +2426,31 @@ export const purgeExpiredTaxDocuments = internalMutation({
       .query("contractorTaxDocuments")
       .withIndex("by_purge_after", (q) => q.lte("purgeAfter", Date.now()))
       .take(take);
+    const now = Date.now();
     for (const doc of due) {
       try {
         await ctx.storage.delete(doc.storageId);
       } catch {
         // Already gone (a previous run died between the two deletes) — the row
         // still has to go, so this is not a reason to stop.
+      }
+      // STAMP EVERY PAYMENT THAT CITED IT before the row disappears. Otherwise
+      // a payment whose document was destroyed on schedule reads exactly like
+      // one where nobody ever collected a form — and the difference between
+      // "we kept it for four years and then destroyed it as promised" and "we
+      // never had it" is the whole of whether the org did its job. Bounded: a
+      // document is cited by a handful of payments, never an unbounded list.
+      const citing = await ctx.db
+        .query("contractorPayments")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", doc.chapterId))
+        .take(500);
+      for (const payment of citing) {
+        if (payment.taxDocumentId !== doc._id) continue;
+        await ctx.db.patch(payment._id, {
+          taxDocumentId: undefined,
+          taxDocPurgedAt: now,
+          updatedAt: now,
+        });
       }
       await ctx.db.delete(doc._id);
     }

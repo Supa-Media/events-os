@@ -1,3 +1,5 @@
+import { MIN_PURPOSE_LENGTH } from "./finance";
+
 /**
  * Contractor payments — paying someone who is NOT reimbursable.
  *
@@ -167,18 +169,166 @@ export function isForeignTaxDoc(kind: ContractorTaxDocKind): boolean {
 
 /**
  * How long a tax document is kept: through the end of the FOURTH year after
- * the tax year it belongs to. The IRS wants employment-tax records for four
- * years after the tax is due or paid; keeping the form for the same window and
- * then destroying it is the whole point — an SSN we no longer hold is an SSN
- * that cannot leak.
+ * the LAST tax year it substantiates. The IRS wants employment-tax records for
+ * four years after the tax is due or paid; keeping the form for the same window
+ * and then destroying it is the whole point — an SSN we no longer hold is an
+ * SSN that cannot leak.
+ *
+ * "LAST year it substantiates" is the 2026-08-15 correction, and it is the
+ * whole reason reuse needed a schema change rather than a UI one. When one
+ * document was pinned to one payment, its own service year was the only year
+ * it answered for. A reused document answers for every payment that cites it,
+ * so a clock started at the FIRST would destroy the evidence behind later
+ * payments while they were still inside their own window — quietly, on a
+ * four-year fuse, with nothing to notice at the time.
  */
 export const CONTRACTOR_TAX_DOC_RETENTION_YEARS = 4;
 
-/** The instant a document collected during `taxYear` becomes eligible for the
- *  purge sweep — 1 Jan, `RETENTION_YEARS` after the tax year ends, UTC. */
+/** The instant a document substantiating `taxYear` becomes eligible for the
+ *  purge sweep — 1 Jan, `RETENTION_YEARS` after that tax year ends, UTC. */
 export function taxDocPurgeAfter(taxYear: number): number {
   return Date.UTC(taxYear + 1 + CONTRACTOR_TAX_DOC_RETENTION_YEARS, 0, 1);
 }
+
+/**
+ * The purge instant after a document is cited by a payment in `taxYear`.
+ *
+ * MONOTONIC BY CONSTRUCTION — it can only ever move later. Reuse for an earlier
+ * year (a January payment for work done in December, or a backdated correction)
+ * must not shorten a window already earned by a later payment. Expressing that
+ * as a `Math.max` here, rather than as a rule each caller remembers, is what
+ * makes "we never delete evidence early" a property of the arithmetic instead
+ * of a property of everyone who touches it.
+ */
+export function extendedTaxDocPurgeAfter(
+  currentPurgeAfter: number,
+  taxYear: number,
+): number {
+  return Math.max(currentPurgeAfter, taxDocPurgeAfter(taxYear));
+}
+
+/**
+ * How long we keep a tax document that no payment ever paid out.
+ *
+ * A form collected for a job that fell through is the one we have LEAST right
+ * to hold: nothing was reported to anyone, no return depends on it, and the
+ * four-year rule is about substantiating money that moved. So it gets a short
+ * sliding window from its last activity instead, and the sweep takes it.
+ */
+export const CONTRACTOR_TAX_DOC_UNPAID_RETENTION_DAYS = 180;
+
+export function unpaidTaxDocPurgeAfter(lastActivityAt: number): number {
+  return (
+    lastActivityAt + CONTRACTOR_TAX_DOC_UNPAID_RETENTION_DAYS * 24 * 60 * 60 * 1000
+  );
+}
+
+// ── Is the form on file still good? ─────────────────────────────────────────
+/**
+ * WHEN A FORM STOPS COUNTING AS "ON FILE" — the rule that decides whether a
+ * returning contractor is asked to upload again.
+ *
+ * A W-9 HAS NO EXPIRY. It stays valid until the information on it changes —
+ * legal name, TIN, entity classification, exempt status, or backup-withholding
+ * status. There is no interval after which the IRS considers one stale, so
+ * expiring them on a timer would be inventing a rule and making returning
+ * contractors re-upload for nothing. Instead we ask THEM, because the change is
+ * something only they know about: an attestation each time, with an explicit
+ * way to say "something changed" (`contractorCanReuseTaxDoc` returns true, and
+ * the page still asks).
+ *
+ * A W-8 DOES EXPIRE, and this is the asymmetry worth getting right. A W-8BEN or
+ * W-8BEN-E is valid from the date it was SIGNED through the last day of the
+ * third succeeding calendar year — so one signed any time in 2026 lapses at the
+ * end of 2029. That is why `contractorTaxDocuments.signedAt` exists and is
+ * required for W-8 kinds: nothing parses the PDF, and deriving validity from
+ * the upload date would silently over-grant it for a form signed years before
+ * it reached us.
+ */
+export function w8ExpiresAt(signedAt: number): number {
+  const signedYear = new Date(signedAt).getUTCFullYear();
+  // Through the last day of the third succeeding calendar year — i.e. the
+  // instant the fourth one begins.
+  return Date.UTC(signedYear + 4, 0, 1);
+}
+
+/** Is a tax document still good as of `now`? W-9s always are; W-8s lapse. A
+ *  W-8 with no `signedAt` is treated as EXPIRED rather than valid — an unknown
+ *  signing date is not evidence of a current form. */
+export function taxDocIsCurrent(
+  doc: { kind: ContractorTaxDocKind; signedAt?: number },
+  now: number = Date.now(),
+): boolean {
+  if (!isForeignTaxDoc(doc.kind)) return true;
+  if (doc.signedAt == null) return false;
+  return now < w8ExpiresAt(doc.signedAt);
+}
+
+/** Human sentence for why a form can't be reused, or `null` when it can. */
+export function taxDocReuseProblem(
+  doc: { kind: ContractorTaxDocKind; signedAt?: number },
+  now: number = Date.now(),
+): string | null {
+  if (taxDocIsCurrent(doc, now)) return null;
+  if (doc.signedAt == null) {
+    return "We don't have a signing date for this form, so we can't tell whether it's still valid.";
+  }
+  return `This ${CONTRACTOR_TAX_DOC_KIND_LABELS[doc.kind]} expired at the end of ${
+    new Date(w8ExpiresAt(doc.signedAt)).getUTCFullYear() - 1
+  }.`;
+}
+
+// ── Tax classification ──────────────────────────────────────────────────────
+/**
+ * How the payee is organised, as the W-9 itself asks it.
+ *
+ * Collected once per contractor because it is the fact that decides whether a
+ * payment is 1099-reportable at all — payments to a C or S corporation
+ * generally are not. Without it, a year-end report can only list everyone we
+ * paid and leave a human to work out who is exempt, which is the part of the
+ * job that actually takes the time.
+ *
+ * `unknown` is a real, expected value: every contractor already on file
+ * predates this question, and pretending otherwise would make the report
+ * confidently wrong rather than visibly incomplete.
+ */
+export const CONTRACTOR_TAX_CLASSIFICATIONS = [
+  "individual",
+  "sole_proprietor",
+  "single_member_llc",
+  "partnership",
+  "c_corporation",
+  "s_corporation",
+  "trust_estate",
+  "other",
+  "unknown",
+] as const;
+export type ContractorTaxClassification =
+  (typeof CONTRACTOR_TAX_CLASSIFICATIONS)[number];
+
+export const CONTRACTOR_TAX_CLASSIFICATION_LABELS: Record<
+  ContractorTaxClassification,
+  string
+> = {
+  individual: "An individual",
+  sole_proprietor: "A sole proprietor",
+  single_member_llc: "A single-member LLC",
+  partnership: "A partnership or multi-member LLC",
+  c_corporation: "A C corporation",
+  s_corporation: "An S corporation",
+  trust_estate: "A trust or estate",
+  other: "Something else",
+  unknown: "Not recorded",
+};
+
+/** Classifications generally NOT 1099-reportable. Deliberately a reporting
+ *  HINT and never an automatic exclusion — the exceptions (legal services,
+ *  medical payments) are real, so the year-end view flags these rather than
+ *  dropping them. */
+export const TAX_CLASSIFICATIONS_USUALLY_EXEMPT: ContractorTaxClassification[] = [
+  "c_corporation",
+  "s_corporation",
+];
 
 // ── What the public sees ────────────────────────────────────────────────────
 /**
@@ -255,6 +405,44 @@ export function publicTextProblems(text: string): string[] {
 /** The longest a public-facing service description may be. Long enough to say
  *  what the work was, short enough that the ledger row stays a ledger row. */
 export const CONTRACTOR_SERVICE_DESCRIPTION_MAX = 280;
+
+/**
+ * The SHORTEST a service description may be — and it is not an arbitrary
+ * minimum, it is the coding validator's.
+ *
+ * When a contractor payment is paid, its description is ported verbatim into
+ * the payout transaction's coding as `businessPurpose`
+ * (`lib/contractorTxnFields.ts`), where the shared `codingFieldProblems` rule
+ * demands `MIN_PURPOSE_LENGTH`. Accepting anything shorter here builds a
+ * payment that passes composition, contractor completion, AND approval, and
+ * then fails at the moment the treasurer presses Pay — with a message about
+ * "which org work it served" that makes no sense on a payout screen, and money
+ * that does not move for a reason nobody can act on.
+ *
+ * So the same bar is enforced at the door, in words that fit where they are
+ * read. Deriving it from `MIN_PURPOSE_LENGTH` rather than restating 20 is the
+ * point: if the coding rule moves, this moves with it, and the two can never
+ * drift into that trap again.
+ */
+export const CONTRACTOR_SERVICE_DESCRIPTION_MIN = MIN_PURPOSE_LENGTH;
+
+/** Human problems with a proposed service description, empty when it is fine.
+ *  Shared so the public page, the in-app composer and the server refuse the
+ *  same strings — including the length the payout will later demand. */
+export function contractorDescriptionProblems(text: string): string[] {
+  const t = text.trim();
+  if (t.length < CONTRACTOR_SERVICE_DESCRIPTION_MIN) {
+    return [
+      `Say what the work was in a bit more detail — at least ${CONTRACTOR_SERVICE_DESCRIPTION_MIN} characters. "Sound engineering for the spring concert", not "sound".`,
+    ];
+  }
+  if (t.length > CONTRACTOR_SERVICE_DESCRIPTION_MAX) {
+    return [
+      `Keep it under ${CONTRACTOR_SERVICE_DESCRIPTION_MAX} characters — this is a ledger line, not a contract.`,
+    ];
+  }
+  return publicTextProblems(t);
+}
 
 // ── Money bounds ────────────────────────────────────────────────────────────
 /**

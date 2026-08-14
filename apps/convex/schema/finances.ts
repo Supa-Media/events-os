@@ -18,6 +18,7 @@ import {
   CONTRACTOR_PAYMENT_STATUSES,
   CONTRACTOR_PAYMENT_ORIGINS,
   CONTRACTOR_TAX_DOC_KINDS,
+  CONTRACTOR_TAX_CLASSIFICATIONS,
   CARD_TYPES,
   CARD_STATUSES,
   CARD_SOURCES,
@@ -1148,6 +1149,20 @@ export const contractorPayments = defineTable({
   // `financeAuditLog`, not here.
   reviewNote: v.optional(v.string()),
 
+  // The tax document substantiating THIS payment. Before reuse, a payment's
+  // document was found by scanning `contractorTaxDocuments.by_payment`; a reused
+  // document belongs to an earlier payment, so the citation has to be explicit.
+  // Its presence is what "a form is on file" means from this row's side.
+  taxDocumentId: v.optional(v.id("contractorTaxDocuments")),
+  // Set when this payment reused a document/bank details already on file rather
+  // than collecting them fresh — so the audit trail can answer "did this person
+  // actually fill anything in for this job?" without inference.
+  reusedFromProfile: v.optional(v.boolean()),
+  // Left behind when the retention sweep destroys a cited document, so the
+  // payment can still say a form existed and when it went, rather than reading
+  // as though one was never collected.
+  taxDocPurgedAt: v.optional(v.number()),
+
   // ── Payout destination ───────────────────────────────────────────────────
   // Increase's reusable reference for the payee's bank account. The RAW
   // routing + account number are NEVER persisted — see
@@ -1186,6 +1201,86 @@ export const contractorPayments = defineTable({
   .index("by_status", ["status"]);
 
 /**
+ * What we remember about a contractor between payments, so a returning one is
+ * not asked to fill the whole form again (founder, 2026-08-15: "so we don't
+ * have to ask recurring people to resubmit the W9s").
+ *
+ * A SATELLITE ON `people`, NOT A SECOND ROSTER. `schema/people.ts` states the
+ * house position out loud — "the same person can be a vendor on one event and
+ * volunteer on another, so these signals coexist rather than partition the
+ * roster" — and a separate `contractors` table would contradict it, then double
+ * every dedupe problem: two lists to merge, two answers to "who is this", and a
+ * 1099 total that splits when they disagree. Identity stays on `people`; this
+ * row holds only the payment-rail facts a roster row has no business carrying.
+ *
+ * It is ALSO the same structural move `contractorTaxDocuments` below already
+ * makes, for the same reason: keep the sensitive pointer off the document
+ * everything reads.
+ *
+ * STAFF-INITIATED ONLY. Nothing on the public path writes here — a stranger
+ * completing a form must never be able to mint roster rows, which is the spam
+ * vector the original spec closed and this must not reopen. A profile appears
+ * when someone with compose rights picks a person, or saves a paid payment's
+ * payee.
+ *
+ * WHAT IS DELIBERATELY NOT HERE: a TIN (we hold none, by design), and the tax
+ * document itself (its own table, its own gate, its own audit trail). This row
+ * is safe for a composer screen to read; that one is not.
+ */
+export const contractorProfiles = defineTable({
+  chapterId: v.id("chapters"),
+  personId: v.id("people"),
+
+  // ── The payment rail we remember ─────────────────────────────────────────
+  // Increase's reusable reference for their bank account, and the last four we
+  // show. RAW DIGITS ARE STILL NEVER STORED — this remembers the same two
+  // fields a single payment already remembered, for longer.
+  externalAccountId: v.optional(v.string()),
+  bankAccountLast4: v.optional(v.string()),
+  // When the contractor last CONFIRMED these details are still theirs. Reuse
+  // asks every time (see `contractorPayments.ts#reuseSnapshot`), so this is the
+  // record of them saying yes, not a licence to stop asking. A bank account
+  // that quietly closed is how money reaches the wrong place, and only the
+  // payee knows.
+  bankConfirmedAt: v.optional(v.number()),
+
+  // ── Tax facts ────────────────────────────────────────────────────────────
+  // How they are organised, as the W-9 asks it. Decides whether a payment is
+  // 1099-reportable at all (payments to corporations generally are not), which
+  // is the part of year-end that actually takes the time. `unknown` is a real
+  // value — every contractor already on file predates the question.
+  taxClassification: v.optional(
+    v.union(...CONTRACTOR_TAX_CLASSIFICATIONS.map((c) => v.literal(c))),
+  ),
+  // The business name they invoice under, remembered so it doesn't have to be
+  // retyped. Internal only; nothing about the payee reaches the public ledger.
+  businessName: v.optional(v.string()),
+  // When they last attested that the form on file is still accurate. A W-9 does
+  // not expire on a clock — it stops being valid when the FACTS change, and
+  // only they know that — so this records the asking rather than a countdown.
+  taxAttestedAt: v.optional(v.number()),
+
+  // ── Bookkeeping ──────────────────────────────────────────────────────────
+  // Set when a payment to this contractor is actually paid. Drives "who did we
+  // pay this year" and the tax-document retention clock; a profile that has
+  // never paid out is not evidence of anything.
+  lastPaidAt: v.optional(v.number()),
+  // Staff note ("books the sound rig", "invoices as Rivera AV"). Never public.
+  notes: v.optional(v.string()),
+  createdByPersonId: v.optional(v.id("people")),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  // One profile per person per chapter. Chapter-scoped deliberately: the books
+  // are separate operating entities, a W-9 is given to the entity that pays,
+  // and one chapter should not be able to read another's payee records through
+  // a shared row. The cost is real and worth saying out loud — a contractor
+  // paid by two chapters files twice — and it is the right trade.
+  .index("by_chapter_and_person", ["chapterId", "personId"])
+  .index("by_chapter", ["chapterId"])
+  .index("by_person", ["personId"]);
+
+/**
  * A contractor's tax document — the W-9 (or W-8BEN/-E for a foreign payee).
  *
  * ITS OWN TABLE, AND THAT IS THE POINT. This row holds a `storageId` for a PDF
@@ -1214,17 +1309,52 @@ export const contractorTaxDocuments = defineTable({
   personId: v.optional(v.id("people")),
   payeeName: v.string(),
   kind: v.union(...CONTRACTOR_TAX_DOC_KINDS.map((k) => v.literal(k))),
+  // When the payee SIGNED the form. Required for the W-8 kinds and meaningless
+  // for a W-9, which has no expiry.
+  //
+  // A W-8BEN/-E is valid from its signing date through the last day of the
+  // third succeeding calendar year, so validity cannot be derived from when the
+  // file happened to reach us: a form signed in 2024 and uploaded in 2026 has
+  // one year left, not three. Nothing parses the PDF, so we ask. A W-8 with no
+  // signing date reads as EXPIRED rather than valid — see
+  // `@events-os/shared#taxDocIsCurrent`; an unknown date is not evidence of a
+  // current form.
+  signedAt: v.optional(v.number()),
   storageId: v.id("_storage"),
   // What the uploader's browser called the file, and what it actually was.
   fileName: v.optional(v.string()),
   contentType: v.optional(v.string()),
   sizeBytes: v.optional(v.number()),
-  // The tax year this document substantiates — the payment's service year,
-  // which is what drives `purgeAfter`.
+  // The EARLIEST tax year this document substantiates — the service year of the
+  // payment it was first filed for. Kept for the record; the retention clock
+  // runs off `lastTaxYear` below, not this.
   taxYear: v.number(),
-  // Denormalized from `taxDocPurgeAfter(taxYear)` at insert so the sweep is a
-  // single indexed range scan rather than a full-table filter.
+  // The LATEST tax year this document substantiates, updated every time a new
+  // payment cites it. This is what `purgeAfter` is computed from.
+  //
+  // The distinction only exists because documents are reused now. When one
+  // document belonged to one payment the two were the same number, and a clock
+  // started at `taxYear` was correct. Reuse makes them diverge, and a clock
+  // still started at the first would destroy the evidence behind later payments
+  // while they were inside their own retention window — silently, four years
+  // later, with nothing to notice at the time.
+  lastTaxYear: v.optional(v.number()),
+  // Denormalized purge instant so the sweep is a single indexed range scan
+  // rather than a full-table filter.
+  //
+  // MONOTONIC: only ever moves later (`@events-os/shared#extendedTaxDocPurgeAfter`
+  // takes a `Math.max`), so citing a document for an EARLIER year — a January
+  // payment for December's work, a backdated correction — cannot shorten a
+  // window a later payment already earned.
+  //
+  // A document no payment ever PAID gets the short unpaid window instead
+  // (`unpaidTaxDocPurgeAfter`): nothing was reported to anyone, no return
+  // depends on it, and a form collected for a job that fell through is the one
+  // we have least right to keep.
   purgeAfter: v.number(),
+  // Last time a payment cited this document, so the unpaid window slides from
+  // real activity rather than from the upload.
+  lastUsedAt: v.optional(v.number()),
   uploadedAt: v.number(),
 })
   .index("by_payment", ["contractorPaymentId"])

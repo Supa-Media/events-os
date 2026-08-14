@@ -33,6 +33,7 @@ import type * as columns from "../columns.js";
 import type * as commsSend from "../commsSend.js";
 import type * as contractorPayments from "../contractorPayments.js";
 import type * as contractorPayouts from "../contractorPayouts.js";
+import type * as contractorProfiles from "../contractorProfiles.js";
 import type * as crons from "../crons.js";
 import type * as dashboard from "../dashboard.js";
 import type * as dashboardCharts from "../dashboardCharts.js";
@@ -471,6 +472,7 @@ declare const fullApi: ApiFromModules<{
   commsSend: typeof commsSend;
   contractorPayments: typeof contractorPayments;
   contractorPayouts: typeof contractorPayouts;
+  contractorProfiles: typeof contractorProfiles;
   crons: typeof crons;
   dashboard: typeof dashboard;
   dashboardCharts: typeof dashboardCharts;

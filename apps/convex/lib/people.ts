@@ -102,7 +102,11 @@ export async function collectPersonRowsForUser(
  * Re-point every reference to person `fromId` onto `toId`, across every table
  * that stores a `people` id. Called by `mergePersonInto` before the duplicate
  * row is deleted, so no event owner, project, duty, role assignment, check-in,
- * doc, song, comment, or org-chart edge is left dangling.
+ * doc, song, comment, or org-chart edge is left dangling — nor, since
+ * 2026-08-15, any FINANCIAL record (reimbursements, contractor payments, tax
+ * documents, contractor profiles). See the finance block below for why those
+ * repoint without a dedupe branch and why a remembered bank account is cleared
+ * rather than merged.
  *
  * Tables with a by-person index are re-pointed directly; the rest are swept
  * per-chapter (bounded, and only ever runs when a real duplicate was found).
@@ -148,6 +152,102 @@ export async function repointPersonReferences(
       .collect();
     if (sameRole.some((x) => x.personId === toId)) await ctx.db.delete(a._id);
     else await ctx.db.patch(a._id, { personId: toId });
+  }
+
+  // ── FINANCIAL RECORDS ────────────────────────────────────────────────────
+  // Until 2026-08-15 this function repointed twelve tables and not one of them
+  // held money. Merging two duplicates therefore left the loser's reimbursement
+  // and contractor-payment history pointing at a person id nobody could reach:
+  // the payments still existed, still showed on the ledger, and no longer
+  // belonged to anybody. Separation-of-duties checks compare `personId`, so a
+  // dangling one also quietly stops being able to catch self-approval.
+  //
+  // Contractor payments made it worse, because a contractor's identity is now
+  // durable: an orphaned profile means the next payment doesn't recognise them
+  // and asks for a W-9 they already gave us, and their year-end total splits
+  // across two records with nothing on either saying why.
+  //
+  // These are plain repoints with no dedupe branch, deliberately. Two
+  // engagements on one event are a duplicate to collapse; two payments to one
+  // person are two payments, and collapsing them would destroy a financial
+  // record.
+  const reimbursements = await ctx.db
+    .query("reimbursementRequests")
+    .withIndex("by_person", (q) => q.eq("personId", fromId))
+    .collect();
+  for (const r of reimbursements) {
+    await ctx.db.patch(r._id, { personId: toId, updatedAt: Date.now() });
+  }
+
+  const contractorPayments = await ctx.db
+    .query("contractorPayments")
+    .withIndex("by_person", (q) => q.eq("personId", fromId))
+    .collect();
+  for (const cp of contractorPayments) {
+    await ctx.db.patch(cp._id, { personId: toId, updatedAt: Date.now() });
+  }
+
+  const taxDocs = await ctx.db
+    .query("contractorTaxDocuments")
+    .withIndex("by_person", (q) => q.eq("personId", fromId))
+    .collect();
+  for (const doc of taxDocs) {
+    await ctx.db.patch(doc._id, { personId: toId });
+  }
+
+  // Profiles are 1:1 per (chapter, person), so a merge can find two. Keep the
+  // survivor's row and fold in only what it is MISSING — then delete the
+  // loser's, because two profiles for one person is the exact split this whole
+  // repoint exists to prevent.
+  //
+  // THE BANK ACCOUNT IS DELIBERATELY NOT MERGED. Two remembered accounts is
+  // precisely the case where guessing sends money to the wrong place, and the
+  // person who can settle it is the contractor. The survivor's own account
+  // survives if it has one; otherwise the field is left EMPTY and the next
+  // payment asks. Cleared rather than inherited — an account nobody confirmed
+  // after a merge is not a destination.
+  const losingProfiles = await ctx.db
+    .query("contractorProfiles")
+    .withIndex("by_person", (q) => q.eq("personId", fromId))
+    .collect();
+  for (const losing of losingProfiles) {
+    const survivor = await ctx.db
+      .query("contractorProfiles")
+      .withIndex("by_chapter_and_person", (q) =>
+        q.eq("chapterId", losing.chapterId).eq("personId", toId),
+      )
+      .unique();
+    if (!survivor) {
+      await ctx.db.patch(losing._id, {
+        personId: toId,
+        // Same reasoning: a repointed profile's remembered account was
+        // confirmed by the OTHER identity, so it is re-confirmed or it is not
+        // used.
+        externalAccountId: undefined,
+        bankAccountLast4: undefined,
+        bankConfirmedAt: undefined,
+        updatedAt: Date.now(),
+      });
+      continue;
+    }
+    await ctx.db.patch(survivor._id, {
+      ...(survivor.businessName == null && losing.businessName != null
+        ? { businessName: losing.businessName }
+        : {}),
+      ...(survivor.taxClassification == null && losing.taxClassification != null
+        ? { taxClassification: losing.taxClassification }
+        : {}),
+      // Latest real payment across both identities.
+      ...(losing.lastPaidAt != null &&
+      (survivor.lastPaidAt == null || losing.lastPaidAt > survivor.lastPaidAt)
+        ? { lastPaidAt: losing.lastPaidAt }
+        : {}),
+      externalAccountId: undefined,
+      bankAccountLast4: undefined,
+      bankConfirmedAt: undefined,
+      updatedAt: Date.now(),
+    });
+    await ctx.db.delete(losing._id);
   }
 
   const ownedProjects = await ctx.db

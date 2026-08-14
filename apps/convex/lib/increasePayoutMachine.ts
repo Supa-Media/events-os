@@ -471,6 +471,15 @@ export async function settleContractorPaid(
       internal.contractorPayments.sendPaidNotice,
       { contractorPaymentId: row._id },
     );
+    // A payee becomes a RETURNING CONTRACTOR the moment money actually moves,
+    // and not before — a profile minted at compose time would fill the roster
+    // with people whose payments were never approved. This is also what hands
+    // their tax document from the short unpaid window to the four-year rule.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.contractorProfiles.rememberPaidContractor,
+      { contractorPaymentId: row._id },
+    );
   }
   await postContractorSpend(ctx, row.chapterId, row, payout);
 }
