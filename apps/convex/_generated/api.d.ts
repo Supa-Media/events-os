@@ -105,6 +105,7 @@ import type * as lib_blogAccess from "../lib/blogAccess.js";
 import type * as lib_blogApiRoutes from "../lib/blogApiRoutes.js";
 import type * as lib_blogReactions from "../lib/blogReactions.js";
 import type * as lib_bookBalance from "../lib/bookBalance.js";
+import type * as lib_budgetCategoryAccess from "../lib/budgetCategoryAccess.js";
 import type * as lib_budgetGlanceAccess from "../lib/budgetGlanceAccess.js";
 import type * as lib_budgetTitleResolve from "../lib/budgetTitleResolve.js";
 import type * as lib_builtInTemplates from "../lib/builtInTemplates.js";
@@ -333,6 +334,7 @@ import type * as migrations_0073_book_known_repayment_fee_coverage from "../migr
 import type * as migrations_0074_book_repayment_coverage_by_session from "../migrations/0074_book_repayment_coverage_by_session.js";
 import type * as migrations_0075_label_fee_coverage_rows from "../migrations/0075_label_fee_coverage_rows.js";
 import type * as migrations_0076_backfill_wall_from_gifts from "../migrations/0076_backfill_wall_from_gifts.js";
+import type * as migrations_0077_org_wide_budget_categories from "../migrations/0077_org_wide_budget_categories.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -549,6 +551,7 @@ declare const fullApi: ApiFromModules<{
   "lib/blogApiRoutes": typeof lib_blogApiRoutes;
   "lib/blogReactions": typeof lib_blogReactions;
   "lib/bookBalance": typeof lib_bookBalance;
+  "lib/budgetCategoryAccess": typeof lib_budgetCategoryAccess;
   "lib/budgetGlanceAccess": typeof lib_budgetGlanceAccess;
   "lib/budgetTitleResolve": typeof lib_budgetTitleResolve;
   "lib/builtInTemplates": typeof lib_builtInTemplates;
@@ -777,6 +780,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0074_book_repayment_coverage_by_session": typeof migrations_0074_book_repayment_coverage_by_session;
   "migrations/0075_label_fee_coverage_rows": typeof migrations_0075_label_fee_coverage_rows;
   "migrations/0076_backfill_wall_from_gifts": typeof migrations_0076_backfill_wall_from_gifts;
+  "migrations/0077_org_wide_budget_categories": typeof migrations_0077_org_wide_budget_categories;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;

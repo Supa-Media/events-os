@@ -2054,6 +2054,193 @@ export const listClaimedGivebutterCampaignIds = internalQuery({
  * id, so re-running books nothing twice — which is what lets this sit on a cron
  * beside the event sweep.
  */
+type UndepositedAuditResult = {
+  undepositedCents: number;
+  unbookedCents: number;
+  rows: {
+    campaignId: string;
+    payoutCents: number;
+    ticketCents: number;
+    donationCents: number;
+    bookedAs: string;
+    bookedCents: number | null;
+    claimedByEvent: boolean;
+  }[];
+};
+
+/** Is this Givebutter transaction already in the books, and as what? */
+export const lookupGivebutterBooking = internalQuery({
+  args: { externalIds: v.array(v.string()) },
+  returns: v.array(
+    v.object({
+      externalId: v.string(),
+      bookedAs: v.union(
+        v.literal("gift"),
+        v.literal("ticketOrder"),
+        v.literal("converted"),
+        v.literal("nothing"),
+      ),
+      bookedCents: v.union(v.number(), v.null()),
+    }),
+  ),
+  handler: async (ctx, { externalIds }) => {
+    const out: {
+      externalId: string;
+      bookedAs: "gift" | "ticketOrder" | "converted" | "nothing";
+      bookedCents: number | null;
+    }[] = [];
+    for (const externalId of externalIds) {
+      const gift = await ctx.db
+        .query("gifts")
+        .withIndex("by_externalRef", (q) => q.eq("externalRef", externalId))
+        .first();
+      if (gift) {
+        out.push({ externalId, bookedAs: "gift", bookedCents: gift.amountCents });
+        continue;
+      }
+      const converted = await ctx.db
+        .query("givebutterConvertedDonations")
+        .withIndex("by_externalRef", (q) => q.eq("externalRef", externalId))
+        .first();
+      if (converted) {
+        out.push({
+          externalId,
+          bookedAs: "converted",
+          bookedCents: converted.amountCents,
+        });
+        continue;
+      }
+      const order = await ctx.db
+        .query("ticketOrders")
+        .withIndex("by_external_ref", (q) => q.eq("externalRef", externalId))
+        .first();
+      if (order) {
+        out.push({
+          externalId,
+          bookedAs: "ticketOrder",
+          bookedCents: order.totalCents ?? null,
+        });
+        continue;
+      }
+      out.push({ externalId, bookedAs: "nothing", bookedCents: null });
+    }
+    return out;
+  },
+});
+
+/**
+ * WHAT IS THE MONEY GIVEBUTTER IS HOLDING, AND IS IT IN OUR BOOKS?
+ *
+ * `fetchGivebutterUndepositedCents` returns ONE NUMBER — the sum of succeeded
+ * transactions with no payout — and that number lands on the accounts page as
+ * a pile of cash. When the reconciliation gap is roughly that pile's size, the
+ * only question worth asking is which of those transactions the books have
+ * never seen, and a total cannot answer it.
+ *
+ * It has now cost two wrong guesses. The gap was theorised as unbooked general
+ * giving; the general sweep found all 89 such donations already booked. Before
+ * that it was theorised as a single $6.00 repayment that turned out to be two
+ * $3.00 charges. Both were reasoning about production from the outside. This
+ * itemizes it instead: every undeposited transaction, what it is made of, and
+ * exactly what the books hold against it.
+ *
+ *   gh workflow run run-convex-function.yml -f function=givebutterSync:undepositedAudit
+ *
+ * NAMES NOBODY — amounts, campaign and booking status only. It goes into a CI
+ * log, which is a worse place for a giver's name than any screen in the app.
+ */
+export const undepositedAudit = internalAction({
+  args: {},
+  returns: v.object({
+    undepositedCents: v.number(),
+    unbookedCents: v.number(),
+    rows: v.array(
+      v.object({
+        campaignId: v.string(),
+        payoutCents: v.number(),
+        ticketCents: v.number(),
+        donationCents: v.number(),
+        bookedAs: v.string(),
+        bookedCents: v.union(v.number(), v.null()),
+        claimedByEvent: v.boolean(),
+      }),
+    ),
+  }),
+  // EXPLICIT RETURN TYPE, and the `claimed` annotation below, because this
+  // action calls queries in its OWN file through `internal.givebutterSync.*`.
+  // TypeScript then has to infer the generated api's type from a value that
+  // depends on it, gives up, and reports `implicitly has type 'any'` here AND
+  // in unrelated files that merely touch the same generated types. Annotating
+  // the two crossing points breaks the cycle.
+  handler: async (ctx): Promise<UndepositedAuditResult> => {
+    const key = await resolveGivebutterApiKey(ctx);
+    if (!key) throw new Error("No Givebutter API key configured.");
+
+    const claimedIds: string[] = await ctx.runQuery(
+      internal.givebutterSync.listClaimedGivebutterCampaignIds,
+      {},
+    );
+    const claimed = new Set<string>(claimedIds);
+
+    // Same filter as the balance derivation, so this itemizes exactly the pile
+    // the accounts page counts: succeeded, and not yet assigned to a payout.
+    const held: GivebutterTransactionRaw[] = [];
+    let url: string | null = `${GIVEBUTTER_API_BASE}/transactions`;
+    for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
+      const res = await gbGet(key, url);
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status} fetching Givebutter transactions.`);
+      }
+      const body = (await res.json()) as GivebutterTransactionsPage;
+      for (const txn of body.data ?? []) {
+        if (txn.id === undefined || txn.id === null || txn.id === "") continue;
+        if (String(txn.status ?? "").toLowerCase() !== "succeeded") continue;
+        const payoutId = txn.payout_id ?? txn.payout ?? null;
+        if (payoutId !== null && payoutId !== undefined && payoutId !== "") continue;
+        held.push(txn);
+      }
+      url = nextPageUrl(body.links?.next);
+    }
+
+    const ids = held.map((t) => String(t.id));
+    const bookings: {
+      externalId: string;
+      bookedAs: string;
+      bookedCents: number | null;
+    }[] = await ctx.runQuery(internal.givebutterSync.lookupGivebutterBooking, {
+      externalIds: ids,
+    });
+    const byId = new Map(bookings.map((b) => [b.externalId, b]));
+
+    let undepositedCents = 0;
+    let unbookedCents = 0;
+    const rows: UndepositedAuditResult["rows"] = held.map((txn) => {
+      const rawPayout = txn.payout ?? txn.amount ?? 0;
+      const payoutCents = Math.round(
+        (typeof rawPayout === "number" ? rawPayout : Number(rawPayout)) * 100,
+      );
+      const booking = byId.get(String(txn.id));
+      undepositedCents += payoutCents;
+      if (booking?.bookedAs === "nothing") unbookedCents += payoutCents;
+      return {
+        campaignId: String(txn.campaign_id ?? ""),
+        payoutCents,
+        ticketCents: ticketCentsFromTransaction(txn),
+        donationCents: donationCentsFromTransaction(txn),
+        bookedAs: booking?.bookedAs ?? "nothing",
+        bookedCents: booking?.bookedCents ?? null,
+        claimedByEvent: claimed.has(String(txn.campaign_id ?? "")),
+      };
+    });
+
+    console.log(
+      `[givebutter] undeposited audit: ${rows.length} transactions, ` +
+        `${undepositedCents}c held, ${unbookedCents}c of it not in the books.`,
+    );
+    return { undepositedCents, unbookedCents, rows };
+  },
+});
+
 export const syncGeneralGivebutterGiving = internalAction({
   args: {},
   returns: v.object({
