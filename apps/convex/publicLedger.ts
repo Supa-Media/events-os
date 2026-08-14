@@ -891,10 +891,19 @@ export const startAmendment = mutation({
   },
 });
 
-/** Refuse a snapshot that may be incomplete. See the module doc: an
- *  incomplete ledger presented as complete is the failure a reader cannot
- *  detect, so it is the one thing blocked outright. */
-function assertPublishable(snapshot: Snapshot): void {
+/**
+ * Refuse a snapshot that may be incomplete. See the module doc: an incomplete
+ * ledger presented as complete is the failure a reader cannot detect, so it is
+ * the one thing blocked outright.
+ *
+ * EXPORTED so the refusal itself can be tested. Reaching it end-to-end would
+ * mean seeding `ROLLUP_SCAN_LIMIT` (5,000) transactions into one month, which
+ * is why this rule went untested while every other refusal on the publish path
+ * had a test — and it is the one the publish console's UI names out loud, now
+ * that publishing also happens from a month band on the grid. Every publishing
+ * path (`submit`, `publish`, `republish`) calls it; nothing else may.
+ */
+export function assertPublishable(snapshot: Snapshot): void {
   if (snapshot.truncated) {
     throw new ConvexError({
       code: "SNAPSHOT_TRUNCATED",

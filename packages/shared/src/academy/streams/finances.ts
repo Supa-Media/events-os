@@ -554,6 +554,42 @@
  *    rename editor and the name history still show it) and that a
  *    bookkeeper's own rename still wins, so nobody reads this as the app
  *    quietly editing the statement.
+ *
+ * 2026-08-14, PUBLISHING STOPS BEING SOMEWHERE ELSE (founder: "I can't see a
+ * quick preview button anymore. I want to be able to preview and publish from
+ * the same page — publish here takes me to a different page entirely"). The
+ * publish console's month flow is now a component
+ * (`components/finance/publish/PublishMonth.tsx`) that the console route and a
+ * modal over a Transactions month band both render, so the act is unchanged
+ * and unthinned — the same disclosures before the button, the same
+ * two-approver handoff and its separation-of-duties refusal, the same
+ * amendment reason on a re-publish, the same refusal of a snapshot that came
+ * back incomplete. Two sections are touched, both content-only; no title,
+ * slug, minutes, quiz length or order moved.
+ *  - `finance-reconcile-grid`'s "Group by is how you get everywhere else" rule
+ *    now says what Preview and Publish actually do from a band (open in a new
+ *    tab; open the console's flow over the grid), and names the ONE exception:
+ *    on **All books** a month band spans several chapters' books, so the
+ *    status badge and Preview stand down and Publish travels to the console,
+ *    where a book is named explicitly. Its filtered-band quiz explanation said
+ *    "Publish itself still hands you to the publish console" — true when
+ *    written, false now — and was corrected in place; the question, its
+ *    options and its answer are untouched, and the quiz stays at 5.
+ *  - `finance-publishing-the-books` taught the hand-off as deliberate rather
+ *    than a missing feature, which was the right teaching for the old shape
+ *    and is the wrong description of this one. It now teaches the panel and
+ *    keeps the doctrine that mattered: none of what surrounds the button is
+ *    paperwork in front of it, so nothing is skipped by publishing from the
+ *    grid. It also names the two places that still open the console SCREEN —
+ *    the Finances publishability card and an All-books band — and why (it
+ *    lists every month of one book, and a book has to be named first).
+ *  - NO QUIZ QUESTION SWAPPED, in either lesson. Both are at the 5-question
+ *    cap `apps/convex/tests/academy.test.ts` enforces, and every question was
+ *    re-read against the new shape: none asserted WHERE publishing happens as
+ *    its correct answer. The "who can publish a month you prepared" question
+ *    gained one clause in its EXPLANATION — the refusal is identical from the
+ *    band, because it is the same flow — which is the one place a reader could
+ *    have concluded the grid path was the lighter one.
  */
 
 import type {
@@ -1611,7 +1647,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Group by is how you get everywhere else",
-        text: "**Group by: None · Month · Person** sits directly above the grid, and it is the closest thing this page has to navigation. It doesn't filter anything — every row you had is still there — it bands them, and each band carries the actions that belong to that kind of band.\n\n**Month** gives you one band per month with that month's charge count, its total, how much of it is explained, and its publication state: Draft, In review, Published (with the revision that's live), or Amending — plus **Preview** and **Publish**. That is the whole of \"working a month\" and the whole of publishing one, without leaving the page.\n\n**Person** gives you one band per cardholder — their face, what they owe, and a **Send reminder** button. Put **State → Owes a receipt or coding** on top of it and that is the receipt chase: everyone who owes you something, one band each, nudge them from where you are.\n\nOne thing to read carefully: when you have filtered, a month band names BOTH figures — \"12 of 318 charges · -$4,102 of -$88,201\". The first number is what your filter left; the second is the month. Publish always means the second one.",
+        text: "**Group by: None · Month · Person** sits directly above the grid, and it is the closest thing this page has to navigation. It doesn't filter anything — every row you had is still there — it bands them, and each band carries the actions that belong to that kind of band.\n\n**Month** gives you one band per month with that month's charge count, its total, how much of it is explained, and its publication state: Draft, In review, Published (with the revision that's live), or Amending — plus **Preview** and **Publish**. Both act where you stand: Preview opens that month's public page in a new tab, and Publish opens the publish console's own flow in a panel over the grid — the disclosures, the hand-off to a second approver, the amendment reason on a correction, all of it, unchanged. That is the whole of \"working a month\" and the whole of publishing one, without leaving the page.\n\nThe one exception is **All books**, where a month band is drawn from several chapters' books at once. There is no such thing as publishing \"all books\" as one month, so on that view the band's status badge and Preview stand down and **Publish** takes you to the publish console, where you say which book you mean. Pick a book in the Book dropdown and all three come back.\n\n**Person** gives you one band per cardholder — their face, what they owe, and a **Send reminder** button. Put **State → Owes a receipt or coding** on top of it and that is the receipt chase: everyone who owes you something, one band each, nudge them from where you are.\n\nOne thing to read carefully: when you have filtered, a month band names BOTH figures — \"12 of 318 charges · -$4,102 of -$88,201\". The first number is what your filter left; the second is the month. Publish always means the second one.",
       },
       {
         kind: "rule",
@@ -1720,7 +1756,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "That is exactly why the band names both figures. Publishing acts on the whole month, so a band that could only say \"12 charges\" next to a Publish button was quietly describing something other than what the button did. The second number in each pair is the month; the first is just what you happen to be looking at. (Publish itself still hands you to the publish console — a second approver, an amendment reason on a re-publish, and a refusal if the month's snapshot came back incomplete.)",
+          "That is exactly why the band names both figures. Publishing acts on the whole month, so a band that could only say \"12 charges\" next to a Publish button was quietly describing something other than what the button did. The second number in each pair is the month; the first is just what you happen to be looking at. (Publish opens the publish console's own flow right there over the grid, and nothing about it is shortened by being opened from a band — a second approver, an amendment reason on a re-publish, and a refusal if the month's snapshot came back incomplete.)",
       },
       {
         prompt:
@@ -2076,7 +2112,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "You watch it happen from Transactions. Set **Group by → Month** and every band tells you where that month stands: Draft, In review, Published (with the revision that's live), or Amending. **Preview** on the band opens the actual public page for that month, exactly as a stranger would see it, without publishing anything.\n\nBoth buttons are there whatever else you have set, because the band names its own subject: filter the grid and it reads \"12 of 318 charges · -$4,102 of -$88,201\" — what your filter left, and then the month. Publish always means the month. (It used to hide the buttons whenever you had filtered, on the reasoning that a band saying \"12 charges\" next to a Publish button was describing something other than what the button did. That was true, and naming both figures is the honest fix rather than taking the button away.)\n\nThe **Publish** button on the band hands you to the publish console, and that hand-off is deliberate rather than a missing feature. Publishing is not a way of looking at a month; it is an irreversible act with a second person in it. The console is where the disclosures are read, where a re-publish states its amendment reason, and where the system refuses a month whose snapshot came back incomplete. None of that is paperwork in front of the button — it IS the button.",
+        text: "You watch it happen from Transactions. Set **Group by → Month** and every band tells you where that month stands: Draft, In review, Published (with the revision that's live), or Amending. **Preview** on the band opens the actual public page for that month, exactly as a stranger would see it, without publishing anything.\n\nBoth buttons are there whatever else you have set, because the band names its own subject: filter the grid and it reads \"12 of 318 charges · -$4,102 of -$88,201\" — what your filter left, and then the month. Publish always means the month. (It used to hide the buttons whenever you had filtered, on the reasoning that a band saying \"12 charges\" next to a Publish button was describing something other than what the button did. That was true, and naming both figures is the honest fix rather than taking the button away.)\n\n**Publish** on the band opens the publish console's flow over the grid: the month's figures, every disclosure that will publish beside them, and the button that hands it to a second person. It is the console's own screen in a panel, not a quicker version of it — publishing is not a way of looking at a month, it is an irreversible act with a second person in it, and none of what surrounds it is paperwork in front of the button. It IS the button. So nothing is skipped by publishing from here: the same refusal if you try to approve what you prepared, the same demand for an amendment reason on a correction, the same refusal of a month whose snapshot came back incomplete.\n\nTwo places still send you to the console screen itself (**Finances → the publishability card**, or the band on **All books**): it lists every month of one book at once, and a book has to be named before one of its months can go public. The flow you meet there is the same flow.",
       },
       {
         kind: "rule",
@@ -2163,7 +2199,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "Publishing is a separate seat power from reconciling, because its audience is outside the org and a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book — notably not the Treasurer, who prepares it.",
+          "Publishing is a separate seat power from reconciling, because its audience is outside the org and a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book — notably not the Treasurer, who prepares it. This holds wherever you publish from: the flow that opens over a month band on Transactions is the console's own flow, so it refuses a self-approval in exactly the same words.",
       },
       {
         prompt:

@@ -5,6 +5,8 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { PREVIEW_BANNER_TEXT } from "../lib/publicLedgerPage";
+import { assertPublishable } from "../publicLedger";
+import type { Snapshot } from "../lib/publicLedgerSnapshot";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 import { CENTRAL } from "@events-os/shared";
 
@@ -670,6 +672,44 @@ describe("the lifecycle refuses shortcuts", () => {
     // that when there IS a second person, every past decision can be
     // re-reviewed for which kind it was.
     expect(revision!.approvalParty).toBe("single");
+  });
+
+  test("a snapshot that may be INCOMPLETE is refused outright, and says which limit it hit", () => {
+    // THE ONE REFUSAL ON THE PUBLISH PATH WITH NO TEST, and the reason is
+    // arithmetic: reaching it end-to-end needs 5,000 transactions
+    // (`ROLLUP_SCAN_LIMIT`) or 4,000 published entries
+    // (`MAX_PUBLISHED_ENTRIES`) inside one month. So the rule is pinned where
+    // it lives — `assertPublishable`, which `submit`, `publish` and
+    // `republish` all call before anything is written.
+    //
+    // It matters more now that publishing also happens from a month band on
+    // the Transactions grid: the band opens the publish console's OWN flow
+    // (`PublishMonthBody`), so this refusal reaches a publisher there through
+    // the same mutation and the same error runner. A grid-local publish that
+    // had skipped it would put a partial month in front of the world — the one
+    // failure a reader cannot detect for themselves.
+    const clean = { truncated: false, overCap: false } as Snapshot;
+    expect(() => assertPublishable(clean)).not.toThrow();
+
+    const refusal = (snapshot: Snapshot): ConvexError<{ code: string }> => {
+      try {
+        assertPublishable(snapshot);
+      } catch (e) {
+        return e as ConvexError<{ code: string }>;
+      }
+      throw new Error("an incomplete snapshot was allowed to publish");
+    };
+
+    const truncated = refusal({ truncated: true, overCap: false } as Snapshot);
+    expect(truncated).toBeInstanceOf(ConvexError);
+    expect(truncated.data.code).toBe("SNAPSHOT_TRUNCATED");
+    // The message is what a publisher READS, so it is part of the refusal: it
+    // has to say the figures may be incomplete, not just that something failed.
+    expect(truncated.data).toHaveProperty("message");
+
+    const tooLarge = refusal({ truncated: false, overCap: true } as Snapshot);
+    expect(tooLarge).toBeInstanceOf(ConvexError);
+    expect(tooLarge.data.code).toBe("SNAPSHOT_TOO_LARGE");
   });
 
   test("a malformed month is refused rather than coerced", async () => {
