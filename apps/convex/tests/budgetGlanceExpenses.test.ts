@@ -760,12 +760,14 @@ describe("a recurring bucket is broken into its own windows", () => {
     expect(row?.spentCents).toBe(1_636);
   });
 
-  test("a bucket pinned to ONE month is a single window, not a series of twelve", async () => {
+  test("a bucket pinned to ONE month charts that one window, not a series of twelve", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const thisYear = new Date().getFullYear();
     // A "monthly" cadence with its own `month` set governs exactly one window.
-    // Twelve bars for it would be eleven empty ones plus a claim it repeats.
+    // Twelve bars would be eleven empty ones plus a claim it repeats — and
+    // worse, `txnCountsTowardBudget` ignores the context month for a pinned
+    // budget, so all twelve would show the SAME total.
     const budgetId = await seedBudget(s, {
       amountCents: 20_000,
       year: thisYear,
@@ -781,9 +783,13 @@ describe("a recurring bucket is broken into its own windows", () => {
     });
 
     const glance = await s.as.query(api.finances.budgetsGlance, {});
-    expect(
-      glance.recurring.find((r) => r.id === budgetId)?.periods,
-    ).toBeUndefined();
+    const periods = glance.recurring.find((r) => r.id === budgetId)?.periods;
+    // One window — but a window, not nothing. Returning no periods here is
+    // what made a bucket with no charge in the current window render no chart
+    // at all, which reads as a broken card.
+    expect(periods).toHaveLength(1);
+    expect(periods![0].label).toBe("Feb");
+    expect(periods![0].spentCents).toBe(5_000);
   });
 
   test("a one-time budget never carries windows", async () => {
@@ -878,5 +884,159 @@ describe("budgetsGlance's year and book arguments", () => {
     // whole point: a member's screen is unchanged by this feature.
     expect(scopes).toHaveLength(1);
     expect(scopes[0].key).toBe(s.chapterId);
+  });
+});
+
+/**
+ * TAPPING A BAR — `budgetGlance.expenses`'s `month` argument.
+ *
+ * Founder, 2026-08-14: "when expanding make the graph interactive."
+ *
+ * The charges behind March cannot be filtered client-side. Which txns fall in
+ * a budget's window is `txnCountsTowardBudget`'s decision — it depends on the
+ * budget's cadence and its own month/quarter narrowers — and a client
+ * re-implementing that as a date comparison would drift from the card above it
+ * the first time either rule changed.
+ */
+describe("the drop-down can report a window other than today's", () => {
+  test("a monthly bucket's chosen month returns THAT month's charges", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: thisYear,
+      cadence: "monthly",
+      type: "recurring",
+      label: "Operating Expenses",
+    });
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 7_000,
+      postedAt: tsOn(thisYear, 2, 4),
+      merchantName: "February store",
+    });
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 3_000,
+      postedAt: tsOn(thisYear, 3, 9),
+      merchantName: "March store",
+    });
+
+    const feb = await s.as.query(api.budgetGlance.expenses, { budgetId, month: 2 });
+    expect(feb!.spentCents).toBe(7_000);
+    expect(feb!.lines.map((l) => l.merchantName)).toEqual(["February store"]);
+    // …and it says which window it's reporting, in words that aren't "this
+    // month" — the reader tapped a bar precisely to leave today.
+    expect(feb!.windowLabel).toBe("in Feb");
+
+    const mar = await s.as.query(api.budgetGlance.expenses, { budgetId, month: 3 });
+    expect(mar!.spentCents).toBe(3_000);
+    expect(mar!.windowLabel).toBe("in Mar");
+  });
+
+  test("a quarterly bucket takes any month OF the quarter and reports the quarter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const budgetId = await seedBudget(s, {
+      amountCents: 40_000,
+      year: thisYear,
+      cadence: "quarterly",
+      type: "recurring",
+      label: "Culture Fund",
+    });
+    // Two charges in different MONTHS of the same quarter — both belong to Q1.
+    await seedCharge(s, { budgetId, amountCents: 5_000, postedAt: tsOn(thisYear, 1, 8) });
+    await seedCharge(s, { budgetId, amountCents: 6_000, postedAt: tsOn(thisYear, 3, 20) });
+    await seedCharge(s, { budgetId, amountCents: 9_000, postedAt: tsOn(thisYear, 5, 2) });
+
+    const q1 = await s.as.query(api.budgetGlance.expenses, { budgetId, month: 1 });
+    expect(q1!.spentCents).toBe(11_000);
+    expect(q1!.windowLabel).toBe("in Q1");
+    const q2 = await s.as.query(api.budgetGlance.expenses, { budgetId, month: 4 });
+    expect(q2!.spentCents).toBe(9_000);
+    expect(q2!.windowLabel).toBe("in Q2");
+  });
+
+  test("an out-of-range month falls back to today rather than widening the window", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: thisYear,
+      cadence: "monthly",
+      type: "recurring",
+      label: "Operating Expenses",
+    });
+    await seedCharge(s, { budgetId, amountCents: 7_000, postedAt: tsOn(thisYear, 2, 4) });
+
+    // A month of 0 or 13 would reach `budgetEffectivePeriod` as a value it
+    // can't resolve, which silently widens the window to the WHOLE YEAR — the
+    // one outcome that makes a per-window number wrong rather than empty.
+    const bad = await s.as.query(api.budgetGlance.expenses, { budgetId, month: 99 });
+    const today = await s.as.query(api.budgetGlance.expenses, { budgetId });
+    expect(bad!.spentCents).toBe(today!.spentCents);
+    expect(bad!.windowLabel).toBe(today!.windowLabel);
+  });
+
+  test("a bucket PINNED to one window still charts — one bar, not nothing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    // The founder's report: "not seeing previous quarters if there is no
+    // charge this quarter." A pinned bucket used to return no windows at all,
+    // so its card rendered no chart — which reads as broken rather than as a
+    // budget that covers exactly one window.
+    const budgetId = await seedBudget(s, {
+      amountCents: 40_000,
+      year: thisYear,
+      quarter: 1,
+      cadence: "quarterly",
+      type: "recurring",
+      label: "Q1 push",
+    });
+    await seedCharge(s, { budgetId, amountCents: 15_000, postedAt: tsOn(thisYear, 2, 10) });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const periods = glance.recurring.find((r) => r.id === budgetId)?.periods;
+    // ONE window — a pinned budget's spend doesn't move between windows
+    // (`txnCountsTowardBudget` ignores the context month once `quarter` is
+    // set), so four bars would show the same total four times.
+    expect(periods).toHaveLength(1);
+    expect(periods![0].label).toBe("Q1");
+    expect(periods![0].spentCents).toBe(15_000);
+    expect(periods![0].month).toBe(1);
+  });
+
+  test("every window carries the month the drop-down needs to ask for it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const monthlyId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: thisYear,
+      cadence: "monthly",
+      type: "recurring",
+      label: "Operating",
+    });
+    await seedCharge(s, { budgetId: monthlyId, amountCents: 1_000, postedAt: tsOn(thisYear, 1, 3) });
+    const quarterlyId = await seedBudget(s, {
+      amountCents: 40_000,
+      year: thisYear,
+      cadence: "quarterly",
+      type: "recurring",
+      label: "Culture",
+    });
+    await seedCharge(s, { budgetId: quarterlyId, amountCents: 1_000, postedAt: tsOn(thisYear, 1, 3) });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const monthly = glance.recurring.find((r) => r.id === monthlyId)!.periods!;
+    const quarterly = glance.recurring.find((r) => r.id === quarterlyId)!.periods!;
+    // Monthly: the window's own month. Quarterly: the quarter's FIRST month,
+    // which is what makes `expenses({month})` resolve back to the same window.
+    expect(monthly.slice(0, 3).map((p) => p.month)).toEqual([1, 2, 3]);
+    expect(quarterly.slice(0, 3).map((p) => p.month)).toEqual([1, 4, 7]);
   });
 });

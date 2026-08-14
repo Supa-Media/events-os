@@ -555,6 +555,39 @@
  *    bookkeeper's own rename still wins, so nobody reads this as the app
  *    quietly editing the statement.
  *
+ * AND A SECOND EMAIL WHEN THE MONEY ACTUALLY GOES (2026-08-14). The other
+ * half of the APPROVAL-NOTICE ask two notes up — not of the transfers report
+ * immediately above, which landed the same day and shares nothing but a date.
+ * Founder: "let's also send emails when we actually pay people — this is
+ * really important to them. Email when approved and email when paid." A
+ * claimant now hears from us TWICE about one request, and the approval note
+ * teaches only the first, which would leave the lesson quietly wrong about
+ * what to expect. Same lesson carries it, content-only, minutes stay 5.
+ *
+ *  · ONE BULLET ADDED, "And a second email when the money actually goes": what
+ *    the paid notice says, what "paid" does and doesn't guarantee (it is our
+ *    word for SENT — an ACH credit still takes a business day or two to post,
+ *    and a treasurer paying by hand sets their own timing), that the figure is
+ *    the money that MOVED, and the one case that produces two paid emails — a
+ *    bounced transfer, re-paid.
+ *  · WHY THE AMOUNT BULLET MATTERS HERE: this is where a claimant is most
+ *    likely to misread us. A partial approval means a smaller payment, NOT a
+ *    first instalment; there is no such thing as paying half a reimbursement,
+ *    so "the rest is coming" is never true and the bullet says so outright.
+ *  · NO QUIZ QUESTION SWAPPED, and that is a decision, not an oversight. The
+ *    quiz is at the 5-question cap `apps/convex/tests/academy.test.ts`
+ *    enforces, so anything added costs something already there — and nothing
+ *    here became WRONG: the approval-email question's right answer ("approved
+ *    but not yet paid, sending the payout is the next step") is exactly as
+ *    true now, and its distractors are exactly as false. The new fact — that a
+ *    second email follows when the payout goes — is the natural completion of
+ *    that question's own explanation, so it went there rather than costing
+ *    this quiz a question on SoD, send-backs or personal-charge flags. If this
+ *    lesson ever earns a sixth slot, "what does the PAID email guarantee about
+ *    money being in your account" is the question to write.
+ *  · The one-shot catch-up mailing (`reimbursementPaidNoticeBackfill`) is not
+ *    taught, for the same reason its sibling isn't.
+ *
  * 2026-08-14, PUBLISHING STOPS BEING SOMEWHERE ELSE (founder: "I can't see a
  * quick preview button anymore. I want to be able to preview and publish from
  * the same page — publish here takes me to a different page entirely"). The
@@ -1438,6 +1471,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
           "**You'll be told when it's approved — and approved is not paid:** the moment a reviewer approves your request, an email goes out saying so and naming the amount. It goes to the address you put ON THE REQUEST, not to wherever your account lives, because plenty of claimants have no account at all. Read the amount before you celebrate: a reviewer can approve SOME of your lines and not others, so when the approved figure differs from what you submitted the email names both, and your Treasurer can tell you which lines didn't make it and why. What that email will never tell you is that the money has already moved — approved and paid are two different states, and sending the payout is the step after. If nothing has landed within a week or so, contact your Treasurer; that's the right person to ask, and asking is welcome.",
+          "**And a second email when the money actually goes:** you hear from us twice about one request — once when it's approved, and again when it's PAID, which is the one people actually wait for. That second email names the date the money left and, where we know it, how: an ACH transfer out of the chapter's account (the money has genuinely gone, though most banks take a business day or two to post it) or a payment your Treasurer sent by hand and recorded here, where the timing is whatever they used. The figure in it is the money that MOVED — and on a partial approval that is the approved amount, not what you submitted, because a reimbursement is paid in ONE lump and there is no such thing as a second instalment. The rest of a partly-approved claim is not coming, and the email says so rather than letting you wait for it. \"Paid\" is our record that a payment was sent, which is not the same fact as money in your account: if it doesn't turn up, tell your Treasurer — they can see exactly what was sent. And if a bank transfer bounces days later (it happens), the request re-opens and you'll get a fresh paid email when the retry lands — a second one is a real second payment, never a duplicate.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Book (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Closed AND an unpaid personal expense at the same time.",
           "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
@@ -1586,7 +1620,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Approved and paid are separate states, and the email is careful never to claim otherwise — it tells you the decision, not that the money has moved. Read the figure too: a reviewer can approve some of your lines and not others, and when the approved amount differs from what you submitted the email names both. If nothing arrives within a week or so, contact your Treasurer.",
+          "Approved and paid are separate states, and the email is careful never to claim otherwise — it tells you the decision, not that the money has moved. Read the figure too: a reviewer can approve some of your lines and not others, and when the approved amount differs from what you submitted the email names both — and that smaller figure is the whole payment, not a first instalment. You get a SECOND email when the payout actually goes, naming the date it left; that one is your cue to look for the money. If it still doesn't arrive, contact your Treasurer.",
       },
       {
         prompt:

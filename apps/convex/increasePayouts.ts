@@ -51,9 +51,9 @@ import {
   type BeginPayoutResult,
 } from "./lib/increaseShapes";
 import {
-  postReimbursementSpend,
   payoutTargetFor,
   applyPayoutOutcome,
+  settleReimbursementPaid,
 } from "./lib/increasePayoutMachine";
 
 // ── beginPayout (internalMutation) ───────────────────────────────────────────
@@ -431,6 +431,13 @@ export const payReimbursement = action({
  * into the budget/category totals), and appends a `"pay"` entry to the audit
  * trail. IDEMPOTENT: a re-call after it's paid returns the payout without a
  * second transaction or audit row.
+ *
+ * The reimbursement side of that — the `paid` patch, the ledger row, and the
+ * claimant's "you were paid" notice — is `settleReimbursementPaid`, shared with
+ * the ACH webhook path rather than re-implemented here. It used to be an inline
+ * copy of the same two writes; folding it back means there is ONE definition of
+ * what settling a reimbursement does, and a future third way to pay inherits
+ * the notice for free instead of silently going out unannounced.
  */
 export const markPaidManually = mutation({
   args: { reimbursementId: v.id("reimbursementRequests") },
@@ -512,14 +519,10 @@ export const markPaidManually = mutation({
       status: "paid",
       updatedAt: now,
     });
-    await ctx.db.patch(reimbursement._id, {
-      status: "paid",
-      paidAt: reimbursement.paidAt ?? now,
-      payoutId: payout._id,
-      updatedAt: now,
-    });
-    // The expense's `outflow` ledger row (idempotent — one per reimbursement).
-    await postReimbursementSpend(ctx, chapterId, reimbursement, payout);
+    // Reimbursement → `paid`, the expense's `outflow` ledger row (idempotent —
+    // one per reimbursement), and the claimant's notice. One definition, shared
+    // with the ACH path; see this mutation's doc comment.
+    await settleReimbursementPaid(ctx, reimbursement, payout);
 
     // Append to the append-only approval/audit trail.
     await ctx.db.insert("approvals", {
