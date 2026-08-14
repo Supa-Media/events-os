@@ -835,6 +835,52 @@ export const MAX_PURPOSE_LENGTH = 2000;
  *  route publishes at city level. */
 export const MAX_CODING_PLACE_LENGTH = 200;
 
+/**
+ * HOW MANY CHARGES ONE BULK EXPLANATION MAY COVER
+ * (`transactionCodings.submitBulk`).
+ *
+ * Shared because BOTH halves have to state the same number: the mutation
+ * refuses a longer selection, and the bulk sheet has to say so BEFORE somebody
+ * writes the sentence. A local copy on either side drifts and then either
+ * blocks a legal selection or promises one the server refuses — the same class
+ * of client/server disagreement the coding surfaces already have scars from.
+ *
+ * The value is a Convex transaction budget, not a UI preference. One mutation
+ * is one transaction, and each row costs roughly 15 document reads (chapter +
+ * finance role re-resolved per row, the existing coding, its receipt
+ * exceptions) and 3 writes (the coding, the `codingState` denorm, the audit
+ * row). 100 rows ≈ 1,500 reads / 300 writes — comfortably inside the budget,
+ * with headroom for a book whose access resolution is heavier than today's.
+ *
+ * It is REFUSED, never truncated: doing the first 100 of 140 and staying quiet
+ * about the rest would hand back "100 applied" while 40 rows the person
+ * selected and believed they had done sat untouched.
+ */
+export const MAX_BULK_EXPLANATION_ROWS = 100;
+
+/**
+ * HOW LONG AN APPROVAL MAY BE UNDONE FOR
+ * (`transactionCodings.undoApproval`).
+ *
+ * THE WINDOW IS A SERVER GUARANTEE, not a UI timer. The panel shows a ~10
+ * second toast, but a paused tab, a slow render or a client with a stopped
+ * clock must not be able to widen it — so the mutation reads the approval's
+ * own `decidedAt` and refuses past this, pointing the caller at
+ * `requestChanges` (the audited, notified, any-time reopen) instead.
+ *
+ * Two minutes, deliberately much longer than the toast. The window exists to
+ * cover "I hit the wrong button", which is noticed in seconds; the slack is
+ * for a slow round trip and for somebody who tapped Undo just as it faded —
+ * not for a change of mind an hour later. That is a different act, it means
+ * something was actually wrong with the coding, and it should reach the author
+ * with a note.
+ *
+ * Shared so the mobile toast can be pinned BELOW it by a test rather than by
+ * hope: a toast outliving the server's window would offer an Undo that
+ * refuses.
+ */
+export const UNDO_APPROVAL_WINDOW_MS = 2 * 60 * 1000;
+
 /** Meal names threshold (owner decision, 2026-08-08): 15 or fewer attendees →
  *  every name + affiliation; more than 15 → headcount + an identifiable group
  *  description ("volunteers writing and producing the album"). A HEADCOUNT

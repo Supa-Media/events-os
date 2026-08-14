@@ -571,6 +571,11 @@ const reconcileFilterValidator = v.union(
   // it can never reach the ~400 reconstructed 2024–25 rows this key exists
   // for. See `RECONCILE_FILTER_LABELS.needs_explaining`.
   v.literal("needs_explaining"),
+  // The COMPLEMENT of the key above inside the same population — what has
+  // already been explained, and the only way to re-read a published sentence
+  // from this grid (an approved coding is immutable, so re-reading it is the
+  // whole review). See `RECONCILE_FILTER_LABELS.explained`.
+  v.literal("explained"),
   v.literal("coding_review"),
   v.literal("to_review"),
   v.literal("reconciled"),
@@ -596,6 +601,7 @@ const reconcileCounts = v.object({
   needs_chasing: v.number(),
   uncoded: v.number(),
   needs_explaining: v.number(),
+  explained: v.number(),
   coding_review: v.number(),
   to_review: v.number(),
   reconciled: v.number(),
@@ -9198,6 +9204,7 @@ export const listReconcile = query({
       needs_chasing: 0,
       uncoded: 0,
       needs_explaining: 0,
+      explained: 0,
       coding_review: 0,
       to_review: 0,
       reconciled: 0,
@@ -9442,6 +9449,18 @@ export const listReconcile = query({
       // cover. Note it also ignores `status`: a treasurer closing a row is not
       // an explanation, and the public page doesn't care that it's closed.
       needs_explaining: needsExplaining(tr),
+      // THE COMPLEMENT, inside the same denominator — `explanationPopulation`
+      // AND an approved coding. Written as the population predicate plus the
+      // status rather than `!needsExplaining(tr)`, because the negation would
+      // also be true of every row that can't carry an explanation at all (an
+      // inflow, a transfer leg, an auto-explained fee) and this facet must
+      // mean "somebody explained it", not "nobody has to".
+      //
+      // Approving a coding is what removes a row from `needs_explaining`, and
+      // that used to make the sentence you had just published unreachable from
+      // this grid. This is where it goes.
+      explained:
+        explanationPopulation(tr) && tr.codingState === "approved",
       coding_review: tr.codingState === "submitted",
       personal_unpaid: isPersonalUnpaid(tr),
       reconciled: tr.status === "reconciled",

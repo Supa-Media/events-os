@@ -1,9 +1,10 @@
 /**
  * The multi-select bulk bar for the Reconcile grid: appears when one or more
- * rows are checked and offers the three batch actions — set Category, set For
- * (both via `bulkCategorize`), and mark Reconciled (a loop over the per-row
- * status setter). Category / For open the same `PickerItem` popover the grid
- * cells use, so the option lists never drift.
+ * rows are checked and offers the batch actions — set Category, set For (both
+ * via `bulkCategorize`), Explain (one written sentence across the selection,
+ * `transactionCodings.submitBulk`), and mark Reconciled (a loop over the
+ * per-row status setter). Category / For open the same `PickerItem` popover the
+ * grid cells use, so the option lists never drift.
  */
 import { View, Text, Pressable } from "react-native";
 import { Button, Icon, OptionTag, Popover, useAnchor } from "../../ui";
@@ -26,6 +27,7 @@ export function BulkBar({
   onMarkRefund,
   onMarkPayout,
   onNoDocumentation,
+  onExplain,
 }: {
   count: number;
   categoryItems: PickerItem[];
@@ -63,6 +65,24 @@ export function BulkBar({
   // realistic backlog is dozens-to-hundreds of small fares, and a per-row-only
   // path means the honest option loses to the dishonest one on effort alone.
   onNoDocumentation?: () => void;
+  // ── THE EXPLANATION, ACROSS THE SELECTION ─────────────────────────────────
+  // The bar could batch every cheap field on a row — category, budget, status,
+  // "no documentation" — and not the one thing that takes real time to type.
+  // So forty identical MTA fares cost forty typings of one sentence, and the
+  // cheap dishonest option (close them undocumented, publish a blank) won on
+  // effort. Exactly the argument `onNoDocumentation` above already won for the
+  // other half of the row.
+  //
+  // One human's sentence applied to rows that human selected is not machine
+  // authorship — see `BulkExplainModal`'s own doc, and
+  // `transactionCodings.submitBulk`, which writes one coding per row through
+  // the SAME validated path a typed one takes and reports every row it
+  // refused.
+  //
+  // BOOK-SPECIFIC, like the two coding pickers above it: a coding belongs to
+  // its book, so a selection spanning books steps aside with the same message
+  // rather than half-failing.
+  onExplain?: () => void;
   // Marking (founder ask): reclassify already-ingested bank rows. "Mark as
   // transfer" lives HERE rather than on a row because a transfer is a PAIR —
   // it needs two rows selected, which is exactly what this bar has and a row
@@ -100,6 +120,18 @@ export function BulkBar({
               items={forItems}
               onPick={onSetFor}
             />
+            {/* Beside the other two coding actions, and inside the same
+                `spansBooks` guard, because it is one: a coding belongs to a
+                book. */}
+            {onExplain ? (
+              <Button
+                title="Explain"
+                variant="secondary"
+                size="sm"
+                icon="edit-3"
+                onPress={onExplain}
+              />
+            ) : null}
           </>
         )}
         <Button

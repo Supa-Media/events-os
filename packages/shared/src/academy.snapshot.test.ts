@@ -494,6 +494,17 @@
  * restraint built into it (one message per person, a three-day cooldown, and
  * never chasing a bank transfer that is already clearing). Still content-only:
  * no section added, moved, or removed, and no quiz length changed.
+ *
+ * 2026-08-14 — bulk explanation, and Approve as one undoable tap. Both land in
+ * `finance-reconcile-grid`: an "Explained" filter row, a new rule block on
+ * explaining a backlog without lying about it, and the undo/confirm folded
+ * into the existing "Reconciled means coded, too". Its `minutes` moves 4 → 5
+ * below — the ONLY movement in these tables. Its quiz was at the 5-question
+ * cap, so two questions were SWAPPED, not added (in: the bulk apply's per-row
+ * honesty, what Undo actually calls; out: the "To review 80" tap, whose
+ * doctrine two other questions in the same quiz already carry, and the blank
+ * exclusion reason, stated verbatim in the `try_status` caption above the
+ * quiz). No slugs, sections, courses or totals moved.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -1122,7 +1133,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
-    minutes: 4,
+    minutes: 5,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

@@ -47,7 +47,9 @@ import {
   CENTRAL,
   EXPENSE_TYPES,
   EXPENSE_TYPE_LABELS,
+  MAX_BULK_EXPLANATION_ROWS,
   MIN_PURPOSE_LENGTH,
+  UNDO_APPROVAL_WINDOW_MS,
   TRANSACTION_CODING_STATUSES,
   TRANSACTION_CODING_STATUS_LABELS,
   attendeeAffiliationBreakdown,
@@ -71,7 +73,10 @@ import {
   codingForTransaction,
   codingPolicy,
   decideCoding,
+  normalizeCodingFields,
   submitCoding,
+  undoCodingApproval,
+  type CodingWriteFields,
 } from "./lib/transactionCoding";
 import { codingReviewReach } from "./lib/transactionCodingAccess";
 import { isUncodedCharge } from "./lib/codingReminders";
@@ -663,6 +668,223 @@ export const submit = mutation({
   },
 });
 
+// ── BULK EXPLANATION ────────────────────────────────────────────────────────
+
+/** One selected row's fate. `code`/`message` are the `ConvexError` the single
+ *  submit path threw for THIS row — never a summary, never a bucket the UI has
+ *  to guess at. */
+const bulkExplanationRow = v.object({
+  transactionId: v.id("transactions"),
+  outcome: v.union(
+    v.literal("submitted"),
+    v.literal("resubmitted"),
+    v.literal("failed"),
+  ),
+  code: v.union(v.string(), v.null()),
+  message: v.union(v.string(), v.null()),
+});
+
+/**
+ * ONE SENTENCE A HUMAN WROTE, APPLIED TO ROWS THAT HUMAN SELECTED.
+ *
+ * ## Why this is not machine authorship
+ *
+ * The org's standing rule (owner decision, 2026-08-08, restated at the top of
+ * this file) bans a MACHINE composing testimony. It does not ban a person
+ * reusing their own words. Forty identical MTA fares are one fact about one
+ * person's month, and making them type that fact forty times does not make the
+ * record more true — it makes it more expensive, and the cheap dishonest
+ * option (close them undocumented, publish a blank) wins on effort, which is
+ * how a ledger becomes unpublishable. The same reasoning
+ * `receiptExceptions.attestBulk` already runs on, applied to the other half of
+ * the record.
+ *
+ * So every guarantee a typed coding carries is kept here, deliberately:
+ *  - the substance comes from a human's keystrokes, never from a suggestion,
+ *    a merchant lookup or a model;
+ *  - the WRITE is the same `submitCoding` a single row goes through — same
+ *    field validation, same `DOCUMENTATION_REQUIRED` gate, same
+ *    `CODING_APPROVED` refusal, same lodging/bank-record rule. There is no
+ *    second, laxer path;
+ *  - authorship is resolved PER ROW (`requireSubmitCoding` → `actorPersonId`),
+ *    so `codedByPersonId`/`codedByUserId` name a real human on every row;
+ *  - each row gets its own `coding_submit` audit entry with its own amount,
+ *    identical in shape to a typed one. The only difference is the audit
+ *    REASON, which carries a marker saying the sentence was applied across a
+ *    selection — that belongs in the audit trail and must never touch the
+ *    published `businessPurpose`, which is what a stranger reads.
+ *
+ * ## Rows that fail, fail individually and are NAMED
+ *
+ * A bulk action that silently drops rows is worse than no bulk action. Every
+ * per-row refusal is caught, counted and RETURNED with its own code and
+ * message, so the UI can say "28 applied, 12 need a receipt first" and show
+ * WHICH twelve. Nothing is skipped quietly; nothing is retried behind the
+ * caller's back. `submitCoding` validates before it writes, so a refused row
+ * leaves no partial state.
+ *
+ * A CALLER-WIDE mistake is different and throws for the whole batch: a purpose
+ * under the length floor, a travel type with no route, an unsupported expense
+ * type. Those are wrong on every row, and reporting them as "140 failed" would
+ * bury one fixable typo under a hundred and forty identical lines.
+ *
+ * ## Expense type: `general`, `travel` and `lodging` — never `meal`
+ *
+ * A bulk purpose only makes sense where the type-specific §274(d) fields are
+ * genuinely shared, and this argument list is the enforcement: the shared
+ * fields are supplied ONCE and applied to all.
+ *
+ *  - `general` carries no type-specific fields at all. Trivially safe.
+ *  - `travel` / `lodging` want a ROUTE or a PLACE — which is exactly the thing
+ *    that IS the same across a batch of identical fares ("Rosedale → Midtown,
+ *    forty times"). Asserting one route over a selection is the same assertion
+ *    the person would type row by row, so it is applied once.
+ *  - `meal` is REFUSED. Its required element is WHO WAS THERE — named
+ *    individuals, or a group description above the threshold — and that is a
+ *    per-occasion fact. Applying one attendee list across twelve meals would
+ *    assert that the same eight named people ate at all twelve, which is a
+ *    factual claim about specific humans that nobody verified per row. That is
+ *    the line between reusing your own sentence and fabricating a per-row
+ *    fact, and it is the one thing this mutation must not cross. The argument
+ *    surface has no attendee/headcount fields at all, so the refusal is
+ *    structural as well as explicit; the bulk bar's own type chips refuse it
+ *    too rather than letting someone discover it forty validation errors in.
+ */
+export const submitBulk = mutation({
+  args: {
+    transactionIds: v.array(v.id("transactions")),
+    expenseType: expenseTypeValidator,
+    businessPurpose: v.string(),
+    /** Travel's origin. Shared across the whole selection — see the doc above
+     *  for why a route may be shared and an attendee list may not. */
+    travelFrom: v.optional(v.string()),
+    /** Travel's destination, and (per FINDING 2) lodging's single place. */
+    travelTo: v.optional(v.string()),
+  },
+  returns: v.object({
+    /** Rows that now carry this coding — `submitted` + `resubmitted`. */
+    applied: v.number(),
+    failed: v.number(),
+    /** Echoed so the UI states the same number the server enforces. */
+    limit: v.number(),
+    /** EVERY selected row, in the order given. The caller already has the
+     *  grid rows it selected, so this deliberately carries no merchant name or
+     *  amount to join back on — naming the failures is the UI's job with data
+     *  it already holds, and re-projecting a transaction here would mean
+     *  deciding what to say about a row the caller may not read. */
+    rows: v.array(bulkExplanationRow),
+  }),
+  handler: async (ctx, args) => {
+    if (args.expenseType === "meal") {
+      throw new ConvexError({
+        code: "BULK_MEAL_UNSUPPORTED",
+        message:
+          "A meal's proof is who was at it, and that is different for every meal — one attendee list applied across a selection would be asserting something nobody checked. Code meals one at a time.",
+      });
+    }
+    // DEDUPED. A repeated id would otherwise submit twice, and the second pass
+    // would read as a `resubmitted` row nobody asked for.
+    const transactionIds = [...new Set(args.transactionIds)];
+    if (transactionIds.length > MAX_BULK_EXPLANATION_ROWS) {
+      throw new ConvexError({
+        code: "BULK_LIMIT",
+        message: `Explain up to ${MAX_BULK_EXPLANATION_ROWS} charges at a time — you selected ${transactionIds.length}. Doing the first ${MAX_BULK_EXPLANATION_ROWS} and staying quiet about the rest is how rows get believed-done and left blank.`,
+      });
+    }
+
+    const { namesMaxHeadcount, sinceMs } = await codingPolicy(ctx);
+    // VALIDATE THE SHARED SENTENCE ONCE, up front, and throw. These problems
+    // are properties of what the caller typed, so they are wrong on every row;
+    // running them per row would return N copies of one typo. This is the SAME
+    // `codingFieldProblems` `submitCoding` runs — called here only to fail
+    // early and legibly, never instead of it.
+    const fields: CodingWriteFields = {
+      expenseType: args.expenseType,
+      businessPurpose: args.businessPurpose,
+      ...(args.travelFrom != null ? { travelFrom: args.travelFrom } : {}),
+      ...(args.travelTo != null ? { travelTo: args.travelTo } : {}),
+    };
+    normalizeCodingFields(fields, namesMaxHeadcount);
+
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const purpose = args.businessPurpose.trim();
+    const rows: Infer<typeof bulkExplanationRow>[] = [];
+    let applied = 0;
+    for (const transactionId of transactionIds) {
+      try {
+        // PER ROW, not hoisted: authorship and scope are facts about the ROW
+        // (a bookkeeper's reach, a cardholder's own charge), and resolving
+        // them once against the first transaction would write the wrong
+        // author — or the wrong book — onto the rest.
+        const { txn, scope, actorPersonId } = await requireSubmitCoding(
+          ctx,
+          transactionId,
+        );
+        const existing = await codingForTransaction(ctx, transactionId);
+        const { resubmission } = await submitCoding(ctx, {
+          txn,
+          scope,
+          fields,
+          namesMaxHeadcount,
+          codingRequiredSinceMs: sinceMs,
+          codedByPersonId: actorPersonId,
+          codedByUserId: userId,
+        });
+        await logFinanceAudit(ctx, {
+          chapterId: scope,
+          subjectType: "transaction",
+          subjectId: transactionId,
+          action: "coding_submit",
+          actorPersonId,
+          field: "coding",
+          before: existing
+            ? TRANSACTION_CODING_STATUS_LABELS[
+                existing.status as TransactionCodingStatus
+              ]
+            : "Uncoded",
+          after: resubmission ? "Resubmitted" : "Awaiting review",
+          // THE MARKER LIVES HERE AND NOWHERE ELSE. The audit trail should say
+          // this sentence was applied across a selection — that is exactly the
+          // kind of provenance a later reviewer wants. The PUBLISHED purpose
+          // must not: a stranger reading the ledger is owed the explanation,
+          // not the clerical detail of how it was entered, and appending it
+          // there would also make the same charge read differently depending
+          // on which screen it was coded from.
+          reason: `${purpose} — applied across a ${transactionIds.length}-charge selection`,
+          amountCents: txn.amountCents,
+        });
+        applied += 1;
+        rows.push({
+          transactionId,
+          outcome: resubmission ? "resubmitted" : "submitted",
+          code: null,
+          message: null,
+        });
+      } catch (err) {
+        // A non-`ConvexError` is a BUG, not a row-shaped refusal. Swallowing
+        // one would report a broken deployment as "12 charges need a receipt"
+        // and lose the stack. Every deliberate refusal in this path throws
+        // `ConvexError`, so rethrowing anything else costs nothing.
+        if (!(err instanceof ConvexError)) throw err;
+        const data = err.data as { code?: string; message?: string } | undefined;
+        rows.push({
+          transactionId,
+          outcome: "failed",
+          code: data?.code ?? "UNKNOWN",
+          message:
+            data?.message ?? "This charge wouldn't take the explanation.",
+        });
+      }
+    }
+    return {
+      applied,
+      failed: rows.length - applied,
+      limit: MAX_BULK_EXPLANATION_ROWS,
+      rows,
+    };
+  },
+});
+
 /**
  * Approve a coding — it becomes this transaction's substantiation of record
  * and the row can reconcile (documentation permitting).
@@ -724,10 +946,113 @@ export const approve = mutation({
 });
 
 /**
+ * UNDO YOUR OWN APPROVAL, seconds after making it — the panel's Undo toast.
+ *
+ * ## Why this exists instead of reusing `requestChanges`
+ *
+ * `lib/transactionCoding.ts#undoCodingApproval` carries the full argument. In
+ * short: a send-back means the AUTHOR must act, and it emails them saying so.
+ * Neither is true of a mis-tap. An undo restores `submitted` — back in the
+ * reviewer's queue, exactly where the coding sat a moment earlier — and tells
+ * nobody, because from the author's side nothing ever happened.
+ *
+ * ## The three gates, and why each is the one it is
+ *
+ *  - REVIEW AUTHORITY (`requireReviewCoding`), the same bar as the approval
+ *    this undoes.
+ *  - THE SAME IDENTITY THAT APPROVED IT. Somebody else's approval is not yours
+ *    to quietly roll back; that is exactly what `requestChanges` is for, with
+ *    its required note and its email. Compared on `decidedByUserId`, NOT
+ *    `decidedByPersonId`, because the person id is optional — a superuser with
+ *    no roster row approves with it unset (a real, supported path), so
+ *    comparing on it would either lock them out of their own undo or, worse,
+ *    let any other rosterless caller match on `undefined === undefined`. The
+ *    user id is stamped on every decision, always.
+ *  - THE TIME WINDOW, READ FROM THE ROW. `decidedAt` is the server's own
+ *    stamp, so a paused tab or a client with a stopped clock cannot widen it —
+ *    the UI timer is a courtesy, this is the guarantee. Past the window the
+ *    refusal NAMES the honest path instead of just saying no: by then the
+ *    approval has stood long enough that somebody may have acted on it, and
+ *    reopening it is a decision the author deserves to hear about.
+ *
+ * Audited as `coding_decide` with an explicit undo reason, so the trail reads
+ * approve-then-undo. It must never look like a rejection, which is why `after`
+ * is the state it RETURNS TO ("Awaiting review") and not "Changes requested".
+ */
+export const undoApproval = mutation({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, scope, actorPersonId } = await requireReviewCoding(
+      ctx,
+      args.transactionId,
+    );
+    const coding = await codingForTransaction(ctx, args.transactionId);
+    if (!coding) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "This transaction has no coding.",
+      });
+    }
+    if (coding.status !== "approved") {
+      throw new ConvexError({
+        code: "NOT_APPROVED",
+        message: "There is no approval on this coding to undo.",
+      });
+    }
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    if (coding.decidedByUserId !== userId) {
+      throw new ConvexError({
+        code: "NOT_YOUR_APPROVAL",
+        message:
+          "Only the person who approved this coding can undo it. To reopen somebody else's decision, send it back with a note — the author is told, which is the point.",
+      });
+    }
+    if (Date.now() - (coding.decidedAt ?? 0) > UNDO_APPROVAL_WINDOW_MS) {
+      throw new ConvexError({
+        code: "UNDO_WINDOW_CLOSED",
+        message:
+          "That approval is no longer fresh enough to simply take back. Send the coding back with a note instead — once an approval has stood for a while, reopening it is a decision its author should hear about.",
+      });
+    }
+
+    await undoCodingApproval(ctx, { coding });
+    await logFinanceAudit(ctx, {
+      chapterId: scope,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "coding_decide",
+      actorPersonId,
+      field: "coding",
+      before: "Approved",
+      // The state it RETURNS TO. Never "Changes requested" — nothing was sent
+      // back, and nobody was asked to fix anything.
+      after: "Awaiting review",
+      reason:
+        "Approval undone by the approver within the undo window — the coding is awaiting review again, unchanged.",
+      amountCents: txn.amountCents,
+    });
+    // DELIBERATELY NOTHING SCHEDULED. `requestChanges` below notifies the
+    // author because a send-back they never hear about is a note in a row
+    // nobody reopens. An undo is the opposite case: the author never saw the
+    // approval, so there is no state change to tell them about — and the note
+    // this would carry ("undone by the approver") would read to them as
+    // feedback on work nobody criticised.
+    return null;
+  },
+});
+
+/**
  * Send a coding back with a note — "receipt must show exact amount". Works on
  * a `submitted` coding (the everyday loop) and on an `approved` one (the
  * audited way to reopen the record when something turns out wrong). The note
  * is required: the author needs to know what would make it approvable.
+ *
+ * THIS IS THE ANY-TIME, ANY-REVIEWER REOPEN, and it is deliberately the only
+ * one that reaches the author. `undoApproval` above is the narrow exception —
+ * your own approval, within a couple of minutes, no notification — and it
+ * exists so that a mis-tap doesn't have to be laundered through a fake
+ * complaint about the coding. Everything else comes here, with a note.
  *
  * SEPARATION OF DUTIES applies here too, and it didn't used to. `canReview`
  * has always reported `false` to the author of a coding — so the client

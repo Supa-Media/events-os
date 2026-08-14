@@ -566,6 +566,81 @@ describe("review loop", () => {
       }),
     ).rejects.toMatchObject({ data: { code: "REASON_REQUIRED" } });
   });
+
+  /**
+   * REOPENING AN APPROVED CODING — the any-time, any-reviewer path.
+   *
+   * `requestChanges` is the audited amendment route: it works on an APPROVED
+   * coding by design, and it is what a reviewer reaches for when something
+   * turns out to be wrong after the fact. It lands in `changes_requested`
+   * (meaning the AUTHOR must act) and it emails them — both right here, and
+   * both exactly why it is NOT what the panel's Undo toast calls. That is
+   * `transactionCodings.undoApproval`, covered in
+   * `codingUndoApproval.test.ts`.
+   *
+   * What this pins is that the reopen is REAL: the denorm follows and the
+   * coding becomes editable again. An approved coding is immutable, so any
+   * reopen has to be a state change rather than a cosmetic one.
+   */
+  test("requestChanges reopens an approved coding for real", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    const txnId = await seedTxn(s);
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE,
+    });
+    await reattributeAuthor(s, txnId);
+    await s.as.mutation(api.transactionCodings.approve, { transactionId: txnId });
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.codingState).toBe(
+      "approved",
+    );
+    // While it stands approved it is IMMUTABLE — the state undo exists to
+    // escape.
+    await expect(
+      s.as.mutation(api.transactionCodings.submit, {
+        transactionId: txnId,
+        expenseType: "general",
+        businessPurpose: GOOD_PURPOSE + " — corrected",
+      }),
+    ).rejects.toMatchObject({ data: { code: "CODING_APPROVED" } });
+
+    // THE REOPEN, with the note the author will be sent.
+    await s.as.mutation(api.transactionCodings.requestChanges, {
+      transactionId: txnId,
+      reviewNote: "The receipt has to show the exact amount — please reattach.",
+    });
+
+    const coding = await run(s.t, async (ctx) =>
+      (await ctx.db.query("transactionCodings").collect())[0],
+    );
+    expect(coding.status).toBe("changes_requested");
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.codingState).toBe(
+      "changes_requested",
+    );
+    // …and it really is editable again.
+    await s.as.mutation(api.transactionCodings.submit, {
+      transactionId: txnId,
+      expenseType: "general",
+      businessPurpose: GOOD_PURPOSE + " — corrected after the undo",
+    });
+    const reopened = await run(s.t, (ctx) => ctx.db.get(coding._id));
+    expect(reopened?.status).toBe("submitted");
+    expect(reopened?.businessPurpose).toContain("corrected after the undo");
+
+    // The whole round trip is audited — approve, then the send-back carrying
+    // the reviewer's own words. A reopen is a decision, not an erasure.
+    const decisions = (
+      await run(s.t, (ctx) => ctx.db.query("financeAuditLog").collect())
+    ).filter((a) => a.action === "coding_decide");
+    expect(decisions.map((a) => a.after)).toEqual([
+      "Approved",
+      "Changes requested",
+    ]);
+    expect(decisions[1].reason).toContain("show the exact amount");
+  });
 });
 
 describe("the CODING_REQUIRED gate and the Reconcile facets", () => {

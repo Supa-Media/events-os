@@ -571,6 +571,11 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       // above cannot reach). t4 is an inflow and t3 is excluded, so neither
       // can carry an explanation.
       needs_explaining: 2,
+      // The complement inside the SAME denominator: nothing here has an
+      // approved coding, so the whole explainable population sits on the
+      // "needs" side and this reads 0. The two always sum to
+      // `explanationPopulation`.
+      explained: 0,
       coding_review: 0,
       personal_unpaid: 0, // none flagged personal in this fixture
       transfers: 0, // nothing marked as an internal transfer here

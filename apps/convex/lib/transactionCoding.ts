@@ -392,6 +392,71 @@ export async function decideCoding(
 }
 
 /**
+ * UNDO AN APPROVAL — put the coding back exactly where it was a moment ago.
+ *
+ * ## Why this is not `decideCoding({ approve: false })`
+ *
+ * The undo affordance originally called `requestChanges`, and that was wrong
+ * in two ways that only look cosmetic:
+ *
+ *  1. IT LANDED IN THE WRONG STATE. `changes_requested` means "the AUTHOR must
+ *     act" — it moves the row into the spender's queue and asks them to fix
+ *     something. But an undo says the APPROVER mis-tapped. Nobody found
+ *     anything wrong with the coding; it was awaiting review, and it should be
+ *     awaiting review again. Reusing the send-back silently converted "waiting
+ *     on a reviewer" into "waiting on the person who wrote it".
+ *  2. IT TOLD THE AUTHOR. `requestChanges` schedules
+ *     `cards.notifyCodingSentBack`, which carries the review note. The author
+ *     never saw the approval, so they would get a notification about a state
+ *     that never existed from their side — with "Undone by the approver"
+ *     rendered to them as if it were feedback on their work.
+ *
+ * The fix is NOT a `silent` flag on `requestChanges`. That notification exists
+ * precisely because a send-back nobody hears about is a note in a row nobody
+ * reopens (see `transactionCodings.requestChanges`); an off switch on the
+ * general path would be a worse trade than the bug. So this is its own act,
+ * with its own narrow rules, enforced by its caller
+ * (`transactionCodings.undoApproval`): only the identity that made the
+ * approval, and only inside `UNDO_APPROVAL_WINDOW_MS`.
+ *
+ * ## What it clears, and why all of it
+ *
+ * Everything `decideCoding` stamped on the way in — `decidedByPersonId`,
+ * `decidedByUserId`, `decidedAt`, `approvalParty`. A row carrying "approved by
+ * X, single-party" while sitting in `submitted` would be a decision record for
+ * a decision that no longer stands, and `approvalParty` in particular is the
+ * durable trace of the solo-operator bypass, which must describe a LIVE
+ * approval or nothing at all.
+ *
+ * `reviewNote` is deliberately untouched: it belongs to whatever send-back
+ * preceded this coding's last submission, and an approver's mis-tap is no
+ * reason to erase the author's outstanding instructions.
+ *
+ * The audit entry is the caller's job, as with every other decision in this
+ * module, and it must read as an UNDO — an auditor must never find a
+ * send-back that never happened.
+ */
+export async function undoCodingApproval(
+  ctx: MutationCtx,
+  args: { coding: Doc<"transactionCodings"> },
+): Promise<void> {
+  if (args.coding.status !== "approved") {
+    throw new ConvexError({
+      code: "NOT_APPROVED",
+      message: "There is no approval on this coding to undo.",
+    });
+  }
+  await ctx.db.patch(args.coding._id, {
+    status: "submitted",
+    decidedByPersonId: undefined,
+    decidedByUserId: undefined,
+    decidedAt: undefined,
+    approvalParty: undefined,
+  });
+  await ctx.db.patch(args.coding.transactionId, { codingState: "submitted" });
+}
+
+/**
  * Materialize a coding row PORTED verbatim from an approved reimbursement
  * line — never composed, never re-typed (founder directive, 2026-08-13). The
  * caller (`increasePayoutMachine.ts#postReimbursementSpend`, live path; the

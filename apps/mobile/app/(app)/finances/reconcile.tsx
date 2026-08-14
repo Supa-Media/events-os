@@ -128,6 +128,15 @@ import {
   type ReconcileSortKey,
 } from "../../../components/finance/reconcile/gridView";
 import { BulkNoDocumentationModal } from "../../../components/finance/modals/BulkNoDocumentationModal";
+import {
+  BulkExplainModal,
+  BulkExplainResults,
+  type BulkExplainArgs,
+} from "../../../components/finance/modals/BulkExplainModal";
+import {
+  summarizeBulkExplain,
+  type BulkExplainSummary,
+} from "../../../components/finance/reconcile/bulkExplainOutcome";
 import type { ReceiptExceptionReason } from "@events-os/shared";
 import type { ActionToast } from "../../../lib/useActionToast";
 import { buildForPickerItems } from "../../../components/finance/reconcile/forPicker";
@@ -145,6 +154,8 @@ import {
   RECONCILE_DROPDOWN_GROUPS,
   RECONCILE_FILTER_LABELS,
   displayMerchantName,
+  FINANCE_TIMEZONE,
+  MAX_BULK_EXPLANATION_ROWS,
   formatCents,
   parseReconcileFilters,
   parsePeriodKey,
@@ -401,6 +412,18 @@ function ReconcileGrid() {
   // Silence would be the wrong answer here: the caller just wrote a record
   // against every row they had selected.
   const [noDocSummary, setNoDocSummary] = useState<ActionToast | null>(null);
+  // ── BULK EXPLANATION ──────────────────────────────────────────────────────
+  // The composer, and the outcome. They are two pieces of state rather than
+  // one because the outcome OUTLIVES the composer: a run that refused rows has
+  // to name them after the sheet has closed, and the selection stays intact
+  // behind it so fixing those rows is the next thing that happens.
+  const [explainOpen, setExplainOpen] = useState(false);
+  const [explainBusy, setExplainBusy] = useState(false);
+  const [explainSummary, setExplainSummary] =
+    useState<BulkExplainSummary | null>(null);
+  // A clean pass needs no modal — the toast says it and the rows visibly
+  // change state underneath.
+  const [explainToast, setExplainToast] = useState<ActionToast | null>(null);
 
   const parsedYear = params.year ? Number(params.year) : undefined;
   const periodYear = parsedYear != null && !Number.isNaN(parsedYear) ? parsedYear : undefined;
@@ -865,6 +888,7 @@ function ReconcileGrid() {
   const bulkCategorize = useMutation(api.finances.bulkCategorize);
   const setStatus = useMutation(api.finances.setTransactionStatus);
   const attestBulk = useMutation(api.receiptExceptions.attestBulk);
+  const submitBulkCoding = useMutation(api.transactionCodings.submitBulk);
   const reassignTransactions = useMutation(api.finances.reassignTransactions);
   const markAsTransfer = useMutation(api.finances.markAsTransfer);
   const markAsRefund = useMutation(api.finances.markAsRefund);
@@ -1524,6 +1548,60 @@ function ReconcileGrid() {
     }
   }
 
+  /**
+   * ONE SENTENCE, ACROSS THE SELECTION — the coding half of what
+   * `confirmNoDocumentation` above does for documentation, and for the same
+   * reason: the honest option has to cost what the dishonest one costs.
+   *
+   * The server writes one coding per row through the SAME validated path a
+   * typed one takes and returns EVERY row's fate. This does the two things
+   * that makes worth anything:
+   *
+   *  - it names what it couldn't do. A clean pass gets a toast and the
+   *    selection clears; a pass that refused rows opens the results panel with
+   *    those charges listed by the name the grid gave them, grouped by reason,
+   *    and LEAVES THE SELECTION ALONE so fixing them is the next thing that
+   *    happens rather than a re-hunt through 400 rows.
+   *  - it labels the failures from `displayed`, which is where the caller
+   *    picked them from. Nothing about a refused row is re-fetched.
+   */
+  async function confirmBulkExplain(args: BulkExplainArgs) {
+    setExplainBusy(true);
+    try {
+      const res = await run(
+        () =>
+          submitBulkCoding({
+            transactionIds: bulkIds,
+            expenseType: args.expenseType,
+            businessPurpose: args.businessPurpose,
+            ...(args.travelFrom ? { travelFrom: args.travelFrom } : {}),
+            ...(args.travelTo ? { travelTo: args.travelTo } : {}),
+          }),
+        { errorTitle: "Couldn't explain these charges" },
+      );
+      // `run` swallows the rejection and returns undefined — a server refusal
+      // (a short purpose, over the cap) leaves the sheet open with the words
+      // still in it, which is the only way to correct one.
+      if (!res) return;
+      const summary = summarizeBulkExplain(res.rows, (id) => {
+        const row = displayed.find((r) => r.id === id);
+        if (!row) return null;
+        return `${displayMerchantName(row, "Transaction")} · ${new Date(
+          row.postedAt,
+        ).toLocaleDateString("en-CA", { timeZone: FINANCE_TIMEZONE })}`;
+      });
+      setExplainOpen(false);
+      if (summary.failed > 0) {
+        setExplainSummary(summary);
+      } else {
+        setExplainToast({ title: "Explained", message: summary.line });
+        clearSelection();
+      }
+    } finally {
+      setExplainBusy(false);
+    }
+  }
+
   async function bulkMarkReconciled() {
     await run(
       // No bulk-status mutation: a loop over the idempotent per-row setter is fine.
@@ -1895,6 +1973,40 @@ function ReconcileGrid() {
             onMarkRefund={() => setRefundPromptOpen(true)}
             onMarkPayout={() => setPayoutPromptOpen(true)}
             onNoDocumentation={() => setNoDocOpen(true)}
+            // NOT rank-gated here, deliberately. `book.canEdit` (what puts a
+            // row in this selection) answers WHICH BOOK, not which rank — this
+            // whole bar is rank-optimistic, and a finance viewer pressing "Set
+            // category" already gets a server refusal. The difference is that
+            // this one refuses PER ROW and names what it refused, so an
+            // under-privileged caller gets "40 aren't yours to code" with the
+            // server's own sentence rather than one opaque toast. Gating it on
+            // the nearest flag to hand (`viewerCanRename`) would be an inline
+            // proxy for a power that isn't rename's — the exact shortcut
+            // CLAUDE.md's access-function rule exists to stop.
+            onExplain={() => setExplainOpen(true)}
+          />
+        ) : null}
+
+        {explainOpen ? (
+          <BulkExplainModal
+            count={selectedInView.length}
+            // The SERVER'S cap, echoed rather than re-typed here — a local
+            // copy would drift and then either block a legal selection or
+            // promise one the mutation refuses.
+            limit={MAX_BULK_EXPLANATION_ROWS}
+            submitting={explainBusy}
+            onCancel={() => setExplainOpen(false)}
+            onConfirm={(args) => void confirmBulkExplain(args)}
+          />
+        ) : null}
+
+        {/* Only when something was REFUSED. A clean pass gets the toast below
+            and the rows changing state underneath; opening a dialog to say
+            "all 40 worked" would be a click charged for nothing. */}
+        {explainSummary ? (
+          <BulkExplainResults
+            summary={explainSummary}
+            onClose={() => setExplainSummary(null)}
           />
         ) : null}
 
@@ -2125,6 +2237,13 @@ function ReconcileGrid() {
       <ToastView
         toast={noDocSummary}
         onDismiss={() => setNoDocSummary(null)}
+      />
+      {/* The clean-pass outcome. Same reasoning as `noDocSummary` above:
+          `useActionRunner`'s own toast is error-only, and a run that has just
+          written a public sentence onto forty rows must not end in silence. */}
+      <ToastView
+        toast={explainToast}
+        onDismiss={() => setExplainToast(null)}
       />
       </View>
 

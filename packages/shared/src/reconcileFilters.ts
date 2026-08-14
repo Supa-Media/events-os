@@ -73,6 +73,7 @@ export const RECONCILE_FILTER_KEYS = [
   "needs_chasing",
   "uncoded",
   "needs_explaining",
+  "explained",
   "coding_review",
   "undocumented",
   "personal_unpaid",
@@ -109,6 +110,7 @@ export const RECONCILE_FILTER_GROUPS: readonly {
       "needs_chasing",
       "uncoded",
       "needs_explaining",
+      "explained",
       "coding_review",
       "undocumented",
       "personal_unpaid",
@@ -250,6 +252,27 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   // this area already has a scar from (the `requiresCoding` mirrors in
   // `transactionCodings.ts`).
   needs_explaining: "Needs explaining",
+  // ── THE OTHER HALF OF THE SAME POPULATION, AND WHY IT IS A FACET ──────────
+  // `explanationPopulation(tr) && codingState === "approved"` — exactly the
+  // complement of `needs_explaining` inside the same denominator, so
+  // `needs_explaining + explained === explanationPopulation` holds by
+  // construction and neither number can quietly become a different question.
+  //
+  // It exists because approving is PUBLISHING. The moment a coding is
+  // approved the row leaves `needs_explaining`, which is the whole point of
+  // that facet — and the consequence, for someone writing four hundred
+  // sentences that go on a public page, was that the sentence they had just
+  // published became unreachable. There was no filter for "what I already
+  // explained": you could only find it by clearing every filter and scrolling
+  // the whole book past the rows you hadn't done yet. An approved coding is
+  // also IMMUTABLE (`submitCoding` throws `CODING_APPROVED`), so re-reading it
+  // is the ONLY check available before the month publishes — and it was the
+  // one thing the grid couldn't do.
+  //
+  // Named for the state, not the act ("Explained", not "Approved by me"): the
+  // facet is a fact about the ROW, and a per-viewer facet would report a
+  // different number to each person looking at the same book.
+  explained: "Explained",
   coding_review: "Coding review",
   // "Closed without documentation", not "Undocumented" — and the FACET is now
   // the difference rather than the superset (see `listReconcile`'s `flagsFor`).
