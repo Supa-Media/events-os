@@ -62,6 +62,15 @@ export type GroupSummary = {
   label: string;
   count: number;
   totalCents: number;
+  /** The group's OWN explaining progress, server-computed over the whole
+   *  match set in the same loop that built the group — never the loaded page,
+   *  and not derivable here (the denominator reads transaction fields
+   *  `reconcileRow` doesn't ship). This is what lets a month band carry the
+   *  meter the Explain screen carries. */
+  explainableCount: number;
+  explainableCents: number;
+  explainedCount: number;
+  explainedCents: number;
 };
 
 /** Where one group's rows sit inside the loaded page. */

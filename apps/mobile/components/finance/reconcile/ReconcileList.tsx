@@ -512,6 +512,8 @@ export function ReconcileList({
                     count={seg.group.count}
                     totalCents={seg.group.totalCents}
                     shownCount={seg.shownCount}
+                    explainableCount={seg.group.explainableCount}
+                    explainedCount={seg.group.explainedCount}
                   />
                   {rows
                     .slice(seg.startIndex, seg.startIndex + seg.shownCount)

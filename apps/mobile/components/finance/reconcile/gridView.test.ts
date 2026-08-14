@@ -11,11 +11,23 @@ import {
   type GroupSummary,
 } from "./gridView";
 
-const g = (key: string, count: number): GroupSummary => ({
+const g = (
+  key: string,
+  count: number,
+  progress?: { explainable: number; explained: number },
+): GroupSummary => ({
   key,
   label: key,
   count,
   totalCents: -100 * count,
+  // Defaults to "every row explainable, none explained" so a segment test
+  // that doesn't care about progress still builds a group whose band would
+  // RENDER one — a default of 0 explainable would silently exercise the
+  // hidden-progress branch instead.
+  explainableCount: progress?.explainable ?? count,
+  explainableCents: 100 * (progress?.explainable ?? count),
+  explainedCount: progress?.explained ?? 0,
+  explainedCents: 100 * (progress?.explained ?? 0),
 });
 
 describe("URL param parsing", () => {
