@@ -1097,17 +1097,43 @@ export const personalRepayments = defineTable({
   // emailing a volunteer four times about $12.
   lastNudgedAt: v.optional(v.number()),
   // Stamped once this repayment's PAYMENT RECEIPT ("thanks for paying this
-  // off — here's your receipt") has been sent to the payer
-  // (`cards.ts#claimRepaymentReceipts`, `sendRepaymentReceiptEmail`). Claimed
-  // atomically per row, in the SAME transaction that reads it, so a payment
-  // that settles several repayments at once (one bundled Stripe Checkout)
-  // sends exactly ONE email covering all of them, and a redelivered webhook —
-  // or `checkout.session.completed` landing alongside
-  // `async_payment_succeeded` — can never produce a second receipt for the
-  // same repayment. Absent = never sent. There is no reversal flow for a
-  // repayment the way `payouts` has one for reimbursements, so this stamp is
-  // permanent: at most one receipt per repayment, ever.
+  // off — here's your receipt") is CLAIMED for sending — i.e. an attempt is
+  // about to be made — by `cards.ts#claimRepaymentReceipts` (the live path)
+  // or `cards.ts#claimRepaymentReceiptForRetry` (the backfill's retry).
+  // Claimed atomically per row, in the SAME transaction that reads it, so a
+  // payment that settles several repayments at once (one bundled Stripe
+  // Checkout) sends exactly ONE email covering all of them, and a
+  // redelivered webhook — or `checkout.session.completed` landing alongside
+  // `async_payment_succeeded` — can never produce a second SIMULTANEOUS
+  // attempt at the same repayment. Absent = never even attempted.
+  //
+  // THIS STAMP ALONE DOES NOT MEAN DELIVERED. It is stamp-BEFORE-send by
+  // design (prevents double-sends if the process dies mid-send), which means
+  // a claim can be followed by a failure — see `receiptDeliveredAt` /
+  // `receiptDeliveryFailedAt` below for the outcome, and
+  // `repaymentReceiptBackfill.ts` for the recovery path that re-claims (by
+  // re-stamping this field) a row whose delivery never confirmed.
   receiptSentAt: v.optional(v.number()),
+  // Stamped ONLY on a CONFIRMED successful send (Resend accepted it with a
+  // 2xx). This is the field that actually means "the payer has this
+  // receipt" — `receiptSentAt` alone does not. Cleared to `undefined` only
+  // never (a confirmed delivery is never un-confirmed); a retry that
+  // succeeds after an earlier failure sets this AND clears the two failure
+  // fields below in the same patch (`markRepaymentReceiptOutcome`).
+  receiptDeliveredAt: v.optional(v.number()),
+  // Stamped when a claimed receipt's send did NOT confirm delivery — no
+  // email on file for the payer, Resend rejected/couldn't be reached, a
+  // transport throw, or the claimed rows vanished before send. Set in EVERY
+  // failure path (`cards.ts#sendOneRepaymentReceiptGroup`), never silently.
+  // Cleared on a subsequent successful resend. Its presence (with
+  // `receiptDeliveredAt` absent) is exactly what
+  // `repaymentReceiptBackfill.ts` sweeps for.
+  receiptDeliveryFailedAt: v.optional(v.number()),
+  // Short, bounded (<=300 char) human-readable reason for the most recent
+  // `receiptDeliveryFailedAt` — enough to triage without a log dig, never an
+  // unbounded provider payload. Cleared alongside `receiptDeliveryFailedAt`
+  // on a successful resend.
+  lastReceiptError: v.optional(v.string()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })

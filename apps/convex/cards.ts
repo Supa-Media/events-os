@@ -3681,6 +3681,96 @@ export const claimRepaymentReceipts = internalMutation({
   },
 });
 
+/** How long a claimed-but-not-yet-confirmed receipt must sit before the
+ *  backfill (`repaymentReceiptBackfill.ts`) is willing to re-claim it. A
+ *  `sendOneRepaymentReceiptGroup` call is one HTTP round trip to Resend —
+ *  comfortably done in seconds — so anything still short of this window is
+ *  almost certainly a send genuinely in flight, not a lost one, and must be
+ *  left alone rather than risk a duplicate. Exported so the backfill's
+ *  eligibility scan and this file's retry-claim agree on the same threshold. */
+export const RECEIPT_RETRY_STALE_MS = 15 * 60 * 1000;
+
+/**
+ * Re-claim ONE repayment's receipt for a RETRY send, for the backfill only
+ * (`repaymentReceiptBackfill.ts`). Unlike `claimRepaymentReceipts` (which
+ * claims a never-attempted row), this claims a row that was ALREADY
+ * attempted and never confirmed delivered — re-stamping `receiptSentAt` to
+ * `now` is what makes the claim atomic (read-and-write in one transaction,
+ * same trick `claimRepaymentReceipts` uses) AND what stops a second backfill
+ * run from re-claiming the same row a moment later: its own staleness check
+ * reads the fresh timestamp and sees a claim that isn't old enough to be
+ * "stuck" yet.
+ *
+ * Returns `null` (nothing to do) when: the row is gone, was never settled,
+ * was never claimed in the first place (`receiptSentAt` absent — not this
+ * mutation's job), already has a CONFIRMED delivery, or its outstanding
+ * claim isn't old enough yet to safely assume the original attempt is done
+ * (see `RECEIPT_RETRY_STALE_MS`).
+ */
+export const claimRepaymentReceiptForRetry = internalMutation({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.union(
+    v.object({
+      repaymentId: v.id("personalRepayments"),
+      payerPersonId: v.id("people"),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { repaymentId }) => {
+    const r = await ctx.db.get(repaymentId);
+    if (!r) return null;
+    if (!r.creditTransactionId || r.status !== "paid") return null;
+    if (r.receiptSentAt === undefined) return null;
+    if (r.receiptDeliveredAt !== undefined) return null;
+    if (Date.now() - r.receiptSentAt < RECEIPT_RETRY_STALE_MS) return null;
+    await ctx.db.patch(repaymentId, { receiptSentAt: Date.now() });
+    return { repaymentId: r._id, payerPersonId: r.payerPersonId };
+  },
+});
+
+/**
+ * Record what actually happened to a claimed receipt send — the piece that
+ * was entirely missing before: a lost receipt used to leave `receiptSentAt`
+ * as the only trace, indistinguishable from a delivered one. Called by
+ * `sendOneRepaymentReceiptGroup` after every attempt, live or retried.
+ *
+ * `"delivered"` is the ONLY outcome that means the payer actually has this
+ * receipt — it stamps `receiptDeliveredAt` and CLEARS both failure fields,
+ * so a retry that finally succeeds erases the trail that would otherwise
+ * make the backfill re-scan a now-fine row forever. `"failed"` stamps
+ * `receiptDeliveryFailedAt` + a short, bounded reason (never an unbounded
+ * provider payload) and leaves `receiptDeliveredAt` untouched.
+ */
+export const markRepaymentReceiptOutcome = internalMutation({
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    outcome: v.union(v.literal("delivered"), v.literal("failed")),
+    error: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { repaymentIds, outcome, error }) => {
+    const now = Date.now();
+    for (const id of repaymentIds) {
+      const r = await ctx.db.get(id);
+      if (!r) continue;
+      if (outcome === "delivered") {
+        await ctx.db.patch(id, {
+          receiptDeliveredAt: now,
+          receiptDeliveryFailedAt: undefined,
+          lastReceiptError: undefined,
+        });
+      } else {
+        await ctx.db.patch(id, {
+          receiptDeliveryFailedAt: now,
+          // Bounded: this is a triage string, never a dumped provider body.
+          lastReceiptError: (error ?? "unknown error").slice(0, 300),
+        });
+      }
+    }
+    return null;
+  },
+});
+
 /**
  * Everything `sendRepaymentReceiptEmail` needs for ONE payer's slice of a
  * claimed batch — `null` only when every id resolves to nothing (a race with
@@ -3713,7 +3803,22 @@ export const getRepaymentReceiptPayload = internalQuery({
     ).filter((r): r is Doc<"personalRepayments"> => r !== null);
     if (rows.length === 0) return null;
 
-    const payer = await ctx.db.get(rows[0].payerPersonId);
+    // GUARD, LOCAL RATHER THAN REMOTE: today's only caller
+    // (`sendOneRepaymentReceiptGroup`) always pre-groups ids by
+    // `payerPersonId` before calling this, so every real batch already
+    // shares one payer — but nothing here enforced that, which made it a
+    // landmine for a future caller passing a mixed batch: it would have
+    // silently put one payer's charges on another payer's receipt. Refuse
+    // outright instead of guessing whose receipt this is.
+    const payerPersonId = rows[0].payerPersonId;
+    if (rows.some((r) => r.payerPersonId !== payerPersonId)) {
+      throw new Error(
+        `getRepaymentReceiptPayload: repaymentIds span more than one payer ` +
+          `(${repaymentIds.join(", ")}) — every caller must pre-group by payer.`,
+      );
+    }
+
+    const payer = await ctx.db.get(payerPersonId);
     const lines = await Promise.all(
       rows.map(async (r) => {
         const txn = await ctx.db.get(r.transactionId);
@@ -3785,6 +3890,145 @@ async function fetchStripeReceiptUrl(
 }
 
 /**
+ * Build and send ONE payer's receipt for a batch of repayment ids that are
+ * ALREADY claimed (`receiptSentAt` stamped), then record what happened
+ * (`markRepaymentReceiptOutcome`) so a lost send is traceable and
+ * recoverable rather than silent — see this section's header ("a lost
+ * receipt is silent AND permanent" was the bug; this function is the fix).
+ *
+ * Shared by the live send path (`sendRepaymentReceiptEmail`, one payer-group
+ * per settlement event) and the backfill's per-row retry
+ * (`repaymentReceiptBackfill.ts`) — both callers already own the claim
+ * (`claimRepaymentReceipts` / `claimRepaymentReceiptForRetry`); this
+ * function only knows "these ids were just claimed, mail them and record
+ * the outcome."
+ *
+ * EVERY exit records an outcome — the four proven-silent failure paths this
+ * fixes are all represented below:
+ *  - the claimed rows vanished before send (a race with a deletion),
+ *  - the payer has no email on file (used to be a bare `continue`, logging
+ *    nothing at all — the worst of the four),
+ *  - Resend didn't accept the send (no key configured, or a non-2xx
+ *    response — `sendEmailReporting` swallows this into a `false`, so it's
+ *    logged HERE with the repayment ids + address, which the underlying
+ *    `[resend]`/`[ticketing]` logs never carried),
+ *  - a genuine throw (a `fetch` transport failure, or `getRepaymentReceiptPayload`'s
+ *    cross-payer guard) — caught locally so ONE payer group's failure can
+ *    never abort a sibling group's send in the same batch.
+ *
+ * Returns the outcome so a caller that wants to tally results (the backfill)
+ * doesn't need a second round trip to re-read the row.
+ */
+export async function sendOneRepaymentReceiptGroup(
+  ctx: ActionCtx,
+  repaymentIds: Id<"personalRepayments">[],
+  feeCoveredCents: number,
+): Promise<"delivered" | "failed"> {
+  const fail = async (reason: string): Promise<"failed"> => {
+    await ctx.runMutation(internal.cards.markRepaymentReceiptOutcome, {
+      repaymentIds,
+      outcome: "failed",
+      error: reason,
+    });
+    return "failed";
+  };
+
+  try {
+    const payload = await ctx.runQuery(
+      internal.cards.getRepaymentReceiptPayload,
+      { repaymentIds },
+    );
+    if (!payload) {
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: claimed repayment rows vanished before send",
+        repaymentIds,
+      );
+      return await fail("repayment rows were gone by send time");
+    }
+    if (!payload.payerEmail) {
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: payer has no email on file — receipt claimed but never sent",
+        repaymentIds,
+      );
+      return await fail("payer has no email on file");
+    }
+
+    const stripeReceiptUrl = payload.stripePaymentIntentId
+      ? await fetchStripeReceiptUrl(payload.stripePaymentIntentId)
+      : null;
+
+    const link = appUrl("/finances/repayments");
+    // KNOWN REPO TRAP: a `link ? <a> : ""` pattern here would silently
+    // ship a CTA-less transactional email whenever APP_URL is unset.
+    // Degrade LOUDLY instead — see `notifyPersonalChargeFlagged`.
+    if (!link) {
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: APP_URL is unset — sending WITHOUT a clickable repayments link",
+        repaymentIds,
+      );
+    }
+
+    const receipt = buildRepaymentReceipt({
+      payerName: payload.payerName,
+      paidAt: payload.paidAt,
+      lines: payload.lines,
+      totalCents: payload.totalCents,
+      method: payload.method,
+      feeCoveredCents: feeCoveredCents > 0 ? feeCoveredCents : null,
+      stripeReceiptUrl,
+      link,
+    });
+
+    // `sendEmailReporting`, not the fire-and-forget `sendEmail`: this is
+    // exactly the caller `sendEmailReporting`'s own doc names as needing the
+    // real delivery outcome. A rejected/non-2xx response resolves `false`
+    // here (never thrown); a genuine transport failure still throws, which
+    // the outer catch below turns into a recorded failure too.
+    const delivered = await sendEmailReporting(ctx, {
+      to: payload.payerEmail,
+      subject: receipt.subject,
+      html: receipt.html,
+    });
+
+    if (!delivered) {
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: Resend did not accept the send",
+        { repaymentIds, to: payload.payerEmail },
+      );
+      return await fail(
+        "Resend rejected the send (no key configured, or a non-2xx response)",
+      );
+    }
+
+    await ctx.runMutation(internal.cards.markRepaymentReceiptOutcome, {
+      repaymentIds,
+      outcome: "delivered",
+    });
+    return "delivered";
+  } catch (err) {
+    console.error(
+      "[cards] sendRepaymentReceiptEmail: send failed for payer group",
+      repaymentIds,
+      err,
+    );
+    try {
+      return await fail(
+        (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      );
+    } catch (innerErr) {
+      // The failure record itself couldn't be written — still don't let
+      // this throw escape and abort a sibling payer group's send.
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: failed to record failure outcome",
+        repaymentIds,
+        innerErr,
+      );
+      return "failed";
+    }
+  }
+}
+
+/**
  * "You paid this off — here's your receipt", scheduled by whichever
  * settlement caller just cleared one or more repayments in a single payment
  * event. See this section's header for the seam and the exactly-once story.
@@ -3798,10 +4042,14 @@ async function fetchStripeReceiptUrl(
  * genuinely multi-payer batch drops the fee note and logs loudly instead of
  * mis-attributing it.
  *
- * Wrapped in a try/catch for the same reason `notifyPersonalChargeFlagged`
- * is: it runs after the payment has already committed, and a missing
- * `RESEND_API_KEY` (dev/CI) or a transient Resend failure must degrade
- * silently rather than surface as a failed scheduled job.
+ * Each payer group is sent (and its outcome recorded) by
+ * `sendOneRepaymentReceiptGroup`, which catches its OWN failures — so one
+ * payer's send failing can never abort a sibling payer's send in the same
+ * batch. The outer try/catch here is a last-resort net for a throw outside
+ * that per-group boundary (e.g. the initial claim itself), for the same
+ * reason `notifyPersonalChargeFlagged` wraps its own body: this runs after
+ * the payment has already committed, and must never surface as a failed
+ * scheduled job.
  */
 export const sendRepaymentReceiptEmail = internalAction({
   args: {
@@ -3836,43 +4084,7 @@ export const sendRepaymentReceiptEmail = internalAction({
       const feeForSingleGroup = groups.size === 1 ? (feeCoveredCents ?? 0) : 0;
 
       for (const ids of groups.values()) {
-        const payload = await ctx.runQuery(
-          internal.cards.getRepaymentReceiptPayload,
-          { repaymentIds: ids },
-        );
-        if (!payload || !payload.payerEmail) continue;
-
-        const stripeReceiptUrl = payload.stripePaymentIntentId
-          ? await fetchStripeReceiptUrl(payload.stripePaymentIntentId)
-          : null;
-
-        const link = appUrl("/finances/repayments");
-        // KNOWN REPO TRAP: a `link ? <a> : ""` pattern here would silently
-        // ship a CTA-less transactional email whenever APP_URL is unset.
-        // Degrade LOUDLY instead — see `notifyPersonalChargeFlagged`.
-        if (!link) {
-          console.error(
-            "[cards] sendRepaymentReceiptEmail: APP_URL is unset — sending WITHOUT a clickable repayments link",
-            ids,
-          );
-        }
-
-        const receipt = buildRepaymentReceipt({
-          payerName: payload.payerName,
-          paidAt: payload.paidAt,
-          lines: payload.lines,
-          totalCents: payload.totalCents,
-          method: payload.method,
-          feeCoveredCents: feeForSingleGroup > 0 ? feeForSingleGroup : null,
-          stripeReceiptUrl,
-          link,
-        });
-
-        await sendEmail(ctx, {
-          to: payload.payerEmail,
-          subject: receipt.subject,
-          html: receipt.html,
-        });
+        await sendOneRepaymentReceiptGroup(ctx, ids, feeForSingleGroup);
       }
     } catch (err) {
       console.error("sendRepaymentReceiptEmail: failed", repaymentIds, err);
