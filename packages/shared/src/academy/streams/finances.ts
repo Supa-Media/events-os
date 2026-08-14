@@ -2956,7 +2956,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**How the 15% actually moves today:** by hand, on purpose. With one chapter and a small backer base, automating the transfer would be complexity the network doesn't need yet — so central's bookkeeper records it as a manual transfer (same ledger shape either way: a real `flow:\"transfer\"` pair, excluded from spend), with a note saying which month's commitment it honors. The 15% itself isn't optional or improvised — it's the number this lesson teaches, and the number donors are told on the giving page — only the RECORDING is manual for now.",
+        text: "**How the 15% actually moves today:** by hand, on purpose. With one chapter and a small backer base, automating the transfer would be complexity the network doesn't need yet — so central's bookkeeper records it as a manual transfer (same ledger shape either way: a real `flow:\"transfer\"` pair, excluded from spend), with a note saying which month's commitment it honors. The 15% itself isn't optional or improvised — it's the number this lesson teaches, and the number donors are told publicly at **`/give/how-it-works`**, the page that carries the whole money model — only the RECORDING is manual for now.",
       },
       {
         kind: "tip",

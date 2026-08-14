@@ -240,12 +240,23 @@ describe("curriculum content", () => {
     // destroyed four years on — and what publishes: the work, the amount, the
     // date and the category, with "Contractor payment" standing in for the
     // name we deliberately never publish.)
-    expect(ACADEMY_SECTION_COUNT).toBe(111);
+    // + 1 (dev-public-gift-wall, 2026-08-14, appended to the donor-stewardship
+    // course after dev-gifts-ledger-and-audit — required, not a capstone. The
+    // /give redesign v3 (docs/plans/give-redesign-v3.md D6/D7/D10) inverted the
+    // public wall's rule: it used to show only gifts whose giver opted in AND
+    // typed a name; it now shows EVERY settled gift, anonymous by default, with
+    // consent gating only the name/message attribution — on a city page that is
+    // now search-indexable. That is a privacy rule staff are asked about out
+    // loud ("take my name off"), and it has a real staff surface behind it
+    // (Giving → Wall, central `giving.manage` take down / restore), so it is
+    // taught rather than left to be inferred. Placed right after the gifts
+    // ledger so the private record is taught before its public echo.)
+    expect(ACADEMY_SECTION_COUNT).toBe(112);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 111 }, (_v, i) => i + 1),
+      Array.from({ length: 112 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(110);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(111);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

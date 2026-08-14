@@ -98,6 +98,40 @@ function money(c){
 
 /** Wire one amount-picker form (presets + custom + name/email + submit).
  *  No-ops if the form isn't on this page (its preset buttons won't exist). */
+/* The one-time destination picker (map page only, v3/D4). Returns the chosen
+   city slug, or '' for central operations — which is the absence of a slug, the
+   thing the API already treats as a central gift. Returns '' on any page that
+   has no picker, so the caller falls back to G.slug (the territory page). */
+function destinationSlug(){
+  var box=document.getElementById('gc_dest');
+  if(!box)return '';
+  var picked=box.querySelector('input[name="gc_dest_choice"]:checked');
+  if(!picked||picked.value!=='city')return '';
+  var sel=document.getElementById('gc_dest_slug');
+  return (sel&&sel.value)||'';
+}
+
+/* Show the city dropdown only once "a specific city" is chosen, and keep the
+   .sel highlight in step with the radio — the whole row is the control, so the
+   selected state has to be on the row, not just the 16px radio. */
+function wireDestinationPicker(){
+  var box=document.getElementById('gc_dest');
+  if(!box)return;
+  var cityWrap=document.getElementById('gc_dest_city');
+  var radios=box.querySelectorAll('input[name="gc_dest_choice"]');
+  function sync(){
+    var isCity=false;
+    for(var i=0;i<radios.length;i++){
+      var row=radios[i].closest('.destopt');
+      if(row)row.className='destopt'+(radios[i].checked?' sel':'');
+      if(radios[i].checked&&radios[i].value==='city')isCity=true;
+    }
+    if(cityWrap)cityWrap.hidden=!isCity;
+  }
+  for(var j=0;j<radios.length;j++)radios[j].addEventListener('change',sync);
+  sync();
+}
+
 function wireAmountForm(opts){
   var prefix=opts.prefix;
   var presets=opts.presets||[];
@@ -260,7 +294,16 @@ function wireAmountForm(opts){
     var btn=$(prefix+'_submit');
     if(btn)btn.disabled=true;
     var payload={amountCents:amountCents,name:name,email:email};
-    if(G.slug)payload.slug=G.slug;
+    /* v3 (docs/plans/give-redesign-v3.md D4): on the map page the one-time form
+       carries a DESTINATION PICKER — central operations, or a named city — so
+       the giver says where the money goes instead of it being inferred from
+       whichever page they happened to land on. "Central" is the absence of a
+       slug, which is exactly what the API already means by no slug, so picking
+       it sends nothing. On a territory page there is no picker and G.slug is
+       the city, unchanged. */
+    var destSlug=destinationSlug();
+    if(destSlug)payload.slug=destSlug;
+    else if(G.slug)payload.slug=G.slug;
     // F6 (wave 2): "share this on the wall" — publicName/message only ever
     // travel alongside shareOnWall, so an unchecked box never leaks a typed
     // (but un-shared) message to the server.
@@ -423,6 +466,7 @@ function wireInterestForm(){
 }
 
 document.addEventListener('DOMContentLoaded',function(){
+  wireDestinationPicker();
   wireAmountForm({
     prefix:'gc_onetime',
     presets:G.oneTimePresetsCents||[2500,5000,10000,25000],

@@ -94,6 +94,7 @@ import { foldFeeCoverageIntoGifts } from "./0072_fold_fee_coverage_into_gifts";
 import { bookKnownRepaymentFeeCoverage } from "./0073_book_known_repayment_fee_coverage";
 import { bookRepaymentCoverageBySession } from "./0074_book_repayment_coverage_by_session";
 import { labelFeeCoverageRows } from "./0075_label_fee_coverage_rows";
+import { backfillWallFromGifts } from "./0076_backfill_wall_from_gifts";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -464,4 +465,17 @@ export const MIGRATIONS: Migration[] = [
   // row carrying the marker rather than pinning one — and it only ever fills
   // an absence, never overwrites a human's choice. See 0075.
   labelFeeCoverageRows,
+  // The public giving wall was an OPT-IN echo — a row existed only if the
+  // giver ticked a box AND typed something, and never for a central gift —
+  // so the wall shipping as the page's proof (give-redesign-v3, D6)
+  // would have opened nearly empty, making a claim its own data contradicted.
+  // Writes one ANONYMOUS wall row per recent settled gift (no consent was ever
+  // asked of them, so none is recorded). Moves no money and touches no
+  // rollup: the wall's totals come from `givingScopeRollups`, never from these
+  // rows. Each row carries the gift's OWN `externalRef` as its `refKey` where
+  // it has one (`give:<session>`), because that is the key every reversal path
+  // reaches for to pull a row back down — a synthetic `gift:<id>` is used only
+  // when a gift has no external identity at all. Idempotent against both. See
+  // 0076.
+  backfillWallFromGifts,
 ];

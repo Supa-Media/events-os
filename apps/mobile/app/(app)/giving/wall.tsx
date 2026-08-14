@@ -1,7 +1,8 @@
 /**
  * GIVING · Wall — the staff moderation desk for the PUBLIC giving wall
- * ("Backers & gifts" on `/give/<slug>`, rendered by
- * `apps/convex/lib/givePage.ts` from `givingActivity.getTerritoryActivity`).
+ * ("Backers & gifts" on `/give/<slug>` and "Giving, as it comes in" on `/give`,
+ * both rendered by `apps/convex/lib/givePage.ts` from
+ * `givingActivity.getPublicWall`).
  *
  * WHY THIS SCREEN EXISTS: `hideActivity` shipped with the wall but never had a
  * UI, so the only way to take an entry down was a developer running the
@@ -16,9 +17,11 @@
  * read-only list rather than an access wall, mirroring `interest.tsx`.
  *
  * Every takedown here is REVERSIBLE — `hideActivity` stamps
- * `hiddenReason: "staff"`, and `restoreActivity` puts exactly those rows back
- * (re-checking consent on the way, so a restore can never be the route a
- * non-consented row reaches the public wall). Entries pulled because a payment
+ * `hiddenReason: "staff"`, and `restoreActivity` puts exactly those rows back —
+ * anonymously if that is how they came down. (It no longer refuses over
+ * consent: since v3 the public read decides attribution on every read, so a
+ * restore cannot confer a name, and refusing would have made an accidental
+ * takedown of an unconsented row permanent.) Entries pulled because a payment
  * reversed (`withdrawActivity`, ACH failure) are NOT restorable and say so.
  */
 import { useState } from "react";

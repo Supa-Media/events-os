@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import { ConvexError } from "convex/values";
 import { AFFORDABILITY_TIERS, launchTemplateTotalCents } from "@events-os/shared";
 import { api, internal } from "../_generated/api";
+import { RESERVED_TERRITORY_SLUGS } from "../territories";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
 import { runTerritoriesCutover } from "../migrations/0029_territories_cutover";
@@ -266,6 +267,51 @@ describe("saveTerritory", () => {
         publiclyVisible: false,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("rejects a slug reserved for a static /give route", async () => {
+    const s = await devDirectorSetup();
+    // `how-it-works` is the money-model page (give-redesign-v3 §C4) and `og` is
+    // the already-live share-card sub-route — a territory at either slug would
+    // silently shadow a real page, since `http.ts` dispatches `/give/<segment>`
+    // as a territory slug.
+    for (const slug of ["how-it-works", "og"]) {
+      await expect(
+        s.as.mutation(api.territories.saveTerritory, {
+          name: "Shadowy",
+          region: "NY",
+          lat: 40.7282,
+          lng: -73.7949,
+          slug,
+          publiclyVisible: true,
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    }
+    // Every reserved segment is rejected, not just the two spelled out above.
+    for (const slug of RESERVED_TERRITORY_SLUGS) {
+      await expect(
+        s.as.mutation(api.territories.saveTerritory, {
+          name: "Shadowy",
+          region: "NY",
+          lat: 40.7282,
+          lng: -73.7949,
+          slug,
+          publiclyVisible: true,
+        }),
+      ).rejects.toBeInstanceOf(ConvexError);
+    }
+    // A normal slug in the same shape still saves — the guard is a list, not a
+    // pattern that happens to catch hyphenated names.
+    await expect(
+      s.as.mutation(api.territories.saveTerritory, {
+        name: "How It Works, NY",
+        region: "NY",
+        lat: 40.7282,
+        lng: -73.7949,
+        slug: "how-it-works-ny",
+        publiclyVisible: true,
+      }),
+    ).resolves.toBeDefined();
   });
 
   test("rejects an invalid slug and out-of-range lat/lng", async () => {
@@ -713,7 +759,7 @@ describe("public territory reads", () => {
     ).toBeNull();
   });
 
-  test("getPublicTerritory: upcomingFundraisers surfaces a published future goal event, soonest first", async () => {
+  test("getPublicTerritory: fundraisers surfaces a published future goal event, soonest first", async () => {
     const s = await devDirectorSetup();
     const id = await s.as.mutation(api.territories.saveTerritory, {
       name: "Queens",
@@ -751,23 +797,24 @@ describe("public territory reads", () => {
     const data = await s.t.query(api.territories.getPublicTerritory, {
       slug: "queens-ny",
     });
-    expect(data!.upcomingFundraisers).toHaveLength(2);
-    expect(data!.upcomingFundraisers.map((f) => f.slug)).toEqual([
+    expect(data!.fundraisers).toHaveLength(2);
+    expect(data!.fundraisers.map((f) => f.slug)).toEqual([
       "ltn-fundraiser",
       "eden-fundraiser",
     ]);
-    const eden = data!.upcomingFundraisers.find(
-      (f) => f.slug === "eden-fundraiser",
-    )!;
+    const eden = data!.fundraisers.find((f) => f.slug === "eden-fundraiser")!;
     expect(eden.goalCents).toBe(100000);
     // raisedCents mirrors the RSVP page's progress bar exactly: revenue +
     // on-page giving + externally-attached gifts.
     expect(eden.raisedCents).toBe(5000 + 3000 + 2000);
     expect(eden.name).toBe("Eden Fundraiser");
     expect(typeof eden.startDate).toBe("number");
+    // A future fundraiser is "open", and 10k of a 100k goal is not met.
+    expect(eden.state).toBe("open");
+    expect(eden.goalMet).toBe(false);
   });
 
-  test("getPublicTerritory: upcomingFundraisers is empty for an unpublished, past, or goal-less event", async () => {
+  test("getPublicTerritory: fundraisers keeps finished ones, open first then most-recent-finished (C3/D9)", async () => {
     const s = await devDirectorSetup();
     const id = await s.as.mutation(api.territories.saveTerritory, {
       name: "Queens",
@@ -781,31 +828,230 @@ describe("public territory reads", () => {
     const now = Date.now();
     const day = 24 * 60 * 60 * 1000;
 
-    // Launched with no goal set — never counts as a fundraiser.
+    // Two open, out of order on purpose — the soonest must lead.
     await seedEventPage(s, chapterId, {
-      slug: "no-goal-event",
+      name: "Eden Fundraiser",
+      slug: "open-later",
+      eventDate: now + 20 * day,
+      goalCents: 100000,
+      revenueCents: 1000,
+    });
+    await seedEventPage(s, chapterId, {
+      name: "Love Thy Neighbor",
+      slug: "open-sooner",
+      eventDate: now + 2 * day,
+      goalCents: 100000,
+      revenueCents: 1000,
+    });
+    // Two finished — the MOST RECENT must lead, and the older one trail.
+    await seedEventPage(s, chapterId, {
+      name: "Block Party",
+      slug: "finished-recent",
+      eventDate: now - 3 * day,
+      goalCents: 100000,
+      revenueCents: 1000,
+    });
+    await seedEventPage(s, chapterId, {
+      name: "Pathway Ball",
+      slug: "finished-old",
+      eventDate: now - 90 * day,
+      goalCents: 100000,
+      revenueCents: 1000,
+    });
+
+    const data = await s.t.query(api.territories.getPublicTerritory, {
+      slug: "queens-ny",
+    });
+    // Open block first (soonest→latest), then the finished block
+    // (most-recent→oldest). A past fundraiser no longer vanishes: "we did the
+    // Pathway Ball" is the chapter's proof it is real (D9).
+    expect(data!.fundraisers.map((f) => f.slug)).toEqual([
+      "open-sooner",
+      "open-later",
+      "finished-recent",
+      "finished-old",
+    ]);
+    expect(data!.fundraisers.map((f) => f.state)).toEqual([
+      "open",
+      "open",
+      "finished",
+      "finished",
+    ]);
+  });
+
+  test("getPublicTerritory: goalMet is true once raised meets the goal, and a met goal still ships (D9)", async () => {
+    const s = await devDirectorSetup();
+    const id = await s.as.mutation(api.territories.saveTerritory, {
+      name: "Queens",
+      region: "NY",
+      lat: 40.7282,
+      lng: -73.7949,
+      slug: "queens-ny",
+      publiclyVisible: true,
+    });
+    const chapterId = (await territoryRow(s, id))!.chapterId;
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+
+    // Finished and OVER goal — D9 says it stays on the page and stays giveable,
+    // so it must still be returned; `goalMet` is a badge, never a filter.
+    await seedEventPage(s, chapterId, {
+      name: "Pathway Ball",
+      slug: "over-goal",
+      eventDate: now - 10 * day,
+      goalCents: 50000,
+      revenueCents: 40000,
+      donationsCents: 15000,
+    });
+    // Finished and EXACTLY at goal — the boundary is `>=`, so this is met too.
+    await seedEventPage(s, chapterId, {
+      name: "Block Party",
+      slug: "exact-goal",
+      eventDate: now - 20 * day,
+      goalCents: 50000,
+      revenueCents: 50000,
+    });
+    // Finished and one cent short — not met.
+    await seedEventPage(s, chapterId, {
+      name: "Bake Sale",
+      slug: "under-goal",
+      eventDate: now - 30 * day,
+      goalCents: 50000,
+      revenueCents: 49999,
+    });
+
+    const data = await s.t.query(api.territories.getPublicTerritory, {
+      slug: "queens-ny",
+    });
+    const byslug = new Map(data!.fundraisers.map((f) => [f.slug, f]));
+    expect(byslug.get("over-goal")!.goalMet).toBe(true);
+    expect(byslug.get("over-goal")!.raisedCents).toBe(55000);
+    expect(byslug.get("exact-goal")!.goalMet).toBe(true);
+    expect(byslug.get("under-goal")!.goalMet).toBe(false);
+    // All three survive — nothing drops out for having hit its number.
+    expect(data!.fundraisers).toHaveLength(3);
+  });
+
+  test("getPublicTerritory: fundraisers caps at 8, spending the budget on open before finished", async () => {
+    const s = await devDirectorSetup();
+    const id = await s.as.mutation(api.territories.saveTerritory, {
+      name: "Queens",
+      region: "NY",
+      lat: 40.7282,
+      lng: -73.7949,
+      slug: "queens-ny",
+      publiclyVisible: true,
+    });
+    const chapterId = (await territoryRow(s, id))!.chapterId;
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+
+    // 6 open + 6 finished = 12 candidates for 8 slots.
+    for (let i = 1; i <= 6; i++) {
+      await seedEventPage(s, chapterId, {
+        name: `Open ${i}`,
+        slug: `open-${i}`,
+        eventDate: now + i * day,
+        goalCents: 10000,
+        revenueCents: 100,
+      });
+      await seedEventPage(s, chapterId, {
+        name: `Finished ${i}`,
+        slug: `finished-${i}`,
+        eventDate: now - i * day,
+        goalCents: 10000,
+        revenueCents: 100,
+      });
+    }
+
+    const data = await s.t.query(api.territories.getPublicTerritory, {
+      slug: "queens-ny",
+    });
+    expect(data!.fundraisers).toHaveLength(8);
+    // All 6 open ones make it (they are served first), then the 2 most recent
+    // finished ones fill the remainder — history is what gets truncated.
+    expect(data!.fundraisers.map((f) => f.slug)).toEqual([
+      "open-1",
+      "open-2",
+      "open-3",
+      "open-4",
+      "open-5",
+      "open-6",
+      "finished-1",
+      "finished-2",
+    ]);
+
+    // With 9 open fundraisers the cap is spent entirely on open, and the
+    // finished block is squeezed out completely.
+    for (let i = 7; i <= 9; i++) {
+      await seedEventPage(s, chapterId, {
+        name: `Open ${i}`,
+        slug: `open-${i}`,
+        eventDate: now + i * day,
+        goalCents: 10000,
+        revenueCents: 100,
+      });
+    }
+    const data2 = await s.t.query(api.territories.getPublicTerritory, {
+      slug: "queens-ny",
+    });
+    expect(data2!.fundraisers).toHaveLength(8);
+    expect(data2!.fundraisers.every((f) => f.state === "open")).toBe(true);
+  });
+
+  test("getPublicTerritory: fundraisers excludes unpublished and goal-less events in BOTH directions", async () => {
+    const s = await devDirectorSetup();
+    const id = await s.as.mutation(api.territories.saveTerritory, {
+      name: "Queens",
+      region: "NY",
+      lat: 40.7282,
+      lng: -73.7949,
+      slug: "queens-ny",
+      publiclyVisible: true,
+    });
+    const chapterId = (await territoryRow(s, id))!.chapterId;
+    const now = Date.now();
+    const day = 24 * 60 * 60 * 1000;
+
+    // No goal set — never a fundraiser, whichever side of "now" it sits on. A
+    // gathering without a money goal has nothing for a giver to put money
+    // toward, so it is not evidence of fundraising either.
+    await seedEventPage(s, chapterId, {
+      slug: "future-no-goal",
       eventDate: now + 5 * day,
       published: true,
     });
-    // Unpublished draft with a goal.
     await seedEventPage(s, chapterId, {
-      slug: "unpublished-goal-event",
+      slug: "past-no-goal",
+      eventDate: now - 5 * day,
+      published: true,
+    });
+    // A zero goal is the same as no goal.
+    await seedEventPage(s, chapterId, {
+      slug: "past-zero-goal",
+      eventDate: now - 6 * day,
+      published: true,
+      goalCents: 0,
+    });
+    // Unpublished drafts stay private in both directions — keeping past
+    // fundraisers must not leak a page nobody ever published.
+    await seedEventPage(s, chapterId, {
+      slug: "future-unpublished",
       eventDate: now + 5 * day,
       published: false,
       goalCents: 20000,
     });
-    // Past event with a goal.
     await seedEventPage(s, chapterId, {
-      slug: "past-goal-event",
+      slug: "past-unpublished",
       eventDate: now - 5 * day,
-      published: true,
+      published: false,
       goalCents: 20000,
     });
 
     const data = await s.t.query(api.territories.getPublicTerritory, {
       slug: "queens-ny",
     });
-    expect(data!.upcomingFundraisers).toEqual([]);
+    expect(data!.fundraisers).toEqual([]);
   });
 
   test("getPublicTerritory: sponsorshipCount counts only committed/active sponsorships scoped to this chapter", async () => {

@@ -14,9 +14,19 @@
  * (`apps/mobile/app/(app)/giving/`), and the `giving.view`/`giving.edit`
  * powers in `packages/shared/src/powers.ts`.
  *
- * The public `/give` map and per-territory pages (`territories` +
- * `apps/convex/lib/givePage.ts`) are the live acquisition surface;
- * `dev-prospect-cities-and-map` teaches them as they now work under the
+ * The public `/give` pages (`territories` + `apps/convex/lib/givePage.ts`) are
+ * the live acquisition surface; `dev-prospect-cities-and-map` teaches them as
+ * recomposed by docs/plans/give-redesign-v3.md — backing a CITY is the hero,
+ * giving once (central or a named city) is one tap away, the map is demoted to
+ * "where we're going", the money model moved off to `/give/how-it-works` (the
+ * books stay at `/finances`), and the program descriptions were merged into the
+ * milestone ladder's rungs. Public copy says CITY; "territory" is an internal
+ * word, taught as such in `dev-giving-vocabulary`. The public gift wall gets
+ * its own lesson, `dev-public-gift-wall`, because its rule is a privacy rule
+ * staff get asked about out loud: EVERY settled gift gets a row, anonymous by
+ * default, and consent gates only the name/message attribution — never the
+ * row's existence (v3 D6/D7/D10 + `apps/convex/givingActivity.ts` and the
+ * `/giving/wall` moderation screen). It teaches them under the
  * Territories model (docs/plans/giving-territories.md): a territory maps 1:1
  * with a real chapter, so a prospect territory is a "shadow chapter" (a real,
  * inactive `chapters` row) from the moment it's created. Backers, donors, and
@@ -75,8 +85,13 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Ticket buyer ≠ donor.** Someone who buys an event ticket gets something of equal value in return — a seat. That's a purchase, not a gift, so it never creates a donor or a gift record; it's tracked as a contact with purchase history instead. See \"Canonical import\" later in this course for why that line matters.",
           "**Backer** — a donor with an *active, recurring monthly pledge* to a specific city, at or above the $50/month floor. Backers are what the affordability tiers count — see the next course.",
           "**Sponsor / partner** — an organization-level relationship (a church, a business, or a foundation) attached to a sponsor package, not a one-time or per-month personal gift.",
-          "**Prospect territory** — a place on the map raising backers toward opening a chapter. Under the hood it's already a real chapter, just an inactive one (a \"shadow chapter\") — so backers attach to it directly from day one, before it's officially live.",
+          "**Prospect territory** — a place on the map raising backers toward opening a chapter. Under the hood it's already a real chapter, just an inactive one (a \"shadow chapter\") — so backers attach to it directly from day one, before it's officially live. **\"Territory\" is an inside word:** in public we call it a CITY (see the rule below).",
         ],
+      },
+      {
+        kind: "rule",
+        title: "In public it's a city, never a territory",
+        text: "The desk, the schema, and this Academy say *territory*, because that's what the record is: a place with a slug, a map dot, and a shadow chapter behind it. The public never sees that word. Everything a donor reads — the giving page's \"Back a city\", the city cards, the emails, the ask you make out loud — says **city**. Nobody outside knows what a territory is, and a supporter who has to learn our filing vocabulary before they can give is a supporter we made work for it.",
       },
       {
         kind: "rule",
@@ -139,6 +154,18 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Backing funds a specific mission, not a congregation's operating life — the honest ask is \"in addition to,\" never \"instead of.\"",
+      },
+      {
+        prompt: "You're writing the copy for a public post asking people to support Columbus. Which word do you use for Columbus?",
+        options: [
+          "\"Territory\" — it's the precise term, so it's the honest one",
+          "\"City\" — territory is our internal word for the record; the public ask always says city",
+          "\"Shadow chapter,\" so nobody thinks it's already open",
+          "Either — the two are used interchangeably in public",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Precision inside, plain language outside. \"Territory\" names the record (slug, map dot, shadow chapter) and belongs on the desk; every public surface — \"Back a city\", the city cards, your ask — says CITY.",
       },
     ],
   },
@@ -667,6 +694,101 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
+  // ── 88b · The public gift wall: what a giver's gift says out loud ────────
+  {
+    slug: "dev-public-gift-wall",
+    title: "The public gift wall: anonymous by default",
+    subtitle: "Consent gates the name, never the gift — and how a takedown works",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "The last lesson was the PRIVATE record of a gift. This one is its public echo. Every giving page carries a **wall** — the gifts that have actually landed, newest first — and the single most important thing to know about it is that a gift appears there whether or not the giver told us anything about themselves. The wall is not a curated highlight reel of the people who volunteered a name. It's the giving, shown.",
+      },
+      {
+        kind: "rule",
+        title: "Consent gates ATTRIBUTION, never EXISTENCE",
+        text: "Every gift given through a give page gets a row. The default row is anonymous — **\"A gift to New York · $50\"** — and that's what the overwhelming majority of rows look like. A **display name** and a **message** render only where the giver explicitly said yes to showing them. So \"did they consent?\" is never the question \"does this gift appear?\"; it is only ever the question \"does their NAME appear?\" Get that backwards and you'll tell a donor something false about a page they can go read. (What the wall is NOT: every gift the org receives. A check handed to you at an event, a wire, an import — you enter those at the giving desk, and they move the live total without leaving a row underneath it. The wall is the giving page's own feed; **the books at `/finances` are the complete record**, and the wall's footer says exactly that. Don't promise a desk-entered gift will show up on the wall.)",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Settled only.** A row means money genuinely arrived. An abandoned checkout never reaches the wall, and a payment that fails or is later returned takes its row back off — the wall's whole credibility is that you can't post to it without paying.",
+          "**Central gifts are on it too**, tagged as central operations rather than a city. Giving to the org as a whole is giving, and hiding it would make the wall quietly misrepresent where support actually goes.",
+          "**Coarse time, and nothing else.** \"Two days ago,\" never a timestamp. No payment method, no email, no reference number, no exact ordering. The row is an amount, a destination, a rough when — plus a name and message where consented.",
+          "**A very small city doesn't get named.** Where a place has barely any lifetime giving, one gift plus a city name is close to naming the person, so the destination label is suppressed rather than printed.",
+          "**The total is live.** Give, refresh, and the number has moved. That's deliberate and it is NOT the same promise as the books: \"published month by month\" describes `/finances`, which is frozen and reviewed. Never use the books' language about the wall's counter, or the wall's immediacy about the books.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "A city page can be found by search — so the promise has to match the copy",
+        text: "City pages are indexed. That raises the stakes on attribution: agreeing to be *shown* on a page is not the same as agreeing to be *findable by name, beside what you gave, forever*. So the consent copy now says plainly that the page is public and can be found by search — and only consents captured under THAT wording put a name on an indexed page. People who consented under the older, quieter wording keep the promise they were actually made: their gifts still appear, still count, **anonymously**. If someone asks why their name isn't showing when they remember ticking the box, that's the answer, and it's the right answer.",
+      },
+      {
+        kind: "tip",
+        text: "**In the app · Giving → Wall.** Every entry, any status, newest first, each one saying which page it appears on, whether consent was recorded, and — if it's already down — who took it down and when. **Take down** and **Restore** are central `giving.manage` actions. This screen exists for one reason: before it, the only way to answer a donor who wrote in asking to come off the wall was to ask a developer to run something, and \"I'll file a ticket\" is not a reply you give someone about their own name.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A donor emails: \"I've just seen my name and my $500 on your website. Please take it off.\" What do you do, and what happens to the gift?",
+        answer:
+          "Take the row down from Giving → Wall — it's a central `giving.manage` action, and it's logged with your name and the time. Then say so back to them in a sentence. What you have NOT done is touch the gift: their giving history, their lifetime total, the book's rollups, and the receipt all stand exactly as they were. You removed the public echo, not the money — which is also why the city's total on the page doesn't drop when you do it; that number is summed from the book's rollups, not counted from the rows on screen. Two things not to do: don't remove the gift from the ledger (that's an accounting act to solve a publishing problem, and it will show up in a reconcile), and don't promise them it can never happen again without checking what they actually agreed to — read the recorded consent on the row first.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Someone gives $50 to New York and doesn't fill in a name or tick anything. What appears on the public wall?",
+        options: [
+          "Nothing — the wall only shows givers who opted in",
+          "An anonymous row: a $50 gift to New York, no name and no message",
+          "Their name from the donor CRM, with the amount",
+          "The gift, but visible only to signed-in staff",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Every gift given through the page gets a row, and the default row is anonymous. The wall shows that giving; consent only decides whether a name is attached to it.",
+      },
+      {
+        prompt: "What does a giver's consent actually control?",
+        options: [
+          "Whether their gift appears on the wall at all",
+          "Whether their name and message appear beside it — the gift and its amount are on the wall either way",
+          "Whether the gift counts toward the city's total",
+          "Whether we're allowed to email them again",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Consent gates attribution, never existence. \"Did they consent?\" answers \"does their NAME show?\" and nothing else.",
+      },
+      {
+        prompt: "A donor writes in asking to come off the wall. What's the move, and what happens to their gift?",
+        options: [
+          "Ask a developer to delete the row",
+          "Take it down from Giving → Wall — central `giving.manage`, logged — and leave the gift, the lifetime total, and the book's rollups untouched",
+          "Remove the gift from the ledger so there's nothing left to publish",
+          "Nothing can be done — a published row is permanent",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The takedown is a staff action on the public echo only. Deleting the gift would be solving a publishing problem with an accounting act — and the page's total wouldn't move either way, since it's summed from the book's rollups rather than the rows on screen.",
+      },
+      {
+        prompt: "Why do some gifts whose givers DID agree to be shown still render anonymously on a city page?",
+        options: [
+          "A bug in the wall",
+          "They agreed under older copy that never said the page could be found by search — only consent captured under the newer, explicit wording carries a name onto an indexed page",
+          "Their gifts are too old to display",
+          "Their names couldn't be verified",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Agreeing to be shown isn't agreeing to be findable by name forever. Those givers keep the promise they were actually made: they appear, they count, anonymously.",
+      },
+    ],
+  },
+
   // ── 89 · The backer model: the $50 floor and the ladder ─────────────────
   {
     slug: "dev-backer-floor-and-ladder",
@@ -696,7 +818,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Headcount, not dollars.** A chapter's tier is set by how many BACKERS it has, not how much money they collectively give — the same principle the finance side teaches for the operating model.",
-          "**Public, once the map ships.** The ladder is meant to render as promises with visible progress on a city's own page: \"17 of 20 backers — 3 more unlocks monthly WWS.\" That page isn't live yet (see the last lesson in this course), but the ladder itself is real and editable today.",
+          "**Public — and it IS the program list.** Every rung renders on that city's own `/give/<slug>` page as a promise with visible progress: \"17 of 20 backers — 3 more unlocks monthly WWS.\" Each rung also carries its own description of the thing it unlocks, because the page has no separate list of programs any more — the ladder absorbed it. So a threshold and the thing it buys are never read apart from each other, and a rung whose blurb is wrong is a rung whose promise is wrong.",
         ],
       },
       {
@@ -1221,7 +1343,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Transparency, by design.** Backers are meant to be able to see this story — where their 85% goes locally, and where their 15% goes network-wide — not just trust it happens behind the scenes.",
+          "**Transparency, by design — and it's published, not just promised.** Backers can read the whole money model on its own page, **`/give/how-it-works`**: the monthly operating lines, the 20/30/50 ladder, the launch budget, and this 85/15 split. Then they can check it against the actual books at **`/finances`**, month by month. Two different jobs, deliberately two different pages — the model is an explanation, the books are the evidence — and neither one lives on the giving page itself any more.",
           "**A launch grant, one time.** The City Launch Fund's balance eventually pays a new chapter's one-time launch cost — equipment and the training trip — the moment that new city is ready.",
         ],
       },
@@ -1254,16 +1376,16 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "It's a one-time seeding fund for the network's NEXT city, not a recurring operating budget.",
       },
       {
-        prompt: "Why should a backer be able to see the 85/15 split, not just be told it exists?",
+        prompt: "Where can a backer go to read the 85/15 split for themselves?",
         options: [
-          "It's a legal disclosure requirement",
-          "Transparency is part of the giving relationship — donors can see what their giving actually unlocks, locally and network-wide",
-          "It doesn't matter whether they see it",
-          "Only central donors get to see the split",
+          "Nowhere — it's an internal number staff explain verbally",
+          "`/give/how-it-works`, which lays out the whole money model, with the published books at `/finances` as the check on it",
+          "On the giving page's hero, above the ask",
+          "Only inside the app, once they're signed in",
         ],
         answerIndex: 1,
         explanation:
-          "Showing the split (eventually on each city's own page) is the transparency principle this whole platform is built around.",
+          "The money model has its own page — `/give/how-it-works` — and the books that prove it live at `/finances`. Both are linked from the giving pages, but neither is ON them: the ask and the accounting are separate reads, on purpose.",
       },
     ],
   },
@@ -1283,7 +1405,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Same milestone ladder, public.** A prospect territory's `/give/<slug>` page shows the exact same milestone ladder as a live chapter, framed as visible progress: \"17 of 20 backers — 3 more unlocks monthly Worship With Strangers in Columbus.\"",
-          "**Shareable by design.** A backer campaign is meant to be forwarded — \"already 3 backers here, help get it to 20\" — with no donor's personal information ever exposed publicly.",
+          "**Shareable by design — and findable.** A backer campaign is meant to be forwarded — \"already 3 backers here, help get it to 20\" — and a city page is a genuinely PUBLIC page a search engine can index, not an unlisted link you only reach if someone sends it to you. What it says about any individual giver is governed by the wall's consent rule (see \"The public gift wall\" in Donor Stewardship): a gift's existence and amount, never a donor's CRM record or contact details, and a name or message only where that giver explicitly said yes.",
           "**Launch is a flip, not a move.** Because backers, donors, and gifts scope DIRECTLY to the (shadow) chapter from their very first pledge, launching a territory doesn't move anyone's money anywhere. It simply flips that chapter live and provisions its banking; the public page keeps showing the same backer count, now on an officially-open chapter.",
         ],
       },
@@ -1294,7 +1416,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Live now: the public `/give` map.** The map plots every publicly-visible territory, and each `/give/<slug>` page carries the milestone ladder, a progress bar, and a become-a-backer form — preset $20 / $50 / $100 or a custom monthly amount — that starts a real Stripe subscription. A territory shows publicly only once an admin marks it visible, so central can stage one before announcing it. The map is aggregates-only: it never exposes a donor's name or contact details.",
+        text: "**Live now: the public `/give` pages.** The org-wide `/give` page leads with BACKING A CITY — a card per city with its live backer count and next milestone — and keeps giving once one tap away, with the giver choosing central operations or a named city. The map is still there, further down, doing the job it's actually good at: \"here's where we're going.\" Each `/give/<slug>` page carries that city's milestone ladder, a progress bar, its gift wall, its fundraisers, and a become-a-backer form — preset $50 / $100 / $200 or a custom monthly amount — that starts a real Stripe subscription. A territory shows publicly only once an admin marks it visible, so central can stage one before announcing it. Nothing on either page exposes a donor's contact details or their CRM record.",
       },
       {
         kind: "reveal",
@@ -1397,13 +1519,16 @@ export const DEVELOPMENT_COURSES: Course[] = [
     description:
       "Running real relationships through the CRM: owners, notes, the " +
       "top-donor workflow, getting giving history — old and new — onto " +
-      "the record via CSV import and manual backfill, and the gifts " +
-      "ledger's own edit/audit/merge trail.",
+      "the record via CSV import and manual backfill, the gifts ledger's " +
+      "own edit/audit/merge trail, and the public gift wall that gift " +
+      "history echoes onto — anonymous by default, consent gating only the " +
+      "name, with a staff takedown that never touches the money.",
     icon: "users",
     moduleSlugs: [
       "dev-relationship-workflow",
       "dev-import-and-backfill",
       "dev-gifts-ledger-and-audit",
+      "dev-public-gift-wall",
     ],
   },
   {
