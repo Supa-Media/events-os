@@ -104,6 +104,7 @@ import { sendEmail, emailShell } from "./ticketingEmails";
 import { emailButtonRow, emailHeading, emailParagraph } from "./lib/emailShell";
 import { escapeHtml } from "./lib/html";
 import { buildApprovedNotice } from "./lib/reimbursementApprovedEmail";
+import { buildPaidNotice } from "./lib/reimbursementPaidEmail";
 import { appUrl, siteUrl } from "./lib/siteUrl";
 import {
   gatherForPickerCandidates,
@@ -459,6 +460,76 @@ export function approvedNoticeRowFor(
     status: req.status,
     paidAt: req.paidAt ?? null,
     bankAccountLast4: req.bankAccountLast4 ?? null,
+    identityVerified: req.identityVerified === true,
+    token: req.token,
+    chapterSlug,
+  };
+}
+
+/**
+ * The `payouts` row that actually settled this reimbursement, or `null`.
+ *
+ * The paid notice quotes the money that MOVED, and the payout document is where
+ * that number lives (`lib/reimbursementPaidEmail.ts` explains why the request's
+ * own totals are the wrong thing to quote). `payoutId` is stamped by both settle
+ * paths, so that is the cheap read; the index scan behind it only covers legacy
+ * rows marked paid before `payoutId` was written — bounded, and it prefers a
+ * `paid` payout so a stale `returned` attempt can never be mistaken for the one
+ * that landed.
+ *
+ * Shared by the live payload query below and `reimbursementPaidNoticeBackfill`,
+ * so both senders price the same email the same way.
+ */
+export async function settlingPayoutFor(
+  ctx: { db: QueryCtx["db"] },
+  req: Doc<"reimbursementRequests">,
+): Promise<Doc<"payouts"> | null> {
+  if (req.payoutId) {
+    const byId = await ctx.db.get(req.payoutId);
+    if (byId) return byId;
+  }
+  const candidates = await ctx.db
+    .query("payouts")
+    .withIndex("by_reimbursement", (q) => q.eq("reimbursementId", req._id))
+    .take(20);
+  return candidates.find((p) => p.status === "paid") ?? null;
+}
+
+/** The claimant-facing fields the PAID notice needs, projected off a request
+ *  row + its chapter's slug + the payout that settled it. The twin of
+ *  `approvedNoticeRowFor` above, shared by the live payload query and
+ *  `reimbursementPaidNoticeBackfill`'s paginated sweep. Returns `null` unless
+ *  the row is actually paid AND carries the date the notice is built around —
+ *  there is nothing truthful to say otherwise. */
+export function paidNoticeRowFor(
+  req: Doc<"reimbursementRequests">,
+  chapterSlug: string | null,
+  payout: Doc<"payouts"> | null,
+) {
+  if (req.status !== "paid" || req.paidAt === undefined) return null;
+  return {
+    reimbursementId: req._id,
+    payeeEmail: req.payeeEmail ?? null,
+    payeeName: req.payeeName,
+    reference: referenceFor(req._id),
+    // What MOVED. The fallback covers only a legacy paid row with no payout
+    // document; every row this app settles has one.
+    paidCents: payout?.amountCents ?? req.approvedCents ?? req.totalCents,
+    totalCents: req.totalCents,
+    paidAt: req.paidAt,
+    // `provider` is the honest answer to "how was this sent": an Increase
+    // payout is a real ACH credit, `manual` is a treasurer moving money some
+    // other way and recording it. `null` = a legacy row with no payout row,
+    // where the copy claims nothing about the rail.
+    method:
+      payout === null
+        ? null
+        : payout.provider === "increase"
+          ? ("ach" as const)
+          : ("manual" as const),
+    // The payout's own last-4 is where the money actually went; the request's
+    // is what the claimant typed. Prefer the payout.
+    bankAccountLast4: payout?.bankAccountLast4 ?? req.bankAccountLast4 ?? null,
     identityVerified: req.identityVerified === true,
     token: req.token,
     chapterSlug,
@@ -3168,6 +3239,117 @@ export const sendReimbursementApprovedEmail = internalAction({
         reimbursementId,
         err,
       );
+    }
+    return null;
+  },
+});
+
+// ── INTERNAL: paid notice to the claimant ────────────────────────────────────
+
+/**
+ * Everything `sendReimbursementPaidEmail` needs, or `null` when the request no
+ * longer exists / isn't paid (a scheduled job racing a deletion, or racing
+ * `reverseSettledPayout`'s walk-back — it should degrade, not throw).
+ *
+ * Recipient rules are the approval notice's, verbatim: the CLAIMANT only, at
+ * `payeeEmail` — the address they typed on the request. See
+ * `getReimbursementApprovedEmailPayload` above for why that is the right
+ * address and why the senders still guard against it being absent.
+ */
+export const getReimbursementPaidEmailPayload = internalQuery({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const req = await ctx.db.get(reimbursementId);
+    if (!req) return null;
+    const chapter = await ctx.db.get(req.chapterId);
+    const payout = await settlingPayoutFor(ctx, req);
+    return paidNoticeRowFor(req, chapter?.slug ?? null, payout);
+  },
+});
+
+/**
+ * CLAIM this request's paid notice, returning whether the claim was ours.
+ *
+ * The identical mechanism as `markApprovedNoticeSent` above — one Convex
+ * transaction around the read-then-write, claimed BEFORE the send, so two
+ * senders racing a row (the live settle and an operator running the catch-up
+ * sweep in the same minute) can't both mail it. That function's header is the
+ * argument for all of it, including why the stamp landing before the send is
+ * the ordering we want; nothing about it is different here and it is not
+ * restated.
+ *
+ * Refuses a row that isn't currently `paid` with a `paidAt`, so nothing can
+ * stamp a request this notice doesn't apply to. Deliberately does NOT touch
+ * `updatedAt` — sending a notice isn't a claimant/manager edit.
+ *
+ * WHERE IT DIVERGES: `reverseSettledPayout` CLEARS this stamp when an ACH
+ * credit bounces, so the retry that actually pays the claimant can claim it
+ * again. That is the only route to a second paid notice on one reimbursement,
+ * and it is the right one — see `lib/reimbursementPaidEmail.ts`'s header.
+ */
+export const markPaidNoticeSent = internalMutation({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  returns: v.boolean(),
+  handler: async (ctx, { reimbursementId }) => {
+    const req = await ctx.db.get(reimbursementId);
+    if (!req) return false;
+    if (req.status !== "paid" || req.paidAt === undefined) return false;
+    if (req.paidNoticeSentAt !== undefined) return false;
+    await ctx.db.patch(reimbursementId, { paidNoticeSentAt: Date.now() });
+    return true;
+  },
+});
+
+/**
+ * "Your reimbursement was paid" — best-effort Resend to the claimant,
+ * scheduled by `lib/increasePayoutMachine.ts`'s `settleReimbursementPaid`, the
+ * single place a reimbursement becomes `paid` (both the ACH webhook and the
+ * treasurer's `markPaidManually` funnel through it). The copy — and the rule
+ * that it must not hedge about money that has already moved — lives in
+ * `lib/reimbursementPaidEmail.ts`.
+ *
+ * Claims the send first (`markPaidNoticeSent`) and returns without mailing when
+ * the claim isn't ours, and swallows everything, both for the same reasons
+ * `sendReimbursementApprovedEmail` above does: it runs after the payout has
+ * already committed, and a missing RESEND_API_KEY (dev/CI) or a transient
+ * Resend failure must never surface as a failed scheduled job.
+ */
+export const sendReimbursementPaidEmail = internalAction({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    try {
+      const payload = await ctx.runQuery(
+        internal.reimbursements.getReimbursementPaidEmailPayload,
+        { reimbursementId },
+      );
+      if (!payload) return null;
+      // Claim even when there's no address to mail: a contact-less legacy row
+      // must not sit in the backfill's backlog forever waiting on an email
+      // that can never be written.
+      const claimed: boolean = await ctx.runMutation(
+        internal.reimbursements.markPaidNoticeSent,
+        { reimbursementId },
+      );
+      if (!claimed || !payload.payeeEmail) return null;
+
+      const notice = buildPaidNotice({
+        kind: "live",
+        payeeName: payload.payeeName,
+        reference: payload.reference,
+        paidCents: payload.paidCents,
+        totalCents: payload.totalCents,
+        paidAt: payload.paidAt,
+        method: payload.method,
+        bankAccountLast4: payload.bankAccountLast4,
+        link: claimantStatusLink(payload),
+      });
+      await sendEmail(ctx, {
+        to: payload.payeeEmail,
+        subject: notice.subject,
+        html: notice.html,
+      });
+    } catch (err) {
+      console.error("sendReimbursementPaidEmail: failed", reimbursementId, err);
     }
     return null;
   },

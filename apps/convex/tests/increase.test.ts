@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 import { createHmac } from "node:crypto";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
@@ -2517,5 +2517,402 @@ describe("handleIncreaseWebhook env routing", () => {
     expect(get).toBeTruthy();
     expect(new URL(get!.url).host).toBe("api.increase.com");
     expect(get!.auth).toBe("Bearer prod_key");
+  });
+});
+
+// ── the "your reimbursement was paid" notice to the claimant ─────────────────
+
+/**
+ * The LIVE half of the paid notice (founder, 2026-08-14: "let's also send
+ * emails when we actually pay people — this is really important to them").
+ *
+ * It lives in THIS file rather than `reimbursements.test.ts` (where #727 put
+ * the approval notice's live tests) because the transition it hangs off is
+ * here: `settleReimbursementPaid` is the single place a reimbursement becomes
+ * `paid`, and both rails into it — a treasurer's `markPaidManually` and the
+ * ACH webhook's `submitted` — are already exercised above.
+ *
+ * What these defend, in order of what it would cost to get wrong:
+ *  1. IT CANNOT MAIL ANYONE TWICE for one payment. Every send is gated on
+ *     `markPaidNoticeSent` returning `true`, which it does at most once.
+ *  2. IT CAN mail twice when — and only when — a bounced ACH is re-paid. That
+ *     second payment is real and the first notice was about money that came
+ *     back out.
+ *  3. THE AMOUNT IS THE MONEY THAT MOVED, including under a partial approval,
+ *     where quoting the submitted total would read as a short payment.
+ *  4. NOTHING BUT SETTLING SENDS IT — not approving, not starting a payout,
+ *     not a failed or returned one.
+ */
+describe("paid notice to the claimant (sendReimbursementPaidEmail)", () => {
+  const originalFetch = globalThis.fetch;
+  const PREV_RESEND_KEY = process.env.RESEND_API_KEY;
+
+  afterEach(() => {
+    globalThis.fetch = originalFetch;
+    if (PREV_RESEND_KEY === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = PREV_RESEND_KEY;
+  });
+
+  /** Record every Resend send (nothing else is fetched by these tests — there
+   *  is no INCREASE_API_KEY in the test env, so the ACH side never calls out). */
+  function mockResend(): Array<{ to: string; subject: string; html: string }> {
+    const calls: Array<{ to: string; subject: string; html: string }> = [];
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const path = String(input);
+      if (path.includes("api.resend.com/emails")) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        calls.push({
+          to: body.to,
+          subject: body.subject,
+          html: body.html ?? "",
+        });
+        return new Response(JSON.stringify({ id: "email_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+    return calls;
+  }
+
+  /** Only the paid notices — never the approval one, which shares the mailbox. */
+  function paidOnly(
+    calls: Array<{ to: string; subject: string; html: string }>,
+  ) {
+    return calls.filter((c) => c.subject.startsWith("Paid:"));
+  }
+
+  /** Give the chapter a slug so the accountless CTA link can be built. */
+  async function setSlug(s: ChapterSetup): Promise<void> {
+    await run(s.t, (ctx) => ctx.db.patch(s.chapterId, { slug: "nyc" }));
+  }
+
+  /** Every pending `_scheduled_functions` row whose name mentions the notice. */
+  async function scheduledPaidNotices(s: ChapterSetup): Promise<string[]> {
+    const rows = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    return rows
+      .map((r) => r.name)
+      .filter((n) => n.includes("sendReimbursementPaidEmail"));
+  }
+
+  test("marking it paid by hand emails the claimant at the address ON THE REQUEST", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupChapter(newT());
+      await setSlug(s);
+      await seedManager(s);
+      const payee = await seedPerson(s, { name: "Vera" });
+      const reimbursementId = await seedReimbursement(s, {
+        status: "approved",
+        payeePersonId: payee,
+        approvedCents: 1800,
+      });
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockResend();
+
+      await s.as.mutation(api.increasePayouts.markPaidManually, {
+        reimbursementId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const paid = paidOnly(resendCalls);
+      expect(paid.length).toBe(1);
+      expect(paid[0].to).toBe("vera@example.com"); // `payeeEmail`, off the request
+      expect(paid[0].subject).toContain("$18.00");
+      expect(paid[0].html).toContain("$18.00 was paid");
+      // A treasurer moved this money outside the app: the copy says so, and
+      // does NOT invent a bank-transfer arrival window it can't stand behind.
+      expect(paid[0].html).toContain("Your treasurer sent this one themselves");
+      expect(paid[0].html).not.toContain("bank transfer");
+      // Past tense, always — this notice must never read as still-pending.
+      expect(paid[0].html).not.toContain("on its way");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("an ACH credit that settles emails the claimant, naming the transfer and the account", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupChapter(newT());
+      await setSlug(s);
+      const { reimbursementId } = await seedProcessingPayout(s, "ach_notice_1");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockResend();
+
+      // `submitted` IS Increase's terminal success for an outbound credit.
+      await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
+        eventType: "ach_transfer.updated",
+        transferId: "ach_notice_1",
+        status: "submitted",
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const paid = paidOnly(resendCalls);
+      expect(paid.length).toBe(1);
+      expect(paid[0].html).toContain("It went out by bank transfer");
+      expect(paid[0].html).toContain("ending in 1234");
+      // "Paid" is our word for SENT — the copy owes them the landing window.
+      expect(paid[0].html).toContain("within a business day or two");
+      // …and the escape hatch, because a paid record isn't money in a bank.
+      expect(paid[0].html).toContain("contact your treasurer");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a PARTIAL approval is paid — and the notice names what moved AND what was submitted", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupChapter(newT());
+      await setSlug(s);
+      await seedManager(s);
+      const payee = await seedPerson(s, { name: "Vera" });
+      // $20 submitted, $12 approved — the payout is $12, and a claimant
+      // reading "$12.00 paid" against their $20 receipt must not be left
+      // thinking a second instalment is coming. There is no such thing.
+      const reimbursementId = await seedReimbursement(s, {
+        status: "approved",
+        payeePersonId: payee,
+        totalCents: 2000,
+        approvedCents: 1200,
+      });
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockResend();
+
+      const payout = await s.as.mutation(api.increasePayouts.markPaidManually, {
+        reimbursementId,
+      });
+      expect(payout.amountCents).toBe(1200);
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const paid = paidOnly(resendCalls);
+      expect(paid.length).toBe(1);
+      expect(paid[0].subject).toContain("$12.00");
+      expect(paid[0].html).toContain(
+        "$12.00 was paid — that's the amount a reviewer approved, out of the $20.00 you submitted",
+      );
+      expect(paid[0].html).toContain("isn't coming separately");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("NO paid notice is scheduled by approving, by starting a payout, or by a failed / returned one", async () => {
+    // Fake timers throughout: this test deliberately leaves notices QUEUED
+    // (that's what it's asserting about), and on real timers convex-test would
+    // fire them into whatever fetch mock the NEXT test has installed.
+    vi.useFakeTimers();
+    try {
+      const s = await setupChapter(newT());
+      await seedManager(s);
+      const payee = await seedPerson(s, { name: "Vera" });
+
+      // Approving is the APPROVAL notice's job — never this one.
+      const approvable = await seedReimbursement(s, {
+        status: "submitted",
+        payeePersonId: payee,
+        totalCents: 1800,
+      });
+      await seedLine(s, approvable, 1800);
+      await s.as.mutation(api.reimbursements.approve, {
+        reimbursementId: approvable,
+      });
+      expect(await scheduledPaidNotices(s)).toEqual([]);
+
+      // Starting a payout only reaches `pending`/`paying` — no money has landed.
+      await s.as.action(api.increasePayouts.payReimbursement, {
+        reimbursementId: approvable,
+      });
+      expect(await scheduledPaidNotices(s)).toEqual([]);
+
+      // A rejected ACH transfer walks the request back to `approved`.
+      const failing = await seedProcessingPayout(s, "ach_no_notice_fail");
+      await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
+        eventType: "ach_transfer.updated",
+        transferId: "ach_no_notice_fail",
+        status: "rejected",
+      });
+      expect(await scheduledPaidNotices(s)).toEqual([]);
+      expect(
+        (await run(s.t, (ctx) => ctx.db.get(failing.reimbursementId)))?.status,
+      ).toBe("approved");
+
+      // So does a return that arrives before we ever called it paid.
+      await seedProcessingPayout(s, "ach_no_notice_ret");
+      await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
+        eventType: "ach_transfer.returned",
+        transferId: "ach_no_notice_ret",
+        status: "returned",
+      });
+      expect(await scheduledPaidNotices(s)).toEqual([]);
+
+      // Rejecting and cancelling a request are silent here too.
+      const rejected = await seedReimbursement(s, {
+        status: "submitted",
+        payeePersonId: payee,
+      });
+      await s.as.mutation(api.reimbursements.reject, {
+        reimbursementId: rejected,
+        reason: "Out of policy",
+      });
+      const canceled = await seedReimbursement(s, {
+        status: "submitted",
+        payeePersonId: payee,
+      });
+      await s.as.mutation(api.reimbursements.cancel, {
+        reimbursementId: canceled,
+      });
+      expect(await scheduledPaidNotices(s)).toEqual([]);
+
+      // Sanity: the same helper DOES see it once a payment actually settles.
+      const settling = await seedProcessingPayout(s, "ach_yes_notice");
+      await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
+        eventType: "ach_transfer.updated",
+        transferId: "ach_yes_notice",
+        status: "submitted",
+      });
+      expect((await scheduledPaidNotices(s)).length).toBe(1);
+      expect(
+        (await run(s.t, (ctx) => ctx.db.get(settling.reimbursementId)))?.status,
+      ).toBe("paid");
+
+      // Drain before handing the runner on — no RESEND_API_KEY is set here, so
+      // this mails nothing; it just stops the queue leaking into a sibling.
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the send is claimed exactly once — a re-delivered job mails nobody twice", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupChapter(newT());
+      await setSlug(s);
+      await seedManager(s);
+      const payee = await seedPerson(s, { name: "Vera" });
+      const reimbursementId = await seedReimbursement(s, {
+        status: "approved",
+        payeePersonId: payee,
+        approvedCents: 1800,
+      });
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockResend();
+
+      await s.as.mutation(api.increasePayouts.markPaidManually, {
+        reimbursementId,
+      });
+      const settled = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(paidOnly(resendCalls).length).toBe(1);
+
+      const stamped = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+      expect(typeof stamped?.paidNoticeSentAt).toBe("number");
+      // The stamp is not an edit — `updatedAt` belongs to claimant/manager
+      // changes, not to us mailing somebody. Settling set it; the notice must
+      // have left it exactly where the payment put it.
+      expect(stamped?.updatedAt).toBe(settled?.updatedAt);
+
+      // Re-delivering the very same scheduled job sends nothing.
+      resendCalls.length = 0;
+      await s.t.action(internal.reimbursements.sendReimbursementPaidEmail, {
+        reimbursementId,
+      });
+      expect(resendCalls.length).toBe(0);
+
+      // Neither does marking it paid again (idempotent, and no second claim).
+      await s.as.mutation(api.increasePayouts.markPaidManually, {
+        reimbursementId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(resendCalls.length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a bounced ACH gives the notice back — and the payment that REALLY lands sends a second one", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupChapter(newT());
+      await setSlug(s);
+      await seedManager(s);
+      const { reimbursementId } = await seedProcessingPayout(s, "ach_bounce_2");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockResend();
+
+      // Settles → one notice.
+      await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
+        eventType: "ach_transfer.updated",
+        transferId: "ach_bounce_2",
+        status: "submitted",
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(paidOnly(resendCalls).length).toBe(1);
+
+      // DAYS later the credit bounces. The claim we made stopped being true,
+      // so the stamp comes off with it — unlike `approvedNoticeSentAt`, which
+      // survives because the approval never stopped being true.
+      await s.t.mutation(internal.increasePayouts.onIncreaseWebhookEvent, {
+        eventType: "ach_transfer.returned",
+        transferId: "ach_bounce_2",
+        status: "returned",
+      });
+      const reopened = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+      expect(reopened?.status).toBe("approved");
+      expect(reopened?.paidNoticeSentAt).toBeUndefined();
+      expect(typeof reopened?.approvedNoticeSentAt).toBe("undefined"); // never set on a seeded row
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(paidOnly(resendCalls).length).toBe(1); // the bounce itself mails nothing
+
+      // A manager retries by hand and it lands: a second, TRUE notice.
+      resendCalls.length = 0;
+      await s.as.mutation(api.increasePayouts.markPaidManually, {
+        reimbursementId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      const second = paidOnly(resendCalls);
+      expect(second.length).toBe(1);
+      expect(second[0].html).toContain("$18.00 was paid");
+      expect(
+        (await run(s.t, (ctx) => ctx.db.get(reimbursementId)))?.status,
+      ).toBe("paid");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("degrades without RESEND_API_KEY — the payment still settles and draining doesn't throw", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupChapter(newT());
+      await seedManager(s);
+      const payee = await seedPerson(s, { name: "Vera" });
+      const reimbursementId = await seedReimbursement(s, {
+        status: "approved",
+        payeePersonId: payee,
+        approvedCents: 1800,
+      });
+      delete process.env.RESEND_API_KEY;
+
+      await expect(
+        s.as.mutation(api.increasePayouts.markPaidManually, {
+          reimbursementId,
+        }),
+      ).resolves.toBeDefined();
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(
+        (await run(s.t, (ctx) => ctx.db.get(reimbursementId)))?.status,
+      ).toBe("paid");
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

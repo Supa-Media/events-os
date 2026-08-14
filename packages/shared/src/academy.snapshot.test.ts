@@ -600,6 +600,22 @@
  * originator. `finance-reconcile-grid`'s filter table lost its claim that the
  * chase keeps marked transfers. No title, slug, minutes, quizLength, section
  * or course order moved: every table below is unchanged.
+ *
+ * 2026-08-14 — and a second notice when the money actually goes: the other
+ * half of the approval-notice ask two notes up, not of the transfers report
+ * immediately above ("let's also send emails when we actually pay people…
+ * email when approved and email when paid"). Content-only on
+ * `finance-reimbursements-and-flags` again: one bullet added on the PAID email
+ * — what it names, that "paid" is our word for SENT rather than for landed,
+ * that the figure is the money that moved (so a partial approval is a smaller
+ * payment and never a first instalment), and that the single case producing
+ * two paid emails is a bounced transfer that gets re-paid. NO question was
+ * swapped this time: the quiz is at the 5-cap and nothing in it became wrong,
+ * so the new fact went into the approval-email question's explanation instead
+ * of costing this quiz its SoD, send-back or flagging coverage. Minutes stay 5
+ * and quizLength stays 5, so every table below is unchanged; no slugs, sections
+ * or courses moved. See `streams/finances.ts`'s header comment for the
+ * reasoning.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
