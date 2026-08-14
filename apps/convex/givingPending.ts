@@ -87,7 +87,6 @@
  */
 import { v } from "convex/values";
 import { internalMutation } from "./_generated/server";
-import { splitIntendedGift } from "./lib/givingDonors";
 
 /**
  * How long a bank debit may stay "in flight" before we stop believing in it.
@@ -159,9 +158,6 @@ export const recordPendingGift = internalMutation({
     isGiveDonation: v.optional(v.boolean()),
     /** `metadata.giveDonorId`. A raw string from Stripe: normalized, never trusted. */
     giveDonorId: v.optional(v.string()),
-    /** `metadata.giveIntendedCents` — what they meant to give, when they also
-     *  covered the processing fees. See `splitIntendedGift`. */
-    giveIntendedCents: v.optional(v.number()),
     /** When the donor authorised the debit. Injectable so the digest's window
      *  boundaries are testable; production passes the webhook's instant. */
     submittedAt: v.optional(v.number()),
@@ -234,20 +230,18 @@ export const recordPendingGift = internalMutation({
       const donor = await ctx.db.get(donorId);
       if (!donor) return false; // donor since deleted — safe no-op
 
-      // The PENDING FIGURE IS THE GIFT, NOT THE CHARGE — the same split the
-      // settle path books, so the figure a digest reports as "still clearing"
-      // is the figure that later appears as a gift. Reporting the charge would
+      // THE PENDING FIGURE IS THE CHARGE, because the gift is the charge — the
+      // same rule the settle path books by (`gifts.feeCoverageCents`), so the
+      // figure a digest reports as "still clearing" is the figure that later
+      // appears as a gift. This used to report the smaller pre-coverage amount
+      // to match the old split; reporting anything but the charge now would
       // make the pending line and the settled gift disagree by the fee
       // coverage, every time a donor ticked the box.
-      const { giftCents } = splitIntendedGift(
-        args.amountTotalCents,
-        args.giveIntendedCents,
-      );
       await ctx.db.insert("pendingGifts", {
         sessionId: args.sessionId,
         status: "in_flight",
         scope: donor.scope,
-        amountCents: giftCents,
+        amountCents: args.amountTotalCents,
         chargeTotalCents: args.amountTotalCents,
         currency: "usd",
         submittedAt: now,

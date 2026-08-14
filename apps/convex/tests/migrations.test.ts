@@ -351,6 +351,7 @@ const REGISTRY_NAMES = [
   "0069_materialize_reimbursement_receipts",
   "0070_link_wire_gifts_to_their_deposit",
   "0071_remove_unexecuted_balance_settlements",
+  "0072_fold_fee_coverage_into_gifts",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

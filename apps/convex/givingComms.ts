@@ -174,6 +174,17 @@ type GiveSessionContext = {
    *  wall" at checkout. Drives whether the wall is mentioned at all — we do
    *  not raise the subject with someone who declined it. */
   showOnWall: boolean;
+  /**
+   * How much of `amount` the donor added to cover the processing fee, already
+   * formatted — or `null` when they didn't cover.
+   *
+   * SAID OUT LOUD, because `amount` is the whole charge and the donor is
+   * entitled to see the difference between it and the figure they typed
+   * without doing arithmetic against their bank statement. The receipt that
+   * prompted all this simply announced "your gift of $309.27" to somebody who
+   * had typed 300 (#732).
+   */
+  coverage: string | null;
   refKey: string;
 };
 
@@ -235,6 +246,15 @@ async function loadGiveSessionContext(
   const email = payload?.email ?? session.customer_email ?? null;
   if (!email) return null;
 
+  // Only a positive, whole-cent figure strictly inside the charge is worth
+  // repeating back; anything else is metadata we can't explain, and a
+  // confusing sentence is worse than no sentence.
+  const coverageCents = Number(metadata.giveCoverageCents ?? 0);
+  const coverageIsSane =
+    Number.isInteger(coverageCents) &&
+    coverageCents > 0 &&
+    coverageCents < (session.amount_total ?? 0);
+
   return {
     email,
     firstName: payload?.name.split(/\s+/)[0] || "friend",
@@ -242,6 +262,7 @@ async function loadGiveSessionContext(
     city: payload?.chapterName ?? "Public Worship",
     slug: payload?.slug ?? null,
     showOnWall: metadata.giveShowOnWall === "1",
+    coverage: coverageIsSane ? formatAmount(coverageCents) : null,
     refKey: `give:${sessionId}`,
   };
 }
@@ -312,6 +333,14 @@ export const onAchSubmitted = internalAction({
       )}
       ${emailPanel(emailCode(give.amount), { dashed: true, center: true, margin: "0 0 20px" })}
       ${
+        give.coverage
+          ? emailParagraph(
+              `That includes the <b>${give.coverage}</b> you added to cover the processing fee, so the whole of what you meant to give reaches us.`,
+              { size: 13, margin: "0 0 20px" },
+            )
+          : ""
+      }
+      ${
         give.showOnWall
           ? emailParagraph(
               `You asked to be shown on our public giving wall. Your name won't appear there until the transfer clears.`,
@@ -353,6 +382,14 @@ export const onAchSettled = internalAction({
         { margin: "0 0 20px" },
       )}
       ${emailPanel(emailCode(give.amount), { dashed: true, center: true, margin: "0" })}
+      ${
+        give.coverage
+          ? emailParagraph(
+              `That includes the <b>${give.coverage}</b> you added to cover the processing fee, so the whole of what you meant to give reaches us. Thank you for that too.`,
+              { size: 13, margin: "20px 0 0" },
+            )
+          : ""
+      }
       ${
         give.showOnWall
           ? emailParagraph(

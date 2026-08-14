@@ -90,6 +90,7 @@ import { materializeReimbursementCodings } from "./0068_materialize_reimbursemen
 import { materializeReimbursementReceiptsMigration } from "./0069_materialize_reimbursement_receipts";
 import { linkWireGiftsToTheirDeposit } from "./0070_link_wire_gifts_to_their_deposit";
 import { removeUnexecutedBalanceSettlementsMigration } from "./0071_remove_unexecuted_balance_settlements";
+import { foldFeeCoverageIntoGifts } from "./0072_fold_fee_coverage_into_gifts";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -424,4 +425,16 @@ export const MIGRATIONS: Migration[] = [
   // refusal would be recorded as permanently applied and never retried. See
   // 0071.
   removeUnexecutedBalanceSettlementsMigration,
+  // A donor who covered the processing fee was booked for the amount they
+  // typed, with the extra they actually paid parked outside every giving
+  // total — so a $309.27 charge reported as a $300.00 gift, and the donor's
+  // own receipt disagreed with the ledger. The gift is the gross; the
+  // processor's cut is the org's expense. This folds the coverage back in and
+  // moves the donor / scope / identity / launch-pot rollups by the same
+  // delta. Raises book value by exactly the coverage that was invisible,
+  // which CLOSES the sliver `reconciliation.ts` already worked around on the
+  // in-flight side. Flags each row it corrects, because folding twice would
+  // overstate every covered gift and nothing in the data itself could tell.
+  // See 0072.
+  foldFeeCoverageIntoGifts,
 ];

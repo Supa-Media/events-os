@@ -43,7 +43,7 @@ import {
   assertPositiveGiftCents,
   matchOrCreateDonor,
   recordGiftForDonor,
-  splitIntendedGift,
+  coverageOnCharge,
 } from "./lib/givingDonors";
 import type { GivingScope } from "./lib/givingAccess";
 // The gross-up arithmetic lives in ONE place (#583) and is never re-derived
@@ -89,6 +89,22 @@ export const startGiveDonationCheckout = action({
      * cannot ask to be charged something we never offered.
      */
     coverFees: v.optional(v.boolean()),
+    /**
+     * WHICH RAIL THEY PICKED, on our form, before we quote anything.
+     *
+     * Stripe wants the amount when the session is created and doesn't reveal
+     * the payment method until after it exists, so a page that leaves the
+     * choice to Stripe's screen has to guess the rate — and this one guessed
+     * card, the expensive one, for everybody. A donor paying $300 by bank was
+     * charged $9.27 to cover a fee that turned out to be $2.47 (#732), and the
+     * gap grows with the gift: on $5,000 it is card's $150 against ACH's $5
+     * cap. Asking here is the only way the number we quote can be the number
+     * the rail actually charges.
+     *
+     * Absent = card, which is both the safe default for an older client and
+     * what the overwhelming majority pick.
+     */
+    method: v.optional(v.union(v.literal("card"), v.literal("ach_debit"))),
   },
   handler: async (ctx, args): Promise<{ url: string }> => {
     const slug = args.slug?.trim() || undefined;
@@ -128,25 +144,28 @@ export const startGiveDonationCheckout = action({
     }
 
     // ── Cover the fees ───────────────────────────────────────────────────────
-    // The charge is `intended + coverage`; the GIFT stays `intended`. The
-    // coverage is recomputed here from the live schedule and never read off
-    // the request, so the figure the page showed is checked rather than
-    // trusted — the client sends a yes/no, and the server decides the price.
+    // The charge is `intended + coverage`, and the WHOLE charge is the gift —
+    // the coverage is recorded beside it as a note, never subtracted from it
+    // (`gifts.feeCoverageCents`). The coverage itself is recomputed here from
+    // the live schedule and never read off the request, so the figure the page
+    // showed is checked rather than trusted — the client sends a yes/no plus
+    // which rail, and the server decides the price.
     //
-    // Quoted at the CARD rate, which is the honest default: card is what the
-    // overwhelming majority of givers use and it is the more expensive rail,
-    // so a donor who then pays by bank has over-covered by a few dollars in
-    // the org's favour rather than under-covered in theirs. Stripe does not
-    // tell us which rail they will pick until after the session exists, so
-    // there is no way to be exact at this moment and this is the direction to
-    // be wrong in.
+    // QUOTED AT THE RAIL THE DONOR PICKED, not at card-for-everybody. Quoting
+    // card while somebody paid by bank overcharged them for a fee that never
+    // happened — $9.27 covering a $2.47 ACH fee on a $300 gift (#732) — and
+    // "it errs in the org's favour" is not a defence when the donor is the one
+    // paying it. `method` is asked on our own form precisely so this can be
+    // exact.
     //
     // A rail with no rate (nothing to quote) silently means no coverage — the
     // giving page must never fail to open a checkout over a fee question.
     const rates = await ctx.runQuery(internal.feeSchedule.givePageRates, {});
+    const method = args.method ?? "card";
+    const quotedRate = method === "ach_debit" ? rates.ach : rates.card;
     const coverageCents =
-      args.coverFees && rates.card
-        ? feeCoverageCents(prepared.amountCents, rates.card)
+      args.coverFees && quotedRate
+        ? feeCoverageCents(prepared.amountCents, quotedRate)
         : 0;
     const chargeCents = prepared.amountCents + coverageCents;
 
@@ -156,6 +175,15 @@ export const startGiveDonationCheckout = action({
     const returnPath = givePagePath(slug);
     const body = new URLSearchParams();
     body.set("mode", "payment");
+    // PIN THE RAIL TO THE ONE WE PRICED. Left to Stripe's automatic methods,
+    // the donor could pick a rail we didn't quote and land back in the bug
+    // this replaces — charged a card gross-up on a bank debit. Naming the
+    // method here also means Stripe's own screen opens straight into it
+    // instead of asking a question our form already asked.
+    body.set(
+      "payment_method_types[0]",
+      method === "ach_debit" ? "us_bank_account" : "card",
+    );
     body.set("customer_email", args.email.trim().toLowerCase());
     body.set("success_url", `${base}${returnPath}?donated=1`);
     body.set("cancel_url", `${base}${returnPath}`);
@@ -172,13 +200,17 @@ export const startGiveDonationCheckout = action({
       "metadata[giveShowOnWall]",
       args.shareOnWall && scope !== "central" ? "1" : "0",
     );
-    // The split, carried on the session so settle time can book the gift at
-    // what was MEANT and the coverage beside it. Read from here rather than
-    // recomputed at settle: the rate could have changed in between, and what
-    // the donor agreed to is what was quoted when they agreed to it. Always
-    // set — "0" is a recorded no.
+    // What they typed before covering, carried on the session so settle time
+    // can note how much of the charge was fee coverage. Read from here rather
+    // than recomputed at settle: the rate could have changed in between, and
+    // what the donor agreed to is what was quoted when they agreed to it.
+    // Always set — "0" is a recorded no. NOTE this no longer decides the gift
+    // (the charge does); it only annotates it.
     body.set("metadata[giveIntendedCents]", String(prepared.amountCents));
     body.set("metadata[giveCoverageCents]", String(coverageCents));
+    // The rail we priced against, so a later question about why a coverage
+    // figure was what it was has an answer on the payment itself.
+    body.set("metadata[giveMethod]", method);
     // Inline one-time price — no recurring interval (unlike the pledge flow).
     body.set("line_items[0][quantity]", "1");
     body.set("line_items[0][price_data][currency]", "usd");
@@ -219,7 +251,11 @@ export const startGiveDonationCheckout = action({
         refKey: `give:${session.id}`,
         scope,
         kind: "gift",
-        amountCents: prepared.amountCents,
+        // The charge, not what they typed before covering — the wall echoes
+        // the gift, and the gift is the whole charge (`gifts.feeCoverageCents`).
+        // Posting the smaller figure would have the wall and the ledger
+        // disagree about the same donation.
+        amountCents: chargeCents,
         ...(args.publicName ? { displayName: args.publicName } : {}),
         ...(args.message ? { message: args.message } : {}),
         // The giver's explicit yes, carried through rather than inferred
@@ -379,27 +415,29 @@ export const recordGiveDonationPaid = internalMutation({
       return false;
     }
 
-    // ── One payment, two meanings ────────────────────────────────────────────
-    // The GIFT is what the donor meant to give; the coverage is the extra they
-    // added so the processor's cut wouldn't come out of it. The arithmetic and
-    // all of its guards live in `splitIntendedGift` — SHARED with
-    // `givingPending.recordPendingGift`, so the figure a digest reports as
-    // "still clearing" is exactly the figure booked here when it lands.
+    // ── The gift is the whole charge ─────────────────────────────────────────
+    // Every cent that left the donor's account is the gift, fee coverage
+    // included — see `gifts.feeCoverageCents` for why this used to be a split
+    // and why that was wrong. `coverageOnCharge` decides nothing about the
+    // amount; it only works out how much of the charge to NOTE as coverage,
+    // and it is SHARED with `givingPending.recordPendingGift` so the figure a
+    // digest reports as "still clearing" is exactly the figure booked here
+    // when it lands.
     const intended = args.intendedCents;
-    const { giftCents, coverageCents, splitIsSane } = splitIntendedGift(
+    const { coverageCents, coverageIsSane } = coverageOnCharge(
       args.amountTotalCents,
       intended,
     );
-    if (intended !== undefined && !splitIsSane) {
+    if (intended !== undefined && !coverageIsSane) {
       console.error(
         `[give] session ${args.sessionId}: intendedCents ${intended} is not a ` +
-          `sane split of ${args.amountTotalCents} — booking the whole charge as the gift`,
+          `sane figure inside ${args.amountTotalCents} — booking the charge with no coverage note`,
       );
     }
 
     await recordGiftForDonor(ctx, {
       donorId,
-      amountCents: giftCents,
+      amountCents: args.amountTotalCents,
       ...(coverageCents > 0 ? { feeCoverageCents: coverageCents } : {}),
       receivedAt: Date.now(),
       // Card payments settle through Stripe — the gifts ledger's vocabulary
