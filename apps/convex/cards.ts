@@ -129,6 +129,7 @@ import {
   requireCentralFinanceRole,
   getFinanceRole,
   getChapterAccountForMode,
+  resolveCallerPersonId,
   type FinanceScope,
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
@@ -173,6 +174,7 @@ import {
 } from "./lib/repaymentFees";
 import { markPublicationsStale } from "./lib/publicLedgerStale";
 import { requireRepaymentsCollect } from "./lib/repaymentsAccess";
+import { buildRepaymentReceipt } from "./lib/personalRepaymentReceiptEmail";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -3453,6 +3455,15 @@ const chapterRepaymentValidator = v.object({
   // manager can see they already chased it — the alternative is sending a
   // second reminder because nothing on screen said the first one went.
   lastNudgedAt: v.union(v.number(), v.null()),
+  // Receipt state, for the "Send receipt" / "Resend receipt" row action on a
+  // settled repayment (`PersonalChargesView.tsx`'s Repaid section) — a
+  // manager needs to see "did this person ever actually get one?" at a
+  // glance, not guess. `receiptSentAt` alone means an attempt was made, not
+  // that it landed; `receiptDeliveredAt` is the one that means delivered.
+  receiptSentAt: v.union(v.number(), v.null()),
+  receiptDeliveredAt: v.union(v.number(), v.null()),
+  receiptDeliveryFailedAt: v.union(v.number(), v.null()),
+  lastReceiptError: v.union(v.string(), v.null()),
 });
 
 /**
@@ -3521,6 +3532,10 @@ export const listPersonalRepayments = query({
           hasExternalAccount: !!r.payerExternalAccountId,
           creditTransactionId: r.creditTransactionId ?? null,
           lastNudgedAt: r.lastNudgedAt ?? null,
+          receiptSentAt: r.receiptSentAt ?? null,
+          receiptDeliveredAt: r.receiptDeliveredAt ?? null,
+          receiptDeliveryFailedAt: r.receiptDeliveryFailedAt ?? null,
+          lastReceiptError: r.lastReceiptError ?? null,
         };
       }),
     );
@@ -3598,6 +3613,767 @@ async function settleRepayment(
 
   return (await ctx.db.get(repayment._id))!;
 }
+
+// ── Payment receipt (the payer's proof-of-payment email) ─────────────────────
+//
+// Founder, 2026-08-14: "When people pay what they owe, we need to make sure
+// we send them an email saying, like, hey, thanks for paying this off. This
+// is your receipt … just in case they need a receipt for showing that they
+// did the payment." The copy itself — and the hard rule that it must never
+// read as a donation or a tax deduction — lives in
+// `lib/personalRepaymentReceiptEmail.ts`.
+//
+// ── THE SEAM: one email per PAYMENT, not per debt ────────────────────────────
+// A single Checkout can settle SEVERAL repayments at once (`repaymentIds` is
+// comma-joined in Stripe metadata). Scheduling from inside `settleRepayment`
+// itself — the per-row core — would therefore send N emails for one payment.
+// Instead each SETTLEMENT CALLER schedules exactly once, after it has
+// finished settling everything the current payment event covers:
+//  - `applyRepaymentPaidFromStripe` runs once per settling webhook
+//    (`checkout.session.completed` for a card, `async_payment_succeeded` for
+//    a bank debit) and covers BOTH Stripe rails from one seam — it schedules
+//    once with every repayment it just settled in THIS call.
+//  - `applyRepaymentPaid` (the Increase ACH direct-debit rail) always settles
+//    one repayment at a time, so its single schedule call already has
+//    exactly the shape the other rail's batch degenerates to.
+// A retried/redelivered webhook re-derives "what's still outstanding" before
+// scheduling, so a duplicate delivery that settled nothing new schedules
+// nothing — see `claimRepaymentReceipts` below for the second, row-level
+// guarantee that makes this exactly-once regardless.
+//
+// ── AT MOST ONE RECEIPT PER REPAYMENT, EVER ──────────────────────────────────
+// `claimRepaymentReceipts` stamps `receiptSentAt` on each row in ONE
+// transaction — the same "stamp before send, in a mutation, so the read and
+// the write can't interleave" idempotency `reimbursements.markApprovedNoticeSent`
+// uses. Because one email can cover SEVERAL repayments, the claim is
+// PER-ROW, not all-or-nothing across the batch: it returns only the ids that
+// were actually unclaimed, and the sender includes ONLY those in the email.
+// If it claims nothing — every id in the batch already has a receipt —
+// nothing is sent. That is what makes a webhook retry, or
+// `checkout.session.completed` racing `async_payment_succeeded` for the same
+// session, safe: `settleRepayment`'s own guard means a retry's "outstanding"
+// list is already empty by the time it would schedule, and even in the
+// pathological case where it schedules anyway, the claim finds nothing left
+// to stamp.
+
+const repaymentReceiptLineValidator = v.object({
+  merchantName: v.union(v.string(), v.null()),
+  description: v.union(v.string(), v.null()),
+  chargeDate: v.union(v.number(), v.null()),
+  amountCents: v.number(),
+});
+
+/**
+ * CLAIM the receipt for every listed repayment, returning only the ones this
+ * call actually claimed (previously un-sent, and genuinely settled — the
+ * second check is defensive; every real caller only ever passes ids it just
+ * settled itself). One transaction, so two schedules racing the same row —
+ * a webhook retry landing beside the original call — can never both claim
+ * it.
+ *
+ * Returns each claimed id's `payerPersonId` alongside it so the sender can
+ * GROUP by payer without a second round trip: a batch is normally one
+ * payer's own charges, but `prepareRepaymentCheckout` doesn't itself refuse a
+ * manager bundling charges from DIFFERENT payers into one Checkout, so this
+ * treats that as first-class rather than mailing one payer a receipt that
+ * quietly includes somebody else's charges.
+ *
+ * ALSO claims the IN-FLIGHT LOCK (`receiptSendingAt`) alongside `receiptSentAt`
+ * — this row's automatic exactly-once guard above still needs no other
+ * change (a second automatic claim is already refused by `receiptSentAt`
+ * alone), but stamping the lock here is what lets a MANUAL send that races
+ * this send while it's still in flight refuse itself instead of double-
+ * mailing the payer — see `receiptSendingAt`'s schema doc and
+ * `claimRepaymentReceiptManual` below.
+ */
+export const claimRepaymentReceipts = internalMutation({
+  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  returns: v.array(
+    v.object({
+      repaymentId: v.id("personalRepayments"),
+      payerPersonId: v.id("people"),
+    }),
+  ),
+  handler: async (ctx, { repaymentIds }) => {
+    const claimed: Array<{
+      repaymentId: Id<"personalRepayments">;
+      payerPersonId: Id<"people">;
+    }> = [];
+    for (const id of repaymentIds) {
+      const r = await ctx.db.get(id);
+      if (!r) continue;
+      if (!r.creditTransactionId || r.status !== "paid") continue;
+      // UNCHANGED, deliberately as strict as ever — pinned by
+      // `repaymentReceiptManual.test.ts`'s "at-most-once guarantee is
+      // unchanged" suite. Nothing added ABOVE this line; only the stamp
+      // below grew a second field.
+      if (r.receiptSentAt !== undefined) continue;
+      const now = Date.now();
+      await ctx.db.patch(id, {
+        receiptSentAt: now,
+        receiptSendingAt: now,
+        lastReceiptSendSource: "automatic",
+      });
+      claimed.push({ repaymentId: id, payerPersonId: r.payerPersonId });
+    }
+    return claimed;
+  },
+});
+
+/** How long a claimed receipt's IN-FLIGHT LOCK (`receiptSendingAt`) is
+ *  honored before a second claimer is allowed to assume the original attempt
+ *  died mid-flight and try again. A `sendOneRepaymentReceiptGroup` call is
+ *  one HTTP round trip to Resend, resolved (successfully or not) in
+ *  milliseconds — `markRepaymentReceiptOutcome` clears the lock the instant
+ *  that resolves — so in the OVERWHELMING majority of cases this bound is
+ *  never actually waited out; it exists purely for the process-died-mid-send
+ *  case, where nothing ever clears the lock. Exported so the backfill's
+ *  eligibility scan, this file's retry-claim, and the manual claim's
+ *  in-flight refusal all agree on the same threshold — three independent
+ *  claimers can never disagree about what "stuck" means. */
+export const RECEIPT_RETRY_STALE_MS = 15 * 60 * 1000;
+
+/** How long ONE manual send silences a second one for the SAME repayment —
+ *  the MANUAL path's own cooldown, deliberately separate from (and far
+ *  shorter than) `REPAYMENT_NUDGE_COOLDOWN_MS`'s three days. That cooldown
+ *  protects a DEBTOR from being pestered about money they haven't paid yet;
+ *  this one protects the SYSTEM (and Resend's rate limits) from a runaway
+ *  loop or a fat-fingered double-tap on a "Resend receipt" button — an
+ *  un-throttled probe of this exact action produced 50 Resend calls for 50
+ *  presses with nothing stopping it. The founder's stated use case is
+ *  on-demand resending ("say they forgot it, or they just need it resent")
+ *  minutes-to-days later, which 60 seconds never touches; it only ever
+ *  refuses a press that lands while the previous one is still settling.
+ *  Exported so the manual claim and its tests agree on one number. */
+export const MANUAL_RECEIPT_RESEND_COOLDOWN_MS = 60 * 1000;
+
+/** Is a receipt send CURRENTLY in flight for this row — the shared check
+ *  every claimer (automatic, backfill retry, manual) runs before claiming.
+ *  `receiptSendingAt` unset means nothing is happening; set-but-stale (past
+ *  `RECEIPT_RETRY_STALE_MS`) means the original attempt is presumed dead and
+ *  the lock no longer blocks a new claim — see that field's schema doc. */
+function isReceiptSendInFlight(
+  r: Pick<Doc<"personalRepayments">, "receiptSendingAt">,
+  now: number,
+): boolean {
+  return (
+    r.receiptSendingAt !== undefined &&
+    now - r.receiptSendingAt < RECEIPT_RETRY_STALE_MS
+  );
+}
+
+/**
+ * Re-claim ONE repayment's receipt for a RETRY send, for the backfill only
+ * (`repaymentReceiptBackfill.ts`). Unlike `claimRepaymentReceipts` (which
+ * claims a never-attempted row), this claims a row that was ALREADY
+ * attempted and never confirmed delivered — re-stamping `receiptSentAt` (and
+ * the in-flight lock, `receiptSendingAt`) to `now` is what makes the claim
+ * atomic (read-and-write in one transaction, same trick `claimRepaymentReceipts`
+ * uses).
+ *
+ * Returns `null` (nothing to do) when: the row is gone, was never settled,
+ * was never claimed in the first place (`receiptSentAt` absent — not this
+ * mutation's job), already has a CONFIRMED delivery, or a send is CURRENTLY
+ * in flight for it — either this sweep's own prior claim not yet resolved,
+ * or (the race an adversarial review proved: 2026-08-14) a MANUAL send that
+ * is mid-flight right now. `isReceiptSendInFlight` is what decides "in
+ * flight": it is keyed on `receiptSendingAt`, not on how long ago
+ * `receiptSentAt` was last stamped, precisely so a manager's earlier FAILED
+ * manual retry — which used to re-stamp `receiptSentAt` and silently evict
+ * this row from the backlog for another `RECEIPT_RETRY_STALE_MS` — no longer
+ * does: `markRepaymentReceiptOutcome` clears `receiptSendingAt` the instant
+ * that failure is recorded, so this row is reachable again immediately, not
+ * 15 more minutes later.
+ */
+export const claimRepaymentReceiptForRetry = internalMutation({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.union(
+    v.object({
+      repaymentId: v.id("personalRepayments"),
+      payerPersonId: v.id("people"),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { repaymentId }) => {
+    const r = await ctx.db.get(repaymentId);
+    if (!r) return null;
+    if (!r.creditTransactionId || r.status !== "paid") return null;
+    if (r.receiptSentAt === undefined) return null;
+    if (r.receiptDeliveredAt !== undefined) return null;
+    const now = Date.now();
+    if (isReceiptSendInFlight(r, now)) return null;
+    await ctx.db.patch(repaymentId, {
+      receiptSentAt: now,
+      receiptSendingAt: now,
+      lastReceiptSendSource: "backfill",
+    });
+    return { repaymentId: r._id, payerPersonId: r.payerPersonId };
+  },
+});
+
+/**
+ * Record what actually happened to a claimed receipt send — the piece that
+ * was entirely missing before: a lost receipt used to leave `receiptSentAt`
+ * as the only trace, indistinguishable from a delivered one. Called by
+ * `sendOneRepaymentReceiptGroup` after every attempt, live or retried.
+ *
+ * `"delivered"` is the ONLY outcome that means the payer actually has this
+ * receipt — it stamps `receiptDeliveredAt` and CLEARS both failure fields,
+ * so a retry that finally succeeds erases the trail that would otherwise
+ * make the backfill re-scan a now-fine row forever. `"failed"` stamps
+ * `receiptDeliveryFailedAt` + a short, bounded reason (never an unbounded
+ * provider payload) and leaves `receiptDeliveredAt` untouched.
+ *
+ * EITHER outcome also CLEARS the in-flight lock (`receiptSendingAt`) — this
+ * is the release side of the claim every claimer takes before sending. A
+ * send that reaches this mutation at all (success or failure) is, by
+ * definition, no longer in flight; leaving the lock set would wedge the row
+ * against every other claimer for no reason until `RECEIPT_RETRY_STALE_MS`
+ * expired on its own. Only a process that dies BEFORE reaching this mutation
+ * leaves the lock standing — which is exactly the case the staleness bound
+ * exists for.
+ */
+export const markRepaymentReceiptOutcome = internalMutation({
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    outcome: v.union(v.literal("delivered"), v.literal("failed")),
+    error: v.optional(v.string()),
+  },
+  returns: v.null(),
+  handler: async (ctx, { repaymentIds, outcome, error }) => {
+    const now = Date.now();
+    for (const id of repaymentIds) {
+      const r = await ctx.db.get(id);
+      if (!r) continue;
+      if (outcome === "delivered") {
+        await ctx.db.patch(id, {
+          receiptDeliveredAt: now,
+          receiptDeliveryFailedAt: undefined,
+          lastReceiptError: undefined,
+          receiptSendingAt: undefined,
+        });
+      } else {
+        await ctx.db.patch(id, {
+          receiptDeliveryFailedAt: now,
+          // Bounded: this is a triage string, never a dumped provider body.
+          lastReceiptError: (error ?? "unknown error").slice(0, 300),
+          receiptSendingAt: undefined,
+        });
+      }
+    }
+    return null;
+  },
+});
+
+/**
+ * Everything `sendRepaymentReceiptEmail` needs for ONE payer's slice of a
+ * claimed batch — `null` only when every id resolves to nothing (a race with
+ * a deletion), which the sender treats as "nothing to mail".
+ *
+ * `paidAt` is the LATEST `updatedAt` across the rows rather than any single
+ * one: `settleRepayment` stamps each row with its own `Date.now()` inside the
+ * settlement loop, so a multi-line batch's rows can differ by a few
+ * milliseconds — irrelevant at the day-level granularity the receipt prints,
+ * but "latest" is the more honest answer to "when did this payment settle"
+ * than "whichever row happened first".
+ */
+export const getRepaymentReceiptPayload = internalQuery({
+  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  returns: v.union(
+    v.object({
+      payerEmail: v.union(v.string(), v.null()),
+      payerName: v.string(),
+      paidAt: v.number(),
+      totalCents: v.number(),
+      method: repaymentMethodValidator,
+      stripePaymentIntentId: v.union(v.string(), v.null()),
+      lines: v.array(repaymentReceiptLineValidator),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { repaymentIds }) => {
+    const rows = (
+      await Promise.all(repaymentIds.map((id) => ctx.db.get(id)))
+    ).filter((r): r is Doc<"personalRepayments"> => r !== null);
+    if (rows.length === 0) return null;
+
+    // GUARD, LOCAL RATHER THAN REMOTE: today's only caller
+    // (`sendOneRepaymentReceiptGroup`) always pre-groups ids by
+    // `payerPersonId` before calling this, so every real batch already
+    // shares one payer — but nothing here enforced that, which made it a
+    // landmine for a future caller passing a mixed batch: it would have
+    // silently put one payer's charges on another payer's receipt. Refuse
+    // outright instead of guessing whose receipt this is.
+    const payerPersonId = rows[0].payerPersonId;
+    if (rows.some((r) => r.payerPersonId !== payerPersonId)) {
+      throw new Error(
+        `getRepaymentReceiptPayload: repaymentIds span more than one payer ` +
+          `(${repaymentIds.join(", ")}) — every caller must pre-group by payer.`,
+      );
+    }
+
+    const payer = await ctx.db.get(payerPersonId);
+    const lines = await Promise.all(
+      rows.map(async (r) => {
+        const txn = await ctx.db.get(r.transactionId);
+        return {
+          merchantName: txn?.merchantNameOverride ?? txn?.merchantName ?? null,
+          description: txn?.description ?? null,
+          chargeDate: txn?.postedAt ?? null,
+          amountCents: r.amountCents,
+        };
+      }),
+    );
+
+    return {
+      payerEmail: payer?.pwEmail ?? payer?.email ?? null,
+      payerName: payer?.name ?? "there",
+      paidAt: Math.max(...rows.map((r) => r.updatedAt)),
+      totalCents: rows.reduce((sum, r) => sum + r.amountCents, 0),
+      method: rows[0].method,
+      stripePaymentIntentId: rows[0].stripePaymentIntentId ?? null,
+      lines,
+    };
+  },
+});
+
+const STRIPE_RECEIPT_API = "https://api.stripe.com/v1";
+
+/**
+ * Stripe's own hosted receipt for a settled repayment charge — the LIVE
+ * expand call rule D calls for, mirroring `givingComms.ts#fetchAchFailureCode`'s
+ * pattern but reached through the PaymentIntent directly: a repayment row
+ * already persists `stripePaymentIntentId` (`settleRepayment`), so there's no
+ * reason to detour through the Checkout Session the way the giving-comms
+ * failure lookup does. `GET /payment_intents/{id}?expand[]=latest_charge` —
+ * the receipt lives on the CHARGE, one level below the PaymentIntent, so an
+ * unexpanded read never carries it.
+ *
+ * Best-effort by design, mirroring `fetchAchFailureCode`: `null` on ANY
+ * problem — no `STRIPE_SECRET_KEY` configured, a non-2xx response, a network
+ * throw, no charge yet, a charge with no `receipt_url`, or a `receipt_url`
+ * that isn't `https://`. Nothing here is allowed to be the reason the
+ * receipt email fails to send — see `lib/personalRepaymentReceiptEmail.ts`'s
+ * doc for why a missing Stripe receipt DEGRADES the email rather than
+ * blocking it.
+ */
+async function fetchStripeReceiptUrl(
+  paymentIntentId: string,
+): Promise<string | null> {
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) return null;
+  try {
+    const response = await fetch(
+      `${STRIPE_RECEIPT_API}/payment_intents/${encodeURIComponent(paymentIntentId)}` +
+        `?expand[]=latest_charge`,
+      { headers: { Authorization: `Bearer ${secretKey}` } },
+    );
+    if (!response.ok) return null;
+    const intent = (await response.json()) as {
+      latest_charge?: { receipt_url?: string | null } | string | null;
+    };
+    const charge = intent.latest_charge;
+    // Unexpanded (a bare `ch_…`/`py_…` string) or absent — nothing to read.
+    if (!charge || typeof charge === "string") return null;
+    const url = charge.receipt_url;
+    return typeof url === "string" && url.startsWith("https://") ? url : null;
+  } catch (err) {
+    console.error("[cards] fetchStripeReceiptUrl failed", paymentIntentId, err);
+    return null;
+  }
+}
+
+/**
+ * Build and send ONE payer's receipt for a batch of repayment ids that are
+ * ALREADY claimed (`receiptSentAt` stamped), then record what happened
+ * (`markRepaymentReceiptOutcome`) so a lost send is traceable and
+ * recoverable rather than silent — see this section's header ("a lost
+ * receipt is silent AND permanent" was the bug; this function is the fix).
+ *
+ * Shared by the live send path (`sendRepaymentReceiptEmail`, one payer-group
+ * per settlement event) and the backfill's per-row retry
+ * (`repaymentReceiptBackfill.ts`) — both callers already own the claim
+ * (`claimRepaymentReceipts` / `claimRepaymentReceiptForRetry`); this
+ * function only knows "these ids were just claimed, mail them and record
+ * the outcome."
+ *
+ * EVERY exit records an outcome — the four proven-silent failure paths this
+ * fixes are all represented below:
+ *  - the claimed rows vanished before send (a race with a deletion),
+ *  - the payer has no email on file (used to be a bare `continue`, logging
+ *    nothing at all — the worst of the four),
+ *  - Resend didn't accept the send (no key configured, or a non-2xx
+ *    response — `sendEmailReporting` swallows this into a `false`, so it's
+ *    logged HERE with the repayment ids + address, which the underlying
+ *    `[resend]`/`[ticketing]` logs never carried),
+ *  - a genuine throw (a `fetch` transport failure, or `getRepaymentReceiptPayload`'s
+ *    cross-payer guard) — caught locally so ONE payer group's failure can
+ *    never abort a sibling group's send in the same batch.
+ *
+ * Returns the outcome so a caller that wants to tally results (the backfill)
+ * doesn't need a second round trip to re-read the row.
+ */
+export async function sendOneRepaymentReceiptGroup(
+  ctx: ActionCtx,
+  repaymentIds: Id<"personalRepayments">[],
+  feeCoveredCents: number,
+): Promise<"delivered" | "failed"> {
+  const fail = async (reason: string): Promise<"failed"> => {
+    await ctx.runMutation(internal.cards.markRepaymentReceiptOutcome, {
+      repaymentIds,
+      outcome: "failed",
+      error: reason,
+    });
+    return "failed";
+  };
+
+  try {
+    const payload = await ctx.runQuery(
+      internal.cards.getRepaymentReceiptPayload,
+      { repaymentIds },
+    );
+    if (!payload) {
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: claimed repayment rows vanished before send",
+        repaymentIds,
+      );
+      return await fail("repayment rows were gone by send time");
+    }
+    if (!payload.payerEmail) {
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: payer has no email on file — receipt claimed but never sent",
+        repaymentIds,
+      );
+      return await fail("payer has no email on file");
+    }
+
+    const stripeReceiptUrl = payload.stripePaymentIntentId
+      ? await fetchStripeReceiptUrl(payload.stripePaymentIntentId)
+      : null;
+
+    const link = appUrl("/finances/repayments");
+    // KNOWN REPO TRAP: a `link ? <a> : ""` pattern here would silently
+    // ship a CTA-less transactional email whenever APP_URL is unset.
+    // Degrade LOUDLY instead — see `notifyPersonalChargeFlagged`.
+    if (!link) {
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: APP_URL is unset — sending WITHOUT a clickable repayments link",
+        repaymentIds,
+      );
+    }
+
+    const receipt = buildRepaymentReceipt({
+      payerName: payload.payerName,
+      paidAt: payload.paidAt,
+      lines: payload.lines,
+      totalCents: payload.totalCents,
+      method: payload.method,
+      feeCoveredCents: feeCoveredCents > 0 ? feeCoveredCents : null,
+      stripeReceiptUrl,
+      link,
+    });
+
+    // `sendEmailReporting`, not the fire-and-forget `sendEmail`: this is
+    // exactly the caller `sendEmailReporting`'s own doc names as needing the
+    // real delivery outcome. A rejected/non-2xx response resolves `false`
+    // here (never thrown); a genuine transport failure still throws, which
+    // the outer catch below turns into a recorded failure too.
+    const delivered = await sendEmailReporting(ctx, {
+      to: payload.payerEmail,
+      subject: receipt.subject,
+      html: receipt.html,
+    });
+
+    if (!delivered) {
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: Resend did not accept the send",
+        { repaymentIds, to: payload.payerEmail },
+      );
+      return await fail(
+        "Resend rejected the send (no key configured, or a non-2xx response)",
+      );
+    }
+
+    await ctx.runMutation(internal.cards.markRepaymentReceiptOutcome, {
+      repaymentIds,
+      outcome: "delivered",
+    });
+    return "delivered";
+  } catch (err) {
+    console.error(
+      "[cards] sendRepaymentReceiptEmail: send failed for payer group",
+      repaymentIds,
+      err,
+    );
+    try {
+      return await fail(
+        (err instanceof Error ? err.message : String(err)).slice(0, 300),
+      );
+    } catch (innerErr) {
+      // The failure record itself couldn't be written — still don't let
+      // this throw escape and abort a sibling payer group's send.
+      console.error(
+        "[cards] sendRepaymentReceiptEmail: failed to record failure outcome",
+        repaymentIds,
+        innerErr,
+      );
+      return "failed";
+    }
+  }
+}
+
+/**
+ * "You paid this off — here's your receipt", scheduled by whichever
+ * settlement caller just cleared one or more repayments in a single payment
+ * event. See this section's header for the seam and the exactly-once story.
+ *
+ * Claims first (`claimRepaymentReceipts`), then GROUPS the claimed ids by
+ * payer — normally one group, since a batch is normally one person's own
+ * charges — and mails each payer their OWN itemized receipt, never another
+ * payer's charges. `feeCoveredCents` is attributed to a group only when the
+ * WHOLE claimed batch is that one group: split across payers with no
+ * per-line record of who agreed to cover what, it would be a guess, so a
+ * genuinely multi-payer batch drops the fee note and logs loudly instead of
+ * mis-attributing it.
+ *
+ * Each payer group is sent (and its outcome recorded) by
+ * `sendOneRepaymentReceiptGroup`, which catches its OWN failures — so one
+ * payer's send failing can never abort a sibling payer's send in the same
+ * batch. The outer try/catch here is a last-resort net for a throw outside
+ * that per-group boundary (e.g. the initial claim itself), for the same
+ * reason `notifyPersonalChargeFlagged` wraps its own body: this runs after
+ * the payment has already committed, and must never surface as a failed
+ * scheduled job.
+ */
+export const sendRepaymentReceiptEmail = internalAction({
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    feeCoveredCents: v.optional(v.number()),
+  },
+  handler: async (ctx, { repaymentIds, feeCoveredCents }) => {
+    try {
+      if (repaymentIds.length === 0) return null;
+      const claimed: Array<{
+        repaymentId: Id<"personalRepayments">;
+        payerPersonId: Id<"people">;
+      }> = await ctx.runMutation(internal.cards.claimRepaymentReceipts, {
+        repaymentIds,
+      });
+      if (claimed.length === 0) return null;
+
+      const groups = new Map<Id<"people">, Id<"personalRepayments">[]>();
+      for (const c of claimed) {
+        const list = groups.get(c.payerPersonId) ?? [];
+        list.push(c.repaymentId);
+        groups.set(c.payerPersonId, list);
+      }
+      if (groups.size > 1 && (feeCoveredCents ?? 0) > 0) {
+        console.error(
+          "[cards] sendRepaymentReceiptEmail: fee coverage on a batch spanning " +
+            "multiple payers — omitting the fee note rather than guessing an " +
+            "attribution",
+          repaymentIds,
+        );
+      }
+      const feeForSingleGroup = groups.size === 1 ? (feeCoveredCents ?? 0) : 0;
+
+      for (const ids of groups.values()) {
+        await sendOneRepaymentReceiptGroup(ctx, ids, feeForSingleGroup);
+      }
+    } catch (err) {
+      console.error("sendRepaymentReceiptEmail: failed", repaymentIds, err);
+    }
+    return null;
+  },
+});
+
+// ── Manual "Send receipt" (a manager, on demand) ──────────────────────────────
+//
+// Founder: "add an email button for already paid reimbursements or whatever.
+// Allowing me to manually send a receipt to someone that needs it. Say they
+// forgot it, or they just need it resent. Or, you know, it's in the past. So
+// let me do that, because there's some payments that I want to send receipts
+// for, or repayments I want to send receipts for."
+//
+// The automatic path above is deliberately AT MOST ONCE, and that guarantee
+// stays exactly as strict as it was — `claimRepaymentReceipts` still refuses
+// anything with `receiptSentAt` set. This is a SEPARATE path that deliberately
+// does NOT carry that same restriction: a manager choosing to (re)send is the
+// whole feature, including for a repayment that settled long before receipts
+// existed at all (`receiptSentAt` already set from that era) or one whose one
+// automatic attempt simply failed. It reuses every piece of the automatic
+// path's send machinery — `getRepaymentReceiptPayload`, `buildRepaymentReceipt`,
+// `sendOneRepaymentReceiptGroup`, `markRepaymentReceiptOutcome` — so there is
+// still exactly one composer and one sender, just three ways to reach them.
+//
+// "NOT RESTRICTED BY THE AUTOMATIC GUARD" IS NOT THE SAME AS "UNGUARDED"
+// (adversarial review, 2026-08-14 — two proven findings fixed here):
+//
+//  1. CONCURRENCY. A manual send used to claim unconditionally, with no idea
+//     whether an automatic or backfill send was ALREADY in flight for the
+//     same row — proven sequence: the backfill claims a stale row (claim
+//     commits, send not yet issued), a manual send runs to completion (one
+//     email), then the backfill's own send finishes (a second email). Fixed
+//     by the shared in-flight lock, `receiptSendingAt` (see its schema doc):
+//     every claimer — this one included — checks it before claiming and
+//     refuses with a clear `RECEIPT_SEND_IN_FLIGHT` error rather than racing
+//     whoever holds it. The lock has its own staleness escape hatch
+//     (`RECEIPT_RETRY_STALE_MS`) so a crashed process can never wedge a row
+//     shut forever.
+//  2. VOLUME. Nothing bounded how often a manager (or a bug, or a runaway
+//     loop) could press this — a 50-call probe against this exact action
+//     produced 50 Resend sends. Fixed by `MANUAL_RECEIPT_RESEND_COOLDOWN_MS`
+//     (60s, this path ONLY — see that constant's doc for why the automatic
+//     and backfill paths get none): a second manual claim inside the window
+//     is refused with a clear `RECEIPT_SEND_COOLDOWN` error naming when to
+//     retry, never a silent no-op.
+//
+// WHAT `receiptSentAt` MEANS AFTER A MANUAL SEND: "the most recent attempt",
+// not "the first attempt ever" — the same meaning `claimRepaymentReceiptForRetry`
+// already gives it when the backfill retries a stale send. It is re-stamped
+// to `Date.now()` on every CLAIMED manual send, live or not (a REFUSED one —
+// in-flight or cooled-down — claims nothing and stamps nothing).
+// `receiptDeliveredAt` / `receiptDeliveryFailedAt` are still the fields that
+// answer "did the payer actually get one" — those come only from
+// `markRepaymentReceiptOutcome`, exactly as before.
+//
+// AUDIT (the other proven finding: no record of who sent what, or how often).
+// `lastReceiptSentBy` (this path only — automatic/backfill have no human to
+// name) and `lastReceiptSendSource` (every path) are stamped on every claim,
+// so "was this manual or automatic, and who pressed it" is answerable from
+// the row itself — see both fields' schema docs.
+
+/**
+ * The mutation half of a manual send: gate, verify the repayment is genuinely
+ * settled and in the caller's chapter, check the in-flight lock and the
+ * cooldown, and — only once both pass — stamp the claim (`receiptSentAt`,
+ * `receiptSendingAt`, `lastManualReceiptSendAt`, `lastReceiptSentBy`,
+ * `lastReceiptSendSource`) — all in ONE transaction, the same shape
+ * `claimRepaymentReceipts` uses. Deliberately does NOT check `receiptSentAt`
+ * on its own (a prior automatic/backfill/manual attempt, successful or not,
+ * is never by itself a reason to refuse) — see this section's header for why
+ * re-sending on purpose is the point; only a send that's genuinely happening
+ * RIGHT NOW, or one that JUST happened seconds ago, is refused.
+ */
+export const claimRepaymentReceiptManual = internalMutation({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.object({
+    repaymentId: v.id("personalRepayments"),
+    payerPersonId: v.id("people"),
+  }),
+  handler: async (ctx, { repaymentId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireRepaymentsCollect(ctx, chapterId);
+    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+
+    const r = await ctx.db.get(repaymentId);
+    await requireInChapter(ctx, chapterId, r, "Repayment");
+    if (!r!.creditTransactionId || r!.status !== "paid") {
+      throw new ConvexError({
+        code: "NOT_SETTLED",
+        message:
+          "This repayment hasn't been paid yet — there's nothing to email a receipt for.",
+      });
+    }
+
+    const now = Date.now();
+    // GUARD 1 — concurrency. A send genuinely in flight for this row right
+    // now (automatic, backfill, or another manual press) must never be
+    // raced — see `receiptSendingAt`'s schema doc.
+    if (isReceiptSendInFlight(r!, now)) {
+      throw new ConvexError({
+        code: "RECEIPT_SEND_IN_FLIGHT",
+        message:
+          "A receipt for this repayment is already being sent — try again in a moment.",
+      });
+    }
+    // GUARD 2 — volume. A manual send within the cooldown of the LAST manual
+    // send is refused with a clear, honest wait time — never a silent no-op.
+    // Automatic/backfill claims never set `lastManualReceiptSendAt`, so
+    // neither of those paths can ever trip this.
+    if (r!.lastManualReceiptSendAt !== undefined) {
+      const elapsed = now - r!.lastManualReceiptSendAt;
+      if (elapsed < MANUAL_RECEIPT_RESEND_COOLDOWN_MS) {
+        const retryInSeconds = Math.ceil(
+          (MANUAL_RECEIPT_RESEND_COOLDOWN_MS - elapsed) / 1000,
+        );
+        throw new ConvexError({
+          code: "RECEIPT_SEND_COOLDOWN",
+          message: `A receipt was just sent for this repayment — try again in ${retryInSeconds}s.`,
+        });
+      }
+    }
+
+    await ctx.db.patch(repaymentId, {
+      receiptSentAt: now,
+      receiptSendingAt: now,
+      lastManualReceiptSendAt: now,
+      lastReceiptSentBy: callerPersonId,
+      lastReceiptSendSource: "manual",
+    });
+    return { repaymentId: r!._id, payerPersonId: r!.payerPersonId };
+  },
+});
+
+/** The claimed row's most recent failure reason, so a manual send's failure
+ *  can tell a manager something real ("payer has no email on file") instead
+ *  of a generic "try again" — the backlog's most common actual cause is
+ *  exactly that, and it's actionable. */
+export const getRepaymentReceiptFailureReason = internalQuery({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, { repaymentId }) => {
+    const r = await ctx.db.get(repaymentId);
+    return r?.lastReceiptError ?? null;
+  },
+});
+
+/**
+ * "Send receipt" / "Resend receipt" — the manual, per-row action behind the
+ * Repaid section's button (`PersonalChargesView.tsx`). Manager-gated
+ * (`requireRepaymentsCollect`, re-checked inside the claim mutation — the
+ * same rung `nudgeOutstandingRepayments` uses, because this is also an
+ * outbound email with somebody's name and an amount on it, just to the
+ * person who already paid instead of the person who still owes).
+ *
+ * Synchronous, unlike the automatic path (which schedules and returns
+ * immediately): a manager pressing this button is watching for the outcome,
+ * so it sends inline and THROWS on failure — never reports success either
+ * way. `useActionRunner` on the client turns that throw into a real error
+ * toast instead of a silent no-op that leaves a manager believing an email
+ * went out when it didn't.
+ */
+export const sendRepaymentReceiptManually = action({
+  args: { repaymentId: v.id("personalRepayments") },
+  returns: v.null(),
+  handler: async (ctx, { repaymentId }) => {
+    const claimed: {
+      repaymentId: Id<"personalRepayments">;
+      payerPersonId: Id<"people">;
+    } = await ctx.runMutation(internal.cards.claimRepaymentReceiptManual, {
+      repaymentId,
+    });
+
+    const outcome = await sendOneRepaymentReceiptGroup(
+      ctx,
+      [claimed.repaymentId],
+      0,
+    );
+    if (outcome === "failed") {
+      const reason: string | null = await ctx.runQuery(
+        internal.cards.getRepaymentReceiptFailureReason,
+        { repaymentId: claimed.repaymentId },
+      );
+      throw new ConvexError({
+        code: "SEND_FAILED",
+        message: reason
+          ? `Couldn't send the receipt: ${reason}`
+          : "Couldn't send the receipt — try again in a moment.",
+      });
+    }
+    return null;
+  },
+});
 
 // ── THERE IS NO MANUAL "MARK REPAID" (founder, 2026-08-14) ───────────────────
 // "We should only mark repaid when you actually pay through the platform. No
@@ -3905,9 +4681,19 @@ export const applyRepaymentPaid = internalMutation({
       );
       return toRepaymentSummary(repayment);
     }
-    return toRepaymentSummary(
-      await settleRepayment(ctx, repayment, { increaseRef: args.increaseRef }),
-    );
+    const settled = await settleRepayment(ctx, repayment, {
+      increaseRef: args.increaseRef,
+    });
+    // ONE repayment settles per call on this rail, so the batch this
+    // schedules IS the payment event — see this file's "Payment receipt"
+    // section for why the seam lives at each settlement CALLER rather than
+    // inside `settleRepayment` itself. No Stripe fee coverage exists on this
+    // rail (that option only ever appears in Stripe Checkout metadata).
+    await ctx.scheduler.runAfter(0, internal.cards.sendRepaymentReceiptEmail, {
+      repaymentIds: [settled._id],
+      feeCoveredCents: 0,
+    });
+    return toRepaymentSummary(settled);
   },
 });
 
@@ -4247,6 +5033,19 @@ export const applyRepaymentPaidFromStripe = internalMutation({
       // this takes the first — see the helper's own note.
       repayments: outstanding,
     });
+    // ONE schedule per call, covering every repayment THIS call settled —
+    // see this file's "Payment receipt" section. A redelivered/duplicate
+    // webhook for the same session re-derives `outstanding` as empty (every
+    // row it lists is already `paid`), so a retry schedules nothing rather
+    // than a second receipt. Scheduled AFTER the fee-coverage posting so the
+    // books already carry that entry by the time the receipt naming the same
+    // covered fee goes out.
+    if (outstanding.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.cards.sendRepaymentReceiptEmail, {
+        repaymentIds: outstanding.map((r) => r._id),
+        feeCoveredCents: feeCoverageCents ?? 0,
+      });
+    }
     return null;
   },
 });

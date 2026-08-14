@@ -758,6 +758,41 @@
  * idempotency/replay guards. Both are the same machinery the reimbursement
  * rail already runs, neither changes what a person should DO, and the lesson
  * budget went to the distinction and the tax form instead.
+ *
+ * PAYMENT RECEIPT ON PAYING A PERSONAL CHARGE BACK (2026-08-14, founder: "when
+ * people pay what they owe, we need to make sure we send them an email
+ * saying, like, hey, thanks for paying this off. This is your receipt …
+ * just in case they need a receipt for showing that they did the payment").
+ * `finance-reimbursements-and-flags` already enumerated every email the "you
+ * owe Public Worship" side sends — the flag notice, the reminder — and was
+ * silently missing the one that closes the loop: settling the debt now mails
+ * a receipt naming the total, the settle date, and one line per charge, with
+ * Stripe's own hosted receipt linked in when the payment ran through Stripe
+ * (a bank debit through the org's own Increase account has no Stripe charge
+ * behind it, and the email is still a complete, standalone receipt either
+ * way). ONE bullet added, content-only, minutes unchanged.
+ *
+ * ONE QUIZ QUESTION SWAPPED, at the 5-question cap
+ * `apps/convex/tests/academy.test.ts` enforces. OUT: "your chapter's
+ * Treasurer submits their own reimbursement — who approves it", whose
+ * doctrine (approver ≠ requester is identity-based, not role-based) is
+ * taught and quizzed in full in `finance-raise-vs-manage`'s "Separation of
+ * duties is identity-based, not a courtesy" section — losing it here loses
+ * no coverage. IN: paying back several flagged charges in one
+ * bundled payment gets ONE receipt itemizing all of them, never one per
+ * charge, with the Stripe-link/no-Stripe-link distinction spelled out in the
+ * explanation.
+ *
+ * MANUAL "SEND RECEIPT", AND ITS ONE LIMIT (2026-08-14, founder: "add an email
+ * button for already paid repayments … say they forgot it, or they just need
+ * it resent, or it's in the past"). The lesson bullet added above gained the
+ * manager-side half: a settled row on the personal-charges desk can be mailed
+ * its receipt on demand, however old, and says on the row whether one was ever
+ * delivered. The bullet and its quiz explanation originally claimed the button
+ * "never expires or locks after one use" — a 60-second cooldown and an
+ * in-flight lock landed later in the same branch to stop a runaway loop and a
+ * double-send race, so both were corrected to say it still works on demand
+ * across any gap but refuses a back-to-back double-press.
  */
 
 import type {
@@ -1613,6 +1648,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
           "**Card or bank transfer — you choose, and you cover the fee:** the payment processor's cut is added on top so Public Worship gets the full amount back instead of losing three cents on the dollar to fix your mistake. Because it's YOUR money covering it, you pick the rail: card is instant and costs about 2.9% + 30¢, a bank transfer costs 0.8% capped at $5.00 and takes about four business days. On a $248 charge that's roughly $7.72 against $2.00. Both figures are on screen before you commit. The fee is charged once per PAYMENT, not per charge — so settling four charges in one go costs less than paying for them one at a time across four evenings.",
           "**A bank transfer is not instant, and the app says so:** once you authorise it the charge moves to *Clearing* — still owed, but no longer payable, so you can't accidentally pay for it twice while the bank moves the money. If your bank refuses the debit, it comes back as owed with a note saying the attempt failed. Only when the money lands does the charge clear.",
+          "**The moment it lands, you get a receipt:** \"thanks for paying this off — here's your receipt,\" naming the total, the date it settled, and one line per charge it covered — pay off three flagged charges in one go and you get ONE email itemizing all three, never three separate ones. Paid by card or bank transfer through Stripe? The email also links Stripe's own hosted receipt. Paid by bank debit through the org's own bank (no Stripe charge behind it)? The email is still a complete receipt on its own — it just doesn't carry that extra link. Either way it's evidence you can keep or forward if anyone ever asks whether you paid it back — never donation language, and never a claim that it's tax-deductible, because it isn't either of those things.",
+          "**Lost it, or it settled before this existed? A manager can (re)send it.** Every settled row on the Personal charges screen carries its own **Send receipt** button — it says **Resend receipt** once one has actually been delivered, so the row is honest about whether you ever got one. Nothing about the automatic send changes: it still goes out on its own the moment a payment lands, exactly once. This is a second, manual door to the SAME email for the times that isn't enough — you misplaced it, or the charge settled before the button existed at all. It's genuinely on-demand — press it minutes or days apart and both go through — but two presses on top of each other are refused with a plain \"try again in a moment,\" a brief brake against a double-tap or a stuck loop, never a silent nothing.",
           "**Nobody can mark a charge repaid by hand — not even the Financial Manager.** A repayment settles when a payment this app started actually arrives, full stop. So if you paid someone back in cash, the app can't record that: run it through the app instead. And if the charge was never personal in the first place, that's a different fix — a manager un-flags it and it goes back to being Public Worship's spend, which is honest in a way \"mark it repaid\" never was.",
           "**You'll be reminded, kindly:** if a personal charge sits unpaid, a finance manager can send a reminder listing what you owe and a link to settle it. One email per person, never one per charge, and never twice in the same few days — and a charge whose bank transfer is already clearing is never chased, because you already did the right thing.",
           "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once the money has landed, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
@@ -1734,16 +1771,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt. And the mirror rule: flagging says YOU made the charge, so a charge you genuinely don't recognize is not a flag — freeze the card yourself (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager right away so it gets investigated.",
       },
       {
-        prompt: "Your chapter's Treasurer submits a reimbursement request for their own out-of-pocket purchase. Who can approve it?",
+        prompt:
+          "Someone repaid a personal charge months ago, before this org even had the receipt button, and now needs proof they paid. What can a manager do?",
         options: [
-          "The Treasurer — they hold the seat that normally approves these",
-          "The Chapter Director — chapter finance items are theirs to sign off on",
-          "The central Financial Manager — SoD blocks the Treasurer from approving their own request, and the FM's central-scope grant reaches every chapter",
-          "The Executive Director, automatically, since they outrank the Treasurer",
+          "Nothing — the receipt only ever goes out at the moment of payment",
+          "Mark the charge repaid again to trigger a fresh email",
+          "Open it on the Personal charges screen and press Send receipt — every settled row keeps that button, no matter how old",
+          "Ask the payer to screenshot their bank statement instead, since the app can't help",
         ],
         answerIndex: 2,
         explanation:
-          "Approver ≠ requester is identity-based — even a Treasurer can't approve their own request. A Chapter Director's finance access doesn't reach reimbursement approval, so the Financial Manager — whose grant covers every chapter — is the real failsafe.",
+          "A settled row's receipt button never expires after one use — a manager can send it again whenever it's genuinely needed, days or months later, which is exactly what makes it useful for a debt settled long before the button existed. It's a manual door to the SAME receipt email the automatic send uses, not a new record; there is still no way to \"mark repaid\" a charge that hasn't actually been paid through the app. The one limit is a brief one: pressing it twice back-to-back is refused with a clear \"try again in a moment\" rather than mailing the payer twice.",
       },
       {
         prompt:

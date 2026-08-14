@@ -1336,6 +1336,96 @@ export const personalRepayments = defineTable({
   // button can be pressed repeatedly with no memory is a tool for accidentally
   // emailing a volunteer four times about $12.
   lastNudgedAt: v.optional(v.number()),
+  // Stamped once this repayment's PAYMENT RECEIPT ("thanks for paying this
+  // off — here's your receipt") is CLAIMED for sending — i.e. an attempt is
+  // about to be made — by `cards.ts#claimRepaymentReceipts` (the live path)
+  // or `cards.ts#claimRepaymentReceiptForRetry` (the backfill's retry).
+  // Claimed atomically per row, in the SAME transaction that reads it, so a
+  // payment that settles several repayments at once (one bundled Stripe
+  // Checkout) sends exactly ONE email covering all of them, and a
+  // redelivered webhook — or `checkout.session.completed` landing alongside
+  // `async_payment_succeeded` — can never produce a second SIMULTANEOUS
+  // attempt at the same repayment. Absent = never even attempted.
+  //
+  // THIS STAMP ALONE DOES NOT MEAN DELIVERED. It is stamp-BEFORE-send by
+  // design (prevents double-sends if the process dies mid-send), which means
+  // a claim can be followed by a failure — see `receiptDeliveredAt` /
+  // `receiptDeliveryFailedAt` below for the outcome, and
+  // `repaymentReceiptBackfill.ts` for the recovery path that re-claims (by
+  // re-stamping this field) a row whose delivery never confirmed.
+  receiptSentAt: v.optional(v.number()),
+  // Stamped ONLY on a CONFIRMED successful send (Resend accepted it with a
+  // 2xx). This is the field that actually means "the payer has this
+  // receipt" — `receiptSentAt` alone does not. Cleared to `undefined` only
+  // never (a confirmed delivery is never un-confirmed); a retry that
+  // succeeds after an earlier failure sets this AND clears the two failure
+  // fields below in the same patch (`markRepaymentReceiptOutcome`).
+  receiptDeliveredAt: v.optional(v.number()),
+  // Stamped when a claimed receipt's send did NOT confirm delivery — no
+  // email on file for the payer, Resend rejected/couldn't be reached, a
+  // transport throw, or the claimed rows vanished before send. Set in EVERY
+  // failure path (`cards.ts#sendOneRepaymentReceiptGroup`), never silently.
+  // Cleared on a subsequent successful resend. Its presence (with
+  // `receiptDeliveredAt` absent) is exactly what
+  // `repaymentReceiptBackfill.ts` sweeps for.
+  receiptDeliveryFailedAt: v.optional(v.number()),
+  // Short, bounded (<=300 char) human-readable reason for the most recent
+  // `receiptDeliveryFailedAt` — enough to triage without a log dig, never an
+  // unbounded provider payload. Cleared alongside `receiptDeliveryFailedAt`
+  // on a successful resend.
+  lastReceiptError: v.optional(v.string()),
+  // ── IN-FLIGHT LOCK (adversarial review finding, 2026-08-14) ────────────────
+  // Stamped alongside `receiptSentAt` by WHICHEVER claimer wins a claim
+  // (`claimRepaymentReceipts` the automatic path, `claimRepaymentReceiptForRetry`
+  // the backfill's retry, `claimRepaymentReceiptManual` the manager's on-demand
+  // send) — the piece `receiptSentAt` alone could never express, because
+  // `receiptSentAt` means "an attempt was claimed, ever" while this means "a
+  // send is happening RIGHT NOW". Cleared by `markRepaymentReceiptOutcome` the
+  // instant an outcome (delivered OR failed) is recorded, so it is normally
+  // set for milliseconds — one Resend round trip.
+  //
+  // EVERY claimer checks this BEFORE claiming: if it's set and younger than
+  // `RECEIPT_RETRY_STALE_MS` (`cards.ts`), a second claimer refuses rather
+  // than racing the first one's still-in-flight send — this is what closes
+  // the double-email hole a manual send used to be able to open against an
+  // in-flight automatic or backfill send (and vice versa). If it's set but
+  // OLDER than that bound, the original attempt is presumed dead (the process
+  // that held it crashed before it could record an outcome) and a fresh claim
+  // is allowed to proceed — the same staleness escape hatch
+  // `claimRepaymentReceiptForRetry` already used to give `receiptSentAt`,
+  // just now scoped to the thing that actually needed a grace window.
+  receiptSendingAt: v.optional(v.number()),
+  // ── MANUAL-SEND COOLDOWN (same review, finding 2) ──────────────────────────
+  // Stamped ONLY by `claimRepaymentReceiptManual`, on every claimed manual
+  // attempt (live or failed) — never by the automatic or backfill paths, which
+  // is deliberate: the automatic path already has an at-most-once claim and
+  // needs no throttle, and a maintainer-run backfill sweep must never be
+  // slowed by a limit meant for a person mashing a button. Refused (never
+  // silently dropped) by a second manual send inside
+  // `MANUAL_RECEIPT_RESEND_COOLDOWN_MS` (`cards.ts`) — short enough (60s) to
+  // be invisible to a manager genuinely resending minutes or days later (the
+  // founder's stated use case), long enough to stop a fat-fingered double-tap
+  // or a runaway loop from putting Resend calls out at will, the way an
+  // un-throttled probe of this action proved it could.
+  lastManualReceiptSendAt: v.optional(v.number()),
+  // ── AUDIT: WHO, AND BY WHICH PATH (same review) ────────────────────────────
+  // The manager whose `sendRepaymentReceiptManually` call most recently
+  // claimed this row. Absent on a row that has never been manually sent —
+  // including one settled and receipted entirely by the automatic path.
+  // Never set by the automatic or backfill claimers (there is no human to
+  // name for either). Read alongside `lastReceiptSendSource` below, since a
+  // later automatic/backfill attempt doesn't clear this — it's "the last
+  // manual sender, if any", not "the last sender".
+  lastReceiptSentBy: v.optional(v.id("people")),
+  // Which of the three claimers most recently claimed this row — the answer
+  // to "was this manual or automatic", which used to be unrecoverable from
+  // application data at all (only Convex platform logs carried it, and even
+  // those didn't distinguish a manual resend from the original automatic
+  // send). Set by every claimer, including the automatic and backfill paths,
+  // so it's always current for whichever attempt is most recent.
+  lastReceiptSendSource: v.optional(
+    v.union(v.literal("automatic"), v.literal("manual"), v.literal("backfill")),
+  ),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
