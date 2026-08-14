@@ -107,9 +107,14 @@
  * cycle's receipt, the desk notification through the existing giving rules, and
  * the annual-value threshold that makes a $50/month signup clear a $500 rule.
  * `dev-backer-lifecycle` gained two rule blocks, a vocabulary tip (under the $50
- * floor the emails say "monthly giver", not "backer"), and two quiz questions —
- * quiz length 5→7 and minutes 4→5, both bumped below. Nothing else moved: no
- * slugs, no titles, no order.
+ * floor the emails say "monthly giver", not "backer") and a reveal on the
+ * welcome-instead-of-receipt rule — minutes 4→5, quiz length UNCHANGED at 5,
+ * which is the per-section cap `academy.test.ts` enforces. The annual-value quiz
+ * question went to `dev-backer-floor-and-ladder` instead (4→5, bumped below):
+ * that lesson is the one teaching what a backer is WORTH, so "a $50/month signup
+ * clears a $500 rule because it's $600 a year" belongs to it on the merits, not
+ * only because it had the room. Nothing else moved: no slugs, no titles, no
+ * order.
  *
  * Two-party campaign approval (founder requirement, 2026-07-24):
  * `dev-relationship-workflow` gained a rule ("A personal thank-you and a
@@ -1746,7 +1751,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-backer-floor-and-ladder",
     title: "The $50 floor, and the milestone ladder",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
@@ -1754,7 +1759,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-backer-lifecycle",
     title: "A backer's lifecycle: subscribe, pay, sometimes falter",
     minutes: 5,
-    quizLength: 7,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

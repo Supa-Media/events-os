@@ -873,6 +873,18 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         explanation:
           "Headcount, not dollars, drives the tier — consistent with the same principle taught on the finance side of the house.",
       },
+      {
+        prompt: "A notification rule tells the team about gifts of $500 and up. Someone starts a $50/month pledge. Does the team hear about it?",
+        options: [
+          "No — $50 is well under the $500 threshold",
+          "Yes — a signup is judged by its ANNUAL value ($600), because a backer is a big gift arriving twelve payments at a time",
+          "Only if someone on the desk records it manually",
+          "Only in the weekly digest, never right away",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Judging a signup by the monthly charge would let the most consequential event on the giving desk slip under every threshold the team actually sets, while a one-off $500 cheque rang the bell. The notification prints both figures — $50/month and $600 a year — so nobody mistakes the annual number for money in the bank.",
+      },
     ],
   },
 
@@ -925,6 +937,13 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "tip",
         text: "**Self-serve, always.** A backer manages their own card, changes their pledge amount, or cancels through a Stripe billing-portal link — we never store card numbers or build our own card-management screen. If someone emails asking you to update their card, the answer is the portal link, not a request for their card number.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A new backer's first monthly cycle is paid. What lands in their inbox — the welcome, the standard receipt, or both?",
+        answer:
+          "The welcome, and only the welcome. It carries the first cycle's details (amount, that the first month is in, how to change it) precisely so it can stand in for the receipt exactly once. Two emails in the same minute about the same $50 — one saying \"this matters enormously\", one saying \"your monthly gift came through\" — is how a thank-you gets read as an auto-reply. Every cycle after the first gets the ordinary receipt.",
       },
       {
         kind: "reveal",
@@ -982,30 +1001,6 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Recurring giving is real giving history — it lands in the CRM the same way any other gift does, without anyone typing it in.",
-      },
-      {
-        prompt: "A rule is set to notify the team about gifts of $500 and up. Someone starts a $50/month pledge. Does the team hear about it?",
-        options: [
-          "No — $50 is well under the $500 threshold",
-          "Yes — a signup is judged by its annual value ($600), because a backer IS a big gift, twelve payments at a time",
-          "Only if someone on the desk records it manually",
-          "Only in the weekly digest, never immediately",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Judging a signup by the monthly charge would let the most consequential event on the giving desk slip under every threshold the team sets. The notification prints both figures — $50/month and $600 a year — so nobody mistakes the annual number for money in the bank.",
-      },
-      {
-        prompt: "A new backer's first monthly cycle is paid. What lands in their inbox?",
-        options: [
-          "The standard monthly receipt, same as every other cycle",
-          "A welcome email instead of the receipt — thanking them for becoming a backer, and carrying the first month's details",
-          "Both a welcome and a receipt",
-          "Nothing until the second cycle",
-        ],
-        answerIndex: 1,
-        explanation:
-          "One email, not two: the welcome carries the receipt's facts so it can stand in for it exactly once. Two emails in the same minute about the same $50 is how a thank-you gets read as an auto-reply. Every cycle after the first gets the ordinary receipt.",
       },
       {
         prompt: "A backer asks to take a break, so you PAUSE their pledge. What happens to the chapter's backer count and the backers list?",
