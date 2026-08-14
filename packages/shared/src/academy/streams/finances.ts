@@ -362,6 +362,41 @@
  *  - "you mark a charge Excluded and leave the reason blank" — stated verbatim
  *    in the `try_status` caption immediately above the quiz.
  * Minutes 4 → 5 for the added rule block.
+ *
+ * "Reconciled" is now called **Closed** (2026-08-14). Founder, on the deployed
+ * Transactions grid: "I don't even know what reconciled is." The word only ever
+ * meant "this row is finished", and the page already funnels rows toward it
+ * with a roll-up called Ready to close — so the STATUS is now labeled Closed
+ * and the two finally pair. This is a LABEL change only: the stored value is
+ * still the string `"reconciled"` in the schema, in `TRANSACTION_STATUSES`, in
+ * the filter keys and in every URL param, so nothing here about what a state
+ * MEANS has changed.
+ *
+ * Content-only, adding and moving nothing; no section title, slug, minutes or
+ * quiz length moved. `finance-receipt-exceptions` (the "mark it Closed and move
+ * on" wrong-fix, its tip, and one quiz option + explanation),
+ * `finance-reimbursements-and-flags` (the flag-is-not-a-status bullet and its
+ * quiz explanation), `finance-chasing-receipts` (the disjoint-filters paragraph
+ * and one quiz distractor) and `finance-reconcile-grid` carry the new word;
+ * that last one most, since it teaches the grid: the filter table's own row is
+ * now ["Closed", …], the header rule says "pressing Mark closed", the
+ * `try_status` option reads Closed (its `value` still `"reconciled"`), the rule
+ * "Reconciled means coded, too" is retitled **"Closed means coded, too"**, and
+ * one quiz distractor moves to "marked closed without a coding". Two quizzes
+ * were edited IN PLACE — no question added or removed, both still at their
+ * snapshotted length.
+ *
+ * What deliberately KEPT the word: everywhere it means real bank
+ * reconciliation, which is a different act and still the honest name for it —
+ * "Paid from … that's what reconciles against a bank statement"
+ * (`finance-cross-chapter-audit`), the morning reconciliation engine, the
+ * Treasurer's remit in `foundations-*` ("records and reconciles the chapter's
+ * money"), the monthly-close lesson's "the month was reconciled continuously"
+ * (its neighbour sentence already uses "close" for closing the MONTH, and
+ * reusing it for the rows would collide), and `works-finishing-well`'s giving
+ * duty. The Reconcile SCREEN keeps its name too — this renamed a status, not a
+ * page. The audit log stores the label, so rows written before today still read
+ * "Reconciled"; that trail is append-only and is not being rewritten.
  */
 
 import type {
@@ -856,7 +891,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The answer is never a blank",
-        text: "The wrong fix is to quietly mark the charge Reconciled and move on. A published ledger can't tell that row from a properly documented one — and neither can we, six months later. So the app refuses it: **you can't reconcile a charge that has neither a receipt nor an approved exception.** It refuses earlier than that, too — you can't even submit the charge's coding without one or the other. Why there's no receipt is part of the record, not a follow-up to it.\n\nThe right fix is to say, on the record, what the money was for and why no receipt exists. That's a **receipt exception**. It isn't an absence — it's a substitute document with a name attached to it.",
+        text: "The wrong fix is to quietly mark the charge Closed and move on. A published ledger can't tell that row from a properly documented one — and neither can we, six months later. So the app refuses it: **you can't close a charge that has neither a receipt nor an approved exception.** It refuses earlier than that, too — you can't even submit the charge's coding without one or the other. Why there's no receipt is part of the record, not a follow-up to it.\n\nThe right fix is to say, on the record, what the money was for and why no receipt exists. That's a **receipt exception**. It isn't an absence — it's a substitute document with a name attached to it.",
       },
       {
         kind: "bullets",
@@ -892,7 +927,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Treasurers:** your side of this is the decision. Read the note before approving — an exception you wave through becomes the org's public answer for that money. Rejecting is fine and often right; say what would make it approvable, and the charge goes back to owing a receipt. In Reconcile, the honest backlog is two filters, not one: **Needs documentation** (still open, still owing a receipt or an approved exception — somebody to nudge) and **Closed without documentation** (marked Reconciled with neither one behind it — nobody to nudge, and the pile that gets forgotten because it already looks finished). They're disjoint, they're in the same filter group, so picking both shows you the union — and that union is what has to reach zero before a period can be published.",
+        text: "**Treasurers:** your side of this is the decision. Read the note before approving — an exception you wave through becomes the org's public answer for that money. Rejecting is fine and often right; say what would make it approvable, and the charge goes back to owing a receipt. In Reconcile, the honest backlog is two filters, not one: **Needs documentation** (still open, still owing a receipt or an approved exception — somebody to nudge) and **Closed without documentation** (marked Closed with neither one behind it — nobody to nudge, and the pile that gets forgotten because it already looks finished). They're disjoint, they're in the same filter group, so picking both shows you the union — and that union is what has to reach zero before a period can be published.",
       },
     ],
     quiz: [
@@ -900,14 +935,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "You tipped a sound engineer $40 in cash. No receipt exists and never will. What's the right move?",
         options: [
-          "Mark the charge Reconciled and move on",
+          "Mark the charge Closed and move on",
           "File a receipt exception — pick the reason, say what it was for, and let a manager approve it",
           "Nothing; small cash amounts are exempt",
           "Ask the venue to write you a receipt for it later",
         ],
         answerIndex: 1,
         explanation:
-          "An exception is the documented substitute for a receipt, not a shrug. Marking it Reconciled with nothing attached is exactly what the app refuses — a published ledger can't tell that row from a documented one.",
+          "An exception is the documented substitute for a receipt, not a shrug. Marking it Closed with nothing attached is exactly what the app refuses — a published ledger can't tell that row from a documented one.",
       },
       {
         prompt:
@@ -976,7 +1011,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   // publication rule (names never publish) — and both neighbouring quizzes
   // are already at the 5-question cap `apps/convex/tests/academy.test.ts`
   // enforces. The Treasurer's half of this ships as a rule on
-  // `finance-reconcile-grid` ("Reconciled means coded, too"); this is the
+  // `finance-reconcile-grid` ("Closed means coded, too"); this is the
   // spender's half. See `docs/plans/transaction-coding.md`.
   {
     slug: "finance-coding-your-charges",
@@ -1210,7 +1245,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
-          "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Book (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Reconciled AND an unpaid personal expense at the same time.",
+          "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Book (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Closed AND an unpaid personal expense at the same time.",
           "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
           "**Card or bank transfer — you choose, and you cover the fee:** the payment processor's cut is added on top so Public Worship gets the full amount back instead of losing three cents on the dollar to fix your mistake. Because it's YOUR money covering it, you pick the rail: card is instant and costs about 2.9% + 30¢, a bank transfer costs 0.8% capped at $5.00 and takes about four business days. On a $248 charge that's roughly $7.72 against $2.00. Both figures are on screen before you commit. The fee is charged once per PAYMENT, not per charge — so settling four charges in one go costs less than paying for them one at a time across four evenings.",
           "**A bank transfer is not instant, and the app says so:** once you authorise it the charge moves to *Clearing* — still owed, but no longer payable, so you can't accidentally pay for it twice while the bank moves the money. If your bank refuses the debit, it comes back as owed with a note saying the attempt failed. Only when the money lands does the charge clear.",
@@ -1332,7 +1367,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 3,
         explanation:
-          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Reconciled AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt.",
+          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt.",
       },
       {
         prompt: "Your chapter's Treasurer submits a reimbursement request for their own out-of-pocket purchase. Who can approve it?",
@@ -1397,13 +1432,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Needs budget", "Open, categorized, and still not linked to a budget. A row somebody already closed isn't queue work, so it doesn't count here. Processor and bank fees are deliberately absent — a fee is charged, not chosen, so there is no decision for a budget to control. That covers every processor fee we book: Stripe and Givebutter each book one monthly row, and Cash App's fees are marked per payment from a one-off backfill rather than rolled up. None of them will ever ask you for a budget — or for a coding or a receipt: a fee has no testimony to give and no receipt exists, so the processor's own itemized ledger is its record and the public page prints the fee's standing explanation for it. The exemption is by ORIGIN, not by category — a Givebutter paid tier or any other subscription you chose to buy is a decision, so it stays budgeted (and coded) even though it lands in Bank & Fees alongside them"],
           ["Needs documentation", "Still open, still owing a receipt or an acknowledged reason there isn't one"],
           ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It also keeps the marked internal transfers and processor payouts that owe a statement rather than a person — the Book hides those from the default queue, and picking this brings them back. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
-          ["Closed without documentation", "Somebody marked it Reconciled with neither a receipt nor an approved exception behind it. Nobody left to nudge, and a published ledger still can't tell that row from a documented one"],
+          ["Closed without documentation", "Somebody marked it Closed with neither a receipt nor an approved exception behind it. Nobody left to nudge, and a published ledger still can't tell that row from a documented one"],
           ["Needs explaining", "Every row that will publish with a BLANK where its explanation should be — the whole backlog, including the 2024-25 history the coding policy grandfathers out. This is the one that ignores the policy date on purpose: \"Needs coding\" answers what policy demands of whom, this answers what a stranger will see a gap next to when the month publishes. Fees, refunded pairs and personal charges are already excluded — they explain themselves"],
           ["Explained", "The other half of the row above — everything in the same population that HAS an approved explanation. It exists because approving one publishes it and takes the row out of \"Needs explaining\", which used to mean the sentence you had just written became unreachable. This is how you re-read what you published, spot-check twenty of them a week later, or hand somebody the month you finished"],
           ["Needs coding", "Spend under the coding policy (posted Sept 1, 2026 or later) still waiting on its author — what it was for, and who was involved. It only appears once the policy starts; before then it could only ever return zero rows, and a filter that's always empty just teaches people to distrust the filters"],
           ["Coding review", "A submitted coding waiting on YOU to approve it or send it back with a note. Same policy-start rule as above"],
           ["To review", "Still sitting at Unreviewed — nobody has touched it yet. This is the number the dashboard's \"To review\" tile shows, and tapping that tile lands you right here"],
-          ["Reconciled", "Already cleared and closed — where every other row is trying to get to"],
+          ["Closed", "Already cleared — where every other row is trying to get to"],
           ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
           ["Transfers", "Money you marked as moving between your own accounts"],
           ["Payouts", "Deposits you marked as a processor settling donations to you"],
@@ -1412,7 +1447,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The pile that was never a backlog",
-        text: "The page is called **Transactions**, and it has exactly four controls: Search, Kind, State, and Group by — plus the books selector if you hold a central seat. There is no view menu and there are no summary pills. Anything you want to look at is those four controls set a particular way, which is why they are the only things on the page: a saved view would just be them, set for you, under a different name.\n\nThat matters most for the two roll-ups the header used to advertise. **Needs attention** is open with something genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** is open with none of those — categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark reconciled.\n\nThey are complements over the open rows, so together they are the whole backlog. And the split is worth knowing about even without a pill announcing it: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done.\n\nSo start a session on the second pile: open **State**, pick the states that describe a row with nothing left owing, select all, Mark reconciled. Then what's left on the page is work that's actually work.\n\nMulti-select is what turns those into a minute's work, and the bulk bar does more than close rows: it sets Category and Budget across a selection, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
+        text: "The page is called **Transactions**, and it has exactly four controls: Search, Kind, State, and Group by — plus the books selector if you hold a central seat. There is no view menu and there are no summary pills. Anything you want to look at is those four controls set a particular way, which is why they are the only things on the page: a saved view would just be them, set for you, under a different name.\n\nThat matters most for the two roll-ups the header used to advertise. **Needs attention** is open with something genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** is open with none of those — categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark closed.\n\nThey are complements over the open rows, so together they are the whole backlog. And the split is worth knowing about even without a pill announcing it: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done.\n\nSo start a session on the second pile: open **State**, pick the states that describe a row with nothing left owing, select all, Mark closed. Then what's left on the page is work that's actually work.\n\nMulti-select is what turns those into a minute's work, and the bulk bar does more than close rows: it sets Category and Budget across a selection, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
       },
       {
         kind: "rule",
@@ -1437,7 +1472,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Personal is a flag, not a status",
-        text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — a fully Reconciled charge can also be an unpaid personal expense at the same time. Mark or un-mark it right from a row's actions (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.",
+        text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — a charge that is fully Closed can also be an unpaid personal expense at the same time. Mark or un-mark it right from a row's actions (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.",
       },
       {
         kind: "rule",
@@ -1461,8 +1496,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
-        title: "Reconciled means coded, too",
-        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, your OWN charges at /code, and the review queue on Transactions itself (**State → Coding review**). Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.\n\nApproving is publishing, so the app asks once — a single line naming what the tap does, then Approve & publish — and then gives you about ten seconds to take it back. **Undo is a real state change, not a hidden button** — and it is deliberately NOT the same act as Send back. Undo returns the coding to **awaiting review**: your queue, exactly where it sat a moment earlier, with nobody told. Send back means the AUTHOR has something to fix — it moves the row into their queue and emails them your note. Your own mis-tap should never land on somebody\'s phone as criticism of work nobody faulted.\n\nTwo limits on it, both enforced by the server rather than by the countdown on screen: you can only undo YOUR OWN approval, and only for a couple of minutes. To reopen somebody else\'s decision, or one that has stood a while and may already have been acted on, send it back with a note — the author is told, which is the point. Nothing is lost either way: Send back reopens an approved coding at any time, and the **Explained** filter is how you find it again. An approved coding is otherwise locked, which is why re-reading it is the only review left: it is worth a pass over a month\'s Explained rows before you publish it.',
+        title: "Closed means coded, too",
+        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, your OWN charges at /code, and the review queue on Transactions itself (**State → Coding review**). Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to close; that one still needs somebody\'s decision.\n\nApproving is publishing, so the app asks once — a single line naming what the tap does, then Approve & publish — and then gives you about ten seconds to take it back. **Undo is a real state change, not a hidden button** — and it is deliberately NOT the same act as Send back. Undo returns the coding to **awaiting review**: your queue, exactly where it sat a moment earlier, with nobody told. Send back means the AUTHOR has something to fix — it moves the row into their queue and emails them your note. Your own mis-tap should never land on somebody\'s phone as criticism of work nobody faulted.\n\nTwo limits on it, both enforced by the server rather than by the countdown on screen: you can only undo YOUR OWN approval, and only for a couple of minutes. To reopen somebody else\'s decision, or one that has stood a while and may already have been acted on, send it back with a note — the author is told, which is the point. Nothing is lost either way: Send back reopens an approved coding at any time, and the **Explained** filter is how you find it again. An approved coding is otherwise locked, which is why re-reading it is the only review left: it is worth a pass over a month\'s Explained rows before you publish it.',
       },
       {
         kind: "try_status",
@@ -1470,7 +1505,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         options: [
           { value: "unreviewed", label: "Unreviewed", color: "gray" },
           { value: "categorized", label: "Categorized", color: "amber" },
-          { value: "reconciled", label: "Reconciled", color: "green" },
+          { value: "reconciled", label: "Closed", color: "green" },
         ],
         terminal: "reconciled",
         caption:
@@ -1535,7 +1570,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The app drafts a purpose for each charge based on the merchant",
           "Each charge gets its own coding carrying your sentence, under your name — and any that can't take it (no receipt yet, already approved) are refused one by one and listed back to you",
           "One shared explanation is attached to all 40 rows at once",
-          "The 40 are marked reconciled without a coding",
+          "The 40 are marked closed without a coding",
         ],
         answerIndex: 1,
         explanation:
@@ -1698,7 +1733,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Two filters, and they don't overlap — a row is in one or the other, never both. **Needs documentation** is still open and still owing a receipt or an approved exception. **Closed without documentation** is the tail behind it: rows somebody marked Reconciled with neither one behind them. The chase stopped there; the gap didn't.\n\n(A third, **Owes a receipt or coding**, sits beside them and is the one you actually chase from. It is WIDER than \"Needs documentation\" — it adds the charges owing a coding rather than a document — so it is not disjoint from anything and is not part of the arithmetic below. Use it to work the chase; use these two to count the publishing backlog.)\n\nThey're split because they need different hands. The first pile you nudge. The second nobody is going to send you a receipt for — you go back and document it, or you honestly re-open it, and it's the half that gets forgotten precisely because it already looks finished. **The publishing backlog is both of them together.** They sit in the same filter group, so selecting both widens rather than narrows, and that union is the number that has to reach zero before a period goes public — a public ledger can't tell a quietly-closed row from a documented one. (Approving the exceptions themselves is its own lesson.)",
+        text: "Two filters, and they don't overlap — a row is in one or the other, never both. **Needs documentation** is still open and still owing a receipt or an approved exception. **Closed without documentation** is the tail behind it: rows somebody marked Closed with neither one behind them. The chase stopped there; the gap didn't.\n\n(A third, **Owes a receipt or coding**, sits beside them and is the one you actually chase from. It is WIDER than \"Needs documentation\" — it adds the charges owing a coding rather than a document — so it is not disjoint from anything and is not part of the arithmetic below. Use it to work the chase; use these two to count the publishing backlog.)\n\nThey're split because they need different hands. The first pile you nudge. The second nobody is going to send you a receipt for — you go back and document it, or you honestly re-open it, and it's the half that gets forgotten precisely because it already looks finished. **The publishing backlog is both of them together.** They sit in the same filter group, so selecting both widens rather than narrows, and that union is the number that has to reach zero before a period goes public — a public ledger can't tell a quietly-closed row from a documented one. (Approving the exceptions themselves is its own lesson.)",
       },
       {
         kind: "reveal",
@@ -1751,7 +1786,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Reconcile shows Needs documentation: 7 and Closed without documentation: 3. How many rows stand between you and publishing the period, and how do you see them?",
         options: [
           "3 — the 7 are still open, so they aren't a publishing problem yet",
-          "7 — the 3 were reconciled, so somebody already settled them",
+          "7 — the 3 were closed, so somebody already settled them",
           "10 — the two filters are disjoint, so the publishing backlog is both; pick both and they widen, because they're in the same group",
           "7 — the 3 are inside the 7, so the bigger number is the real one",
         ],

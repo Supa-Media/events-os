@@ -2,7 +2,7 @@
  * The multi-select bulk bar for the Reconcile grid: appears when one or more
  * rows are checked and offers the batch actions — set Category, set For (both
  * via `bulkCategorize`), Explain (one written sentence across the selection,
- * `transactionCodings.submitBulk`), and mark Reconciled (a loop over the
+ * `transactionCodings.submitBulk`), and mark Closed (a loop over the
  * per-row status setter). Category / For open the same `PickerItem` popover the
  * grid cells use, so the option lists never drift.
  */
@@ -37,14 +37,14 @@ export function BulkBar({
   onMarkReconciled: () => void;
   onClear: () => void;
   // WP-2.1: hide "Set category" in central scope — central txns have no
-  // categories (chapter-only), so only For + Mark Reconciled apply.
+  // categories (chapter-only), so only For + Mark closed apply.
   hideCategory?: boolean;
   // The selection spans BOOKS (central + at least one chapter) — only possible
   // in the merged all-books queue. Coding is book-specific: a central charge
   // takes no category and only a central budget, a chapter charge the reverse.
   // There's no option list that's correct for both, so rather than offer one
   // that half-fails, the two coding pickers step aside and say why. Every
-  // book-agnostic action (Mark reconciled, Reassign, transfer/payout marking)
+  // book-agnostic action (Mark closed, Reassign, transfer/payout marking)
   // stays exactly where it was.
   spansBooks?: boolean;
   // WP-2.2: central-seat holders can move the selection to another BOOK (→
@@ -135,7 +135,7 @@ export function BulkBar({
           </>
         )}
         <Button
-          title="Mark reconciled"
+          title="Mark closed"
           variant="primary"
           size="sm"
           icon="check"

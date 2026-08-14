@@ -753,7 +753,7 @@ export const applyPayoutAllocation = internalMutation({
  * like `finances.markAsPayout` would (`payoutProcessor:"stripe"`, LABEL only
  * — the row stays `flow:"inflow"`; see `PAYOUT_PROCESSORS`' doc) plus the
  * `stripePayoutId` link, and lifts an `unreviewed` row to `categorized`
- * (machine-coded; a human still owns Reconciled). Returns the matched row id
+ * (machine-coded; a human still owns Closed). Returns the matched row id
  * or null.
  */
 async function matchPayoutDeposit(
