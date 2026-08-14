@@ -973,7 +973,6 @@ export const remove = mutation({
       ctx,
       { kind: "project", id: projectId },
       project.name,
-      project.chapterId,
     );
 
     const children = await ctx.db

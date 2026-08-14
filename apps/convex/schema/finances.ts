@@ -945,7 +945,12 @@ export const reimbursementRequests = defineTable({
   .index("by_token", ["token"])
   .index("by_chapter_and_status", ["chapterId", "status"])
   .index("by_person", ["personId"])
-  .index("by_event", ["eventId"]);
+  .index("by_event", ["eventId"])
+  // Mirrors `by_event`. Added for `releaseReimbursementsForDeletedRef`, which
+  // otherwise had to read the whole chapter and filter — a scan that
+  // TRUNCATES, and a truncated scan there silently reintroduces the dangling
+  // ref the function exists to prevent.
+  .index("by_project", ["projectId"]);
 
 /** One receipt line within a reimbursement request. Per-line categorization +
  *  receipt; `matchedTransactionId` links a line to an already-synced txn so an

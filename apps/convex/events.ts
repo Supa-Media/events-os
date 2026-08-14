@@ -1402,7 +1402,6 @@ export const remove = mutation({
       ctx,
       { kind: "event", id: eventId },
       event.name,
-      event.chapterId,
     );
 
     const items = await ctx.db

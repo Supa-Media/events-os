@@ -162,6 +162,23 @@ describe("money still in flight blocks the deletion", () => {
     expect(msg).toContain("2 reimbursements");
     expect(msg).toContain("$151.24");
   });
+
+  test("the refusal only names escapes that actually exist", async () => {
+    const s = await setupChapter(newT());
+    const eventId = await seedEvent(s, "Love Thy Neighbor 2025");
+    await seedReimbursement(s, { status: "submitted", totalCents: 4064, eventId });
+
+    const err = await s.as
+      .mutation(api.events.remove, { eventId })
+      .catch((e: unknown) => e);
+
+    // "re-tag it" was in an earlier draft and is a lie: no mutation repoints a
+    // request's event after `createReimbursement`. Telling someone to do an
+    // impossible thing is worse than the block itself.
+    const msg = (err as ConvexError<{ message: string }>).data.message;
+    expect(msg).not.toContain("re-tag");
+    expect(msg).toContain("Finish paying");
+  });
 });
 
 describe("settled money doesn't block, and keeps its answer", () => {
@@ -186,6 +203,44 @@ describe("settled money doesn't block, and keeps its answer", () => {
     });
   }
 
+  test("the payout transaction's dangling ref is released too", async () => {
+    const s = await setupChapter(newT());
+    const eventId = await seedEvent(s, "Love Thy Neighbor 2025");
+    const requestId = await seedReimbursement(s, {
+      status: "paid",
+      totalCents: 11060,
+      eventId,
+    });
+    // The shape `deriveReimbursementTxnFields` writes for an EVENT-tagged
+    // request: eventId set, budgetId absent. `releaseBudgetsForDeletedRef`
+    // looks up transactions via `by_budget`, so it is blind to this row.
+    const txnId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "reimbursement",
+        flow: "outflow",
+        amountCents: 11060,
+        postedAt: Date.now(),
+        status: "reconciled",
+        eventId,
+        reimbursementId: requestId,
+        createdAt: Date.now(),
+      }),
+    );
+
+    await s.as.mutation(api.events.remove, { eventId });
+
+    const txn = await run(s.t, (ctx) => ctx.db.get(txnId));
+    expect(txn).not.toBeNull();
+    // No pointer at a deleted event — which also stops `migrateLinksToBudgets`
+    // re-minting an orphan budget off it.
+    expect(txn!.eventId).toBeUndefined();
+    // The chain back to "what for" survives: txn → request → snapshot.
+    expect(txn!.reimbursementId).toBe(requestId);
+    const request = await run(s.t, (ctx) => ctx.db.get(requestId));
+    expect(request!.forLabelSnapshot).toBe("Love Thy Neighbor 2025");
+  });
+
   test("the line items are released too", async () => {
     const s = await setupChapter(newT());
     const eventId = await seedEvent(s, "Love Thy Neighbor 2025");
@@ -207,7 +262,7 @@ describe("settled money doesn't block, and keeps its answer", () => {
     expect(lines[0].eventId).toBeUndefined();
   });
 
-  test("an existing snapshot is never clobbered — the older answer is the truer one", async () => {
+  test("the released ref's name wins — it is the only ref the request ever had", async () => {
     const s = await setupChapter(newT());
     const eventId = await seedEvent(s, "Second Event");
     const requestId = await seedReimbursement(s, {
@@ -215,14 +270,19 @@ describe("settled money doesn't block, and keeps its answer", () => {
       totalCents: 11060,
       eventId,
     });
+    // A stale value can only get here by hand: a request carries exactly one
+    // ref and nothing re-tags it, so the ref being released IS its history.
+    // An earlier draft preserved the stored value instead; that branch was
+    // unreachable, and if re-tagging ever lands the rule inverts — the stored
+    // one would be the stale tag.
     await run(s.t, (ctx) =>
-      ctx.db.patch(requestId, { forLabelSnapshot: "The Original Event" }),
+      ctx.db.patch(requestId, { forLabelSnapshot: "Hand-written stale value" }),
     );
 
     await s.as.mutation(api.events.remove, { eventId });
 
     const request = await run(s.t, (ctx) => ctx.db.get(requestId));
-    expect(request!.forLabelSnapshot).toBe("The Original Event");
+    expect(request!.forLabelSnapshot).toBe("Second Event");
   });
 
   test("a live ref still wins over the snapshot — a rename shows through", async () => {

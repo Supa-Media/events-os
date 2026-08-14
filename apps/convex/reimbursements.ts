@@ -3410,23 +3410,22 @@ export async function releaseReimbursementsForDeletedRef(
   ctx: MutationCtx,
   ref: { kind: "event"; id: Id<"events"> } | { kind: "project"; id: Id<"projects"> },
   refName: string,
-  chapterId: Id<"chapters">,
 ): Promise<void> {
-  // `by_event` exists; there is no `by_project`, so the project side scans its
-  // chapter and filters. Bounded and cheap (single digits in production), and
-  // an unindexed read beats a dangling FK on a money row.
+  // Both sides go through an index (`by_event`, and `by_project` added for this
+  // in the same change). The project side originally scanned the chapter and
+  // filtered, which TRUNCATES at the scan cap — and a truncation here silently
+  // leaves behind the exact dangling ref this function exists to prevent, so
+  // the ceiling had to go rather than be warned about.
   const candidates =
     ref.kind === "event"
       ? await ctx.db
           .query("reimbursementRequests")
           .withIndex("by_event", (q) => q.eq("eventId", ref.id))
-          .take(ROLLUP_SCAN_LIMIT)
-      : (
-          await ctx.db
-            .query("reimbursementRequests")
-            .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-            .take(ROLLUP_SCAN_LIMIT)
-        ).filter((r) => r.projectId === ref.id);
+          .collect()
+      : await ctx.db
+          .query("reimbursementRequests")
+          .withIndex("by_project", (q) => q.eq("projectId", ref.id))
+          .collect();
   if (candidates.length === 0) return;
 
   const live = candidates.filter(
@@ -3446,17 +3445,25 @@ export async function releaseReimbursementsForDeletedRef(
         `Can't delete this ${ref.kind} — ${subject} ${live.length === 1 ? "says it was" : "say they were"} ` +
         `for it, and ${live.length === 1 ? "hasn't" : "haven't"} been settled yet. Deleting it now would ` +
         `blank out what the money was for while someone still has to approve or pay it. ` +
-        `Settle or re-tag ${live.length === 1 ? "it" : "them"} first, then delete this ${ref.kind}.`,
+        `Finish paying ${live.length === 1 ? "it" : "them"} (or reject ${live.length === 1 ? "it" : "them"} if ` +
+        `${live.length === 1 ? "it's" : "they're"} not owed), then delete this ${ref.kind}.`,
     });
   }
 
   for (const request of candidates) {
     await ctx.db.patch(request._id, {
       ...(ref.kind === "event" ? { eventId: undefined } : { projectId: undefined }),
-      // Never clobber an existing snapshot: a request can only carry one ref,
-      // so a value already here belongs to an earlier release and is the older,
-      // truer answer.
-      ...(request.forLabelSnapshot ? {} : { forLabelSnapshot: refName }),
+      // Unconditional. A request carries exactly ONE ref
+      // (`createReimbursement`'s mutual-exclusivity check) and nothing re-tags
+      // it afterwards, so the ref being released here is the only one this
+      // request ever had — there is no older snapshot to protect. An earlier
+      // draft guarded this with `request.forLabelSnapshot ? {} : …`; that
+      // branch was unreachable, and worse, if a re-tag path is ever added the
+      // rule inverts (the stored snapshot would then be the STALE tag, and the
+      // one being released the current one). Better to state the invariant
+      // than to encode a guess about a future that would need revisiting here
+      // anyway.
+      forLabelSnapshot: refName,
       updatedAt: Date.now(),
     });
     const lines = await ctx.db
@@ -3470,5 +3477,40 @@ export async function releaseReimbursementsForDeletedRef(
         await ctx.db.patch(line._id, { projectId: undefined });
       }
     }
+  }
+
+  // THE PAYOUT TRANSACTION CARRIES THE SAME REF, and nothing above touches it.
+  // `lib/reimbursementTxnFields.ts#deriveReimbursementTxnFields` writes
+  // `budgetId` OR `eventId` OR `projectId` — an else-if chain — so an
+  // EVENT-tagged reimbursement's payout row carries `eventId` and NO
+  // `budgetId`. `releaseBudgetsForDeletedRef` only ever finds transactions
+  // through `by_budget`, so it is structurally blind to exactly these rows:
+  // paying an event-tagged reimbursement and then deleting the event left a
+  // `transactions` row pointing at a row that no longer exists, in the `paid`
+  // case this whole terminal branch exists to serve.
+  //
+  // That dangle is not merely cosmetic — `migrateLinksToBudgets`
+  // (`finances.ts`) walks transactions carrying `eventId`/`projectId` and calls
+  // `ensureBudgetForRef` on each, which would MINT a fresh budget against the
+  // deleted ref: the precise orphan #736 was written to eliminate.
+  //
+  // Clearing the link loses nothing. The row keeps `reimbursementId`, and the
+  // request it points at now carries `forLabelSnapshot`, so "what was this
+  // payout for" is still answerable — through one more hop, in words rather
+  // than a dead pointer.
+  const payoutTxns =
+    ref.kind === "event"
+      ? await ctx.db
+          .query("transactions")
+          .withIndex("by_event", (q) => q.eq("eventId", ref.id))
+          .collect()
+      : await ctx.db
+          .query("transactions")
+          .withIndex("by_project", (q) => q.eq("projectId", ref.id))
+          .collect();
+  for (const tr of payoutTxns) {
+    await ctx.db.patch(tr._id, {
+      ...(ref.kind === "event" ? { eventId: undefined } : { projectId: undefined }),
+    });
   }
 }
