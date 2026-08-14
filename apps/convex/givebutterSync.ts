@@ -73,7 +73,7 @@ import {
   internalQuery,
   mutation,
 } from "./_generated/server";
-import type { ActionCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 // Triggers-wrapped builder for `applyGivebutterTickets`/
 // `applyGivebutterDonations` below (insert `rsvps`/`people` via
 // `matchOrCreateDonor`) — see `lib/peopleAggregate.ts`'s module doc.
@@ -115,6 +115,67 @@ const SYNC_THROTTLE_MS = 60_000;
 /** The cron stops polling a campaign once its event ended more than this ago.
  *  The manual button still works forever (no date gate). */
 const CRON_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How many donor rows one PERSON may hold before the legacy-backfill guard
+ *  stops widening (see that guard). One row per scope is the shape this is
+ *  built for — a handful of chapters plus central — so this is a runaway
+ *  backstop, not a working limit. */
+const SIBLING_DONOR_SCAN_LIMIT = 50;
+
+/**
+ * Every gift held by any donor row belonging to the SAME PERSON as `donorId` —
+ * the reach the legacy-backfill guard needs (see its comment).
+ *
+ * MEMOIZED PER SYNC RUN, and that is not a nicety. The donation loop this
+ * serves is unbounded — attaching a campaign replays its entire history — and
+ * an unmemoized version costs up to 50 donor reads plus 200 gifts each, per
+ * donation. A campaign backfill would walk into Convex's per-transaction
+ * document ceiling and fail the whole batch rather than one row. Repeat donors
+ * are the common case, so the cache does most of the work.
+ */
+async function siblingGiftHistory(
+  ctx: MutationCtx,
+  donorId: Id<"donors">,
+  cache: Map<Id<"donors">, Doc<"gifts">[]>,
+): Promise<Doc<"gifts">[]> {
+  const cached = cache.get(donorId);
+  if (cached) return cached;
+  const donorRow = await ctx.db.get(donorId);
+  const siblingIds = new Set<Id<"donors">>([donorId]);
+  if (donorRow?.identityId) {
+    const identityId = donorRow.identityId;
+    for (const sib of await ctx.db
+      .query("donors")
+      .withIndex("by_identity", (q) => q.eq("identityId", identityId))
+      .take(SIBLING_DONOR_SCAN_LIMIT)) {
+      siblingIds.add(sib._id);
+    }
+  }
+  // Normalized, because `by_email` stores the normalized form and an
+  // unnormalized probe silently finds nothing.
+  const donorEmail = normalizeEmail(donorRow?.email);
+  if (donorEmail) {
+    for (const sib of await ctx.db
+      .query("donors")
+      .withIndex("by_email", (q) => q.eq("email", donorEmail))
+      .take(SIBLING_DONOR_SCAN_LIMIT)) {
+      siblingIds.add(sib._id);
+    }
+  }
+  const history: Doc<"gifts">[] = [];
+  for (const sibId of siblingIds) {
+    history.push(
+      ...(await ctx.db
+        .query("gifts")
+        .withIndex("by_donor", (q) => q.eq("donorId", sibId))
+        .take(200)),
+    );
+  }
+  // Cached under every sibling id: the next donation from any row of this
+  // person is answered without a single extra read.
+  for (const sibId of siblingIds) cache.set(sibId, history);
+  return history;
+}
 
 /** Trim + lowercase for name matching (mirror-type dedup by ticket-type name). */
 function normalizeName(name: string): string {
@@ -700,6 +761,9 @@ export const applyGivebutterDonations = triggerInternalMutation({
     let skipped = 0;
     let legacyCollisions = 0;
     let converted = 0;
+    /** Per-run memo for the legacy-backfill guard's sibling lookup — see
+     *  `siblingGiftHistory`. Lives outside the loop deliberately. */
+    const historyCache = new Map<Id<"donors">, Doc<"gifts">[]>();
     for (const d of donations) {
       if (!Number.isInteger(d.donationCents) || d.donationCents <= 0) {
         skipped += 1;
@@ -783,17 +847,44 @@ export const applyGivebutterDonations = triggerInternalMutation({
       // Pop The Balloon's campaign did exactly that: $665 of duplicate giving,
       // repaired by a 2026-08 one-off since removed.
       //
-      // So: before inserting, check whether THIS donor already holds a
+      // So: before inserting, check whether this donor already holds a
       // legacy-keyed gift for the same money on the same UTC day. Scoped to
       // `gb:txn:`-prefixed rows deliberately — it can never suppress against
       // this sync's own rows, so two genuine same-amount gifts on one day
       // still both land (the mistake that cost a real $500 bank deposit
       // earlier in this reconciliation was exactly that kind of collapse).
-      // Bounded read: one donor's gift history, not a table scan.
-      const priorForDonor = await ctx.db
-        .query("gifts")
-        .withIndex("by_donor", (q) => q.eq("donorId", donorId))
-        .take(200);
+      //
+      // ── ACROSS EVERY DONOR ROW FOR THE PERSON, NOT JUST THIS ONE ─────────
+      // This guard used to read `by_donor` on `donorId` alone, and that made
+      // it dependent on donor matching having worked — which is exactly what
+      // fails when the two imports run at different SCOPES.
+      //
+      // That is not hypothetical: on 2026-08-14 an API sync ran at `central`
+      // against a July CSV backfill that had landed at New York.
+      // `findDonorInScope` looks up `by_scope_and_email`, so the central
+      // lookup could not see the New York donor and minted a second row for
+      // the same person — same name, same email — and this guard then read
+      // that fresh row's empty history and found nothing to collide with.
+      // 88 gifts totalling $7,324.75 were re-inserted, and the org's
+      // reconciliation page reported $7,228.25 "unaccounted for" the next
+      // morning. Three defenses in a row (externalRef, this guard, donor
+      // matching) all fell to one changed variable.
+      //
+      // So the lookup now spans every donor row that belongs to the same
+      // PERSON: the cross-chapter identity layer (`donorIdentities`, which
+      // `matchOrCreateDonor` already attaches on both its branches) is the
+      // right notion of sameness here, with email as the fallback for a row
+      // that predates the layer. Bounded: one person's donor rows and their
+      // gift histories, never a table scan.
+      // BOTH lookups, unioned — never `else`. `matchOrCreateDonor` calls
+      // `syncDonorIdentity` on every path, so the freshly minted donor ALWAYS
+      // has an `identityId` and an `else if` would make the email branch dead
+      // for exactly the rows this guard exists for. And `syncDonorIdentity`
+      // attaches only the donor it is handed, so a legacy sibling written
+      // before the identity layer has no `identityId` at all and is invisible
+      // to `by_identity` — email is what finds it. Each alone misses the case
+      // the other catches.
+      const priorForDonor = await siblingGiftHistory(ctx, donorId, historyCache);
       const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
       const legacyTwin = priorForDonor.find(
         (g) =>
