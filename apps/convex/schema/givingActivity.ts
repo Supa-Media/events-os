@@ -18,14 +18,20 @@ import { givingScope } from "./givingPlatform";
  * The wall used to be OPT-IN: no consent, no row, and a giver who ticked the
  * box but typed neither a name nor a message got no row either. That made the
  * wall a self-selected highlight reel of the handful of people who filled in a
- * text field, and it made "every gift, in public" — the page's whole proof —
- * literally untrue.
+ * text field — a feed that was the page's whole proof and showed almost none of
+ * the giving it was proving.
  *
  * v3 splits the two questions that were fused into one flag
  * (docs/plans/give-redesign-v3.md, D6 + "Privacy posture"):
- *  - EXISTENCE is unconditional. Every settled gift and every new backer gets a
- *    row, whatever they said about being named. The default rendering is
- *    anonymous — "A gift to New York — $50" — which carries no PII at all.
+ *  - EXISTENCE is unconditional. Every gift and every new backer that comes
+ *    through the `/give` checkout gets a row on settle, whatever they said
+ *    about being named. The default rendering is anonymous — "A gift to New
+ *    York — $50" — which carries no PII at all. (UNCONDITIONAL ON CONSENT, not
+ *    on the rail: money that arrives another way — desk-entered cash/check/
+ *    wire, an event-page donation, a canonical import — is written by
+ *    `lib/givingDonors.ts#recordGiftForDonor` and gets no row here. The wall is
+ *    the checkout feed; `/finances` is the complete record, and the wall's copy
+ *    says so. See `lib/givePageSections.ts#givingWallHtml`.)
  *  - ATTRIBUTION (`displayName` + `message`) is what `consent` gates, and it
  *    gates it on the READ path, every time, for ever.
  * So `consent === false` now means "count me, don't name me", not "pretend I

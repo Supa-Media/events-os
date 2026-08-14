@@ -255,7 +255,7 @@ export const startGiveDonationCheckout = action({
     //
     // UNCONDITIONAL NOW, and both of the conditions it lost were bugs the page
     // was built on top of:
-    //  - `shareOnWall` gated EXISTENCE, so "every gift, in public" showed only
+    //  - `shareOnWall` gated EXISTENCE, so the public feed showed only
     //    the givers who ticked a box. It now gates ATTRIBUTION only (D6) — the
     //    row exists either way, and `getPublicWall` decides on every read
     //    whether it carries a name.

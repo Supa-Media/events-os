@@ -279,6 +279,17 @@ export const markActivityVisible = internalMutation({
  *
  * Idempotent and total: no row (the giver never opted in) and an
  * already-hidden row are both no-ops. Safe to call on any refKey.
+ *
+ * ── IT LOOKS UP BY ONE KEY, AND THAT IS A CONTRACT ON THE WRITERS ───────────
+ * The only thing this knows about a payment is its `refKey`, so a row written
+ * under a key the reversal paths cannot reconstruct is a row that can never
+ * come down. That is why the wall backfill (migration 0076) keys its rows on
+ * the gift's own `externalRef` (`give:<session>`) rather than on a synthetic
+ * id: the historical rows answer to the same call this already makes. Making
+ * this function *guess* at second keys instead — reading `gifts` to map a
+ * session back to an id — would put a table read inside a webhook-driven
+ * mutation to cover a case the writers can simply not create, so the invariant
+ * is kept where it is cheap: at the write.
  */
 export const withdrawActivity = internalMutation({
   args: { refKey: v.string() },

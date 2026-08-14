@@ -467,12 +467,15 @@ export const MIGRATIONS: Migration[] = [
   labelFeeCoverageRows,
   // The public giving wall was an OPT-IN echo — a row existed only if the
   // giver ticked a box AND typed something, and never for a central gift —
-  // so the page shipping under "Every gift, in public" (give-redesign-v3, D6)
+  // so the wall shipping as the page's proof (give-redesign-v3, D6)
   // would have opened nearly empty, making a claim its own data contradicted.
   // Writes one ANONYMOUS wall row per recent settled gift (no consent was ever
   // asked of them, so none is recorded). Moves no money and touches no
   // rollup: the wall's totals come from `givingScopeRollups`, never from these
-  // rows. Idempotent on `refKey`, against both the live `give:<session>` key
-  // and its own `gift:<id>`. See 0076.
+  // rows. Each row carries the gift's OWN `externalRef` as its `refKey` where
+  // it has one (`give:<session>`), because that is the key every reversal path
+  // reaches for to pull a row back down — a synthetic `gift:<id>` is used only
+  // when a gift has no external identity at all. Idempotent against both. See
+  // 0076.
   backfillWallFromGifts,
 ];

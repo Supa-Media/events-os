@@ -6,6 +6,7 @@ import {
   type PublicTerritoryData,
 } from "../lib/givePage";
 import type { PublicWallData } from "../lib/givePageSections";
+import { COMPENSATION_CLAIM } from "./compensationClaim.helpers";
 
 /**
  * Render tests for the public `/give` pages (server-rendered HTML, no React).
@@ -38,9 +39,12 @@ const STATS = { total: 42, wantInCity: 27 };
 /** The salary/compensation claim the founder cut (D3). Deliberately does NOT
  *  ban the bare word "volunteer(s)" — `MONTHLY_OPERATING_LINES` has a
  *  "Food — team, musicians & volunteers" line, and the hero legitimately talks
- *  about "the volunteer team". What is banned is the CLAIM. */
-const COMP_CLAIM =
-  /salary|salaries|nobody draws|nobody is paid|everyone is a volunteer|all volunteers/i;
+ *  about "the volunteer team". What is banned is the CLAIM.
+ *
+ *  SHARED with `giveHowItWorksPage.test.ts` (`compensationClaim.helpers.ts`):
+ *  every give surface is held to one pattern, so a copy rule can't be tightened
+ *  on one page and loosened on another without somebody noticing. */
+const COMP_CLAIM = COMPENSATION_CLAIM;
 
 /** A number of humans, in the hero — the exact thing D2 forbids ("one of the
  *  twenty people"). Digits only: "the next few backers" is fine, "20 backers"

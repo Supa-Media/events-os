@@ -6,6 +6,7 @@ import {
 } from "../lib/giveHowItWorksPage";
 import { ledgerPath } from "../lib/publicLedgerPage";
 import { givePagePath } from "../lib/siteUrl";
+import { COMPENSATION_CLAIM } from "./compensationClaim.helpers";
 import {
   BACKER_UNIT_CENTS,
   CENTRAL_SKIM_PCT,
@@ -34,12 +35,16 @@ import {
  *
  * 2. D3 IS ASSERTED AS AN ABSENCE. The founder cut the "nobody draws a salary"
  *    claim on purpose: it is not a flex, and it becomes false the day it
- *    changes — on a page that, unlike `/give/<slug>`, is indexed. A content
- *    regression here would be invisible to every other test in the repo, so the
- *    regex below is the only thing standing between a well-meaning copy edit
- *    and a false public claim. Note it cannot simply ban the word "volunteer":
- *    `MONTHLY_OPERATING_LINES` legitimately contains "Food — team, musicians &
- *    volunteers", so the pattern targets COMPENSATION claims specifically.
+ *    changes — on a page that, unlike `/give/<slug>` used to be, is indexed. A
+ *    content regression here would be invisible to every other test in the
+ *    repo, so `COMPENSATION_CLAIM` is the only thing standing between a
+ *    well-meaning copy edit and a false public claim. It targets the CLAIM, not
+ *    the word "volunteer" — `MONTHLY_OPERATING_LINES` legitimately contains
+ *    "Food — team, musicians & volunteers", and the give pages legitimately
+ *    describe "the volunteer team". It is shared with `givePageRender.test.ts`
+ *    (`compensationClaim.helpers.ts`) so the two suites cannot drift into
+ *    enforcing opposite rules, which is exactly what they were doing: this file
+ *    also banned `/volunteer (core )?team/i` while that one whitelisted it.
  */
 
 const SITE = "https://publicworship.life";
@@ -168,10 +173,26 @@ describe("renderGiveHowItWorksPage", () => {
   });
 
   test("makes no compensation claim anywhere (spec D3)", () => {
-    expect(html).not.toMatch(/salary|salaries/i);
-    expect(html).not.toMatch(/nobody is paid|no one is paid|nobody draws/i);
-    expect(html).not.toMatch(/all volunteers|everyone is a volunteer/i);
-    expect(html).not.toMatch(/volunteer (core )?team/i);
-    expect(html).not.toMatch(/\bunpaid\b/i);
+    // The SAME pattern `givePageRender.test.ts` holds both give pages to — see
+    // `compensationClaim.helpers.ts` for why it is shared and why it stops at
+    // the claim rather than the word "volunteer".
+    expect(html).not.toMatch(COMPENSATION_CLAIM);
+  });
+
+  test("the ban is on the CLAIM, not on the word 'volunteer'", () => {
+    // Guards the guard, exactly as the give-page suite does. This page happens
+    // to describe the five roles without reaching for the word at all, so the
+    // assertion is that the shared pattern would still let it: "the volunteer
+    // team" is a description of who does the work, and both give surfaces are
+    // allowed to say it.
+    expect("$50 a month backs the volunteer team").not.toMatch(
+      COMPENSATION_CLAIM,
+    );
+    expect("Food — team, musicians & volunteers").not.toMatch(
+      COMPENSATION_CLAIM,
+    );
+    // …while the claim itself is caught, in any of its usual dresses.
+    expect("Nobody draws a salary.").toMatch(COMPENSATION_CLAIM);
+    expect("Everyone is a volunteer.").toMatch(COMPENSATION_CLAIM);
   });
 });

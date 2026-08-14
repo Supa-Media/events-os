@@ -486,16 +486,36 @@ export type PublicWallData = {
 };
 
 /**
- * The public giving wall — "every gift, in public."
+ * The public giving wall — the live feed of giving through this page.
  *
  * WHAT CHANGED IN v3, and why it is a rebuild rather than a move. The old
  * `activityWallHtml` rendered only rows whose giver ticked the share box AND
  * typed a display name or message, so a city with real backers could still
  * render "Be the first to back this city" — the worst possible sentence on the
- * page that is trying to prove the city is alive. Now every settled gift has a
- * row and consent gates only ATTRIBUTION (spec D6): an unconsented gift is
- * "A gift to New York — $50", which discloses exactly what the published
- * ledger's gift roll already discloses monthly, only live.
+ * page that is trying to prove the city is alive. Now every gift given through
+ * this page gets a row and consent gates only ATTRIBUTION (spec D6): an
+ * unconsented gift is "A gift to New York — $50", which discloses exactly what
+ * the published ledger's gift roll already discloses monthly, only live.
+ *
+ * ── THE WALL IS THE CHECKOUT FEED; THE LEDGER IS THE COMPLETE RECORD ────────
+ * The heading and footer used to say "Every gift, in public" / "Every settled
+ * gift appears here", and that was not true. Exactly two writers reach
+ * `givingActivity.recordPendingActivity`:
+ * `givingDonations.startGiveDonationCheckout` and
+ * `givingPledges.startPledgeCheckout` — i.e. the `/give` checkout. Every other
+ * way money arrives goes through `lib/givingDonors.ts#recordGiftForDonor`,
+ * which writes NO wall row: a cash/check/wire/Zelle gift entered at the giving
+ * desk, a donation taken on an event page, a canonical import, a sponsorship
+ * payment, a recurring pledge cycle. Those gifts DO bump `givingScopeRollups`,
+ * which is where the live total comes from — so a $5,000 desk check moves the
+ * number above the feed without leaving a row inside it.
+ *
+ * Wiring `recordGiftForDonor` to the wall is not the fix: a canonical import
+ * settles thousands of gifts in one mutation, which is precisely why migration
+ * 0076 is bounded to 500 rows. So the COPY tells the truth instead — this feed
+ * is what came through this page, and `/finances` is the complete record, gift
+ * by gift and expense by expense. If a future change does make the wall
+ * exhaustive, this is the comment and the copy to revisit.
  *
  * The total is LIVE, deliberately (spec D8) — a giver has to be able to give
  * and watch the number move. "Published month by month" is the books' promise
@@ -513,7 +533,7 @@ export function givingWallHtml(
   const isCity = scope.kind === "city";
   const heading = isCity
     ? `Backers &amp; gifts in ${esc(scope.name)}`
-    : "Every gift, in public";
+    : "Giving, as it comes in";
 
   if (wall.rows.length === 0) {
     return `<section>
@@ -550,7 +570,7 @@ export function givingWallHtml(
       <span class="livepill"><span class="blip"></span> LIVE</span>
     </div>
     ${rows}
-    <div class="wallfoot">Every settled gift appears here. Amounts and cities, never names &mdash; unless a giver chooses to sign theirs. Real names and email addresses are never published. These totals are live; <a href="${esc(ledgerPath())}">the books</a> are published month by month.</div>
+    <div class="wallfoot">The numbers above count every gift we receive. The feed is the giving that comes through this page, each one the moment it settles &mdash; a check or transfer handed to us another way is in the books with everything else. Amounts and cities, never names &mdash; unless a giver chooses to sign theirs. Real names and email addresses are never published. These totals are live; <a href="${esc(ledgerPath())}">the books</a> are published month by month.</div>
   </div>
 </section>`;
 }
