@@ -74,6 +74,8 @@ import {
   matchesAnyKeyword,
   autoExplainedKind,
   isNonDiscretionaryFee,
+  personalExpenseState,
+  personalStateBlocksClose,
   REASSIGN_BATCH_CAP,
   chapterAffordability as chapterAffordabilityCalc,
   effectiveBudgetApprovalStatus,
@@ -1488,36 +1490,95 @@ export function isProcessorPayout(tr: Doc<"transactions">): boolean {
 }
 
 /**
+ * DOES THIS ROW OWE A DOCUMENT AT ALL? — the documentation POPULATION, in one
+ * predicate, status-blind and evidence-blind.
+ *
+ * The two predicates below (`needsDocumentation`, the chase; `isUndocumented`,
+ * the publishing gate) differ ONLY in which statuses they stop at. They used to
+ * each carry their own copy of this population line and their own copy of the
+ * fee carve-out, which is precisely the drift this file keeps repairing — so
+ * the population and every carve-out on it live here, once, and both callers
+ * ask this.
+ *
+ * ── WHO OWES ─────────────────────────────────────────────────────────────────
+ *  - a SPEND charge (the original rule, `isSpend`);
+ *  - a MARKED INTERNAL TRANSFER — it's `flow:"transfer"`, so `isSpend` is
+ *    false and it would otherwise vanish from the chase the instant someone
+ *    marked it (the same disappearing act the Academy's old "just mark it
+ *    Excluded" advice caused). Founder ask with the marking feature, and it
+ *    stands: marking a row must never be a way to stop being chased.
+ *
+ * ── WHO DOESN'T, AND WHY EACH EXEMPTION IS BY POSITIVE MARKER ────────────────
+ *  - a PROCESSOR FEE (`isNonDiscretionaryFee`): no receipt exists and none
+ *    ever will — the processor's own ledger is the record, kept row by row in
+ *    `processorFeeEntries` exactly so the number is never taken on faith
+ *    (founder, 2026-08-12: "I literally dont have receipts").
+ *  - a MARKED PROCESSOR PAYOUT (`isProcessorPayout`) — REVERSED 2026-08-14,
+ *    see below.
+ *
+ * ── THE PAYOUT REVERSAL (founder, 2026-08-14) ────────────────────────────────
+ * This function used to end `|| isProcessorPayout(tr)`, added deliberately
+ * with the marking feature: "a MARKED PROCESSOR PAYOUT owes one as well — an
+ * `inflow` was NEVER in this bucket to begin with, so this is the first time a
+ * deposit can be chased for its settlement report at all." The founder
+ * overruled it looking at the dashboard: "it says nine rows not publishable
+ * yet, no documentation — but when you click on it, most of the rows are quite
+ * literally payouts… Payouts shouldn't need documentation."
+ *
+ * It follows the FEE precedent, and it is worth being precise about how far:
+ * a payout is a batch of money the org ALREADY counted at the giving layer
+ * (`gifts` + ticket orders) physically arriving, which is why a marked payout
+ * is already worth zero to book value (`lib/bookBalance.ts#signedBookCents`).
+ * Nobody chose it, nobody can produce a purchase receipt for it, and the thing
+ * that substantiates it is the processor's settlement report.
+ *
+ * WHAT WE ACTUALLY HOLD, stated honestly, because the fee exemption is sound
+ * on the strength of `processorFeeEntries` rather than on convenience:
+ *  - STRIPE payouts: we DO hold a settlement record. `stripePayouts` stores
+ *    the payout id, amount, currency, Stripe's own status, arrival date, the
+ *    per-book gross/fee/net allocation with item counts, the item-kind
+ *    rollup and the loud `unmapped` bucket — linked both ways to the bank row
+ *    (`transactions.stripePayoutId` ↔ `stripePayouts.matchedTransactionId`).
+ *    Weaker than `processorFeeEntries` in one stated respect: it is a
+ *    SUMMARY, not one row per item, because Stripe stays the system of record
+ *    for charge-level data.
+ *  - GIVEBUTTER and `other` payouts: we hold NOTHING but the label
+ *    `markAsPayout` writes. For those the exemption rests on the processor's
+ *    own dashboard, outside this system.
+ * That asymmetry is a real gap, not a rounding error, and it is written down
+ * here rather than implied so the next person weighing "should this be
+ * chased?" is weighing the actual evidence.
+ *
+ * NOT ALSO AUTO-EXPLAINED. `autoExplainedKind` (`@events-os/shared`) was the
+ * obvious neighbouring move and is deliberately NOT taken: its own module
+ * comment already says why — "internal movements (transfers, payout deposits)
+ * are another self-explaining class, but they already sign to zero
+ * (`signedBookCents`) and are excluded by the `direction !== "internal"` /
+ * `signed === 0` checks everywhere — this classification covers the classes
+ * that carry real signed money and so can't be caught by the zero test." A
+ * payout is an `inflow`, so `canCarryExplanation`/`isSpend` already keeps it
+ * out of `explanationPopulation`; adding a kind would buy nothing and would
+ * put a second, weaker test in front of a row the zero test already handles.
+ */
+export function owesDocumentation(tr: Doc<"transactions">): boolean {
+  if (isNonDiscretionaryFee(tr)) return false;
+  if (isProcessorPayout(tr)) return false;
+  return isSpend(tr) || isMarkedTransfer(tr);
+}
+
+/**
  * True iff a row still owes a receipt / supporting document — the ONE
  * predicate behind the Reconcile `missing_receipt` pill AND the `receiptChase`
  * list (they're kept in lockstep on purpose; this function is that lockstep,
  * replacing the two hand-copied expressions that used to drift).
  *
- * Founder ask, with the marking feature: an internal transfer and a processor
- * payout "should still have receipts". Documentation obligation is therefore
- * NOT the same axis as spend:
- *  - a SPEND charge owes a receipt (the original rule, `isSpend`),
- *  - a MARKED INTERNAL TRANSFER owes one too — it's `flow:"transfer"`, so
- *    `isSpend` is false and it would otherwise vanish from the chase the
- *    instant someone marked it (the same disappearing act the Academy's old
- *    "just mark it Excluded" advice caused),
- *  - a MARKED PROCESSOR PAYOUT owes one as well — an `inflow` was NEVER in
- *    this bucket to begin with, so this is the first time a deposit can be
- *    chased for its settlement report at all.
- * A transfer/payout that was never marked is untouched: an unmarked inflow
- * still owes nothing, exactly as before.
- *
- * `reconciled` still ends the chase for every class (a treasurer who closed a
- * row document-less made a call — there's nobody left to chase), and
- * `excluded` never enters it.
+ * Who owes anything at all is {@link owesDocumentation}. What this adds is the
+ * CHASE semantics: `reconciled` ends the chase for every class (a treasurer who
+ * closed a row document-less made a call — there's nobody left to chase), and
+ * `excluded` never enters it. A transfer/payout that was never marked is
+ * untouched: an unmarked inflow still owes nothing, exactly as before.
  */
 export function needsDocumentation(tr: Doc<"transactions">): boolean {
-  // A processor fee has no receipt and never will — the processor's own
-  // ledger (`processorFeeEntries`) is the record, kept row by row exactly so
-  // this number never has to be taken on faith. Chasing a receipt for one
-  // asks for a document that does not exist (founder, 2026-08-12: "I
-  // literally dont have receipts").
-  if (isNonDiscretionaryFee(tr)) return false;
   if (tr.receiptStorageId != null) return false;
   // An APPROVED receipt exception is documentation — an attested, second-party
   // -approved statement of what this was for and why no receipt exists. It
@@ -1526,7 +1587,7 @@ export function needsDocumentation(tr: Doc<"transactions">): boolean {
   // `docs/plans/receipt-exceptions.md`.
   if (tr.approvedReceiptExceptionId != null) return false;
   if (tr.status === "reconciled" || tr.status === "excluded") return false;
-  return isSpend(tr) || isMarkedTransfer(tr) || isProcessorPayout(tr);
+  return owesDocumentation(tr);
 }
 
 /**
@@ -1536,10 +1597,16 @@ export function needsDocumentation(tr: Doc<"transactions">): boolean {
  *
  * This is the PUBLISHING predicate and the historical-cleanup worklist: a row
  * a treasurer closed document-less years ago is invisible to the chase and
- * loudly visible here, which is the whole point. Scoped to rows that OWE
- * documentation in the first place (`isSpend` / marked transfer / marked
- * payout, never `excluded`), so an ordinary donation inflow doesn't read as an
- * undocumented gap.
+ * loudly visible here, which is the whole point. Scoped to the rows that OWE
+ * documentation in the first place ({@link owesDocumentation} — so the fee and
+ * payout exemptions land here identically, and an ordinary donation inflow
+ * doesn't read as an undocumented gap).
+ *
+ * The shared population is what makes the founder's payout call land on the
+ * dashboard's not-publishable count too: `publishability.ts` reads THIS
+ * function, so a carve-out applied to the chase and not to the gate would
+ * leave nine payout rows still blocking a period — the dead-number defect in
+ * its exact original form.
  *
  * Mirrors `documentationState(...) === "undocumented"` (`@events-os/shared`)
  * for the subset of rows that owe anything — that function is the one the
@@ -1547,14 +1614,9 @@ export function needsDocumentation(tr: Doc<"transactions">): boolean {
  */
 export function isUndocumented(tr: Doc<"transactions">): boolean {
   if (tr.status === "excluded") return false;
-  // Same fee carve-out as `needsDocumentation`, for the same reason: the
-  // processor's ledger IS this row's documentation. A publishing predicate
-  // that counted fees "undocumented" forever would disclose a permanent gap
-  // nobody can close.
-  if (isNonDiscretionaryFee(tr)) return false;
   if (tr.receiptStorageId != null) return false;
   if (tr.approvedReceiptExceptionId != null) return false;
-  return isSpend(tr) || isMarkedTransfer(tr) || isProcessorPayout(tr);
+  return owesDocumentation(tr);
 }
 
 /**
@@ -1670,12 +1732,13 @@ export function needsExplaining(tr: Doc<"transactions">): boolean {
  * policy landed. Two predicates cover it, and they cover deliberately different
  * populations:
  *
- *  - {@link needsDocumentation} — a spend charge, a MARKED internal transfer or
- *    a MARKED processor payout with nothing attached and not yet closed. The
- *    two marked classes have NO CARDHOLDER (a bank transfer and a processor
- *    deposit carry no `cardId`/`personId`); they are chased with a statement
- *    rather than a person, and are exactly what the chase list's "Unattributed"
- *    bundle holds.
+ *  - {@link needsDocumentation} — a spend charge or a MARKED internal transfer
+ *    with nothing attached and not yet closed. (A marked PAYOUT was in this
+ *    half until 2026-08-14 and no longer owes anything — see
+ *    {@link owesDocumentation}.) A marked transfer has NO CARDHOLDER — a bank
+ *    transfer carries no `cardId`/`personId` — so it is chased with a
+ *    statement rather than a person, and is exactly what the chase list's
+ *    "Unattributed" bundle holds.
  *  - `chargeOutstanding` (`lib/codingReminders.ts`) — what the cardholder's own
  *    digest and the manual FM nudge ask them for, which is cardholder-shaped
  *    (outflow spend only) but covers the CODING debt the documentation
@@ -9527,9 +9590,11 @@ export const listReconcile = query({
      * PREDICATE CHANGE. `needsBudget`, `needsDocumentation` and `isUndocumented`
      * are untouched and stay untouched: they feed the dashboards' dollar tiles,
      * the receipt chase and the publishing gate, and they encode a founder rule
-     * (a marked internal transfer and a marked processor payout still owe a
-     * receipt, so marking a row can never be a way to stop being chased) that is
-     * pinned by `markTransferPayout.test.ts` and `receiptChase.test.ts`.
+     * (a marked internal transfer still owes a receipt, so marking a row can
+     * never be a way to stop being chased) that is pinned by
+     * `markTransferPayout.test.ts` and `receiptChase.test.ts`. A marked PAYOUT
+     * was in that rule until the founder took it out on 2026-08-14 — that too
+     * is a change to `owesDocumentation`, never to a facet here.
      *
      * The gates live HERE, next to the other facet logic, precisely so the drift
      * risk is visible in one place rather than hidden behind a second predicate
@@ -11049,6 +11114,70 @@ export const bulkCategorize = mutation({
   },
 });
 
+/**
+ * IS SOMEBODY STILL GOING TO PAY THIS ROW BACK? — the resolver behind the
+ * personal-charge close rule, and the ONLY place that question is asked.
+ *
+ * Founder ask, 2026-08-13: "make sure to have business logic so that no rows
+ * that are personal expenses that need to be repaid can be closed." Closing is
+ * a treasurer saying they are finished with a row; a charge somebody still
+ * owes the org money for is not finished.
+ *
+ * ── WHY IT IS A RESOLVER AND NOT AN INLINE `isPersonal` TEST ─────────────────
+ * The `has`/`require` pair is what CLAUDE.md asks for even when the answer
+ * today is a plain rule, and it earns it twice over here. The derived state is
+ * a THREE-value lifecycle (`personalExpenseState`, `@events-os/shared`) whose
+ * whole point is that `isPersonal` alone is not the answer — a repaid charge
+ * is still `isPersonal: true` and closes fine, and a `"processing"` ACH debit
+ * is still outstanding. Re-deriving that at a call site is how the two would
+ * disagree; the state has an invariant test
+ * (`finances.personalExpenseState.test.ts`) precisely so it can be the single
+ * derivation. `personalStateBlocksClose` is the policy on top of it, and lives
+ * beside the state it reads.
+ *
+ * ── WHAT THIS DELIBERATELY DOES NOT DO ──────────────────────────────────────
+ * It is a guard on the TRANSITION to `reconciled`, never an invariant. A row
+ * closed FIRST and flagged personal AFTERWARDS is still both at once, is still
+ * expressible, and is never rewritten — that is the representation decision
+ * recorded above `PERSONAL_EXPENSE_STATES` in `@events-os/shared`, which this
+ * does not touch (its long note explains the distinction at length). Read
+ * paths are untouched for the same reason the receipt and coding gates below
+ * are write-only: legacy rows stay valid and stay visible rather than being
+ * retroactively invalidated.
+ */
+export async function hasOutstandingPersonalRepayment(
+  ctx: QueryCtx,
+  tr: Doc<"transactions">,
+): Promise<boolean> {
+  // The read is skipped for a row that carries no repayment link at all —
+  // that is a cost decision, not a second derivation: `personalExpenseState`
+  // is still the one function that turns the pair into a state, and it reads
+  // a missing repayment exactly as it reads an unpaid one.
+  const repayment =
+    tr.isPersonal === true && tr.repaymentId ? await ctx.db.get(tr.repaymentId) : null;
+  return personalStateBlocksClose(
+    personalExpenseState(tr.isPersonal, repayment?.status ?? null),
+  );
+}
+
+/**
+ * Refuse to close a row somebody still owes money back on. The refusal names
+ * BOTH ways out, because there are exactly two and a treasurer stuck on this
+ * row is stuck on which one applies: the money comes back through the app, or
+ * it was never personal and the flag should come off.
+ */
+export async function requireRepaidBeforeClose(
+  ctx: QueryCtx,
+  tr: Doc<"transactions">,
+): Promise<void> {
+  if (!(await hasOutstandingPersonalRepayment(ctx, tr))) return;
+  throw new ConvexError({
+    code: "REPAYMENT_OUTSTANDING",
+    message:
+      "This is a personal charge that hasn't been repaid yet, so it can't be closed — either it gets repaid through the app (Cards → Personal to repay), or it wasn't personal after all and the flag should come off.",
+  });
+}
+
 export const setTransactionStatus = mutation({
   args: {
     transactionId: v.id("transactions"),
@@ -11090,8 +11219,17 @@ export const setTransactionStatus = mutation({
       throw new ConvexError({
         code: "RECEIPT_REQUIRED",
         message:
-          "Attach a receipt before reconciling — or, if no receipt exists, file a receipt exception saying why.",
+          "Attach a receipt before closing — or, if no receipt exists, file a receipt exception saying why.",
       });
+    }
+    // CLOSED MEANS NOBODY STILL OWES THE MONEY BACK (founder, 2026-08-13).
+    // The third close gate, alongside the two above and written the same way:
+    // a guard on the WRITE only. See `requireRepaidBeforeClose` for why this
+    // does NOT contradict the "a row can be both closed and an unpaid personal
+    // expense" representation decision in `@events-os/shared` — a row already
+    // closed when it was flagged stays exactly as it is.
+    if (args.status === "reconciled") {
+      await requireRepaidBeforeClose(ctx, txn);
     }
     // RECONCILED MEANS SUBSTANTIATED, too (transaction-coding PR): spend
     // posted at/after the coding policy date (2026-09-01 by default —
@@ -11105,7 +11243,7 @@ export const setTransactionStatus = mutation({
         throw new ConvexError({
           code: "CODING_REQUIRED",
           message:
-            "This charge still needs its coding — what it was for, and who was involved — submitted and approved before it can be reconciled.",
+            "This charge still needs its coding — what it was for, and who was involved — submitted and approved before it can be closed.",
         });
       }
     }

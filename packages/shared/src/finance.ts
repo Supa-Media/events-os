@@ -1840,6 +1840,46 @@ export function personalExpenseState(
   return repaymentStatus === "paid" ? "personal_reimbursed" : "personal_unpaid";
 }
 
+/**
+ * MAY A ROW IN THIS PERSONAL-EXPENSE STATE BE CLOSED? — the policy half of the
+ * pair above, kept next to it so the state and the rule about the state are
+ * read together.
+ *
+ * Founder ask, 2026-08-13: "make sure to have business logic so that no rows
+ * that are personal expenses that need to be repaid can be closed." A charge
+ * somebody still owes the org money for is not a finished piece of
+ * bookkeeping — closing it says the treasurer is done with it, and it isn't
+ * done until the money comes back or the flag comes off.
+ *
+ * ## THIS DOES NOT CONTRADICT THE `PERSONAL_EXPENSE_STATES` DECISION ABOVE
+ *
+ * The block above records why personal state is DERIVED from two fields
+ * instead of being a 5th `TRANSACTION_STATUS`: "a transaction must be able to
+ * be BOTH `reconciled` AND an unpaid personal expense at the same time, which
+ * one status column can't represent." That is an argument about
+ * REPRESENTATION — what the data model has to be able to say — and it still
+ * stands, unchanged and load-bearing:
+ *
+ *  - A row CLOSED FIRST and flagged personal AFTERWARDS is genuinely both, and
+ *    stays expressible. Nothing here rewrites it, re-opens it, or invalidates
+ *    it: `personalExpenseState` still returns `personal_unpaid` for a
+ *    `reconciled` row, every read path still renders that pair, and the
+ *    legacy rows already in it are untouched.
+ *  - What this adds is a guard on ONE TRANSITION — going TO `reconciled`
+ *    while unpaid. A transition rule is not an invariant. An invariant would
+ *    say the pair may never exist, which would collapse the representation
+ *    the block above deliberately kept (and would need a migration that
+ *    rewrote real history).
+ *
+ * So: never author this as `state !== "personal_unpaid"` at a call site, and
+ * never let it grow into a read-path filter. It answers exactly one question,
+ * asked in exactly one place — `finances.ts#requireRepaidBeforeClose`, called
+ * from `setTransactionStatus`.
+ */
+export function personalStateBlocksClose(state: PersonalExpenseState): boolean {
+  return state === "personal_unpaid";
+}
+
 // ── Auto-explained rows (founder directive, 2026-08-12) ─────────────────────
 // "only things that actually need explaining should show up here, so I can
 // attack this month by month." Two row classes publish on the ledger but

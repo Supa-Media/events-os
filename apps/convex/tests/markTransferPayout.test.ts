@@ -24,7 +24,9 @@ import type { Doc, Id } from "../_generated/dataModel";
  *  - a PAYOUT stays `flow:"inflow"` (it's real revenue — donations live in
  *    `gifts` and never reach this table, so excluding it would erase income)
  *    and is single-sided.
- * Both keep owing a receipt, and both write `financeAuditLog`.
+ * A marked TRANSFER keeps owing a receipt; a marked PAYOUT owes nothing
+ * (founder, 2026-08-14 — see "a marked payout owes no documentation" below).
+ * Both write `financeAuditLog`.
  */
 
 async function seedPerson(
@@ -621,8 +623,14 @@ describe("finances.markAsPayout", () => {
     ).counts;
     expect(counts.payouts).toBe(1);
     expect(counts.transfers).toBe(0);
-    // Now chase-able for its settlement report — an inflow never was before.
-    expect(counts.missing_receipt).toBe(1);
+    // AND IT OWES NO DOCUMENTATION (founder, 2026-08-14). Marking a payout
+    // briefly put it into the receipt chase — "an `inflow` was NEVER in this
+    // bucket, so this is the first time a deposit can be chased for its
+    // settlement report" — and the founder reversed that looking at a
+    // not-publishable count made almost entirely of payouts: "Payouts
+    // shouldn't need documentation." Nobody bought anything; the money was
+    // already counted at the giving layer and this row is its arrival.
+    expect(counts.missing_receipt).toBe(0);
   });
 
   test("refuses an outflow — a payout is money arriving", async () => {
@@ -825,5 +833,141 @@ describe("finances.markAsPayout — allocateToScope", () => {
         allocateToScope: otherChapterId,
       }),
     ).rejects.toThrow(/central and a chapter/i);
+  });
+});
+
+/**
+ * A MARKED PAYOUT OWES NO DOCUMENTATION (founder, 2026-08-14).
+ *
+ * This REVERSES the rule the marking feature shipped with. Marking a payout
+ * put it into the receipt chase for the first time — "an `inflow` was NEVER in
+ * this bucket to begin with, so this is the first time a deposit can be chased
+ * for its settlement report at all" — and the founder overruled it looking at
+ * a dashboard: "it says nine rows not publishable yet, no documentation — but
+ * when you click on it, most of the rows are quite literally payouts and stuff
+ * like that. Payouts shouldn't need documentation."
+ *
+ * It follows the FEE precedent (`isNonDiscretionaryFee`): a cost or an arrival
+ * nobody chose, with no purchase behind it and therefore no receipt that could
+ * ever exist. What is asserted here, one test per surface, is that the
+ * carve-out reaches EVERY reader of "owes documentation" — the grid's two
+ * facets, the chase entry point, the chase list itself. A carve-out applied in
+ * one place and not the others is the dead-number defect this file's own
+ * `needsDocumentation` comment was written about, and it is why all of these
+ * predicates now share `owesDocumentation`. (The publishing gate's copy of the
+ * same assertion is in `publishability.test.ts`, which reads the other
+ * predicate, `isUndocumented`.)
+ *
+ * A marked TRANSFER is asserted alongside in each case, unchanged: it still
+ * owes its bank statement. The two markings were deliberately symmetric here
+ * and are now deliberately not, so the tests say both halves out loud.
+ */
+describe("a marked payout owes no documentation", () => {
+  async function markedPair(s: ChapterSetup): Promise<{
+    payout: Id<"transactions">;
+    transferOut: Id<"transactions">;
+  }> {
+    const payout = await seedTxn(s, {
+      amountCents: 250_000,
+      flow: "inflow",
+      merchantName: "GIVEBUTTER PAYOUT",
+    });
+    await s.as.mutation(api.finances.markAsPayout, {
+      transactionId: payout,
+      processor: "givebutter",
+    });
+    const transferOut = await seedTxn(s, { amountCents: 100_000, flow: "outflow" });
+    const transferIn = await seedTxn(s, { amountCents: 100_000, flow: "inflow" });
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: transferOut,
+      counterpartTransactionId: transferIn,
+    });
+    return { payout, transferOut };
+  }
+
+  test("the chase list and its entry-point count both leave it out", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const { payout } = await markedPair(s);
+
+    // `chaseCount` is what gates the "Chase receipts" entry point and
+    // `receiptChase` is the list behind it; both run `isChaseable`, so a
+    // number that still counted the payout would open a list that didn't show
+    // it. Only the two marked transfer legs are left.
+    const res = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(res.chaseCount).toBe(2);
+    const chase = await s.as.query(api.finances.receiptChase, {});
+    expect(chase.count).toBe(2);
+    expect(
+      chase.groups.flatMap((g) => g.transactions.map((c) => c.id)),
+    ).not.toContain(payout);
+  });
+
+  test("the CLOSED tail doesn't collect it either", async () => {
+    // `undocumented` ("Closed without documentation") is the publishing
+    // backlog's other half and reads `isUndocumented`, which ignores status.
+    // If only the chase predicate had the carve-out, closing a payout would
+    // move it from one pill to the other rather than out of both — and the
+    // backlog that has to reach zero before a month publishes would still be
+    // full of deposits.
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const { payout } = await markedPair(s);
+    await s.as.mutation(api.finances.setTransactionStatus, {
+      transactionId: payout,
+      status: "reconciled",
+    });
+
+    const counts = (
+      await s.as.query(api.finances.listReconcile, { filter: "all" })
+    ).counts;
+    expect(counts.missing_receipt).toBe(0);
+    expect(counts.undocumented).toBe(0);
+  });
+
+  test("a payout can be CLOSED with nothing attached", async () => {
+    // The documented-before-closed gate (`RECEIPT_REQUIRED`) reads the same
+    // predicate, so the exemption has to reach it too — otherwise the row owes
+    // no receipt and still can't be closed, which is the worst of both.
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const { payout } = await markedPair(s);
+
+    await s.as.mutation(api.finances.setTransactionStatus, {
+      transactionId: payout,
+      status: "reconciled",
+    });
+    expect((await txn(s, payout))!.status).toBe("reconciled");
+  });
+
+  test("a marked TRANSFER still owes one — the founder rule that did NOT change", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const { transferOut } = await markedPair(s);
+
+    await expect(
+      s.as.mutation(api.finances.setTransactionStatus, {
+        transactionId: transferOut,
+        status: "reconciled",
+      }),
+    ).rejects.toMatchObject({ data: { code: "RECEIPT_REQUIRED" } });
+  });
+
+  test("an UNMARKED deposit is unaffected — it never owed anything", async () => {
+    // The exemption is by POSITIVE MARKER (`payoutProcessor`), same discipline
+    // as the fee carve-out. A plain inflow was already outside the population,
+    // so nothing about this row changed in either direction.
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    await seedTxn(s, { amountCents: 5_000, flow: "inflow" });
+
+    const res = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(res.counts.missing_receipt).toBe(0);
+    expect(res.chaseCount).toBe(0);
   });
 });

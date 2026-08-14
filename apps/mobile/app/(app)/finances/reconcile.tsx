@@ -141,8 +141,11 @@ import {
 } from "../../../components/finance/modals/BulkExplainModal";
 import {
   summarizeBulkExplain,
+  CLOSE_WORDING,
+  type BulkExplainRowOutcome,
   type BulkExplainSummary,
 } from "../../../components/finance/reconcile/bulkExplainOutcome";
+import { errorCode, errorMessage } from "../../../lib/errors";
 import type { ReceiptExceptionReason } from "@events-os/shared";
 import type { ActionToast } from "../../../lib/useActionToast";
 import { buildForPickerItems } from "../../../components/finance/reconcile/forPicker";
@@ -448,6 +451,13 @@ function ReconcileGrid() {
   // A clean pass needs no modal — the toast says it and the rows visibly
   // change state underneath.
   const [explainToast, setExplainToast] = useState<ActionToast | null>(null);
+  // ── BULK CLOSE ────────────────────────────────────────────────────────────
+  // Same two pieces of state, for the same reason, on the other bulk action
+  // the server refuses per row (see `bulkMarkClosed`).
+  const [closeSummary, setCloseSummary] = useState<BulkExplainSummary | null>(
+    null,
+  );
+  const [closeToast, setCloseToast] = useState<ActionToast | null>(null);
 
   const parsedYear = params.year ? Number(params.year) : undefined;
   const periodYear = parsedYear != null && !Number.isNaN(parsedYear) ? parsedYear : undefined;
@@ -1481,7 +1491,7 @@ function ReconcileGrid() {
   ) {
     setMarkBusy(true);
     try {
-      // A loop over the per-row mutation, same shape as `bulkMarkReconciled`
+      // A loop over the per-row mutation, same shape as `bulkMarkClosed`
       // — a month of payouts from one processor is a single action. The
       // "whose money is this?" choice applies to every selected deposit
       // (server-side no-op for rows already sitting on the stated book).
@@ -1591,13 +1601,7 @@ function ReconcileGrid() {
       // (a short purpose, over the cap) leaves the sheet open with the words
       // still in it, which is the only way to correct one.
       if (!res) return;
-      const summary = summarizeBulkExplain(res.rows, (id) => {
-        const row = displayed.find((r) => r.id === id);
-        if (!row) return null;
-        return `${displayMerchantName(row, "Transaction")} · ${new Date(
-          row.postedAt,
-        ).toLocaleDateString("en-CA", { timeZone: FINANCE_TIMEZONE })}`;
-      });
+      const summary = summarizeBulkExplain(res.rows, bulkRowLabel);
       setExplainOpen(false);
       if (summary.failed > 0) {
         setExplainSummary(summary);
@@ -1610,18 +1614,60 @@ function ReconcileGrid() {
     }
   }
 
-  async function bulkMarkReconciled() {
-    await run(
-      // No bulk-status mutation: a loop over the idempotent per-row setter is fine.
-      () =>
-        Promise.all(
-          bulkIds.map((id) =>
-            setStatus({ transactionId: id, status: "reconciled" }),
-          ),
-        ),
-      { errorTitle: "Couldn't close" },
+  /** How the grid is naming a row right now — what a bulk result hands back
+   *  instead of an id. Shared by both bulk actions, so a refusal reads the
+   *  same whichever one produced it, and nothing about the row is re-fetched:
+   *  the caller selected it from `displayed`. */
+  function bulkRowLabel(id: string): string | null {
+    const row = displayed.find((r) => r.id === id);
+    if (!row) return null;
+    return `${displayMerchantName(row, "Transaction")} · ${new Date(
+      row.postedAt,
+    ).toLocaleDateString("en-CA", { timeZone: FINANCE_TIMEZONE })}`;
+  }
+
+  /**
+   * CLOSING A SELECTION — and naming the rows that wouldn't close.
+   *
+   * Still a loop over the idempotent per-row setter: there is no bulk-status
+   * mutation, and the server has to authorize each row against its own book
+   * regardless. What changed is that the loop no longer stops reporting at the
+   * first refusal. `finances.setTransactionStatus` refuses a close for three
+   * separate reasons now — no documentation, no approved coding, and an unpaid
+   * personal charge (founder, 2026-08-13: a row somebody still owes money back
+   * on isn't finished) — and across a 40-row selection they routinely coexist.
+   *
+   * `Promise.all` surfaced exactly one of them. Every mutation still ran and
+   * every success still committed, so the screen showed some rows closing, one
+   * error toast, and no way to tell which of the other thirty-nine were
+   * refused or why — the silent-skip failure the bulk EXPLAIN path already
+   * solved. Same solution, same words, same results panel: settle every
+   * promise, group the refusals by the server's own code, list each charge by
+   * the name the grid gave it, and leave the selection alone so the rows that
+   * still need work are the next thing in front of you.
+   */
+  async function bulkMarkClosed() {
+    const settled = await Promise.allSettled(
+      bulkIds.map((id) =>
+        setStatus({ transactionId: id, status: "reconciled" }),
+      ),
     );
-    clearSelection();
+    const rows: BulkExplainRowOutcome[] = settled.map((result, i) => ({
+      transactionId: bulkIds[i],
+      outcome: result.status === "fulfilled" ? "submitted" : "failed",
+      code: result.status === "rejected" ? errorCode(result.reason) : null,
+      message:
+        result.status === "rejected"
+          ? errorMessage(result.reason, "This charge wouldn't close.")
+          : null,
+    }));
+    const summary = summarizeBulkExplain(rows, bulkRowLabel, CLOSE_WORDING);
+    if (summary.failed > 0) {
+      setCloseSummary(summary);
+    } else {
+      setCloseToast({ title: "Closed", message: summary.line });
+      clearSelection();
+    }
   }
 
   return (
@@ -2065,7 +2111,7 @@ function ReconcileGrid() {
             forItems={bulkForItems}
             onSetCategory={bulkSetCategory}
             onSetFor={bulkSetFor}
-            onMarkReconciled={bulkMarkReconciled}
+            onMarkReconciled={bulkMarkClosed}
             onClear={clearSelection}
             hideCategory={bulkHideCategory}
             spansBooks={selectionSpansBooks}
@@ -2109,6 +2155,16 @@ function ReconcileGrid() {
           <BulkExplainResults
             summary={explainSummary}
             onClose={() => setExplainSummary(null)}
+          />
+        ) : null}
+
+        {/* The same panel for the same reason, on the other bulk action the
+            server refuses a row at a time — "3 closed · 2 still owe money
+            back", with those two charges named. */}
+        {closeSummary ? (
+          <BulkExplainResults
+            summary={closeSummary}
+            onClose={() => setCloseSummary(null)}
           />
         ) : null}
 
@@ -2351,6 +2407,11 @@ function ReconcileGrid() {
         toast={explainToast}
         onDismiss={() => setExplainToast(null)}
       />
+      {/* And the clean-pass outcome for a bulk close. It used to be silence
+          plus the rows moving; now that a close can be refused per row, the
+          successful case has to say so too, or "nothing happened" and "all of
+          them closed" look identical. */}
+      <ToastView toast={closeToast} onDismiss={() => setCloseToast(null)} />
       </View>
 
       {showPanel && panelTxn ? (

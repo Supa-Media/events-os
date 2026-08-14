@@ -535,6 +535,23 @@
  * filter; the checkbox, Merchant and Actions always stay; the narrowed view is
  * in the link). No section, course, slug, minutes or quiz length moved, so every
  * table below is unchanged.
+ *
+ * 2026-08-14 — two CLOSE rules, both founder calls about what a row owes
+ * before it can be closed, both content-only. `finance-reconcile-grid`'s
+ * "Personal is a flag, not a status" now teaches that a personal charge
+ * awaiting repayment cannot be closed, while a row closed BEFORE it was
+ * flagged stays closed and stays both — the clause it replaces was true in
+ * only one of those two directions. `finance-transfers-and-payouts`' "Marked
+ * still means documented" splits its two markings: a marked transfer still
+ * owes its bank statement, a marked payout owes nothing at all, and the block
+ * says outright which processors we hold a settlement record for ourselves
+ * (Stripe) and which we don't (Givebutter, hand-marked "other"). Neither
+ * section had a quiz question the changes made false, so nothing was swapped
+ * in either — both were checked question by question, and
+ * `finance-reconcile-grid` is at the 5-cap, where a swap would have cost
+ * coverage to restate what the rule blocks already say. No title, slug,
+ * minutes, quizLength, section or course order moved: every table below is
+ * unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
