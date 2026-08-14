@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 import {
   autoExplainedKind,
   autoExplanationLine,
+  giftCreditExplanation,
   personalExpenseState,
   personalStateBlocksClose,
   PERSONAL_EXPENSE_STATES,
@@ -691,5 +692,64 @@ describe("autoExplanationLine", () => {
 
   test("the cashback line says what the money is", () => {
     expect(autoExplanationLine("cashback")).toContain("Card cashback");
+  });
+});
+
+describe("giftCreditExplanation — what a gift-carrying deposit says", () => {
+  const base = { bookLabel: "New York", unclaimedCents: 0 };
+
+  test("says nothing extra when the whole deposit is this book's giving", () => {
+    expect(
+      giftCreditExplanation({ ...base, inScopeCents: 700_000, otherBooksCents: 0 }),
+    ).toBe(autoExplanationLine("gift_credit"));
+  });
+
+  test("names this book's share and the rest when a donation was SPLIT", () => {
+    // The founder's case: $7,000 wired, $2,000 New York's, $5,000 central's.
+    // The page used to show the arrival against $2,050 of giving and say
+    // nothing about where the other $5,000 went.
+    const line = giftCreditExplanation({
+      ...base,
+      inScopeCents: 200_000,
+      otherBooksCents: 500_000,
+    });
+    expect(line).toContain("$2,000.00 of this deposit is New York's giving");
+    expect(line).toContain("attributed the rest — $5,000.00 — to other books");
+    // The other books are never NAMED and their giving is never broken down —
+    // each publishes its own statement, and that is where it is accounted for.
+    expect(line).not.toContain("Central");
+  });
+
+  test("says so when NONE of the deposit is this book's", () => {
+    const line = giftCreditExplanation({
+      ...base,
+      inScopeCents: 0,
+      otherBooksCents: 700_000,
+    });
+    expect(line).toContain("None of it is New York's");
+    expect(line).not.toContain("of this deposit is New York's giving");
+  });
+
+  test("names the unaccounted-for part last, and plainly", () => {
+    const line = giftCreditExplanation({
+      bookLabel: "New York",
+      inScopeCents: 200_000,
+      otherBooksCents: 0,
+      unclaimedCents: 500_000,
+    });
+    expect(line).toContain("$2,000.00 of this deposit is New York's giving");
+    expect(line).toContain("$5,000.00 of it is not yet accounted for");
+  });
+
+  test("reports a split AND a remainder together", () => {
+    const line = giftCreditExplanation({
+      bookLabel: "New York",
+      inScopeCents: 200_000,
+      otherBooksCents: 300_000,
+      unclaimedCents: 200_000,
+    });
+    expect(line).toContain("$2,000.00 of this deposit is New York's giving");
+    expect(line).toContain("$3,000.00 — to other books");
+    expect(line).toContain("$2,000.00 of it is not yet accounted for");
   });
 });

@@ -2164,6 +2164,71 @@ export function autoExplanationLine(
     : "Accidental personal charge — awaiting repayment.";
 }
 
+/**
+ * WHAT A GIFT-CARRYING DEPOSIT SAYS ON A PUBLIC PAGE.
+ *
+ * One bank deposit is routinely several gifts, and they do not all belong to
+ * the book whose statement a reader is looking at: a $7,000 wire that is
+ * $5,000 of central's giving and $2,000 of New York's lands in ONE account,
+ * and each book counts only its own share.
+ *
+ * The generic line ("counted once, in the giving roll below") is true but
+ * leaves a reader stuck when that happens — New York's page showed a $7,000
+ * arrival against $2,050 of giving and said nothing about where the rest went,
+ * which is a gap a careful reader is right to distrust. So when a donation was
+ * split, the line SAYS it was split, and says which part is this book's
+ * (founder, 2026-08-14: "hey 2K isn't this book, but the donor attributed the
+ * rest to other books … we should do that any time we see that a donation has
+ * been split").
+ *
+ * It reports the OTHER books' share as one figure and never names them or
+ * breaks it down. Each of those books publishes its own statement, and that is
+ * where its giving is accounted for; restating another book's numbers here
+ * would be this page answering for records it does not hold.
+ *
+ * `unclaimedCents` is the part of the deposit no gift claims — money that
+ * really arrived and still counts. It is named last and plainly, because it is
+ * the one part of the sentence that describes unfinished work.
+ */
+export function giftCreditExplanation(args: {
+  /** The book whose statement this is. */
+  bookLabel: string;
+  /** Cents of the deposit claimed by gifts in THIS book. */
+  inScopeCents: number;
+  /** Cents claimed by gifts in any OTHER book. */
+  otherBooksCents: number;
+  /** Cents no gift claims — still counted as this book's income. */
+  unclaimedCents: number;
+}): string {
+  const { bookLabel, inScopeCents, otherBooksCents, unclaimedCents } = args;
+
+  // Nothing split and nothing outstanding: the plain case, and the same
+  // sentence `autoExplanationLine` gives it.
+  if (otherBooksCents <= 0 && unclaimedCents <= 0) {
+    return autoExplanationLine("gift_credit");
+  }
+
+  const parts: string[] = [];
+  if (inScopeCents > 0) {
+    parts.push(
+      `${formatCents(inScopeCents)} of this deposit is ${bookLabel}'s giving, counted once in the giving roll below.`,
+    );
+  }
+  if (otherBooksCents > 0) {
+    parts.push(
+      inScopeCents > 0
+        ? `The giver attributed the rest — ${formatCents(otherBooksCents)} — to other books, which report it on their own statements.`
+        : `This deposit is giving the giver attributed to other books, which report it on their own statements. None of it is ${bookLabel}'s.`,
+    );
+  }
+  if (unclaimedCents > 0) {
+    parts.push(
+      `${formatCents(unclaimedCents)} of it is not yet accounted for.`,
+    );
+  }
+  return parts.join(" ");
+}
+
 // ── ACH destination capture (Increase External Accounts) ─────────────────────
 // The funding-type Increase records on an External Account (`POST
 // /external_accounts`). Increase itself also allows `general_ledger`/`other`,
