@@ -114,6 +114,21 @@ const CADENCE_WINDOW_LABELS: Record<string, string> = {
   yearly: "this year",
 };
 
+const MONTH_ABBR = [
+  "Jan", "Feb", "Mar", "Apr", "May", "Jun",
+  "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/** "in Mar" / "in Q2" — the window label once the reader has stepped off the
+ *  current one by tapping a bar. Deliberately NOT "this month", which would
+ *  be a lie about the very thing they navigated away from. */
+function namedWindowLabel(cadence: string, month: number): string | null {
+  if (cadence === "monthly") return `in ${MONTH_ABBR[month - 1]}`;
+  if (cadence === "quarterly") return `in Q${Math.ceil(month / 3)}`;
+  if (cadence === "yearly") return "this year";
+  return null;
+}
+
 /**
  * One budget's charges — the expansion behind a `budgetsGlance` card.
  *
@@ -125,9 +140,27 @@ const CADENCE_WINDOW_LABELS: Record<string, string> = {
  * existence of budgets the caller can't see.
  */
 export const expenses = query({
-  args: { budgetId: v.id("budgets") },
+  args: {
+    budgetId: v.id("budgets"),
+    /**
+     * WHICH CADENCE WINDOW to report, as a month of the budget's year — the
+     * month itself for a `monthly` bucket, any month of the quarter for a
+     * `quarterly` one. Omitted = today's window, which is what every caller
+     * did before and still does by default.
+     *
+     * This is what makes the card's window strip INTERACTIVE (founder,
+     * 2026-08-14: "when expanding make the graph interactive"). Tapping March's
+     * bar has to produce March's charges, and the charges cannot be filtered
+     * client-side: the drawer only ever receives the window it asked for, and
+     * which txns fall in a window is `txnCountsTowardBudget`'s decision, not a
+     * date comparison the client is allowed to re-implement.
+     *
+     * Ignored for a one-time budget, whose window is its whole life.
+     */
+    month: v.optional(v.number()),
+  },
   returns: v.union(budgetLinesResult, v.null()),
-  handler: async (ctx, { budgetId }) => {
+  handler: async (ctx, { budgetId, month }) => {
     const budget = await ctx.db.get(budgetId);
     if (!budget) return null;
     // A central budget has no chapter roster to be a member of; the glance
@@ -146,6 +179,10 @@ export const expenses = query({
     const type = effectiveType(budget);
     const isOneTime = type === "one_time";
     const now = easternParts(Date.now());
+    // Clamped, not trusted: an out-of-range month would silently widen the
+    // window to the whole year via `budgetEffectivePeriod`'s `undefined` path.
+    const windowMonth =
+      month != null && month >= 1 && month <= 12 ? Math.trunc(month) : now.month;
 
     const sandboxMode = await readSandbox(ctx);
     const linked = await ctx.db
@@ -162,7 +199,9 @@ export const expenses = query({
     const counted = linked
       .filter((tr) => txnMatchesMode(tr, sandboxMode))
       .filter((tr) =>
-        isOneTime ? isSpend(tr) : txnCountsTowardBudget(tr, budget, now.month),
+        isOneTime
+          ? isSpend(tr)
+          : txnCountsTowardBudget(tr, budget, windowMonth),
       );
 
     const spentCents = counted.reduce((sum, tr) => sum + tr.amountCents, 0);
@@ -248,7 +287,11 @@ export const expenses = query({
       remainingCents: capCents - spentCents,
       windowLabel: isOneTime
         ? null
-        : CADENCE_WINDOW_LABELS[budget.cadence] ?? null,
+        : windowMonth === now.month
+          ? CADENCE_WINDOW_LABELS[budget.cadence] ?? null
+          // A window that ISN'T the current one must not be labelled "this
+          // month" — the reader tapped a bar precisely to leave today.
+          : namedWindowLabel(budget.cadence, windowMonth),
       categories,
       lines,
       lineTotalCount: counted.length,
