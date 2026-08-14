@@ -14,7 +14,13 @@
  *    as cluttered"): the once-a-morning explainer is now one sentence with
  *    the rest behind a "How this works" disclosure, and the last run's notes
  *    (up to 6 lines) collapse behind a count toggle past 3 — same shape as
- *    `TransactionHistoryCompact`.
+ *    `TransactionHistoryCompact`. That collapse is deliberately NOT where the
+ *    "chapters sitting below book value, real cash movement is off" advisory
+ *    lives (review finding, 2026-08-14): `notes` is a capped, unordered,
+ *    collapsible run log, the wrong home for a STANDING CONDITION. It renders
+ *    instead from `overview.lastRun.unsettledGaps` — a typed field, always
+ *    visible, immediately below the "Real cash movement" block, since that
+ *    toggle is the condition's cause and its fix.
  *
  * The org-wide "do these numbers agree?" verdict is NOT here — it lives in
  * `ReconciliationSummary.tsx`, immediately BELOW `BalancesSection`, because it
@@ -74,6 +80,7 @@ import {
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { BookValueBreakdownModal } from "./BookValueBreakdownModal";
+import { computeReconciliationRunView } from "./reconciliationRunView";
 
 /** `Aug 7` / `Aug 7, 5:31 AM` in the org's timezone — compact display dates. */
 function shortDate(ts: number, withTime = false): string {
@@ -300,11 +307,6 @@ function FlagModal({
 }
 
 // ── Morning reconciliation panel ─────────────────────────────────────────────
-
-/** Last-run notes at/below this count render inline — same threshold
- *  `TransactionHistoryCompact` uses, so a short list never grows a toggle
- *  just to reveal almost nothing. */
-const RUN_NOTES_INLINE_THRESHOLD = 3;
 
 const RUN_STATUS_TONE: Record<string, "success" | "warn" | "danger" | "neutral"> =
   {
@@ -539,6 +541,72 @@ export function ReconciliationSection() {
             )}
           </View>
 
+          {/* ADDED (2026-08-14, review finding): the last run's `notes` array is
+              a capped (40), unordered, UI-collapsible log — the wrong home for
+              a STANDING CONDITION. With Real cash movement off, the morning
+              engine finds chapters below (or above) their book value and books
+              NOTHING for them; that fact used to travel only through `notes`,
+              which on a busy morning (>3 notes) sat behind a closed-by-default
+              toggle, and past 6 notes never reached this component at all, and
+              past 40 never left the server. `unsettledGaps` is its own typed
+              field on the run summary specifically so it can render here,
+              always, next to the toggle that causes it — the effect sits
+              beside its cause, and "Turn on" above is the fix. */}
+          {lastRun && lastRun.unsettledGaps.length > 0
+            ? (() => {
+                // `advisoryGaps` (unlike `runNotes` below it) is never sliced
+                // and never gated on `notesExpanded` — see
+                // `reconciliationRunView.ts` for why, and
+                // `reconciliationRunView.test.ts` for the regression this
+                // guarantees.
+                const { advisoryGaps } = computeReconciliationRunView(
+                  lastRun,
+                  notesExpanded,
+                );
+                return (
+                  <View className="gap-1.5 rounded-lg border border-warn bg-warn-bg px-3 py-2">
+                    <View className="flex-row items-center gap-1.5">
+                      <Icon name="alert-triangle" size={14} color={colors.warn} />
+                      <Text className="text-xs font-semibold text-ink">
+                        Not settled — real cash movement is off
+                      </Text>
+                    </View>
+                    <Text className="text-2xs text-muted">
+                      {advisoryGaps.length === 1
+                        ? "This chapter's"
+                        : `These ${advisoryGaps.length} chapters'`}{" "}
+                      cash doesn&apos;t match its book, and nothing is being
+                      booked or moved to close the gap. Turn on Real cash
+                      movement above to have the morning run bring it to its
+                      book.
+                    </Text>
+                    <View className="gap-1 pt-0.5">
+                      {advisoryGaps.map((gap) => (
+                        <View
+                          key={gap.scope}
+                          className="flex-row items-center justify-between gap-2"
+                        >
+                          <Text
+                            className="min-w-0 flex-1 text-2xs text-ink"
+                            numberOfLines={1}
+                          >
+                            {gap.scopeName}
+                          </Text>
+                          <Text
+                            className="text-2xs font-semibold text-warn"
+                            style={{ fontVariant: ["tabular-nums"] }}
+                          >
+                            {formatCents(Math.abs(gap.gapCents))}{" "}
+                            {gap.gapCents > 0 ? "below book" : "above book"}
+                          </Text>
+                        </View>
+                      ))}
+                    </View>
+                  </View>
+                );
+              })()
+            : null}
+
           {overview.sinceMs != null ? (
             <Text className="text-2xs text-faint">
               Looking at payouts arriving since {shortDate(overview.sinceMs)}.
@@ -553,10 +621,8 @@ export function ReconciliationSection() {
 
           {lastRun
             ? (() => {
-                const runNotes = lastRun.notes.slice(0, 6);
-                const notesCollapsible =
-                  runNotes.length > RUN_NOTES_INLINE_THRESHOLD;
-                const showNotes = !notesCollapsible || notesExpanded;
+                const { runNotes, notesCollapsible, showNotes } =
+                  computeReconciliationRunView(lastRun, notesExpanded);
                 return (
                   <View className="gap-0.5 rounded-lg border border-border bg-sunken/40 px-3 py-2">
                     <Text className="text-2xs text-muted">
