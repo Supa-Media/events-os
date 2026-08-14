@@ -547,7 +547,13 @@ export async function materializePortedReimbursementCoding(
      *  stamped "now" — this is when the testimony was actually written. */
     submittedAt: number;
     approvalParty: "single" | "two_party";
-    portedFromReimbursementId: Id<"reimbursementRequests">;
+    /** PROVENANCE — exactly one of these, naming the rail the testimony came
+     *  from. Both are optional in the signature (a caller supplies whichever
+     *  applies) but a caller supplying NEITHER is a bug: the whole point of
+     *  this function over the normal editor is that the row can say where its
+     *  words came from. */
+    portedFromReimbursementId?: Id<"reimbursementRequests">;
+    portedFromContractorPaymentId?: Id<"contractorPayments">;
   },
 ): Promise<Id<"transactionCodings"> | null> {
   const existing = await codingForTransaction(ctx, args.transactionId);
@@ -568,7 +574,12 @@ export async function materializePortedReimbursementCoding(
     ...(args.decidedByUserId ? { decidedByUserId: args.decidedByUserId } : {}),
     decidedAt: args.decidedAt,
     approvalParty: args.approvalParty,
-    portedFromReimbursementId: args.portedFromReimbursementId,
+    ...(args.portedFromReimbursementId
+      ? { portedFromReimbursementId: args.portedFromReimbursementId }
+      : {}),
+    ...(args.portedFromContractorPaymentId
+      ? { portedFromContractorPaymentId: args.portedFromContractorPaymentId }
+      : {}),
   });
   await ctx.db.patch(args.transactionId, { codingState: "approved" });
   return codingId;

@@ -92,7 +92,9 @@ import { linkWireGiftsToTheirDeposit } from "./0070_link_wire_gifts_to_their_dep
 import { removeUnexecutedBalanceSettlementsMigration } from "./0071_remove_unexecuted_balance_settlements";
 import { foldFeeCoverageIntoGifts } from "./0072_fold_fee_coverage_into_gifts";
 import { bookKnownRepaymentFeeCoverage } from "./0073_book_known_repayment_fee_coverage";
-import { backfillWallFromGifts } from "./0074_backfill_wall_from_gifts";
+import { bookRepaymentCoverageBySession } from "./0074_book_repayment_coverage_by_session";
+import { labelFeeCoverageRows } from "./0075_label_fee_coverage_rows";
+import { backfillWallFromGifts } from "./0076_backfill_wall_from_gifts";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -449,6 +451,20 @@ export const MIGRATIONS: Migration[] = [
   // outright if the rows it finds are not the ones it was told to expect.
   // See 0073.
   bookKnownRepaymentFeeCoverage,
+  // 0073 refused on deploy: it looked for one settled repayment of $6.00 and
+  // found none, because THE $6.00 WAS NEVER A ROW — it was two $3.00 charges
+  // bundled into one checkout, and a fee is quoted once on their total. This
+  // pins the SESSION instead, which names the exact payment rather than an
+  // amount two rows could share, and verifies the debts still sum to what was
+  // recorded before booking anything. See 0074.
+  bookRepaymentCoverageBySession,
+  // …and 0074's rows landed in Reconcile as "Unlabeled charge / Uncategorized
+  // / For: None", which is the shape two other modules already exist to
+  // prevent. Names them and files them under the same category as the fees
+  // they offset. Moves no money, so unlike its neighbours it can take every
+  // row carrying the marker rather than pinning one — and it only ever fills
+  // an absence, never overwrites a human's choice. See 0075.
+  labelFeeCoverageRows,
   // The public giving wall was an OPT-IN echo — a row existed only if the
   // giver ticked a box AND typed something, and never for a central gift —
   // so the page shipping under "Every gift, in public" (give-redesign-v3, D6)
@@ -457,6 +473,6 @@ export const MIGRATIONS: Migration[] = [
   // asked of them, so none is recorded). Moves no money and touches no
   // rollup: the wall's totals come from `givingScopeRollups`, never from these
   // rows. Idempotent on `refKey`, against both the live `give:<session>` key
-  // and its own `gift:<id>`. See 0074.
+  // and its own `gift:<id>`. See 0076.
   backfillWallFromGifts,
 ];

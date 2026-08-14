@@ -133,7 +133,7 @@ export async function runBackfillWallFromGifts(ctx: MutationCtx): Promise<{
   }
 
   console.log(
-    `[0074] scanned ${oldestFirst.length} recent gifts: inserted ${inserted} ` +
+    `[0076] scanned ${oldestFirst.length} recent gifts: inserted ${inserted} ` +
       `anonymous wall rows, skipped ${skippedExisting} already echoed`,
   );
   return {
@@ -144,6 +144,6 @@ export async function runBackfillWallFromGifts(ctx: MutationCtx): Promise<{
 }
 
 export const backfillWallFromGifts: Migration = {
-  name: "0074_backfill_wall_from_gifts",
+  name: "0076_backfill_wall_from_gifts",
   run: runBackfillWallFromGifts,
 };

@@ -291,6 +291,12 @@ describe("repayment rails — the days-long gap", () => {
     // so it has to carry positive signed value or it cannot offset the fee.
     expect(coverage?.flow).toBe("inflow");
     expect(coverage?.externalId).toBe("stripe_repayment_fee_coverage:cs_ach");
+    // AND IT SAYS WHAT IT IS. A machine-posted row with no merchant lands in
+    // Reconcile as "Unlabeled charge / Uncategorized / For: None" — the shape
+    // `reimbursementTxnFields` and `increasePayoutMachine` both exist to
+    // prevent, and which these rows shipped with until the founder found two
+    // of them. A 49¢ line nobody can identify is worse than no line.
+    expect(coverage?.merchantName).toBe("Processing fee covered by payer");
     // Together they equal what the payer was actually charged.
     expect((credit?.amountCents ?? 0) + (coverage?.amountCents ?? 0)).toBe(
       prepared.chargeCents,

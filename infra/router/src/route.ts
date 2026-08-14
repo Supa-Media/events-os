@@ -85,6 +85,18 @@ export const CONVEX_PREFIXES = [
   // with live curls: the Worker served an empty static-asset 404 and Convex
   // was never consulted). drift.test.ts now resolves template literals too.
   "/finances/",
+  // The contractor's own payment page (`apps/convex/http.ts`'s `/contract/`
+  // GET, plus the `/api/contract/*` posts already covered by `/api/`). Same
+  // shape as `/reimburse/`: a private link texted or emailed to somebody with
+  // no account, which has to reach Convex rather than the static site.
+  //
+  // Missing this is not a degraded experience, it is a dead link — the Worker
+  // would serve an empty static-asset 404 and Convex would never be consulted,
+  // exactly as happened to `/finances/` above. A contractor cannot work around
+  // it, cannot report it usefully, and the org finds out when they ask where
+  // their money is. The drift guard in `drift.test.ts` caught this one before
+  // it shipped, which is the whole reason that test exists.
+  "/contract/",
 ] as const;
 
 function isConvexPath(pathname: string): boolean {

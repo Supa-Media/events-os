@@ -184,6 +184,13 @@ export const TRANSACTION_SOURCES = [
   "relay_csv", // imported from a Relay monthly-statement CSV (full history)
   "manual", // hand-entered
   "reimbursement", // the payout leg of an approved reimbursement (a transfer)
+  "contractor_payment", // the payout leg of an approved CONTRACTOR payment — a
+  // sibling rail, and its own source rather than a reuse of `reimbursement`
+  // because the two mean different things to a reader and to the tax year: a
+  // reimbursement pays a member back for a receipt, this buys work from an
+  // outside person and is reportable income to them. Sharing the literal made
+  // every contractor row render "Reimbursement payout" in the rail column,
+  // which is precisely the confusion this feature's naming exists to avoid.
   "repayment", // an offsetting credit from a personal-charge repayment
   "skim", // HISTORICAL (WP-4.1, retired) — a leg of the automated monthly
   // chapter→central City Launch Fund skim. No code writes this anymore
@@ -225,6 +232,7 @@ export const TRANSACTION_SOURCE_LABELS: Record<TransactionSource, string> = {
   relay_csv: "Relay statement import",
   manual: "Entered by hand",
   reimbursement: "Reimbursement payout",
+  contractor_payment: "Contractor payment",
   repayment: "Personal-charge repayment",
   skim: "City Launch Fund skim (historical)",
   launch_grant: "Launch grant (historical)",

@@ -3,7 +3,7 @@ import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
-import { runBackfillWallFromGifts } from "../migrations/0074_backfill_wall_from_gifts";
+import { runBackfillWallFromGifts } from "../migrations/0076_backfill_wall_from_gifts";
 import type { Id } from "../_generated/dataModel";
 
 /**

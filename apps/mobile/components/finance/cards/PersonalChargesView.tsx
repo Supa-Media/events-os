@@ -112,6 +112,24 @@ function statusBadge(
   return { label: "Owed", tone: "warn" };
 }
 
+/** Row copy for the receipt state — the founder's stated use case is "did
+ *  this person ever actually get one?", so this reads the three receipt
+ *  fields in the order that actually answers it: a CONFIRMED delivery wins
+ *  outright, then a known failure (the invisible-failure case a reviewer
+ *  flagged on this branch), then "attempted but unconfirmed", then never. */
+function receiptStatusText(row: Repayment): string {
+  if (row.receiptDeliveredAt) {
+    return `Receipt sent ${shortDate(row.receiptDeliveredAt)}`;
+  }
+  if (row.receiptDeliveryFailedAt) {
+    return row.lastReceiptError
+      ? `Last receipt attempt failed — ${row.lastReceiptError}`
+      : "Last receipt attempt failed to send";
+  }
+  if (row.receiptSentAt) return "Receipt attempted — delivery unconfirmed";
+  return "No receipt sent yet";
+}
+
 function NoFinanceAccess() {
   return (
     <EmptyState
@@ -128,6 +146,7 @@ function RepaymentRow({
   onUnmark,
   onRemind,
   onCopyLink,
+  onSendReceipt,
   busy,
   isLast,
 }: {
@@ -136,6 +155,7 @@ function RepaymentRow({
   onUnmark: () => void;
   onRemind: () => void;
   onCopyLink: () => void;
+  onSendReceipt: () => void;
   busy: boolean;
   isLast: boolean;
 }) {
@@ -163,9 +183,10 @@ function RepaymentRow({
         <Badge label={badge.label} tone={badge.tone} />
       </View>
 
-      {/* The one action left — manager only, and the server gates it again
-          regardless. A settled row keeps none: `unflagPersonalCharge` refuses
-          once the credit is posted. */}
+      {/* Manager row actions — server-gated again regardless. Before
+          settlement there's a debt to chase; after, `unflagPersonalCharge`
+          refuses (there's nothing left to un-flag), but a receipt can always
+          be (re)sent — that's the block below. */}
       {isManager && !settled ? (
         <View className="flex-row flex-wrap items-center justify-between gap-2">
           <Text className="text-2xs text-faint">
@@ -223,6 +244,33 @@ function RepaymentRow({
           </View>
         </View>
       ) : null}
+
+      {/* The one action a settled row keeps: (re)send its receipt on demand
+          — the founder's ask, including for a repayment settled long before
+          this button existed. Label and status both read from the receipt
+          fields so the row tells the truth about whether this person ever
+          actually got one — see `receiptStatusText`. */}
+      {isManager && settled ? (
+        <View className="flex-row flex-wrap items-center justify-between gap-2">
+          <Text
+            className={`text-2xs ${
+              row.receiptDeliveryFailedAt && !row.receiptDeliveredAt
+                ? "text-danger"
+                : "text-faint"
+            }`}
+          >
+            {receiptStatusText(row)}
+          </Text>
+          <Button
+            title={row.receiptDeliveredAt ? "Resend receipt" : "Send receipt"}
+            variant="ghost"
+            size="sm"
+            icon="send"
+            disabled={busy}
+            onPress={onSendReceipt}
+          />
+        </View>
+      ) : null}
     </View>
   );
 }
@@ -243,6 +291,10 @@ function PersonalChargesBody() {
   // `repaymentLinks.mintLink`. A mutation rather than a query because the
   // first press is what creates the token.
   const mintLink = useMutation(api.repaymentLinks.mintLink);
+  // Manual, per-row (re)send — same access rung as chasing (`requireRepaymentsCollect`),
+  // deliberately bypasses the automatic path's at-most-once claim. See
+  // `cards.ts`'s "Manual "Send receipt"" section.
+  const sendReceipt = useAction(api.cards.sendRepaymentReceiptManually);
   const { run, toast, dismiss } = useActionRunner();
   const [nudging, setNudging] = useState(false);
 
@@ -326,6 +378,27 @@ function PersonalChargesBody() {
     setBusyId(null);
   }
 
+  /** (Re)send ONE settled repayment's receipt — no confirmation, matching
+   *  this row's other single-tap actions ("Copy pay link", "Email it"):
+   *  it's a low-stakes, reversible-by-repeating email, not a ledger write,
+   *  and `busyId` already blocks a double-tap while one is in flight. The
+   *  action itself returns `null` on success and THROWS on failure — check
+   *  for `undefined` rather than falsiness, since `null` is the success
+   *  value here. */
+  async function handleSendReceipt(row: Repayment) {
+    setBusyId(row.id);
+    const result = await run(
+      () =>
+        sendReceipt({
+          repaymentId: row.id as Id<"personalRepayments">,
+        }),
+      { errorTitle: "Couldn't send the receipt" },
+    );
+    setBusyId(null);
+    if (result === undefined) return; // failure already surfaced
+    notifyResult(`Receipt emailed to ${row.payerName}.`);
+  }
+
   if (rows === undefined) {
     return <Text className="text-sm text-muted">Loading personal charges…</Text>;
   }
@@ -407,6 +480,7 @@ function PersonalChargesBody() {
                 onRemind={() => void handleRemind(r)}
                 onCopyLink={() => void handleCopyLink(r)}
                 onUnmark={() => void handleUnmark(r)}
+                onSendReceipt={() => {}}
               />
             ))}
           </View>
@@ -421,11 +495,12 @@ function PersonalChargesBody() {
                   key={r.id}
                   row={r}
                   isManager={isManager}
-                  busy={false}
+                  busy={busyId === r.id}
                   isLast={i === repaid.length - 1}
                   onRemind={() => {}}
                   onCopyLink={() => {}}
                   onUnmark={() => {}}
+                  onSendReceipt={() => void handleSendReceipt(r)}
                 />
               ))}
             </View>

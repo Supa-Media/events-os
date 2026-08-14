@@ -228,6 +228,18 @@ describe("curriculum content", () => {
     // comes back as a personal charge). Deliberately has no product mechanism
     // behind it; the founders were explicit that the tracks are taught and
     // reinforced in meetings rather than enforced in software.)
+    // + 2 (finance-paying-a-contractor + finance-contractor-tax-and-privacy,
+    // 2026-08-14, inserted directly after finance-reimbursements-and-flags so
+    // the two money-out flows are taught back to back — both required. The
+    // first teaches the distinction that causes the real errors (a
+    // reimbursement pays back a receipt and is not income; a contractor
+    // payment buys work, is substantiated by the AGREEMENT, and IS reportable
+    // income), the two entry points into one queue, and the rule that editing
+    // an agreed term voids the contractor's acceptance. The second teaches the
+    // W-9 — who may open it, that every view is logged, and that it is
+    // destroyed four years on — and what publishes: the work, the amount, the
+    // date and the category, with "Contractor payment" standing in for the
+    // name we deliberately never publish.)
     // + 1 (dev-public-gift-wall, 2026-08-14, appended to the donor-stewardship
     // course after dev-gifts-ledger-and-audit — required, not a capstone. The
     // /give redesign v3 (docs/plans/give-redesign-v3.md D6/D7/D10) inverted the
@@ -239,12 +251,12 @@ describe("curriculum content", () => {
     // (Giving → Wall, central `giving.manage` take down / restore), so it is
     // taught rather than left to be inferred. Placed right after the gifts
     // ledger so the private record is taught before its public echo.)
-    expect(ACADEMY_SECTION_COUNT).toBe(110);
+    expect(ACADEMY_SECTION_COUNT).toBe(112);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 110 }, (_v, i) => i + 1),
+      Array.from({ length: 112 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(109);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(111);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

@@ -710,6 +710,89 @@
  * its Group-by rule's Person paragraph, which also picks up the one clause a
  * reader of THAT lesson needs: the chase acts on the view you are standing in.
  * No quiz there changed; none of its questions hung on the button's name.
+ *
+ * CONTRACTOR PAYMENTS (2026-08-14, founder — "paying someone for work when
+ * there's nothing to reimburse and no invoice portal";
+ * `specs/contractor-payments-pm-spec.md` §9 asks for exactly this). A new money
+ * flow with new vocabulary, a new approval path and a new public-ledger rule,
+ * so it is training-worthy on three of CLAUDE.md's counts at once. It ADDS a
+ * course and two sections, and corrects one sentence in two existing lessons:
+ *
+ *  - NEW COURSE `finance-paying-contractors` (Finances stream), placed after
+ *    the shared `chapter-money-model` and before `treasurer`. `audience:
+ *    "team"` for the same reason that course carries it: it is not one seat's
+ *    remit — the Treasurer, the central Financial Manager and the ED all work
+ *    the same queue, and the whole point of the separation-of-duties rule
+ *    below is that two of them are involved in every payment. NOT given to
+ *    `chapter_director`: that seat derives finance VIEWER, so it can read the
+ *    queue but can neither compose an agreement nor approve one
+ *    (`lib/contractorPaymentsAccess.ts`).
+ *  - NEW SECTION `finance-paying-a-contractor` (5 min, 5-quiz), inserted
+ *    directly after `finance-reimbursements-and-flags` because the single most
+ *    likely error in this whole feature is confusing the two, and the fix is
+ *    to teach them back to back. It carries the distinction (money already
+ *    spent + receipt + not income vs. work bought + AGREEMENT + reportable
+ *    income), the two entry points into one queue, the uncoded self-serve
+ *    refusal, the three-signal SoD check that runs twice, and the rule that
+ *    editing agreed terms voids the contractor's acceptance.
+ *  - NEW SECTION `finance-contractor-tax-and-privacy` (4 min, 5-quiz), the
+ *    second module of that course: the W-9/W-8 file (never a typed TIN), the
+ *    logged-every-view access rule, the four-year destruction window, the W-8
+ *    approval block, what the public ledger does and does not say
+ *    (`CONTRACTOR_LEDGER_COUNTERPARTY` — the description, amount, date and
+ *    category publish; the NAME never does), that the description publishes
+ *    verbatim and permanently, and that raw bank digits are never stored.
+ *  - `finance-reimbursements-and-flags` OPENED with "Two situations, two
+ *    flows." There are three now, so that sentence was false the day this
+ *    shipped: it now names the third and points at the new course. Nothing
+ *    else in that lesson changed — its quiz is at the 5-question cap and no
+ *    question became wrong, since none of them ever claimed reimbursement was
+ *    the only way money leaves for a person.
+ *  - `finance-publishing-the-books`'s "No names, ever" bullet gained the
+ *    contractor case, which is the one place a reader could have concluded the
+ *    rule was only about givers and meal attendees. Content-only; that quiz is
+ *    at the cap too and none of its answers moved.
+ *
+ * NOT taught, deliberately: the `manual` payout fallback (an unwired Increase
+ * account degrades to a payout the treasurer completes by hand) and the
+ * idempotency/replay guards. Both are the same machinery the reimbursement
+ * rail already runs, neither changes what a person should DO, and the lesson
+ * budget went to the distinction and the tax form instead.
+ *
+ * PAYMENT RECEIPT ON PAYING A PERSONAL CHARGE BACK (2026-08-14, founder: "when
+ * people pay what they owe, we need to make sure we send them an email
+ * saying, like, hey, thanks for paying this off. This is your receipt …
+ * just in case they need a receipt for showing that they did the payment").
+ * `finance-reimbursements-and-flags` already enumerated every email the "you
+ * owe Public Worship" side sends — the flag notice, the reminder — and was
+ * silently missing the one that closes the loop: settling the debt now mails
+ * a receipt naming the total, the settle date, and one line per charge, with
+ * Stripe's own hosted receipt linked in when the payment ran through Stripe
+ * (a bank debit through the org's own Increase account has no Stripe charge
+ * behind it, and the email is still a complete, standalone receipt either
+ * way). ONE bullet added, content-only, minutes unchanged.
+ *
+ * ONE QUIZ QUESTION SWAPPED, at the 5-question cap
+ * `apps/convex/tests/academy.test.ts` enforces. OUT: "your chapter's
+ * Treasurer submits their own reimbursement — who approves it", whose
+ * doctrine (approver ≠ requester is identity-based, not role-based) is
+ * taught and quizzed in full in `finance-raise-vs-manage`'s "Separation of
+ * duties is identity-based, not a courtesy" section — losing it here loses
+ * no coverage. IN: paying back several flagged charges in one
+ * bundled payment gets ONE receipt itemizing all of them, never one per
+ * charge, with the Stripe-link/no-Stripe-link distinction spelled out in the
+ * explanation.
+ *
+ * MANUAL "SEND RECEIPT", AND ITS ONE LIMIT (2026-08-14, founder: "add an email
+ * button for already paid repayments … say they forgot it, or they just need
+ * it resent, or it's in the past"). The lesson bullet added above gained the
+ * manager-side half: a settled row on the personal-charges desk can be mailed
+ * its receipt on demand, however old, and says on the row whether one was ever
+ * delivered. The bullet and its quiz explanation originally claimed the button
+ * "never expires or locks after one use" — a 60-second cooldown and an
+ * in-flight lock landed later in the same branch to stop a runaway loop and a
+ * double-send race, so both were corrected to say it still works on demand
+ * across any gap but refuses a back-to-back double-press.
  */
 
 import type {
@@ -882,6 +965,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Which budget does this come out of?** Not \"the chapter's money\" — a specific, named, approved budget. Event budgets are named after the event template they came from (\"Genesis\"), with a year or a month added only when there's more than one to tell apart, so the name you say out loud is the name you'll find on the Budgets tab. If you can't name one, you've already found your answer: this isn't green.",
           "**Is there enough left in it?** Not what the budget started at — what's left after everything already charged to it. Open Finances → Budgets and look; the app knows, and you don't need a finance role to see it. The tab shows **one year at a time** — this year by default, with arrows to step back to a previous one, so a budget you can't find is almost always on another year's page rather than gone. Tap any budget to drop it open: the individual charges behind that number, who made each one, what's been coded where, and a link straight through to the event or project it belongs to. If the number surprises you, the answer to why is one tap away — don't guess, and don't ask around. For a standing bucket that resets every month or quarter (operating expenses, equipment), dropping it open also gives you the year window by window — every month or quarter so far side by side, plus a faded estimate of where the year lands if spending keeps up. Faded bars are a forecast from the months that have already finished, not money anyone has spent.",
+          "**Two headlines, never one.** The tab totals **Events & projects** and **Recurring** separately, and it will never show you a single grand total of the two. That isn't an omission — an event budget's cap is the whole plan for a thing that happens once, while a standing bucket's cap is what it gets *every month* or *every quarter*. Adding a $4,000 Genesis cap to a $500-a-month coffee cap gives you $4,500 of nothing. So the recurring headline is framed by WINDOW instead: budgeted, spent and left for **this month** across all the monthly buckets, and again for **this quarter** across the quarterly ones (and the year, for yearly ones). When someone asks \"how are we doing on budget this month\", that row is the answer — and it's asking about a different thing than the events total above it.",
           "**Which track is this on — green, yellow, or red?** The rest of this lesson.",
         ],
       },
@@ -1551,7 +1635,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Two situations, two flows. You paid out of pocket for something mission-related? Submit a reimbursement request. A personal charge landed on your Public Worship card by mistake? Flag it — that starts you owing the money back, not the other way around.",
+        text: "Two situations here, and a third one lesson over. You paid out of pocket for something mission-related? Submit a reimbursement request. A personal charge landed on your Public Worship card by mistake? Flag it — that starts you owing the money back, not the other way around.\n\nThe third is the one people file in the wrong place: paying someone for WORK, where nothing has been spent yet and there is no receipt to give back. That is a **contractor payment**, it is reportable income to the person paid, and it has its own flow and its own lesson — *Paying a contractor*. If you find yourself about to reimburse somebody for their own time, stop: that is the other flow.",
       },
       {
         kind: "bullets",
@@ -1564,6 +1648,8 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
           "**Card or bank transfer — you choose, and you cover the fee:** the payment processor's cut is added on top so Public Worship gets the full amount back instead of losing three cents on the dollar to fix your mistake. Because it's YOUR money covering it, you pick the rail: card is instant and costs about 2.9% + 30¢, a bank transfer costs 0.8% capped at $5.00 and takes about four business days. On a $248 charge that's roughly $7.72 against $2.00. Both figures are on screen before you commit. The fee is charged once per PAYMENT, not per charge — so settling four charges in one go costs less than paying for them one at a time across four evenings.",
           "**A bank transfer is not instant, and the app says so:** once you authorise it the charge moves to *Clearing* — still owed, but no longer payable, so you can't accidentally pay for it twice while the bank moves the money. If your bank refuses the debit, it comes back as owed with a note saying the attempt failed. Only when the money lands does the charge clear.",
+          "**The moment it lands, you get a receipt:** \"thanks for paying this off — here's your receipt,\" naming the total, the date it settled, and one line per charge it covered — pay off three flagged charges in one go and you get ONE email itemizing all three, never three separate ones. Paid by card or bank transfer through Stripe? The email also links Stripe's own hosted receipt. Paid by bank debit through the org's own bank (no Stripe charge behind it)? The email is still a complete receipt on its own — it just doesn't carry that extra link. Either way it's evidence you can keep or forward if anyone ever asks whether you paid it back — never donation language, and never a claim that it's tax-deductible, because it isn't either of those things.",
+          "**Lost it, or it settled before this existed? A manager can (re)send it.** Every settled row on the Personal charges screen carries its own **Send receipt** button — it says **Resend receipt** once one has actually been delivered, so the row is honest about whether you ever got one. Nothing about the automatic send changes: it still goes out on its own the moment a payment lands, exactly once. This is a second, manual door to the SAME email for the times that isn't enough — you misplaced it, or the charge settled before the button existed at all. It's genuinely on-demand — press it minutes or days apart and both go through — but two presses on top of each other are refused with a plain \"try again in a moment,\" a brief brake against a double-tap or a stuck loop, never a silent nothing.",
           "**Nobody can mark a charge repaid by hand — not even the Financial Manager.** A repayment settles when a payment this app started actually arrives, full stop. So if you paid someone back in cash, the app can't record that: run it through the app instead. And if the charge was never personal in the first place, that's a different fix — a manager un-flags it and it goes back to being Public Worship's spend, which is honest in a way \"mark it repaid\" never was.",
           "**You'll be reminded, kindly:** if a personal charge sits unpaid, a finance manager can send a reminder listing what you owe and a link to settle it. One email per person, never one per charge, and never twice in the same few days — and a charge whose bank transfer is already clearing is never chased, because you already did the right thing.",
           "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once the money has landed, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
@@ -1685,16 +1771,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt. And the mirror rule: flagging says YOU made the charge, so a charge you genuinely don't recognize is not a flag — freeze the card yourself (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager right away so it gets investigated.",
       },
       {
-        prompt: "Your chapter's Treasurer submits a reimbursement request for their own out-of-pocket purchase. Who can approve it?",
+        prompt:
+          "Someone repaid a personal charge months ago, before this org even had the receipt button, and now needs proof they paid. What can a manager do?",
         options: [
-          "The Treasurer — they hold the seat that normally approves these",
-          "The Chapter Director — chapter finance items are theirs to sign off on",
-          "The central Financial Manager — SoD blocks the Treasurer from approving their own request, and the FM's central-scope grant reaches every chapter",
-          "The Executive Director, automatically, since they outrank the Treasurer",
+          "Nothing — the receipt only ever goes out at the moment of payment",
+          "Mark the charge repaid again to trigger a fresh email",
+          "Open it on the Personal charges screen and press Send receipt — every settled row keeps that button, no matter how old",
+          "Ask the payer to screenshot their bank statement instead, since the app can't help",
         ],
         answerIndex: 2,
         explanation:
-          "Approver ≠ requester is identity-based — even a Treasurer can't approve their own request. A Chapter Director's finance access doesn't reach reimbursement approval, so the Financial Manager — whose grant covers every chapter — is the real failsafe.",
+          "A settled row's receipt button never expires after one use — a manager can send it again whenever it's genuinely needed, days or months later, which is exactly what makes it useful for a debt settled long before the button existed. It's a manual door to the SAME receipt email the automatic send uses, not a new record; there is still no way to \"mark repaid\" a charge that hasn't actually been paid through the app. The one limit is a brief one: pressing it twice back-to-back is refused with a clear \"try again in a moment\" rather than mailing the payer twice.",
       },
       {
         prompt:
@@ -1721,6 +1808,296 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Sent back is not rejected — rejected is terminal, this is a revision loop, and resubmitting keeps your original submission date so a question never costs you your place in the queue. But a revision may change the SUBSTANTIATION only: a wrong amount is a reject and a fresh request, never a quiet edit under a reviewer who already saw the number. While it sits with you it isn't payable, though you can still cancel it.",
+      },
+    ],
+  },
+
+  // ── 36 · Paying contractors: the agreement ─────────────────────────────────
+  // Sits directly after the reimbursement lesson on purpose: the error this
+  // whole course exists to prevent is filing one as the other, and the two are
+  // taught back to back so the distinction is impossible to miss.
+  {
+    slug: "finance-paying-a-contractor",
+    title: "Paying a contractor",
+    subtitle: "Not a reimbursement — an agreement, and income",
+    minutes: 5,
+    blocks: [
+      {
+        kind: "p",
+        text: "Sooner or later somebody does work for us that isn't volunteering: a photographer shoots the night, an engineer mixes the record, a designer builds the flyer. There's nothing to reimburse — they haven't spent our money, they've spent their hours — and there's no invoice portal to pay them through. That's a **contractor payment**, and it is its own flow with its own front door.",
+      },
+      {
+        kind: "rule",
+        title: "A reimbursement is not a payment for work",
+        text: "Get this one wrong and everything downstream is wrong, so it's worth being blunt about it.\n\nA **reimbursement** gives back money a person ALREADY SPENT out of their own pocket on our behalf. The receipt is what substantiates it, and the money is not income to them — they're being made whole, not paid.\n\nA **contractor payment** buys WORK. Nothing has been spent, so there is no receipt and never will be: the **agreement** is the substantiation — what the work was, when, for how much. And the money IS reportable income to the person receiving it, which is why we collect a tax form before we pay and why they can't just send us a receipt instead.\n\nSo \"they don't have a receipt, can I reimburse them anyway?\" for somebody's own time isn't a receipt problem. It's the wrong flow, and the honest answer is a contractor agreement.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Two ways in, one queue.** Either staff pre-fills the agreement and sends it out, or a blank request arrives asking to be approved. Both land in the same review queue at **Needs review**, and from there they take the identical route — a treasurer works one list, not two.",
+          "**Agreement sent (you pre-fill it):** you write the terms — the service, the date, the amount, and the coding that says which budget pays for it — and send the contractor a private link. They fill in their half: who they are, their tax form, and their bank details, and then they accept. The terms are FROZEN to them: read-only on their page, and the server ignores those fields if anything tries to send them anyway. What they agreed to is what you wrote.",
+          "**Payment requested (they fill it in blank):** somebody asks to be paid, terms and all. Nothing about it is pre-approved, and it arrives **UNCODED** — no budget, no event, no project. Approving is refused outright until a human says where it belongs, because a request's own claim about which budget should pay it is a starting point for that conversation, not evidence. Their explanation is kept as a note, not as your coding.",
+          "**A private link, not a login.** A contractor has no account and doesn't get one. Their link is the whole authority, it opens exactly their one agreement, and it can't reach the chapter, the queue, the coding, or any other person. Cancel a payment and the link stops accepting anything — it shows them where the payment stands and nothing more.",
+          "**Approved is not paid, here too.** Approval makes the payout legal; the money going is the step after, and the contractor gets an email at each — one saying it's approved, one saying it's been sent.",
+        ],
+      },
+      {
+        kind: "try_status",
+        title: "A contractor payment",
+        options: [
+          { value: "draft", label: "Draft", color: "gray" },
+          { value: "sent", label: "Awaiting contractor", color: "blue" },
+          { value: "submitted", label: "Needs review", color: "gray" },
+          { value: "approved", label: "Approved", color: "amber" },
+          { value: "paid", label: "Paid", color: "green" },
+        ],
+        terminal: "paid",
+        caption:
+          "Draft and Awaiting contractor only exist on the pre-filled path — a blank request is born at Needs review, because the person asking has already said everything they have to say. Changes requested isn't on this line either: it hands the agreement BACK to the contractor with a required note and makes their link editable again. Rejected and Canceled are endings.",
+      },
+      {
+        kind: "rule",
+        title: "Whoever wrote the terms never approves them",
+        text: "Separation of duties on this flow has a third party the reimbursement flow doesn't have: the person who WROTE the agreement. So three things are checked, any one of which stops you:\n\n· you are the payee on the roster, or\n· your own sign-in email is the payee's email, or\n· **you composed this agreement.**\n\nThat third one is the whole point of pre-filling. One person who can both decide the org owes somebody $1,800 and decide the money should go is a single point of failure with a bank account attached. In practice: a chapter Treasurer writes the agreement, and the central Financial Manager approves it — the same failsafe reimbursements use when the Treasurer is the claimant.\n\nAnd it is checked TWICE — once when someone approves, and again at the moment the payout is released. Approving and paying can be different acts by different people minutes apart, and a control that only ran at the first one wouldn't be a control.",
+      },
+      {
+        kind: "rule",
+        title: "Changing the terms unsigns the agreement",
+        text: "The **amount**, the **description of the work**, and the **service date** are the agreed terms — the things the contractor actually said yes to. Edit any of them after they've accepted and their acceptance is VOIDED: the agreement goes back to *Awaiting contractor*, they're emailed to review and accept again, and nothing is payable until they do.\n\nThat isn't friction for its own sake. The alternative is holding somebody's signature against terms they never saw, which is the single worst thing this feature could do, so it isn't reachable at all — not by a form, not by an admin.\n\nChanging only the CODING — which budget, category or fund pays for it — voids nothing. The contractor never agreed to which line of our books they come out of, and re-asking for a signature because a bookkeeper moved a category would just teach people to click through acceptance without reading it.",
+      },
+      {
+        kind: "tip",
+        text: "**A waiting contractor is somebody's rent.** Submitting emails every treasurer and central finance manager who could act on it. If nobody has decided after **3 days** they're nudged, and after **7** it escalates to the central Financial Manager by name, so \"nobody looked at it\" has an owner. Nothing is ever auto-cancelled, however long it sits — killing a person's payment because our queue went unattended would punish them for our delay.",
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "A videographer accepted a $1,200 agreement last week. She emails: the shoot ran two hours long, can we make it $1,400? Everyone agrees that's fair. What do you do?",
+        options: [
+          {
+            text: "Edit the agreement to $1,400 — which voids her acceptance, sends it back to her, and asks her to accept the new terms",
+            correct: true,
+            feedback:
+              "Right. The amount is an agreed term, so changing it re-opens the agreement rather than quietly editing a signed one. She gets an email, accepts $1,400, and it comes back to the queue. One record, one signature, one number — and it's the number she agreed to.",
+          },
+          {
+            text: "Approve the original $1,200 and send her the extra $200 separately so the signed agreement stays clean",
+            feedback:
+              "Now there's $200 leaving the building with no agreement behind it, no coding, and nothing on her tax form's side of the story. The signed record staying 'clean' is exactly what makes the second payment dirty.",
+          },
+          {
+            text: "Approve $1,400 — the approval screen lets you set the amount",
+            feedback:
+              "It lets you approve LESS than was agreed, never more. Approving more would be paying against terms nobody accepted, so it's refused and tells you to change the terms instead.",
+          },
+          {
+            text: "Ask her to submit a reimbursement request for the extra two hours",
+            feedback:
+              "Her time isn't money she spent, so there's nothing to reimburse and no receipt she could ever produce. That's the confusion this whole lesson exists to prevent.",
+          },
+        ],
+      },
+    ],
+    quiz: [
+      {
+        prompt:
+          "A volunteer spent $80 of her own money on cups. A photographer spent six hours shooting the same event for an agreed $600. Which is which?",
+        options: [
+          "Both are reimbursements — money leaving for a person is a reimbursement either way",
+          "The cups are a reimbursement (money already spent, substantiated by the receipt, not income); the photographer is a contractor payment (work bought, substantiated by the agreement, and reportable income)",
+          "Both are contractor payments, since both people did something for the event",
+          "The photographer is a reimbursement for her time; the cups need a contractor agreement because a purchase is a service",
+        ],
+        answerIndex: 1,
+        explanation:
+          "This is the distinction everything else hangs on. A reimbursement gives back money someone ALREADY SPENT — the receipt substantiates it and it is not income. A contractor payment buys WORK — nothing was spent, so the AGREEMENT substantiates it, and the money IS reportable income, which is why a tax form is collected first. \"They have no receipt for their time\" is not a receipt problem; it means you're in the wrong flow.",
+      },
+      {
+        prompt:
+          "A blank request lands in the queue: $450, \"sound engineering for the March night.\" The terms look right and the person is real. Why can't you approve it yet?",
+        options: [
+          "It arrived uncoded — nobody has said which budget, event or project pays for it, and approval is refused until a human does",
+          "Blank requests always need a second approver before the first one",
+          "You can approve it; blank requests are approved exactly like pre-filled ones",
+          "It has to be re-entered as a pre-filled agreement before it can be approved",
+        ],
+        answerIndex: 0,
+        explanation:
+          "Both entry points share one queue and one route from Needs review on — the difference is that a self-serve request arrives UNCODED. What the requester says the money is for is the start of that conversation, not evidence for it, so the server refuses to release money until somebody with the books in front of them says which budget it belongs to.",
+      },
+      {
+        prompt:
+          "You're the chapter Treasurer. You pre-filled an agreement for a designer, sent the link, and she's accepted. Who approves it?",
+        options: [
+          "You do — you hold the seat that approves chapter payments",
+          "Anyone with a finance manager seat, including you, since you're not the payee",
+          "Someone other than you — the person who wrote the agreement can't approve it, so in practice the central Financial Manager does",
+          "The Chapter Director, because chapter money is theirs to sign off on",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Rank isn't the control here; separation of duties is. Three signals are checked — are you the payee on the roster, is your sign-in email the payee's, and did you write this agreement — and the third is what stops the person who set the amount from also releasing the money. The check runs again at the moment the payout goes, because approving and paying can be two different acts.",
+      },
+      {
+        prompt:
+          "A contractor accepted a $900 agreement. Which of these edits sends it back to him for a fresh signature?",
+        options: [
+          "Moving it from the Events budget to the Media budget",
+          "Fixing a typo in your internal note about who introduced him",
+          "Changing the amount to $950, or rewording the description of the work, or moving the service date",
+          "None — once accepted, nothing on the record can be changed by anyone",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Amount, description and service date are the AGREED terms — the things he actually said yes to. Change one and his acceptance is voided, the payment reverts to Awaiting contractor, and he's asked to accept again; nothing is payable in between. Coding is a different matter: he never agreed to which budget line pays him, so re-coding voids nothing.",
+      },
+      {
+        prompt:
+          "A submitted payment has been sitting undecided for eight days. What has happened to it?",
+        options: [
+          "It was auto-cancelled at seven days and the contractor has to start over",
+          "Nothing — the queue is a list, and someone will get to it",
+          "Treasurers were nudged at three days and it escalated to the central Financial Manager at seven; it is still live and still payable",
+          "It was auto-approved, since nobody objected within the window",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Submitting already emails everyone who could decide it; the sweep then nudges at day 3 and escalates by name to central at day 7, so an unattended queue has an owner. Nothing is ever auto-cancelled and nothing is ever auto-approved — the first would punish the contractor for our delay, and the second would release money nobody decided to release.",
+      },
+    ],
+  },
+
+  // ── 37 · Paying contractors: the W-9 and the public row ────────────────────
+  {
+    slug: "finance-contractor-tax-and-privacy",
+    title: "The W-9, and what publishes",
+    subtitle: "The most sensitive file we hold, and the one line the world reads",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Because a contractor payment is income to the person receiving it, we collect a tax form before we pay: a **W-9** from a US person or US business, a **W-8BEN** from a foreign individual, a **W-8BEN-E** from a foreign entity. It's uploaded as a file — nobody types a Social Security or tax ID number into this app, and nothing reads one out of the document.",
+      },
+      {
+        kind: "rule",
+        title: "That file has an SSN on it. Treat it like it does.",
+        text: "A completed W-9 carries a Social Security or Employer Identification Number, which makes it the most sensitive thing this application holds — more sensitive than any dollar figure in the books.\n\nSo three rules sit on top of it. Only **finance managers and treasurers** can open it; everyone else sees that a form is on file and nothing more. **Every single view is logged** before the file opens — who looked, at whose form, and when — because the gate is a role rather than a named person, and the log is what makes \"the treasurer can see W-9s\" answerable instead of anonymous. And it is **destroyed four years after the tax year it covers**, automatically. That last one is the only rule that actually protects anybody in the long run: a number we no longer hold is a number that can't leak.",
+      },
+      {
+        kind: "tip",
+        text: "**A W-8 stops the payment, on purpose.** A W-8BEN or W-8BEN-E means the payee is not a US person, and payments abroad can carry withholding obligations that this app does not compute. So approval is BLOCKED and the payment is handed to a human to handle off-platform — deliberately louder than paying it at zero withholding and finding out in April.",
+      },
+      {
+        kind: "rule",
+        title: "The work publishes. The person doesn't.",
+        text: "When the payment settles it becomes a row in the books like any other spend, and that row goes on the public ledger when the month is published. What a stranger reads is: **the description of the work, the amount, the date, and the category**.\n\nWhat they never read is the contractor. The counterparty on that row is the fixed words **\"Contractor payment\"** — not a name, not a business name, not initials. Their email, their tax form and their bank details are never published in any form.\n\nThat's a deliberate choice about someone's livelihood, and it's the conservative direction of a one-way door: we can decide to publish names later, but we can never un-publish one. It also runs the other way from a reimbursement, which publishes as \"Reimbursement to <name>\" — that's a member being made whole, and members carry the org's spending in public. This is a person's income.",
+      },
+      {
+        kind: "rule",
+        title: "The description publishes verbatim, and forever",
+        text: "The sentence describing the work is the one field that goes public word for word — no editor rewrites it, and a published month is FROZEN, so it can only ever be amended in public, never taken down.\n\nWhich means it must not contain personal details. \"Two-camera video for the March worship night\" is a description. \"Video for the March night, call Jane at 555-0142 or come by 12 Elm St\" is a permanent public disclosure of somebody's phone number and address.\n\nThe app checks — the same check on the contractor's own page, on the staff form, and on the server, so no door into it is the easy one — and it refuses the shapes it can recognize: email addresses, phone numbers, street addresses, long digit runs that could be an account or tax number. It is crude on purpose. It catches the accidental paste; it can't catch \"ring me at my house on Elm\", and it isn't pretending to. Reading the sentence as a stranger would is still your job, and a treasurer can soften a description before the month publishes — after that, only an amendment.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**We never store their bank details.** The routing and account numbers go straight to the bank and are never written down here — all we keep is the **last four digits** and an opaque reference. So when someone asks you to read back the account on file, the honest answer is that we can't, and that's the feature.",
+          "**One agreement, one payment.** A payment can be approved for LESS than was agreed (with the contractor told), never for more, and there's a ceiling on a single payment as a typo guard — a bigger engagement is split into milestones, each its own agreement.",
+          "**Every decision is on the record.** Sending the link, sending it back, approving, rejecting, cancelling and every view of the tax form all append to the same audit trail the rest of finance writes to. It's append-only: the record of what was decided doesn't get tidied up later.",
+        ],
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "A sound engineer in Lagos has done the mix. He uploads a W-8BEN, his bank details are in, and the work was excellent. You go to approve it.",
+        options: [
+          {
+            text: "Approval is blocked — a W-8 means he isn't a US person, so it goes to a human to handle outside the app",
+            correct: true,
+            feedback:
+              "Right. Foreign payments can carry withholding that this system doesn't compute, so it refuses rather than quietly paying at 0% and creating a problem nobody sees until tax time. Nothing is wrong with him or the work — it's a case the software declines to guess at.",
+          },
+          {
+            text: "Approve it and note in the description that he's overseas",
+            feedback:
+              "Two problems: the approval is refused anyway, and the description is the field that publishes verbatim and permanently — it is the last place to record something about a person.",
+          },
+          {
+            text: "Ask him to file a W-9 instead so the payment can go through",
+            feedback:
+              "A W-9 is for US persons. Asking a foreign contractor to file one to unblock a screen is asking him to certify something untrue.",
+          },
+          {
+            text: "Reject the payment — we can't pay people abroad",
+            feedback:
+              "We can; it just isn't a decision this flow makes on its own. Rejecting tells him no when the real answer is 'handled another way'.",
+          },
+        ],
+      },
+    ],
+    quiz: [
+      {
+        prompt:
+          "A $1,800 contractor payment to Jane Doe Media settles and the month is published. What does a stranger reading publicworship.life see?",
+        options: [
+          "\"Jane Doe Media — $1,800\", with the work described beside it",
+          "Nothing — contractor payments are held back from the public ledger",
+          "The description of the work, the amount, the date and the category — with the counterparty shown as \"Contractor payment\", never her name",
+          "A single line saying the chapter spent $1,800 on contractors that month",
+        ],
+        answerIndex: 2,
+        explanation:
+          "The work publishes so a reader can audit what the money bought; the person doesn't. The counterparty is the fixed words \"Contractor payment\", and her name, email, tax form and bank details are never published in any form. Note this runs the opposite way from a reimbursement, which publishes as \"Reimbursement to <name>\" — that's a member being made whole, this is someone's income.",
+      },
+      {
+        prompt:
+          "You're writing the service description on an agreement and you type: \"Photography for the June night — reach Ade at 555-0142.\" What happens?",
+        options: [
+          "It's accepted; the phone number is only visible internally",
+          "It's refused — the same check runs on the contractor's page, the staff form and the server, and a phone number is one of the shapes it recognizes",
+          "It's accepted, and a treasurer strips the number automatically before publishing",
+          "It's accepted but the whole description is withheld from the public ledger",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The description is the one field that publishes VERBATIM and permanently — a published month is frozen and can only be amended in public. The checker refuses emails, phone numbers, street addresses and long digit runs wherever the text is typed. It's deliberately crude: it stops the accidental paste, not a determined one, so reading the sentence as a stranger would is still yours to do.",
+      },
+      {
+        prompt: "Who can open a contractor's actual W-9 file, and what happens when they do?",
+        options: [
+          "Anyone on the chapter roster; opening it is an ordinary read",
+          "Finance managers and treasurers — and every single view is written to the audit trail before the file opens",
+          "Only the Executive Director, and views aren't logged because the seat is trusted",
+          "Nobody — the form is write-only once uploaded",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The gate is a role, not a named individual, so the log is what makes the access answerable after the fact: who looked, at whose form, when. The form itself is destroyed four years after the tax year it covers — an SSN we no longer hold is an SSN that can't leak — and no tax ID is ever typed into a field in the first place; the form is a file and nothing parses it.",
+      },
+      {
+        prompt:
+          "A contractor calls: \"Can you read me back the account number you have for me? I think I fat-fingered it.\" What can you tell her?",
+        options: [
+          "The full account number, from the payment record",
+          "Only the last four digits — the full routing and account numbers went straight to the bank and were never stored here",
+          "Nothing at all; bank details can't be discussed",
+          "The number, but only after a finance manager approves the request",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Raw bank digits are never persisted. They're validated, handed to the bank once, and what comes back is a reference and the last four — so \"we can't tell you, we don't have it\" is the true answer, and it's the point rather than a limitation. If the account is wrong, she re-enters it; nobody here is reading it back to her.",
+      },
+      {
+        prompt:
+          "A contractor uploads a W-8BEN rather than a W-9. What does that change about approving the payment?",
+        options: [
+          "Nothing — it's just a different form for the same thing",
+          "It blocks approval: a W-8 means the payee isn't a US person, and foreign payments can carry withholding this system doesn't compute, so a human handles it off-platform",
+          "It speeds it up, since foreign payments have no tax reporting",
+          "It means no tax form is needed at all and the upload can be skipped",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A W-9 is for US persons and entities; a W-8BEN (individual) or W-8BEN-E (entity) says the payee is foreign. Withholding isn't something a form field can decide, so the flow refuses rather than paying at zero withholding and discovering the problem at tax time. The payment isn't wrong and neither is the contractor — it's a case the app declines to guess at.",
       },
     ],
   },
@@ -2246,7 +2623,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**One person prepares, a different person publishes.** Preparing needs a finance manager seat; publishing needs the separate *Publish finances* power on the seat chart. The system refuses a self-approval and records which way every month went.",
           "**Everything publishes — but not everything counts.** Internal transfers and the bank deposits carrying gifts you already counted are shown, marked \"not counted.\" Hiding them would leave gaps; counting them would count the same dollar twice.",
           "**An intentionally excluded row does not publish.** Excluding a duplicate or a bank error is us saying it was never a transaction. Publishing it as one would be the opposite of clarifying.",
-          "**No names, ever.** Not givers, not the people at a meal. A meal publishes as \"12 people — 5 team members, 7 community members.\" That answers who it was for without publishing a person, and some of the people we feed are minors.",
+          "**No names, ever.** Not givers, not the people at a meal, and not the people we PAY for work. A meal publishes as \"12 people — 5 team members, 7 community members.\" A contractor payment publishes the work, the amount, the date and the category, with the counterparty reading \"Contractor payment\" — never who was paid (see *Paying a contractor*). That answers who the money was for without publishing a person, and some of the people we feed are minors.",
         ],
       },
       {
@@ -3407,9 +3784,10 @@ export const FINANCES_THEME: Theme = {
 };
 
 /**
- * The Finances stream's courses, in catalog order. Six courses now: five
- * role courses (most-to-least everyone) plus the shared `chapter-money-model`
- * core course between Finances-for-Everyone and Treasurer — the org
+ * The Finances stream's courses, in catalog order. Seven courses now: five
+ * role courses (most-to-least everyone) plus two SHARED courses that several
+ * finance paths carry — `chapter-money-model` and `finance-paying-contractors`,
+ * both sitting between Finances-for-Everyone and Treasurer — the org
  * principle: a role path is a playlist of shared courses, and Chapter
  * Director + Treasurer (later FM/ED — role-path wiring lands separately)
  * both start from the exact same foundation instead of re-teaching it.
@@ -3468,6 +3846,32 @@ export const FINANCES_COURSES: Course[] = [
       // this shared-foundation course, so one authoring of the rules reaches
       // both sides of that split.
       "finance-publishing-the-books",
+    ],
+  },
+  {
+    // The contractor desk. `audience: "team"` for the same reason
+    // `chapter-money-model` carries it rather than `"role"`: this is not one
+    // seat's remit — the Treasurer, the central Financial Manager and the ED
+    // all work the same queue, and the separation-of-duties rule it teaches
+    // means two of them are involved in every single payment. Deliberately NOT
+    // on the `chapter_director` path: that seat derives finance VIEWER, so it
+    // can read the queue but can neither compose an agreement nor approve one
+    // (`apps/convex/lib/contractorPaymentsAccess.ts`).
+    slug: "finance-paying-contractors",
+    themeKey: "finances",
+    title: "Paying contractors",
+    level: "intermediate",
+    audience: "team",
+    description:
+      "The third money flow: paying someone for work, where there's nothing " +
+      "to reimburse and no receipt to file. Why a contractor payment is not a " +
+      "reimbursement, the two ways one arrives in a single queue, who may " +
+      "approve it and who may not, the W-9 and how it's guarded, and exactly " +
+      "what a contractor payment says on the public ledger.",
+    icon: "file-text",
+    moduleSlugs: [
+      "finance-paying-a-contractor",
+      "finance-contractor-tax-and-privacy",
     ],
   },
   {
