@@ -92,6 +92,7 @@ import { linkWireGiftsToTheirDeposit } from "./0070_link_wire_gifts_to_their_dep
 import { removeUnexecutedBalanceSettlementsMigration } from "./0071_remove_unexecuted_balance_settlements";
 import { foldFeeCoverageIntoGifts } from "./0072_fold_fee_coverage_into_gifts";
 import { bookKnownRepaymentFeeCoverage } from "./0073_book_known_repayment_fee_coverage";
+import { bookRepaymentCoverageBySession } from "./0074_book_repayment_coverage_by_session";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -448,4 +449,11 @@ export const MIGRATIONS: Migration[] = [
   // outright if the rows it finds are not the ones it was told to expect.
   // See 0073.
   bookKnownRepaymentFeeCoverage,
+  // 0073 refused on deploy: it looked for one settled repayment of $6.00 and
+  // found none, because THE $6.00 WAS NEVER A ROW — it was two $3.00 charges
+  // bundled into one checkout, and a fee is quoted once on their total. This
+  // pins the SESSION instead, which names the exact payment rather than an
+  // amount two rows could share, and verifies the debts still sum to what was
+  // recorded before booking anything. See 0074.
+  bookRepaymentCoverageBySession,
 ];
