@@ -555,6 +555,75 @@
  *    bookkeeper's own rename still wins, so nobody reads this as the app
  *    quietly editing the statement.
  *
+ * AND A SECOND EMAIL WHEN THE MONEY ACTUALLY GOES (2026-08-14). The other
+ * half of the APPROVAL-NOTICE ask two notes up — not of the transfers report
+ * immediately above, which landed the same day and shares nothing but a date.
+ * Founder: "let's also send emails when we actually pay people — this is
+ * really important to them. Email when approved and email when paid." A
+ * claimant now hears from us TWICE about one request, and the approval note
+ * teaches only the first, which would leave the lesson quietly wrong about
+ * what to expect. Same lesson carries it, content-only, minutes stay 5.
+ *
+ *  · ONE BULLET ADDED, "And a second email when the money actually goes": what
+ *    the paid notice says, what "paid" does and doesn't guarantee (it is our
+ *    word for SENT — an ACH credit still takes a business day or two to post,
+ *    and a treasurer paying by hand sets their own timing), that the figure is
+ *    the money that MOVED, and the one case that produces two paid emails — a
+ *    bounced transfer, re-paid.
+ *  · WHY THE AMOUNT BULLET MATTERS HERE: this is where a claimant is most
+ *    likely to misread us. A partial approval means a smaller payment, NOT a
+ *    first instalment; there is no such thing as paying half a reimbursement,
+ *    so "the rest is coming" is never true and the bullet says so outright.
+ *  · NO QUIZ QUESTION SWAPPED, and that is a decision, not an oversight. The
+ *    quiz is at the 5-question cap `apps/convex/tests/academy.test.ts`
+ *    enforces, so anything added costs something already there — and nothing
+ *    here became WRONG: the approval-email question's right answer ("approved
+ *    but not yet paid, sending the payout is the next step") is exactly as
+ *    true now, and its distractors are exactly as false. The new fact — that a
+ *    second email follows when the payout goes — is the natural completion of
+ *    that question's own explanation, so it went there rather than costing
+ *    this quiz a question on SoD, send-backs or personal-charge flags. If this
+ *    lesson ever earns a sixth slot, "what does the PAID email guarantee about
+ *    money being in your account" is the question to write.
+ *  · The one-shot catch-up mailing (`reimbursementPaidNoticeBackfill`) is not
+ *    taught, for the same reason its sibling isn't.
+ *
+ * 2026-08-14, PUBLISHING STOPS BEING SOMEWHERE ELSE (founder: "I can't see a
+ * quick preview button anymore. I want to be able to preview and publish from
+ * the same page — publish here takes me to a different page entirely"). The
+ * publish console's month flow is now a component
+ * (`components/finance/publish/PublishMonth.tsx`) that the console route and a
+ * modal over a Transactions month band both render, so the act is unchanged
+ * and unthinned — the same disclosures before the button, the same
+ * two-approver handoff and its separation-of-duties refusal, the same
+ * amendment reason on a re-publish, the same refusal of a snapshot that came
+ * back incomplete. Two sections are touched, both content-only; no title,
+ * slug, minutes, quiz length or order moved.
+ *  - `finance-reconcile-grid`'s "Group by is how you get everywhere else" rule
+ *    now says what Preview and Publish actually do from a band (open in a new
+ *    tab; open the console's flow over the grid), and names the ONE exception:
+ *    on **All books** a month band spans several chapters' books, so the
+ *    status badge and Preview stand down and Publish travels to the console,
+ *    where a book is named explicitly. Its filtered-band quiz explanation said
+ *    "Publish itself still hands you to the publish console" — true when
+ *    written, false now — and was corrected in place; the question, its
+ *    options and its answer are untouched, and the quiz stays at 5.
+ *  - `finance-publishing-the-books` taught the hand-off as deliberate rather
+ *    than a missing feature, which was the right teaching for the old shape
+ *    and is the wrong description of this one. It now teaches the panel and
+ *    keeps the doctrine that mattered: none of what surrounds the button is
+ *    paperwork in front of it, so nothing is skipped by publishing from the
+ *    grid. It also names the two places that still open the console SCREEN —
+ *    the Finances publishability card and an All-books band — and why (it
+ *    lists every month of one book, and a book has to be named first).
+ *  - NO QUIZ QUESTION SWAPPED, in either lesson. Both are at the 5-question
+ *    cap `apps/convex/tests/academy.test.ts` enforces, and every question was
+ *    re-read against the new shape: none asserted WHERE publishing happens as
+ *    its correct answer. The "who can publish a month you prepared" question
+ *    gained one clause in its EXPLANATION — the refusal is identical from the
+ *    band, because it is the same flow — which is the one place a reader could
+ *    have concluded the grid path was the lighter one.
+ *
  * Reconciliation "flag" → "mark for review" (2026-08-14, founder: "what does
  * 'flag' do, it feels like a scary button"). Presentation-only rename on the
  * Accounts page's payout/transfer audit rows — the Convex mutation names and
@@ -1425,6 +1494,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
           "**You'll be told when it's approved — and approved is not paid:** the moment a reviewer approves your request, an email goes out saying so and naming the amount. It goes to the address you put ON THE REQUEST, not to wherever your account lives, because plenty of claimants have no account at all. Read the amount before you celebrate: a reviewer can approve SOME of your lines and not others, so when the approved figure differs from what you submitted the email names both, and your Treasurer can tell you which lines didn't make it and why. What that email will never tell you is that the money has already moved — approved and paid are two different states, and sending the payout is the step after. If nothing has landed within a week or so, contact your Treasurer; that's the right person to ask, and asking is welcome.",
+          "**And a second email when the money actually goes:** you hear from us twice about one request — once when it's approved, and again when it's PAID, which is the one people actually wait for. That second email names the date the money left and, where we know it, how: an ACH transfer out of the chapter's account (the money has genuinely gone, though most banks take a business day or two to post it) or a payment your Treasurer sent by hand and recorded here, where the timing is whatever they used. The figure in it is the money that MOVED — and on a partial approval that is the approved amount, not what you submitted, because a reimbursement is paid in ONE lump and there is no such thing as a second instalment. The rest of a partly-approved claim is not coming, and the email says so rather than letting you wait for it. \"Paid\" is our record that a payment was sent, which is not the same fact as money in your account: if it doesn't turn up, tell your Treasurer — they can see exactly what was sent. And if a bank transfer bounces days later (it happens), the request re-opens and you'll get a fresh paid email when the retry lands — a second one is a real second payment, never a duplicate.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Book (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Closed AND an unpaid personal expense at the same time.",
           "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
@@ -1573,7 +1643,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Approved and paid are separate states, and the email is careful never to claim otherwise — it tells you the decision, not that the money has moved. Read the figure too: a reviewer can approve some of your lines and not others, and when the approved amount differs from what you submitted the email names both. If nothing arrives within a week or so, contact your Treasurer.",
+          "Approved and paid are separate states, and the email is careful never to claim otherwise — it tells you the decision, not that the money has moved. Read the figure too: a reviewer can approve some of your lines and not others, and when the approved amount differs from what you submitted the email names both — and that smaller figure is the whole payment, not a first instalment. You get a SECOND email when the payout actually goes, naming the date it left; that one is your cue to look for the money. If it still doesn't arrive, contact your Treasurer.",
       },
       {
         prompt:
@@ -1634,7 +1704,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Group by is how you get everywhere else",
-        text: "**Group by: None · Month · Person** sits directly above the grid, and it is the closest thing this page has to navigation. It doesn't filter anything — every row you had is still there — it bands them, and each band carries the actions that belong to that kind of band.\n\n**Month** gives you one band per month with that month's charge count, its total, how much of it is explained, and its publication state: Draft, In review, Published (with the revision that's live), or Amending — plus **Preview** and **Publish**. That is the whole of \"working a month\" and the whole of publishing one, without leaving the page.\n\n**Person** gives you one band per cardholder — their face, what they owe, and a **Send reminder** button. Put **State → Owes a receipt or coding** on top of it and that is the receipt chase: everyone who owes you something, one band each, nudge them from where you are.\n\nOne thing to read carefully: when you have filtered, a month band names BOTH figures — \"12 of 318 charges · -$4,102 of -$88,201\". The first number is what your filter left; the second is the month. Publish always means the second one.",
+        text: "**Group by: None · Month · Person** sits directly above the grid, and it is the closest thing this page has to navigation. It doesn't filter anything — every row you had is still there — it bands them, and each band carries the actions that belong to that kind of band.\n\n**Month** gives you one band per month with that month's charge count, its total, how much of it is explained, and its publication state: Draft, In review, Published (with the revision that's live), or Amending — plus **Preview** and **Publish**. Both act where you stand: Preview opens that month's public page in a new tab, and Publish opens the publish console's own flow in a panel over the grid — the disclosures, the hand-off to a second approver, the amendment reason on a correction, all of it, unchanged. That is the whole of \"working a month\" and the whole of publishing one, without leaving the page.\n\nThe one exception is **All books**, where a month band is drawn from several chapters' books at once. There is no such thing as publishing \"all books\" as one month, so on that view the band's status badge and Preview stand down and **Publish** takes you to the publish console, where you say which book you mean. Pick a book in the Book dropdown and all three come back.\n\n**Person** gives you one band per cardholder — their face, what they owe, and a **Send reminder** button. Put **State → Owes a receipt or coding** on top of it and that is the receipt chase: everyone who owes you something, one band each, nudge them from where you are.\n\nOne thing to read carefully: when you have filtered, a month band names BOTH figures — \"12 of 318 charges · -$4,102 of -$88,201\". The first number is what your filter left; the second is the month. Publish always means the second one.",
       },
       {
         kind: "rule",
@@ -1743,7 +1813,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "That is exactly why the band names both figures. Publishing acts on the whole month, so a band that could only say \"12 charges\" next to a Publish button was quietly describing something other than what the button did. The second number in each pair is the month; the first is just what you happen to be looking at. (Publish itself still hands you to the publish console — a second approver, an amendment reason on a re-publish, and a refusal if the month's snapshot came back incomplete.)",
+          "That is exactly why the band names both figures. Publishing acts on the whole month, so a band that could only say \"12 charges\" next to a Publish button was quietly describing something other than what the button did. The second number in each pair is the month; the first is just what you happen to be looking at. (Publish opens the publish console's own flow right there over the grid, and nothing about it is shortened by being opened from a band — a second approver, an amendment reason on a re-publish, and a refusal if the month's snapshot came back incomplete.)",
       },
       {
         prompt:
@@ -2099,7 +2169,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "You watch it happen from Transactions. Set **Group by → Month** and every band tells you where that month stands: Draft, In review, Published (with the revision that's live), or Amending. **Preview** on the band opens the actual public page for that month, exactly as a stranger would see it, without publishing anything.\n\nBoth buttons are there whatever else you have set, because the band names its own subject: filter the grid and it reads \"12 of 318 charges · -$4,102 of -$88,201\" — what your filter left, and then the month. Publish always means the month. (It used to hide the buttons whenever you had filtered, on the reasoning that a band saying \"12 charges\" next to a Publish button was describing something other than what the button did. That was true, and naming both figures is the honest fix rather than taking the button away.)\n\nThe **Publish** button on the band hands you to the publish console, and that hand-off is deliberate rather than a missing feature. Publishing is not a way of looking at a month; it is an irreversible act with a second person in it. The console is where the disclosures are read, where a re-publish states its amendment reason, and where the system refuses a month whose snapshot came back incomplete. None of that is paperwork in front of the button — it IS the button.",
+        text: "You watch it happen from Transactions. Set **Group by → Month** and every band tells you where that month stands: Draft, In review, Published (with the revision that's live), or Amending. **Preview** on the band opens the actual public page for that month, exactly as a stranger would see it, without publishing anything.\n\nBoth buttons are there whatever else you have set, because the band names its own subject: filter the grid and it reads \"12 of 318 charges · -$4,102 of -$88,201\" — what your filter left, and then the month. Publish always means the month. (It used to hide the buttons whenever you had filtered, on the reasoning that a band saying \"12 charges\" next to a Publish button was describing something other than what the button did. That was true, and naming both figures is the honest fix rather than taking the button away.)\n\n**Publish** on the band opens the publish console's flow over the grid: the month's figures, every disclosure that will publish beside them, and the button that hands it to a second person. It is the console's own screen in a panel, not a quicker version of it — publishing is not a way of looking at a month, it is an irreversible act with a second person in it, and none of what surrounds it is paperwork in front of the button. It IS the button. So nothing is skipped by publishing from here: the same refusal if you try to approve what you prepared, the same demand for an amendment reason on a correction, the same refusal of a month whose snapshot came back incomplete.\n\nTwo places still send you to the console screen itself (**Finances → the publishability card**, or the band on **All books**): it lists every month of one book at once, and a book has to be named before one of its months can go public. The flow you meet there is the same flow.",
       },
       {
         kind: "rule",
@@ -2186,7 +2256,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "Publishing is a separate seat power from reconciling, because its audience is outside the org and a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book — notably not the Treasurer, who prepares it.",
+          "Publishing is a separate seat power from reconciling, because its audience is outside the org and a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book — notably not the Treasurer, who prepares it. This holds wherever you publish from: the flow that opens over a month band on Transactions is the console's own flow, so it refuses a self-approval in exactly the same words.",
       },
       {
         prompt:

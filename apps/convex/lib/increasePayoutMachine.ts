@@ -6,9 +6,14 @@
  * guarded transitions including the late-`returned` reversal of an
  * already-`paid` payout.
  *
- * PURE HELPERS ONLY — nothing in `lib/` registers Convex functions.
+ * PURE HELPERS ONLY — nothing in `lib/` registers Convex functions. It does
+ * SCHEDULE one (the claimant's paid notice, off `settleReimbursementPaid`),
+ * which is the established shape for a `lib/` helper that has to fire a
+ * side-effect off a transition it owns — see `lib/givingDonors.ts` and
+ * `lib/receiptRetry.ts`.
  */
 import type { MutationCtx } from "../_generated/server";
+import { internal } from "../_generated/api";
 import { Doc, Id } from "../_generated/dataModel";
 import { materializeReimbursementReceipts } from "./reimbursementReceipts";
 import {
@@ -125,7 +130,25 @@ export async function postReimbursementSpend(
 }
 
 /** Settle a payout: mark the reimbursement `paid` + post the `outflow` ledger
- *  row for the expense. Idempotent via `postReimbursementSpend`. */
+ *  row for the expense, and tell the CLAIMANT their money went out. Idempotent
+ *  via `postReimbursementSpend`.
+ *
+ *  THE ONE PLACE A REIMBURSEMENT BECOMES PAID, which is why the notice hangs
+ *  here rather than at either call site. Both rails end up in this function:
+ *  the ACH webhook via `applyPayoutOutcome`, and a treasurer's
+ *  `increasePayouts.markPaidManually`. Hooking the two of them separately would
+ *  have worked today and quietly failed the first time somebody adds a third
+ *  way to pay — the same argument the `postReimbursementSpend` call above is
+ *  already making.
+ *
+ *  Scheduled rather than sent inline for the reason every notice in this
+ *  codebase is: a mutation must not do network I/O, and a Resend hiccup must
+ *  never fail a payout that has already committed
+ *  (`reimbursements.sendReimbursementPaidEmail` carries the send-side half of
+ *  that guarantee in its own try/catch). Inside the `status !== "paid"` guard on
+ *  purpose: a re-settle of an already-paid row is a no-op here, so it must not
+ *  queue a job either — and the claim in `markPaidNoticeSent` would refuse it
+ *  anyway. */
 export async function settleReimbursementPaid(
   ctx: MutationCtx,
   req: Doc<"reimbursementRequests">,
@@ -139,6 +162,11 @@ export async function settleReimbursementPaid(
       payoutId: payout._id,
       updatedAt: now,
     });
+    await ctx.scheduler.runAfter(
+      0,
+      internal.reimbursements.sendReimbursementPaidEmail,
+      { reimbursementId: req._id },
+    );
   }
   await postReimbursementSpend(ctx, req.chapterId, req, payout);
 }
@@ -242,6 +270,16 @@ async function reverseSettledPayout(
     await ctx.db.patch(req._id, {
       status: "approved",
       paidAt: undefined,
+      // Give back the claimant's paid notice. We told them their money was
+      // sent and then it came back out, so the claim we made is no longer
+      // true; when a manager retries and THAT settles, it is a different, real
+      // payment on a later date and they have never been told about it.
+      // Clearing here is what lets `markPaidNoticeSent` hand out a second
+      // notice for exactly this case and no other — see
+      // `lib/reimbursementPaidEmail.ts`'s header. Note the contrast with
+      // `approvedNoticeSentAt`, deliberately left alone: the approval never
+      // stopped being true.
+      paidNoticeSentAt: undefined,
       updatedAt: now,
     });
   }

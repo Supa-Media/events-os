@@ -899,6 +899,24 @@ export const reimbursementRequests = defineTable({
   // knows it was approved, and a bounced ACH is its own (unbuilt) notice, not
   // a reason to re-send this one.
   approvedNoticeSentAt: v.optional(v.number()),
+  // The same exactly-once guard for the SECOND claimant notice: "your
+  // reimbursement was paid." Same mechanism as `approvedNoticeSentAt` above —
+  // written only by `reimbursements.markPaidNoticeSent`, claimed before the
+  // send by both the live settle path (`lib/increasePayoutMachine.ts`'s
+  // `settleReimbursementPaid`) and the one-shot
+  // `reimbursementPaidNoticeBackfill` sweep — so read that field's note for the
+  // ordering and the why; none of it is restated here.
+  //
+  // ONE DIFFERENCE, and it is deliberate: this stamp IS cleared by
+  // `reverseSettledPayout`'s paid→approved walk-back, where the approval stamp
+  // is not. An approval that happened stays true forever, so re-sending that
+  // notice would be noise. A PAYMENT that bounced is a claim we made and that
+  // stopped being true — the money came back out. When a manager retries and
+  // the retry settles, that is a real payment the claimant has never been told
+  // about, and it deserves its own notice naming the real date and amount. See
+  // `lib/reimbursementPaidEmail.ts`'s header for why that is the only way one
+  // reimbursement can ever produce two paid notices.
+  paidNoticeSentAt: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })

@@ -48,7 +48,11 @@ import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { Meter } from "../dashboard/Meter";
 import { MiniBar, txnStatusTone } from "../dashboard/parts";
-import { RecurringPeriodStrip } from "./RecurringPeriodStrip";
+import {
+  CompactPeriodStrip,
+  RecurringPeriodStrip,
+  type RecurringPeriod,
+} from "./RecurringPeriodStrip";
 
 type GlanceRow = FunctionReturnType<
   typeof api.finances.budgetsGlance
@@ -67,8 +71,13 @@ const CADENCE_LABELS: Record<string, string> = {
 
 export function BudgetGlanceCard({ row }: { row: GlanceRow }) {
   const [open, setOpen] = useState(false);
+  // Which cadence window the drawer is reporting. `null` = the current one,
+  // which is what the card's own header always shows — so clearing the
+  // selection puts the drawer back in agreement with the number above it.
+  const [selected, setSelected] = useState<RecurringPeriod | null>(null);
   const over = row.remainingCents < 0;
   const window = row.type === "recurring" ? CADENCE_LABELS[row.cadence] : null;
+  const periods = row.periods ?? [];
 
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
@@ -109,19 +118,32 @@ export function BudgetGlanceCard({ row }: { row: GlanceRow }) {
           </Text>
         </View>
         <Meter pct={row.pct} size="sm" />
+        {/* Collapsed, the year's shape is still visible — the founder asked to
+            "surface some sort of amount for the other months without
+            expanding", and a headline scoped to one window can't do that.
+            Nothing in here is pressable, so a tap still opens the card. */}
+        {!open && periods.length > 0 ? (
+          <CompactPeriodStrip
+            periods={periods}
+            cadence={row.cadence}
+            capCents={row.capCents}
+          />
+        ) : null}
       </Pressable>
 
       {/* The window-by-window strip renders from data the row ALREADY carries,
           so it paints the instant the card opens rather than after the charge
           query resolves — and it sits above the drawer for that reason. */}
-      {open && row.periods && row.periods.length > 0 ? (
+      {open && periods.length > 0 ? (
         <RecurringPeriodStrip
-          periods={row.periods}
+          periods={periods}
           cadence={row.cadence}
           capCents={row.capCents}
+          selected={selected}
+          onSelect={setSelected}
         />
       ) : null}
-      {open ? <BudgetGlanceDrawer row={row} /> : null}
+      {open ? <BudgetGlanceDrawer row={row} month={selected?.month ?? null} /> : null}
     </View>
   );
 }
@@ -132,9 +154,19 @@ export function BudgetGlanceCard({ row }: { row: GlanceRow }) {
  * `"skip"` — twenty collapsed budgets should cost twenty rows of data, not
  * twenty idle subscriptions waiting to be un-skipped.
  */
-function BudgetGlanceDrawer({ row }: { row: GlanceRow }) {
+function BudgetGlanceDrawer({
+  row,
+  month,
+}: {
+  row: GlanceRow;
+  /** The selected window's month, or `null` for the current one. Passing it
+   *  re-reads: which charges fall in a window is the server's rule, not a
+   *  date comparison this component is allowed to re-implement. */
+  month: number | null;
+}) {
   const detail = useQuery(api.budgetGlance.expenses, {
     budgetId: row.id as Id<"budgets">,
+    ...(month != null ? { month } : {}),
   });
 
   if (detail === undefined) {
