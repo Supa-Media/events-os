@@ -8,8 +8,9 @@
  * change accountable. Out-of-chapter and deleted projects land on the same
  * not-found state so a shared link never confirms existence to an outsider.
  */
-import { useMemo } from "react";
+import { ComponentRef, useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, Pressable, Platform } from "react-native";
+import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -38,12 +39,34 @@ import { confirmAction } from "../../../components/event/ticketing/helpers";
 
 export default function ProjectScreen() {
   const router = useRouter();
-  const { id } = useLocalSearchParams<{ id: string }>();
+  const { id, section } = useLocalSearchParams<{ id: string; section?: string }>();
   const projectId = id ? (id as Id<"projects">) : undefined;
   const detail = useQuery(
     api.projects.get,
     projectId ? { projectId } : "skip",
   );
+  // ── ?section=money — the project half of the budget card's "Money" link ───
+  // An event's money is a TAB (`event/[id]?tab=money`), so a deep link there
+  // just selects it. A project renders its money inline, so the equivalent
+  // link has to SCROLL — otherwise "take me to this project's money" lands at
+  // the top of a long page and leaves the reader to hunt, which is the
+  // complaint the whole budgets drill-down exists to answer.
+  //
+  // Measured rather than guessed: the section reports its own offset via
+  // `onLayout` (the header above it is variable-height — description, owner,
+  // parent chain), and the jump fires once, after that offset is known. Fires
+  // ONCE by design — after the first jump the reader owns the scroll
+  // position, and a re-scroll on any later re-layout would yank the page out
+  // from under them.
+  const scrollRef = useRef<ComponentRef<typeof KeyboardAwareScrollView>>(null);
+  const [moneyY, setMoneyY] = useState<number | null>(null);
+  const jumpedRef = useRef(false);
+  useEffect(() => {
+    if (section !== "money" || moneyY == null || jumpedRef.current) return;
+    jumpedRef.current = true;
+    scrollRef.current?.scrollTo({ y: moneyY, animated: true });
+  }, [section, moneyY]);
+
   const projects = useQuery(api.projects.list, {});
   const people = useQuery(api.people.list, {});
   const log = useQuery(
@@ -118,7 +141,7 @@ export default function ProjectScreen() {
       : undefined;
 
   return (
-    <Screen>
+    <Screen scrollRef={scrollRef}>
       <Narrow>
         <BackLink fallback="/team" />
 
@@ -172,7 +195,10 @@ export default function ProjectScreen() {
         {/* Money — what's this project costing? Planned vs actual by
             category, assembled from the v2 budget + its planned lines +
             linked transactions; a link through to the budget in Finances. */}
-        <View className="mt-6">
+        <View
+          className="mt-6"
+          onLayout={(e) => setMoneyY(e.nativeEvent.layout.y)}
+        >
           <SectionHeader
             title="Money"
             right={

@@ -206,11 +206,12 @@ function BudgetGlanceDrawer({ row }: { row: GlanceRow }) {
  * for a LIVE event/project ref (the server drops it for a deleted one), so
  * every link here is guaranteed to resolve.
  *
- * "Money" targets the ref's OWN money surface — for an event that's
- * `?tab=money` on its detail route (see `event/[id].tsx`'s tab param, which is
- * also what makes the link shareable/back-button-safe); a project renders its
- * `MoneyView` on the page itself, so its "Money" and "Open project" are the
- * same destination and only one chip is offered.
+ * "Money" targets the ref's OWN money surface. An event's is a TAB
+ * (`?tab=money` on its detail route — the param is also what makes the link
+ * shareable and back-button-safe). A project renders its `MoneyView` inline,
+ * so `?section=money` scrolls to it instead (see `project/[id].tsx`). Both
+ * land the reader on the money rather than at the top of a long page, which
+ * is the whole point of the link.
  */
 function BudgetLinks({ detail }: { detail: Expenses }) {
   const router = useRouter();
@@ -228,12 +229,16 @@ function BudgetLinks({ detail }: { detail: Expenses }) {
           }
         />
       ) : null}
-      {hasRef && detail.refKind === "event" ? (
+      {hasRef ? (
         <LinkChip
           icon="dollar-sign"
           label="Money"
           onPress={() =>
-            router.push(`/event/${detail.scopeRefId}?tab=money` as never)
+            router.push(
+              detail.refKind === "event"
+                ? (`/event/${detail.scopeRefId}?tab=money` as never)
+                : (`/project/${detail.scopeRefId}?section=money` as never),
+            )
           }
         />
       ) : null}
