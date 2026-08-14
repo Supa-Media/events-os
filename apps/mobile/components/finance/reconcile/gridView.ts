@@ -121,6 +121,19 @@ export type GroupSummary = {
   imageUrl: string | null;
   count: number;
   totalCents: number;
+  /** ── WHAT THE WHOLE MONTH IS, beside what the filter left ─────────────────
+   *
+   *  MONTH BANDS ONLY — `listReconcile` omits both for a person grouping,
+   *  since a person is not a publishable unit and has no unfiltered baseline
+   *  to be compared against.
+   *
+   *  `count`/`totalCents` describe the MATCH SET. These describe the month
+   *  before any filter or search, which is the population Publish acts on, and
+   *  they are what lets a filtered band carry Publish honestly instead of
+   *  having it withheld. The band prints both figures only when they differ,
+   *  so an unfiltered grid reads exactly as it always did. */
+  unfilteredCount?: number;
+  unfilteredTotalCents?: number;
 } & ExplainProgress;
 
 /** The person-band group key for rows that resolve to nobody — a bank

@@ -3,7 +3,7 @@
  *
  * Finance has two, and they are not interchangeable:
  *
- *  - GRID scope, what the reconcile grid and its view menu speak:
+ *  - GRID scope, what the reconcile grid and its links speak:
  *    `"all" | "central" | "chapter" | <chapterId>`. `"all"` is the merged
  *    queue (every book at once) and is the DEFAULT for anyone holding both a
  *    central and a chapter desk; `"chapter"` is a relative word meaning
@@ -13,9 +13,10 @@
  *    `v.union(v.id("chapters"), v.literal("central"))`. There is no "all",
  *    and no "chapter".
  *
- * The grid's view menu forwards ITS scope into `/finances/explain?scope=…`
- * and `/finances/publish?scope=…`, so on "All books" both destinations used
- * to hand `"all"` straight to a query that cannot accept it. That fails
+ * The grid forwards ITS scope into `/finances/explain?scope=…` and
+ * `/finances/publish?scope=…` — the latter now from a month band's own
+ * Publish button — so on "All books" both destinations used to hand `"all"`
+ * straight to a query that cannot accept it. That fails
  * ARGUMENT VALIDATION before the handler ever runs, which is not a
  * `ConvexError` — `FinanceBoundary` can't catch it, and the founder saw a
  * bare "[CONVEX Q(finances:monthCodingWorklist)] Server Error" on the screen

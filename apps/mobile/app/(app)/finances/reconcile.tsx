@@ -111,24 +111,10 @@ import {
   selectionAfterRowsShrink,
   stepSelection,
 } from "../../../components/finance/coding/panelNav";
-import {
-  ViewMenu,
-  activeView,
-  type BookView,
-} from "../../../components/finance/reconcile/ViewMenu";
 import { GroupByControl } from "../../../components/finance/reconcile/GroupByControl";
-// The SAME four constants the publish console's "Explain them now" link and the
-// `/finances/explain` redirect build their URL from — "By month" is three axes
-// of this grid, and all three surfaces read one definition of them.
 import { UNATTRIBUTED_GROUP_KEY } from "../../../components/finance/reconcile/gridView";
 import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
 import type { SingleBookScope } from "../../../components/finance/bookScope";
-import {
-  BY_MONTH_DIR,
-  BY_MONTH_FILTER,
-  BY_MONTH_GROUP,
-  BY_MONTH_SORT,
-} from "../../../components/finance/byMonthHref";
 import { ExplainedProgressStrip } from "../../../components/finance/reconcile/ExplainedProgressStrip";
 import {
   DEFAULT_SORT_DIR,
@@ -157,7 +143,6 @@ import { MoveBookModal } from "../../../components/finance/modals/MoveBookModal"
 import {
   CENTRAL,
   RECONCILE_DROPDOWN_GROUPS,
-  RECONCILE_HEADER_CHIPS,
   RECONCILE_FILTER_LABELS,
   displayMerchantName,
   formatCents,
@@ -593,13 +578,33 @@ function ReconcileGrid() {
           ? { ...listArgs, chapterId: targetChapterId }
           : listArgs,
   );
-  // A new selection, a new search, a new book — or a new ORDER — starts at
-  // page one. Otherwise narrowing to 3 rows would keep asking the server for
-  // 400, and re-sorting a book somebody had paged three times deep would
-  // re-enrich 400 rows to show them the top of a different list.
+  // ── A NEW BOOK STARTS AT PAGE ONE. NOTHING ELSE DOES. ────────────────────
+  // This used to reset on `filters`, `debouncedQuery`, `sortKey`, `sortDir`
+  // and `groupBy` as well, on the reasoning that narrowing to 3 rows shouldn't
+  // keep asking the server for 400 and that a re-sort shouldn't re-enrich a
+  // page nobody is looking at any more.
+  //
+  // The second half of that was wrong, and it made a fully-loaded book
+  // IMPOSSIBLE TO SORT: press "Load more" four times to get 500 rows, click
+  // the Amount header, and you are back to 100 — the top hundred of a
+  // different order, with the 400 you had just waited for thrown away. Every
+  // further click of a header repeats it, so the only orderings you can ever
+  // see across a whole book are the first hundred rows of each. The same held
+  // for narrowing: filter a 500-row page down and you got 100.
+  //
+  // Re-ordering and narrowing both act on the WHOLE match set server-side —
+  // `listReconcile` sorts before it pages, and `limit` only caps how many rows
+  // are ENRICHED — so keeping the page size costs nothing on a narrowed grid
+  // (a 3-row match enriches 3 rows whatever the limit says) and is exactly
+  // what somebody who has deliberately loaded 500 rows is asking for.
+  //
+  // A change of BOOK is the one case that genuinely starts over: the rows are
+  // a different set entirely, and a page depth carried across from another
+  // desk means re-enriching hundreds of rows nobody asked to see. The period
+  // scope counts as a book change for the same reason.
   useEffect(() => {
     setPageSize(PAGE_STEP);
-  }, [filters, debouncedQuery, scope, targetChapterId, sortKey, sortDir, groupBy]);
+  }, [scope, targetChapterId, periodYear, periodMonth, periodMode]);
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
   // `ReconcileList` ALSO widens the same button to a cardholder's OWN row
@@ -762,26 +767,31 @@ function ReconcileGrid() {
   // "Restricted" for every reconciler who cannot publish, which is precisely
   // the failure that locked the founder out for a night (2026-08-11/12).
   const canUseLedgerConsole = reconcile?.viewerCanUseLedgerConsole ?? false;
-  // A FILTERED BAND MUST NOT OFFER TO PUBLISH.
+  // ── A FILTERED BAND IS MADE TRUTHFUL, NOT MUTE ────────────────────────────
+  // #707 WITHHELD Preview and Publish whenever the grid was narrowed, and the
+  // reasoning was sound as far as it went: a band's count and total describe
+  // the MATCH SET, publishing acts on the WHOLE MONTH, and "March 2025 · 12
+  // charges · -$4,102" beside a button that puts ~300 rows and -$88,201 on
+  // publicworship.life is the dead-number defect wired to the one
+  // irreversible, public act on the screen.
   //
-  // A band's count and total describe the MATCH SET — the rows the current
-  // filters left standing. Publishing acts on the whole month. Group "Needs
-  // attention" by month and the band reads "March 2025 · 12 charges ·
-  // -$4,102" beside a button that would put ~300 rows and a completely
-  // different figure on publicworship.life.
+  // But the founder wants the buttons: "When you group by month, you see the
+  // headers in a month. There should be a button to view and a button to
+  // publish, and it tells you what revision it's already in, and you're able
+  // to still publish it." And withholding was never the only fix available —
+  // it treated a band that could not state its subject as a band that must
+  // not act, when the real defect was that it could not state its subject.
   //
-  // That is the dead-number defect this whole area exists to end, wired to
-  // the one irreversible, public act on the screen — the worst possible place
-  // for it. So the ACTIONS require an unfiltered grid; the STATUS badge does
-  // not, because "March is published" is true regardless of what you have
-  // narrowed to, and hiding it would make a filtered view quietly forget
-  // which months are already out.
-  //
-  // A search counts as a filter here even though the State group stands down
-  // for it (`searchIgnoredState`): the rows on screen are still a subset.
-  const gridIsNarrowed = filters.length > 0 || debouncedQuery.trim().length > 0;
+  // So the BAND now carries both figures whenever they differ ("12 of 318
+  // charges · -$4,102 of -$88,201", from `groups[].unfilteredCount` /
+  // `unfilteredTotalCents` — see `listReconcile`), which makes Publish plainly
+  // about the month rather than about the selection, and the actions are
+  // allowed always. The irreversible half still ROUTES to `/finances/publish`:
+  // the two-approver handoff, the amendment reason on a re-publish and the
+  // SNAPSHOT_TRUNCATED refusal are the act itself, not paperwork in front of
+  // it, and reimplementing a separation-of-duties check on a band is how one
+  // gets quietly weakened.
   const showPublishInBands = groupBy === "month" && canUseLedgerConsole;
-  const allowBandPublishActions = showPublishInBands && !gridIsNarrowed;
   // The one book the console is about. `null` means "the caller's own desk",
   // which is what both `console_` and the preview mint default to.
   const consoleScope: SingleBookScope | null = centralScope
@@ -874,201 +884,53 @@ function ReconcileGrid() {
 
 
   /**
-   * THE VIEWS — saved questions about this one book.
+   * THERE IS NO VIEW MENU ANYMORE, and the page title is plain text.
    *
-   * EVERY ENTRY RE-FILTERS THIS GRID IN PLACE. Nothing here navigates.
+   * It used to be a dropdown of seven saved views — "Needs attention",
+   * "Waiting on me", "Ready to close", "Everything", "By month", "Chase
+   * receipts", "Publish a month" — each one a filter set plus a sort plus a
+   * grouping, applied in place. Founder, using the deployed build:
    *
-   * Three of them used to: a month's worklist, the chase list, the publish
-   * console — each a separate screen on the reasoning that it GROUPED or
-   * paginated differently. The grid can group and sort now, so the reasoning
-   * expired, and what the routing actually cost was the thing the founder
-   * named: "It takes away the header. Doesn't even show the database view. It
-   * should be the same exact view... Now I need to click back. I don't even
-   * see the dropdown anymore."
+   *   "I don't even see the need for the dropdown into By month."
+   *   "Needs attention doesn't really seem necessary. Ready to close, all of
+   *    that — seems not useful. Chase receipts also seems not useful."
+   *   "I like that you have the Group by — none, month, person. So the month
+   *    should just show the things by month already."
+   *   "You already have the State right here on the side, so I can see
+   *    everything in every state. That's all you need, and you have the books
+   *    as well."
+   *   "This should just be, like, Transactions."
    *
-   * So a view is a QUESTION about the same grid — a filter set, an order and a
-   * grouping — and the chrome never moves. The one thing still routed is the
-   * publish state machine itself, from a month band, and only because it is an
-   * irreversible two-approver act rather than a way of looking (see the band's
-   * own comment).
+   * The logic is exact and it is the same argument this file already made
+   * against the chip rail it replaced, applied one level up. Every axis a
+   * saved view set has its own control, on screen, permanently:
    *
-   * Counts come from `counts`, which is server-side and truthful across the
-   * whole scope rather than the loaded page — so every number here is one you
-   * can actually get to. An entry carries no count only when this screen has no
-   * honest figure for it; a guessed one is the exact defect this area keeps
-   * repairing.
+   *   Group by (none / month / person)  →  "By month", "Chase receipts"
+   *   State + Kind dropdowns            →  every state-shaped view
+   *   The books selector                →  scope
+   *   The Date/Amount column headers    →  the ordering
+   *
+   * So the menu was a THIRD way to say what the grid already said, and the
+   * header chips beneath it were a fourth. Both are gone; not one capability
+   * went with them, because a view was never anything but those controls set
+   * for you. What each retired entry now IS:
+   *
+   *   Needs attention / Ready to close  →  State dropdown (the keys survive)
+   *   Waiting on me                     →  State → Coding review
+   *   Everything                        →  clear the dropdowns (the default)
+   *   By month                          →  Group by Month
+   *   Chase receipts                    →  Group by Person, and the band's own
+   *                                        "Send reminder" per cardholder
+   *   Publish a month                   →  Group by Month, where each band
+   *                                        carries its status, Preview and
+   *                                        Publish
+   *
+   * EVERY URL STILL RESOLVES. `?filters=`, `?group=`, `?sort=`, `?dir=` are
+   * read exactly as before, so the `/finances/explain` redirect and the
+   * publish console's "Explain them now" link — both built by `byMonthHref`,
+   * which sets all four — still land on the same filtered, banded, sorted
+   * grid they always did. The view menu was never what made those links work.
    */
-  const views: BookView[] = [
-    {
-      key: "attention",
-      label: "Needs attention",
-      detail:
-        "Still unreviewed, or missing a budget, documentation, or money owed back. The pile that needs a decision.",
-      filters: ["needs_attention"],
-      count: counts?.needs_attention,
-    },
-    {
-      key: "review",
-      label: "Waiting on me",
-      detail:
-        "Explanations somebody submitted and you haven't decided yet — approve, or send back with a note.",
-      // FILTERED, NOT ROUTED. This used to route to `/finances/coding` on the
-      // reasoning that the review queue is a purpose-built surface — oldest
-      // first, and a send-back note per row — and that half-replacing it with
-      // a filter would drop both.
-      //
-      // Both are now expressible here, and the routing cost more than it
-      // bought. Founder, on the deployed build: "click Waiting on me. It takes
-      // away the header. Doesn't even show the database view. It should be the
-      // same exact view... Now I need to click back. I don't even see the
-      // dropdown anymore." Leaving the grid is the defect; the two features
-      // were the excuse.
-      //
-      //  - OLDEST FIRST is `sort:"date"` + `dir:"asc"`, applied by the server
-      //    across the whole match set before paging. The 60-day
-      //    accountable-plan clock runs against whatever has waited longest, so
-      //    the ordering is load-bearing and is set by the view rather than
-      //    left to whatever the last view used.
-      //  - APPROVE / SEND BACK WITH A NOTE is `CodingWorkbenchPanel`, which
-      //    this grid opens as its row detail — the same component, with the
-      //    receipt visible while the note is typed, which the standalone queue
-      //    could not do.
-      //
-      // `/finances/coding` is untouched and still the cardholder's own desk
-      // (its first half); this only stops the Book's view menu from throwing
-      // the reviewer out of the grid to reach rows the grid can show.
-      filters: ["coding_review"],
-      sort: "date",
-      dir: "asc",
-      group: null,
-      count: counts?.coding_review,
-    },
-    {
-      key: "close",
-      label: "Ready to close",
-      detail:
-        "Categorised, budgeted, documented — and simply never closed. Needs a keystroke, not a decision.",
-      filters: ["ready_to_close"],
-      count: counts?.ready_to_close,
-    },
-    {
-      key: "everything",
-      label: "Everything",
-      detail: "The whole book for this desk, newest first, no filter applied.",
-      filters: [],
-      // DECLARED, not left open. "Publish a month" is also the unfiltered book
-      // — banded by month — so without naming its own shape this entry would
-      // claim that view's title too (`activeView` returns the first match, and
-      // an undeclared axis matches anything). "Newest first, no grouping" is
-      // what the label already promises.
-      sort: DEFAULT_SORT_KEY,
-      dir: DEFAULT_SORT_DIR,
-      group: null,
-      count: counts?.all,
-    },
-    {
-      key: "month",
-      label: "By month",
-      detail:
-        "Every line that will publish blank, biggest-first, banded by month with each month's own progress — the backfill view.",
-      // ABSORBED, not routed. This was `/finances/explain` — a separate screen
-      // that existed because the grid could not ask the publishing question
-      // (its `uncoded` facet grandfathers pre-policy history, so the ~450
-      // reconstructed 2024-25 rows were unreachable), could not sort by amount,
-      // could not group by month, and had no per-month meter. It can do all
-      // four now, so the view is three axes of THIS grid rather than a
-      // destination: `needs_explaining` (no policy date), biggest money first,
-      // one band per month carrying that month's own progress.
-      filters: [BY_MONTH_FILTER],
-      sort: BY_MONTH_SORT,
-      dir: BY_MONTH_DIR,
-      group: BY_MONTH_GROUP,
-    },
-    {
-      key: "chase",
-      label: "Chase receipts",
-      detail:
-        "Everything still owed a receipt or a coding, grouped by who spent it, with a nudge button per person.",
-      // FILTERED AND GROUPED, NOT ROUTED — founder: "why can't I see the
-      // header? The header that has the dropdown." The presentation they liked
-      // (by person, with a nudge each) is now what a person band renders; the
-      // chrome they lost is the point of moving it.
-      //
-      // `needs_chasing`, NOT `missing_receipt`. The chase is a UNION —
-      // `needsDocumentation || chargeOutstanding != null` — and the
-      // documentation pill is only its first half: it misses a charge whose
-      // receipt is on and whose coding isn't, and it is what the nudge email
-      // would have covered anyway. Building this view on the pill would have
-      // produced a plausible, wrong list. See the key's own doc comment.
-      filters: ["needs_chasing"],
-      group: "person",
-      sort: "amount",
-      dir: "desc",
-      count: counts?.needs_chasing,
-    },
-    {
-      key: "publish",
-      label: "Publish a month",
-      detail:
-        "Every month banded, with its publication status and a preview — and the console one tap from the month it's about.",
-      // BANDED, NOT ROUTED — founder: "Publish a month, same thing. Should be
-      // in database view... I should see whether it's published when I look at
-      // things by month."
-      //
-      // Publishing IS a month-at-a-time act, so it is the month view with the
-      // publication status on each band: where the month is up to, a Preview
-      // that opens the actual page, and a hand-off to the console for the
-      // irreversible part. Same three axes as "By month" minus the
-      // `needs_explaining` narrowing — a month you are about to publish is the
-      // WHOLE month, not just its unexplained rows.
-      //
-      // The console stays the destination for the state machine itself. See
-      // the band's own comment for why that half is routed rather than
-      // reimplemented on a band.
-      filters: [],
-      group: "month",
-      sort: BY_MONTH_SORT,
-      dir: BY_MONTH_DIR,
-    },
-  ];
-  /** The chase view, by key — the header's "Chase receipts" button applies the
-   *  SAME view the menu offers rather than a second hand-rolled copy of its
-   *  filters, so the two can never point at different populations. */
-  const chaseView = views.find((v) => v.key === "chase") ?? views[0];
-  const currentView = activeView(views, {
-    filters,
-    sort: sortKey,
-    dir: sortDir,
-    group: groupBy,
-  });
-  /**
-   * APPLY A WHOLE SAVED VIEW — filters, sort and grouping in one act.
-   *
-   * Every axis the view does NOT name is RESET to the grid's default rather
-   * than inherited. A saved view that kept whatever grouping the last one left
-   * behind would render differently depending on where the user came from,
-   * which is precisely what "saved view" is supposed to rule out.
-   */
-  function applyView(view: BookView) {
-    const nextSort = view.sort ?? DEFAULT_SORT_KEY;
-    const nextDir = view.dir ?? DEFAULT_SORT_DIR;
-    const nextGroup = view.group ?? null;
-    setSortKey(nextSort);
-    setSortDir(nextDir);
-    setGroupBy(nextGroup);
-    const isDefaultSort =
-      nextSort === DEFAULT_SORT_KEY && nextDir === DEFAULT_SORT_DIR;
-    // One `setParams`, not four — `applyFilters` writes `?filters=` itself, so
-    // the sort/group params are folded into a single navigation beside it.
-    setFilters([...(view.filters ?? [])]);
-    clearSelectionRef.current?.();
-    router.setParams({
-      filters: serializeReconcileFilters([...(view.filters ?? [])]) ?? "",
-      sort: isDefaultSort ? "" : nextSort,
-      dir: isDefaultSort ? "" : nextDir,
-      group: nextGroup ?? "",
-    });
-  }
 
   // The server has already applied the filter set AND the search, so the grid
   // renders exactly what it was sent. This used to be
@@ -1230,11 +1092,13 @@ function ReconcileGrid() {
   // facet counts, so every number shown is one the current selection could
   // actually produce.
   //
-  // `RECONCILE_DROPDOWN_GROUPS`, not every group: the roll-up keys behind the
-  // header chips are a group for set-semantics purposes but must not appear in
-  // this menu, where a 51 sitting next to a 7 and a 42 that are subsets of it
-  // would recreate the "which number is the real one" problem the chips exist
-  // to end.
+  // `RECONCILE_DROPDOWN_GROUPS`, not every group: `needs_attention` and
+  // `ready_to_close` are a group for set-semantics purposes but must not
+  // appear in this menu, where a 51 sitting next to a 7 and a 42 that are
+  // subsets of it would recreate the "which number is the real one" problem
+  // this whole area exists to end. They have no control of their own on the
+  // page now that the header chips are gone; they are reachable by URL and are
+  // what the Dashboard's tiles drill through on.
   const filterOptionsByGroup = useMemo(
     () =>
       RECONCILE_DROPDOWN_GROUPS.map((group) => ({
@@ -1383,21 +1247,12 @@ function ReconcileGrid() {
   clearSelectionRef.current = clearSelection;
 
   const loading = reconcile === undefined;
-  // The old "N to clear" headline was `toClearCount`. It is still computed
-  // server-side — it is the honest open-items figure and the thing the two
-  // roll-up chips must sum to — but it is no longer rendered on its own,
-  // because on its own it conflated 51 rows that needed a decision with 76 that
-  // needed a keystroke. The header shows both halves instead
-  // (`RECONCILE_HEADER_CHIPS`), which is a strictly more informative way to
-  // spend the same pixels.
-  // Whether the chase page has anything on it — server-computed over EVERY row
-  // in scope, selection included and transfer legs included. This used to read
-  // `counts.missing_receipt`, which is a facet count: it narrows with the
-  // active filters, and it no longer sees a marked transfer now that the queue
-  // hides transfer legs. Either would take the button away while
-  // `receiptChase` still had rows to show — and this button is the only route
-  // to that page.
-  const chaseCount = reconcile?.chaseCount ?? 0;
+  // `toClearCount` and `chaseCount` are both still computed server-side and
+  // are still the honest, selection-independent figures they always were — the
+  // grid simply no longer renders a headline or a "Chase receipts (N)" button
+  // out of them. The State dropdown carries the backlog and a person band
+  // carries the chase, both of which say the same thing in a control that was
+  // going to be on screen anyway.
 
   const bulkIds = selectedInView as Id<"transactions">[];
 
@@ -1692,48 +1547,29 @@ function ReconcileGrid() {
       <View style={{ flex: 1, minWidth: 0 }}>
       <Screen maxWidth={FULL_WIDTH}>
         <Narrow>
-          {/* Header — title + "N to clear" (or the searched result count), with
-              "Chase receipts" as the page-level action on the right. That
-              button used to sit at the end of the filter row, where it wrapped
-              onto a line of its own on a phone; a page action belongs in the
-              page header, and moving it there costs nothing and buys a row. */}
+          {/* Header — the page's name, and the searched result count beside
+              it. Nothing else: the page-level "Chase receipts (N)" button that
+              used to sit here is gone with the view menu, because grouping by
+              Person puts a "Send reminder" on each cardholder's own band, which
+              is the presentation the founder actually asked to keep ("If the
+              chase receipt is just grouped by person, there's no need. I can
+              see each person, and click a button in their header"). */}
           <View className="mb-1 flex-row items-center justify-between gap-2">
-            {/* THE TITLE IS THE VIEW PICKER (founder: "I don't love all these
-                chips and stuff — maybe a drop down"). A rail of pills under a
-                bar of pills was two rows of the same thing, which is the
-                complaint this whole change exists to answer. The heading the
-                page needs anyway carries the menu instead, so nothing is
-                added to the screen and the current view is stated in the
-                largest type on it. See `ViewMenu`. */}
-            <ViewMenu
-              views={views}
-              active={currentView}
-              subtitle={searching ? `${matchedCount} found` : undefined}
-              onPickView={applyView}
-              onNavigate={(href) => router.navigate(href as never)}
-            />
-            {/* THE ENTRY POINT, which no longer leaves the grid. It used to
-                navigate to `/finances/receipt-chase`; it now applies the chase
-                view in place — same population (`chaseCount` is `isChaseable`
-                over the whole scope, the exact predicate the `needs_chasing`
-                facet uses), same by-person presentation, header intact.
-
-                Still gated on `chaseCount` rather than the facet count: that
-                figure ignores the current selection AND counts the hidden
-                transfer legs, so a book whose only receipt-owing rows are
-                marked transfers keeps its route to them. */}
-            {chaseCount > 0 ? (
-              <Button
-                title={`Chase receipts (${chaseCount})`}
-                variant="ghost"
-                size="sm"
-                icon="bell"
-                onPress={() => applyView(chaseView)}
-              />
-            ) : null}
+            {/* JUST THE NAME OF THE PAGE — founder: "This should just be, like,
+                Transactions." It used to be a dropdown of seven saved views;
+                see "THERE IS NO VIEW MENU ANYMORE" above for what each one of
+                them is now, and why every one is a control already on screen. */}
+            <View className="flex-row items-center gap-3">
+              <Text className="font-display text-2xl text-ink">Transactions</Text>
+              {searching ? (
+                <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                  {`${matchedCount} found`}
+                </Text>
+              ) : null}
+            </View>
             {/* REMIND ALL — the page-level nudge, manager-only, and only while
-                the chase view is actually up. It reminds whoever the CURRENT
-                view found, in the CURRENT book. */}
+                the grid is actually banded by person. It reminds whoever the
+                CURRENT filters found, in the CURRENT book. */}
             {canNudgeHere && chasingByPerson && nudgeableGroupCount > 0 ? (
               <Button
                 title="Remind all"
@@ -1774,34 +1610,23 @@ function ReconcileGrid() {
             </View>
           ) : null}
 
-          {/* THE HEADER CHIPS — what replaced "127 to clear".
+          {/* NO HEADER CHIPS. There used to be three here — "45 needs
+              attention · 90 ready to close · 222 reconciled" — and the founder,
+              using the build, asked what they were: "What are these pills
+              underneath — 45 need attention, 90 ready to close, 222 reconciled?
+              I don't even know what reconciled is."
 
-              That number was one figure doing two jobs. Of 127 open rows in
-              production, 51 had something genuinely outstanding and 76 were
-              categorised, budgeted, documented and simply never closed: 60% of
-              the backlog headline was a keystroke, not a backlog, and there was
-              no filter that found them — you could only reach them by scrolling
-              346 rows and eyeballing each one. Now each pile is named, counted,
-              and one tap away, which is the rule the rest of this area already
-              follows: the number you announce has to be a number you can get
-              to. `needs_attention + ready_to_close` equals the old total by
-              construction (see `flagsFor`), so the header can't drift from the
-              grid.
+              They were a row of pills under a row of pills, restating three of
+              the twelve options the State dropdown already offers a few pixels
+              below them, in vocabulary that only means anything to somebody who
+              already knows the pipeline. "You already have the State right here
+              on the side, so I can see everything in every state. That's all
+              you need."
 
-              Hidden while searching — the chips are filters, and a search
-              deliberately stands the filters down. */}
-          {!searching ? (
-            <View className="mb-3 flex-row flex-wrap items-center gap-2">
-              {RECONCILE_HEADER_CHIPS.map((key) => (
-                <Pill
-                  key={key}
-                  label={`${counts?.[key] ?? 0} ${RECONCILE_FILTER_LABELS[key].toLowerCase()}`}
-                  selected={filters.includes(key)}
-                  onPress={() => toggleFilter(key)}
-                />
-              ))}
-            </View>
-          ) : null}
+              The keys and their counts are untouched server-side
+              (`needs_attention` / `ready_to_close` are still filters, still
+              facet-counted, still what the Dashboard's tiles drill through on)
+              — only this row is gone. */}
 
           {/* no-dead-numbers: the period-scope banner — only present when a
               dashboard tile's drill-through set `year`/`month`/`period` (see
@@ -2207,52 +2032,44 @@ function ReconcileGrid() {
                                 : "neutral"
                         }
                       />
-                      {/* LOOKING, not committing — a mint and an open, which is
-                          why it can happen right here. Still withheld on a
-                          narrowed grid: the preview renders the WHOLE month,
-                          so offering it beside a filtered count would invite
-                          the same "these 12 rows" misreading as Publish. */}
-                      {allowBandPublishActions ? (
-                        <Button
-                          title="Preview"
-                          variant="ghost"
-                          size="sm"
-                          icon="eye"
-                          loading={previewPage.loading}
-                          onPress={() =>
-                            void previewPage.open({
-                              scope: consoleScope,
-                              periodKey: group.key,
-                            })
-                          }
-                        />
-                      ) : null}
+                      {/* LOOKING, not committing — a mint and an open, which
+                          is why it can happen right here, and why it is offered
+                          on a narrowed grid too: the preview renders the WHOLE
+                          month, which is now exactly what the band beside it
+                          says it is about. */}
+                      <Button
+                        title="Preview"
+                        variant="ghost"
+                        size="sm"
+                        icon="eye"
+                        loading={previewPage.loading}
+                        onPress={() =>
+                          void previewPage.open({
+                            scope: consoleScope,
+                            periodKey: group.key,
+                          })
+                        }
+                      />
                       {/* COMMITTING — routed to the console, deliberately. The
                           two-approver handoff, the amendment reason and the
                           truncated-snapshot refusal are the act itself, not
-                          paperwork in front of it. */}
-                      {allowBandPublishActions ? (
-                        <Button
-                          title={pub.status === "published" ? "Amend" : "Publish"}
-                          variant="ghost"
-                          size="sm"
-                          icon="arrow-up-right"
-                          onPress={() =>
-                            router.navigate(
-                              `/finances/publish${
-                                consoleScope ? `?scope=${consoleScope}` : ""
-                              }${parsed ? `${consoleScope ? "&" : "?"}period=${group.key}` : ""}` as never,
-                            )
-                          }
-                        />
-                      ) : (
-                        // SAY WHY, rather than leaving a gap somebody reads as
-                        // "this month can't be published". The status is still
-                        // true; only the actions are withheld.
-                        <Text className="text-2xs text-faint">
-                          Clear filters to publish
-                        </Text>
-                      )}
+                          paperwork in front of it. Always offered: what stopped
+                          it being offered on a filtered grid was the band's
+                          inability to say which rows it meant, and the band
+                          says so now. */}
+                      <Button
+                        title={pub.status === "published" ? "Amend" : "Publish"}
+                        variant="ghost"
+                        size="sm"
+                        icon="arrow-up-right"
+                        onPress={() =>
+                          router.navigate(
+                            `/finances/publish${
+                              consoleScope ? `?scope=${consoleScope}` : ""
+                            }${parsed ? `${consoleScope ? "&" : "?"}period=${group.key}` : ""}` as never,
+                          )
+                        }
+                      />
                     </View>
                   );
                 }
