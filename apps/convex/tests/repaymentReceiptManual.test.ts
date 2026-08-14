@@ -27,10 +27,12 @@
  * `receiptDeliveredAt`, `receiptDeliveryFailedAt`, `lastReceiptError`) is
  * actually on `listPersonalRepayments`'s return shape.
  */
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
+import { sendOneRepaymentReceiptGroup } from "../cards";
+import type { ActionCtx } from "../_generated/server";
 import type { Id } from "../_generated/dataModel";
 
 async function seedManager(s: ChapterSetup): Promise<Id<"people">> {
@@ -215,20 +217,272 @@ describe("manual receipt send — the backlog case", () => {
     });
   });
 
-  test("can be pressed more than once — sending twice is the feature", async () => {
+  test("can be pressed more than once, minutes apart — genuine resending is the feature", async () => {
+    vi.useFakeTimers();
+    try {
+      await withEmailEnv(async () => {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedManager(s);
+        const payer = await seedPayer(s, { email: "twice@example.com" });
+        const a = await seedSettledRepayment(s, payer, 1_000);
+
+        const calls = captureResend();
+        await s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a });
+        // Past the manual cooldown (`MANUAL_RECEIPT_RESEND_COOLDOWN_MS`, 60s)
+        // — a genuinely later press must still go through in full.
+        vi.advanceTimersByTime(90 * 1000);
+        await s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a });
+
+        expect(calls).toHaveLength(2);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("manual receipt send — the cooldown (finding 2: no bound on repeated sends)", () => {
+  test("an immediate second press is refused with a clear, honest wait time — never a silent no-op", async () => {
+    vi.useFakeTimers();
+    try {
+      await withEmailEnv(async () => {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedManager(s);
+        const payer = await seedPayer(s, { email: "cooldown@example.com" });
+        const a = await seedSettledRepayment(s, payer, 1_000);
+
+        const calls = captureResend();
+        await s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a });
+        expect(calls).toHaveLength(1);
+
+        // Immediately again — a runaway loop or a fat-fingered double-tap.
+        await expect(
+          s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a }),
+        ).rejects.toThrow(/try again in \d+s/i);
+        // No second network call — the refusal happened before any send was
+        // attempted, not after a wasted one.
+        expect(calls).toHaveLength(1);
+
+        const row = await run(s.t, (ctx) => ctx.db.get(a));
+        // The FIRST send's delivery is untouched by the refused second press.
+        expect(typeof row?.receiptDeliveredAt).toBe("number");
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a runaway loop of 10 presses inside the cooldown produces exactly ONE send", async () => {
+    vi.useFakeTimers();
+    try {
+      await withEmailEnv(async () => {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedManager(s);
+        const payer = await seedPayer(s, { email: "loop@example.com" });
+        const a = await seedSettledRepayment(s, payer, 1_000);
+
+        const calls = captureResend();
+        let succeeded = 0;
+        let refused = 0;
+        for (let i = 0; i < 10; i++) {
+          try {
+            await s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a });
+            succeeded += 1;
+          } catch (err) {
+            expect(err).toBeInstanceOf(ConvexError);
+            refused += 1;
+          }
+        }
+        expect(succeeded).toBe(1);
+        expect(refused).toBe(9);
+        expect(calls).toHaveLength(1);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the cooldown never applies to the automatic path — an automatic send is unaffected by a manual send moments earlier", async () => {
+    vi.useFakeTimers();
+    try {
+      await withEmailEnv(async () => {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedManager(s);
+        const payer = await seedPayer(s, { email: "auto-unaffected@example.com" });
+        // Two DIFFERENT repayments — manually receipt one, then prove the
+        // automatic claim on the OTHER, moments later, is untouched by the
+        // first row's cooldown (the cooldown is per-row anyway, but this also
+        // pins that automatic claims never even read
+        // `lastManualReceiptSendAt`).
+        const manual = await seedSettledRepayment(s, payer, 1_000);
+        const other = await seedSettledRepayment(s, payer, 500);
+
+        const calls = captureResend();
+        await s.as.action(api.cards.sendRepaymentReceiptManually, {
+          repaymentId: manual,
+        });
+        expect(calls).toHaveLength(1);
+
+        // Immediately after — well inside the 60s manual cooldown window —
+        // the automatic claim on the OTHER row must still succeed.
+        const claimed = await t.mutation(internal.cards.claimRepaymentReceipts, {
+          repaymentIds: [other],
+        });
+        expect(claimed).toHaveLength(1);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
+
+describe("manual receipt send — concurrency (finding 1: races an in-flight send)", () => {
+  test("backfill claims a stale row, a manual send races it mid-flight and is refused, then the backfill's own send completes — exactly one email", async () => {
     await withEmailEnv(async () => {
       const t = newT();
       const s = await setupChapter(t);
       await seedManager(s);
-      const payer = await seedPayer(s, { email: "twice@example.com" });
-      const a = await seedSettledRepayment(s, payer, 1_000);
+      const payer = await seedPayer(s, { email: "race-backfill@example.com" });
+      // Settled long enough ago (and never confirmed delivered) to be
+      // eligible for the backfill's retry claim.
+      const a = await seedSettledRepayment(s, payer, 2_000, {
+        receiptSentAt: Date.now() - 20 * 60 * 1000,
+      });
 
+      // STEP 1 — the backfill's retry claim commits. Its own send hasn't
+      // been issued yet — exactly the reviewer's proven window.
+      const claim = await t.mutation(internal.cards.claimRepaymentReceiptForRetry, {
+        repaymentId: a,
+      });
+      expect(claim).not.toBeNull();
+
+      // STEP 2 — a manual send races the in-flight claim: refused outright,
+      // no email, no silent no-op.
       const calls = captureResend();
-      await s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a });
-      await s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a });
+      await expect(
+        s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a }),
+      ).rejects.toThrow(/already being sent/i);
+      expect(calls).toHaveLength(0);
 
-      expect(calls).toHaveLength(2);
+      // STEP 3 — the backfill's own claimed send completes normally, through
+      // the SAME `sendOneRepaymentReceiptGroup` every path shares.
+      await t.action(async (rawCtx) => {
+        await sendOneRepaymentReceiptGroup(rawCtx as unknown as ActionCtx, [a], 0);
+      });
+
+      expect(calls).toHaveLength(1);
+      const row = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(typeof row?.receiptDeliveredAt).toBe("number");
     });
+  });
+
+  test("automatic claims (settlement scheduling), a manual send races it mid-flight and is refused, then automatic's own send completes — exactly one email", async () => {
+    await withEmailEnv(async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const payer = await seedPayer(s, { email: "race-automatic@example.com" });
+      const a = await seedSettledRepayment(s, payer, 1_800);
+
+      // STEP 1 — automatic's claim commits (this is exactly what
+      // `sendRepaymentReceiptEmail` does before it sends).
+      const claimed = await t.mutation(internal.cards.claimRepaymentReceipts, {
+        repaymentIds: [a],
+      });
+      expect(claimed).toHaveLength(1);
+
+      // STEP 2 — a manual send races the in-flight automatic claim: refused.
+      const calls = captureResend();
+      await expect(
+        s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a }),
+      ).rejects.toThrow(/already being sent/i);
+      expect(calls).toHaveLength(0);
+
+      // STEP 3 — automatic's own claimed send completes normally.
+      await t.action(async (rawCtx) => {
+        await sendOneRepaymentReceiptGroup(rawCtx as unknown as ActionCtx, [a], 0);
+      });
+
+      expect(calls).toHaveLength(1);
+      const row = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(typeof row?.receiptDeliveredAt).toBe("number");
+    });
+  });
+
+  test("automatic claims, a backfill retry races it mid-flight and finds nothing to claim, then automatic's own send completes — exactly one email", async () => {
+    await withEmailEnv(async () => {
+      const t = newT();
+      const s = await setupChapter(t);
+      await seedManager(s);
+      const payer = await seedPayer(s, { email: "race-both@example.com" });
+      const a = await seedSettledRepayment(s, payer, 1_500);
+
+      // STEP 1 — automatic's claim commits.
+      const claimed = await t.mutation(internal.cards.claimRepaymentReceipts, {
+        repaymentIds: [a],
+      });
+      expect(claimed).toHaveLength(1);
+
+      // STEP 2 — a backfill retry races the in-flight automatic claim: finds
+      // nothing to claim (returns `null`, the same graceful skip it gives
+      // any other ineligible row — no throw, since the backfill sweeps many
+      // rows and one being mid-flight is routine, not exceptional).
+      const retryClaim = await t.mutation(
+        internal.cards.claimRepaymentReceiptForRetry,
+        { repaymentId: a },
+      );
+      expect(retryClaim).toBeNull();
+
+      // STEP 3 — automatic's own claimed send completes normally.
+      const calls = captureResend();
+      await t.action(async (rawCtx) => {
+        await sendOneRepaymentReceiptGroup(rawCtx as unknown as ActionCtx, [a], 0);
+      });
+
+      expect(calls).toHaveLength(1);
+      const row = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(typeof row?.receiptDeliveredAt).toBe("number");
+    });
+  });
+
+  test("the in-flight lock isn't permanent — once RECEIPT_RETRY_STALE_MS has passed with no recorded outcome, a manual send may proceed", async () => {
+    vi.useFakeTimers();
+    try {
+      await withEmailEnv(async () => {
+        const t = newT();
+        const s = await setupChapter(t);
+        await seedManager(s);
+        const payer = await seedPayer(s, { email: "crashed@example.com" });
+        const a = await seedSettledRepayment(s, payer, 1_200);
+
+        // A claim commits and then the process holding it is presumed dead —
+        // `markRepaymentReceiptOutcome` never runs, so the lock is never
+        // released the normal way.
+        const claimed = await t.mutation(internal.cards.claimRepaymentReceipts, {
+          repaymentIds: [a],
+        });
+        expect(claimed).toHaveLength(1);
+
+        // Still inside the grace window — refused.
+        const calls = captureResend();
+        await expect(
+          s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a }),
+        ).rejects.toThrow(/already being sent/i);
+        expect(calls).toHaveLength(0);
+
+        // Past `RECEIPT_RETRY_STALE_MS` (15 minutes) — the lock is presumed
+        // abandoned and a fresh claim may proceed.
+        vi.advanceTimersByTime(16 * 60 * 1000);
+        await s.as.action(api.cards.sendRepaymentReceiptManually, { repaymentId: a });
+        expect(calls).toHaveLength(1);
+      });
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 

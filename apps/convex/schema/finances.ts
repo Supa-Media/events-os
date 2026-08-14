@@ -1134,6 +1134,58 @@ export const personalRepayments = defineTable({
   // unbounded provider payload. Cleared alongside `receiptDeliveryFailedAt`
   // on a successful resend.
   lastReceiptError: v.optional(v.string()),
+  // ── IN-FLIGHT LOCK (adversarial review finding, 2026-08-14) ────────────────
+  // Stamped alongside `receiptSentAt` by WHICHEVER claimer wins a claim
+  // (`claimRepaymentReceipts` the automatic path, `claimRepaymentReceiptForRetry`
+  // the backfill's retry, `claimRepaymentReceiptManual` the manager's on-demand
+  // send) — the piece `receiptSentAt` alone could never express, because
+  // `receiptSentAt` means "an attempt was claimed, ever" while this means "a
+  // send is happening RIGHT NOW". Cleared by `markRepaymentReceiptOutcome` the
+  // instant an outcome (delivered OR failed) is recorded, so it is normally
+  // set for milliseconds — one Resend round trip.
+  //
+  // EVERY claimer checks this BEFORE claiming: if it's set and younger than
+  // `RECEIPT_RETRY_STALE_MS` (`cards.ts`), a second claimer refuses rather
+  // than racing the first one's still-in-flight send — this is what closes
+  // the double-email hole a manual send used to be able to open against an
+  // in-flight automatic or backfill send (and vice versa). If it's set but
+  // OLDER than that bound, the original attempt is presumed dead (the process
+  // that held it crashed before it could record an outcome) and a fresh claim
+  // is allowed to proceed — the same staleness escape hatch
+  // `claimRepaymentReceiptForRetry` already used to give `receiptSentAt`,
+  // just now scoped to the thing that actually needed a grace window.
+  receiptSendingAt: v.optional(v.number()),
+  // ── MANUAL-SEND COOLDOWN (same review, finding 2) ──────────────────────────
+  // Stamped ONLY by `claimRepaymentReceiptManual`, on every claimed manual
+  // attempt (live or failed) — never by the automatic or backfill paths, which
+  // is deliberate: the automatic path already has an at-most-once claim and
+  // needs no throttle, and a maintainer-run backfill sweep must never be
+  // slowed by a limit meant for a person mashing a button. Refused (never
+  // silently dropped) by a second manual send inside
+  // `MANUAL_RECEIPT_RESEND_COOLDOWN_MS` (`cards.ts`) — short enough (60s) to
+  // be invisible to a manager genuinely resending minutes or days later (the
+  // founder's stated use case), long enough to stop a fat-fingered double-tap
+  // or a runaway loop from putting Resend calls out at will, the way an
+  // un-throttled probe of this action proved it could.
+  lastManualReceiptSendAt: v.optional(v.number()),
+  // ── AUDIT: WHO, AND BY WHICH PATH (same review) ────────────────────────────
+  // The manager whose `sendRepaymentReceiptManually` call most recently
+  // claimed this row. Absent on a row that has never been manually sent —
+  // including one settled and receipted entirely by the automatic path.
+  // Never set by the automatic or backfill claimers (there is no human to
+  // name for either). Read alongside `lastReceiptSendSource` below, since a
+  // later automatic/backfill attempt doesn't clear this — it's "the last
+  // manual sender, if any", not "the last sender".
+  lastReceiptSentBy: v.optional(v.id("people")),
+  // Which of the three claimers most recently claimed this row — the answer
+  // to "was this manual or automatic", which used to be unrecoverable from
+  // application data at all (only Convex platform logs carried it, and even
+  // those didn't distinguish a manual resend from the original automatic
+  // send). Set by every claimer, including the automatic and backfill paths,
+  // so it's always current for whichever attempt is most recent.
+  lastReceiptSendSource: v.optional(
+    v.union(v.literal("automatic"), v.literal("manual"), v.literal("backfill")),
+  ),
   createdAt: v.number(),
   updatedAt: v.number(),
 })

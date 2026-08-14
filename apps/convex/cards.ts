@@ -127,6 +127,7 @@ import {
   requireCentralFinanceRole,
   getFinanceRole,
   getChapterAccountForMode,
+  resolveCallerPersonId,
   type FinanceScope,
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
@@ -3668,6 +3669,14 @@ const repaymentReceiptLineValidator = v.object({
  * manager bundling charges from DIFFERENT payers into one Checkout, so this
  * treats that as first-class rather than mailing one payer a receipt that
  * quietly includes somebody else's charges.
+ *
+ * ALSO claims the IN-FLIGHT LOCK (`receiptSendingAt`) alongside `receiptSentAt`
+ * — this row's automatic exactly-once guard above still needs no other
+ * change (a second automatic claim is already refused by `receiptSentAt`
+ * alone), but stamping the lock here is what lets a MANUAL send that races
+ * this send while it's still in flight refuse itself instead of double-
+ * mailing the payer — see `receiptSendingAt`'s schema doc and
+ * `claimRepaymentReceiptManual` below.
  */
 export const claimRepaymentReceipts = internalMutation({
   args: { repaymentIds: v.array(v.id("personalRepayments")) },
@@ -3686,39 +3695,87 @@ export const claimRepaymentReceipts = internalMutation({
       const r = await ctx.db.get(id);
       if (!r) continue;
       if (!r.creditTransactionId || r.status !== "paid") continue;
+      // UNCHANGED, deliberately as strict as ever — pinned by
+      // `repaymentReceiptManual.test.ts`'s "at-most-once guarantee is
+      // unchanged" suite. Nothing added ABOVE this line; only the stamp
+      // below grew a second field.
       if (r.receiptSentAt !== undefined) continue;
-      await ctx.db.patch(id, { receiptSentAt: Date.now() });
+      const now = Date.now();
+      await ctx.db.patch(id, {
+        receiptSentAt: now,
+        receiptSendingAt: now,
+        lastReceiptSendSource: "automatic",
+      });
       claimed.push({ repaymentId: id, payerPersonId: r.payerPersonId });
     }
     return claimed;
   },
 });
 
-/** How long a claimed-but-not-yet-confirmed receipt must sit before the
- *  backfill (`repaymentReceiptBackfill.ts`) is willing to re-claim it. A
- *  `sendOneRepaymentReceiptGroup` call is one HTTP round trip to Resend —
- *  comfortably done in seconds — so anything still short of this window is
- *  almost certainly a send genuinely in flight, not a lost one, and must be
- *  left alone rather than risk a duplicate. Exported so the backfill's
- *  eligibility scan and this file's retry-claim agree on the same threshold. */
+/** How long a claimed receipt's IN-FLIGHT LOCK (`receiptSendingAt`) is
+ *  honored before a second claimer is allowed to assume the original attempt
+ *  died mid-flight and try again. A `sendOneRepaymentReceiptGroup` call is
+ *  one HTTP round trip to Resend, resolved (successfully or not) in
+ *  milliseconds — `markRepaymentReceiptOutcome` clears the lock the instant
+ *  that resolves — so in the OVERWHELMING majority of cases this bound is
+ *  never actually waited out; it exists purely for the process-died-mid-send
+ *  case, where nothing ever clears the lock. Exported so the backfill's
+ *  eligibility scan, this file's retry-claim, and the manual claim's
+ *  in-flight refusal all agree on the same threshold — three independent
+ *  claimers can never disagree about what "stuck" means. */
 export const RECEIPT_RETRY_STALE_MS = 15 * 60 * 1000;
+
+/** How long ONE manual send silences a second one for the SAME repayment —
+ *  the MANUAL path's own cooldown, deliberately separate from (and far
+ *  shorter than) `REPAYMENT_NUDGE_COOLDOWN_MS`'s three days. That cooldown
+ *  protects a DEBTOR from being pestered about money they haven't paid yet;
+ *  this one protects the SYSTEM (and Resend's rate limits) from a runaway
+ *  loop or a fat-fingered double-tap on a "Resend receipt" button — an
+ *  un-throttled probe of this exact action produced 50 Resend calls for 50
+ *  presses with nothing stopping it. The founder's stated use case is
+ *  on-demand resending ("say they forgot it, or they just need it resent")
+ *  minutes-to-days later, which 60 seconds never touches; it only ever
+ *  refuses a press that lands while the previous one is still settling.
+ *  Exported so the manual claim and its tests agree on one number. */
+export const MANUAL_RECEIPT_RESEND_COOLDOWN_MS = 60 * 1000;
+
+/** Is a receipt send CURRENTLY in flight for this row — the shared check
+ *  every claimer (automatic, backfill retry, manual) runs before claiming.
+ *  `receiptSendingAt` unset means nothing is happening; set-but-stale (past
+ *  `RECEIPT_RETRY_STALE_MS`) means the original attempt is presumed dead and
+ *  the lock no longer blocks a new claim — see that field's schema doc. */
+function isReceiptSendInFlight(
+  r: Pick<Doc<"personalRepayments">, "receiptSendingAt">,
+  now: number,
+): boolean {
+  return (
+    r.receiptSendingAt !== undefined &&
+    now - r.receiptSendingAt < RECEIPT_RETRY_STALE_MS
+  );
+}
 
 /**
  * Re-claim ONE repayment's receipt for a RETRY send, for the backfill only
  * (`repaymentReceiptBackfill.ts`). Unlike `claimRepaymentReceipts` (which
  * claims a never-attempted row), this claims a row that was ALREADY
- * attempted and never confirmed delivered — re-stamping `receiptSentAt` to
- * `now` is what makes the claim atomic (read-and-write in one transaction,
- * same trick `claimRepaymentReceipts` uses) AND what stops a second backfill
- * run from re-claiming the same row a moment later: its own staleness check
- * reads the fresh timestamp and sees a claim that isn't old enough to be
- * "stuck" yet.
+ * attempted and never confirmed delivered — re-stamping `receiptSentAt` (and
+ * the in-flight lock, `receiptSendingAt`) to `now` is what makes the claim
+ * atomic (read-and-write in one transaction, same trick `claimRepaymentReceipts`
+ * uses).
  *
  * Returns `null` (nothing to do) when: the row is gone, was never settled,
  * was never claimed in the first place (`receiptSentAt` absent — not this
- * mutation's job), already has a CONFIRMED delivery, or its outstanding
- * claim isn't old enough yet to safely assume the original attempt is done
- * (see `RECEIPT_RETRY_STALE_MS`).
+ * mutation's job), already has a CONFIRMED delivery, or a send is CURRENTLY
+ * in flight for it — either this sweep's own prior claim not yet resolved,
+ * or (the race an adversarial review proved: 2026-08-14) a MANUAL send that
+ * is mid-flight right now. `isReceiptSendInFlight` is what decides "in
+ * flight": it is keyed on `receiptSendingAt`, not on how long ago
+ * `receiptSentAt` was last stamped, precisely so a manager's earlier FAILED
+ * manual retry — which used to re-stamp `receiptSentAt` and silently evict
+ * this row from the backlog for another `RECEIPT_RETRY_STALE_MS` — no longer
+ * does: `markRepaymentReceiptOutcome` clears `receiptSendingAt` the instant
+ * that failure is recorded, so this row is reachable again immediately, not
+ * 15 more minutes later.
  */
 export const claimRepaymentReceiptForRetry = internalMutation({
   args: { repaymentId: v.id("personalRepayments") },
@@ -3735,8 +3792,13 @@ export const claimRepaymentReceiptForRetry = internalMutation({
     if (!r.creditTransactionId || r.status !== "paid") return null;
     if (r.receiptSentAt === undefined) return null;
     if (r.receiptDeliveredAt !== undefined) return null;
-    if (Date.now() - r.receiptSentAt < RECEIPT_RETRY_STALE_MS) return null;
-    await ctx.db.patch(repaymentId, { receiptSentAt: Date.now() });
+    const now = Date.now();
+    if (isReceiptSendInFlight(r, now)) return null;
+    await ctx.db.patch(repaymentId, {
+      receiptSentAt: now,
+      receiptSendingAt: now,
+      lastReceiptSendSource: "backfill",
+    });
     return { repaymentId: r._id, payerPersonId: r.payerPersonId };
   },
 });
@@ -3753,6 +3815,15 @@ export const claimRepaymentReceiptForRetry = internalMutation({
  * make the backfill re-scan a now-fine row forever. `"failed"` stamps
  * `receiptDeliveryFailedAt` + a short, bounded reason (never an unbounded
  * provider payload) and leaves `receiptDeliveredAt` untouched.
+ *
+ * EITHER outcome also CLEARS the in-flight lock (`receiptSendingAt`) — this
+ * is the release side of the claim every claimer takes before sending. A
+ * send that reaches this mutation at all (success or failure) is, by
+ * definition, no longer in flight; leaving the lock set would wedge the row
+ * against every other claimer for no reason until `RECEIPT_RETRY_STALE_MS`
+ * expired on its own. Only a process that dies BEFORE reaching this mutation
+ * leaves the lock standing — which is exactly the case the staleness bound
+ * exists for.
  */
 export const markRepaymentReceiptOutcome = internalMutation({
   args: {
@@ -3771,12 +3842,14 @@ export const markRepaymentReceiptOutcome = internalMutation({
           receiptDeliveredAt: now,
           receiptDeliveryFailedAt: undefined,
           lastReceiptError: undefined,
+          receiptSendingAt: undefined,
         });
       } else {
         await ctx.db.patch(id, {
           receiptDeliveryFailedAt: now,
           // Bounded: this is a triage string, never a dumped provider body.
           lastReceiptError: (error ?? "unknown error").slice(0, 300),
+          receiptSendingAt: undefined,
         });
       }
     }
@@ -4116,29 +4189,63 @@ export const sendRepaymentReceiptEmail = internalAction({
 //
 // The automatic path above is deliberately AT MOST ONCE, and that guarantee
 // stays exactly as strict as it was — `claimRepaymentReceipts` still refuses
-// anything with `receiptSentAt` set. This is a SEPARATE, deliberately
-// UNLIMITED path: a manager choosing to (re)send is the whole feature,
-// including for a repayment that settled long before receipts existed at all
-// (`receiptSentAt` already set from that era) or one whose one automatic
-// attempt simply failed. It reuses every piece of the automatic path's send
-// machinery — `getRepaymentReceiptPayload`, `buildRepaymentReceipt`,
+// anything with `receiptSentAt` set. This is a SEPARATE path that deliberately
+// does NOT carry that same restriction: a manager choosing to (re)send is the
+// whole feature, including for a repayment that settled long before receipts
+// existed at all (`receiptSentAt` already set from that era) or one whose one
+// automatic attempt simply failed. It reuses every piece of the automatic
+// path's send machinery — `getRepaymentReceiptPayload`, `buildRepaymentReceipt`,
 // `sendOneRepaymentReceiptGroup`, `markRepaymentReceiptOutcome` — so there is
-// still exactly one composer and one sender, just two ways to reach them.
+// still exactly one composer and one sender, just three ways to reach them.
+//
+// "NOT RESTRICTED BY THE AUTOMATIC GUARD" IS NOT THE SAME AS "UNGUARDED"
+// (adversarial review, 2026-08-14 — two proven findings fixed here):
+//
+//  1. CONCURRENCY. A manual send used to claim unconditionally, with no idea
+//     whether an automatic or backfill send was ALREADY in flight for the
+//     same row — proven sequence: the backfill claims a stale row (claim
+//     commits, send not yet issued), a manual send runs to completion (one
+//     email), then the backfill's own send finishes (a second email). Fixed
+//     by the shared in-flight lock, `receiptSendingAt` (see its schema doc):
+//     every claimer — this one included — checks it before claiming and
+//     refuses with a clear `RECEIPT_SEND_IN_FLIGHT` error rather than racing
+//     whoever holds it. The lock has its own staleness escape hatch
+//     (`RECEIPT_RETRY_STALE_MS`) so a crashed process can never wedge a row
+//     shut forever.
+//  2. VOLUME. Nothing bounded how often a manager (or a bug, or a runaway
+//     loop) could press this — a 50-call probe against this exact action
+//     produced 50 Resend sends. Fixed by `MANUAL_RECEIPT_RESEND_COOLDOWN_MS`
+//     (60s, this path ONLY — see that constant's doc for why the automatic
+//     and backfill paths get none): a second manual claim inside the window
+//     is refused with a clear `RECEIPT_SEND_COOLDOWN` error naming when to
+//     retry, never a silent no-op.
 //
 // WHAT `receiptSentAt` MEANS AFTER A MANUAL SEND: "the most recent attempt",
 // not "the first attempt ever" — the same meaning `claimRepaymentReceiptForRetry`
 // already gives it when the backfill retries a stale send. It is re-stamped
-// to `Date.now()` on every manual send, live or not. `receiptDeliveredAt` /
-// `receiptDeliveryFailedAt` are still the fields that answer "did the payer
-// actually get one" — those come only from `markRepaymentReceiptOutcome`,
-// exactly as before.
+// to `Date.now()` on every CLAIMED manual send, live or not (a REFUSED one —
+// in-flight or cooled-down — claims nothing and stamps nothing).
+// `receiptDeliveredAt` / `receiptDeliveryFailedAt` are still the fields that
+// answer "did the payer actually get one" — those come only from
+// `markRepaymentReceiptOutcome`, exactly as before.
+//
+// AUDIT (the other proven finding: no record of who sent what, or how often).
+// `lastReceiptSentBy` (this path only — automatic/backfill have no human to
+// name) and `lastReceiptSendSource` (every path) are stamped on every claim,
+// so "was this manual or automatic, and who pressed it" is answerable from
+// the row itself — see both fields' schema docs.
 
 /**
  * The mutation half of a manual send: gate, verify the repayment is genuinely
- * settled and in the caller's chapter, and stamp `receiptSentAt` — all in ONE
- * transaction, the same shape `claimRepaymentReceipts` uses. Deliberately
- * does NOT check `receiptSentAt` first; see this section's header for why
- * re-sending on purpose is the point, not a bug to guard against.
+ * settled and in the caller's chapter, check the in-flight lock and the
+ * cooldown, and — only once both pass — stamp the claim (`receiptSentAt`,
+ * `receiptSendingAt`, `lastManualReceiptSendAt`, `lastReceiptSentBy`,
+ * `lastReceiptSendSource`) — all in ONE transaction, the same shape
+ * `claimRepaymentReceipts` uses. Deliberately does NOT check `receiptSentAt`
+ * on its own (a prior automatic/backfill/manual attempt, successful or not,
+ * is never by itself a reason to refuse) — see this section's header for why
+ * re-sending on purpose is the point; only a send that's genuinely happening
+ * RIGHT NOW, or one that JUST happened seconds ago, is refused.
  */
 export const claimRepaymentReceiptManual = internalMutation({
   args: { repaymentId: v.id("personalRepayments") },
@@ -4149,6 +4256,7 @@ export const claimRepaymentReceiptManual = internalMutation({
   handler: async (ctx, { repaymentId }) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireRepaymentsCollect(ctx, chapterId);
+    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
 
     const r = await ctx.db.get(repaymentId);
     await requireInChapter(ctx, chapterId, r, "Repayment");
@@ -4160,7 +4268,41 @@ export const claimRepaymentReceiptManual = internalMutation({
       });
     }
 
-    await ctx.db.patch(repaymentId, { receiptSentAt: Date.now() });
+    const now = Date.now();
+    // GUARD 1 — concurrency. A send genuinely in flight for this row right
+    // now (automatic, backfill, or another manual press) must never be
+    // raced — see `receiptSendingAt`'s schema doc.
+    if (isReceiptSendInFlight(r!, now)) {
+      throw new ConvexError({
+        code: "RECEIPT_SEND_IN_FLIGHT",
+        message:
+          "A receipt for this repayment is already being sent — try again in a moment.",
+      });
+    }
+    // GUARD 2 — volume. A manual send within the cooldown of the LAST manual
+    // send is refused with a clear, honest wait time — never a silent no-op.
+    // Automatic/backfill claims never set `lastManualReceiptSendAt`, so
+    // neither of those paths can ever trip this.
+    if (r!.lastManualReceiptSendAt !== undefined) {
+      const elapsed = now - r!.lastManualReceiptSendAt;
+      if (elapsed < MANUAL_RECEIPT_RESEND_COOLDOWN_MS) {
+        const retryInSeconds = Math.ceil(
+          (MANUAL_RECEIPT_RESEND_COOLDOWN_MS - elapsed) / 1000,
+        );
+        throw new ConvexError({
+          code: "RECEIPT_SEND_COOLDOWN",
+          message: `A receipt was just sent for this repayment — try again in ${retryInSeconds}s.`,
+        });
+      }
+    }
+
+    await ctx.db.patch(repaymentId, {
+      receiptSentAt: now,
+      receiptSendingAt: now,
+      lastManualReceiptSendAt: now,
+      lastReceiptSentBy: callerPersonId,
+      lastReceiptSendSource: "manual",
+    });
     return { repaymentId: r!._id, payerPersonId: r!.payerPersonId };
   },
 });

@@ -760,10 +760,13 @@ describe("payment receipt backfill — recovers a lost delivery", () => {
       // Simulate "claimed, outcome not yet resolved" — a state the live
       // code always resolves out of by the time its action returns, but
       // the row can transiently look like this, and the backfill must not
-      // treat it as ready.
+      // treat it as ready. `receiptSendingAt` is the field that actually
+      // means "in flight" now — see `repaymentReceiptBackfill.ts`'s header on
+      // why eligibility no longer keys off `receiptSentAt`'s own age.
       await run(s.t, (ctx) =>
         ctx.db.patch(a, {
           receiptSentAt: Date.now(), // just claimed
+          receiptSendingAt: Date.now(), // …and still in flight
           receiptDeliveredAt: undefined,
           receiptDeliveryFailedAt: undefined,
           lastReceiptError: undefined,

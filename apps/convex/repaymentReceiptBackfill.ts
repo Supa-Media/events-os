@@ -64,12 +64,28 @@
  * is drained; a running `progress` tally rides along so the final log line
  * reports the whole run.
  *
- * NOT THE STALE-BUT-STILL-IN-FLIGHT WINDOW. A row claimed moments ago is
- * probably just a send genuinely in progress, not a lost one — re-sending
- * immediately would risk a duplicate. `RECEIPT_RETRY_STALE_MS`
- * (`cards.ts`) is the same threshold both this sweep's eligibility scan and
- * the retry-claim itself check, so they can never disagree about what's
- * "stuck" long enough to retry.
+ * NOT THE STALE-BUT-STILL-IN-FLIGHT WINDOW. A row with its IN-FLIGHT LOCK
+ * (`receiptSendingAt`) still fresh is probably just a send genuinely in
+ * progress right now — automatic, another run of this sweep, or (an
+ * adversarial review proved, 2026-08-14) a MANUAL send — and re-claiming it
+ * would risk a duplicate delivery. `RECEIPT_RETRY_STALE_MS` (`cards.ts`) is
+ * the same threshold this sweep's eligibility scan, the retry-claim itself,
+ * AND the manual claim's own in-flight refusal all check, so no two of the
+ * three claimers can ever disagree about what's "stuck" long enough to
+ * retry.
+ *
+ * DELIBERATELY NOT KEYED ON "HOW LONG SINCE THE LAST ATTEMPT". An earlier
+ * version of this eligibility check read `receiptSentAt`'s age instead of
+ * `receiptSendingAt`'s — which meant a manager's FAILED manual retry
+ * (`cards.ts#claimRepaymentReceiptManual`, which re-stamps `receiptSentAt` on
+ * every attempt, live or not) silently evicted the row from this backlog for
+ * another full `RECEIPT_RETRY_STALE_MS`, every single time it was retried.
+ * A manager repeatedly retrying during a real outage could keep a
+ * never-delivered row permanently just out of this sweep's reach. Keying on
+ * `receiptSendingAt` instead fixes that: `markRepaymentReceiptOutcome`
+ * clears it the instant an attempt's outcome (delivered OR failed) is
+ * recorded, so a row a manual retry just failed on is reachable again
+ * immediately, not 15 more minutes later.
  *
  * ONE RECEIPT LINE PER RETRY, not the original bundle. The live path groups
  * every repayment ONE payment settled into a single email
@@ -163,9 +179,15 @@ export const listReceiptDeliveryBacklog = internalQuery({
       if (r.receiptSentAt === undefined) continue;
       // Already confirmed delivered — done, nothing to retry.
       if (r.receiptDeliveredAt !== undefined) continue;
-      // Too fresh to assume the original attempt is finished — see this
-      // file's header on the in-flight grace window.
-      if (now - r.receiptSentAt < RECEIPT_RETRY_STALE_MS) continue;
+      // A send is genuinely in flight for this row right now (fresh
+      // `receiptSendingAt`) — see this file's header on why this is keyed on
+      // the in-flight lock rather than on how long ago the last attempt was.
+      if (
+        r.receiptSendingAt !== undefined &&
+        now - r.receiptSendingAt < RECEIPT_RETRY_STALE_MS
+      ) {
+        continue;
+      }
       due.push(r._id);
     }
 
