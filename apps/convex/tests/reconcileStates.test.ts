@@ -226,3 +226,88 @@ describe("the header roll-ups", () => {
     expect(res.counts.reconciled).toBe(1);
   });
 });
+
+/**
+ * A CREDIT THE GIVING LAYER ALREADY COUNTED says so on the row.
+ *
+ * The grid badges every other row that is accounted for somewhere else —
+ * Transfer, the processor payouts, Personal, Repaid — and had nothing for a
+ * gift-linked credit. So the founder's $7,000 wire, correctly recorded as its
+ * two gifts and correctly contributing nothing, sat in Reconcile reading
+ * "Uncategorized · None · No receipt", indistinguishable from work nobody had
+ * done ("why can I still see this row … it should literally just be listed as
+ * a gift", 2026-08-13). It stays in the ledger — the bank really did receive
+ * it — and now carries the number the badge is drawn from.
+ */
+describe("giftCoveredCents — the credit that is already a gift", () => {
+  async function seedGift(
+    s: ChapterSetup,
+    amountCents: number,
+    transactionId: Id<"transactions">,
+    scope?: "central",
+  ): Promise<void> {
+    await run(s.t, async (ctx) => {
+      const donorId = await ctx.db.insert("donors", {
+        scope: scope ?? s.chapterId,
+        kind: "individual",
+        name: "A Giver",
+        status: "active",
+        lifetimeCents: amountCents,
+        giftCount: 1,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("gifts", {
+        donorId,
+        scope: scope ?? s.chapterId,
+        amountCents,
+        currency: "usd",
+        receivedAt: Date.now(),
+        method: "wire",
+        transactionId,
+        createdAt: Date.now(),
+      });
+    });
+  }
+
+  test("sums the gifts on the credit, across books, and leaves everything else at 0", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const wire = await txn(s, { flow: "inflow", amountCents: 700_000 });
+    const spend = await txn(s, { amountCents: 4_000 });
+    await seedGift(s, 500_000, wire, "central");
+    await seedGift(s, 200_000, wire);
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    const byId = new Map(res.rows.map((r) => [r.id, r.giftCoveredCents]));
+    // Both halves of the split, though one of them is central's gift.
+    expect(byId.get(wire)).toBe(700_000);
+    // A spend row is never covered by giving, and never pays for a lookup.
+    expect(byId.get(spend)).toBe(0);
+  });
+
+  test("a partly matched wire reports only what is claimed", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const wire = await txn(s, { flow: "inflow", amountCents: 700_000 });
+    await seedGift(s, 200_000, wire);
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    // The badge reads "Gift · $2,000.00 of it" off this — the row is not
+    // finished, and must not look like it is.
+    expect(res.rows.find((r) => r.id === wire)?.giftCoveredCents).toBe(200_000);
+  });
+
+  test("an unmatched credit reports nothing, so no badge claims it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    const wire = await txn(s, { flow: "inflow", amountCents: 700_000 });
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.rows.find((r) => r.id === wire)?.giftCoveredCents).toBe(0);
+  });
+});

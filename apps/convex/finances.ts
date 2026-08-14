@@ -94,6 +94,7 @@ import { readSandbox } from "./financeSettings";
 // worklist that padded itself with internal movements would be asking people
 // to explain transfers between the org's own accounts.
 import { signedBookCents } from "./lib/bookBalance";
+import { giftCoverageCents } from "./lib/giftCoverage";
 // Same gate as the publish console: this worklist reads exactly the rows that
 // console is about to publish.
 import { hasLedgerConsole, requireLedgerConsole } from "./lib/publicLedgerAccess";
@@ -376,6 +377,18 @@ const txnSummaryFields = {
     ...PAYOUT_PROCESSORS.map((p) => v.literal(p)),
     v.null(),
   ),
+  // Cents of this bank credit already counted as giving — the sum of the
+  // gifts pointing at it (`lib/giftCoverage.ts`), in ANY book. Zero for
+  // everything else.
+  //
+  // The grid has a badge for every other row that is accounted for somewhere
+  // else — Transfer, the processor payouts, Personal, Repaid — and had none
+  // for this one. So a founder's wire, correctly recorded as its gifts and
+  // correctly contributing nothing, still sat in Reconcile reading
+  // "Uncategorized · None · No receipt": indistinguishable from work nobody
+  // had done. The row belongs in the ledger (the bank really did receive it);
+  // what it needed was to say so.
+  giftCoveredCents: v.number(),
   // The card's last-4 (parsed out of the sync description), for display.
   cardLast4: v.union(v.string(), v.null()),
   // Receipt-reminder timeline stage ("none" until a day-1/day-3 nudge fires;
@@ -1106,7 +1119,7 @@ async function logRecodeAudit(
   }
 }
 
-function toTxnSummary(tr: Doc<"transactions">) {
+function toTxnSummary(tr: Doc<"transactions">, giftCoveredCents = 0) {
   return {
     id: tr._id,
     postedAt: tr.postedAt,
@@ -1131,6 +1144,10 @@ function toTxnSummary(tr: Doc<"transactions">) {
     payoutProcessor: tr.payoutProcessor ?? null,
     cardLast4: tr.cardLast4 ?? null,
     reminderStage: tr.receiptReminderStage ?? ("none" as const),
+    // Resolved by the caller where it matters (the Reconcile grid); 0 is the
+    // honest default everywhere else, since every non-credit row and every
+    // unmatched credit really is covered by nothing.
+    giftCoveredCents,
   };
 }
 
@@ -10700,7 +10717,13 @@ export const listReconcile = query({
     // is harmless (same id, same answer) and much cheaper than serializing.
     const rows: (typeof reconcileRow.type)[] = await Promise.all(
       page.map(async (tr) => ({
-        ...toTxnSummary(tr),
+        // One index read per CREDIT on the page (`giftCoverageCents` skips
+        // everything else without asking the database), so the grid can badge
+        // a credit the giving layer has already counted.
+        ...toTxnSummary(
+          tr,
+          tr.flow === "inflow" ? await giftCoverageCents(ctx, tr._id) : 0,
+        ),
         correctable: isTransactionCorrectable(tr),
         isReconstructed: isReconstructedHistory({
           externalId: tr.externalId ?? null,
