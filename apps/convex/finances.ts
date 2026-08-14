@@ -146,7 +146,15 @@ import {
 } from "./lib/transferPair";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
 import { codingForTransaction, codingPolicy } from "./lib/transactionCoding";
-import { chargeOutstanding } from "./lib/codingReminders";
+import {
+  chargeOutstanding,
+  chaseTargetValidator,
+  isDocumented,
+  isUncodedCharge,
+  type ChaseTarget,
+} from "./lib/codingReminders";
+import { requireCodingChase } from "./lib/chaseAccess";
+import { reconcileFilterValidator } from "./lib/reconcileArgs";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
 import {
@@ -596,70 +604,6 @@ const reconcileRow = v.object({
   outstanding: v.union(v.string(), v.null()),
 });
 
-// The reconcile filter pills (server-side, correct across ALL rows).
-// `spend` (no-dead-numbers): the exact predicate the "Spent" KPI tile sums
-// (`isSpend` — outflow, not excluded, not personal) — the drill-down target
-// for that tile, distinct from `all` (which keeps inflow/transfer/personal
-// rows too, so it would NOT sum to the same figure).
-// `personal_unpaid`: an unpaid personal expense — exactly the worklist a
-// treasurer needs (founder ask: surface it "in the reconcile flow"). Reuses
-// the SAME `isPersonal` + linked-repayment-status pair `repaymentStatus`
-// already resolves per row (see `personalExpenseState` in
-// `@events-os/shared`) — a row qualifies iff `isPersonal === true` AND its
-// repayment isn't `"paid"` (a `"failed"` attempt still counts — the debt is
-// still outstanding).
-//
-// NAMING (founder report — "it says review 80 but 80 is nowhere in Reconcile"):
-// two of these keys used to lie about their own predicate, which is how a
-// dashboard number could point at a grid that never showed it.
-//   - `to_review` was `uncategorized`, but its predicate is and always was
-//     `status === "unreviewed"` — nothing to do with whether a CATEGORY is
-//     set. That word already means something else in this codebase
-//     (`dashboardCharts.budgetTransactions`' `"uncategorized"` sentinel =
-//     "no `categoryId`", the honest use), so the same term named two
-//     different things one file apart. It's now spelled the same as the
-//     dashboards' own "To review" tile — the tile and the pill it drills into
-//     finally share one word for one predicate.
-//   - `reconciled` was `ready`, which reads as "ready TO reconcile" — the
-//     actionable backlog. It's the opposite: rows already CLEARED
-//     (`status === "reconciled"`), the complement of the header's "N to
-//     clear" (`all - reconciled`).
-const reconcileFilterValidator = v.union(
-  v.literal("all"),
-  v.literal("spend"),
-  v.literal("needs_budget"),
-  v.literal("missing_receipt"),
-  // The CHASE union — `needsDocumentation || chargeOutstanding != null`, the
-  // population `receiptChase` lists and `chaseCount` counts. Deliberately not
-  // the `missing_receipt` pill: see `RECONCILE_FILTER_LABELS.needs_chasing`.
-  v.literal("needs_chasing"),
-  v.literal("uncoded"),
-  // The PUBLISHING population — `needsExplaining`, no policy date. `uncoded`
-  // beside it is the POLICY question and grandfathers pre-policy history, so
-  // it can never reach the ~400 reconstructed 2024–25 rows this key exists
-  // for. See `RECONCILE_FILTER_LABELS.needs_explaining`.
-  v.literal("needs_explaining"),
-  // The COMPLEMENT of the key above inside the same population — what has
-  // already been explained, and the only way to re-read a published sentence
-  // from this grid (an approved coding is immutable, so re-reading it is the
-  // whole review). See `RECONCILE_FILTER_LABELS.explained`.
-  v.literal("explained"),
-  v.literal("coding_review"),
-  v.literal("to_review"),
-  v.literal("reconciled"),
-  v.literal("undocumented"),
-  v.literal("personal_unpaid"),
-  v.literal("transfers"),
-  v.literal("payouts"),
-  // The roll-ups. Complements over the OPEN set, so
-  // `needs_attention + ready_to_close === toClearCount` by construction — see
-  // `flagsFor`. The grid's header chips that used to render them are gone (the
-  // State dropdown says the same thing); the counts still feed the Dashboard
-  // and both keys are still selectable filters.
-  v.literal("needs_attention"),
-  v.literal("ready_to_close"),
-);
-
 // Per-filter counts returned alongside the rows so each pill shows its number.
 const reconcileCounts = v.object({
   all: v.number(),
@@ -888,6 +832,11 @@ const chapterRollupRow = v.object({
 
 // ── Bounds (keep every read + rollup bounded) ────────────────────────────────
 export const ROLLUP_SCAN_LIMIT = 5000;
+/** How many ticked rows a scoped coding chase will honour. Client-supplied and
+ *  therefore bounded; well above any real selection (the grid's own page cap is
+ *  `MAX_RECONCILE_PAGE_SIZE`, and you cannot tick a row you haven't loaded), so
+ *  clamping here can only ever cut a request nobody could make by hand. */
+const CHASE_SELECTION_LIMIT = 1000;
 const RECENT_TXN_COUNT = 10;
 // R1a: `MAX_NOTE_LENGTH` (a transaction note is a short "who/why"
 // justification, not a document) is shared from `@events-os/shared` — the
@@ -1864,19 +1813,208 @@ export function needsExplaining(tr: Doc<"transactions">): boolean {
  *
  * ## Why a function
  *
- * There are three callers — `listReconcile`'s `needs_chasing` facet, that same
- * query's selection-independent `chaseCount` (the gate on the entry point), and
- * `receiptChase` itself. A hand-copied two-line expression across three callers
- * is precisely how the fee carve-out went missing from `chaseEligible` for a
- * release while `needsDocumentation` already had it, so the documentation
+ * There are four callers — `listReconcile`'s `needs_chasing` facet, that same
+ * query's selection-independent `chaseCount` (the gate on the entry point),
+ * `receiptChase`, and the CODING CHASE itself (`getCodingChaseTargets`, which
+ * decides who gets mailed). A hand-copied two-line expression across four
+ * callers is precisely how the fee carve-out went missing from `chaseEligible`
+ * for a release while `needsDocumentation` already had it, so the documentation
  * predicate said a Stripe fee row owed nothing while the chase demanded two
- * things from it. One expression, three callers, no drift.
+ * things from it. One expression, four callers, no drift.
+ *
+ * ## Why it is phrased as a LABEL, with the boolean derived
+ *
+ * Because the email has to say what each row owes, and "is chaseable" plus a
+ * separately-computed sentence is two expressions that can disagree — the
+ * chase would list a charge the label then called settled. So
+ * {@link chaseOutstandingFor} is the primitive and this is `!= null` over it.
  */
 export function isChaseable(
   tr: Doc<"transactions">,
   codingSinceMs: number,
 ): boolean {
-  return needsDocumentation(tr) || chargeOutstanding(tr, codingSinceMs) != null;
+  return chaseOutstandingFor(tr, codingSinceMs) != null;
+}
+
+/**
+ * WHAT THIS ROW STILL OWES, in the words a reminder prints — or `null` when
+ * nobody owes anything on it. The chase population and the chase COPY, as one
+ * expression.
+ *
+ * THE UNION, and why each half is load-bearing (founder, 2026-08-14: a coding
+ * chase, "because coding includes receipts"):
+ *
+ *  - `chargeOutstanding` is the cardholder-shaped half and the one that carries
+ *    the words. Post-policy it says "needs coding", "needs coding and a
+ *    receipt", or "sent back — needs your edit"; PRE-policy, where
+ *    `codingRequiredSinceMs` grandfathers the row, it degrades to exactly
+ *    "needs a receipt". So it already covers most of the receipt-only tail.
+ *  - `needsDocumentation` is what it still misses: a row that owes a document
+ *    but that `chaseEligible` refuses — a fully-refunded charge, and every
+ *    spend row with no cardholder behind it (a bank withdrawal carrying no
+ *    card, which is chased with a statement rather than a person and is what
+ *    the chase list's "Unattributed" bundle holds).
+ *
+ * DROPPING THE SECOND HALF IS THE WHOLE REASON THE RECEIPT CHASE COULD BE
+ * RETIRED SAFELY, and dropping it is therefore the one thing this function must
+ * not do. A coding chase built on `chargeOutstanding` alone would quietly stop
+ * chasing the pre-policy historical rows that owe documentation and no coding —
+ * the population the receipt chase existed for. Keying on documentation alone
+ * shows "3 charges" and then emails somebody about a fourth. Only the union is
+ * both.
+ *
+ * `"needs a receipt"` is written once, here, rather than re-derived: it is the
+ * same string `outstandingLabel` returns for the documentation-only case, so
+ * the two halves of the union print the same sentence for the same debt.
+ */
+export function chaseOutstandingFor(
+  tr: Doc<"transactions">,
+  codingSinceMs: number,
+): string | null {
+  const cardholderDebt = chargeOutstanding(tr, codingSinceMs);
+  if (cardholderDebt != null) return cardholderDebt;
+  return needsDocumentation(tr) ? "needs a receipt" : null;
+}
+
+/**
+ * EVERY FACET CHANGE IN THIS FUNCTION IS A QUEUE-POPULATION CHANGE, NOT A
+ * PREDICATE CHANGE. `needsBudget`, `needsDocumentation` and `isUndocumented`
+ * are untouched and stay untouched: they feed the dashboards' dollar tiles,
+ * the receipt chase and the publishing gate, and what they encode is pinned
+ * by `markTransferPayout.test.ts` and `receiptChase.test.ts`. Marked
+ * PAYOUTS and marked internal TRANSFERS both left that population on
+ * 2026-08-14 (founder: "all payouts and transfers should be bank record
+ * only") — and both are changes to `owesDocumentation`, never to a facet
+ * here. If a facet ever needs a carve-out the predicate doesn't have, that
+ * is the signal the carve-out belongs in the predicate.
+ *
+ * The gates live HERE, next to the other facet logic, precisely so the drift
+ * risk is visible in one place rather than hidden behind a second predicate
+ * that looks like the first one.
+ *
+ * ## Why it is module-level, and takes its per-query state as an argument
+ *
+ * It was a closure inside `listReconcile` until the CODING CHASE needed the
+ * same answer. The chase is scoped to the view the manager is looking at —
+ * their filters, their search — and "the same filters" has to mean the same
+ * predicates, or the button would mail people about a population the grid in
+ * front of them never showed. A second copy here is the exact drift this
+ * function's own doc warns about, one level up.
+ *
+ * The two things it cannot compute per row are passed in: `codingSinceMs` (one
+ * settings read per query) and `isPersonalUnpaid` (needs the linked
+ * `personalRepayments` row's live status, resolved eagerly for the small
+ * `isPersonal` subset — see `listReconcile`).
+ */
+export function reconcileFlagsFor(
+  tr: Doc<"transactions">,
+  deps: {
+    codingSinceMs: number;
+    isPersonalUnpaid: (tr: Doc<"transactions">) => boolean;
+  },
+): Record<ReconcileFilterKey, boolean> {
+  const { codingSinceMs, isPersonalUnpaid } = deps;
+  const open = tr.status !== "reconciled";
+  const base = {
+  spend: isSpend(tr),
+  // EVERY internal transfer leg, not just the MARKED ones. This used to be
+  // `isMarkedTransfer`, which left the app-created legs (a
+  // `transfers.recordTransfer` pair, a reimbursement/repayment leg, the
+  // reconciliation engine's allocation legs, the retired skim/launch_grant/
+  // settlement kinds still on prod) matchable by no key at all. That was
+  // survivable while they sat in the default queue; it isn't now that the
+  // queue hides them (see `isHiddenTransferLeg` below), because Kind →
+  // Transfers is what brings them back. `isMarkedTransfer` still decides
+  // whether Un-mark is offered, and (since 2026-08-14) that the row owes no
+  // documentation at all — widening the FILTER doesn't touch either.
+  transfers: tr.flow === "transfer",
+  payouts: isProcessorPayout(tr),
+  to_review: tr.status === "unreviewed",
+  // OPEN rows only. `needsBudget` is deliberately status-blind — the
+  // dashboards' unbudgeted-spend tiles want every status, because
+  // unattributed money is unattributed whether someone closed the row or
+  // not — but a closed row is not queue work, and 4 of the 14 rows this
+  // facet showed in production were already `reconciled`. Matches what
+  // `needsDocumentation` has always done. THE PREDICATE IS UNCHANGED.
+  needs_budget: needsBudget(tr) && open,
+  missing_receipt: needsDocumentation(tr),
+  // ── THE CHASE, AS ONE EXPRESSION ────────────────────────────────────
+  // Byte for byte what `receiptChase` filters on and what `chaseCount`
+  // counts below — `isChaseable`, called by all three, so the facet, the
+  // number on the "Chase receipts" entry point and the chase list itself
+  // cannot describe different populations.
+  //
+  // It is a UNION and neither half is redundant: `missing_receipt` above
+  // is only `needsDocumentation`, which misses a charge whose receipt is
+  // attached and whose CODING is not (the chase absorbed coding when the
+  // policy landed); and `chargeOutstanding` alone drops a fully-refunded
+  // charge and every spend row with no cardholder behind it. See the key's
+  // doc in `@events-os/shared`.
+  needs_chasing: isChaseable(tr, codingSinceMs),
+  // The substantiation chase (`docs/plans/transaction-coding.md`):
+  // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
+  // `coding_review` waits on a REVIEWER — deliberately keyed off
+  // `codingState` alone, so a voluntarily-coded pre-policy row still
+  // reaches the review queue.
+  uncoded: isUncoded(tr, codingSinceMs),
+  // WHAT WILL PUBLISH BLANK — the publishing question, not the policy one,
+  // and the SAME function `monthCodingWorklist` runs (`needsExplaining`,
+  // never a copy of it). `uncoded` above grandfathers everything posted
+  // before `codingRequiredSinceMs`, which is right about obligation and
+  // meant the ~400 reconstructed 2024–25 rows were unreachable from this
+  // grid entirely — the gap the month-at-a-time Explain screen exists to
+  // cover. Note it also ignores `status`: a treasurer closing a row is not
+  // an explanation, and the public page doesn't care that it's closed.
+  needs_explaining: needsExplaining(tr),
+  // THE COMPLEMENT, inside the same denominator — `explanationPopulation`
+  // AND an approved coding. Written as the population predicate plus the
+  // status rather than `!needsExplaining(tr)`, because the negation would
+  // also be true of every row that can't carry an explanation at all (an
+  // inflow, a transfer leg, an auto-explained fee) and this facet must
+  // mean "somebody explained it", not "nobody has to".
+  //
+  // Approving a coding is what removes a row from `needs_explaining`, and
+  // that used to make the sentence you had just published unreachable from
+  // this grid. This is where it goes.
+  explained:
+    explanationPopulation(tr) && tr.codingState === "approved",
+  coding_review: tr.codingState === "submitted",
+  personal_unpaid: isPersonalUnpaid(tr),
+  reconciled: tr.status === "reconciled",
+  // "Closed without documentation" — the DIFFERENCE, not the superset.
+  //
+  // `isUndocumented` ignores status entirely, which made this facet a
+  // strict superset of `missing_receipt`: in production, overlap 42,
+  // only-undocumented 3, only-missing-receipt 0. Two options with
+  // near-identical labels and near-identical numbers, where picking the
+  // bigger one showed you the rows you had just looked at plus three you
+  // hadn't. Restricting the facet to the CLOSED tail leaves two disjoint
+  // options whose labels are both literally true; the publishing backlog is
+  // their OR, which — same group — is what multi-select already gives you.
+  //
+  // THE PREDICATE IS UNCHANGED: `isUndocumented` is still the publishing
+  // gate and still mirrors `documentationState(...)` for the ledger.
+  undocumented: isUndocumented(tr) && !open,
+  };
+  // THE HEADER ROLL-UPS, defined as complements over the OPEN set so
+  // `needs_attention + ready_to_close === toClearCount` holds by
+  // construction and the header cannot drift from the grid. Derived from
+  // `RECONCILE_ATTENTION_KEYS` rather than a re-typed list, for the same
+  // reason.
+  //
+  // They answer the question `toClearCount` alone could not: of 127 open
+  // rows, 51 had something genuinely outstanding and 76 were categorised,
+  // budgeted, documented and simply never closed. That second pile is the
+  // single biggest actionable bucket in the book and there was no filter
+  // that found it — you could only reach it by scrolling 346 rows and
+  // eyeballing each one.
+  const needsAttention =
+    open && RECONCILE_ATTENTION_KEYS.some((k) => base[k]);
+  return {
+    ...base,
+    needs_attention: needsAttention,
+    ready_to_close: open && !needsAttention,
+  };
 }
 
 /**
@@ -10057,125 +10195,11 @@ export const listReconcile = query({
     // The coding policy's start date — read once per query, consulted per row
     // by `isUncoded` (pre-policy history must never light the facet up).
     const { sinceMs: codingSinceMs } = await codingPolicy(ctx);
-    /**
-     * EVERY FACET CHANGE IN THIS FUNCTION IS A QUEUE-POPULATION CHANGE, NOT A
-     * PREDICATE CHANGE. `needsBudget`, `needsDocumentation` and `isUndocumented`
-     * are untouched and stay untouched: they feed the dashboards' dollar tiles,
-     * the receipt chase and the publishing gate, and what they encode is pinned
-     * by `markTransferPayout.test.ts` and `receiptChase.test.ts`. Marked
-     * PAYOUTS and marked internal TRANSFERS both left that population on
-     * 2026-08-14 (founder: "all payouts and transfers should be bank record
-     * only") — and both are changes to `owesDocumentation`, never to a facet
-     * here. If a facet ever needs a carve-out the predicate doesn't have, that
-     * is the signal the carve-out belongs in the predicate.
-     *
-     * The gates live HERE, next to the other facet logic, precisely so the drift
-     * risk is visible in one place rather than hidden behind a second predicate
-     * that looks like the first one.
-     */
-    const flagsFor = (tr: Doc<"transactions">): Record<ReconcileFilterKey, boolean> => {
-      const open = tr.status !== "reconciled";
-      const base = {
-      spend: isSpend(tr),
-      // EVERY internal transfer leg, not just the MARKED ones. This used to be
-      // `isMarkedTransfer`, which left the app-created legs (a
-      // `transfers.recordTransfer` pair, a reimbursement/repayment leg, the
-      // reconciliation engine's allocation legs, the retired skim/launch_grant/
-      // settlement kinds still on prod) matchable by no key at all. That was
-      // survivable while they sat in the default queue; it isn't now that the
-      // queue hides them (see `isHiddenTransferLeg` below), because Kind →
-      // Transfers is what brings them back. `isMarkedTransfer` still decides
-      // whether Un-mark is offered, and (since 2026-08-14) that the row owes no
-      // documentation at all — widening the FILTER doesn't touch either.
-      transfers: tr.flow === "transfer",
-      payouts: isProcessorPayout(tr),
-      to_review: tr.status === "unreviewed",
-      // OPEN rows only. `needsBudget` is deliberately status-blind — the
-      // dashboards' unbudgeted-spend tiles want every status, because
-      // unattributed money is unattributed whether someone closed the row or
-      // not — but a closed row is not queue work, and 4 of the 14 rows this
-      // facet showed in production were already `reconciled`. Matches what
-      // `needsDocumentation` has always done. THE PREDICATE IS UNCHANGED.
-      needs_budget: needsBudget(tr) && open,
-      missing_receipt: needsDocumentation(tr),
-      // ── THE CHASE, AS ONE EXPRESSION ────────────────────────────────────
-      // Byte for byte what `receiptChase` filters on and what `chaseCount`
-      // counts below — `isChaseable`, called by all three, so the facet, the
-      // number on the "Chase receipts" entry point and the chase list itself
-      // cannot describe different populations.
-      //
-      // It is a UNION and neither half is redundant: `missing_receipt` above
-      // is only `needsDocumentation`, which misses a charge whose receipt is
-      // attached and whose CODING is not (the chase absorbed coding when the
-      // policy landed); and `chargeOutstanding` alone drops a fully-refunded
-      // charge and every spend row with no cardholder behind it. See the key's
-      // doc in `@events-os/shared`.
-      needs_chasing: isChaseable(tr, codingSinceMs),
-      // The substantiation chase (`docs/plans/transaction-coding.md`):
-      // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
-      // `coding_review` waits on a REVIEWER — deliberately keyed off
-      // `codingState` alone, so a voluntarily-coded pre-policy row still
-      // reaches the review queue.
-      uncoded: isUncoded(tr, codingSinceMs),
-      // WHAT WILL PUBLISH BLANK — the publishing question, not the policy one,
-      // and the SAME function `monthCodingWorklist` runs (`needsExplaining`,
-      // never a copy of it). `uncoded` above grandfathers everything posted
-      // before `codingRequiredSinceMs`, which is right about obligation and
-      // meant the ~400 reconstructed 2024–25 rows were unreachable from this
-      // grid entirely — the gap the month-at-a-time Explain screen exists to
-      // cover. Note it also ignores `status`: a treasurer closing a row is not
-      // an explanation, and the public page doesn't care that it's closed.
-      needs_explaining: needsExplaining(tr),
-      // THE COMPLEMENT, inside the same denominator — `explanationPopulation`
-      // AND an approved coding. Written as the population predicate plus the
-      // status rather than `!needsExplaining(tr)`, because the negation would
-      // also be true of every row that can't carry an explanation at all (an
-      // inflow, a transfer leg, an auto-explained fee) and this facet must
-      // mean "somebody explained it", not "nobody has to".
-      //
-      // Approving a coding is what removes a row from `needs_explaining`, and
-      // that used to make the sentence you had just published unreachable from
-      // this grid. This is where it goes.
-      explained:
-        explanationPopulation(tr) && tr.codingState === "approved",
-      coding_review: tr.codingState === "submitted",
-      personal_unpaid: isPersonalUnpaid(tr),
-      reconciled: tr.status === "reconciled",
-      // "Closed without documentation" — the DIFFERENCE, not the superset.
-      //
-      // `isUndocumented` ignores status entirely, which made this facet a
-      // strict superset of `missing_receipt`: in production, overlap 42,
-      // only-undocumented 3, only-missing-receipt 0. Two options with
-      // near-identical labels and near-identical numbers, where picking the
-      // bigger one showed you the rows you had just looked at plus three you
-      // hadn't. Restricting the facet to the CLOSED tail leaves two disjoint
-      // options whose labels are both literally true; the publishing backlog is
-      // their OR, which — same group — is what multi-select already gives you.
-      //
-      // THE PREDICATE IS UNCHANGED: `isUndocumented` is still the publishing
-      // gate and still mirrors `documentationState(...)` for the ledger.
-      undocumented: isUndocumented(tr) && !open,
-      };
-      // THE HEADER ROLL-UPS, defined as complements over the OPEN set so
-      // `needs_attention + ready_to_close === toClearCount` holds by
-      // construction and the header cannot drift from the grid. Derived from
-      // `RECONCILE_ATTENTION_KEYS` rather than a re-typed list, for the same
-      // reason.
-      //
-      // They answer the question `toClearCount` alone could not: of 127 open
-      // rows, 51 had something genuinely outstanding and 76 were categorised,
-      // budgeted, documented and simply never closed. That second pile is the
-      // single biggest actionable bucket in the book and there was no filter
-      // that found it — you could only reach it by scrolling 346 rows and
-      // eyeballing each one.
-      const needsAttention =
-        open && RECONCILE_ATTENTION_KEYS.some((k) => base[k]);
-      return {
-        ...base,
-        needs_attention: needsAttention,
-        ready_to_close: open && !needsAttention,
-      };
-    };
+    // The row predicates the filter set is evaluated against — module-level
+    // (`reconcileFlagsFor`) so the coding chase narrows by exactly the same
+    // rules this grid does, bound here to this query's per-row state.
+    const flagsFor = (tr: Doc<"transactions">) =>
+      reconcileFlagsFor(tr, { codingSinceMs, isPersonalUnpaid });
 
     // FACET COUNTS, not global ones. With one mutually-exclusive filter, a
     // count could safely be "rows matching this predicate". With a SET of
@@ -10829,6 +10853,16 @@ const chaseGroup = v.object({
  * chasing 16 volunteers doesn't mean re-deriving the same answer from the
  * reconcile grid's flat Missing-receipt filter each week.
  *
+ * ITS SCREEN IS GONE. `/finances/receipt-chase` is a redirect into the grid
+ * grouped by person, and the chase that actually mails anybody is
+ * {@link getCodingChaseTargets} + `cards.sendCodingChase`. This query survives
+ * for the same reason `monthCodingWorklist` survived the Explain screen's
+ * retirement: it is the grouped, biggest-first PINNED REFERENCE for what
+ * `isChaseable` means, exercised by four test suites, and deleting it would
+ * take that pin with it. Nothing in the app calls it — if that ever changes,
+ * note this list has no cardholder filter, no view scoping and no gate above
+ * viewer, none of which a sending path may do without.
+ *
  * "Needs a receipt" here = `needsDocumentation` — a spend charge, a MARKED
  * internal transfer, or a MARKED processor payout, with nothing attached and
  * not yet `reconciled` (a treasurer who closed a row document-less made a
@@ -10993,6 +11027,271 @@ export const receiptChase = query({
       totalCents: groups.reduce((s, g) => s + g.totalCents, 0),
       count: owing.length,
     };
+  },
+});
+
+/**
+ * THE CODING CHASE, SCOPED TO WHAT THE MANAGER IS LOOKING AT — who gets mailed,
+ * and what each of their charges still owes.
+ *
+ * Founder, 2026-08-14: *"Instead of receipt chase, I want a coding chase,
+ * because coding includes receipts. When I filter by person, I want to click
+ * one button and it chases them for everything — all their uncoded charges."*
+ * And, on scoping: *"When I hit chase, I want it to take into consideration the
+ * view that I'm on and which rows are selected, if there are rows selected.
+ * That way the financial manager can narrow in — because they'd know there's no
+ * way this person can code these two transactions, but they can code these
+ * three."*
+ *
+ * ## Why one chase, and why it is the CODING one
+ *
+ * `transactionCodings.submitCoding` REFUSES TO SUBMIT WITHOUT A RECEIPT OR A
+ * FILED EXCEPTION. That single rule is what collapses two chases into one:
+ * nobody can finish coding a charge without documenting it, so asking somebody
+ * to code is strictly more than asking them for a receipt, and a separate
+ * receipt chase can only ever ask for less. `/finances/receipt-chase` is
+ * retired into this (it redirects into the grid grouped by person).
+ *
+ * ## The population — the union, and why the second half is not optional
+ *
+ * {@link chaseOutstandingFor}: everything owing a CODING, plus anything owing
+ * only a RECEIPT. The second half is what makes retiring the receipt chase
+ * safe — pre-policy historical rows are grandfathered by
+ * `codingRequiredSinceMs` and owe no coding at all, yet can still be missing
+ * documentation. Chase on the coding debt alone and those rows silently stop
+ * being chased by anything at all, which is precisely the regression a
+ * "coding-first" rewrite invites. See that function for the full argument.
+ *
+ * ## Scoping precedence: SELECTION > FILTERS + SEARCH > everything they owe
+ *
+ * Three narrowings, strictly ordered, and the narrowest wins outright:
+ *
+ *  1. `selectedIds` — if the manager ticked rows, the chase is EXACTLY those
+ *     rows and nothing else. Filters and search are not additionally applied,
+ *     because a selection is already the answer to "which rows": a ticked row
+ *     that a stale filter would now reject is a row the human deliberately
+ *     pointed at, and dropping it would make the button do less than the screen
+ *     says. (Selection is only offerable over rows on screen anyway, so it is
+ *     always a subset of the view in practice.)
+ *  2. `filters` + `search` + the period window — the view, re-derived here from
+ *     the SAME predicates the grid narrows with (`reconcileFlagsFor`,
+ *     `matchesReconcileFilters`, `matchesReconcileSearch`), including the rule
+ *     that a search stands the State group down. Not "roughly the same" — the
+ *     same functions, because a chase that mailed a population the grid never
+ *     rendered is the dead-number defect with an outbox attached.
+ *  3. Nothing narrowed — everything the book's cardholders still owe, which is
+ *     what the old unscoped nudge always did.
+ *
+ * `personId` is orthogonal to all three: it picks ONE band out of whatever the
+ * three left, and is what the per-person button sends. Absent = every band,
+ * which is "Chase everyone".
+ *
+ * ## Why a client id list is safe here
+ *
+ * IT ISN'T TRUSTED — it is intersected, never followed. The client says which
+ * rows are ON SCREEN; the server says, independently, whether each one is
+ * chaseable and who owns it:
+ *
+ *  · the ids only ever narrow a set this query loaded itself, from the ONE book
+ *    `requireCodingChase` authorized — an id from another book (or a fabricated
+ *    one) simply never appears in the scan and cannot widen anything;
+ *  · every surviving row must still pass {@link chaseOutstandingFor}, so a row
+ *    that owes nothing cannot be mailed about however it was selected — you
+ *    cannot make somebody get chased for a settled charge;
+ *  · the recipient is resolved from the ROW (`makeCardholderResolver`), never
+ *    from the request, so a caller cannot aim a chase at a person who did not
+ *    spend the money.
+ *
+ * That is the resolution of the tension: the SCOPING is the caller's (they are
+ * looking at the screen and we cannot re-derive their intent), the ELIGIBILITY
+ * and the RECIPIENT are the server's.
+ *
+ * ## What is deliberately not here
+ *
+ * ALL-BOOKS. `requireCodingChase` resolves one book and has no merged branch —
+ * see its doc. Manager-gated at every branch, one bounded scan, no writes: this
+ * is internal, and `cards.sendCodingChase` (which does the mailing and the
+ * rate-limiting) is its only caller.
+ */
+export const getCodingChaseTargets = internalQuery({
+  args: {
+    // ONE BAND, or every band. The per-person button sends this; "Chase
+    // everyone" omits it.
+    personId: v.optional(v.id("people")),
+    // The book, resolved by `requireCodingChase` — the same `scope`/`chapterId`
+    // pair the grid reads its rows with, so a central desk chases the book on
+    // screen and never falls back to the caller's own chapter.
+    scope: v.optional(v.literal("central")),
+    chapterId: v.optional(v.id("chapters")),
+    // ── THE VIEW ──────────────────────────────────────────────────────────
+    // The same three narrowings `listReconcile` takes, meaning exactly what
+    // they mean there. Absent = unnarrowed, which is the old nudge's behavior.
+    filters: v.optional(v.array(reconcileFilterValidator)),
+    search: v.optional(v.string()),
+    year: v.optional(v.number()),
+    month: v.optional(v.number()),
+    period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
+    // ── THE SELECTION ─────────────────────────────────────────────────────
+    // Ticked rows. Present and non-empty ⇒ the chase is exactly these rows
+    // (intersected with the book, and with what each row actually owes — see
+    // the doc above). Bounded because it is client-supplied.
+    selectedIds: v.optional(v.array(v.id("transactions"))),
+  },
+  returns: v.array(chaseTargetValidator),
+  handler: async (ctx, args): Promise<ChaseTarget[]> => {
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const book = await requireCodingChase(ctx, homeChapterId, {
+      scope: args.scope,
+      chapterId: args.chapterId,
+    });
+
+    // A SELECTION IS ONLY A SELECTION WHEN IT HAS SOMETHING IN IT. An empty
+    // array must read as "no selection" and fall through to the filters — the
+    // alternative is a button that silently chases nobody the moment the grid
+    // ships `selectedIds: []`, which is what an unticked grid ships.
+    const selectedIds = (args.selectedIds ?? []).slice(0, CHASE_SELECTION_LIMIT);
+    const selection =
+      selectedIds.length > 0 ? new Set<string>(selectedIds as string[]) : null;
+
+    const sandboxMode = await readSandbox(ctx);
+    // The book's rows, loaded exactly as `listReconcile` loads them for the
+    // same arguments — including the period window, so a grid narrowed to one
+    // month chases that month. An `excluded` row is never in the reconcile
+    // inbox and so is never chaseable.
+    let all: Doc<"transactions">[];
+    if (args.year != null) {
+      const ytd = args.period === "ytd" || args.month == null;
+      const dp: DashPeriod = { year: args.year, month: args.month ?? 12, ytd };
+      all = (
+        await loadPeriodTxns(
+          ctx,
+          book,
+          args.year,
+          sandboxMode,
+          !ytd ? args.month : undefined,
+        )
+      )
+        .filter((tr) => inDashRange(tr.postedAt, dp))
+        .filter((tr) => tr.status !== "excluded");
+    } else {
+      all = (
+        await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
+          .order("desc")
+          .take(ROLLUP_SCAN_LIMIT)
+      )
+        .filter((tr) => txnMatchesMode(tr, sandboxMode))
+        .filter((tr) => tr.status !== "excluded");
+    }
+
+    // The `personal_unpaid` flag needs the linked repayment's LIVE status, so
+    // it is resolved eagerly for the (small) flagged subset — the same eager
+    // pass, for the same reason, as `listReconcile`'s.
+    const getRepayment = nameCache(ctx, "personalRepayments");
+    const repaymentStatusByTxnId = new Map<Id<"transactions">, RepaymentStatus | null>();
+    for (const tr of all) {
+      if (tr.isPersonal === true) {
+        const rep = tr.repaymentId ? await getRepayment(tr.repaymentId) : null;
+        repaymentStatusByTxnId.set(tr._id, rep?.status ?? null);
+      }
+    }
+    const isPersonalUnpaid = (tr: Doc<"transactions">) =>
+      tr.isPersonal === true && repaymentStatusByTxnId.get(tr._id) !== "paid";
+
+    const { sinceMs: codingSinceMs } = await codingPolicy(ctx);
+    // A SEARCH STANDS THE STATE GROUP DOWN — `listReconcile`'s rule, restated
+    // here because the chase has to narrow to the rows that grid is SHOWING,
+    // and a search is the one input that makes the visible set stop obeying the
+    // State dropdown. Kind is still honoured. See that query's `search` arg.
+    const searchTerms = reconcileSearchTerms(args.search);
+    const searching = searchTerms.length > 0;
+    // `"all"` is the retired spelling of "no constraint" and is dropped, exactly
+    // as `listReconcile` drops it — a shared link still carrying it must chase
+    // the same rows it renders.
+    const activeFilters: ReconcileFilterKey[] = (args.filters ?? []).filter(
+      (f): f is ReconcileFilterKey => f !== "all",
+    );
+    const selectionFilters = searching
+      ? activeFilters.filter((k) => reconcileFilterGroupOf(k) === "kind")
+      : activeFilters;
+
+    const cardholders = makeCardholderResolver(ctx);
+    const bookName =
+      book === CENTRAL ? "Central" : ((await ctx.db.get(book))?.name ?? "Chapter");
+    const matchesSearch = async (tr: Doc<"transactions">): Promise<boolean> => {
+      if (!searching) return true;
+      return matchesReconcileSearch(
+        {
+          merchantNameOverride: tr.merchantNameOverride ?? null,
+          merchantName: tr.merchantName ?? null,
+          description: tr.description ?? null,
+          cardholderName: await cardholders.resolveName(tr),
+          cardLast4: tr.cardLast4 ?? null,
+          bookName,
+          amountCents: tr.amountCents,
+        },
+        searchTerms,
+      );
+    };
+
+    const byPerson = new Map<string, ChaseTarget>();
+    for (const tr of all) {
+      // ── PRECEDENCE, IN THREE LINES ──────────────────────────────────────
+      if (selection) {
+        if (!selection.has(tr._id as string)) continue;
+      } else {
+        const flags = reconcileFlagsFor(tr, { codingSinceMs, isPersonalUnpaid });
+        if (!matchesReconcileFilters(flags, selectionFilters)) continue;
+        if (!(await matchesSearch(tr))) continue;
+      }
+      // ── AND THEN THE SERVER'S OWN QUESTION, ALWAYS ──────────────────────
+      // Nothing above can put a row here that owes nothing. This is also what
+      // makes the grid's hidden transfer legs a non-issue: no `flow:"transfer"`
+      // row is chaseable at all (both halves of the union stop at spend), so
+      // there is no un-hiding rule to mirror.
+      const outstanding = chaseOutstandingFor(tr, codingSinceMs);
+      if (!outstanding) continue;
+
+      // The RECIPIENT comes from the row, never from the request.
+      const holder = await cardholders.resolveRef(tr);
+      // "Unattributed" — a spend charge with no card behind it owes the
+      // treasurer a statement, not a person an email. Silently skipped, exactly
+      // as `receiptChase` pins it last and the old nudge dropped it.
+      if (!holder) continue;
+      if (args.personId && holder.personId !== args.personId) continue;
+
+      const key = holder.personId as string;
+      let entry = byPerson.get(key);
+      if (!entry) {
+        const person = await ctx.db.get(holder.personId);
+        if (!person) continue;
+        entry = {
+          personId: holder.personId,
+          email: person.pwEmail ?? person.email ?? null,
+          phone: person.phone ?? null,
+          cardholderName: person.name,
+          anyEscalated: false,
+          charges: [],
+        };
+        byPerson.set(key, entry);
+      }
+      entry.charges.push({
+        amountCents: tr.amountCents,
+        merchantName: tr.merchantName ?? null,
+        escalated: tr.receiptReminderStage === "escalated",
+        outstanding,
+        missingReceipt: !isDocumented(tr),
+        needsCoding: isUncodedCharge(tr, codingSinceMs),
+      });
+    }
+    // Biggest first within a band, so the email leads with the charge worth
+    // reading about — the same ordering `receiptChase` gives the FM's list.
+    return [...byPerson.values()].map((e) => ({
+      ...e,
+      charges: [...e.charges].sort((a, b) => b.amountCents - a.amountCents),
+      anyEscalated: e.charges.some((c) => c.escalated),
+    }));
   },
 });
 

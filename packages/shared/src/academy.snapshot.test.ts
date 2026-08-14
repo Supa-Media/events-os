@@ -634,6 +634,26 @@
  * holds wherever you publish from — so nothing was swapped. No title, slug,
  * minutes, quizLength, section or course order moved: every table below is
  * unchanged.
+ *
+ * 2026-08-14 — the receipt chase became a CODING chase, and got a scope
+ * (founder: "Instead of receipt chase, I want a coding chase, because coding
+ * includes receipts… when I hit chase, I want it to take into consideration the
+ * view that I'm on and which rows are selected"). "Send reminder"/"Remind all"
+ * are now Chase/Chase everyone, they ask for the coding (which cannot be
+ * submitted without a receipt behind it, so it contains the old ask), and they
+ * act on the manager's current filters, search and ROW SELECTION — selection
+ * winning outright. `/finances/receipt-chase` is a redirect into the grid
+ * grouped by person, like `/finances/explain` before it. Content-only on two
+ * Finances sections: `finance-chasing-receipts` rewrote its worklist rule and
+ * its "for that handful" paragraph (the coding-contains-receipts argument, the
+ * scoping, the reported no-email case) and SWAPPED one quiz question at the
+ * 5-cap — in, tick-three-and-chase-those; out, the "click Send reminder in
+ * Chase Receipts" question, whose right answer named a button and a page that
+ * both stopped existing. `finance-reconcile-grid` carries the button's new name
+ * in the two places it appears, with no quiz change. The lesson keeps its title
+ * and subject: the chase absorbed coding when the policy landed, so this is the
+ * UI catching up with what it already taught. No title, slug, minutes,
+ * quizLength, section or course order moved — every table below is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

@@ -431,7 +431,7 @@ describe("getReceiptReminderDigests — one email, per-line debts", () => {
   });
 });
 
-describe("getManualNudgeTargets — the FM's on-demand nudge", () => {
+describe("getCodingChaseTargets — the FM's on-demand chase", () => {
   test("picks up a coding-only debt, labelled, alongside a missing receipt", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -449,7 +449,7 @@ describe("getManualNudgeTargets — the FM's on-demand nudge", () => {
     });
     await seedCharge(s, { cardId, ageDays: 4, amountCents: 900 });
 
-    const targets = await s.as.query(internal.cards.getManualNudgeTargets, {});
+    const targets = await s.as.query(internal.finances.getCodingChaseTargets, {});
     const holderTarget = targets.find((x) => x.personId === holder)!;
     expect(holderTarget.charges).toHaveLength(2);
     const byAmount = new Map(holderTarget.charges.map((c) => [c.amountCents, c]));

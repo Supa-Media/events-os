@@ -413,9 +413,9 @@ describe("finances.receiptChase: a non-discretionary fee is never chased", () =>
     await grantRole(s, me, "manager");
     const { alice } = await seedFeeAndSubscription(s);
 
-    // The one query behind every nudge email/SMS the FM sends from the Chase
-    // page (`cards.sendReceiptNudge` is its only caller).
-    const targets = await s.as.query(internal.cards.getManualNudgeTargets, {});
+    // The one query behind every chase email/SMS the FM sends from the grid
+    // (`cards.sendCodingChase` is its only caller).
+    const targets = await s.as.query(internal.finances.getCodingChaseTargets, {});
     expect(targets).toHaveLength(1);
     expect(targets[0].personId).toBe(alice);
     // ONE charge in the bundle, and it is not the fee: Alice is asked about

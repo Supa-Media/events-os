@@ -646,6 +646,57 @@
  * labelling always happen, booking AND moving are both gated, and with the
  * toggle off the engine reports the gap instead of writing a row. The same tip
  * also lost a stale "badged 'Payout allocation'" claim, dead since #553.
+ *
+ * ONE CHASE, AND IT IS THE CODING ONE (2026-08-14; founder: "Instead of receipt
+ * chase, I want a coding chase, because coding includes receipts… when I hit
+ * chase, I want it to take into consideration the view that I'm on and which
+ * rows are selected"). Two real changes to what the app does, both taught, no
+ * section added, moved, retitled or re-timed.
+ *
+ *  - THE ASK CHANGED. "Send reminder" / "Remind all" became **Chase** /
+ *    **Chase everyone**, and what they ask for is the CODING. That is not a
+ *    rename with new words on it: `submitCoding` refuses to submit without a
+ *    receipt or an approved exception, so asking somebody to code already asks
+ *    them to document, and a coding chase strictly contains the receipt chase.
+ *    `finance-chasing-receipts`'s worklist rule now says that out loud — it is
+ *    the reason there is only one button and the reason the Chase Receipts page
+ *    is gone rather than sitting beside this. The chase email's two stated
+ *    reasons are taught with it, because both are true and the second is the
+ *    one this org runs on: IRS substantiation, and the public ledger our donors
+ *    read.
+ *  - THE CHASE IS SCOPED. It acts on the view the manager is standing in —
+ *    filters, search, and above all TICKED ROWS, which win over everything
+ *    because they are the narrowest thing on the screen. This is the founder's
+ *    actual reason for wanting it in the grid ("they'd know there's no way this
+ *    person can code these two transactions, but they can code these three"),
+ *    so it earns a full paragraph in the "for that handful" block rather than a
+ *    clause. The same block gains the no-email-on-file case, which is reported
+ *    by name rather than skipped silently, and keeps the manager-only and
+ *    one-book rules.
+ *
+ * ONE QUIZ QUESTION SWAPPED in `finance-chasing-receipts`, never grown — it is
+ * at the 5-question cap `apps/convex/tests/academy.test.ts` enforces. IN: Priya
+ * has five charges, two are yours and three are hers, tick the three and chase
+ * those (the selection-wins rule, plus why the 24h cap makes narrowing-before-
+ * pressing matter). OUT: "a straggler hasn't uploaded a receipt, what do you
+ * do", whose correct answer was "click Send reminder on their group in Chase
+ * Receipts" — a button and a page that both stopped existing, and whose
+ * doctrine (you can chase on demand, capped at once a day) is stated in the
+ * rule block and carried in the new question's explanation. The worklist
+ * question's explanation was corrected in place for the button's name.
+ *
+ * TITLE AND SUBJECT DELIBERATELY UNCHANGED. "Chasing receipts" still names
+ * what this lesson is about: the chase absorbed coding when the policy landed
+ * (the State filter has read "Owes a receipt or coding" since), so this is the
+ * button and the scoping catching up with a subject the lesson already had —
+ * not a new one. Retitling it would move a slug and a snapshot for a lesson
+ * whose reader is doing the same job in the same place.
+ *
+ * `finance-reconcile-grid` carries the vocabulary in the two places it names
+ * the button — its State-filter table row for "Owes a receipt or coding" and
+ * its Group-by rule's Person paragraph, which also picks up the one clause a
+ * reader of THAT lesson needs: the chase acts on the view you are standing in.
+ * No quiz there changed; none of its questions hung on the button's name.
  */
 
 import type {
@@ -1683,7 +1734,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Open, categorized, and still not linked to a budget. A row somebody already closed isn't queue work, so it doesn't count here. Processor and bank fees are deliberately absent — a fee is charged, not chosen, so there is no decision for a budget to control. That covers every processor fee we book: Stripe and Givebutter each book one monthly row, and Cash App's fees are marked per payment from a one-off backfill rather than rolled up. None of them will ever ask you for a budget — or for a coding or a receipt: a fee has no testimony to give and no receipt exists, so the processor's own itemized ledger is its record and the public page prints the fee's standing explanation for it. The exemption is by ORIGIN, not by category — a Givebutter paid tier or any other subscription you chose to buy is a decision, so it stays budgeted (and coded) even though it lands in Bank & Fees alongside them"],
           ["Needs documentation", "Still open, still owing a receipt or an acknowledged reason there isn't one"],
-          ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It does NOT contain marked internal transfers or marked payouts: neither owes documentation at all, and both read Bank record only. The rows in it with nobody to email are spend charges with no card behind them, chased with a statement rather than a person. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
+          ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It does NOT contain marked internal transfers or marked payouts: neither owes documentation at all, and both read Bank record only. The rows in it with nobody to email are spend charges with no card behind them, chased with a statement rather than a person. Group by Person and this is the chase list: one band per cardholder, biggest first, with a **Chase** button on each"],
           ["Closed without documentation", "Somebody marked it Closed with neither a receipt nor an approved exception behind it. Nobody left to nudge, and a published ledger still can't tell that row from a documented one"],
           ["Needs explaining", "Every row that will publish with a BLANK where its explanation should be — the whole backlog, including the 2024-25 history the coding policy grandfathers out. This is the one that ignores the policy date on purpose: \"Needs coding\" answers what policy demands of whom, this answers what a stranger will see a gap next to when the month publishes. Fees, refunded pairs and personal charges are already excluded — they explain themselves"],
           ["Explained", "The other half of the row above — everything in the same population that HAS an approved explanation. It exists because approving one publishes it and takes the row out of \"Needs explaining\", which used to mean the sentence you had just written became unreachable. This is how you re-read what you published, spot-check twenty of them a week later, or hand somebody the month you finished"],
@@ -1704,7 +1755,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Group by is how you get everywhere else",
-        text: "**Group by: None · Month · Person** sits directly above the grid, and it is the closest thing this page has to navigation. It doesn't filter anything — every row you had is still there — it bands them, and each band carries the actions that belong to that kind of band.\n\n**Month** gives you one band per month with that month's charge count, its total, how much of it is explained, and its publication state: Draft, In review, Published (with the revision that's live), or Amending — plus **Preview** and **Publish**. Both act where you stand: Preview opens that month's public page in a new tab, and Publish opens the publish console's own flow in a panel over the grid — the disclosures, the hand-off to a second approver, the amendment reason on a correction, all of it, unchanged. That is the whole of \"working a month\" and the whole of publishing one, without leaving the page.\n\nThe one exception is **All books**, where a month band is drawn from several chapters' books at once. There is no such thing as publishing \"all books\" as one month, so on that view the band's status badge and Preview stand down and **Publish** takes you to the publish console, where you say which book you mean. Pick a book in the Book dropdown and all three come back.\n\n**Person** gives you one band per cardholder — their face, what they owe, and a **Send reminder** button. Put **State → Owes a receipt or coding** on top of it and that is the receipt chase: everyone who owes you something, one band each, nudge them from where you are.\n\nOne thing to read carefully: when you have filtered, a month band names BOTH figures — \"12 of 318 charges · -$4,102 of -$88,201\". The first number is what your filter left; the second is the month. Publish always means the second one.",
+        text: "**Group by: None · Month · Person** sits directly above the grid, and it is the closest thing this page has to navigation. It doesn't filter anything — every row you had is still there — it bands them, and each band carries the actions that belong to that kind of band.\n\n**Month** gives you one band per month with that month's charge count, its total, how much of it is explained, and its publication state: Draft, In review, Published (with the revision that's live), or Amending — plus **Preview** and **Publish**. Both act where you stand: Preview opens that month's public page in a new tab, and Publish opens the publish console's own flow in a panel over the grid — the disclosures, the hand-off to a second approver, the amendment reason on a correction, all of it, unchanged. That is the whole of \"working a month\" and the whole of publishing one, without leaving the page.\n\nThe one exception is **All books**, where a month band is drawn from several chapters' books at once. There is no such thing as publishing \"all books\" as one month, so on that view the band's status badge and Preview stand down and **Publish** takes you to the publish console, where you say which book you mean. Pick a book in the Book dropdown and all three come back.\n\n**Person** gives you one band per cardholder — their face, what they owe, and a **Chase** button. Put **State → Owes a receipt or coding** on top of it and that is the chase: everyone who owes you something, one band each, chased from where you are. The chase acts on the view you are standing in — your filters, your search, and any rows you have ticked — so narrowing the grid narrows what you ask people for.\n\nOne thing to read carefully: when you have filtered, a month band names BOTH figures — \"12 of 318 charges · -$4,102 of -$88,201\". The first number is what your filter left; the second is the month. Publish always means the second one.",
       },
       {
         kind: "rule",
@@ -1973,7 +2024,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "You chase the exceptions, not everyone",
-        text: "Most receipts show up before the reminders even matter. Chase Receipts is your actual worklist — a handful of stragglers each month, not the whole roster.\n\nIt is not a screen at all — it is two controls on Transactions. Set **State → Owes a receipt or coding** and **Group by → Person**, and there it is: one band per cardholder, biggest first, each showing their face, what they owe, and a **Send reminder** button in the band itself. Nothing to navigate back from, and you widen or narrow it exactly like anything else on that page.\n\nThe reminder is rate-limited to one per cardholder per 24 hours, so a band you already nudged today reads \"Nudged today\" and is disabled rather than quietly doing nothing. **Remind all** in the page header does the whole list at once, and it only appears when you are looking at ONE book — reminders go to one book's cardholders at a time, so pick Central or a chapter first.",
+        text: "Most receipts show up before the reminders even matter. The chase is your actual worklist — a handful of stragglers each month, not the whole roster.\n\nIt is not a screen at all — it is two controls on Transactions. Set **State → Owes a receipt or coding** and **Group by → Person**, and there it is: one band per cardholder, biggest first, each showing their face, what they owe, and a **Chase** button in the band itself. Nothing to navigate back from, and you widen or narrow it exactly like anything else on that page.\n\nWhat you are asking for is the CODING, not the receipt. That is deliberate and it is why there is only one button: a coding cannot be submitted without a receipt or an approved exception behind it, so asking someone to code a charge already asks them to document it. Chasing the coding is strictly more than chasing the receipt, which is why the old Chase Receipts page is gone rather than sitting beside this.\n\nThe chase is rate-limited to one per cardholder per 24 hours, so a band you already chased today reads \"Chased today\" and is disabled rather than quietly doing nothing. **Chase everyone** in the page header does the whole list at once, and it only appears when you are looking at ONE book — a chase goes to one book's cardholders at a time, so pick Central or a chapter first.",
       },
       {
         kind: "p",
@@ -1981,7 +2032,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "For that handful, you don't have to text them yourself anymore. Each cardholder's band carries a **Send reminder** button (and there's a **Remind all** in the header for the whole list) — one click re-sends the same reminder email the automated timeline sends, plus a text if they have a phone on file. It's capped at once per cardholder per day, so mashing the button can't spam anyone; a nudge already sent today just reads \"Nudged today\" instead of firing again.\n\nTwo things to expect. Only a finance MANAGER sees the buttons at all — a bookkeeper has full run of the Book and not this. And a reminder goes to one book's cardholders at a time, so if you're looking at all books merged, pick Central or a chapter first; the page says so where the buttons would be, rather than quietly reminding a narrower list than you're looking at.",
+        text: "For that handful, you don't have to text them yourself anymore. Each cardholder's band carries a **Chase** button (and there's a **Chase everyone** in the header for the whole list) — one click emails them the list of what's outstanding with a link straight to their own charges, plus a text if they have a phone on file. The email says why we ask, in two sentences that are both true: spending we can't substantiate in time becomes taxable income to the person who spent it, and every dollar goes on our public ledger for donors to read. It's capped at once per cardholder per day, so mashing the button can't spam anyone; someone already chased today just reads \"Chased today\" instead of firing again.\n\n**THE CHASE ACTS ON THE VIEW YOU ARE STANDING IN.** Filter, search, or tick individual rows, and that is what gets asked for — ticked rows win over everything, because they are the narrowest thing on the screen. This is the whole point of doing it from the grid: when you know perfectly well that two of someone's five charges are yours to sort out and three are theirs, tick the three and chase those. Nothing narrowed means everything they owe, which is the sensible default.\n\nThree things to expect. Only a finance MANAGER sees the buttons at all — a bookkeeper has full run of the Book and not this. A chase goes to one book's cardholders at a time, so if you're looking at all books merged, pick Central or a chapter first; the page says so where the buttons would be, rather than quietly chasing a narrower list than you're looking at. And someone with no email address on file is reported back to you by name rather than skipped in silence — nothing was sent, and it is now your job to go find an address.",
       },
       {
         kind: "p",
@@ -2031,7 +2082,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The reminder timeline handles the routine cases; that one State + Group by pairing is where you spend your actual attention. It isn't a separate screen \u2014 there is no Chase Receipts page and no menu entry for it, just those two controls, with each cardholder's Send reminder sitting in their own band.",
+          "The reminder timeline handles the routine cases; that one State + Group by pairing is where you spend your actual attention. It isn't a separate screen \u2014 there is no Chase Receipts page and no menu entry for it, just those two controls, with each cardholder's Chase button sitting in their own band.",
       },
       {
         prompt:
@@ -2048,16 +2099,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "A straggler hasn't uploaded a receipt and you don't want to wait for the next automated reminder. What do you do?",
+          "Priya has five open charges. Two are waiting on a decision from you, three are hers to code. You want to ask her for the three and only the three. What do you do?",
         options: [
-          "Text them yourself, outside the app",
-          "Click Send reminder on their group in Chase Receipts",
-          "Manually lock their card early",
-          "Nothing can be done before the next scheduled reminder",
+          "Chase her — she'll work out which ones you meant",
+          "Tick those three rows in the grid, then press Chase on her band — a selection wins over everything else, so those three are what gets asked for",
+          "Wait until you've cleared your own two, then chase her",
+          "Email her outside the app; the chase can only ever ask for everything",
         ],
         answerIndex: 1,
         explanation:
-          "Send reminder (and Remind all for the whole list) fires the same reminder email — plus a text if they have a phone on file — right from Chase Receipts, capped at once per cardholder per day.",
+          "The chase acts on the view you are standing in — your filters, your search, and above all any rows you have ticked, which are the narrowest thing on the screen and therefore win. Chasing her for all five would ask for two she cannot do anything about, which is how a reminder teaches people it isn't worth reading carefully. Note the cap that makes this matter: one chase per cardholder per 24 hours, so the ask you send is the ask you get for the day — narrow it before you press, not after.",
       },
     ],
   },
