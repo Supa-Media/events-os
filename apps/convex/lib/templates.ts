@@ -399,7 +399,11 @@ export async function deepCopyTemplate(
   return roleIdMap;
 }
 
-const BLANK_TEMPLATE_SLUG = "blank-event";
+/** The chapter's ad-hoc "start from scratch" template. Exported because
+ *  `budgetTitleResolve.ts` needs to recognise it on rows that predate the
+ *  `isBlank` flag — this template is lazily created per chapter, so some are
+ *  older than the flag. */
+export const BLANK_TEMPLATE_SLUG = "blank-event";
 const BLANK_TEMPLATE_NAME = "Blank event";
 
 /**
