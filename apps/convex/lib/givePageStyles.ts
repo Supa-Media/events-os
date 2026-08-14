@@ -378,7 +378,7 @@ section{margin-bottom:32px}
 .citycard.prospectcard .cc-cta{background:var(--raised);color:var(--accent);
   border:1.5px solid var(--accent);box-shadow:none}
 
-/* ── the wall: every settled gift, anonymous by default (spec D6) ── */
+/* ── the wall: the give pages' own giving, anonymous by default (spec D6) ── */
 .wallbox{border:1px solid var(--border);border-radius:22px;background:var(--raised);
   box-shadow:var(--shadow);overflow:hidden}
 .wallhead{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;

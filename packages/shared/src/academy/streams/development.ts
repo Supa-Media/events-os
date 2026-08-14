@@ -708,7 +708,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Consent gates ATTRIBUTION, never EXISTENCE",
-        text: "Every settled gift gets a row. The default row is anonymous — **\"A gift to New York · $50\"** — and that's what the overwhelming majority of rows look like. A **display name** and a **message** render only where the giver explicitly said yes to showing them. So \"did they consent?\" is never the question \"does this gift appear?\"; it is only ever the question \"does their NAME appear?\" Get that backwards and you'll tell a donor something false about a page they can go read.",
+        text: "Every gift given through a give page gets a row. The default row is anonymous — **\"A gift to New York · $50\"** — and that's what the overwhelming majority of rows look like. A **display name** and a **message** render only where the giver explicitly said yes to showing them. So \"did they consent?\" is never the question \"does this gift appear?\"; it is only ever the question \"does their NAME appear?\" Get that backwards and you'll tell a donor something false about a page they can go read. (What the wall is NOT: every gift the org receives. A check handed to you at an event, a wire, an import — you enter those at the giving desk, and they move the live total without leaving a row underneath it. The wall is the giving page's own feed; **the books at `/finances` are the complete record**, and the wall's footer says exactly that. Don't promise a desk-entered gift will show up on the wall.)",
       },
       {
         kind: "bullets",
@@ -748,7 +748,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Every settled gift gets a row, and the default row is anonymous. The wall shows the giving; consent only decides whether a name is attached to it.",
+          "Every gift given through the page gets a row, and the default row is anonymous. The wall shows that giving; consent only decides whether a name is attached to it.",
       },
       {
         prompt: "What does a giver's consent actually control?",

@@ -13,7 +13,8 @@ import type { Migration } from "./index";
  * highlight reel of the most extroverted fraction of a fraction of the org's
  * giving.
  *
- * give-redesign-v3 (D6) inverts that: every settled gift gets a row, anonymous
+ * give-redesign-v3 (D6) inverts that: every gift through the give checkout
+ * gets a row, anonymous
  * by default, and consent gates only whether the row carries a name. The
  * sibling change makes that true going forward. Without this, the page shipping
  * would open showing a handful of rows from whenever someone last filled in

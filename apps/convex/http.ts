@@ -356,10 +356,10 @@ http.route({
     const [data, interestStats, wall, feeRates] = await Promise.all([
       ctx.runQuery(api.territories.getPublicTerritory, { slug }),
       ctx.runQuery(api.givingInterest.publicInterestStats, {}),
-      // v3: `getPublicWall` supersedes `getTerritoryActivity` — every settled
-      // gift, anonymous unless the giver signed it, rather than only the
-      // opt-in subset that left a city with real backers rendering "Be the
-      // first to back this city" (spec D6).
+      // v3: `getPublicWall` supersedes `getTerritoryActivity` — every gift
+      // given through the page, anonymous unless the giver signed it, rather
+      // than only the opt-in subset that left a city with real backers
+      // rendering "Be the first to back this city" (spec D6).
       ctx.runQuery(api.givingActivity.getPublicWall, { slug }).catch(() => null),
       ctx.runQuery(internal.feeSchedule.givePageRates, {}),
     ]);

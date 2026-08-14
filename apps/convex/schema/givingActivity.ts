@@ -158,14 +158,16 @@ export const givingActivity = defineTable({
   // one-time gift's Stripe session id (`"give:" + session.id`, mirroring
   // `gifts.externalRef`'s `give:` prefix), a backer's pledge id
   // (`String(pledgeId)`), or `"gift:" + giftId` for a row the historical
-  // backfill wrote (migration 0074). Unique by convention
+  // backfill wrote (migration 0076) for a gift that carries no external
+  // reference of its own — one that does is keyed on that reference instead, so
+  // the reversal paths can still find its row. Unique by convention
   // (`recordPendingActivity` skips a second insert for the same `refKey`, and
   // the backfill checks it before inserting) — and NEVER returned publicly:
   // it identifies a payment.
   refKey: v.string(),
   createdAt: v.number(),
   // Stamped by `markActivityVisible` on the pending→visible flip (and by the
-  // 0074 backfill, from the historical gift's `receivedAt`). Absent while
+  // 0076 backfill, from the historical gift's `receivedAt`). Absent while
   // `pending`. This — not `_creationTime` — is what the feed orders by: the
   // backfill wrote decade-old giving at deploy time, so creation order is not
   // settle order. See `by_status_and_settledAt`.
@@ -185,7 +187,7 @@ export const givingActivity = defineTable({
   // row created between the sweep and the deploy, every pre-consent row is
   // permanently ineligible for attribution. The owner's instruction was
   // "assume no for everybody before now"; this encodes it in the read path so
-  // it cannot be undone by a later backfill — including 0074's, which writes
+  // it cannot be undone by a later backfill — including 0076's, which writes
   // no consent at all.
   consent: v.optional(v.boolean()),
   // WHETHER THAT CONSENT WAS GIVEN FOR AN INDEXED PAGE (v3, "Privacy posture"
@@ -246,7 +248,7 @@ export const givingActivity = defineTable({
   // chapter AND central, newest SETTLE first. `by_scope_and_status` cannot
   // serve it — it would mean fanning out per chapter and merging by hand — and
   // ordering on `settledAt` rather than on the index's implicit
-  // `_creationTime` matters because migration 0074 wrote historical rows at
+  // `_creationTime` matters because migration 0076 wrote historical rows at
   // deploy time: by creation order a gift from last year outranks one from
   // this morning.
   .index("by_status_and_settledAt", ["status", "settledAt"])

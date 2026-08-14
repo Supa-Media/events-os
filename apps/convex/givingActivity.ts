@@ -68,7 +68,7 @@ const PUBLIC_WALL_MAX_LIMIT = 30;
  * The org-wide feed can take exactly what it needs, because
  * `by_status_and_settledAt` is already in settle order. The per-city feed
  * reads `by_scope_and_status`, which is ordered by the index's implicit
- * `_creationTime` — and migration 0074 wrote every historical gift's wall row
+ * `_creationTime` — and migration 0076 wrote every historical gift's wall row
  * at deploy time, so creation order says a gift from last year is newer than
  * one from this morning. Over-reading a bounded window and sorting it by
  * `settledAt` fixes the order without a second per-scope index; the window is
@@ -131,10 +131,10 @@ function trimmedCapped(
  *  - no display name and no message → insert nothing.
  * Between them, a row existed only for the givers who both ticked the box AND
  * typed something into a text field. The wall was therefore a highlight reel
- * of the most extroverted fraction of a fraction, on a page headed "every
- * gift, in public". The callers made it worse still: a `"central"` gift was
- * skipped before it ever got here, because the old `scope` type couldn't hold
- * one (D7).
+ * of the most extroverted fraction of a fraction, on the page whose whole job
+ * is to show that people give. The callers made it worse still: a `"central"`
+ * gift was skipped before it ever got here, because the old `scope` type
+ * couldn't hold one (D7).
  *
  * `consent` is still required, still stored, and still the giver's EXPLICIT
  * recorded answer — it just answers a narrower question now: MAY WE NAME YOU.
@@ -601,7 +601,7 @@ export const getPublicWall = query({
     let visible: Doc<"givingActivity">[];
     if (territory) {
       // Over-read then sort: `by_scope_and_status` orders by the index's
-      // implicit `_creationTime`, and the 0074 backfill wrote historical
+      // implicit `_creationTime`, and the 0076 backfill wrote historical
       // giving at deploy time. See `PUBLIC_WALL_SCAN_LIMIT`.
       const window = await ctx.db
         .query("givingActivity")
