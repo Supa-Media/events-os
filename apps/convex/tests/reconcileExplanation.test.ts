@@ -69,10 +69,17 @@ async function txn(
   );
 }
 
+/** `status` defaults to `submitted`. Pass `"approved"` when the transaction's
+ *  `codingState` says approved too — the two are a denorm pair and a fixture
+ *  that sets only one of them is exercising a state the single-writer
+ *  discipline never produces. It matters now that `explanation.editable` is
+ *  read off the CODING (see `finances.ts#resolveExplanation` for why it is
+ *  read from there and not from the denorm). */
 async function seedCoding(
   s: ChapterSetup,
   transactionId: Id<"transactions">,
   publicPurpose?: string,
+  status: "submitted" | "approved" = "submitted",
 ): Promise<void> {
   const userId = await run(s.t, (ctx) =>
     ctx.db.insert("users", { email: `author-${transactionId}@test.local` }),
@@ -84,7 +91,7 @@ async function seedCoding(
       expenseType: "meal",
       businessPurpose: AUTHOR_WORDS,
       headcount: 4,
-      status: "submitted",
+      status,
       codedByUserId: userId,
       submittedAt: Date.now(),
       updatedAt: Date.now(),
@@ -118,6 +125,9 @@ describe("the reconcile row carries its own sentence", () => {
     expect(await explanationFor(s, id)).toEqual({
       purpose: AUTHOR_WORDS,
       redacted: false,
+      // A submitted coding can still be edited, so the grid's cell may offer a
+      // cursor — see `transactionCodings.setPurpose`.
+      editable: true,
     });
   });
 
@@ -125,10 +135,17 @@ describe("the reconcile row carries its own sentence", () => {
     const s = await setupChapter(newT());
     await asManager(s);
     const id = await txn(s, "approved");
-    await seedCoding(s, id, REDACTED);
+    await seedCoding(s, id, REDACTED, "approved");
 
     const explanation = await explanationFor(s, id);
-    expect(explanation).toEqual({ purpose: REDACTED, redacted: true });
+    // `editable: false` — this row's coding is APPROVED, so the sentence is the
+    // record and changing it is a reviewer's audited send-back rather than a
+    // keystroke in a grid cell.
+    expect(explanation).toEqual({
+      purpose: REDACTED,
+      redacted: true,
+      editable: false,
+    });
     // The thing a redaction exists to keep off a public surface stays off it.
     expect(explanation?.purpose).not.toContain("Michael Reid");
   });
@@ -146,6 +163,7 @@ describe("the reconcile row carries its own sentence", () => {
     expect(await explanationFor(s, id)).toEqual({
       purpose: AUTHOR_WORDS,
       redacted: false,
+      editable: true,
     });
   });
 

@@ -508,6 +508,31 @@ const reconcileRow = v.object({
        *  this only tells the cell that what it's showing isn't the words the
        *  spender typed. */
       redacted: v.boolean(),
+      /** ── MAY THE GRID OFFER A CURSOR IN THIS CELL? ────────────────────────
+       *
+       *  The column exists so a month's explanations read without opening
+       *  anything, and then tapping a cell opened the documentation modal —
+       *  founder, on the deployed build: "There's a whole column for it. When
+       *  you click on it, it opens the side panel. That kinda defeats the
+       *  purpose."
+       *
+       *  It opened the modal because `submitCoding` refuses an APPROVED
+       *  coding, so a cell that always accepted typing would work on some
+       *  rows and throw on others. That is a real constraint, and the answer
+       *  is to tell the cell which row it is on rather than to degrade every
+       *  row to the safe case.
+       *
+       *  FALSE means the sentence is the record: the coding is approved, and
+       *  changing it is a reviewer's audited send-back rather than a
+       *  keystroke. The cell then reads rather than edits — it expands in
+       *  place to show the full sentence, and still never opens the panel.
+       *
+       *  Only ever a claim about the CODING's state. Whether this caller may
+       *  write it at all is `canEdit` on the row, decided by the same
+       *  `requireSubmitCoding` the mutation re-runs server-side — a client
+       *  reading `editable: true` still cannot write a row it has no reach
+       *  into. */
+      editable: v.boolean(),
     }),
     v.null(),
   ),
@@ -10026,7 +10051,16 @@ export const listReconcile = query({
       // same answer rather than re-tested against `publicPurpose`, so the
       // flag and the string can never disagree about what happened.
       const purpose = publishedPurpose(coding);
-      return { purpose, redacted: purpose !== coding.businessPurpose };
+      return {
+        purpose,
+        redacted: purpose !== coding.businessPurpose,
+        // The one state `transactionCodings.setPurpose` refuses. Read off the
+        // coding rather than off `codingState` so the cell and the mutation
+        // are looking at the same field: the denorm mirrors this exactly, but
+        // "exactly" is a property worth not depending on where the answer
+        // decides whether a control is offered.
+        editable: coding.status !== "approved",
+      };
     };
 
     // Projected for the PAGE only, and CONCURRENTLY. Each row costs up to three

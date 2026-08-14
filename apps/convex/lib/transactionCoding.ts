@@ -86,6 +86,50 @@ export interface CodingWriteFields {
   groupDescription?: string;
 }
 
+/**
+ * READ A STORED CODING BACK AS THE FIELDS THAT WROTE IT.
+ *
+ * ## Why this has to exist
+ *
+ * `submitCoding` writes with `ctx.db.replace(..., ...fields)`, deliberately —
+ * a coding retyped from "travel" to "general" must not keep a stale route, and
+ * `replace` is what guarantees that. The consequence is that ANY caller
+ * submitting a partial field set silently DELETES everything it omitted.
+ *
+ * That is fine for the full form, which always sends every field it collected.
+ * It is a trap for `transactionCodings.setPurpose` — the grid's inline "what
+ * it was for" cell — whose whole job is to change one sentence and touch
+ * nothing else. Sending `{ expenseType: "general", businessPurpose }` there
+ * would erase a meal's attendee list, a trip's route and a stay's place, and
+ * would do it silently, on the one record the IRS asks about.
+ *
+ * So the edit round-trips through here: the stored coding becomes the fields
+ * that produced it, the caller replaces exactly the one it means to, and the
+ * same `submitCoding` writes it back with the same validation. Nothing about
+ * the write path is relaxed to make the narrow edit possible, which is the
+ * only version of this worth having.
+ *
+ * Type-irrelevant fields are simply absent on the doc (that is what
+ * `normalizeCodingFields` guarantees on the way in), so copying whatever is
+ * present cannot resurrect a field the type doesn't own.
+ */
+export function codingWriteFieldsFrom(
+  coding: Doc<"transactionCodings">,
+): CodingWriteFields {
+  return {
+    expenseType: coding.expenseType as ExpenseType,
+    businessPurpose: coding.businessPurpose,
+    ...(coding.travelFrom != null ? { travelFrom: coding.travelFrom } : {}),
+    ...(coding.travelTo != null ? { travelTo: coding.travelTo } : {}),
+    ...(coding.travelers ? { travelers: coding.travelers } : {}),
+    ...(coding.headcount != null ? { headcount: coding.headcount } : {}),
+    ...(coding.attendees ? { attendees: coding.attendees } : {}),
+    ...(coding.groupDescription != null
+      ? { groupDescription: coding.groupDescription }
+      : {}),
+  };
+}
+
 /** The at-most-one coding on a transaction. Single-writer discipline is what
  *  makes `.unique()` safe here. */
 export async function codingForTransaction(

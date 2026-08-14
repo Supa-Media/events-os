@@ -114,6 +114,7 @@ import {
 } from "../../ui";
 import {
   CENTRAL,
+  MIN_PURPOSE_LENGTH,
   PAYOUT_PROCESSOR_LABELS,
   MAX_MERCHANT_NAME_LENGTH,
   displayMerchantName,
@@ -716,6 +717,72 @@ function ReconcileRow({
   // Fire-and-surface: run a cell mutation, alerting the server's reason on error.
   const guard = (p: Promise<unknown>) => p.catch((err) => alertError(err));
 
+  // ── THE INLINE "WHAT IT WAS FOR" EDITOR ───────────────────────────────────
+  // See the cell itself for why this is an input rather than a way into the
+  // panel. `editable` is server-resolved per row (`reconcileRow.explanation`),
+  // and `setPurpose` re-checks it — this state only decides what is drawn.
+  const setPurpose = useMutation(api.transactionCodings.setPurpose);
+  const [editingPurpose, setEditingPurpose] = useState(false);
+  const [draftPurpose, setDraftPurpose] = useState("");
+  const [savingPurpose, setSavingPurpose] = useState(false);
+  // An approved row can't be edited, so the only thing tapping it can usefully
+  // do is finish the sentence the cell truncated at two lines.
+  const [purposeExpanded, setPurposeExpanded] = useState(false);
+  const purposeEditable = row.explanation?.editable === true && !readOnly;
+  /**
+   * WHAT A TAP MEANS, decided by what the row can take.
+   *
+   * The three branches are the three states in the cell's own comment: edit
+   * it, read the rest of it, or go to the sheet that can create one. The
+   * panel is reached from exactly one of them — the row that genuinely has no
+   * coding to edit — which is the whole of the founder's complaint.
+   */
+  const beginEditPurpose = () => {
+    if (purposeEditable) {
+      setDraftPurpose(row.explanation?.purpose ?? "");
+      setEditingPurpose(true);
+      return;
+    }
+    if (row.explanation) {
+      setPurposeExpanded((v) => !v);
+      return;
+    }
+    openRecord();
+  };
+  /**
+   * SAVE ON BLUR OR ENTER, and say nothing when nothing changed.
+   *
+   * Both events fire for one commit on web (Enter blurs), so `savingPurpose`
+   * is the re-entry guard as well as the spinner — without it the second
+   * event submits the same sentence again and the row picks up a second
+   * `coding_submit` audit entry for one edit.
+   *
+   * An unchanged draft closes silently rather than resubmitting: reopening a
+   * cell to re-read it must not put an approved-and-sent-back coding through
+   * another review round, and it must not write an audit line saying somebody
+   * revised something they didn't.
+   */
+  const commitPurpose = () => {
+    if (savingPurpose) return;
+    const next = draftPurpose.trim();
+    if (next === (row.explanation?.purpose ?? "").trim()) {
+      setEditingPurpose(false);
+      return;
+    }
+    setSavingPurpose(true);
+    void setPurpose({ transactionId: id, businessPurpose: next })
+      .then(() => {
+        setEditingPurpose(false);
+      })
+      .catch((err) => {
+        // STAYS OPEN ON REFUSAL, with what they typed still in it. The server
+        // rejects a purpose under the length floor, and closing the editor
+        // would throw the sentence away along with the reason it was refused.
+        alertError(err);
+      })
+      .finally(() => setSavingPurpose(false));
+  };
+
   // Founder feedback review: "is this MY charge" — the cardholder's OWN half
   // of `cards.flagPersonalCharge`'s server-side OR-gate (cardholder OR
   // manager). `viewerPersonId` is `null` for a superuser with no roster row,
@@ -1001,35 +1068,72 @@ function ReconcileRow({
         </Cell>
       ) : null}
 
-      {/* WHAT IT WAS FOR — the coding's own sentence, readable without
-          opening anything (founder ask, 2026-08-13: "inline a lot of ...
-          like what was this for"). Until now the grid carried only
-          `codingState`, so a written explanation and an empty one looked the
-          same from here and reading a month meant opening every row.
+      {/* WHAT IT WAS FOR — the coding's own sentence, readable AND editable
+          without opening anything.
 
-          The whole cell is the affordance, not a separate button: tapping it
-          opens the SAME `TransactionDocumentationModal` the speech-bubble in
-          Actions opens, so there is exactly one way in to a charge's record
-          and no second editing path to keep in sync. It is deliberately not a
-          text input — `submitCoding` refuses to touch an APPROVED coding
-          (`CODING_APPROVED`: "ask a reviewer to reopen it"), so a cell that
-          accepted typing would work on some rows and throw on others, which
-          is worse than a cell that always opens the surface that knows the
-          difference.
+          The column shipped read-only, and tapping a cell opened the
+          documentation modal. Founder, on the deployed build: "There's a whole
+          column for it. When you click on it, it opens the side panel. That
+          kinda defeats the purpose." He is right — a column whose reason for
+          existing is that you don't have to open anything, which opens
+          something, has argued itself out of existence.
 
-          THREE STATES, matching the speech-bubble's `docState` exactly so the
-          two can never contradict each other on the same row:
-            written — show it (truncated to two lines; the modal has the rest)
+          It was read-only for a real reason: `submitCoding` refuses an
+          APPROVED coding (`CODING_APPROVED`), so a cell that always accepted
+          typing would work on some rows and throw on others. But that fixed a
+          per-row problem by degrading every row to the safe case. The row now
+          says which case it is (`explanation.editable`, server-resolved), so:
+
+            editable → a real text input, saved by `setPurpose`, which carries
+                       every other coding field forward untouched (a partial
+                       write here would silently erase a meal's attendees —
+                       see `codingWriteFieldsFrom`).
+            approved → NOT an input, and still not the panel. The cell
+                       truncates to two lines, so the only honest reason to tap
+                       is to read the rest: it expands in place and says the
+                       sentence is the record now.
+            no coding → the panel, and only here. There is no type to preserve
+                       and nothing to edit, and inventing "general" for a
+                       restaurant charge would write a coding that fails
+                       substantiation from a control with nowhere to say who
+                       was there.
+
+          THREE STATES for what to SHOW, matching the speech-bubble's
+          `docState` exactly so the two can never contradict each other:
+            written — show it, and let it be edited
             missing — this charge owes an account of itself and has none
             empty   — nothing written, nothing owed; stays quiet. */}
       {showExplanation ? (
       <Cell width={widths.explanation}>
+        {editingPurpose ? (
+          <View className="flex-1 px-1 py-1">
+            <TextInput
+              value={draftPurpose}
+              onChangeText={setDraftPurpose}
+              autoFocus
+              multiline
+              // ENTER SAVES, not newline: this is a cell in a grid, and the
+              // sentence is one sentence. `multiline` is here only so a long
+              // purpose wraps while it is being read back, which is the same
+              // two lines the read view shows.
+              blurOnSubmit
+              onSubmitEditing={commitPurpose}
+              onBlur={commitPurpose}
+              editable={!savingPurpose}
+              placeholder={`At least ${MIN_PURPOSE_LENGTH} characters`}
+              placeholderTextColor={colors.faint}
+              className="rounded border border-accent bg-raised px-1.5 py-1 text-sm text-ink"
+            />
+          </View>
+        ) : (
         <Pressable
-          onPress={openRecord}
+          onPress={beginEditPurpose}
           accessibilityRole="button"
           accessibilityLabel={
             row.explanation
-              ? `What it was for: ${row.explanation.purpose}`
+              ? row.explanation.editable
+                ? `Edit what it was for: ${row.explanation.purpose}`
+                : `What it was for (approved): ${row.explanation.purpose}`
               : docState === "missing"
                 ? "Needs an explanation — say what this was for"
                 : "Say what this was for"
@@ -1038,7 +1142,12 @@ function ReconcileRow({
         >
           {row.explanation ? (
             <View className="flex-row items-start gap-1">
-              <Text className="flex-1 text-sm text-ink" numberOfLines={2}>
+              <Text
+                className="flex-1 text-sm text-ink"
+                // Expanded only where expanding is the whole point: an
+                // approved row somebody tapped to read the rest of.
+                numberOfLines={purposeExpanded ? undefined : 2}
+              >
                 {row.explanation.purpose}
               </Text>
               {/* A reviewer replaced the author's wording for publication.
@@ -1054,7 +1163,18 @@ function ReconcileRow({
           ) : (
             <Text className="text-sm text-faint">—</Text>
           )}
+          {/* SAY WHY THIS ONE DOESN'T TYPE. Without it, an approved row is a
+              cell that looks exactly like every editable one and simply
+              doesn't take a cursor, which reads as broken rather than as
+              closed. Only once expanded, so a column of approved rows isn't a
+              column of the same sentence. */}
+          {purposeExpanded && row.explanation && !row.explanation.editable ? (
+            <Text className="mt-0.5 text-2xs text-faint">
+              Approved — a reviewer sends it back to change it
+            </Text>
+          ) : null}
         </Pressable>
+        )}
       </Cell>
       ) : null}
 
