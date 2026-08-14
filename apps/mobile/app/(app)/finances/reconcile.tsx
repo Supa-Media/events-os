@@ -1995,7 +1995,10 @@ function ReconcileGrid() {
               thing they act on is the whole of the page's chrome. Deliberately
               ONE pill and not a rail of nine switches — this page has just had
               a view menu and a chip row taken out of it for exactly that. */}
-          <View className="mb-3 flex-row items-center justify-between gap-2">
+          {/* Wraps rather than crushes: on a phone the segmented Group by and
+              this pill together exceed the width, and a squeezed pill is worse
+              than a second line. */}
+          <View className="mb-3 flex-row flex-wrap items-center justify-between gap-2">
             <GroupByControl value={groupBy} onChange={applyGroupBy} />
             <ColumnsControl
               hidden={hiddenColumns}
