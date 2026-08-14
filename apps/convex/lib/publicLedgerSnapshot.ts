@@ -51,6 +51,7 @@ import {
   CENTRAL,
   displayMerchantName,
   documentationState,
+  type DocumentationExemption,
   easternParts,
   formatCents,
   INCOME_STREAMS,
@@ -65,6 +66,7 @@ import {
 } from "@events-os/shared";
 import {
   canCarryExplanation,
+  documentationExemption,
   effectiveCapCents,
   isUndocumented,
   requiresCoding,
@@ -117,6 +119,26 @@ export type EntryDraft = {
   affiliationMix?: Record<string, number>;
   groupDescription?: string;
   documentation?: DocumentationState;
+  /**
+   * WHY THIS ROW OWES NO DOCUMENT, when it owes none — the published half of
+   * `finances.ts#documentationExemption`, carried as the key so the page reads
+   * its label and sentence off the same shared list the app does.
+   *
+   * IT EXISTS BECAUSE THE PUBLISHED PAGE WAS CONTRADICTING THE APP. The
+   * documentation cell inside the app has known since 2026-08-14 that a
+   * processor fee, a payout and an internal transfer owe nothing. This page
+   * knew only "no receipt file, no approved exception" and so printed
+   * "Undocumented" on all three — plus on personal charges and on deposits
+   * already recorded as giving. Founder, on the published March page: rows
+   * that "shouldn't need" a receipt "should automatically be a documented
+   * exception or document not needed".
+   *
+   * The row still publishes its true `documentation` state beside this — an
+   * exempt row genuinely has no receipt, and hiding that would be the
+   * over-correction. What changes is that the page now says why none is owed
+   * instead of implying somebody failed to file one.
+   */
+  documentationExempt?: DocumentationExemption;
   reconstructed?: boolean;
   nonDiscretionaryFee?: boolean;
   sourceTransactionId?: Id<"transactions">;
@@ -467,6 +489,12 @@ export async function buildSnapshot(
       tr.receiptStorageId != null,
       tr.approvedReceiptExceptionId != null,
     );
+    // The SAME decision the app's own documentation cell makes, off the same
+    // function — `coveredCents` is already resolved above for the signing, so
+    // the gift-recorded case costs no extra read.
+    const documentationExempt = documentationExemption(tr, {
+      giftCoveredCents: coveredCents,
+    });
     const reconstructed = isReconstructedHistory(tr);
 
     // AUTO-EXPLAINED rows (founder directive, 2026-08-12): a processor fee or
@@ -539,6 +567,7 @@ export async function buildSnapshot(
       affiliationMix,
       groupDescription: approved?.groupDescription,
       documentation,
+      ...(documentationExempt ? { documentationExempt } : {}),
       reconstructed: reconstructed || undefined,
       // The shared predicate, not a fourth inline `feeOrigin` test — see
       // `@events-os/shared#isNonDiscretionaryFee` for why they were pulled
@@ -595,7 +624,14 @@ export async function buildSnapshot(
     // `isUndocumented` is the PUBLISHING predicate — status-blind, so a row a
     // treasurer quietly closed document-less years ago is disclosed rather
     // than dropping out. (`publishability.ts` makes this argument at length.)
-    if (isUndocumented(tr)) {
+    // BELT AND BRACES, and deliberately so — `isUndocumented` already answers
+    // this correctly today, because it ends at `owesDocumentation` and every
+    // exempt class here is also outside `isSpend`. The second test exists so
+    // the row's own badge and this disclosure count are decided by the SAME
+    // value: if `isSpend` ever widens, the page would otherwise publish a row
+    // saying "no document needed" while counting it as a missing one, which is
+    // the exact self-contradiction the exemption list was extracted to end.
+    if (isUndocumented(tr) && documentationExempt == null) {
       undocumentedCount += 1;
       undocumentedCents += tr.amountCents;
     }

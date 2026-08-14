@@ -43,6 +43,10 @@ import {
   ATTENDEE_AFFILIATION_LABELS,
   COMPENSATION_DISCLOSURE,
   DOCUMENTATION_STATE_LABELS,
+  DOCUMENTATION_EXEMPTIONS,
+  DOCUMENTATION_EXEMPTION_LABELS,
+  documentationExemptionLine,
+  type DocumentationExemption,
   EXPENSE_TYPE_LABELS,
   formatAffiliationMix,
   contactMailto,
@@ -89,6 +93,12 @@ export type PublicLedgerEntry = {
   affiliationMix: Record<string, number> | null;
   groupDescription: string | null;
   documentation: DocumentationState | null;
+  /** Why this row owed no document, or null when it owed one. A plain string
+   *  rather than the `DocumentationExemption` union: a published revision is
+   *  frozen evidence that must keep validating after a key is retired, so the
+   *  page resolves the label through the shared list and prints nothing for a
+   *  key it no longer recognises. */
+  documentationExempt: string | null;
   reconstructed: boolean;
   nonDiscretionaryFee: boolean;
 };
@@ -439,12 +449,53 @@ function expenseHtml(s: StatementCore): string {
 </section>`;
 }
 
+/**
+ * Resolve a published exemption key to what the chip shows.
+ *
+ * TOLERANT OF A KEY IT NO LONGER KNOWS, on purpose. A published revision is
+ * frozen evidence and keeps validating after a key is retired from
+ * `DOCUMENTATION_EXEMPTIONS`, so a months-old page can carry one this build has
+ * never heard of. It then renders as the plain documentation state it always
+ * did — a chip missing its explanation, rather than a page that throws.
+ */
+function documentationExemptLabel(
+  key: string | null,
+): { label: string; line: string } | null {
+  if (!key) return null;
+  const known = (DOCUMENTATION_EXEMPTIONS as readonly string[]).includes(key);
+  if (!known) return null;
+  const typed = key as DocumentationExemption;
+  return {
+    label: DOCUMENTATION_EXEMPTION_LABELS[typed],
+    line: documentationExemptionLine(typed),
+  };
+}
+
 /** The per-row chips: documentation state, rebuilt history, charged-not-chosen
  *  fees, and internal movements. Each one exists so a reader can tell rows
  *  apart that would otherwise look identical and mean different things. */
 function rowChipsHtml(e: PublicLedgerEntry): string {
   const chips: string[] = [];
-  if (e.documentation) {
+  // ── A ROW THAT OWES NOTHING SAYS SO, RATHER THAN "UNDOCUMENTED" ───────────
+  // Founder, on the published March page: some rows read undocumented that
+  // "shouldn't need to be… it should automatically be a documented exception
+  // or document not needed". A $3.00 fare marked as an accidental personal
+  // charge and already paid back; a $7,000 deposit already recorded as giving,
+  // badged "Undocumented" two lines under its own sentence explaining the
+  // giving split.
+  //
+  // The exemption REPLACES the bare state rather than sitting beside it. Both
+  // chips would say the row has no receipt twice, once as a failing and once
+  // as a fact, and the reader would have to work out which one governs. The
+  // sentence behind it goes in the `title`, so the short label stays scannable
+  // and the full reasoning is a hover away — the same treatment every other
+  // chip here gets.
+  const exemptLabel = documentationExemptLabel(e.documentationExempt);
+  if (exemptLabel) {
+    chips.push(
+      `<span class="chip exception" title="${esc(exemptLabel.line)}">${esc(exemptLabel.label)}</span>`,
+    );
+  } else if (e.documentation) {
     chips.push(
       `<span class="chip ${e.documentation}">${esc(DOCUMENTATION_STATE_LABELS[e.documentation])}</span>`,
     );
@@ -577,7 +628,17 @@ function ledgerHtml(s: PublicStatement): string {
         .join(" ")
         .toLowerCase();
       const sign = e.direction === "out" ? "−" : e.direction === "in" ? "+" : "";
-      return `<tr data-row data-dir="${e.direction}" data-doc="${esc(e.documentation ?? "")}" data-search="${esc(search)}">
+      // The FILTER has to agree with the CHIP. A row the page badges "Bank
+      // record only" must not still answer to "Undocumented" in the dropdown —
+      // that is the same contradiction one layer down, and the reader who went
+      // looking for missing paperwork is exactly the one who would find it.
+      // An exempt row files under `exception`, which is what the founder asked
+      // for in as many words: "it should automatically be a documented
+      // exception or document not needed".
+      const docFacet = documentationExemptLabel(e.documentationExempt)
+        ? "exception"
+        : (e.documentation ?? "");
+      return `<tr data-row data-dir="${e.direction}" data-doc="${esc(docFacet)}" data-search="${esc(search)}">
   <td class="date">${esc(shortDate(e.occurredAt))}</td>
   <td class="chapter">${esc(e.bookLabel)}</td>
   <td class="amt ${e.direction}">${sign}${esc(money(e.amountCents))}</td>

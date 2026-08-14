@@ -1591,6 +1591,12 @@ describe("explaining a month", () => {
     // internal-transfer fallback ("Money moved between our own accounts —
     // nothing earned or spent"), which was the opposite of the truth.
     expect(row!.purpose).toContain("giving roll");
+
+    // AND IT DOES NOT ASK FOR A RECEIPT. The founder's March page badged this
+    // exact row "Undocumented", two lines under its own sentence explaining
+    // the giving split — asking a donor, in effect, to invoice us for their
+    // donation. The gift record IS the document.
+    expect(row!.documentationExempt).toBe("recorded_giving");
   });
 
   test("a wire split between two books counts once, in the book that earned it", async () => {
@@ -1902,6 +1908,30 @@ describe("explaining a month", () => {
     expect(by("Peerspace")?.purpose).toContain("Refunded in full");
     expect(by("Peerspace refund")?.purpose).toContain("refund received");
     expect(by("Costco")?.purpose).toBeNull();
+
+    // ── AND THE ROW SAYS WHY IT OWES NO RECEIPT ─────────────────────────────
+    // Founder, 2026-08-14, on the published March page: some rows read
+    // "undocumented" that "shouldn't need to be… it should automatically be a
+    // documented exception or document not needed".
+    //
+    // They were never in the undocumented COUNT (they fail `isSpend`), but the
+    // page printed the bare state anyway, so a reader saw "Undocumented" on a
+    // processor fee and on a personal charge and had no way to know the app
+    // considered both settled. The exemption is now published beside the
+    // state, off the same list the app's own documentation cell reads.
+    expect(by("Stripe")?.documentationExempt).toBe("processor_fee");
+    expect(by("MTA")?.documentationExempt).toBe("personal_charge");
+    expect(by("Uber")?.documentationExempt).toBe("personal_charge");
+    // …and an ordinary receiptless purchase is untouched. This is the control:
+    // exempting real org spend with no receipt would erase a check the
+    // treasurer is actively using (the hand-approved exceptions on the March
+    // page), which is the one thing this must not do.
+    expect(by("Costco")?.documentationExempt).toBeNull();
+    expect(by("Costco")?.documentation).toBe("undocumented");
+    // The exemption does NOT quiet an unpaid charge. The money is still owed
+    // and the status line still says so — founder: "awaiting repayments should
+    // still be loud." Documentation and obligation are different axes.
+    expect(by("MTA")?.purpose).toContain("awaiting repayment");
   });
 
   test("every row says WHOSE charge it is — the coder has to know who to ask", async () => {
