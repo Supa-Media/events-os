@@ -291,12 +291,21 @@
  *    it") states the framing, the meal refusal (who was at a meal is a
  *    per-occasion fact and is not offered in bulk), and the per-row refusal
  *    reporting.
- *  - Approve gained a confirm beat, a ~10s **Undo** wired to the real reopen
- *    (`requestChanges`, audited — not a hidden button), and the grid gained an
- *    **Explained** filter so a published sentence stays re-readable. Folded
- *    into the existing "Reconciled means coded, too" rule and the filter
- *    table rather than given new blocks — they change how one act behaves, not
- *    what the act means.
+ *  - Approve gained a confirm beat, a ~10s **Undo**
+ *    (`transactionCodings.undoApproval` — restores `submitted`, notifies
+ *    nobody, audited as an undo), and the grid gained an **Explained** filter
+ *    so a published sentence stays re-readable. Folded into the existing
+ *    "Reconciled means coded, too" rule and the filter table rather than given
+ *    new blocks: they change how one act behaves, not what the act means.
+ *
+ *    The undo teaching is DELIBERATELY explicit that undo is not send-back.
+ *    The first cut of both the rule and its quiz question said the undo "sends
+ *    the coding back to its author, exactly as Send back would" — true of the
+ *    first implementation, and now precisely wrong. Undo returns the row to
+ *    the REVIEWER's queue (`submitted`) and notifies nobody; send-back means
+ *    the AUTHOR must act and emails them. A lesson that blurred the two would
+ *    teach a treasurer to reach for the wrong one, which is the exact failure
+ *    "the Academy must track the product" is about.
  *
  * `finance-coding-your-charges` is deliberately UNTOUCHED: it is the
  * cardholder's lesson, the bulk bar is the Book's (bookkeeper+), and its "no
@@ -305,7 +314,8 @@
  *
  * Two quiz questions IN, two OUT, so the length stays 5 (the per-section cap
  * `apps/convex/tests/academy.test.ts` enforces). IN: the bulk apply's per-row
- * honesty, and what Undo actually calls. OUT, both because this lesson already
+ * honesty, and what Undo actually does (returns the row to awaiting review,
+ * telling nobody). OUT, both because this lesson already
  * teaches them elsewhere rather than because they stopped mattering:
  *  - "the dashboard says To review 80, where do you land" — its doctrine (a
  *    number you can see is a number you can tap through to) is carried twice
@@ -1405,7 +1415,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Reconciled means coded, too",
-        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, your OWN charges at /code, and the review queue under the Book\'s view menu (\"Waiting on me\"). Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.\n\nApproving is publishing, so the app asks once — a single line naming what the tap does, then Approve & publish — and then gives you about ten seconds to take it back. **Undo is a real reopen**, not a hidden button: it sends the coding back to its author exactly as if you had done it tomorrow, note and all, recorded in the trail. Miss the window and nothing is lost — Send back still reopens an approved coding at any time, and the **Explained** filter is how you find it again. An approved coding is otherwise locked, which is why re-reading it is the only review left: it is worth a pass over a month\'s Explained rows before you publish it.',
+        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, your OWN charges at /code, and the review queue under the Book\'s view menu (\"Waiting on me\"). Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.\n\nApproving is publishing, so the app asks once — a single line naming what the tap does, then Approve & publish — and then gives you about ten seconds to take it back. **Undo is a real state change, not a hidden button** — and it is deliberately NOT the same act as Send back. Undo returns the coding to **awaiting review**: your queue, exactly where it sat a moment earlier, with nobody told. Send back means the AUTHOR has something to fix — it moves the row into their queue and emails them your note. Your own mis-tap should never land on somebody\'s phone as criticism of work nobody faulted.\n\nTwo limits on it, both enforced by the server rather than by the countdown on screen: you can only undo YOUR OWN approval, and only for a couple of minutes. To reopen somebody else\'s decision, or one that has stood a while and may already have been acted on, send it back with a note — the author is told, which is the point. Nothing is lost either way: Send back reopens an approved coding at any time, and the **Explained** filter is how you find it again. An approved coding is otherwise locked, which is why re-reading it is the only review left: it is worth a pass over a month\'s Explained rows before you publish it.',
       },
       {
         kind: "try_status",
@@ -1449,14 +1459,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "You approve a coding, then immediately realise the sentence names someone it shouldn't. The Undo is still on screen. What does pressing it do?",
         options: [
-          "Deletes the coding so you can start again",
           "Hides the approval locally — the record stays approved",
-          "Sends the coding back to its author, exactly as Send back would, and records the reopen in the trail",
+          "Puts the coding back to awaiting review, in your queue, and tells nobody",
+          "Sends it back to its author with a note, exactly as Send back would",
           "Nothing — an approved coding is permanent",
         ],
-        answerIndex: 2,
+        answerIndex: 1,
         explanation:
-          "Undo is the real reopen, not a cosmetic one — it's the same audited path as Send back, which works on an approved coding by design. Nothing is erased. Miss the ten seconds and you still have Send back, and the Explained filter to find the row again — worth knowing, because an approved coding is otherwise locked and re-reading it is the only review left before the month publishes.",
+          "Undo says the APPROVER mis-tapped, so it returns the coding to exactly where it was \u2014 awaiting review \u2014 and notifies nobody, because the author never saw the approval. That is why it is not Send back: Send back means the AUTHOR has something to fix, moves the row into their queue, and emails them your note. Undo is also limited server-side to your OWN approval and to a couple of minutes; past that, Send back is the honest path, since an approval that has stood a while may already have been acted on.",
       },
       {
         prompt:

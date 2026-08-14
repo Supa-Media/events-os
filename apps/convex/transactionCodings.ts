@@ -49,6 +49,7 @@ import {
   EXPENSE_TYPE_LABELS,
   MAX_BULK_EXPLANATION_ROWS,
   MIN_PURPOSE_LENGTH,
+  UNDO_APPROVAL_WINDOW_MS,
   TRANSACTION_CODING_STATUSES,
   TRANSACTION_CODING_STATUS_LABELS,
   attendeeAffiliationBreakdown,
@@ -74,6 +75,7 @@ import {
   decideCoding,
   normalizeCodingFields,
   submitCoding,
+  undoCodingApproval,
   type CodingWriteFields,
 } from "./lib/transactionCoding";
 import { codingReviewReach } from "./lib/transactionCodingAccess";
@@ -944,10 +946,113 @@ export const approve = mutation({
 });
 
 /**
+ * UNDO YOUR OWN APPROVAL, seconds after making it — the panel's Undo toast.
+ *
+ * ## Why this exists instead of reusing `requestChanges`
+ *
+ * `lib/transactionCoding.ts#undoCodingApproval` carries the full argument. In
+ * short: a send-back means the AUTHOR must act, and it emails them saying so.
+ * Neither is true of a mis-tap. An undo restores `submitted` — back in the
+ * reviewer's queue, exactly where the coding sat a moment earlier — and tells
+ * nobody, because from the author's side nothing ever happened.
+ *
+ * ## The three gates, and why each is the one it is
+ *
+ *  - REVIEW AUTHORITY (`requireReviewCoding`), the same bar as the approval
+ *    this undoes.
+ *  - THE SAME IDENTITY THAT APPROVED IT. Somebody else's approval is not yours
+ *    to quietly roll back; that is exactly what `requestChanges` is for, with
+ *    its required note and its email. Compared on `decidedByUserId`, NOT
+ *    `decidedByPersonId`, because the person id is optional — a superuser with
+ *    no roster row approves with it unset (a real, supported path), so
+ *    comparing on it would either lock them out of their own undo or, worse,
+ *    let any other rosterless caller match on `undefined === undefined`. The
+ *    user id is stamped on every decision, always.
+ *  - THE TIME WINDOW, READ FROM THE ROW. `decidedAt` is the server's own
+ *    stamp, so a paused tab or a client with a stopped clock cannot widen it —
+ *    the UI timer is a courtesy, this is the guarantee. Past the window the
+ *    refusal NAMES the honest path instead of just saying no: by then the
+ *    approval has stood long enough that somebody may have acted on it, and
+ *    reopening it is a decision the author deserves to hear about.
+ *
+ * Audited as `coding_decide` with an explicit undo reason, so the trail reads
+ * approve-then-undo. It must never look like a rejection, which is why `after`
+ * is the state it RETURNS TO ("Awaiting review") and not "Changes requested".
+ */
+export const undoApproval = mutation({
+  args: { transactionId: v.id("transactions") },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, scope, actorPersonId } = await requireReviewCoding(
+      ctx,
+      args.transactionId,
+    );
+    const coding = await codingForTransaction(ctx, args.transactionId);
+    if (!coding) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "This transaction has no coding.",
+      });
+    }
+    if (coding.status !== "approved") {
+      throw new ConvexError({
+        code: "NOT_APPROVED",
+        message: "There is no approval on this coding to undo.",
+      });
+    }
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    if (coding.decidedByUserId !== userId) {
+      throw new ConvexError({
+        code: "NOT_YOUR_APPROVAL",
+        message:
+          "Only the person who approved this coding can undo it. To reopen somebody else's decision, send it back with a note — the author is told, which is the point.",
+      });
+    }
+    if (Date.now() - (coding.decidedAt ?? 0) > UNDO_APPROVAL_WINDOW_MS) {
+      throw new ConvexError({
+        code: "UNDO_WINDOW_CLOSED",
+        message:
+          "That approval is no longer fresh enough to simply take back. Send the coding back with a note instead — once an approval has stood for a while, reopening it is a decision its author should hear about.",
+      });
+    }
+
+    await undoCodingApproval(ctx, { coding });
+    await logFinanceAudit(ctx, {
+      chapterId: scope,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "coding_decide",
+      actorPersonId,
+      field: "coding",
+      before: "Approved",
+      // The state it RETURNS TO. Never "Changes requested" — nothing was sent
+      // back, and nobody was asked to fix anything.
+      after: "Awaiting review",
+      reason:
+        "Approval undone by the approver within the undo window — the coding is awaiting review again, unchanged.",
+      amountCents: txn.amountCents,
+    });
+    // DELIBERATELY NOTHING SCHEDULED. `requestChanges` below notifies the
+    // author because a send-back they never hear about is a note in a row
+    // nobody reopens. An undo is the opposite case: the author never saw the
+    // approval, so there is no state change to tell them about — and the note
+    // this would carry ("undone by the approver") would read to them as
+    // feedback on work nobody criticised.
+    return null;
+  },
+});
+
+/**
  * Send a coding back with a note — "receipt must show exact amount". Works on
  * a `submitted` coding (the everyday loop) and on an `approved` one (the
  * audited way to reopen the record when something turns out wrong). The note
  * is required: the author needs to know what would make it approvable.
+ *
+ * THIS IS THE ANY-TIME, ANY-REVIEWER REOPEN, and it is deliberately the only
+ * one that reaches the author. `undoApproval` above is the narrow exception —
+ * your own approval, within a couple of minutes, no notification — and it
+ * exists so that a mis-tap doesn't have to be laundered through a fake
+ * complaint about the coding. Everything else comes here, with a note.
  *
  * SEPARATION OF DUTIES applies here too, and it didn't used to. `canReview`
  * has always reported `false` to the author of a coding — so the client

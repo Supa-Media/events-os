@@ -568,19 +568,21 @@ describe("review loop", () => {
   });
 
   /**
-   * UNDO IS THE REAL REOPEN, not a UI illusion.
+   * REOPENING AN APPROVED CODING — the any-time, any-reviewer path.
    *
-   * `CodingWorkbenchPanel` shows a ~10s "Undo" after an approval. It calls
-   * `requestChanges` — this mutation, with the same note requirement and the
-   * same separation-of-duties rule — because approving PUBLISHES and an undo
-   * that only hid a button would leave the record approved while the person
-   * believed they had taken it back. These tests are the contract that
-   * affordance stands on: the row really returns to `changes_requested`, the
-   * denorm follows, and the coding is EDITABLE again (which is the whole
-   * point — an approved coding is immutable, so undo has to be a state
-   * change, not a cosmetic one).
+   * `requestChanges` is the audited amendment route: it works on an APPROVED
+   * coding by design, and it is what a reviewer reaches for when something
+   * turns out to be wrong after the fact. It lands in `changes_requested`
+   * (meaning the AUTHOR must act) and it emails them — both right here, and
+   * both exactly why it is NOT what the panel's Undo toast calls. That is
+   * `transactionCodings.undoApproval`, covered in
+   * `codingUndoApproval.test.ts`.
+   *
+   * What this pins is that the reopen is REAL: the denorm follows and the
+   * coding becomes editable again. An approved coding is immutable, so any
+   * reopen has to be a state change rather than a cosmetic one.
    */
-  test("undo right after approving reopens the coding for real", async () => {
+  test("requestChanges reopens an approved coding for real", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asManager(s);
@@ -605,10 +607,10 @@ describe("review loop", () => {
       }),
     ).rejects.toMatchObject({ data: { code: "CODING_APPROVED" } });
 
-    // THE UNDO.
+    // THE REOPEN, with the note the author will be sent.
     await s.as.mutation(api.transactionCodings.requestChanges, {
       transactionId: txnId,
-      reviewNote: "Undone by the approver moments after approving — reopened.",
+      reviewNote: "The receipt has to show the exact amount — please reattach.",
     });
 
     const coding = await run(s.t, async (ctx) =>
@@ -628,8 +630,8 @@ describe("review loop", () => {
     expect(reopened?.status).toBe("submitted");
     expect(reopened?.businessPurpose).toContain("corrected after the undo");
 
-    // The whole round trip is audited — approve, then the reopen, with the
-    // undo's own reason. An undo is a decision, not an erasure.
+    // The whole round trip is audited — approve, then the send-back carrying
+    // the reviewer's own words. A reopen is a decision, not an erasure.
     const decisions = (
       await run(s.t, (ctx) => ctx.db.query("financeAuditLog").collect())
     ).filter((a) => a.action === "coding_decide");
@@ -637,7 +639,7 @@ describe("review loop", () => {
       "Approved",
       "Changes requested",
     ]);
-    expect(decisions[1].reason).toContain("Undone by the approver");
+    expect(decisions[1].reason).toContain("show the exact amount");
   });
 });
 

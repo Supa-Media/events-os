@@ -731,13 +731,16 @@ describe("solo-operator self-approval — superuser only, and it leaves a trace"
     );
   });
 
-  test("the solo operator can UNDO their own approval — the panel's 10s undo, in the one case it matters most", async () => {
-    // Separation of duties is NOT relaxed by the undo affordance: it calls
-    // `requestChanges`, which carries the same SoD rule as `approve` and the
-    // same solo-operator carve-out. That matters here because the founder
-    // grinding 400 rows IS the author and the approver, so if the carve-out
-    // didn't cover the reopen the undo would be dead exactly where it was
-    // designed to be used.
+  test("the solo operator can send BACK their own approved coding — the carve-out covers the reopen too", async () => {
+    // Separation of duties is not relaxed here: `requestChanges` carries the
+    // same SoD rule as `approve` and the same solo-operator carve-out. It
+    // matters because the founder grinding 400 rows IS the author and the
+    // approver, so without the carve-out on the reopen an approved coding
+    // would be permanently locked for the one person who has to correct it.
+    // (The panel's 10s Undo is a DIFFERENT act — `undoApproval`, which
+    // restores `submitted` and notifies nobody; see
+    // `codingUndoApproval.test.ts`. This is the any-time, note-and-email
+    // path.)
     const s = await seatSetup({ email: "seyi@publicworship.life" });
     const selfPersonId = await seedPerson(s, "Owner", { self: true });
     const txnId = await seedTxn(s, s.chapterId);
@@ -748,11 +751,11 @@ describe("solo-operator self-approval — superuser only, and it leaves a trace"
 
     await s.as.mutation(api.transactionCodings.requestChanges, {
       transactionId: txnId,
-      reviewNote: "Undone right after approving — reopening to fix the wording.",
+      reviewNote: "Reopening to strip a volunteer's name out of the wording.",
     });
     const reopened = await selfCodingRow(s, txnId);
     expect(reopened?.status).toBe("changes_requested");
-    expect(reopened?.reviewNote).toContain("Undone right after approving");
+    expect(reopened?.reviewNote).toContain("strip a volunteer's name");
   });
 });
 

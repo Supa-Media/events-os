@@ -61,10 +61,14 @@
  *     consequence, not a modal and not a typed confirmation. A wall on a
  *     screen someone works down four hundred times is either clicked through
  *     blind or makes the job untenable.
- *  2. AN UNDO WINDOW (`ApproveUndoBar`, ~10s), which calls the REAL
- *     `requestChanges` — the audited amendment path — rather than hiding a
- *     button. It lives at PANEL level because `renderReview` unmounts the
- *     instant the coding stops being `submitted`.
+ *  2. AN UNDO WINDOW (`ApproveUndoBar`, ~10s) calling
+ *     `transactionCodings.undoApproval` — a real state change, audited as an
+ *     undo, which puts the coding back to `submitted` (the REVIEWER's queue,
+ *     where it was) and tells nobody, because the author never saw the
+ *     approval. Deliberately NOT `requestChanges`: that means "the author must
+ *     act" and emails them saying so, neither of which is true of a mis-tap.
+ *     See `ApproveUndoBar`'s own doc. It lives at PANEL level because
+ *     `renderReview` unmounts the instant the coding stops being `submitted`.
  *  3. RE-READABILITY from the grid, which is the Reconcile grid's own
  *     `explained` facet (`RECONCILE_FILTER_LABELS.explained`): the complement
  *     of `needs_explaining`, one tap, and every approved row opens right back
@@ -90,6 +94,10 @@ import {
 import type { ChargeTodo, MyTxnRow } from "../myTransactions/chargeTodo";
 import { PublicPurposeEditor } from "./PublicPurposeEditor";
 import { ReceiptPane } from "./ReceiptPane";
+// The toast's own length. Its own module so `undoWindow.test.ts` can pin it
+// below the server's `UNDO_APPROVAL_WINDOW_MS` without importing this file's
+// react-native dependencies — see that constant's doc.
+import { APPROVE_UNDO_SECONDS } from "./undoWindow";
 
 /** `YYYY-MM-DD` in the finance timezone — same formatting as the modal
  *  sheet's own header, so the two read identically. */
@@ -98,17 +106,6 @@ function dateStr(ts: number): string {
     timeZone: "America/New_York",
   });
 }
-
-/**
- * HOW LONG THE UNDO STANDS, in seconds.
- *
- * Long enough to catch the tap you regret the instant you make it; short
- * enough that it is plainly a beat and not a pending state. It is NOT the only
- * way back — `requestChanges` reopens an approved coding at any time from this
- * same panel — so nothing is lost when it expires. It just makes the common
- * correction free.
- */
-const APPROVE_UNDO_SECONDS = 10;
 
 /** The row an undo is offered for, with the name the person was looking at
  *  when they approved it. Held by the PANEL, not by `ReviewActions`, because
@@ -277,26 +274,40 @@ function ReviewActions({
 }
 
 /**
- * THE UNDO WINDOW — the real reopen, not a hidden button.
+ * THE UNDO WINDOW — a real state change, not a hidden button.
  *
  * Approving is publishing, and the row it happened to LEAVES the list (an
- * approved coding is out of `needs_explaining`), so the moment before this
- * existed the sequence was: tap, row vanishes, no way back on this screen.
- * The only reopen path lived on another surface.
+ * approved coding is out of `needs_explaining`), so before this existed the
+ * sequence was: tap, row vanishes, no way back on this screen. The only reopen
+ * path lived on another surface.
  *
- * This calls `transactionCodings.requestChanges` — the actual audited
- * amendment path, which works on an approved coding by design and carries the
- * same separation-of-duties rule (plus the same solo-operator carve-out, which
- * is what makes it usable by the one-person finance team it is aimed at). The
- * server therefore sees a reopen, exactly as if the reviewer had opened the
- * row tomorrow and sent it back; nothing is erased and nothing is special-
- * cased. The note goes in the audit trail, where a reader can see what
- * happened.
+ * ## Why this calls `undoApproval` and NOT `requestChanges`
  *
- * It is a CONVENIENCE, not the only way back. When the ten seconds lapse, the
- * row is still reopenable from this panel's own Send-back — and, with the
- * grid's `explained` facet, still findable. So there is no state that depends
- * on catching it.
+ * It used to call `requestChanges`, and that was wrong in a way that looked
+ * cosmetic and wasn't:
+ *
+ *  - `requestChanges` lands the coding in `changes_requested`, which means
+ *    "the AUTHOR must act". It moves the row into the spender's queue and asks
+ *    them to fix something. But an undo means the APPROVER mis-tapped — the
+ *    coding was fine, it was awaiting review, and it should be awaiting review
+ *    again. The undo was silently converting "waiting on a reviewer" into
+ *    "waiting on the person who wrote it".
+ *  - It also EMAILS the author (`cards.notifyCodingSentBack`), carrying the
+ *    review note. The author never saw the approval, so they'd be told about a
+ *    state that never existed on their side — with "undone by the approver"
+ *    reading as feedback on work nobody criticised.
+ *
+ * `transactionCodings.undoApproval` restores `submitted`, clears what the
+ * approval stamped, notifies nobody, and is audited as an undo (never as a
+ * rejection). It is gated server-side to the identity that made the approval
+ * and to `UNDO_APPROVAL_WINDOW_MS` — so the countdown below is a courtesy, not
+ * the rule, and a paused tab cannot widen it.
+ *
+ * It stays a CONVENIENCE, not the only way back. When the seconds lapse the
+ * row is still reopenable from this panel's own Send-back — which is the right
+ * act by then, note and email included, because an approval that has stood a
+ * while may have been acted on — and, with the grid's `explained` facet, still
+ * findable. Nothing depends on catching the toast.
  */
 function ApproveUndoBar({
   pending,
@@ -305,7 +316,7 @@ function ApproveUndoBar({
   pending: PendingUndo;
   onDone: () => void;
 }) {
-  const requestChanges = useMutation(api.transactionCodings.requestChanges);
+  const undoApproval = useMutation(api.transactionCodings.undoApproval);
   const [left, setLeft] = useState(APPROVE_UNDO_SECONDS);
   const [busy, setBusy] = useState(false);
 
@@ -343,15 +354,11 @@ function ApproveUndoBar({
         loading={busy}
         onPress={() => {
           setBusy(true);
-          requestChanges({
-            transactionId: pending.transactionId,
-            // REQUIRED by the mutation, and rightly so — a reopen with no
-            // reason is how a policy stops being followed. This one states what
-            // actually happened rather than inventing a complaint about the
-            // coding.
-            reviewNote:
-              "Undone by the approver moments after approving — reopened for edits.",
-          })
+          // No note, because there is no complaint — the mutation records its
+          // own audit reason naming this an undo. A send-back's note is the
+          // author's instructions, and inventing one here would put words in
+          // a reviewer's mouth about a coding nobody found fault with.
+          undoApproval({ transactionId: pending.transactionId })
             .then(onDone)
             // A FAILED UNDO MUST BE LOUD and must NOT close the bar: the
             // coding is still approved, and silently dismissing would leave
