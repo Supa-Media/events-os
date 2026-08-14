@@ -112,6 +112,32 @@ export const financePublications = defineTable({
   publishedAt: v.optional(v.number()),
   publishedByPersonId: v.optional(v.id("people")),
 
+  /** ── DRIFT SINCE PUBLISH ───────────────────────────────────────────────
+   *  When the live books first changed underneath an already-published month,
+   *  and in one sentence what changed. Absent = the published statement still
+   *  matches the books as far as anything has told us.
+   *
+   *  Founder, 2026-08-14, on settling a personal charge: "it should probably
+   *  trigger — or it should ask to republish, you know, the public ledgers and
+   *  statements and stuff like that if they're already published."
+   *
+   *  Deliberately a POSITIVE MARK stamped by the write that caused the drift
+   *  (`lib/publicLedgerStale.ts`), never a comparison of the stored snapshot
+   *  against a freshly-built one. A recompute-to-detect design would be a full
+   *  snapshot build per console load, and — worse — would quietly redefine
+   *  "stale" every time the builder changed. This says only what somebody
+   *  actually did.
+   *
+   *  It is a PROMPT, never an action: republishing changes a public statement
+   *  and stays a human decision with a human's sentence attached (see
+   *  `publicLedger.republish`). `staleSince` keeps the FIRST drift's timestamp
+   *  so the console can say how long the public page has been behind, while
+   *  `staleReason` names the MOST RECENT cause — the one a publisher is most
+   *  likely to recognize. Both clear on the next publish.
+   */
+  staleSince: v.optional(v.number()),
+  staleReason: v.optional(v.string()),
+
   createdAt: v.number(),
   updatedAt: v.number(),
 })

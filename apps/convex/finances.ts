@@ -1920,7 +1920,7 @@ export function effectiveRefKind(b: Doc<"budgets">): BudgetRefKind | null {
  * flow-carries-direction + transfer-excluded invariants hold regardless of an
  * explicit link).
  */
-function txnCountsTowardBudget(
+export function txnCountsTowardBudget(
   tr: Doc<"transactions">,
   b: Doc<"budgets">,
   contextMonth?: number,
@@ -5442,6 +5442,18 @@ const glanceBudgetRow = v.object({
   dateLabel: v.union(v.string(), v.null()),
   type: typeValidator,
   cadence: cadenceValidator,
+  // The linked event/project, but ONLY when the ref still resolves — a deleted
+  // event leaves its budget's `scopeRefId` dangling (`events.remove` doesn't
+  // cascade), and the glance card's "Open event" link must never 404. Both
+  // fields are null together for a recurring bucket, an unlinked one-time
+  // budget, and a dead ref alike, which is what lets the client gate the link
+  // on `refKind != null` without a second `refLive` flag to remember.
+  //
+  // Founder, 2026-08-14: "for events, you can't even click to the event, go to
+  // the money page for a project. You can't even go to where the project
+  // details are." These two fields are the whole fix on the read side.
+  refKind: v.union(refKindValidator, v.null()),
+  scopeRefId: v.union(v.string(), v.null()),
   capCents: v.number(),
   spentCents: v.number(),
   remainingCents: v.number(),
@@ -5538,13 +5550,22 @@ export const budgetsGlance = query({
       // WP-wave4 (item 9) mirror: hide the "$0.00 / $0.00" stragglers.
       if (capCents === 0 && spentCents === 0) continue;
       const pct = pctOf(spentCents, capCents);
-      const { name, dateLabel, refDate } = await resolveBudgetRef(b, getEvent, getProject);
+      const { name, dateLabel, refDate, live } = await resolveBudgetRef(
+        b,
+        getEvent,
+        getProject,
+      );
+      // Gated on `live` — see `glanceBudgetRow.refKind`'s own comment for why
+      // a dangling ref must read as "no ref" rather than as a link.
+      const refKind = live ? effectiveRefKind(b) : null;
       const row = {
         id: b._id,
         name,
         dateLabel,
         type: effectiveType(b),
         cadence: b.cadence,
+        refKind,
+        scopeRefId: refKind ? b.scopeRefId ?? null : null,
         capCents,
         spentCents,
         remainingCents: capCents - spentCents,

@@ -313,6 +313,12 @@ export const console_ = query({
           reviewNote: v.union(v.string(), v.null()),
           amendmentReason: v.union(amendmentReasonValidator, v.null()),
           amendmentNote: v.union(v.string(), v.null()),
+          /** Set when the live books changed under an ALREADY-PUBLISHED month
+           *  — the console renders a "republish?" prompt (never an automatic
+           *  amendment). See `lib/publicLedgerStale.ts`. Always null for a
+           *  month that isn't live. */
+          staleSince: v.union(v.number(), v.null()),
+          staleReason: v.union(v.string(), v.null()),
         }),
       ),
     }),
@@ -393,6 +399,8 @@ export const console_ = query({
           reviewNote: row?.reviewNote ?? null,
           amendmentReason: row?.amendmentReason ?? null,
           amendmentNote: row?.amendmentNote ?? null,
+          staleSince: row?.staleSince ?? null,
+          staleReason: row?.staleReason ?? null,
         };
       }),
     };
@@ -658,6 +666,12 @@ async function writeRevision(
       amendmentReason: undefined,
       amendmentNote: undefined,
       reviewNote: undefined,
+      // Whatever drift prompted this publication is now published. Cleared
+      // HERE — in the one function every publish and republish routes through
+      // — rather than at each caller, so a rail that forgot to clear it could
+      // not leave a month permanently badged "needs republishing".
+      staleSince: undefined,
+      staleReason: undefined,
       updatedAt: now,
     });
 }
