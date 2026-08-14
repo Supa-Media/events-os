@@ -92,6 +92,7 @@ import { linkWireGiftsToTheirDeposit } from "./0070_link_wire_gifts_to_their_dep
 import { removeUnexecutedBalanceSettlementsMigration } from "./0071_remove_unexecuted_balance_settlements";
 import { foldFeeCoverageIntoGifts } from "./0072_fold_fee_coverage_into_gifts";
 import { bookKnownRepaymentFeeCoverage } from "./0073_book_known_repayment_fee_coverage";
+import { backfillWallFromGifts } from "./0074_backfill_wall_from_gifts";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -448,4 +449,14 @@ export const MIGRATIONS: Migration[] = [
   // outright if the rows it finds are not the ones it was told to expect.
   // See 0073.
   bookKnownRepaymentFeeCoverage,
+  // The public giving wall was an OPT-IN echo — a row existed only if the
+  // giver ticked a box AND typed something, and never for a central gift —
+  // so the page shipping under "Every gift, in public" (give-redesign-v3, D6)
+  // would have opened nearly empty, making a claim its own data contradicted.
+  // Writes one ANONYMOUS wall row per recent settled gift (no consent was ever
+  // asked of them, so none is recorded). Moves no money and touches no
+  // rollup: the wall's totals come from `givingScopeRollups`, never from these
+  // rows. Idempotent on `refKey`, against both the live `give:<session>` key
+  // and its own `gift:<id>`. See 0074.
+  backfillWallFromGifts,
 ];

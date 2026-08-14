@@ -6,22 +6,27 @@
  * `/give/<slug>` (one territory's page). URLs are unchanged from the retired
  * cityCampaigns pages so already-shared links survive the cutover.
  *
- * v2 redesign (2026-07): leads with an immediate one-time "just give" CTA,
- * then the movement/city-launch-plan map, then the backer/recurring-giver
- * give box, milestone "guarantees," program cards, and an interest +
- * suggest-a-space capture section. The shared form/section widgets (one-time
- * give form, monthly give form, interest form, program cards, active-raise
- * goal cards) live in `givePageSections.ts` to keep this file's two page
- * compositions readable.
+ * v3 redesign (2026-08, docs/plans/give-redesign-v3.md) — READ THAT PLAN
+ * BEFORE CHANGING THE COMPOSITION HERE. It records decisions that look
+ * arbitrary in code and are not:
  *
- * WAVE 2 (2026-07): a thank-you banner on the map after a one-time gift
- * (`thankYou`), a deep "where your giving goes" money-transparency section
- * (single-sourced from the shared finance constants — see
- * `givePageSections.ts`'s `moneyTransparencyHtml`), a launched-but-under-
- * backed "sustain" section + a public activity wall on the territory page,
- * a multi-select interest form, one-time-gift → City Launch Fund framing for
- * pre-launch territories, and a "who we're looking for" team-philosophy
- * block on both pages.
+ *  - The map page's hero is the BACKER ask, and the one-time gift is a section
+ *    below it. v2 led with `oneTimeGiveFormHtml` as the first interactive
+ *    element and never rendered the monthly form on `/give` at all, so the
+ *    conversion the whole page exists for was unreachable from it.
+ *  - The hero carries NO backer count (D2). 20/30/50 guarantee different
+ *    things, so naming twenty in the headline caps the ask at the floor.
+ *  - No compensation claim anywhere (D3) — it is not a flex, and it becomes
+ *    false the day it changes.
+ *  - The money model moved to `/give/how-it-works`; the books are at
+ *    `/finances`, which neither give page linked to before v3 despite it being
+ *    the org's strongest asset.
+ *  - The wall shows EVERY settled gift, anonymous unless the giver signed it
+ *    (D6), which is what let the territory page drop `noindex` (D10).
+ *  - Program cards merged into the milestone ladder — they were always the same
+ *    three things, rendered twice.
+ *
+ * Public copy says "city"; "territory" stays the internal word (D1).
  *
  * The map's dots are plotted with a hand-rolled equirectangular projection
  * (see `projectPoint`) onto a simplified, hand-rolled continental-US outline
@@ -31,16 +36,19 @@ import { BASE_CSS, FAVICON, FONTS } from "./landingPageStyles";
 import { GIVE_CSS } from "./givePageStyles";
 import { GIVE_CAMPAIGN_SCRIPT } from "./givePageClient";
 import {
-  activeRaisesHtml,
-  activityWallHtml,
+  bookLinkHtml,
+  cityCardsHtml,
+  fundraisersHtml,
+  givingWallHtml,
   interestSectionHtml,
-  moneyTransparencyHtml,
+  moneyTeaserHtml,
   monthlyGiveFormHtml,
   oneTimeGiveFormHtml,
-  programCardsHtml,
-  sustainSectionHtml,
-  teamPhilosophyHtml,
+  programForCommitment,
+  proofStripHtml,
+  type PublicWallData,
 } from "./givePageSections";
+import { ledgerPath } from "./publicLedgerPage";
 import { escapeHtml as esc } from "./html";
 import { givePagePath } from "./siteUrl";
 import {
@@ -95,17 +103,27 @@ export type PublicTerritoryData = {
     targetCents: number;
     months: Array<{ month: string; cents: number }>;
   } | null;
-  // Wave 2 (F3 sustain section) — published, FUTURE fundraiser event pages for
-  // this territory's chapter that carry a `goalCents` (see
-  // `territories.ts#getPublicTerritory`'s F3-data extension). Capped 5,
-  // soonest first, PII-free. Rendered only for a launched-but-under-backed
-  // territory (`sustainSectionHtml`'s gate).
-  upcomingFundraisers: Array<{
+  /**
+   * This chapter's fundraiser event pages carrying a `goalCents` — OPEN AND
+   * FINISHED (v3, docs/plans/give-redesign-v3.md §C3/D9).
+   *
+   * Was `upcomingFundraisers`, future-only, capped 5, and rendered only for a
+   * launched-but-under-backed territory. A finished fundraiser vanishing the
+   * moment its date passed threw away the best evidence a chapter has that it
+   * is real — "we did Pathway Ball, we did the block party" — and closed a door
+   * nobody asked to close, since a finished fundraiser with a goal is still
+   * something a person can give toward, into the same pot. Now capped 8, open
+   * first (soonest), then finished (most recent), and rendered for every
+   * territory that has any. `goalMet` is descriptive, never a gate.
+   */
+  fundraisers: Array<{
     name: string;
     slug: string;
     goalCents: number;
     raisedCents: number;
     startDate: number;
+    state: "open" | "finished";
+    goalMet: boolean;
   }>;
   // Wave 2 (F3) — count of committed/active sponsorships for this chapter (0
   // when none). PII-free (a count, not the sponsor list).
@@ -328,6 +346,32 @@ ${FAVICON}
 ${FONTS}`;
 }
 
+/**
+ * The hero's one-line pitch (spec D1/D2).
+ *
+ * DELIBERATELY CARRIES NO BACKER COUNT. An earlier draft read "one of the
+ * twenty people who keep worship happening in a neighborhood all year," which
+ * is true only of the FIRST rung: 20 backers guarantees Worship With Strangers,
+ * 30 adds Eden, 50 adds Love Thy Neighbor. Naming twenty in the headline caps
+ * the ask at the floor and undersells every city already above it. The
+ * milestone ladder does the counting, per city, where the number is real.
+ */
+const HERO_SUBHEAD =
+  "$50 a month backs the volunteer team that puts worship on a neighborhood corner all year. Every city shows you what it can guarantee today — and what the next few backers would add.";
+
+/** The topbar, with the books link that neither give page carried before v3 —
+ *  `/finances` has been live and unlinked from `/give` since it shipped. */
+function giveTopbarHtml(): string {
+  return `<div class="give-topbar">
+  <div class="wordmark">✦ PUBLIC WORSHIP ✦</div>
+  <div class="give-topnav"><a class="give-navlink" href="${esc(ledgerPath())}">Read our books →</a></div>
+</div>`;
+}
+
+function giveFooterHtml(): string {
+  return `<footer style="margin-top:20px;text-align:center;font-size:12.5px;color:var(--faint)">Made with <span class="hearts">♥</span> by Public Worship · <a href="${esc(ledgerPath())}">Read our books</a> · <a href="${givePagePath()}/how-it-works">How the money works</a></footer>`;
+}
+
 /** Every gift's plain-language transparency line (block #10) — the split
  *  read from `CENTRAL_SKIM_PCT` so it can never drift from the real math.
  *  Shown right under a give form, where the ask is fresh. The second line is
@@ -340,31 +384,6 @@ function transparencyNoteHtml(): string {
 <p class="transparency-note">When we raise for a specific purpose — an event, a program, a new city — that's our stated intention for your gift. Gifts are unrestricted: if a goal is exceeded or plans change, your generosity may support general operations and other programs. A gift to a specific chapter stays with that chapter.</p>`;
 }
 
-/** The map page's "City Launch Plan" section (block #2) — the movement
- *  pitch right above the map itself. Wave-2 copy alignment: the playbook
- *  one-liner (5-person team + 20 backers at $50/mo makes a city
- *  self-sustaining, a slice of every chapter funds the next), computed from
- *  the shared constants rather than the stale "~25 backers" copy. New York's
- *  own page still shows its real 25-backer target from `data` unaffected —
- *  this is just the generic movement pitch. */
-function cityLaunchPlanHtml(): string {
-  const unit = esc(formatCents(BACKER_UNIT_CENTS, { showCents: false }));
-  const tier20 =
-    PUBLIC_BACKER_TIERS.find((t) => t.minBackers === 20) ?? PUBLIC_BACKER_TIERS[0];
-  const monthly20 = esc(formatCents(tier20.monthlyCents, { showCents: false }));
-  // The real five-person team, derived from the shared roles so it can never
-  // drift from the roles table further down the page. Starts with the Chapter
-  // Director. "Chapter Director, Music Lead, … , and Treasurer".
-  const roleList = esc(
-    CHAPTER_CORE_ROLES.map((r) => r.role)
-      .join(", ")
-      .replace(/,([^,]*)$/, ", and$1"),
-  );
-  return `<div class="citylaunch">
-  <h2 class="sectionhead serif">Public Worship — The Movement: City Launch Plan</h2>
-  <p>Every city runs on the same five-person volunteer team — ${roleList}. That team plus ${tier20.minBackers} backers at ${unit}/mo (${monthly20}/mo) makes a city self-sustaining, and a slice of every chapter funds the launch of the next. Starting with New York, we train a team, then plan the next cities together.</p>
-</div>`;
-}
 
 /** The backer-vs-recurring-giver explainer (block #3), shown right beside the
  *  territory page's give box so the ask and the framing sit together. */
@@ -443,12 +462,22 @@ function milestoneLadderHtml(data: PublicTerritoryData): string {
         : isNext
           ? `${remaining} more backer${remaining === 1 ? "" : "s"} guarantee${remaining === 1 ? "s" : ""} ${esc(m.commitment)}`
           : `${m.minBackers} backers`;
+      // v3: the rung carries its own program blurb + Instagram link. The three
+      // `programCardsHtml` cards said the same three things as these rungs, in
+      // less detail, in a second grid immediately below this one — so the
+      // promise and the evidence for it now sit together instead of competing.
+      const program = programForCommitment(m.commitment);
+      const programLine = program
+        ? `<div class="ds">${esc(program.body)}${program.instagramUrl ? ` <a href="${esc(program.instagramUrl)}" target="_blank" rel="noopener">Watch it →</a>` : ""}</div>`
+        : m.description
+          ? `<div class="ds">${esc(m.description)}</div>`
+          : "";
       return `<div class="rung ${cls}">
   <div class="badge">${badge}</div>
   <div class="rt">
     <div class="lb">${esc(m.label)}</div>
     <div class="cm">${status}</div>
-    ${m.description ? `<div class="ds">${esc(m.description)}</div>` : ""}
+    ${programLine}
   </div>
 </div>`;
     })
@@ -533,10 +562,23 @@ export function renderGiveMapPage(
   thankYou: boolean,
   siteUrl: string,
   feeRates?: GiveFeeRates | null,
+  wall?: PublicWallData | null,
+  nextCommitments: Readonly<
+    Record<string, { remaining: number; commitment: string }>
+  > = {},
+  publishedMonths = 0,
 ): string {
-  const title = "See where Public Worship is growing, and start a chapter in your city.";
+  // v3: the page asks for a BACKER. The old title ("See where Public Worship is
+  // growing, and start a chapter in your city") was a recruiting headline on a
+  // giving URL, and it was also the og:title — every share of /give previewed
+  // as a 74-character sentence about starting a chapter.
+  //
+  // No backer NUMBER in the headline (spec D2): the ladder guarantees different
+  // things at 20, 30 and 50, so "one of the twenty people" undersells every
+  // rung above the first. The ladder does the counting.
+  const title = "Back a city.";
   const description =
-    "Public Worship gathers neighborhoods for worship in public spaces — bold gospel and generous community care. Give a one-time gift to help the work right now, or back the team that will bring it to your city.";
+    "Public Worship gathers neighborhoods for worship in public spaces. $50 a month backs the volunteer team that puts worship on a neighborhood corner all year — and every dollar we spend is published, line by line.";
 
   // F1 (wave 2): a one-time gift on the map returns to `/give?donated=1` —
   // the orchestrator (http.ts) reads that query param and passes `thankYou`.
@@ -557,29 +599,45 @@ export function renderGiveMapPage(
     })
     .join("\n");
 
-  const listRows = territories
-    .map(
-      (c) => `<a class="row" href="${givePagePath(c.slug)}">
-  <div class="info"><div class="nm">${esc(c.name)}, ${esc(c.region)}</div><div class="rg">${stageChip(c.stage)}</div></div>
-  <div class="stat"><span class="count">${c.backerCount} / ${c.targetBackers} backers</span></div>
-</a>`,
-    )
-    .join("\n");
+  // v3: giving once is a SECTION, not the page's opening statement, and it asks
+  // where the money should go rather than inferring it from which page the
+  // giver happened to land on (spec D4). The destination picker is wired by
+  // `givePageClient.ts`, which sets `slug` on the POST payload.
+  const backableCities = territories.filter((t) => t.stage !== "prospect");
+  const cityOptions = backableCities
+    .map((t) => `<option value="${esc(t.slug)}">${esc(t.name)}, ${esc(t.region)}</option>`)
+    .join("");
 
-  const oneTimeCard = `<section class="givecard">
-  <div class="givecard-head">
-    <h2>Give a one-time gift</h2>
-    <p>Every gift goes straight to the mission — no chapter required.</p>
+  const oneTimeSection = `<section id="gc_once">
+  <h2 class="sectionhead">Or give once</h2>
+  <div class="oncebox">
+    <div class="once-l">
+      <h2>Where should it go?</h2>
+      <p>Both are unrestricted gifts, and both are receipted the same way. Pick whichever you meant.</p>
+      <fieldset class="destpick" id="gc_dest">
+        <label class="destopt sel"><input type="radio" name="gc_dest_choice" value="central" checked>
+          <span><span class="dt">Central operations</span><span class="dh">Keeps the whole thing running &mdash; and seeds the next city's launch fund.</span></span></label>
+        <label class="destopt"><input type="radio" name="gc_dest_choice" value="city">
+          <span><span class="dt">A specific city</span><span class="dh">Goes to that chapter's team. ${Math.round((1 - CENTRAL_SKIM_PCT) * 100)}% stays local; ${Math.round(CENTRAL_SKIM_PCT * 100)}% funds the next launch.</span></span></label>
+        <div class="destcity" id="gc_dest_city" hidden>
+          <label class="sr-only" for="gc_dest_slug">Which city</label>
+          <select id="gc_dest_slug">${cityOptions}</select>
+        </div>
+      </fieldset>
+    </div>
+    <div class="once-r">
+      ${oneTimeGiveFormHtml({
+        presetsCents: ONE_TIME_PRESETS_CENTS,
+        defaultIndex: ONE_TIME_DEFAULT_INDEX,
+        submitLabel: "Give now",
+        // The wall opt-in lives on the thank-you return now, not on the
+        // critical path to payment — three extra fields before checkout for a
+        // feature that only matters after it succeeds.
+        showWallOptIn: false,
+      })}
+      ${transparencyNoteHtml()}
+    </div>
   </div>
-  ${oneTimeGiveFormHtml({
-    presetsCents: ONE_TIME_PRESETS_CENTS,
-    defaultIndex: ONE_TIME_DEFAULT_INDEX,
-    submitLabel: "Give now",
-    // The map page's gift is central (no slug) and the wall is per-territory,
-    // so there is no wall to opt into here — don't ask a question we discard.
-    showWallOptIn: false,
-  })}
-  ${transparencyNoteHtml()}
 </section>`;
 
   const initialJson = JSON.stringify({
@@ -600,23 +658,36 @@ ${BASE_CSS}${GIVE_CSS}
 </head>
 <body>
 <main class="give">
-  <div class="give-topbar"><div class="wordmark">✦ PUBLIC WORSHIP ✦</div></div>
+  ${giveTopbarHtml()}
 
   ${thankYouBanner}
 
   <div class="give-hero">
-    <h1 class="serif">${esc(title)}</h1>
-    <p>${esc(description)}</p>
+    <h1 class="serif">Back a <span style="color:var(--accent)">city</span>.</h1>
+    <p>${esc(HERO_SUBHEAD)}</p>
+    <div class="hero-cta">
+      <a class="ctabtn primary" href="#gc_cities">Back a city &mdash; ${esc(formatCents(BACKER_UNIT_CENTS, { showCents: false }))}/month</a>
+      <a class="ctabtn secondary" href="#gc_once">Prefer to give once? &rarr;</a>
+    </div>
   </div>
 
-  ${oneTimeCard}
+  ${wall ? proofStripHtml(wall.totals) : ""}
 
-  ${cityLaunchPlanHtml()}
+  <div id="gc_cities"></div>
+  ${cityCardsHtml(territories, nextCommitments)}
 
-  <div class="mapwrap">
+  ${wall ? givingWallHtml(wall, { kind: "org" }) : ""}
+
+  ${oneTimeSection}
+
+  ${moneyTeaserHtml(publishedMonths)}
+
+  <section>
+    <h2 class="sectionhead">Where we are, and where we're going</h2>
+    <div class="mapwrap">
     ${
       territories.length === 0
-        ? `<div class="map-empty">No territories on the map yet — check back soon.</div>`
+        ? `<div class="map-empty">No cities on the map yet — check back soon.</div>`
         : `<svg viewBox="0 0 ${MAP_VIEW_WIDTH} ${MAP_VIEW_HEIGHT}" role="img" aria-label="Map of Public Worship chapters and prospect territories across the continental United States">
   <path class="us-outline" d="${usOutlinePath()}"></path>
   ${dots}
@@ -624,28 +695,15 @@ ${BASE_CSS}${GIVE_CSS}
     }
     <div class="legend">
       <span class="item"><span class="swatch launched"></span> Launched chapter</span>
-      <span class="item"><span class="swatch raising"></span> Raising</span>
-      <span class="item"><span class="swatch prospect"></span> Prospect territory</span>
+      <span class="item"><span class="swatch raising"></span> Raising backers</span>
+      <span class="item"><span class="swatch prospect"></span> People asking for one</span>
     </div>
-  </div>
-
-  <section>
-    <h2 class="sectionhead">Raising right now</h2>
-    ${activeRaisesHtml(territories)}
+    </div>
   </section>
-
-  <div class="citylist">
-    <h2 class="sectionhead">Every territory</h2>
-    ${territories.length === 0 ? `<p style="color:var(--muted);font-size:14px">Nothing here yet.</p>` : listRows}
-  </div>
-
-  ${moneyTransparencyHtml()}
-
-  ${teamPhilosophyHtml()}
 
   ${interestSectionHtml(interestStats)}
 
-  <footer style="margin-top:20px;text-align:center;font-size:12.5px;color:var(--faint)">Made with <span class="hearts">♥</span> by Public Worship</footer>
+  ${giveFooterHtml()}
 </main>
 
 <script>window.__GIVE__=${initialJson};</script>
@@ -661,10 +719,10 @@ ${GIVE_CAMPAIGN_SCRIPT}
 export function renderGiveTerritoryPage(
   data: PublicTerritoryData,
   interestStats: InterestStats,
-  activity: TerritoryActivityEntry[],
   siteUrl: string,
   pledgeParam: string | null,
   feeRates?: GiveFeeRates | null,
+  wall?: PublicWallData | null,
 ): string {
   const url = `${siteUrl}${givePagePath(data.slug)}`;
   const backerUnit = formatCents(BACKER_UNIT_CENTS, { showCents: false });
@@ -693,13 +751,30 @@ export function renderGiveTerritoryPage(
   // `givingPledges.startPledgeCheckout`'s return URL) and the new one-time
   // gift's "donated" value (the `?donated=1` return param, translated to
   // this same slot by http.ts so the renderer's signature stays frozen).
+  // v3: the `donated` return is the warmest moment the site ever gets, and it
+  // used to spend it on six words of thanks. It now carries the two things
+  // worth saying there — the books promise (nobody else can make it) and the
+  // one-time → backer upgrade ask, with the city's real remaining gap.
+  const upgradeGap = data.nextMilestone
+    ? Math.max(0, data.nextMilestone.minBackers - data.backerCount)
+    : 0;
+  const upgradeLine =
+    data.nextMilestone && upgradeGap > 0
+      ? ` <b>${upgradeGap} more backer${upgradeGap === 1 ? "" : "s"} guarantee${upgradeGap === 1 ? "s" : ""} ${esc(data.nextMilestone.commitment)} here.</b>`
+      : "";
   const thankYou =
     pledgeParam === "success"
       ? `<div class="thankyou success">🙏 Thank you — you're backing ${esc(data.name)}! A receipt is on its way to your inbox.</div>`
       : pledgeParam === "canceled"
         ? `<div class="thankyou canceled">Checkout canceled — ${esc(data.name)} is still waiting for you whenever you're ready.</div>`
         : pledgeParam === "donated"
-          ? `<div class="thankyou success">🙏 Thank you for your gift — a receipt is on its way.</div>`
+          ? `<div class="thankyou success stacked">
+  <div>🙏 Thank you for your gift to ${esc(data.name)} — a receipt is on its way.</div>
+  <div class="ty-upgrade">
+    <div class="ty-b">Your gift will appear in <a href="${esc(ledgerPath())}">our public books</a> when we publish that month — the same line-item treatment as everything else we spend.${upgradeLine}</div>
+    <a class="ty-cta" href="#gc_monthly_amt">Become a backer — ${esc(formatCents(BACKER_UNIT_CENTS, { showCents: false }))}/month</a>
+  </div>
+</div>`
           : "";
 
   const remaining = data.nextMilestone
@@ -739,13 +814,21 @@ ${ogHead({
   description,
   url,
   ...(ogImageUrl ? { imageUrl: ogImageUrl } : {}),
-  // A territory page carries the public giving wall — donor display names beside
-  // gift amounts — so it stays out of search indexes. See `ogHead`'s `noindex`
-  // doc for why that is not the same as un-sharing it. This is a REVERSIBLE
-  // DEFAULT: drop this line and territory pages become discoverable again.
-  // The `/give` map page deliberately does NOT set it — it lists cities, not
-  // people, and it's the page we want found.
-  noindex: true,
+  // NO `noindex` from v3 onward (docs/plans/give-redesign-v3.md D10).
+  //
+  // It was set because the wall paired self-provided donor display names with
+  // amounts, and being *shown* is not the same as being *findable by name
+  // beside what you gave, forever*. That reasoning was right, and the cost was
+  // that the pages carrying the org's primary ask could never be found by
+  // search — a hard ceiling on the one conversion the page exists for.
+  //
+  // What changed is the wall itself (spec D6): a row is now anonymous by
+  // default, and consent gates only the attribution. The rows that DO carry a
+  // name are gated a second time on `consentIndexable`, which is set only for
+  // consent captured under copy that says plainly the page can be found by
+  // search — so nobody who agreed under the old promise is retroactively made
+  // searchable. With that in place there is nothing left for `noindex` to
+  // protect, and it costs the ask.
 })}
 <style>
 ${BASE_CSS}${GIVE_CSS}
@@ -753,8 +836,8 @@ ${BASE_CSS}${GIVE_CSS}
 </head>
 <body>
 <main class="give">
-  <div class="give-topbar"><div class="wordmark">✦ PUBLIC WORSHIP ✦</div></div>
-  <a class="give-back" href="${givePagePath()}">← All territories</a>
+  ${giveTopbarHtml()}
+  <a class="give-back" href="${givePagePath()}">← All cities</a>
 
   ${thankYou}
 
@@ -766,35 +849,32 @@ ${BASE_CSS}${GIVE_CSS}
 
   <div class="progress-card">
     <div class="progress-count"><b>${data.backerCount}</b> of ${data.targetBackers} backers</div>
-    <div class="progress-sub">Monthly backers funding the team that will launch this chapter.</div>
+    <div class="progress-sub">Monthly backers funding the five-person volunteer team here.</div>
     <div class="progress-track"><div class="progress-fill" style="width:${progressPct}%"></div></div>
+    ${nextCallout}
   </div>
-
-  ${nextCallout}
 
   ${data.launchFund ? launchFundModuleHtml(data.launchFund) : ""}
 
   ${giveBoxHtml(data)}
 
-  ${activityWallHtml(activity)}
-
   ${milestoneLadderHtml(data)}
 
-  ${programCardsHtml()}
+  ${bookLinkHtml(data.name)}
+
+  ${wall ? givingWallHtml(wall, { kind: "city", name: data.name }) : ""}
+
+  ${fundraisersHtml(data.fundraisers, data.name)}
 
   ${data.stage === "launched" ? foundingCalloutHtml() : ""}
 
-  ${data.stage === "launched" && data.backerCount < data.targetBackers ? sustainSectionHtml(data) : ""}
-
   ${data.story ? `<section><h2 class="sectionhead">The story so far</h2><div class="story">${esc(data.story)}</div></section>` : ""}
 
-  ${moneyTransparencyHtml()}
-
-  ${teamPhilosophyHtml()}
+  ${moneyTeaserHtml(0)}
 
   ${interestSectionHtml(interestStats)}
 
-  <footer style="margin-top:20px;text-align:center;font-size:12.5px;color:var(--faint)">Made with <span class="hearts">♥</span> by Public Worship</footer>
+  ${giveFooterHtml()}
 </main>
 
 <script>window.__GIVE__=${initialJson};</script>
@@ -817,6 +897,6 @@ export function renderGiveNotFound(): string {
 </style></head><body><div class="give-404">
 <div style="font-size:44px">🗺️</div>
 <h1>Nothing here yet</h1>
-<p>This territory isn't on the map. <a href="${givePagePath()}">See every territory →</a></p>
+<p>This city isn't on the map. <a href="${givePagePath()}">See every city →</a></p>
 </div></body></html>`;
 }

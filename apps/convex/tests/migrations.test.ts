@@ -353,6 +353,7 @@ const REGISTRY_NAMES = [
   "0071_remove_unexecuted_balance_settlements",
   "0072_fold_fee_coverage_into_gifts",
   "0073_book_known_repayment_fee_coverage",
+  "0074_backfill_wall_from_gifts",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

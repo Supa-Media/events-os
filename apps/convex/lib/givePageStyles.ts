@@ -11,7 +11,26 @@
  */
 export const GIVE_CSS = `
 main.give{max-width:1080px;margin:0 auto;padding:20px 20px 96px}
-.give-topbar{display:flex;justify-content:center;padding:10px 0 26px}
+.give-topbar{display:flex;justify-content:center;align-items:center;position:relative;padding:10px 0 26px}
+
+/* ── BUG FIX: .wordmark and .hearts live in LANDING_CSS, which the give pages
+   never load (they load BASE_CSS + GIVE_CSS only — see givePage.ts's <style>).
+   The result was the logotype at the top of the donation page rendering as
+   plain 16px black body text, and the footer heart in ink rather than accent.
+   Duplicated here rather than pulling in the whole landing stylesheet. ── */
+.wordmark{font-weight:700;font-size:12px;letter-spacing:.22em;color:var(--accent)}
+.hearts{color:var(--accent)}
+
+/* ── topbar nav: the books link, on every give page ──
+   /finances has existed and been unlinked from /give since it shipped. The
+   single most persuasive asset the org has was reachable only by typing the
+   URL. */
+.give-topnav{position:absolute;right:0;top:50%;transform:translateY(-50%);display:flex;gap:8px}
+.give-navlink{display:inline-flex;align-items:center;gap:6px;background:var(--raised);
+  border:1px solid var(--border);border-radius:999px;padding:7px 14px;text-decoration:none;
+  font-size:12.5px;font-weight:600;color:var(--accent);box-shadow:var(--shadow);white-space:nowrap}
+.give-navlink:hover{background:var(--accent-soft)}
+@media(max-width:620px){.give-topnav{display:none}}
 .give-hero{text-align:center;max-width:640px;margin:0 auto 28px}
 .give-hero h1{font-size:clamp(30px,5vw,44px);line-height:1.12;font-weight:700;margin-bottom:10px;letter-spacing:-.01em}
 .give-hero p{font-size:16px;color:var(--muted);line-height:1.55}
@@ -21,12 +40,6 @@ main.give{max-width:1080px;margin:0 auto;padding:20px 20px 96px}
   display:flex;align-items:center;gap:10px;margin:8px 0 14px}
 .sectionhead::after{content:"";height:1px;flex:1;background:var(--border)}
 section{margin-bottom:32px}
-
-/* ── city launch plan (map page, block #2) ── */
-.citylaunch{max-width:720px;margin:0 auto 26px;text-align:center}
-.citylaunch .sectionhead{justify-content:center}
-.citylaunch .sectionhead::after{display:none}
-.citylaunch p{color:var(--muted);font-size:15px;line-height:1.6}
 
 /* ── map ── */
 .mapwrap{background:var(--raised);border:1px solid var(--border);border-radius:24px;
@@ -133,11 +146,15 @@ section{margin-bottom:32px}
 .next-callout{background:var(--accent-soft);border:1px dashed var(--accent);border-radius:14px;
   padding:12px 16px;font-size:14px;color:var(--accent-hover);font-weight:600;margin-bottom:20px}
 
-.explainer .grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:12px}
-.explainer .fact{border:1px solid var(--border);border-radius:16px;padding:16px;background:var(--raised)}
-.explainer .fact .k{font-family:'Corben',Georgia,serif;font-size:22px;color:var(--accent)}
-.explainer .fact .v{font-size:13px;color:var(--muted);margin-top:4px;line-height:1.4}
-.explainer p.lead{color:var(--muted);font-size:15px;line-height:1.6;margin-bottom:14px}
+/* ── BUG FIX: these were scoped \`.explainer .fact\`, but no element with
+   class="explainer" exists anywhere in givePage.ts or givePageSections.ts —
+   the descendant selector never matched, so the 85/15 split figures (the two
+   most quotable numbers on the page) rendered as plain body text. The
+   \`.explainer\` wrapper was removed with an earlier section and the rules were
+   left behind. Unprefixed here so \`.fact\` styles wherever it is used. ── */
+.fact{border:1px solid var(--border);border-radius:16px;padding:16px;background:var(--raised)}
+.fact .k{font-family:'Corben',Georgia,serif;font-size:22px;color:var(--accent)}
+.fact .v{font-size:13px;color:var(--muted);margin-top:4px;line-height:1.4}
 .story{white-space:pre-wrap;color:#4A2E2E;font-size:15.5px;line-height:1.65;margin-bottom:28px}
 
 /* ── founding / New York callout ── */
@@ -160,7 +177,11 @@ section{margin-bottom:32px}
 .givecard .givecard-head{margin-bottom:14px}
 .givecard .givecard-head h2{font-family:'Corben',Georgia,serif;font-size:21px;font-weight:400}
 .givecard .givecard-head p{font-size:13.5px;color:var(--muted);margin-top:4px;line-height:1.5}
-.amtgrid{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+/* auto-fit, not repeat(4,1fr): a pre-launch territory's one-time ladder tops
+   out at $1,000 (LAUNCH_FUND_ONE_TIME_PRESETS_CENTS), and a fixed quarter of a
+   360px viewport leaves ~54px of content box — not enough for "$1,000" at
+   15px/700, so the label wrapped or overflowed its button. */
+.amtgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(72px,1fr));gap:8px;margin-bottom:10px}
 .amtbtn{border:1.5px solid var(--border-strong);border-radius:14px;padding:11px 4px;
   font-weight:700;font-size:15px;color:var(--ink);transition:all .12s;background:none;text-align:center}
 .amtbtn:hover{border-color:var(--accent);color:var(--accent)}
@@ -312,6 +333,180 @@ section{margin-bottom:32px}
 /* ── team philosophy (F7, both pages) ── */
 .teamphilo p{color:var(--muted);font-size:14.5px;line-height:1.65;margin-bottom:12px}
 .teamphilo-quote{font-family:'Corben',Georgia,serif;font-size:16px;color:var(--accent);font-style:italic}
+
+/* ══ v3 redesign (docs/plans/give-redesign-v3.md) ══════════════════════════ */
+
+/* ── hero: two CTAs, the backer ask primary and "give once" a peer link ──
+   Not a tab pair. Tabs make the two asks look equal-weight while hiding one
+   of them; here the hierarchy is the point (D1) and both stay visible. */
+.hero-cta{display:flex;gap:10px;margin-top:22px;justify-content:center;flex-wrap:wrap}
+.ctabtn{border-radius:999px;padding:15px 28px;font-weight:700;font-size:15.5px;
+  text-align:center;transition:all .15s;display:inline-block;text-decoration:none}
+.ctabtn.primary{background:var(--accent);color:#fff;box-shadow:0 6px 18px rgba(210,59,58,.35)}
+.ctabtn.primary:hover{background:var(--accent-hover)}
+.ctabtn.secondary{background:var(--raised);color:var(--accent);border:1.5px solid var(--accent)}
+.ctabtn.secondary:hover{background:var(--accent-soft)}
+
+/* ── proof strip: four auditable numbers, above the fold ── */
+.proofstrip{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));
+  gap:1px;background:var(--border);border:1px solid var(--border);border-radius:20px;
+  overflow:hidden;box-shadow:var(--shadow);margin-bottom:34px}
+.proofcell{background:var(--raised);padding:18px;text-align:center}
+.proofcell .pk{font-family:'Corben',Georgia,serif;font-size:27px;line-height:1.1;
+  color:var(--accent);font-variant-numeric:tabular-nums}
+.proofcell .pv{font-size:12.5px;color:var(--muted);margin-top:5px;line-height:1.42}
+
+/* ── back a city: the page's centre of gravity ── */
+.citygrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(232px,1fr));gap:14px}
+.citycard{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:20px;
+  background:var(--raised);padding:20px;box-shadow:var(--shadow);
+  text-decoration:none;color:inherit;transition:border-color .15s,transform .15s}
+.citycard:hover{border-color:var(--accent);transform:translateY(-2px)}
+.citycard.flagship{border-color:var(--accent);box-shadow:0 0 0 3px rgba(210,59,58,.10),var(--shadow)}
+.cc-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px}
+.cc-name{font-family:'Corben',Georgia,serif;font-size:22px;color:var(--ink);line-height:1.15}
+.cc-region{font-size:12.5px;color:var(--muted);margin-top:3px}
+.cc-count{font-size:14.5px;color:var(--muted);margin-bottom:9px}
+.cc-count b{color:var(--ink);font-weight:700;font-variant-numeric:tabular-nums}
+.cc-next{font-size:12.5px;color:var(--muted);margin-top:10px;line-height:1.45;flex:1}
+.cc-next b{color:var(--accent)}
+.cc-body{font-size:13.5px;color:var(--muted);line-height:1.5;flex:1}
+.cc-cta{display:block;margin-top:15px;text-align:center;background:var(--accent);color:#fff;
+  font-weight:700;font-size:13.5px;border-radius:999px;padding:11px 8px;
+  box-shadow:0 4px 14px rgba(210,59,58,.28);text-wrap:balance}
+.citycard.prospectcard{background:var(--sunken);box-shadow:none;border-style:dashed;border-color:var(--border-strong)}
+.citycard.prospectcard .cc-cta{background:var(--raised);color:var(--accent);
+  border:1.5px solid var(--accent);box-shadow:none}
+
+/* ── the wall: every settled gift, anonymous by default (spec D6) ── */
+.wallbox{border:1px solid var(--border);border-radius:22px;background:var(--raised);
+  box-shadow:var(--shadow);overflow:hidden}
+.wallhead{display:flex;align-items:center;justify-content:space-between;gap:14px;flex-wrap:wrap;
+  padding:20px 22px 16px;border-bottom:1px solid var(--border);background:var(--sunken)}
+.wallhead .wh-k{font-family:'Corben',Georgia,serif;font-size:30px;color:var(--accent);
+  line-height:1.05;font-variant-numeric:tabular-nums}
+.wallhead .wh-v{font-size:13px;color:var(--muted);margin-top:4px;line-height:1.45}
+.livepill{display:inline-flex;align-items:center;gap:7px;background:var(--raised);
+  border:1px solid var(--border);border-radius:999px;padding:6px 13px;
+  font-size:12px;font-weight:700;color:var(--success)}
+.livepill .blip{width:7px;height:7px;border-radius:50%;background:var(--success);
+  animation:blip 2.4s ease-in-out infinite}
+@keyframes blip{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.8)}}
+@media (prefers-reduced-motion:reduce){.livepill .blip{animation:none}}
+.wallrow{display:flex;align-items:flex-start;gap:13px;padding:14px 22px;border-bottom:1px solid var(--border)}
+.wallrow:last-child{border-bottom:0}
+.wr-av{width:36px;height:36px;border-radius:50%;flex:0 0 auto;display:flex;
+  align-items:center;justify-content:center;font-size:15px;background:var(--accent-soft)}
+.wallrow.backer .wr-av{background:#EAF6F0}
+.wr-body{flex:1;min-width:0}
+.wr-line{font-size:14.5px;color:var(--ink);line-height:1.4}
+.wr-amt{font-weight:700;color:var(--accent);font-variant-numeric:tabular-nums}
+.wr-city{color:var(--muted)}
+.wr-msg{font-size:13.5px;color:var(--muted);font-style:italic;margin-top:4px;line-height:1.45}
+.wr-time{font-size:11.5px;color:var(--faint);margin-top:4px}
+.wr-tag{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  border-radius:5px;padding:2px 7px;margin-left:7px;vertical-align:1px;white-space:nowrap}
+.wr-tag.mo{background:#EAF6F0;color:var(--success)}
+.wr-tag.once{background:var(--accent-soft);color:var(--accent)}
+.wr-tag.central{background:var(--sunken);color:var(--muted)}
+.wr-goal{margin-top:8px;max-width:280px}
+.wg-track{height:6px;border-radius:999px;background:var(--sunken);overflow:hidden}
+.wg-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-hover))}
+.wg-lbl{font-size:12px;color:var(--muted);margin-top:5px;font-variant-numeric:tabular-nums}
+.wg-lbl b{color:var(--accent)}
+.wallfoot{padding:14px 22px;background:var(--sunken);font-size:12.5px;
+  color:var(--muted);text-align:center;line-height:1.5}
+
+/* ── give once: destination first, amount second ── */
+.oncebox{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1.05fr);
+  border:1px solid var(--border);border-radius:22px;overflow:hidden;
+  background:var(--raised);box-shadow:var(--shadow)}
+@media(max-width:760px){.oncebox{grid-template-columns:1fr}}
+.once-l{padding:24px;background:var(--sunken);border-right:1px solid var(--border)}
+@media(max-width:760px){.once-l{border-right:0;border-bottom:1px solid var(--border)}}
+.once-l h2{font-family:'Corben',Georgia,serif;font-size:21px;font-weight:400;margin-bottom:8px}
+.once-l p{font-size:14px;color:var(--muted);line-height:1.58;margin-bottom:14px}
+.once-r{padding:24px}
+.destpick{display:flex;flex-direction:column;gap:8px;border:0;padding:0;margin:0}
+.destopt{display:flex;align-items:flex-start;gap:10px;cursor:pointer;
+  border:1.5px solid var(--border-strong);border-radius:14px;padding:12px 14px;
+  background:var(--raised);transition:all .12s}
+.destopt:hover{border-color:var(--accent)}
+.destopt.sel{background:var(--accent-soft);border-color:var(--accent);box-shadow:0 0 0 3px rgba(210,59,58,.14)}
+.destopt input{width:16px;height:16px;margin-top:2px;accent-color:var(--accent);flex:0 0 auto}
+.destopt .dt{font-weight:700;font-size:13.5px;color:var(--ink);display:block}
+.destopt .dh{font-size:12px;color:var(--muted);margin-top:2px;display:block;line-height:1.4}
+.destcity{margin-top:10px}
+.destcity select{width:100%;background:var(--raised);border:1.5px solid var(--border);
+  border-radius:14px;padding:12px 16px;font-size:15px;color:var(--ink);outline:none}
+.destcity[hidden]{display:none}
+/* The city <select> is introduced by the radio it belongs to, so a visible
+   label would be redundant — but a bare select is unlabelled to a screen
+   reader, which is not. */
+.sr-only{position:absolute;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;
+  clip:rect(0,0,0,0);white-space:nowrap;border:0}
+
+/* ── money teaser: three facts and two links, replacing ~450 words ── */
+.moneyteaser{border:1px solid var(--border-strong);border-radius:22px;
+  background:var(--sunken);padding:26px 26px 24px}
+.moneyteaser h2{font-family:'Corben',Georgia,serif;font-size:23px;font-weight:400;margin-bottom:10px}
+.moneyteaser .mt-lead{font-size:14.5px;color:#4A2E2E;line-height:1.62;max-width:62ch}
+.moneyteaser .mt-lead + .mt-lead{margin-top:10px}
+.moneyteaser .sharp{color:var(--ink);font-weight:600}
+.mt-facts{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));
+  gap:12px;margin:20px 0}
+.mt-links{display:flex;gap:10px;flex-wrap:wrap}
+.mt-links .ctabtn{padding:12px 22px;font-size:14.5px}
+
+/* ── this book is public: the /finances doorway ── */
+.booklink{display:flex;align-items:center;gap:14px;border:1px solid var(--border-strong);
+  border-radius:18px;background:var(--sunken);padding:18px 20px;margin-bottom:28px}
+.booklink .bl-ic{width:44px;height:44px;border-radius:12px;background:var(--raised);
+  border:1px solid var(--border);display:flex;align-items:center;justify-content:center;
+  font-size:20px;flex:0 0 auto}
+.booklink .bl-t{font-weight:700;font-size:14.5px;color:var(--ink)}
+.booklink .bl-s{font-size:13px;color:var(--muted);margin-top:2px;line-height:1.45}
+
+/* ── fundraisers: open AND finished, all giveable (spec D9) ── */
+.fundgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:14px}
+.fundcard{display:flex;flex-direction:column;border:1px solid var(--border);border-radius:18px;
+  background:var(--raised);padding:18px;box-shadow:var(--shadow)}
+.fundcard.past{background:var(--sunken);box-shadow:none;border-color:var(--border-strong)}
+.fc-top{display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:4px}
+.fc-name{font-family:'Corben',Georgia,serif;font-size:17px;color:var(--ink);line-height:1.25}
+.fc-when{font-size:12.5px;color:var(--muted);margin-bottom:12px}
+.fc-track{height:8px;border-radius:999px;background:var(--sunken);overflow:hidden}
+.fundcard.past .fc-track{background:var(--raised)}
+.fc-fill{height:100%;border-radius:999px;background:linear-gradient(90deg,var(--accent),var(--accent-hover))}
+.fc-fill.met{background:linear-gradient(90deg,var(--success),#1F5C41)}
+.fc-lbl{font-size:13px;color:var(--muted);margin:7px 0 12px;font-variant-numeric:tabular-nums}
+.fc-lbl b{color:var(--accent)}
+.fc-lbl b.met{color:var(--success)}
+.fc-body{font-size:13px;color:var(--muted);line-height:1.5;margin-bottom:14px;flex:1}
+.fc-cta{display:block;text-align:center;border-radius:999px;padding:10px;font-weight:700;
+  font-size:13.5px;background:var(--accent);color:#fff;text-decoration:none;
+  box-shadow:0 4px 14px rgba(210,59,58,.28)}
+.fundcard.past .fc-cta{background:var(--raised);color:var(--accent);
+  border:1.5px solid var(--accent);box-shadow:none}
+.fc-chip{font-size:10.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;
+  border-radius:5px;padding:3px 8px;flex:0 0 auto}
+.fc-chip.live{background:var(--accent-soft);color:var(--accent)}
+.fc-chip.done{background:#EAF6F0;color:var(--success)}
+
+/* ── thank-you upgrade: the warmest moment on the site (one-time → backer) ── */
+.ty-upgrade{margin-top:12px}
+.ty-upgrade .ty-b{font-size:14px;color:#2C4A3C;line-height:1.6;margin-bottom:12px}
+.ty-upgrade .ty-b b{color:var(--ink)}
+.ty-cta{display:inline-block;background:var(--accent);color:#fff;font-weight:700;
+  font-size:14.5px;border-radius:999px;padding:11px 22px;text-decoration:none;
+  box-shadow:0 4px 14px rgba(210,59,58,.28)}
+.thankyou.stacked{display:block}
+
+/* ── focus: GIVE_CSS defined no :focus-visible at all, so keyboard users got
+   the UA default ring on a cream ground. ── */
+.give a:focus-visible,.give button:focus-visible,.give input:focus-visible,
+.give select:focus-visible,.give textarea:focus-visible{
+  outline:2px solid var(--accent);outline-offset:2px}
 
 .give-404{min-height:100vh;display:flex;flex-direction:column;align-items:center;justify-content:center;
   text-align:center;padding:24px;gap:10px}

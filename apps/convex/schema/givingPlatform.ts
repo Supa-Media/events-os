@@ -113,8 +113,13 @@ export const GIFT_AUDIT_ACTIONS = [
   "createdBySplit",
 ] as const;
 
-/** A donor's `scope`: the chapter that stewards the relationship, or central. */
-const givingScope = v.union(v.id("chapters"), v.literal("central"));
+/** A donor's `scope`: the chapter that stewards the relationship, or central.
+ *  EXPORTED because it is the giving domain's one scope vocabulary — every
+ *  table here uses it, and `schema/givingActivity.ts` imports it rather than
+ *  re-declaring the union (give-redesign-v3 C2 widened the wall's `scope` to
+ *  match `gifts.scope` so a central gift can appear on the wall, D7; two copies
+ *  of "chapter or central" would be two things to keep in step). */
+export const givingScope = v.union(v.id("chapters"), v.literal("central"));
 
 /**
  * A donor's optional MAILING ADDRESS — for postal outreach (year-end letters,

@@ -3,22 +3,30 @@ import { ConvexError } from "convex/values";
 import { api, internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
+import { runBackfillWallFromGifts } from "../migrations/0074_backfill_wall_from_gifts";
 import type { Id } from "../_generated/dataModel";
 
 /**
- * Public activity wall (`/give` redesign, wave 2, F6) tests:
- *  - `recordPendingActivity` skips silently when neither a name nor a
- *    message is present, and is idempotent on `refKey`;
+ * Public activity wall (`/give` redesign, wave 2, F6; recomposed by
+ * give-redesign-v3 C1/C2) tests:
+ *  - `recordPendingActivity` records EVERY gift and pledge — consent gates
+ *    attribution, never existence (D6) — and is idempotent on `refKey`;
  *  - `markActivityVisible` flips a pending row to visible, re-stamps the
  *    SETTLED amount, and is idempotent (a second flip is a no-op);
- *  - `getTerritoryActivity` returns only visible rows for the right
- *    territory, newest first, capped, and carries no PII (no email/donor
- *    name field — only the self-provided public fields);
+ *  - `getPublicWall` (C1): central gifts appear tagged `central` (D7), a
+ *    non-consented gift appears anonymously, a consented one is named, a
+ *    payment-reversed one stays off, `raisedCents` comes from the scope
+ *    rollups (D8) and never from a `gifts` scan, and a territory with fewer
+ *    than three lifetime gifts is not named;
+ *  - `getTerritoryActivity` (the pre-v3 read the un-swapped city renderer
+ *    still calls) is UNCHANGED: only visible, consented rows for the right
+ *    territory, newest first, capped, PII-free;
  *  - the admin surfaces (`listActivityAdmin` / `hideActivity`) are gated to
  *    central `giving.view`/`giving.manage`;
- *  - CONSENT: no row without an explicit `consent: true`, no publish without
- *    it, and no public read of a row that lacks it — including the rows
- *    written before consent was recorded at all (`consent` absent ⇒ NO).
+ *  - CONSENT: attribution is withheld from any row that lacks BOTH an
+ *    explicit `consent: true` and the `consentIndexable: true` that licenses
+ *    a search-findable page — including every row written before either field
+ *    existed (absent ⇒ NO).
  */
 
 /** Link a `people` row to the caller's user + seat them (requires seeded
@@ -90,7 +98,7 @@ async function activityByRefKey(t: ReturnType<typeof newT>, refKey: string) {
 // ── recordPendingActivity ────────────────────────────────────────────────────
 
 describe("recordPendingActivity", () => {
-  test("skips entirely when neither displayName nor message is present", async () => {
+  test("records a gift that carries neither a name nor a message — existence is not attribution (D6)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await t.mutation(internal.givingActivity.recordPendingActivity, {
@@ -100,7 +108,28 @@ describe("recordPendingActivity", () => {
       kind: "gift",
       amountCents: 5000,
     });
-    expect(await activityByRefKey(t, "give:cs_blank")).toBeNull();
+    // This used to insert NOTHING ("nothing to show"), which is how the wall
+    // ended up a highlight reel of the givers who filled in an optional text
+    // box. The gift is the thing worth showing; the name is a bonus.
+    const row = await activityByRefKey(t, "give:cs_blank");
+    expect(row?.status).toBe("pending");
+    expect(row?.amountCents).toBe(5000);
+    expect(row?.displayName).toBeUndefined();
+  });
+
+  test("records a CENTRAL gift — the scope the old wall could not hold (D7)", async () => {
+    const t = newT();
+    await t.mutation(internal.givingActivity.recordPendingActivity, {
+      refKey: "give:cs_central",
+      consent: false,
+      scope: "central",
+      kind: "central",
+      amountCents: 12345,
+    });
+    const row = await activityByRefKey(t, "give:cs_central");
+    expect(row?.scope).toBe("central");
+    expect(row?.kind).toBe("central");
+    expect(row?.amountCents).toBe(12345);
   });
 
   test("inserts a pending row, trimmed + capped, when a name or message is present", async () => {
@@ -163,7 +192,7 @@ describe("recordPendingActivity", () => {
 // ── Consent: the wall is opt-in, and "not asked" means no ────────────────────
 
 describe("wall consent", () => {
-  test("recordPendingActivity writes nothing when consent is false", async () => {
+  test("a refused giver still gets a row — and none of their attribution is stored", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await t.mutation(internal.givingActivity.recordPendingActivity, {
@@ -175,7 +204,15 @@ describe("wall consent", () => {
       displayName: "Sam K.",
       message: "Let's make this happen.",
     });
-    expect(await activityByRefKey(t, "give:cs_no_consent")).toBeNull();
+    const row = await activityByRefKey(t, "give:cs_no_consent");
+    // The gift counts (D6) …
+    expect(row?.amountCents).toBe(5000);
+    expect(row?.consent).toBe(false);
+    // … and the name they typed before un-ticking the box is not kept at all.
+    // Storing it would leave a public handle in a table whose purpose is to be
+    // published, one read-path bug away from disclosure.
+    expect(row?.displayName).toBeUndefined();
+    expect(row?.message).toBeUndefined();
   });
 
   test("a stored row records the consent that created it", async () => {
@@ -192,7 +229,7 @@ describe("wall consent", () => {
     expect((await activityByRefKey(t, "give:cs_consented"))?.consent).toBe(true);
   });
 
-  test("markActivityVisible refuses to publish a row with no recorded consent", async () => {
+  test("markActivityVisible settles a row with no recorded consent — the gift is public, the giver isn't", async () => {
     const t = newT();
     const s = await setupChapter(t);
     // A row as it existed BEFORE consent was recorded — `consent` absent
@@ -215,9 +252,12 @@ describe("wall consent", () => {
     });
 
     const row = await activityByRefKey(t, "give:cs_legacy");
-    // Still pending, never settled — it can never reach the wall.
-    expect(row?.status).toBe("pending");
-    expect(row?.settledAt).toBeUndefined();
+    // It used to stay `pending` for ever. Withholding settlement protected
+    // nobody once the row itself became anonymous — it just deleted a real
+    // gift from "every gift, in public" (D6). The name on this legacy row is
+    // still never returned; that is the read path's job, asserted below.
+    expect(row?.status).toBe("visible");
+    expect(typeof row?.settledAt).toBe("number");
   });
 
   test("getTerritoryActivity hides a visible row that carries no consent", async () => {
@@ -678,7 +718,7 @@ describe("staff takedown + restore", () => {
     expect(restored?.hiddenReason).toBeUndefined();
   });
 
-  test("CONSENT STILL RULES AFTER A REMOVAL: a row without recorded consent can never be restored onto the wall", async () => {
+  test("a takedown of an ANONYMOUS row is still undoable — and it comes back anonymous", async () => {
     const s = await devDirectorSetup();
     const chapterId = await makeTerritory(s, "consentless-city");
     // A pre-consent row (the field is absent entirely), taken down by staff.
@@ -689,20 +729,26 @@ describe("staff takedown + restore", () => {
     });
     await s.as.mutation(api.givingActivity.hideActivity, { id });
 
-    await expect(
-      s.as.mutation(api.givingActivity.restoreActivity, { id }),
-    ).rejects.toBeInstanceOf(ConvexError);
-    expect((await run(s.t, (ctx) => ctx.db.get(id)))?.status).toBe("hidden");
+    // Restore used to REFUSE this row, on the reasoning that restoring was a
+    // publish path. Under D6 it isn't: attribution is decided on every read,
+    // so a row goes back exactly as anonymous as it came down — and a staff
+    // member who took one down by mistake isn't stuck with it.
+    await s.as.mutation(api.givingActivity.restoreActivity, { id });
+    expect((await run(s.t, (ctx) => ctx.db.get(id)))?.status).toBe("visible");
 
-    // And even if something else put it back to `visible`, the public read
-    // gate still refuses it — restore is not the only thing standing between
-    // a non-consented row and the wall.
-    await run(s.t, (ctx) => ctx.db.patch(id, { status: "visible" }));
+    // The read gate is what protects the name, and it still does: the legacy
+    // per-city read drops the row entirely, and the v3 wall shows it with no
+    // name on it.
     expect(
       await s.t.query(api.givingActivity.getTerritoryActivity, {
         slug: "consentless-city",
       }),
     ).toEqual([]);
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "consentless-city",
+    });
+    expect(wall.rows).toHaveLength(1);
+    expect(wall.rows[0]!.displayName).toBeNull();
   });
 
   test("an entry pulled because its payment reversed is NOT restorable", async () => {
@@ -776,5 +822,597 @@ describe("staff takedown + restore", () => {
     ).rejects.toBeInstanceOf(ConvexError);
     // Still hidden — the rejected caller changed nothing.
     expect((await run(s.t, (ctx) => ctx.db.get(id)))?.status).toBe("hidden");
+  });
+});
+
+// ── getPublicWall (give-redesign-v3 C1) ──────────────────────────────────────
+
+/**
+ * The v3 wall: the org-wide and per-city feed the `/give` pages render, plus
+ * the live totals under them.
+ *
+ * The load-bearing claims, in the order the spec makes them:
+ *  - D6 — every settled gift appears; consent decides only whether it carries
+ *    a name.
+ *  - D7 — a gift to central operations appears, tagged `central`. The old wall
+ *    dropped these on the floor at the checkout, because `scope` could not
+ *    hold `"central"`.
+ *  - D8 — `raisedCents` is LIVE and comes from `givingScopeRollups`, so a
+ *    giver can give and watch the number move. Never a `gifts` scan.
+ *  - "Privacy posture" — attribution needs `consentIndexable` too, because
+ *    these pages are indexable (D10) and a consent captured under the old,
+ *    `noindex` promise was consent to something smaller.
+ *  - C1 — a territory with fewer than three lifetime gifts is not named: one
+ *    gift in a small prospect city identifies the giver.
+ */
+describe("getPublicWall", () => {
+  /** Seed the denormalized per-scope rollup the totals read (D8). One row per
+   *  scope is the table's own invariant — this is what a live deployment's
+   *  gift writes maintain. */
+  async function seedRollup(
+    s: ChapterSetup,
+    scope: Id<"chapters"> | "central",
+    totals: { lifetimeCents: number; giftCount: number; donorCount: number },
+  ): Promise<void> {
+    await run(s.t, (ctx) =>
+      ctx.db.insert("givingScopeRollups", {
+        scope,
+        lifetimeCents: totals.lifetimeCents,
+        giftCount: totals.giftCount,
+        donorCount: totals.donorCount,
+        activeCount: 0,
+        lapsedCount: 0,
+        prospectCount: 0,
+        updatedAt: Date.now(),
+      }),
+    );
+  }
+
+  /** A settled, publicly-visible wall row. `consent`/`consentIndexable` are
+   *  omitted unless asked for, which is exactly what a backfilled or refused
+   *  row looks like. */
+  async function settledRow(
+    s: ChapterSetup,
+    row: {
+      scope: Id<"chapters"> | "central";
+      kind: "backer" | "gift" | "fundraiser" | "central";
+      amountCents: number;
+      refKey: string;
+      settledAt: number;
+      displayName?: string;
+      message?: string;
+      consent?: boolean;
+      consentIndexable?: boolean;
+      eventId?: Id<"events">;
+    },
+  ): Promise<Id<"givingActivity">> {
+    return run(s.t, (ctx) =>
+      ctx.db.insert("givingActivity", {
+        scope: row.scope,
+        kind: row.kind,
+        amountCents: row.amountCents,
+        status: "visible",
+        refKey: row.refKey,
+        createdAt: row.settledAt,
+        settledAt: row.settledAt,
+        ...(row.displayName ? { displayName: row.displayName } : {}),
+        ...(row.message ? { message: row.message } : {}),
+        ...(row.consent !== undefined ? { consent: row.consent } : {}),
+        ...(row.consentIndexable !== undefined
+          ? { consentIndexable: row.consentIndexable }
+          : {}),
+        ...(row.eventId ? { eventId: row.eventId } : {}),
+      }),
+    );
+  }
+
+  test("a central gift appears on the org-wide wall, tagged `central` and labelled for a reader (D7)", async () => {
+    const s = await devDirectorSetup();
+    const now = Date.now();
+    await settledRow(s, {
+      scope: "central",
+      kind: "central",
+      amountCents: 25000,
+      refKey: "give:cs_central_wall",
+      settledAt: now,
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {});
+    expect(wall.rows).toHaveLength(1);
+    const row = wall.rows[0]!;
+    expect(row.kind).toBe("central");
+    expect(row.amountCents).toBe(25000);
+    // Central is the org, not a place — it gets a name, and no city link.
+    expect(row.scopeLabel).toBe("Central operations");
+    expect(row.scopeSlug).toBeNull();
+  });
+
+  test("a gift with no consent appears anonymously — existence is not attribution (D6)", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "anon-city");
+    await seedRollup(s, chapterId, {
+      lifetimeCents: 30000,
+      giftCount: 9,
+      donorCount: 4,
+    });
+    await settledRow(s, {
+      scope: chapterId,
+      kind: "gift",
+      amountCents: 5000,
+      refKey: "gift:anon_1",
+      settledAt: Date.now(),
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "anon-city",
+    });
+    expect(wall.rows).toHaveLength(1);
+    const row = wall.rows[0]!;
+    // It counts, it is placed, and it names nobody: "A gift to anon-city — $50".
+    expect(row.amountCents).toBe(5000);
+    expect(row.scopeLabel).toBe("anon-city");
+    expect(row.displayName).toBeNull();
+    expect(row.message).toBeNull();
+  });
+
+  test("a consented, indexable gift shows its name and message", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "named-city");
+    await seedRollup(s, chapterId, {
+      lifetimeCents: 30000,
+      giftCount: 9,
+      donorCount: 4,
+    });
+    await settledRow(s, {
+      scope: chapterId,
+      kind: "gift",
+      amountCents: 500000,
+      refKey: "give:cs_named",
+      settledAt: Date.now(),
+      displayName: "Sam K.",
+      message: "Let's make this happen.",
+      consent: true,
+      consentIndexable: true,
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "named-city",
+    });
+    expect(wall.rows[0]!.displayName).toBe("Sam K.");
+    expect(wall.rows[0]!.message).toBe("Let's make this happen.");
+  });
+
+  test("a consent given under the OLD, noindex promise stays anonymous on an indexable page", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "old-consent-city");
+    await seedRollup(s, chapterId, {
+      lifetimeCents: 30000,
+      giftCount: 9,
+      donorCount: 4,
+    });
+    // `consent: true`, `consentIndexable` absent — every row written before
+    // the new copy existed. They agreed to be shown on a page that asked not
+    // to be indexed; D10 takes that `noindex` off, and their old yes does not
+    // stretch to cover it.
+    await settledRow(s, {
+      scope: chapterId,
+      kind: "gift",
+      amountCents: 5000,
+      refKey: "give:cs_old_consent",
+      settledAt: Date.now(),
+      displayName: "Pre-v3 Giver",
+      message: "Go get 'em.",
+      consent: true,
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "old-consent-city",
+    });
+    // Still appears, still counts, still anonymous.
+    expect(wall.rows).toHaveLength(1);
+    expect(wall.rows[0]!.amountCents).toBe(5000);
+    expect(wall.rows[0]!.displayName).toBeNull();
+    expect(wall.rows[0]!.message).toBeNull();
+  });
+
+  test("a payment-reversed row stays off the wall — an entry means money that arrived", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "reversal-city");
+    await seedRollup(s, chapterId, {
+      lifetimeCents: 30000,
+      giftCount: 9,
+      donorCount: 4,
+    });
+    await settledRow(s, {
+      scope: chapterId,
+      kind: "gift",
+      amountCents: 30000,
+      refKey: "give:cs_bounced",
+      settledAt: Date.now(),
+      consent: true,
+      consentIndexable: true,
+      displayName: "Bounced Debit",
+    });
+    await settledRow(s, {
+      scope: chapterId,
+      kind: "gift",
+      amountCents: 4000,
+      refKey: "give:cs_good",
+      settledAt: Date.now() + 1,
+    });
+
+    // The bank took it back (`givingComms.onAchFailed`).
+    await s.t.mutation(internal.givingActivity.withdrawActivity, {
+      refKey: "give:cs_bounced",
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "reversal-city",
+    });
+    expect(wall.rows.map((r) => r.amountCents)).toEqual([4000]);
+    // And it is gone from the org-wide feed too, not just the city's.
+    const orgWide = await s.t.query(api.givingActivity.getPublicWall, {});
+    expect(orgWide.rows.map((r) => r.amountCents)).toEqual([4000]);
+  });
+
+  test("raisedCents/giftCount/giverCount come from the scope rollups, never from a gifts scan (D8)", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "totals-city");
+    const otherChapterId = await makeTerritory(s, "other-city");
+    await seedRollup(s, chapterId, {
+      lifetimeCents: 250000,
+      giftCount: 12,
+      donorCount: 7,
+    });
+    await seedRollup(s, otherChapterId, {
+      lifetimeCents: 100000,
+      giftCount: 5,
+      donorCount: 3,
+    });
+    await seedRollup(s, "central", {
+      lifetimeCents: 50000,
+      giftCount: 2,
+      donorCount: 2,
+    });
+
+    // Org-wide: every book, summed.
+    const orgWide = await s.t.query(api.givingActivity.getPublicWall, {});
+    expect(orgWide.totals.raisedCents).toBe(400000);
+    expect(orgWide.totals.giftCount).toBe(19);
+    expect(orgWide.totals.giverCount).toBe(12);
+    // Both territories are publicly visible, so both are taking backers.
+    expect(orgWide.totals.cityCount).toBe(2);
+
+    // Scoped: that city's book only.
+    const scoped = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "totals-city",
+    });
+    expect(scoped.totals.raisedCents).toBe(250000);
+    expect(scoped.totals.giftCount).toBe(12);
+    expect(scoped.totals.giverCount).toBe(7);
+    expect(scoped.totals.cityCount).toBe(1);
+
+    // LIVE, by construction: bump the rollup the way a settling gift does and
+    // the headline moves on the very next read — no snapshot, no publication
+    // cycle (that language belongs to `/finances`).
+    await run(s.t, async (ctx) => {
+      const rollup = await ctx.db
+        .query("givingScopeRollups")
+        .withIndex("by_scope", (q) => q.eq("scope", chapterId))
+        .unique();
+      await ctx.db.patch(rollup!._id, {
+        lifetimeCents: rollup!.lifetimeCents + 10000,
+      });
+    });
+    const after = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "totals-city",
+    });
+    expect(after.totals.raisedCents).toBe(260000);
+  });
+
+  test("backerCount is the chapter's own derived counter, summed across public cities", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "backers-city");
+    const otherChapterId = await makeTerritory(s, "backers-other-city");
+    await run(s.t, async (ctx) => {
+      await ctx.db.patch(chapterId, { backerCount: 8 });
+      await ctx.db.patch(otherChapterId, { backerCount: 5 });
+    });
+
+    const orgWide = await s.t.query(api.givingActivity.getPublicWall, {});
+    expect(orgWide.totals.backerCount).toBe(13);
+    const scoped = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "backers-city",
+    });
+    expect(scoped.totals.backerCount).toBe(8);
+  });
+
+  test("a territory with fewer than three lifetime gifts is not named — one gift in a small city is a person (C1)", async () => {
+    const s = await devDirectorSetup();
+    const tinyChapterId = await makeTerritory(s, "tiny-city");
+    const bigChapterId = await makeTerritory(s, "big-city");
+    await seedRollup(s, tinyChapterId, {
+      lifetimeCents: 50000,
+      giftCount: 2, // one under the floor
+      donorCount: 1,
+    });
+    await seedRollup(s, bigChapterId, {
+      lifetimeCents: 50000,
+      giftCount: 3, // exactly the floor — named
+      donorCount: 3,
+    });
+    const now = Date.now();
+    await settledRow(s, {
+      scope: tinyChapterId,
+      kind: "gift",
+      amountCents: 50000,
+      refKey: "gift:tiny_1",
+      settledAt: now,
+    });
+    await settledRow(s, {
+      scope: bigChapterId,
+      kind: "gift",
+      amountCents: 1000,
+      refKey: "gift:big_1",
+      settledAt: now + 1,
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {});
+    const tiny = wall.rows.find((r) => r.amountCents === 50000)!;
+    const big = wall.rows.find((r) => r.amountCents === 1000)!;
+    // The amount and the gift still show — only the place is withheld, and
+    // the slug goes with the label (a link says the same thing the label does).
+    expect(tiny.scopeLabel).toBeNull();
+    expect(tiny.scopeSlug).toBeNull();
+    expect(big.scopeLabel).toBe("big-city");
+    expect(big.scopeSlug).toBe("big-city");
+  });
+
+  test("the feed is newest-settled first and honours the limit — default 12, hard cap 30", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "ordering-city");
+    await seedRollup(s, chapterId, {
+      lifetimeCents: 100000,
+      giftCount: 40,
+      donorCount: 20,
+    });
+    const base = Date.now();
+    for (let i = 0; i < 40; i++) {
+      await settledRow(s, {
+        scope: chapterId,
+        kind: "gift",
+        amountCents: 100 + i,
+        refKey: `gift:ordering_${i}`,
+        settledAt: base + i,
+      });
+    }
+
+    const orgDefault = await s.t.query(api.givingActivity.getPublicWall, {});
+    expect(orgDefault.rows).toHaveLength(12);
+    // Newest settle first — i = 39 is the most recent.
+    expect(orgDefault.rows[0]!.amountCents).toBe(139);
+
+    // A caller asking for more than the ceiling gets the ceiling, not what it
+    // asked for: this is an unauthed public query.
+    const capped = await s.t.query(api.givingActivity.getPublicWall, {
+      limit: 1000,
+    });
+    expect(capped.rows).toHaveLength(30);
+
+    // The per-city feed reads a different index and sorts by `settledAt`
+    // itself — same answer.
+    const scoped = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "ordering-city",
+      limit: 5,
+    });
+    expect(scoped.rows.map((r) => r.amountCents)).toEqual([
+      139, 138, 137, 136, 135,
+    ]);
+  });
+
+  test("pending and hidden rows never surface, and an unknown or hidden slug reads empty rather than erroring", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "quiet-city");
+    await run(s.t, async (ctx) => {
+      const now = Date.now();
+      await ctx.db.insert("givingActivity", {
+        scope: chapterId,
+        kind: "gift",
+        amountCents: 111,
+        status: "pending",
+        refKey: "give:cs_still_pending",
+        createdAt: now,
+      });
+      await ctx.db.insert("givingActivity", {
+        scope: chapterId,
+        kind: "gift",
+        amountCents: 222,
+        status: "hidden",
+        refKey: "give:cs_taken_down",
+        createdAt: now,
+        settledAt: now,
+      });
+    });
+
+    expect(
+      (await s.t.query(api.givingActivity.getPublicWall, { slug: "quiet-city" }))
+        .rows,
+    ).toEqual([]);
+    expect((await s.t.query(api.givingActivity.getPublicWall, {})).rows).toEqual(
+      [],
+    );
+
+    await s.as.mutation(api.territories.saveTerritory, {
+      name: "Hidden",
+      region: "NY",
+      lat: 40.7,
+      lng: -73.8,
+      slug: "hidden-wall-city",
+      publiclyVisible: false,
+    });
+    // A hidden territory is indistinguishable from one that never existed —
+    // a public page must not leak whether a slug is real.
+    const hidden = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "hidden-wall-city",
+    });
+    const unknown = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "no-such-city",
+    });
+    expect(hidden).toEqual(unknown);
+    expect(hidden.rows).toEqual([]);
+    expect(hidden.totals.raisedCents).toBe(0);
+  });
+
+  test("a wall row carries no PII and no payment identifiers", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "pii-city");
+    await seedRollup(s, chapterId, {
+      lifetimeCents: 10000,
+      giftCount: 5,
+      donorCount: 3,
+    });
+    await settledRow(s, {
+      scope: chapterId,
+      kind: "gift",
+      amountCents: 5000,
+      refKey: "give:cs_pii",
+      settledAt: Date.now(),
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "pii-city",
+    });
+    expect(Object.keys(wall.rows[0]!).sort()).toEqual(
+      [
+        "amountCents",
+        "at",
+        "displayName",
+        "goal",
+        "kind",
+        "message",
+        "scopeLabel",
+        "scopeSlug",
+      ].sort(),
+    );
+    // `refKey` is a Stripe session id — it identifies a payment, so it never
+    // leaves the table.
+    expect(wall.rows[0]!).not.toHaveProperty("refKey");
+  });
+});
+
+// ── Migration 0074: the wall's history ───────────────────────────────────────
+
+/**
+ * The wall shipped as an opt-in echo, so on the day "Every gift, in public"
+ * goes live the table holds almost nothing. 0074 writes one ANONYMOUS row per
+ * recent settled gift so the page's headline is true when a reader first sees
+ * it. It moves no money and touches no rollup — the totals come from
+ * `givingScopeRollups` either way.
+ */
+describe("0074 wall backfill", () => {
+  async function seedGift(
+    s: ChapterSetup,
+    gift: {
+      scope: Id<"chapters"> | "central";
+      amountCents: number;
+      receivedAt: number;
+      externalRef?: string;
+    },
+  ): Promise<void> {
+    await run(s.t, async (ctx) => {
+      const donorId = await ctx.db.insert("donors", {
+        scope: gift.scope,
+        kind: "individual",
+        name: "Historical Donor",
+        status: "active",
+        lifetimeCents: gift.amountCents,
+        giftCount: 1,
+        createdAt: gift.receivedAt,
+      });
+      await ctx.db.insert("gifts", {
+        donorId,
+        scope: gift.scope,
+        amountCents: gift.amountCents,
+        currency: "usd",
+        receivedAt: gift.receivedAt,
+        method: "stripe",
+        ...(gift.externalRef ? { externalRef: gift.externalRef } : {}),
+        createdAt: gift.receivedAt,
+      });
+    });
+  }
+
+  test("echoes historical gifts anonymously, skips ones already on the wall, and is safe to re-run", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "history-city");
+    const base = Date.now() - 10_000;
+
+    await seedGift(s, { scope: chapterId, amountCents: 7500, receivedAt: base });
+    await seedGift(s, {
+      scope: "central",
+      amountCents: 20000,
+      receivedAt: base + 1,
+    });
+    // A gift that ALREADY produced a wall row at checkout time, carrying its
+    // giver's consented name. The backfill must not shadow it with an
+    // anonymous duplicate.
+    await seedGift(s, {
+      scope: chapterId,
+      amountCents: 30000,
+      receivedAt: base + 2,
+      externalRef: "give:cs_already_walled",
+    });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("givingActivity", {
+        scope: chapterId,
+        kind: "gift",
+        amountCents: 30000,
+        status: "visible",
+        refKey: "give:cs_already_walled",
+        displayName: "Consented Giver",
+        consent: true,
+        consentIndexable: true,
+        createdAt: base + 2,
+        settledAt: base + 2,
+      }),
+    );
+
+    const first = await run(s.t, (ctx) => runBackfillWallFromGifts(ctx));
+    expect(first.inserted).toBe(2);
+    expect(first.skippedExisting).toBe(1);
+
+    // Re-running changes nothing — the ledger skips it in production, and the
+    // `refKey` checks make it harmless even if it didn't.
+    const second = await run(s.t, (ctx) => runBackfillWallFromGifts(ctx));
+    expect(second.inserted).toBe(0);
+    expect(second.skippedExisting).toBe(3);
+
+    await run(s.t, (ctx) =>
+      ctx.db.insert("givingScopeRollups", {
+        scope: chapterId,
+        lifetimeCents: 37500,
+        giftCount: 5,
+        donorCount: 3,
+        activeCount: 0,
+        lapsedCount: 0,
+        prospectCount: 0,
+        updatedAt: Date.now(),
+      }),
+    );
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {});
+    // All three gifts are on the wall: two backfilled, one already there.
+    expect(wall.rows.map((r) => r.amountCents).sort((a, b) => a - b)).toEqual([
+      7500, 20000, 30000,
+    ]);
+    // The central gift is tagged as such (D7) …
+    expect(wall.rows.find((r) => r.amountCents === 20000)!.kind).toBe("central");
+    // … the backfilled chapter gift names nobody — history never agreed to be
+    // named, and its donor's CRM name must never reach this table …
+    expect(wall.rows.find((r) => r.amountCents === 7500)!.displayName).toBeNull();
+    // … and the pre-existing consented row keeps its name.
+    expect(wall.rows.find((r) => r.amountCents === 30000)!.displayName).toBe(
+      "Consented Giver",
+    );
   });
 });
