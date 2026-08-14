@@ -121,7 +121,11 @@ export function GridHeaderCell({
 }) {
   const labelText = (
     <Text
-      className={`flex-1 text-2xs font-bold uppercase tracking-wider ${
+      // `flex-1` for a plain header (unchanged — it's what pushes the resize
+      // handle to the column's right edge). A SORTABLE one shrinks instead, so
+      // the caret sits against the label rather than being flung to the far
+      // side of the cell with the label's whitespace between them.
+      className={`${onSort ? "shrink" : "flex-1"} text-2xs font-bold uppercase tracking-wider ${
         onSort && sortActive ? "text-ink" : "text-muted"
       }`}
       numberOfLines={1}
