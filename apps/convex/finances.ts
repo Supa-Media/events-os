@@ -5821,6 +5821,13 @@ export const budgetsGlance = query({
   returns: v.object({
     year: v.number(),
     month: v.number(),
+    /** TODAY's Eastern year — which is not `year` once the reader steps the
+     *  picker, and not `new Date().getFullYear()` either. Every period boundary
+     *  in finance is Eastern; a client deriving "am I on the current year's
+     *  page" from its own locale gets it wrong for whoever is west of Eastern
+     *  on New Year's Eve, and gets it wrong in the direction that matters
+     *  (agenda ordering and the recurring section both hang off this). */
+    currentYear: v.number(),
     /** Every year that has a budget in this scope, newest first — what the
      *  year picker offers. Always contains the current year, even when empty,
      *  so the control never presents a year that isn't selectable. */
@@ -5833,6 +5840,7 @@ export const budgetsGlance = query({
     const empty = {
       year: args.year ?? now.year,
       month: now.month,
+      currentYear: now.year,
       availableYears: [now.year],
       oneTime: [],
       recurring: [],
@@ -6004,6 +6012,7 @@ export const budgetsGlance = query({
     return {
       year: viewYear,
       month: now.month,
+      currentYear: now.year,
       availableYears,
       // ONE YEAR AT A TIME (founder, 2026-08-14: "every year is a new page").
       // The whole set is loaded — that's what `availableYears` is derived from

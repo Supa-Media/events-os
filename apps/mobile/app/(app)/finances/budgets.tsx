@@ -252,7 +252,10 @@ export default function BudgetsGlanceScreen() {
   const oneTime = useMemo(() => glance?.oneTime ?? [], [glance]);
   const recurring = useMemo(() => glance?.recurring ?? [], [glance]);
   const viewYear = glance?.year ?? new Date().getFullYear();
-  const isCurrentYear = viewYear === (glance ? new Date().getFullYear() : viewYear);
+  // The server's own Eastern year, never the browser's — see `currentYear`'s
+  // validator comment. Defaults to "yes" while the query is in flight so the
+  // loading state never briefly renders as a past year's page.
+  const isCurrentYear = glance ? viewYear === glance.currentYear : true;
 
   const rows = useMemo(
     () =>
