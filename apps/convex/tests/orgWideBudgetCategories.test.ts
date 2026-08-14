@@ -136,7 +136,7 @@ describe("0076: collapsing same-named categories", () => {
 });
 
 describe("0076: every reference is repointed before the duplicate is deleted", () => {
-  test("transactions, budgets, budget lines, reimbursement lines, event items, engagements, undo snapshots, and the nesting link", async () => {
+  test("transactions, budgets, budget lines, reimbursement lines, event items, engagements, contractor payments, undo snapshots, and the nesting link", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const boston = await makeChapter(s, "Boston");
@@ -285,6 +285,26 @@ describe("0076: every reference is repointed before the duplicate is deleted", (
       }),
     );
 
+    // 6b. contractorPayments.categoryId — the reference this migration missed
+    // on its first pass, because the feature merged while it was being written.
+    // A payment left pointing at a merged-away duplicate is a dangling id in a
+    // row that pays a real person.
+    const contractorPaymentId = await run(t, (ctx) =>
+      ctx.db.insert("contractorPayments", {
+        chapterId: boston,
+        token: "tok_0076",
+        status: "draft",
+        origin: "staff_prefilled",
+        payeeName: "Lighting Co",
+        serviceDescription: "Stage lighting",
+        agreedAmountCents: 50_000,
+        agreementTermsVersion: 1,
+        categoryId: dupe,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
     // 7. reattributionAudit.priorStates[].categoryId (the bulk-move UNDO)
     const auditId = await run(t, (ctx) =>
       ctx.db.insert("reattributionAudit", {
@@ -319,11 +339,15 @@ describe("0076: every reference is repointed before the duplicate is deleted", (
       "reimbursementLineItems.categoryId": 1,
       "eventItems.budgetCategoryId": 1,
       "engagements.budgetCategoryId": 1,
+      "contractorPayments.categoryId": 1,
       "reattributionAudit.priorStates": 1,
       "budgetCategories.parentCategoryId": 1,
     });
 
     // Every one of them now points at the survivor, and none at a dead row.
+    expect(
+      (await run(t, (ctx) => ctx.db.get(contractorPaymentId)))?.categoryId,
+    ).toBe(keeper);
     expect((await run(t, (ctx) => ctx.db.get(txnId)))?.categoryId).toBe(keeper);
     const suggested = await run(t, (ctx) => ctx.db.get(suggestedTxnId));
     expect(suggested?.aiSuggestion?.categoryId).toBe(keeper);
