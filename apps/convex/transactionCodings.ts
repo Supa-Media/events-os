@@ -71,7 +71,9 @@ import {
   codingForTransaction,
   codingPolicy,
   decideCoding,
+  normalizeCodingFields,
   submitCoding,
+  type CodingWriteFields,
 } from "./lib/transactionCoding";
 import { codingReviewReach } from "./lib/transactionCodingAccess";
 import { isUncodedCharge } from "./lib/codingReminders";
@@ -660,6 +662,243 @@ export const submit = mutation({
       amountCents: txn.amountCents,
     });
     return codingId;
+  },
+});
+
+// ── BULK EXPLANATION ────────────────────────────────────────────────────────
+
+/**
+ * THE CAP, stated out loud rather than enforced by truncation.
+ *
+ * One Convex mutation is one transaction, and this one is not cheap per row:
+ * `requireSubmitCoding` re-resolves the caller's chapter + finance role (~4-6
+ * document reads), `submitCoding` reads the existing coding and — on a row
+ * that owes one — its receipt exceptions, then writes the coding row, patches
+ * `transactions.codingState`, and `logFinanceAudit` inserts an audit row. Call
+ * it ~15 reads and 3 writes per transaction, so 100 rows is ~1,500 reads and
+ * ~300 writes: comfortably inside a Convex transaction's budget, with room for
+ * a book whose access resolution is heavier than this one's.
+ *
+ * A selection over the cap is REFUSED, naming the number. Silently taking the
+ * first 100 of 140 would hand back "100 applied" while 40 rows the person
+ * selected, watched highlight, and believed they had done sat untouched — the
+ * exact failure this whole mutation's per-row reporting exists to prevent,
+ * just moved one level up.
+ */
+export const BULK_EXPLANATION_MAX = 100;
+
+/** One selected row's fate. `code`/`message` are the `ConvexError` the single
+ *  submit path threw for THIS row — never a summary, never a bucket the UI has
+ *  to guess at. */
+const bulkExplanationRow = v.object({
+  transactionId: v.id("transactions"),
+  outcome: v.union(
+    v.literal("submitted"),
+    v.literal("resubmitted"),
+    v.literal("failed"),
+  ),
+  code: v.union(v.string(), v.null()),
+  message: v.union(v.string(), v.null()),
+});
+
+/**
+ * ONE SENTENCE A HUMAN WROTE, APPLIED TO ROWS THAT HUMAN SELECTED.
+ *
+ * ## Why this is not machine authorship
+ *
+ * The org's standing rule (owner decision, 2026-08-08, restated at the top of
+ * this file) bans a MACHINE composing testimony. It does not ban a person
+ * reusing their own words. Forty identical MTA fares are one fact about one
+ * person's month, and making them type that fact forty times does not make the
+ * record more true — it makes it more expensive, and the cheap dishonest
+ * option (close them undocumented, publish a blank) wins on effort, which is
+ * how a ledger becomes unpublishable. The same reasoning
+ * `receiptExceptions.attestBulk` already runs on, applied to the other half of
+ * the record.
+ *
+ * So every guarantee a typed coding carries is kept here, deliberately:
+ *  - the substance comes from a human's keystrokes, never from a suggestion,
+ *    a merchant lookup or a model;
+ *  - the WRITE is the same `submitCoding` a single row goes through — same
+ *    field validation, same `DOCUMENTATION_REQUIRED` gate, same
+ *    `CODING_APPROVED` refusal, same lodging/bank-record rule. There is no
+ *    second, laxer path;
+ *  - authorship is resolved PER ROW (`requireSubmitCoding` → `actorPersonId`),
+ *    so `codedByPersonId`/`codedByUserId` name a real human on every row;
+ *  - each row gets its own `coding_submit` audit entry with its own amount,
+ *    identical in shape to a typed one. The only difference is the audit
+ *    REASON, which carries a marker saying the sentence was applied across a
+ *    selection — that belongs in the audit trail and must never touch the
+ *    published `businessPurpose`, which is what a stranger reads.
+ *
+ * ## Rows that fail, fail individually and are NAMED
+ *
+ * A bulk action that silently drops rows is worse than no bulk action. Every
+ * per-row refusal is caught, counted and RETURNED with its own code and
+ * message, so the UI can say "28 applied, 12 need a receipt first" and show
+ * WHICH twelve. Nothing is skipped quietly; nothing is retried behind the
+ * caller's back. `submitCoding` validates before it writes, so a refused row
+ * leaves no partial state.
+ *
+ * A CALLER-WIDE mistake is different and throws for the whole batch: a purpose
+ * under the length floor, a travel type with no route, an unsupported expense
+ * type. Those are wrong on every row, and reporting them as "140 failed" would
+ * bury one fixable typo under a hundred and forty identical lines.
+ *
+ * ## Expense type: `general`, `travel` and `lodging` — never `meal`
+ *
+ * A bulk purpose only makes sense where the type-specific §274(d) fields are
+ * genuinely shared, and this argument list is the enforcement: the shared
+ * fields are supplied ONCE and applied to all.
+ *
+ *  - `general` carries no type-specific fields at all. Trivially safe.
+ *  - `travel` / `lodging` want a ROUTE or a PLACE — which is exactly the thing
+ *    that IS the same across a batch of identical fares ("Rosedale → Midtown,
+ *    forty times"). Asserting one route over a selection is the same assertion
+ *    the person would type row by row, so it is applied once.
+ *  - `meal` is REFUSED. Its required element is WHO WAS THERE — named
+ *    individuals, or a group description above the threshold — and that is a
+ *    per-occasion fact. Applying one attendee list across twelve meals would
+ *    assert that the same eight named people ate at all twelve, which is a
+ *    factual claim about specific humans that nobody verified per row. That is
+ *    the line between reusing your own sentence and fabricating a per-row
+ *    fact, and it is the one thing this mutation must not cross. The argument
+ *    surface has no attendee/headcount fields at all, so the refusal is
+ *    structural as well as explicit; the bulk bar's own type chips refuse it
+ *    too rather than letting someone discover it forty validation errors in.
+ */
+export const submitBulk = mutation({
+  args: {
+    transactionIds: v.array(v.id("transactions")),
+    expenseType: expenseTypeValidator,
+    businessPurpose: v.string(),
+    /** Travel's origin. Shared across the whole selection — see the doc above
+     *  for why a route may be shared and an attendee list may not. */
+    travelFrom: v.optional(v.string()),
+    /** Travel's destination, and (per FINDING 2) lodging's single place. */
+    travelTo: v.optional(v.string()),
+  },
+  returns: v.object({
+    /** Rows that now carry this coding — `submitted` + `resubmitted`. */
+    applied: v.number(),
+    failed: v.number(),
+    /** Echoed so the UI states the same number the server enforces. */
+    limit: v.number(),
+    /** EVERY selected row, in the order given. The caller already has the
+     *  grid rows it selected, so this deliberately carries no merchant name or
+     *  amount to join back on — naming the failures is the UI's job with data
+     *  it already holds, and re-projecting a transaction here would mean
+     *  deciding what to say about a row the caller may not read. */
+    rows: v.array(bulkExplanationRow),
+  }),
+  handler: async (ctx, args) => {
+    if (args.expenseType === "meal") {
+      throw new ConvexError({
+        code: "BULK_MEAL_UNSUPPORTED",
+        message:
+          "A meal's proof is who was at it, and that is different for every meal — one attendee list applied across a selection would be asserting something nobody checked. Code meals one at a time.",
+      });
+    }
+    // DEDUPED. A repeated id would otherwise submit twice, and the second pass
+    // would read as a `resubmitted` row nobody asked for.
+    const transactionIds = [...new Set(args.transactionIds)];
+    if (transactionIds.length > BULK_EXPLANATION_MAX) {
+      throw new ConvexError({
+        code: "BULK_LIMIT",
+        message: `Explain up to ${BULK_EXPLANATION_MAX} charges at a time — you selected ${transactionIds.length}. Doing the first ${BULK_EXPLANATION_MAX} and staying quiet about the rest is how rows get believed-done and left blank.`,
+      });
+    }
+
+    const { namesMaxHeadcount, sinceMs } = await codingPolicy(ctx);
+    // VALIDATE THE SHARED SENTENCE ONCE, up front, and throw. These problems
+    // are properties of what the caller typed, so they are wrong on every row;
+    // running them per row would return N copies of one typo. This is the SAME
+    // `codingFieldProblems` `submitCoding` runs — called here only to fail
+    // early and legibly, never instead of it.
+    const fields: CodingWriteFields = {
+      expenseType: args.expenseType,
+      businessPurpose: args.businessPurpose,
+      ...(args.travelFrom != null ? { travelFrom: args.travelFrom } : {}),
+      ...(args.travelTo != null ? { travelTo: args.travelTo } : {}),
+    };
+    normalizeCodingFields(fields, namesMaxHeadcount);
+
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const purpose = args.businessPurpose.trim();
+    const rows: Infer<typeof bulkExplanationRow>[] = [];
+    let applied = 0;
+    for (const transactionId of transactionIds) {
+      try {
+        // PER ROW, not hoisted: authorship and scope are facts about the ROW
+        // (a bookkeeper's reach, a cardholder's own charge), and resolving
+        // them once against the first transaction would write the wrong
+        // author — or the wrong book — onto the rest.
+        const { txn, scope, actorPersonId } = await requireSubmitCoding(
+          ctx,
+          transactionId,
+        );
+        const existing = await codingForTransaction(ctx, transactionId);
+        const { resubmission } = await submitCoding(ctx, {
+          txn,
+          scope,
+          fields,
+          namesMaxHeadcount,
+          codingRequiredSinceMs: sinceMs,
+          codedByPersonId: actorPersonId,
+          codedByUserId: userId,
+        });
+        await logFinanceAudit(ctx, {
+          chapterId: scope,
+          subjectType: "transaction",
+          subjectId: transactionId,
+          action: "coding_submit",
+          actorPersonId,
+          field: "coding",
+          before: existing
+            ? TRANSACTION_CODING_STATUS_LABELS[
+                existing.status as TransactionCodingStatus
+              ]
+            : "Uncoded",
+          after: resubmission ? "Resubmitted" : "Awaiting review",
+          // THE MARKER LIVES HERE AND NOWHERE ELSE. The audit trail should say
+          // this sentence was applied across a selection — that is exactly the
+          // kind of provenance a later reviewer wants. The PUBLISHED purpose
+          // must not: a stranger reading the ledger is owed the explanation,
+          // not the clerical detail of how it was entered, and appending it
+          // there would also make the same charge read differently depending
+          // on which screen it was coded from.
+          reason: `${purpose} — applied across a ${transactionIds.length}-charge selection`,
+          amountCents: txn.amountCents,
+        });
+        applied += 1;
+        rows.push({
+          transactionId,
+          outcome: resubmission ? "resubmitted" : "submitted",
+          code: null,
+          message: null,
+        });
+      } catch (err) {
+        // A non-`ConvexError` is a BUG, not a row-shaped refusal. Swallowing
+        // one would report a broken deployment as "12 charges need a receipt"
+        // and lose the stack. Every deliberate refusal in this path throws
+        // `ConvexError`, so rethrowing anything else costs nothing.
+        if (!(err instanceof ConvexError)) throw err;
+        const data = err.data as { code?: string; message?: string } | undefined;
+        rows.push({
+          transactionId,
+          outcome: "failed",
+          code: data?.code ?? "UNKNOWN",
+          message:
+            data?.message ?? "This charge wouldn't take the explanation.",
+        });
+      }
+    }
+    return {
+      applied,
+      failed: rows.length - applied,
+      limit: BULK_EXPLANATION_MAX,
+      rows,
+    };
   },
 });
 
