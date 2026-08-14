@@ -778,6 +778,9 @@ export const DOCUMENTATION_EXEMPTIONS = [
   "processor_fee", // `feeOrigin` — charged, not chosen; the processor's ledger is the record
   "processor_payout", // a marked settlement deposit — already-counted revenue arriving
   "internal_transfer", // a marked internal transfer — our own money between our own accounts
+  "fee_coverage", // `feeCoverageOrigin` — a payer covering the fee on their own repayment
+  "personal_charge", // `isPersonal` — not the org's money; a receivable, settled by repayment
+  "recorded_giving", // a bank credit already recorded as gifts — the gift record IS the document
 ] as const;
 export type DocumentationExemption = (typeof DOCUMENTATION_EXEMPTIONS)[number];
 
@@ -790,6 +793,19 @@ export const DOCUMENTATION_EXEMPTION_LABELS: Record<
   processor_fee: RECEIPT_EXCEPTION_REASON_LABELS.no_receipt_issued,
   processor_payout: RECEIPT_EXCEPTION_REASON_LABELS.bank_record_only,
   internal_transfer: RECEIPT_EXCEPTION_REASON_LABELS.bank_record_only,
+  fee_coverage: RECEIPT_EXCEPTION_REASON_LABELS.no_receipt_issued,
+  // BOTH BORROWED, and the first one was nearly not. "Not the org's purchase"
+  // reads better on a personal charge — but the rule above is that a row
+  // exempt by construction says exactly what a human filing for it would have
+  // had to pick, and inventing a sixth reason here would leave the attest form
+  // unable to express a case the app exempts automatically. `bank_record_only`
+  // is also simply TRUE of both: the statement line is the only evidence that
+  // exists on our side, because the purchase was somebody else's and the gift
+  // was somebody else's. What each one MEANS is carried by the sentence
+  // underneath (`documentationExemptionLine`), which is where the nuance
+  // belongs and where there is room for it.
+  personal_charge: RECEIPT_EXCEPTION_REASON_LABELS.bank_record_only,
+  recorded_giving: RECEIPT_EXCEPTION_REASON_LABELS.bank_record_only,
 };
 
 /** The full sentence behind that label — the row explaining itself, for a
@@ -802,8 +818,15 @@ export function documentationExemptionLine(
   kind: DocumentationExemption,
 ): string {
   if (kind === "processor_fee") return autoExplanationLine("fee");
+  if (kind === "fee_coverage") return autoExplanationLine("fee_coverage");
   if (kind === "processor_payout") {
     return "A processor payout — donation and ticket money the org already counted, arriving in one batch. Nobody bought anything, so there is no receipt to produce; the bank record is the evidence, alongside the processor's own settlement report.";
+  }
+  if (kind === "personal_charge") {
+    return "A personal charge that landed on an org card by accident. It is not the org's purchase, so a receipt for it would not document anything the org did — what settles it is the money coming back, and the repayment record is that evidence.";
+  }
+  if (kind === "recorded_giving") {
+    return "A deposit already recorded as giving. The gift record is the document — it names what arrived and which book it belongs to — and it is counted once, in the giving roll rather than here.";
   }
   return "An internal transfer between the org's own accounts. No purchase and no outside counterparty — the bank record on both legs is the evidence.";
 }
@@ -2053,7 +2076,13 @@ export type AutoExplainedKind =
   // `autoExplanationLine` itself. It belongs in this union anyway: the
   // sentence is the same KIND of thing as the others, and keeping it here is
   // what stops a second, divergent copy being written at the call site.
-  | "gift_credit";
+  | "gift_credit"
+  // The processor's fee, paid by the person who triggered it rather than by
+  // the org — a payer covering the card fee on their personal-charge
+  // repayment (`cards.ts#applyRepaymentPaidFromStripe`). Real money that
+  // really arrived, posted as its own row so the fee it funds is offset
+  // instead of quietly eating book value. See `transactions.feeCoverageOrigin`.
+  | "fee_coverage";
 
 /** Increase's `source.category` values the classification keys on — POSITIVE
  *  markers stored verbatim at ingestion, never description-text inferences
@@ -2104,6 +2133,7 @@ export function isNonDiscretionaryFee(tr: { feeOrigin?: unknown }): boolean {
 
 export function autoExplainedKind(tr: {
   feeOrigin?: unknown;
+  feeCoverageOrigin?: unknown;
   isPersonal?: boolean;
   source?: string;
   sourceCategory?: string | null;
@@ -2111,6 +2141,11 @@ export function autoExplainedKind(tr: {
   refundsTransactionId?: unknown;
 }): AutoExplainedKind | null {
   if (isNonDiscretionaryFee(tr)) return "fee";
+  // BEFORE the `source === "repayment"` test below, which would otherwise
+  // claim this row: a coverage line is posted alongside a repayment credit and
+  // shares its source, but it is not the credit and must not be netted away
+  // like one — it is income that offsets the processor's fee.
+  if (tr.feeCoverageOrigin != null) return "fee_coverage";
   // Refund outranks personal ON PURPOSE: a personal-flagged charge the
   // merchant then refunded in full has un-happened — "refunded" is the truer
   // headline, and the repayment record (whose state a human still settles)
@@ -2140,6 +2175,9 @@ export function autoExplanationLine(
 ): string {
   if (kind === "fee") {
     return "Payment processing fees — charged by the processor on money already accepted, itemized in the processor's own ledger. Not a purchase anyone made, so there is no receipt.";
+  }
+  if (kind === "fee_coverage") {
+    return "The processing fee on a repayment, paid by the person repaying rather than by us — they chose to cover it so paying the org back cost the org nothing. It offsets the processor's fee for the same payment, and there is no receipt because nobody bought anything.";
   }
   if (kind === "cashback") {
     return "Card cashback paid by the bank — a slice of card spend returned by the card program. Not a sale and not anyone's purchase.";
