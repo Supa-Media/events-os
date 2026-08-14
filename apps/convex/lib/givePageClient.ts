@@ -180,7 +180,7 @@ function wireAmountForm(opts){
     if(paynote){
       paynote.textContent=method==='ach_debit'
         ?"Bank transfers take about 2–4 business days to clear — we'll email you when it does."
-        :"Your card is charged straight away — we'll email you a receipt.";
+        :"Card, Apple Pay, Link or bank transfer — all offered at checkout. We'll email you a receipt.";
     }
     var cov=$(prefix+'_covline');
     var box=$(prefix+'_covfees');
@@ -206,8 +206,8 @@ function wireAmountForm(opts){
       if(show){
         var saving=feeOnCents(c,G.cardRate)-feeOnCents(c,G.achRate);
         ach.textContent='Paying by bank transfer instead of card keeps about '
-          +money(saving)+' more of this with us — pick it above. It takes 2–4 '
-          +'business days to clear.';
+          +money(saving)+' more of this with us. Pick it above to price the fee '
+          +'for it. It takes 2–4 business days to clear.';
       }
       ach.style.display=show?'block':'none';
     }

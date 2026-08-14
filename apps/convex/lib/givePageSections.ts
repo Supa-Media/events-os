@@ -89,21 +89,24 @@ function payMethodNoteHtml(): string {
 }
 
 /**
- * "How are you paying?" — asked HERE, before anything is priced.
+ * "How do you plan to pay?" — asked HERE, so the fee can be quoted at the
+ * right rate.
  *
- * WHY THE FORM ASKS A QUESTION STRIPE WAS ALREADY ASKING. Stripe Checkout needs
- * the amount when the session is created and doesn't say which rail the donor
- * picked until after that, so any page that leaves the choice to Stripe's own
- * screen has to guess a rate when it quotes "cover the fee". This one guessed
- * card — the expensive rail — for everybody, and a donor giving $300 by bank
- * was charged $9.27 to cover a fee that turned out to be $2.47 (#732). On a
- * $5,000 gift the same guess is $150 against ACH's $5.00 cap.
+ * WHY THE FORM ASKS A QUESTION STRIPE WILL ASK AGAIN. Stripe Checkout needs the
+ * amount when the session is created and doesn't say which rail the donor
+ * picked until after that, so "cover the fee" is always a forecast. This page
+ * used to forecast card — the expensive rail — for everybody, and a donor
+ * giving $300 by bank was charged $9.27 to cover a fee that turned out to be
+ * $2.47 (#732). On a $5,000 gift the same guess is $149.64 against ACH's $5.00
+ * cap. Asking is simply the cheapest way to make the forecast a good one.
  *
- * There is no way to be exact after the fact — a Checkout session's amount
- * cannot be changed once it exists — so the only honest fix is to ask first.
- * The rail then pins `payment_method_types` on the session, which has the
- * happy side effect of opening Stripe straight into the chosen method instead
- * of asking the question twice.
+ * IT DOES NOT BIND THEM, and the copy says so. The checkout still offers every
+ * rail, and the gift is booked at whatever was actually charged — so answering
+ * this wrong costs a few dollars of precision on the coverage and nothing else.
+ * An earlier draft pinned `payment_method_types` to the answer; that bought
+ * nothing once the gift became the charge, and cost Link, which is its own
+ * Stripe payment-method type rather than a flavour of card and disappears the
+ * moment `payment_method_types` is named at all.
  *
  * CARD IS PRESELECTED, because it is what most people use and because a
  * preselection that costs MORE cannot be a dark pattern. The rate under each
@@ -112,11 +115,12 @@ function payMethodNoteHtml(): string {
  */
 function payMethodPickerHtml(prefix: string): string {
   return `<fieldset class="paypick" id="${prefix}_paypick">
-  <legend>How are you paying?</legend>
+  <legend>How do you plan to pay?</legend>
   <label class="payopt sel"><input type="radio" name="${prefix}_method" value="card" checked>
     <span class="payopt-name">Card</span><span class="payopt-rate" id="${prefix}_rate_card"></span></label>
   <label class="payopt"><input type="radio" name="${prefix}_method" value="ach_debit">
     <span class="payopt-name">Bank transfer</span><span class="payopt-rate" id="${prefix}_rate_ach"></span></label>
+  <p class="sharewall-hint">Just so we can work out the fee below &mdash; you can still pay whichever way you like at checkout.</p>
 </fieldset>`;
 }
 

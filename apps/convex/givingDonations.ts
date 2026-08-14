@@ -90,16 +90,22 @@ export const startGiveDonationCheckout = action({
      */
     coverFees: v.optional(v.boolean()),
     /**
-     * WHICH RAIL THEY PICKED, on our form, before we quote anything.
+     * HOW THEY EXPECT TO PAY — an input to the ESTIMATE, and nothing more.
      *
      * Stripe wants the amount when the session is created and doesn't reveal
-     * the payment method until after it exists, so a page that leaves the
-     * choice to Stripe's screen has to guess the rate — and this one guessed
-     * card, the expensive one, for everybody. A donor paying $300 by bank was
-     * charged $9.27 to cover a fee that turned out to be $2.47 (#732), and the
-     * gap grows with the gift: on $5,000 it is card's $150 against ACH's $5
-     * cap. Asking here is the only way the number we quote can be the number
-     * the rail actually charges.
+     * the payment method until after it exists, so covering the fee is always
+     * a forecast. This page used to forecast card for everybody, which is how
+     * a $300 bank gift came to carry $9.27 of coverage against a $2.47 fee
+     * (#732) — and on $5,000 it is card's $149.64 against ACH's $5.00 cap.
+     * Asking is simply the cheapest way to make the forecast a good one.
+     *
+     * IT IS NOT A COMMITMENT, and nothing downstream treats it as one. The
+     * checkout still offers every rail Stripe is configured for, the donor may
+     * pay by any of them, and the gift is booked at whatever was actually
+     * charged. Guessing wrong therefore costs precision, never correctness:
+     * the coverage is a few dollars off in one direction or the other, the
+     * actual fee is read from Stripe's own ledger (`processorFeeEntries`), and
+     * nobody reconciles one against the other.
      *
      * Absent = card, which is both the safe default for an older client and
      * what the overwhelming majority pick.
@@ -151,12 +157,13 @@ export const startGiveDonationCheckout = action({
     // showed is checked rather than trusted — the client sends a yes/no plus
     // which rail, and the server decides the price.
     //
-    // QUOTED AT THE RAIL THE DONOR PICKED, not at card-for-everybody. Quoting
-    // card while somebody paid by bank overcharged them for a fee that never
-    // happened — $9.27 covering a $2.47 ACH fee on a $300 gift (#732) — and
-    // "it errs in the org's favour" is not a defence when the donor is the one
-    // paying it. `method` is asked on our own form precisely so this can be
-    // exact.
+    // QUOTED AT THE RAIL THE DONOR EXPECTS TO USE, not at card-for-everybody.
+    // Quoting card while somebody paid by bank charged them for a fee that
+    // never happened — $9.27 covering a $2.47 ACH fee on a $300 gift (#732) —
+    // and "it errs in the org's favour" is not a defence when the donor is the
+    // one paying it. This is still a FORECAST (see `method` above): they can
+    // pay however they like at checkout, and whatever they are charged is the
+    // gift.
     //
     // A rail with no rate (nothing to quote) silently means no coverage — the
     // giving page must never fail to open a checkout over a fee question.
@@ -175,15 +182,16 @@ export const startGiveDonationCheckout = action({
     const returnPath = givePagePath(slug);
     const body = new URLSearchParams();
     body.set("mode", "payment");
-    // PIN THE RAIL TO THE ONE WE PRICED. Left to Stripe's automatic methods,
-    // the donor could pick a rail we didn't quote and land back in the bug
-    // this replaces — charged a card gross-up on a bank debit. Naming the
-    // method here also means Stripe's own screen opens straight into it
-    // instead of asking a question our form already asked.
-    body.set(
-      "payment_method_types[0]",
-      method === "ach_debit" ? "us_bank_account" : "card",
-    );
+    // THE RAIL IS NOT PINNED, DELIBERATELY. An earlier version of this fix set
+    // `payment_method_types` to whatever the form said, so the donor couldn't
+    // pay by a rail we hadn't priced. That was solving a problem that no longer
+    // exists: the gift is now whatever was CHARGED, so a donor who says "card"
+    // and then pays by bank produces a slightly generous fee estimate, not a
+    // wrong gift. Pinning would have cost real money for nothing — naming
+    // `payment_method_types` at all switches off Stripe's automatic payment
+    // methods, and Link is its own method type rather than a flavour of card,
+    // so a `card` pin silently removes it from the checkout. Apple/Google Pay
+    // would have survived (they are cards underneath); Link would not.
     body.set("customer_email", args.email.trim().toLowerCase());
     body.set("success_url", `${base}${returnPath}?donated=1`);
     body.set("cancel_url", `${base}${returnPath}`);

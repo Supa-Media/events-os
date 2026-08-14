@@ -432,12 +432,15 @@ describe("the fee surfaces on the give form", () => {
 
   test("the rail picker is asked BEFORE the fee is quoted, and defaults to card", () => {
     // The order is the point: Stripe needs the amount when the session is
-    // created, so the only way to quote the right rate is to ask first. Card
-    // is preselected because a preselection that costs MORE cannot be a dark
+    // created, so the only way to quote a good rate is to ask first. Card is
+    // preselected because a preselection that costs MORE cannot be a dark
     // pattern — and because it is what most people use.
     const html = renderGiveMapPage(TERRITORIES, STATS, false, SITE, RATES);
     expect(html).toContain('id="gc_onetime_paypick"');
-    expect(html).toMatch(/How are you paying\?/);
+    expect(html).toMatch(/How do you plan to pay\?/);
+    // And it must NOT read as a commitment — the checkout still offers every
+    // rail, and the gift is whatever was charged either way.
+    expect(html).toMatch(/you can still pay whichever way you like at checkout/);
     expect(html).toMatch(
       /<input type="radio" name="gc_onetime_method" value="card" checked>/,
     );
