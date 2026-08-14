@@ -6,7 +6,7 @@
  * `Cell`-wrapped cells that each commit ONE field via its own mutation.
  *
  * Columns: [☐] Merchant · Date · Amount · Cardholder · What it was for ·
- * Category▾ · For▾ · Receipt · Status▾ · Actions.
+ * Category▾ · For▾ · Receipt · Status▾ · Marked · Actions.
  * "What it was for" is the coding's own sentence, read-only and rendered
  * straight from the row payload (`explanation`, see `finances.ts#reconcileRow`)
  * — tapping it opens the same documentation modal the Actions speech-bubble
@@ -59,12 +59,51 @@
  * never a separate event/project link, and the old "summon a $0 budget on
  * pick" flow is retired.
  *
+ * ── THE LAST TWO COLUMNS: A FACT, THEN THE VERBS (2026-08-14) ────────────────
+ * Founder, on the deployed grid: "the last column is very cluttered. It
+ * contains like a bunch of different rows and information and things like
+ * that… it could be much cleaner and have things broken down. Maybe move some
+ * things to a side panel, move something to its own column."
+ *
+ * He is describing an accretion, not a layout problem. Actions had collected
+ * THREE DIFFERENT KINDS of thing, one change at a time, into one 112px cell,
+ * with nothing to tell them apart:
+ *
+ *   OPEN   the speech-bubble → the charge's whole record.
+ *   STATE  "Transfer" / "Stripe" / "Personal" / "Repaid" badges — facts about
+ *          the row, not things you press.
+ *   ACT    a pencil (correct), a flag (mark personal), and up to two `⊗`s
+ *          (un-mark).
+ *
+ * Five of those seven were conditional, so no two rows carried the same set,
+ * and the eye has no way to sort icons by kind. The split, by kind:
+ *
+ *   STATE → its OWN COLUMN, "Marked" (`gridView#rowMarkings`) — badges only,
+ *           no controls. Hideable, and rendered at all only when the page
+ *           actually has a marking on it (`showsMarkedColumn`), so an ordinary
+ *           month of spend pays nothing for it and comes out NARROWER than
+ *           before (Actions 112 → 72).
+ *   ACT   → ONE `⋯` menu (`rowActions.ts` decides the contents, `RowActionsMenu`
+ *           draws it), where each verb gets a sentence instead of a shape:
+ *           "Un-mark internal transfer (both legs)" says what a bare `⊗` next
+ *           to a badge only implied. Costs one extra click per row action;
+ *           nothing is removed, and none of these is per-row routine work.
+ *   OPEN  → UNMOVED. It is why this column is not hideable at all (see
+ *           `gridView.ts`): the one affordance on every row in every frame
+ *           that opens the record.
+ *
+ * Deliberately NOT the side panel, though the founder offered it: the panel
+ * already hides Cardholder / What it was for / Documentation to pay for its
+ * width, it renders only on a wide screen and only once a row is selected, and
+ * a marking that vanished on a phone would be a fact you could only see
+ * sometimes.
+ *
  * Actions (R1): a comment icon (tap → `TransactionDocumentationModal`, which
  * holds BOTH the freeform note and the structured coding — purpose, route,
  * attendees — plus a reviewer's Approve / Send back; the icon itself says
  * whether anything is behind it, see `docState`)
- * and, for a finance MANAGER or the charge's own PAYER, a "Mark personal"
- * flag — `cards.flagPersonalCharge` (#147), confirmed first
+ * and, in the `⋯` menu, for a finance MANAGER or the charge's own PAYER, a
+ * "Mark personal" — `cards.flagPersonalCharge` (#147), confirmed first
  * (`MarkPersonalModal`, mirrors `ExcludeReasonModal`'s confirm-before-commit
  * pattern) since marking schedules a real repayment email. A flagged-but-
  * unpaid charge also offers "Un-mark" (`cards.unflagPersonalCharge`, same
@@ -75,7 +114,7 @@
  * "Repaid" straight from the payload — no session-local "what did I just
  * flag" state, so a reload or a flag made elsewhere always shows correctly.
  *
- * PAYEE (generalized past card-only): the flag button shows whenever
+ * PAYEE (generalized past card-only): the flag item shows whenever
  * `row.cardholder` resolves — a card's cardholder OR a transaction with its
  * own `personId` directly attributed — mirroring `flagPersonalCharge`'s own
  * server-side payee resolution (`personId`, else the card's cardholder)
@@ -125,6 +164,7 @@ import {
   GridHeaderCell,
   useAnchor,
   useResizableColumns,
+  type IconName,
 } from "../../ui";
 import {
   CENTRAL,
@@ -154,13 +194,16 @@ import {
 import { ReconcileGroupHeader } from "./ReconcileGroupHeader";
 import {
   groupSegments,
+  rowMarkings,
   showsCategoryColumn,
+  showsMarkedColumn,
   type GroupSummary,
   type ReconcileColumnKey,
   type ReconcileGroupBy,
   type ReconcileSortDir,
   type ReconcileSortKey,
 } from "./gridView";
+import { rowActions, type RowAction, type RowActionId } from "./rowActions";
 import { buildRankedForPickerItems, type RankForPickerResult } from "./forPicker";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
@@ -221,10 +264,19 @@ const DEFAULT_COLS = {
   // the widest state the cell can render.
   receipt: 208,
   status: 148,
-  // Wide enough for the note icon PLUS the "Personal" badge (its widest
-  // combination — the note icon + the manager-only flag icon is narrower).
-  // 76px clipped/overlapped the badge's text.
-  actions: 112,
+  // WHAT THIS ROW HAS BEEN MARKED AS — badges only, no controls (see
+  // `gridView#rowMarkings`). Wide enough for "Other processor", the longest
+  // `PAYOUT_PROCESSOR_LABELS` value, plus the cell's own padding; the two-badge
+  // case (a marked transfer that is ALSO an unpaid personal charge) wraps onto
+  // a second line rather than clipping, which is why this doesn't need to fit
+  // both side by side. Rendered only when the page actually has a marking on
+  // it — `showsMarkedColumn` — so an ordinary month pays nothing for it.
+  marked: 132,
+  // TWO THINGS, on every row, in the same two places: the speech-bubble that
+  // opens the record, and the `⋯` menu that holds every act. It used to be
+  // 112px because it also carried the badges that are now their own column —
+  // and even at 112 the widest combination clipped. Two 15px glyphs need 72.
+  actions: 72,
 } as const;
 type ColKey = keyof typeof DEFAULT_COLS;
 type ColWidths = Record<ColKey, number>;
@@ -391,6 +443,10 @@ export function ReconcileList({
   // question — whether to offer a tick box for a column at all — and two copies
   // of it would eventually answer differently.
   const showCategory = showsCategoryColumn(centralScope, rows);
+  // Same shape, same reason: the Marked column exists exactly when the page
+  // has something marked on it, and the Columns menu asks `showsMarkedColumn`
+  // too rather than keeping a second copy of the rule.
+  const showMarked = showsMarkedColumn(rows);
   // ── WHAT THE PANEL COSTS THIS GRID, AND WHAT IT PAYS BACK ─────────────────
   // The columns already total ~1776px in a single-book scope and the grid
   // scrolls horizontally to fit them; handing 44% of the window to the panel
@@ -410,7 +466,7 @@ export function ReconcileList({
   // 676px back: ~1776 → ~1100, which is what makes the two-pane layout usable
   // rather than two scrollbars fighting. Everything the panel does NOT do
   // stays: the checkbox (bulk actions), Book, Merchant (the rename lives
-  // here), Date, Amount, Category, For, Status, and the row Actions.
+  // here), Date, Amount, Category, For, Status, Marked, and the row Actions.
   const hidesForPanel = panelOpen;
   // ── CAPABILITY FIRST, PREFERENCE SECOND ───────────────────────────────────
   // Two different questions, and they must not be allowed to become one. The
@@ -442,6 +498,7 @@ export function ReconcileList({
     forCol: !hidden("forCol"),
     receipt: !hidesForPanel && !hidden("receipt"),
     status: !hidden("status"),
+    marked: showMarked && !hidden("marked"),
     actions: true,
   };
   // The table is exactly as wide as the columns actually on screen — hiding one
@@ -627,6 +684,16 @@ export function ReconcileList({
                 onResizeStart={startResize("status")}
               />
             ) : null}
+            {shown.marked ? (
+              <GridHeaderCell
+                label="Marked"
+                width={widths.marked}
+                onResizeStart={startResize("marked")}
+              />
+            ) : null}
+            {/* Actions carries no header label — it never has. Two glyphs need
+                no column name, and one here would only compete with the
+                headers that are naming real data. */}
             <View style={{ width: widths.actions }} />
           </View>
 
@@ -979,14 +1046,63 @@ function ReconcileRow({
     }
   }
 
-  /** Tapping the flag: a row with a resolvable payee goes straight to the
-   *  confirm; one without asks a manager who owes it first. */
+  /** Picking "Mark personal": a row with a resolvable payee goes straight to
+   *  the confirm; one without asks a manager who owes it first. */
   function startMarkPersonal() {
     if (row.cardholder == null) {
       setPayeePickerOpen(true);
       return;
     }
     setPersonalPromptMode("mark");
+  }
+
+  // ── THE ROW'S TWO OTHER HALVES, both derived once ─────────────────────────
+  // What this row IS (badges, the Marked column) and what can be DONE to it
+  // (the `⋯` menu). Kept as separate pure calls over the same payload rather
+  // than one "row summary": they are read by different cells, and the whole
+  // point of the split is that a fact and a verb are not the same kind of
+  // thing. Both are tested (`gridView.test.ts`, `rowActions.test.ts`).
+  const markings = rowMarkings(row);
+  const actions = rowActions(
+    {
+      correctable: row.correctable,
+      isMarkedTransfer: row.isMarkedTransfer,
+      payoutProcessor: row.payoutProcessor,
+      isPersonal: row.isPersonal,
+      repaymentStatus: row.repaymentStatus,
+      // The row resolves a payer at all — mirrors `flagPersonalCharge`'s own
+      // server-side resolution, so the menu never offers a flag the backend
+      // would refuse with `PAYEE_REQUIRED`.
+      hasPayee: row.cardholder != null,
+    },
+    { isManager, isOwnCharge },
+  );
+  /**
+   * ONE PLACE THE MENU'S PICKS LAND, so "which rows offer this" (`rowActions`)
+   * and "what it does" (here) are never edited apart. Every branch is exactly
+   * the handler the icon it replaced called — the confirm steps included:
+   * marking personal schedules a real repayment email, so it still never
+   * fires straight off a tap.
+   */
+  function runRowAction(actionId: RowActionId) {
+    switch (actionId) {
+      case "correct":
+        setCorrectOpen(true);
+        return;
+      case "markPersonal":
+      case "markPersonalNamingPayer":
+        startMarkPersonal();
+        return;
+      case "unmarkPersonal":
+        setPersonalPromptMode("unmark");
+        return;
+      case "unmarkTransfer":
+        guard(unmarkTransfer({ transactionId: id }));
+        return;
+      case "unmarkPayout":
+        guard(unmarkPayout({ transactionId: id }));
+        return;
+    }
   }
 
   // The "For" picker's value is just `budgetId` (WP-U: one home per dollar) —
@@ -1390,26 +1506,69 @@ function ReconcileRow({
         />
       ) : null}
 
-      {/* Actions (R1): note (icon fills in when set) + "Mark personal" on a
-          charge with a resolvable payee (`row.cardholder` — a card's
-          cardholder OR a directly-attributed person, mirrors
-          `cards.flagPersonalCharge`'s own payee resolution) that isn't
-          already personal, shown for a MANAGER (any charge) OR the PAYER on
-          their OWN charge (`isOwnCharge` — founder feedback review, mirrors
-          `cards.flagPersonalCharge`'s server-side payer-or-manager gate). A
-          flagged charge shows its REAL repayment state ("Personal" until
-          repaid, then "Repaid") from the row payload, plus an "Un-mark"
-          affordance while it's still unpaid (mis-flag correction —
-          `cards.unflagPersonalCharge` refuses once it's settled). Both
-          transitions confirm first (`MarkPersonalModal`, mirrors
-          `ExcludeReasonModal`) — marking schedules a real email, so neither
-          fires off a stray tap. */}
+      {/* MARKED — what this row has been marked AS, and nothing you can do to
+          it. Badges only: a marking is a FACT about the row (see
+          `gridView#rowMarkings`), and it used to sit in the Actions cell
+          shoulder-to-shoulder with the buttons that change it, each badge
+          trailing its own `⊗`. That is what made the last column unreadable —
+          two kinds of thing wearing the same visual weight, in a different
+          arrangement on every row. The `⊗`s moved into the `⋯` menu, where
+          they read as the verbs they are ("Un-mark internal transfer"); the
+          facts stayed facts and moved here.
+
+          Wraps rather than clips: `isPersonal` is a FLAG that sits BESIDE a
+          transfer or payout marking rather than replacing it (Academy:
+          "Personal is a flag, not a status"), so a row can honestly carry two
+          and both must be legible. */}
+      {shown.marked ? (
+        <Cell width={widths.marked}>
+          <View className="flex-1 flex-row flex-wrap items-center gap-1 px-2 py-1.5">
+            {markings.length === 0 ? (
+              <Text className="text-sm text-faint">—</Text>
+            ) : (
+              markings.map((marking) =>
+                marking.kind === "transfer" ? (
+                  <Badge key="transfer" label="Transfer" tone="neutral" />
+                ) : marking.kind === "payout" ? (
+                  <Badge
+                    key="payout"
+                    label={PAYOUT_PROCESSOR_LABELS[marking.processor]}
+                    tone="success"
+                  />
+                ) : marking.kind === "repaid" ? (
+                  <Badge key="repaid" label="Repaid" tone="success" />
+                ) : (
+                  <Badge key="personal" label="Personal" tone="accent" />
+                ),
+              )
+            )}
+          </View>
+        </Cell>
+      ) : null}
+
+      {/* ACTIONS — the two things that must be on EVERY row, in the SAME two
+          places, whatever the row is: the way IN, and the verbs.
+
+          Founder on the deployed column: "it contains like a bunch of
+          different rows and information and things like that… maybe move some
+          things to a side panel, move something to its own column." It held up
+          to seven elements — a bubble, a pencil, two badges, two `⊗`s and a
+          flag — five of them conditional, so no two rows looked alike and
+          nothing in it announced which of them were facts and which were
+          buttons. It now holds exactly two glyphs, and the third kind (state)
+          is the Marked column above. */}
       <Cell width={widths.actions}>
         <View className="flex-1 flex-row items-center justify-center gap-2 px-1">
           {/* THE WAY IN TO EVERYTHING WRITTEN DOWN about this charge — the
               comment AND the coding (purpose, route, who was there), plus a
               reviewer's Approve / Send back. Owner ask, 2026-08-09: the coding
               should surface where he is already looking, not in a second table.
+
+              STAYS HERE, and this is why the column can't be hidden: it is the
+              one affordance on every row IN EVERY FRAME that opens the record
+              (Date/Amount only become a way in once the side panel is mounted,
+              and "What it was for" is itself hideable). Nothing in this change
+              moved it — the clutter around it moved instead.
 
               The icon says what is behind it before you click, because it used
               to look identical whether anything was there or not — which is how
@@ -1442,106 +1601,16 @@ function ReconcileRow({
               }
             />
           </Pressable>
-          {/* Correct a manually-entered row's amount / date / merchant. Shown
-              only when the SERVER says the row's source accepts it
-              (`row.correctable` — `manual` only), so a synced row never offers
-              a button that would throw. Manager-gated server-side too. */}
-          {row.correctable && isManager ? (
-            <Pressable
-              onPress={() => setCorrectOpen(true)}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel="Correct this transaction"
-              className="rounded p-1 active:opacity-70 web:hover:opacity-90"
-            >
-              <Icon name="edit-2" size={14} color={colors.faint} />
-            </Pressable>
-          ) : null}
-          {/* Marking badges. Both carry an un-mark affordance for a mis-pick,
-              bookkeeper+ only (`isManager` here is the grid's existing
-              write-rank flag) — the server gates it again regardless. A
-              transfer un-marks BOTH legs; a payout has none to pair with. */}
-          {row.isMarkedTransfer ? (
-            <View className="flex-row items-center gap-1.5">
-              <Badge label="Transfer" tone="neutral" />
-              {isManager ? (
-                <Pressable
-                  onPress={() => guard(unmarkTransfer({ transactionId: id }))}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel="Un-mark internal transfer (both legs)"
-                  className="rounded p-1 active:opacity-70 web:hover:opacity-90"
-                >
-                  <Icon name="x-circle" size={14} color={colors.muted} />
-                </Pressable>
-              ) : null}
-            </View>
-          ) : row.payoutProcessor ? (
-            <View className="flex-row items-center gap-1.5">
-              <Badge
-                label={PAYOUT_PROCESSOR_LABELS[row.payoutProcessor]}
-                tone="success"
-              />
-              {isManager ? (
-                <Pressable
-                  onPress={() => guard(unmarkPayout({ transactionId: id }))}
-                  hitSlop={6}
-                  accessibilityRole="button"
-                  accessibilityLabel="Un-mark processor payout"
-                  className="rounded p-1 active:opacity-70 web:hover:opacity-90"
-                >
-                  <Icon name="x-circle" size={14} color={colors.muted} />
-                </Pressable>
-              ) : null}
-            </View>
-          ) : null}
-          {row.isPersonal ? (
-            <View className="flex-row items-center gap-1.5">
-              {row.repaymentStatus === "paid" ? (
-                <Badge label="Repaid" tone="success" />
-              ) : (
-                <>
-                  <Badge label="Personal" tone="accent" />
-                  {isManager || isOwnCharge ? (
-                    <Pressable
-                      onPress={() => setPersonalPromptMode("unmark")}
-                      hitSlop={6}
-                      accessibilityRole="button"
-                      accessibilityLabel="Un-mark personal"
-                      className="rounded p-1 active:opacity-70 web:hover:opacity-90"
-                    >
-                      <Icon name="x-circle" size={14} color={colors.muted} />
-                    </Pressable>
-                  ) : null}
-                </>
-              )}
-            </View>
-          ) : /* A resolvable payee → manager or the payer themselves. No payee
-                at all → a manager only, who names who owes it (see the file
-                header's NO-PAYEE ROWS note). */
-          row.cardholder != null ? (
-            (isManager || isOwnCharge) && (
-              <Pressable
-                onPress={startMarkPersonal}
-                hitSlop={6}
-                accessibilityRole="button"
-                accessibilityLabel="Mark personal"
-                className="rounded p-1 active:opacity-70 web:hover:opacity-90"
-              >
-                <Icon name="flag" size={15} color={colors.muted} />
-              </Pressable>
-            )
-          ) : isManager ? (
-            <Pressable
-              onPress={startMarkPersonal}
-              hitSlop={6}
-              accessibilityRole="button"
-              accessibilityLabel="Mark personal — pick who owes it"
-              className="rounded p-1 active:opacity-70 web:hover:opacity-90"
-            >
-              <Icon name="flag" size={15} color={colors.faint} />
-            </Pressable>
-          ) : null}
+          {/* EVERY VERB THIS ROW HAS, behind one glyph. Which ones those are
+              is `rowActions` (tested), not five nested ternaries in a
+              renderer; what each one DOES is unchanged, down to the confirm
+              step. Absent when the list is empty — a menu button that opens an
+              empty menu is worse than the clutter it replaced. */}
+          <RowActionsMenu
+            actions={actions}
+            merchant={displayMerchantName(row, "this transaction")}
+            onPick={runRowAction}
+          />
         </View>
       </Cell>
       </View>
@@ -1614,6 +1683,103 @@ function ReconcileRow({
         />
       ) : null}
     </View>
+  );
+}
+
+// ── The row's `⋯` menu ───────────────────────────────────────────────────────
+/** One glyph per action, so a reader who has learnt the old icons still
+ *  recognises them a level down. Exhaustive over `RowActionId`, so a new
+ *  action fails to compile here rather than rendering blank. */
+const ROW_ACTION_ICONS: Record<RowActionId, IconName> = {
+  correct: "edit-2",
+  markPersonal: "flag",
+  markPersonalNamingPayer: "flag",
+  unmarkPersonal: "x-circle",
+  unmarkTransfer: "x-circle",
+  unmarkPayout: "x-circle",
+};
+
+/**
+ * EVERY ACT ON ONE ROW, BEHIND ONE GLYPH.
+ *
+ * The grid used to lay these out as bare icons in the Actions cell — a pencil,
+ * a flag, and up to two `⊗`s, each appearing on its own conditions. Founder:
+ * "the last column is very cluttered… it could be much cleaner and have things
+ * broken down." The cost of an icon rail is paid twice: horizontally (the cell
+ * had to be wide enough for the widest combination, on every row) and in
+ * legibility (a bare `⊗` means nothing without the badge it used to sit next
+ * to — and that badge is now a column away).
+ *
+ * A menu pays both back. The trigger is one glyph in one place on every row,
+ * and each act gets a full sentence instead of a shape: "Un-mark internal
+ * transfer (both legs)" says what the `⊗` beside the Transfer badge only
+ * implied. The trade is ONE MORE CLICK on every row action — accepted
+ * deliberately, because none of these is a per-row routine (the routine work
+ * on this grid is the inline cells and the bulk bar), and because a control
+ * you can read is worth more than a control you can reach.
+ *
+ * Built on the same `useAnchor` + `Popover` plumbing as every other dropdown
+ * on this screen, so it flips and clamps at screen edges with no bespoke
+ * overlay — and it renders NOTHING when `actions` is empty, because a menu
+ * button that opens an empty menu is a dead control.
+ */
+function RowActionsMenu({
+  actions,
+  merchant,
+  onPick,
+}: {
+  actions: readonly RowAction[];
+  /** Named in the trigger's label so a screen reader hears which row's menu
+   *  this is — every row has one, and "More actions" alone would be 200
+   *  identical buttons. */
+  merchant: string;
+  onPick: (id: RowActionId) => void;
+}) {
+  const { ref, anchor, visible, open, close } = useAnchor();
+  if (actions.length === 0) return null;
+
+  return (
+    <>
+      <Pressable
+        ref={ref}
+        onPress={open}
+        hitSlop={6}
+        accessibilityRole="button"
+        aria-expanded={visible}
+        aria-haspopup="true"
+        accessibilityLabel={`Actions for ${merchant}`}
+        className="rounded p-1 active:opacity-70 web:hover:opacity-90"
+      >
+        <Icon name="more-horizontal" size={15} color={colors.muted} />
+      </Pressable>
+      <Popover visible={visible} onClose={close} anchor={anchor} width={260}>
+        <View className="py-1">
+          {actions.map((action) => (
+            <Pressable
+              key={action.id}
+              onPress={() => {
+                // Closed BEFORE the act, not after: three of these open a
+                // confirm modal of their own, and two `<Modal>`s cannot be on
+                // screen at once (the same constraint that put the coding
+                // record in a side panel — see this file's header).
+                close();
+                onPick(action.id);
+              }}
+              accessibilityRole="menuitem"
+              accessibilityLabel={action.label}
+              className="flex-row items-center gap-2.5 px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon
+                name={ROW_ACTION_ICONS[action.id]}
+                size={15}
+                color={colors.muted}
+              />
+              <Text className="flex-1 text-sm text-ink">{action.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      </Popover>
+    </>
   );
 }
 

@@ -552,6 +552,24 @@
  * coverage to restate what the rule blocks already say. No title, slug,
  * minutes, quizLength, section or course order moved: every table below is
  * unchanged.
+ *
+ * 2026-08-14 — the grid's last column, split by KIND (founder: "the last
+ * column is very cluttered… it could be much cleaner and have things broken
+ * down"). Reconcile's Actions cell had accumulated three different kinds of
+ * thing — the way INTO a record, badges saying what the row IS, and buttons
+ * that act on it — so the markings moved to a new hideable "Marked" column and
+ * every row action moved behind one `⋯` menu. Two sections are touched, both
+ * content-only, because both named an affordance by its old shape:
+ * `finance-reconcile-grid`'s "Some rows you can correct" said hand-entered
+ * rows "carry a pencil in the Actions column" (now: "Correct amount, date or
+ * merchant" in the row's ⋯ menu), its "Renaming a merchant" rule pointed at
+ * "the pencil" for the same act, and its "Personal is a flag, not a status"
+ * now names the Marked column the flag reads out in; `finance-transfers-and-
+ * payouts`' "Marked still means documented" says where a marking shows and
+ * where its undo went. Neither quiz hung on the old shapes — both were checked
+ * question by question, and `finance-reconcile-grid` is at the 5-cap — so
+ * nothing was swapped. No title, slug, minutes, quizLength, section or course
+ * order moved: every table below is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

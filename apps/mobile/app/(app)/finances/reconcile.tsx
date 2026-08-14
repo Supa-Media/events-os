@@ -127,6 +127,7 @@ import {
   parseSortKey,
   serializeHiddenColumns,
   showsCategoryColumn,
+  showsMarkedColumn,
   toggleHiddenColumn,
   type ReconcileColumnKey,
   type ReconcileGroupBy,
@@ -2084,11 +2085,14 @@ function ReconcileGrid() {
               // Only what THIS scope can render at all, so no tick box ever
               // does nothing: no Book outside the merged queue, no Category
               // where central money has none, and none of the three the side
-              // panel is currently rendering itself. One rule, shared with the
-              // grid (`showsCategoryColumn`), not a second copy of it here.
+              // panel is currently rendering itself, and no Marked where
+              // nothing on the page is actually marked. One rule per column,
+              // shared with the grid (`showsCategoryColumn` /
+              // `showsMarkedColumn`), not a second copy of either here.
               offered={offerableColumns({
                 showBook: allBooksScope || viewingForeignChapter,
                 showCategory: showsCategoryColumn(centralScope, displayed),
+                showMarked: showsMarkedColumn(displayed),
                 panelOpen: showPanel,
               })}
               onToggle={(key) =>
