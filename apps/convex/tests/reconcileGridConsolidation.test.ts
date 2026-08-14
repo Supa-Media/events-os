@@ -989,3 +989,41 @@ describe("the chase, in the grid — `needs_chasing` is the UNION, not the recei
     expect(groups.every((g) => "imageUrl" in g)).toBe(true);
   });
 });
+
+describe("the publish console, seen from the month it is about", () => {
+  /**
+   * The month bands show each month's publication status and offer a preview.
+   * Both need `publicLedger.console_`, which THROWS for a caller without the
+   * console power — and the grid lives inside a `FinanceBoundary`, so one
+   * speculative call would degrade the entire reconcile screen to "Restricted"
+   * for every reconciler who cannot publish. That exact shape locked the
+   * founder out for a night (2026-08-11/12), so the capability is probed once
+   * from the query the grid already runs.
+   */
+  test("a caller who may read the console is told so, and the console agrees", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000 });
+
+    const res = await s.as.query(api.finances.listReconcile, {});
+    expect(res.viewerCanUseLedgerConsole).toBe(true);
+    // The probe and the gate are the same rule — `hasLedgerConsole` is the
+    // non-throwing half of `requireLedgerConsole`. If the probe said yes, the
+    // query it guards must not throw.
+    await expect(s.as.query(api.publicLedger.console_, {})).resolves.not.toBeNull();
+  });
+
+  test("the merged all-books queue reports NO console — there is no console for a merged book", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000 });
+
+    // `console_` takes ONE book (`scope: Id<"chapters"> | "central"`), and
+    // publishing is a per-book act. Reporting `true` here would have the bands
+    // firing a query with no scope to give it.
+    const merged = await s.as.query(api.finances.listReconcile, { scope: "all" });
+    expect(merged.viewerCanUseLedgerConsole).toBe(false);
+  });
+});

@@ -83,6 +83,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
+  Badge,
   Button,
   EmptyState,
   FilterSelect,
@@ -120,6 +121,8 @@ import { GroupByControl } from "../../../components/finance/reconcile/GroupByCon
 // `/finances/explain` redirect build their URL from — "By month" is three axes
 // of this grid, and all three surfaces read one definition of them.
 import { UNATTRIBUTED_GROUP_KEY } from "../../../components/finance/reconcile/gridView";
+import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
+import type { SingleBookScope } from "../../../components/finance/bookScope";
 import {
   BY_MONTH_DIR,
   BY_MONTH_FILTER,
@@ -159,6 +162,9 @@ import {
   displayMerchantName,
   formatCents,
   parseReconcileFilters,
+  parsePeriodKey,
+  PUBLICATION_STATUS_LABELS,
+  type PublicationStatus,
   serializeReconcileFilters,
   type PayoutProcessor,
   type ReconcileFilterKey,
@@ -638,9 +644,9 @@ function ReconcileGrid() {
   // `getManualNudgeStatus` re-assert manager rank AND the same scope branch
   // server-side.
   //
-  // The nudge args mirror `chaseHref`'s resolution exactly — one derivation of
-  // "which book is on screen", so the list, the count and the email cannot
-  // point at three different places.
+  // The nudge args mirror the grid's own book resolution exactly — one
+  // derivation of "which book is on screen", so the list, the count and the
+  // email cannot point at three different places.
   //
   // ONE BOOK AT A TIME, AND SAID OUT LOUD. `cards.getManualNudgeTargets` reads
   // a SINGLE book (`scope: Id<"chapters"> | "central"`) — it has no "all"
@@ -726,24 +732,68 @@ function ReconcileGrid() {
     );
   }
 
+  // ── PUBLISHING, SEEN FROM THE MONTH IT IS ABOUT ────────────────────────────
+  // Founder: "I should be able to see the publish stuff in By month, because
+  // it's the same thing. I'm publishing by month. So I just need a preview and
+  // a place to publish. I should see whether it's published when I look at
+  // things by month."
+  //
+  // So each month band carries that month's publication STATUS and the two
+  // acts that belong beside it. What the band does with each is deliberately
+  // different, and the difference is about guards, not effort:
+  //
+  //  - PREVIEW happens HERE. It needs only console access, mints a scoped
+  //    token and opens a page; it changes nothing. `useLedgerPreview` is the
+  //    same hook the console uses, so the artifact is identical.
+  //  - PUBLISH ROUTES to the console. It is the end of a two-approver state
+  //    machine — separation of duties (the submitter may not approve),
+  //    the amendment-reason record on a re-publish, and the SNAPSHOT_TRUNCATED
+  //    refusal that stops a partial month going public. Those are not
+  //    disclosures to skip past; they ARE the act. A one-tap "Publish" on a
+  //    band would either drop them or reimplement them, and reimplementing a
+  //    separation-of-duties check is how one gets quietly weakened.
+  //
+  // So the band answers "where is this month up to, and what does its page look
+  // like" without leaving the grid, and hands off only the irreversible part.
+  //
+  // MOUNTED ONLY WHEN THE SERVER SAYS THE CALLER MAY READ THE CONSOLE.
+  // `publicLedger.console_` THROWS for anyone else, and this screen is inside
+  // a `FinanceBoundary` — a speculative call would degrade the whole grid to
+  // "Restricted" for every reconciler who cannot publish, which is precisely
+  // the failure that locked the founder out for a night (2026-08-11/12).
+  const canUseLedgerConsole = reconcile?.viewerCanUseLedgerConsole ?? false;
+  const showPublishInBands = groupBy === "month" && canUseLedgerConsole;
+  // The one book the console is about. `null` means "the caller's own desk",
+  // which is what both `console_` and the preview mint default to.
+  const consoleScope: SingleBookScope | null = centralScope
+    ? "central"
+    : (targetChapterId ?? null);
+  const ledgerConsole = useQuery(
+    api.publicLedger.console_,
+    showPublishInBands
+      ? consoleScope
+        ? { scope: consoleScope }
+        : {}
+      : "skip",
+  );
+  const publicationByPeriod = useMemo(() => {
+    const m = new Map<string, { status: PublicationStatus; liveRevision: number | null }>();
+    for (const month of ledgerConsole?.months ?? []) {
+      m.set(month.periodKey, {
+        status: month.status,
+        liveRevision: month.liveRevision,
+      });
+    }
+    return m;
+  }, [ledgerConsole]);
+  const previewPage = useLedgerPreview();
+
   /** How many person bands there is actually somebody to nudge on — gates the
    *  page-level "Remind all", which would otherwise offer to remind nobody. */
   const nudgeableGroupCount = chasingByPerson
     ? (reconcile?.groups ?? []).filter((g) => g.key !== UNATTRIBUTED_GROUP_KEY)
         .length
     : 0;
-
-  // The Chase-receipts destination, carrying this grid's CURRENT scope as
-  // route params — mirrors the args object above (minus `filter`, which
-  // `receipt-chase.tsx` has no use for) so `receiptChase` resolves the exact
-  // same bucket `listReconcile` just counted for the missing_receipt pill.
-  const chaseHref = allBooksScope
-    ? "/finances/receipt-chase?scope=all"
-    : centralScope
-      ? "/finances/receipt-chase?scope=central"
-      : targetChapterId
-        ? `/finances/receipt-chase?chapterId=${targetChapterId}`
-        : "/finances/receipt-chase";
 
   // All chapter categories (no fund filter — coding is category + For only).
   const categories = useQuery(api.finances.listCategories, {}) ?? [];
@@ -803,46 +853,31 @@ function ReconcileGrid() {
   const rows = reconcile?.rows ?? [];
   const counts = reconcile?.counts;
 
-  // The scope suffix every cross-screen destination in the view menu carries,
-  // built from the SAME resolution `chaseHref` above uses. Threaded, never
-  // re-derived at the target: a page that resolves its own scope is how two
-  // finance surfaces end up showing different books under the same heading.
-  //
-  // "ALL BOOKS" IS NOT A BOOK, and these destinations only take one.
-  // `monthCodingWorklist` and `publicLedger`'s `scopeValidator` both accept
-  // `v.id("chapters") | "central"` and nothing else, so forwarding
-  // `?scope=all` failed ARGUMENT VALIDATION before the handler ran and the
-  // screen died with a bare "Server Error" — on By month and Publish alike,
-  // for every dual-hat holder, because "All books" is their default landing
-  // scope. (`chaseHref` below is unaffected: `receiptChase` mirrors
-  // `listReconcile`'s scope args, which DO include "all".)
-  //
-  // Omitted rather than guessed: with no `scope`, each target falls back to
-  // the caller's own desk — exactly what it did before these menu entries
-  // existed. Picking `central` on their behalf would silently point a
-  // chapter treasurer at the wrong book, which is the failure this whole
-  // area threads scope to prevent.
-  const singleBookScopeQuery = centralScope
-    ? "?scope=central"
-    : targetChapterId
-      ? `?scope=${targetChapterId}`
-      : "";
 
   /**
    * THE VIEWS — saved questions about this one book.
    *
-   * The first four re-filter the grid in place. The last three are separate
-   * screens because they GROUP or paginate differently (a month biggest-first
-   * with a progress meter; the chase list grouped by cardholder; a period's
-   * publish console) — not because they're a different subject. Both kinds
-   * read as "where do I want to be looking", which is the only question the
-   * person opening this menu is asking.
+   * EVERY ENTRY RE-FILTERS THIS GRID IN PLACE. Nothing here navigates.
+   *
+   * Three of them used to: a month's worklist, the chase list, the publish
+   * console — each a separate screen on the reasoning that it GROUPED or
+   * paginated differently. The grid can group and sort now, so the reasoning
+   * expired, and what the routing actually cost was the thing the founder
+   * named: "It takes away the header. Doesn't even show the database view. It
+   * should be the same exact view... Now I need to click back. I don't even
+   * see the dropdown anymore."
+   *
+   * So a view is a QUESTION about the same grid — a filter set, an order and a
+   * grouping — and the chrome never moves. The one thing still routed is the
+   * publish state machine itself, from a month band, and only because it is an
+   * irreversible two-approver act rather than a way of looking (see the band's
+   * own comment).
    *
    * Counts come from `counts`, which is server-side and truthful across the
    * whole scope rather than the loaded page — so every number here is one you
-   * can actually get to. The routed entries carry no count on purpose: this
-   * screen has no honest figure for them, and a guessed one is the exact
-   * defect this area keeps repairing.
+   * can actually get to. An entry carries no count only when this screen has no
+   * honest figure for it; a guessed one is the exact defect this area keeps
+   * repairing.
    */
   const views: BookView[] = [
     {
@@ -902,6 +937,14 @@ function ReconcileGrid() {
       label: "Everything",
       detail: "The whole book for this desk, newest first, no filter applied.",
       filters: [],
+      // DECLARED, not left open. "Publish a month" is also the unfiltered book
+      // — banded by month — so without naming its own shape this entry would
+      // claim that view's title too (`activeView` returns the first match, and
+      // an undeclared axis matches anything). "Newest first, no grouping" is
+      // what the label already promises.
+      sort: DEFAULT_SORT_KEY,
+      dir: DEFAULT_SORT_DIR,
+      group: null,
       count: counts?.all,
     },
     {
@@ -948,8 +991,25 @@ function ReconcileGrid() {
       key: "publish",
       label: "Publish a month",
       detail:
-        "Close a month, hand it to a second person, and put it on publicworship.life.",
-      href: `/finances/publish${singleBookScopeQuery}`,
+        "Every month banded, with its publication status and a preview — and the console one tap from the month it's about.",
+      // BANDED, NOT ROUTED — founder: "Publish a month, same thing. Should be
+      // in database view... I should see whether it's published when I look at
+      // things by month."
+      //
+      // Publishing IS a month-at-a-time act, so it is the month view with the
+      // publication status on each band: where the month is up to, a Preview
+      // that opens the actual page, and a hand-off to the console for the
+      // irreversible part. Same three axes as "By month" minus the
+      // `needs_explaining` narrowing — a month you are about to publish is the
+      // WHOLE month, not just its unexplained rows.
+      //
+      // The console stays the destination for the state machine itself. See
+      // the band's own comment for why that half is routed rather than
+      // reimplemented on a band.
+      filters: [],
+      group: "month",
+      sort: BY_MONTH_SORT,
+      dir: BY_MONTH_DIR,
     },
   ];
   /** The chase view, by key — the header's "Chase receipts" button applies the
@@ -2104,6 +2164,65 @@ function ReconcileGrid() {
               // statement, not a person — there is nobody to remind), and for
               // any caller who isn't a finance manager.
               renderGroupAction={(group) => {
+                // ── MONTH BANDS: where this month is up to, and its page ──
+                if (showPublishInBands) {
+                  const pub = publicationByPeriod.get(group.key);
+                  if (!pub) return null;
+                  const parsed = parsePeriodKey(group.key);
+                  return (
+                    <View className="flex-row items-center gap-2">
+                      <Badge
+                        label={
+                          pub.status === "published" && pub.liveRevision != null
+                            ? `Published · rev ${pub.liveRevision}`
+                            : PUBLICATION_STATUS_LABELS[pub.status]
+                        }
+                        tone={
+                          pub.status === "published"
+                            ? "success"
+                            : pub.status === "changes_requested"
+                              ? "danger"
+                              : pub.status === "in_review" ||
+                                  pub.status === "amending"
+                                ? "warn"
+                                : "neutral"
+                        }
+                      />
+                      {/* LOOKING, not committing — a mint and an open, which is
+                          why it can happen right here. */}
+                      <Button
+                        title="Preview"
+                        variant="ghost"
+                        size="sm"
+                        icon="eye"
+                        loading={previewPage.loading}
+                        onPress={() =>
+                          void previewPage.open({
+                            scope: consoleScope,
+                            periodKey: group.key,
+                          })
+                        }
+                      />
+                      {/* COMMITTING — routed to the console, deliberately. The
+                          two-approver handoff, the amendment reason and the
+                          truncated-snapshot refusal are the act itself, not
+                          paperwork in front of it. */}
+                      <Button
+                        title={pub.status === "published" ? "Amend" : "Publish"}
+                        variant="ghost"
+                        size="sm"
+                        icon="arrow-up-right"
+                        onPress={() =>
+                          router.navigate(
+                            `/finances/publish${
+                              consoleScope ? `?scope=${consoleScope}` : ""
+                            }${parsed ? `${consoleScope ? "&" : "?"}period=${group.key}` : ""}` as never,
+                          )
+                        }
+                      />
+                    </View>
+                  );
+                }
                 if (!chasingByPerson || !canNudgeHere) return null;
                 if (group.key === UNATTRIBUTED_GROUP_KEY) return null;
                 const personId = group.key as Id<"people">;

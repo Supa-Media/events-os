@@ -93,7 +93,7 @@ import { readSandbox } from "./financeSettings";
 import { signedBookCents } from "./lib/bookBalance";
 // Same gate as the publish console: this worklist reads exactly the rows that
 // console is about to publish.
-import { requireLedgerConsole } from "./lib/publicLedgerAccess";
+import { hasLedgerConsole, requireLedgerConsole } from "./lib/publicLedgerAccess";
 import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import {
@@ -9113,6 +9113,24 @@ export const listReconcile = query({
     // nothing. Retiring the Explain screen moves those viewers onto this grid,
     // so the guarantee has to move with them.
     viewerCanRename: v.boolean(),
+    // Whether the caller may read the PUBLISH CONSOLE for the book on screen
+    // (`lib/publicLedgerAccess.ts#hasLedgerConsole` — the non-throwing half of
+    // the gate `publicLedger.console_` enforces).
+    //
+    // THE GRID MUST NOT SPECULATIVELY FIRE THAT QUERY. `console_` throws a
+    // ConvexError for a caller without the power, and this whole screen sits
+    // inside a `FinanceBoundary` — so one speculative call would degrade the
+    // ENTIRE reconcile grid to "Restricted" for anybody who can reconcile but
+    // not publish. That exact shape is on this area's record: a returns-
+    // validator failure inside `publicLedger.preview` was dressed as
+    // "Restricted" and locked the founder out for a night (2026-08-11/12).
+    //
+    // So the capability is probed ONCE, here, from the query the grid already
+    // runs — the same discipline as `receipts.canViewList` on this screen, for
+    // the same reason — and the month bands mount the console query only when
+    // it says yes. Always `false` on a merged queue: the console reads ONE
+    // book, and "all books" is not one.
+    viewerCanUseLedgerConsole: v.boolean(),
   }),
   handler: async (ctx, args) => {
     // The selection, as a SET. `filters` is the real input; the singular
@@ -9179,6 +9197,7 @@ export const listReconcile = query({
         viewerPersonId: null,
         viewerIsManager: false,
         viewerCanRename: false,
+        viewerCanUseLedgerConsole: false,
       };
     // Resolve the BOOKS this queue reads. One book in every scope except
     // `"all"`, which merges central + every active chapter (see the `scope`
@@ -9917,6 +9936,13 @@ export const listReconcile = query({
       // inferred from the fact that the grid loaded at all — see the field's
       // doc in the returns validator.
       viewerCanRename: financeRoleAtLeast(access.role, "bookkeeper"),
+      // Single-book scopes only — `console_` takes one book and there is no
+      // console for a merged queue. `books.length === 1` is the honest test:
+      // it also covers `scope:"all"` collapsing to a single active chapter.
+      viewerCanUseLedgerConsole:
+        books.length === 1
+          ? await hasLedgerConsole(ctx, homeChapterId, books[0])
+          : false,
     };
   },
 });

@@ -100,7 +100,7 @@ export default function PublishScreen() {
 }
 
 function Body() {
-  const params = useLocalSearchParams<{ scope?: string }>();
+  const params = useLocalSearchParams<{ scope?: string; period?: string }>();
   const router = useRouter();
   const { context } = useChapterContext();
   // WHICH BOOK ARE WE PUBLISHING? Resolved the same way every other finance
@@ -137,7 +137,19 @@ function Body() {
   // site rather than production doing it. `null` OMITS the field — an
   // explicit null fails `v.optional`.
   const data = useQuery(api.publicLedger.console_, scope ? { scope } : {});
-  const [open, setOpen] = useState<string | null>(null);
+  // WHICH MONTH OPENS EXPANDED. `?period=` is honoured so a link that meant one
+  // month lands ON that month rather than on a list of eighteen with the reader
+  // left to find it — the reconcile grid's month bands now link straight here
+  // from a band that already named the month, and dropping that context at the
+  // door is how a one-tap handoff turns into a scroll.
+  //
+  // Validated, not trusted: an unparseable `?period=` collapses to "nothing
+  // expanded", which is exactly the state this screen has always opened in.
+  // Read once as the INITIAL state rather than as a controlled value, so
+  // expanding a different month afterwards isn't fought by the URL.
+  const [open, setOpen] = useState<string | null>(() =>
+    params.period && parsePeriodKey(params.period) ? params.period : null,
+  );
 
   if (data === undefined) return <Screen loading />;
   if (data === null) {

@@ -1779,6 +1779,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Once a month is closed, it goes on publicworship.life — not a summary, every transaction. What we bought, who we bought it from, what it was for, and whether we can produce the receipt. A giver reading \"$3.9M staff cost\" feels like a drop in a bucket. A giver reading \"$47.83, Costco, water and cups for the setup team at a Worship With Strangers night\" can see their own $5 in it.",
       },
       {
+        kind: "p",
+        text: "You watch it happen from the Book. Group by Month — or pick **Publish a month** from the Book's title dropdown, which is that same grouping — and every band tells you where that month stands: Draft, In review, Published (with the revision that's live), or Amending. **Preview** on the band opens the actual public page for that month, exactly as a stranger would see it, without publishing anything.\n\nThe **Publish** button on the band hands you to the publish console, and that hand-off is deliberate rather than a missing feature. Publishing is not a way of looking at a month; it is an irreversible act with a second person in it. The console is where the disclosures are read, where a re-publish states its amendment reason, and where the system refuses a month whose snapshot came back incomplete. None of that is paperwork in front of the button — it IS the button.",
+      },
+      {
         kind: "rule",
         title: "Published means frozen",
         text: "The public page does **not** read the live books. When a month is published, it is FROZEN — a copy is stored and that copy is what the world sees, forever. Editing a transaction next week changes our books and changes nothing public. That is the whole design: a live page would let an edit silently rewrite what we already said, and nobody outside could tell.",
