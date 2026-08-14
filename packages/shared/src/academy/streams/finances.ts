@@ -447,6 +447,14 @@
  *    — the payout is no longer in that chase to be dropped from. The
  *    Reconcile filter table's "Owes a receipt or coding" row lost its
  *    "…and processor payouts" clause for the same reason.
+ *
+ * Reconciliation "flag" → "mark for review" (2026-08-14, founder: "what does
+ * 'flag' do, it feels like a scary button"). Presentation-only rename on the
+ * Accounts page's payout/transfer audit rows — the Convex mutation names and
+ * `ReconciliationFlagKind` are unchanged, so nothing here about the DATA
+ * model moved. `finance-transfers-and-payouts`'s STRIPE-payouts tip said the
+ * Financial Manager can "audit and flag them"; it now says "audit it and mark
+ * it for review" to match. No title, minutes, or quiz content changed.
  */
 
 import type {
@@ -1667,7 +1675,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts, labels the bank deposit as a payout for you, and books each chapter's share as an automatic transfer — that's what routes the CASH to the right account (and, when the Financial Manager has Real cash movement on, actually moves it). You'll see each one on the Accounts page, badged \"Payout allocation\", where the Financial Manager can audit and flag them. Givebutter and other deposits still need the hand-marking this lesson teaches — and when you mark one, the modal also asks WHOSE money it is: pick the book it belongs to (some Givebutter payouts are central's, some are a chapter's) and the app books that transfer for you. Changing your mind later is an offsetting transfer, so pick deliberately.",
+        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts, labels the bank deposit as a payout for you, and books each chapter's share as an automatic transfer — that's what routes the CASH to the right account (and, when the Financial Manager has Real cash movement on, actually moves it). You'll see each one on the Accounts page, badged \"Payout allocation\", where the Financial Manager can audit it and mark it for review. Givebutter and other deposits still need the hand-marking this lesson teaches — and when you mark one, the modal also asks WHOSE money it is: pick the book it belongs to (some Givebutter payouts are central's, some are a chapter's) and the app books that transfer for you. Changing your mind later is an offsetting transfer, so pick deliberately.",
       },
       {
         kind: "scenario",
