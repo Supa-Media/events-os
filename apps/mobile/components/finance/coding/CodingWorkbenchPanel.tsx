@@ -317,11 +317,18 @@ function ApproveUndoBar({
 
   useEffect(() => {
     if (left > 0) return;
+    // NOT while an undo is in flight: the window lapsing must never dismiss a
+    // request that is still going to land, or the person watches the bar
+    // disappear with no idea whether it worked.
+    if (busy) return;
     onDone();
-    // `onDone` is a stable setter from the parent; re-running on its identity
-    // would restart the window every render.
+    // Deliberately keyed on the countdown alone. `onDone` is an inline closure
+    // from the parent and changes identity every render; listing it would
+    // re-run this on every render rather than on every tick, which is not what
+    // "when the window lapses" means. It is read from the latest render, which
+    // is exactly the behaviour wanted.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [left]);
+  }, [left, busy]);
 
   return (
     <View className="flex-row items-center gap-3 border-t border-border bg-sunken px-4 py-2.5">
