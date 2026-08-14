@@ -805,6 +805,16 @@ async function seedBankBalance(
 // earned. Rather than itemise each payout back to the record that produced it,
 // the engine compares each chapter's BOOK to its BANK and moves the difference.
 
+/** Turn on real cash movement the way the FM does from the accounts page —
+ *  the standing authorization `settleChapterBalances` now requires before it
+ *  will book a `balance_settlement` pair (see that function's doc: a
+ *  settlement nothing will ever execute is not a ledger event). */
+async function enableRealMovement(s: ChapterSetup): Promise<void> {
+  await s.as.mutation(api.reconciliation.setRealMovementEnabled, {
+    enabled: true,
+  });
+}
+
 describe("settleChapterBalances — cash follows the book", () => {
   const DAY = "2026-08-08";
 
@@ -812,6 +822,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
+    await enableRealMovement(s);
     // The chapter earned $500 and holds $100.
     await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
     await seedBankBalance(s, CENTRAL, 100_000);
@@ -835,6 +846,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
+    await enableRealMovement(s);
     await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
     await seedBankBalance(s, CENTRAL, 12_000); // central can't cover $400
     await seedBankBalance(s, s.chapterId, 10_000);
@@ -853,6 +865,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
+    await enableRealMovement(s);
     await seedDonorWithGift(s, s.chapterId, { amountCents: 10_000 });
     await seedBankBalance(s, CENTRAL, 100_000);
     await seedBankBalance(s, s.chapterId, 30_000);
@@ -871,6 +884,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
+    await enableRealMovement(s);
     await seedDonorWithGift(s, s.chapterId, { amountCents: 10_000 });
     await seedBankBalance(s, CENTRAL, 100_000);
     await seedBankBalance(s, s.chapterId, 9_900); // $1 out
@@ -897,6 +911,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
+    await enableRealMovement(s);
     await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
     await seedBankBalance(s, CENTRAL, 100_000);
     await seedBankBalance(s, s.chapterId, 10_000);
@@ -918,6 +933,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
+    await enableRealMovement(s);
     await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
     await seedBankBalance(s, CENTRAL, 100_000);
     await seedBankBalance(s, s.chapterId, 10_000);
@@ -930,6 +946,80 @@ describe("settleChapterBalances — cash follows the book", () => {
     );
     expect(second.settlementsBooked).toBe(0);
     expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(2);
+  });
+
+  test("books NOTHING while real cash movement is off, and says why through notes", async () => {
+    // THE bug this gate closes: a `balance_settlement` pair contributes zero
+    // to book value by construction, so with nothing to ever execute it, it
+    // never closes the gap it measures — the identical pair would get booked
+    // again every morning forever (founder: "it creates actual things on the
+    // ledger which is just wrong and cluttered"). Real movement is OFF by
+    // default here (no `enableRealMovement` call).
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedBankBalance(s, s.chapterId, 10_000);
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+    // Nothing booked, nothing claimed moved — the return shape stays honest.
+    expect(out.settlementsBooked).toBe(0);
+    expect(out.movedCents).toBe(0);
+    // No ledger rows at all — this is the "actual things on the ledger"
+    // complaint closing: NOTHING is written when nothing will ever execute.
+    expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(0);
+    // The finding is not lost — it travels through the run-summary `notes`
+    // channel the accounts page already renders.
+    const note = out.notes.join(" ");
+    expect(note).toContain("New York"); // setupChapter's default chapter name
+    expect(note).toMatch(/real cash movement is off/);
+    // AND through the typed `unsettledGaps` channel — the one the accounts
+    // page renders unconditionally, unlike `notes` (capped, collapsible).
+    // This is what closes the finding that `notes` alone is not enough.
+    expect(out.unsettledGaps).toHaveLength(1);
+    expect(out.unsettledGaps[0]).toMatchObject({
+      scopeName: "New York",
+      bookBalanceCents: 50_000,
+      bankBalanceCents: 10_000,
+      gapCents: 40_000, // book above bank — the chapter is owed $400
+    });
+  });
+
+  test("resumes booking once real cash movement is turned on", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedBankBalance(s, s.chapterId, 10_000);
+
+    // Off: measured but not booked.
+    const off = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+    expect(off.settlementsBooked).toBe(0);
+    expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(0);
+    expect(off.unsettledGaps).toHaveLength(1);
+
+    // On: the SAME day's re-run now books it — turning the toggle on does not
+    // require waiting for tomorrow's date to pick the gap back up.
+    await enableRealMovement(s);
+    const on = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+    expect(on.settlementsBooked).toBe(1);
+    expect(on.movedCents).toBe(40_000);
+    // Booked now, so nothing is left standing unreported.
+    expect(on.unsettledGaps).toHaveLength(0);
+    const legs = await legsFor(s, `balsettle-${s.chapterId}-${DAY}`);
+    expect(legs).toHaveLength(2);
+    expect(legs.every((l) => l.transferOrigin === "balance_settlement")).toBe(true);
   });
 });
 

@@ -623,6 +623,29 @@
  *    gained one clause in its EXPLANATION — the refusal is identical from the
  *    band, because it is the same flow — which is the one place a reader could
  *    have concluded the grid path was the lighter one.
+ *
+ * Reconciliation "flag" → "mark for review" (2026-08-14, founder: "what does
+ * 'flag' do, it feels like a scary button"). Presentation-only rename on the
+ * Accounts page's payout/transfer audit rows — the Convex mutation names and
+ * `ReconciliationFlagKind` are unchanged, so nothing here about the DATA
+ * model moved. `finance-transfers-and-payouts`'s STRIPE-payouts tip said the
+ * Financial Manager can "audit and flag them"; it now says "audit it and mark
+ * it for review" to match. NOTE this is a DIFFERENT flag from the personal-
+ * expense one the "Personal is a flag, not a status" rule teaches — that one
+ * is untouched here, and the entry above moved it to the Marked column.
+ *
+ * BALANCE SETTLEMENT ONLY BOOKS WHEN CASH REALLY MOVES (2026-08-14, founder:
+ * "it creates actual things on the ledger which is just wrong and cluttered").
+ * The morning engine used to book a `balance_settlement` transfer pair every
+ * morning whether or not Real cash movement was on — and since that pair is
+ * worth $0 to book value by construction, it never closed the gap it measured
+ * and re-booked an identical row the next day, forever. Booking is now gated
+ * on the same setting that decides execution. `finance-transfers-and-payouts`'s
+ * STRIPE-payouts tip taught the old behaviour ("books each chapter's share as
+ * an automatic transfer") and now teaches the real one: detection and deposit
+ * labelling always happen, booking AND moving are both gated, and with the
+ * toggle off the engine reports the gap instead of writing a row. The same tip
+ * also lost a stale "badged 'Payout allocation'" claim, dead since #553.
  */
 
 import type {
@@ -1846,7 +1869,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts, labels the bank deposit as a payout for you, and books each chapter's share as an automatic transfer — that's what routes the CASH to the right account (and, when the Financial Manager has Real cash movement on, actually moves it). You'll see each one on the Accounts page, badged \"Payout allocation\", where the Financial Manager can audit and flag them. Givebutter and other deposits still need the hand-marking this lesson teaches — and when you mark one, the modal also asks WHOSE money it is: pick the book it belongs to (some Givebutter payouts are central's, some are a chapter's) and the app books that transfer for you. Changing your mind later is an offsetting transfer, so pick deliberately.",
+        text: "STRIPE payouts mark themselves. Every morning the reconciliation engine detects new Stripe payouts and labels the bank deposit as a payout for you — that part always happens, whether or not the org moves real cash. Separately, that SAME morning run measures the gap between each chapter's book value and what's actually in its bank account: with Real cash movement ON, it books and moves a transfer to close that gap; with it OFF, it only reports the gap on the Accounts page and books nothing — no ledger entry, no cash movement, until a Financial Manager turns it on. You'll see each payout on the Accounts page, badged with its own status (e.g. \"Deposit found & labelled\"), where the Financial Manager can audit it and mark it for review. Givebutter and other deposits still need the hand-marking this lesson teaches — and when you mark one, the modal also asks WHOSE money it is: pick the book it belongs to (some Givebutter payouts are central's, some are a chapter's) and the app books that transfer for you. Changing your mind later is an offsetting transfer, so pick deliberately.",
       },
       {
         kind: "scenario",

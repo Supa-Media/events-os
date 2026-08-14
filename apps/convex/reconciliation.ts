@@ -54,7 +54,17 @@
  * settlement entries. Manual `recordTransfer` pairs are never executed (they
  * record movements that already happened outside the app). With the toggle
  * off, every write is a ledger entry and the LEDGER alone states each book's
- * true value.
+ * true value — EXCEPT `settleChapterBalances`' `balance_settlement` pairs,
+ * which contribute nothing to book value by construction
+ * (`bookBalance.ts#signedBookCents`) and exist ONLY to be executed. With the
+ * toggle off nothing ever executes one, so `settleChapterBalances` books
+ * NOTHING and instead reports each chapter's book-vs-bank gap through its
+ * `notes` — booking a $0 pair nobody will move would just re-book the
+ * identical row every morning forever (founder: "it creates actual things on
+ * the ledger which is just wrong and cluttered"). Both that gate and step 5's
+ * execution filter read `financeSettings.autoTransferRealMovementSinceMs`
+ * through the one shared `resolveRealMovementSinceMs` helper so they can
+ * never disagree about whether movement is on.
  *
  * SAFETY PROPERTIES:
  *  - Idempotent everywhere: deterministic transfer group ids, `stripePayouts`
@@ -192,6 +202,26 @@ function easternDateStr(ts: number): string {
 // ── Validators shared by the engine's internal plumbing ──────────────────────
 
 const financeScopeValidator = v.union(v.id("chapters"), v.literal("central"));
+
+/**
+ * One chapter sitting below (or above) its book value THAT `settleChapterBalances`
+ * measured but did not book, because real cash movement is off. This is a
+ * STANDING CONDITION, not a run event, so it gets its own typed field on the
+ * run summary rather than living only inside `notes` (an unordered, capped,
+ * collapsible log — see `ReconciliationSection`'s "Real cash movement" block,
+ * which is where the accounts page renders this). Central is never a member —
+ * the gate only ever withholds a chapter's settlement.
+ */
+const unsettledGapValidator = v.object({
+  scope: v.id("chapters"),
+  scopeName: v.string(),
+  bookBalanceCents: v.number(),
+  bankBalanceCents: v.number(),
+  // Signed: positive = the chapter's bank sits BELOW its book (owed money),
+  // negative = the chapter holds MORE than its book (surplus to return). Same
+  // sign convention as the internal `owed` this is copied from.
+  gapCents: v.number(),
+});
 
 /** One payout item (one Stripe balance transaction) as the ACTION hands it to
  *  the DB-apply mutation: signed cents + the tracing keys the mutation
@@ -335,6 +365,10 @@ export const finishRun = internalMutation({
     settlementsBooked: v.number(),
     allocatedCents: v.number(),
     notes: v.array(v.string()),
+    // A STANDING CONDITION, not a run event — never truncated the way `notes`
+    // is (there is one entry per chapter, never per note-worthy happening), so
+    // it gets no `MAX_RUN_NOTES`-style cap. See `unsettledGapValidator`.
+    unsettledGaps: v.optional(v.array(unsettledGapValidator)),
     error: v.optional(v.string()),
   },
   returns: v.null(),
@@ -347,6 +381,7 @@ export const finishRun = internalMutation({
       settlementsBooked: args.settlementsBooked,
       allocatedCents: args.allocatedCents,
       notes: args.notes.slice(0, MAX_RUN_NOTES),
+      unsettledGaps: args.unsettledGaps ?? [],
       ...(args.error ? { error: args.error } : {}),
     });
     return null;
@@ -839,6 +874,26 @@ export const retryDepositMatch = internalMutation({
   },
 });
 
+/**
+ * THE resolution of "is real cash movement on, and since when" —
+ * `financeSettings.autoTransferRealMovementSinceMs`, stamped by
+ * `setRealMovementEnabled` every time the FM flips the toggle ON (never
+ * cleared on OFF; see that mutation's comment). `null` means never enabled.
+ *
+ * Both `settleChapterBalances` (should it book a `balance_settlement` pair at
+ * all — see that function's doc for why an unexecutable settlement is not a
+ * ledger event) and `listUnexecutedEnginePairs` (should it execute booked
+ * pairs, and which ones) call this SAME helper so the two can never disagree
+ * about whether movement is on. Do not re-read `financeSettings` inline at
+ * either call site — extend this helper instead.
+ */
+async function resolveRealMovementSinceMs(
+  ctx: QueryCtx | MutationCtx,
+): Promise<number | null> {
+  const settings = await ctx.db.query("financeSettings").first();
+  return settings?.autoTransferRealMovementSinceMs ?? null;
+}
+
 // ── Auto settlement (internal — network-free) ────────────────────────────────
 
 /**
@@ -888,6 +943,30 @@ export const retryDepositMatch = internalMutation({
  * `MIN_SETTLEMENT_CENTS` stops the engine booking a pair every morning to chase
  * a few cents of rounding — a ledger row costs a reader's attention, and $5 of
  * drift is not worth one.
+ *
+ * ── ONLY BOOKED WHEN REAL CASH MOVEMENT IS ON ───────────────────────────────
+ * A `balance_settlement` pair contributes ZERO to book value by construction
+ * (`bookBalance.ts#signedBookCents`) — the whole point of the origin is to be
+ * EXECUTED, moving real cash so the bank catches up to the book. With
+ * `financeSettings.autoTransferRealMovement` off, nothing ever executes it
+ * (`listUnexecutedEnginePairs` never returns it), so it is not a deferred
+ * economic event, it is a no-op decoration: it never closes the gap it
+ * measures, so the identical gap reappears tomorrow and the engine books the
+ * identical pair again, forever. That is the exact bug the founder flagged —
+ * "it creates actual things on the ledger which is just wrong and cluttered"
+ * (five near-duplicate rows for one chapter in five days, movement off the
+ * whole time). So: this only calls `recordTransferPair` when
+ * `resolveRealMovementSinceMs` says movement is ON — the SAME resolution
+ * `listUnexecutedEnginePairs` uses, so booking and execution can never
+ * disagree about whether a settlement is real. With movement off, the gap is
+ * still measured and reported through TWO channels: a `notes` line (part of
+ * the ordinary run log), and — because a standing "we owe you money and
+ * aren't sending it" condition must not depend on a reader expanding a
+ * capped, collapsible notes toggle to find it — a typed `unsettledGaps` entry
+ * (`unsettledGapValidator`) that the accounts page renders unconditionally,
+ * next to the "Real cash movement" toggle that is its cause. Nothing is
+ * silently dropped, and nothing is written to the ledger until there's a
+ * mechanism that will act on it.
  */
 export const settleChapterBalances = internalMutation({
   args: { dateStr: v.string() },
@@ -895,11 +974,24 @@ export const settleChapterBalances = internalMutation({
     settlementsBooked: v.number(),
     movedCents: v.number(),
     notes: v.array(v.string()),
+    unsettledGaps: v.array(unsettledGapValidator),
   }),
   handler: async (ctx, { dateStr }) => {
     const notes: string[] = [];
     let settlementsBooked = 0;
     let movedCents = 0;
+    // Every gap this run measured but could not book, because real cash
+    // movement is off — see `unsettledGapValidator`'s doc for why this is a
+    // separate typed field instead of another `notes` line.
+    const unsettledGaps: (typeof unsettledGapValidator.type)[] = [];
+
+    // THE gate: booked only when this is non-null, i.e. real cash movement is
+    // ON — same resolution `listUnexecutedEnginePairs` uses to decide what to
+    // execute, so the two can never disagree about whether a settlement pair
+    // is a real economic event or a $0 ledger decoration. See this
+    // function's doc for why.
+    const realMovementSinceMs = await resolveRealMovementSinceMs(ctx);
+    const realMovementOn = realMovementSinceMs != null;
 
     const balances = await computeBookBalances(ctx);
     const accountRows = await ctx.db
@@ -917,7 +1009,7 @@ export const settleChapterBalances = internalMutation({
     const centralBank = bankFor(CENTRAL);
     if (centralBank == null) {
       notes.push("Balance settlement skipped — no central bank balance yet.");
-      return { settlementsBooked, movedCents, notes };
+      return { settlementsBooked, movedCents, notes, unsettledGaps };
     }
     // Only cash central is actually free to send. Reduced as each chapter is
     // funded so two chapters can't both be promised the same dollar.
@@ -935,6 +1027,28 @@ export const settleChapterBalances = internalMutation({
 
     for (const chapter of shortfalls) {
       if (Math.abs(chapter.owed) < MIN_SETTLEMENT_CENTS) continue;
+
+      if (!realMovementOn) {
+        // Real cash movement is off, so a `balance_settlement` pair here
+        // would be a $0 ledger entry nothing ever executes — see this
+        // function's doc. Report the gap through the run-summary `notes`
+        // channel instead of booking it, so the finding isn't lost, but
+        // `settlementsBooked`/`movedCents` stay honest at 0.
+        notes.push(
+          `${chapter.scopeName}: book ${formatCents(chapter.bookBalanceCents)} vs bank ${formatCents(chapter.bank)} ` +
+            `— ${formatCents(Math.abs(chapter.owed))} ${chapter.owed > 0 ? "below" : "above"} book. ` +
+            `Not booked: real cash movement is off, so a settlement pair here would never execute. ` +
+            `Turn on real cash movement (accounts page) to have the engine move it.`,
+        );
+        unsettledGaps.push({
+          scope: chapter.scope as Id<"chapters">,
+          scopeName: chapter.scopeName,
+          bookBalanceCents: chapter.bookBalanceCents,
+          bankBalanceCents: chapter.bank,
+          gapCents: chapter.owed,
+        });
+        continue;
+      }
 
       // A chapter holding MORE than its book returns the excess — the same
       // true-up in reverse, and central is where the surplus belongs.
@@ -989,7 +1103,7 @@ export const settleChapterBalances = internalMutation({
         }
       }
     }
-    return { settlementsBooked, movedCents, notes };
+    return { settlementsBooked, movedCents, notes, unsettledGaps };
   },
 });
 
@@ -1133,8 +1247,7 @@ export const listUnexecutedEnginePairs = internalQuery({
     }),
   ),
   handler: async (ctx) => {
-    const settings = await ctx.db.query("financeSettings").first();
-    const enabledSinceMs = settings?.autoTransferRealMovementSinceMs;
+    const enabledSinceMs = await resolveRealMovementSinceMs(ctx);
     if (enabledSinceMs == null) return []; // never enabled — nothing executes
 
     /** True iff the deposit row backing an allocation is cash that actually
@@ -2394,6 +2507,10 @@ async function runEngine(
   let transfersBooked = 0;
   let settlementsBooked = 0;
   let allocatedCents = 0;
+  // Standing conditions `settleChapterBalances` measured but couldn't book —
+  // see `unsettledGapValidator`'s doc. Carried separately from `notes` so the
+  // accounts page can render it unconditionally.
+  let unsettledGaps: (typeof unsettledGapValidator.type)[] = [];
 
   const finish = async (
     status: "ok" | "error" | "skipped",
@@ -2407,6 +2524,7 @@ async function runEngine(
       settlementsBooked,
       allocatedCents,
       notes,
+      unsettledGaps,
       ...(error ? { error } : {}),
     });
   };
@@ -2786,6 +2904,7 @@ async function runEngine(
         settlementsBooked: number;
         movedCents: number;
         notes: string[];
+        unsettledGaps: (typeof unsettledGapValidator.type)[];
       } = await ctx.runMutation(
         internal.reconciliation.settleChapterBalances,
         { dateStr: easternDateStr(Date.now()) },
@@ -2793,6 +2912,7 @@ async function runEngine(
       settlementsBooked += balSettle.settlementsBooked;
       allocatedCents += balSettle.movedCents;
       notes.push(...balSettle.notes);
+      unsettledGaps = balSettle.unsettledGaps;
       if (balSettle.settlementsBooked > 0) {
         notes.push(
           `Brought ${balSettle.settlementsBooked} chapter(s) to their book value.`,
@@ -3215,6 +3335,7 @@ export const reconciliationOverview = query({
         settlementsBooked: v.number(),
         allocatedCents: v.number(),
         notes: v.array(v.string()),
+        unsettledGaps: v.array(unsettledGapValidator),
         error: v.union(v.string(), v.null()),
       }),
       v.null(),
@@ -3301,6 +3422,7 @@ export const reconciliationOverview = query({
             settlementsBooked: lastRunDoc.settlementsBooked,
             allocatedCents: lastRunDoc.allocatedCents,
             notes: lastRunDoc.notes,
+            unsettledGaps: lastRunDoc.unsettledGaps ?? [],
             error: lastRunDoc.error ?? null,
           }
         : null,

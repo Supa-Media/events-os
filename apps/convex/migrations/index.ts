@@ -89,6 +89,7 @@ import { renameReimbursementPayoutRows } from "./0067_rename_reimbursement_payou
 import { materializeReimbursementCodings } from "./0068_materialize_reimbursement_codings";
 import { materializeReimbursementReceiptsMigration } from "./0069_materialize_reimbursement_receipts";
 import { linkWireGiftsToTheirDeposit } from "./0070_link_wire_gifts_to_their_deposit";
+import { removeUnexecutedBalanceSettlementsMigration } from "./0071_remove_unexecuted_balance_settlements";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -407,4 +408,20 @@ export const MIGRATIONS: Migration[] = [
   // deposit by day and exact total, and only when exactly one deposit fits.
   // See 0070.
   linkWireGiftsToTheirDeposit,
+  // The morning engine wrote a near-duplicate `balance_settlement` transfer
+  // pair every day for months, because the settlement is worth $0 to the
+  // book (`lib/bookBalance.ts`'s deliberate zero for that origin) and so
+  // never closes the gap it measures — a sibling change stops new ones being
+  // written, this clears the backlog. Founder ask: "can't you run a
+  // migration to delete the rows" — yes, and this is it: same guarded core
+  // as the human-run `removeUnexecutedBalanceSettlements` mutation
+  // (`lib/removeUnexecutedBalanceSettlements.ts`), invoked here with
+  // `execute: true` under deploy-admin privileges instead of waiting on a
+  // signed-in ED/FM session. Refuses the WHOLE run rather than partially
+  // cleaning up if any candidate anywhere fails any precondition — and,
+  // unlike the mutation, THROWS on a refusal instead of returning it, since
+  // `runPending` ledgers whatever `run` returns unconditionally; a returned
+  // refusal would be recorded as permanently applied and never retried. See
+  // 0071.
+  removeUnexecutedBalanceSettlementsMigration,
 ];
