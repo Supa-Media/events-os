@@ -116,6 +116,12 @@ const SYNC_THROTTLE_MS = 60_000;
  *  The manual button still works forever (no date gate). */
 const CRON_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
 
+/** How many donor rows one PERSON may hold before the legacy-backfill guard
+ *  stops widening (see that guard). One row per scope is the shape this is
+ *  built for — a handful of chapters plus central — so this is a runaway
+ *  backstop, not a working limit. */
+const SIBLING_DONOR_SCAN_LIMIT = 50;
+
 /** Trim + lowercase for name matching (mirror-type dedup by ticket-type name). */
 function normalizeName(name: string): string {
   return name.trim().toLowerCase();
@@ -783,17 +789,63 @@ export const applyGivebutterDonations = triggerInternalMutation({
       // Pop The Balloon's campaign did exactly that: $665 of duplicate giving,
       // repaired by a 2026-08 one-off since removed.
       //
-      // So: before inserting, check whether THIS donor already holds a
+      // So: before inserting, check whether this donor already holds a
       // legacy-keyed gift for the same money on the same UTC day. Scoped to
       // `gb:txn:`-prefixed rows deliberately — it can never suppress against
       // this sync's own rows, so two genuine same-amount gifts on one day
       // still both land (the mistake that cost a real $500 bank deposit
       // earlier in this reconciliation was exactly that kind of collapse).
-      // Bounded read: one donor's gift history, not a table scan.
-      const priorForDonor = await ctx.db
-        .query("gifts")
-        .withIndex("by_donor", (q) => q.eq("donorId", donorId))
-        .take(200);
+      //
+      // ── ACROSS EVERY DONOR ROW FOR THE PERSON, NOT JUST THIS ONE ─────────
+      // This guard used to read `by_donor` on `donorId` alone, and that made
+      // it dependent on donor matching having worked — which is exactly what
+      // fails when the two imports run at different SCOPES.
+      //
+      // That is not hypothetical: on 2026-08-14 an API sync ran at `central`
+      // against a July CSV backfill that had landed at New York.
+      // `findDonorInScope` looks up `by_scope_and_email`, so the central
+      // lookup could not see the New York donor and minted a second row for
+      // the same person — same name, same email — and this guard then read
+      // that fresh row's empty history and found nothing to collide with.
+      // 88 gifts totalling $7,324.75 were re-inserted, and the org's
+      // reconciliation page reported $7,228.25 "unaccounted for" the next
+      // morning. Three defenses in a row (externalRef, this guard, donor
+      // matching) all fell to one changed variable.
+      //
+      // So the lookup now spans every donor row that belongs to the same
+      // PERSON: the cross-chapter identity layer (`donorIdentities`, which
+      // `matchOrCreateDonor` already attaches on both its branches) is the
+      // right notion of sameness here, with email as the fallback for a row
+      // that predates the layer. Bounded: one person's donor rows and their
+      // gift histories, never a table scan.
+      const donorRow = await ctx.db.get(donorId);
+      const siblingIds = new Set<Id<"donors">>([donorId]);
+      if (donorRow?.identityId) {
+        const identityId = donorRow.identityId;
+        for (const sib of await ctx.db
+          .query("donors")
+          .withIndex("by_identity", (q) => q.eq("identityId", identityId))
+          .take(SIBLING_DONOR_SCAN_LIMIT)) {
+          siblingIds.add(sib._id);
+        }
+      } else if (donorRow?.email) {
+        const donorEmail = donorRow.email;
+        for (const sib of await ctx.db
+          .query("donors")
+          .withIndex("by_email", (q) => q.eq("email", donorEmail))
+          .take(SIBLING_DONOR_SCAN_LIMIT)) {
+          siblingIds.add(sib._id);
+        }
+      }
+      const priorForDonor: Doc<"gifts">[] = [];
+      for (const sibId of siblingIds) {
+        priorForDonor.push(
+          ...(await ctx.db
+            .query("gifts")
+            .withIndex("by_donor", (q) => q.eq("donorId", sibId))
+            .take(200)),
+        );
+      }
       const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
       const legacyTwin = priorForDonor.find(
         (g) =>
