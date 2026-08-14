@@ -994,3 +994,43 @@ describe("the fee surfaces on the give form", () => {
     expect(territory).not.toContain('id="gc_monthly_covfees"');
   });
 });
+
+/**
+ * The consent copy and the `consentIndexable` stamp are ONE decision split
+ * across two files, and only this test holds them together.
+ *
+ * `givingDonations.ts` / `givingPledges.ts` stamp `consentIndexable: true` on
+ * every consent captured by the give form, which is what lets an indexed city
+ * page print a giver's chosen name beside their amount (D10). That stamp is
+ * only honest because the form says, in words, that the page can be found
+ * through search. Weaken the sentence and the stamp becomes a promise nobody
+ * made — so if someone edits that copy, this fails and points at the two call
+ * sites that have to change with it.
+ */
+describe("the wall consent copy earns the consentIndexable stamp (D10)", () => {
+  const html = renderGiveTerritoryPage(
+    RAISING_TERRITORY,
+    STATS,
+    SITE,
+    null,
+    null,
+    WALL,
+  );
+
+  test("says the page is publicly visible", () => {
+    expect(html).toMatch(/anyone can see/i);
+  });
+
+  test("says it can be found by search — the sentence the stamp rests on", () => {
+    expect(html).toMatch(/search engine/i);
+  });
+
+  test("still promises real name and email are never public", () => {
+    expect(html).toMatch(/real name and email address never appear/i);
+  });
+
+  test("consent is still off by default", () => {
+    expect(html).toMatch(/Off by default/i);
+    expect(html).not.toMatch(/id="gc_monthly_share"[^>]*checked/);
+  });
+});

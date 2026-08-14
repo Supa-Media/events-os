@@ -58,10 +58,23 @@ import type {
  *  fill in what gets shown.
  *
  *  What is NEVER public, and the hint says so: their real name and email. The
- *  wall only ever renders `displayName` (see `activityWallHtml`). */
+ *  wall only ever renders `displayName` (see `givingWallHtml`).
+ *
+ *  THE HINT NAMES SEARCH, and that sentence is load-bearing (v3, D10 +
+ *  docs/plans/give-redesign-v3.md "Privacy posture"). City pages used to carry
+ *  `noindex`, so "anyone can see it" meant anyone with the link; now they are
+ *  indexable, and being findable by name beside what you gave is a materially
+ *  bigger thing to agree to. `givingDonations`/`givingPledges` stamp
+ *  `consentIndexable: true` on consent captured here ON THE STRENGTH OF THIS
+ *  SENTENCE — it is what makes attribution on an indexed page honest, and it is
+ *  why consents recorded before v3 render anonymously forever.
+ *
+ *  IF THIS COPY IS EVER WEAKENED — if "found through search engines" is cut or
+ *  softened — the two call sites must stop stamping `consentIndexable`, or the
+ *  page starts publishing names under a promise nobody made. */
 function giveFormExtrasHtml(prefix: string): string {
   return `<label class="sharewall"><input type="checkbox" id="${prefix}_share"> Show my name and gift amount on our public giving wall</label>
-  <p class="sharewall-hint">Off by default. The name you enter below and the amount you give appear on this page, which anyone can see. Your real name and email address never do.</p>
+  <p class="sharewall-hint">Off by default. The name you enter below and the amount you give appear on this page, which anyone can see &mdash; and this page can be found through search engines. Your real name and email address never appear anywhere public.</p>
   <div class="fld"><label for="${prefix}_public_name">Display name (optional)</label><input id="${prefix}_public_name" placeholder="e.g. Sam K. — shown on the wall if you share"></div>
   <div class="fld"><label for="${prefix}_message">Leave a public message (optional)</label><textarea id="${prefix}_message" rows="2" maxlength="280" placeholder="Say a word of encouragement..."></textarea></div>`;
 }
