@@ -35,22 +35,34 @@
  *     its rows and then the list below rendered them AGAIN — the same three
  *     budgets twice on one screen, with both headers counting them. A filter
  *     cannot duplicate anything.
- *  4. THE TOTALS STRIP DESCRIBES THE PAGE. It used to sum every one-time
- *     budget ever PLUS this year's recurring buckets — lifetime money added to
- *     cadence-window money, a figure describing nothing on screen.
+ *  4. THE TOTALS STRIP DESCRIBES THE PAGE — see below for what that came to
+ *     mean, and what it now means instead.
  *
- * ── TWO STRIPS, BECAUSE THERE ARE TWO UNITS (founder, 2026-08-14) ───────────
- * "Does budgeted and spent take into consideration recurring budgets? It
- * doesn't seem like it — monthly spend and quarterly spend, and monthly budget
- * and quarterly budget are missing here."
+ * ── ONE HEADLINE, ANNUALISED (founder, 2026-08-14) ──────────────────────────
+ * "The numbers do not add up… Love Thy Neighbor 5,000, Field Day 2,000, that's
+ * 7,000 already. The operating expenses alone is 500 a month, so this year
+ * that's 6,000 dollars. We're not adding up all the budgeted items, and same
+ * thing for how much we spent. The top is just false."
  *
- * They weren't. Point 4 above removed the sum and left the recurring half with
- * no headline at all — a column of cards and nothing saying what they came to.
- * The fix is a SECOND strip, not a re-merge: `RecurringTotalsStrip` totals the
- * standing buckets BY WINDOW (this month across the monthly ones, this quarter
- * across the quarterly ones), so every figure inside a row shares one unit.
- * See `recurringWindowTotals.ts` for the arithmetic and why yearly gets a row
- * of its own.
+ * This screen got that wrong TWICE, in opposite directions, and both attempts
+ * are worth remembering because the second looked like a fix.
+ *
+ * FIRST the strip summed one-time caps (lifetime plans) and recurring caps
+ * (one cadence window) into a single figure — genuinely meaningless. That was
+ * removed, leaving the strip covering one-time budgets only: honest about its
+ * own arithmetic, but a headline that silently meant "some of your budgets"
+ * while looking like "your budgets".
+ *
+ * SECOND came a separate per-cadence strip over the recurring section. It also
+ * refused to convert, so it just restated the cards underneath it — every
+ * figure in it was already on screen two inches below.
+ *
+ * The actual answer is that THE PAGE IS ALREADY A YEAR, so the year is the
+ * common unit and the caps should be CONVERTED, not dropped and not walled
+ * off. A $500-a-month bucket is $6,000 committed for 2026, the same kind of
+ * number as a $5,000 event cap. One strip, every budget in it. Spend is never
+ * annualised — see `annualBudgetTotals.ts`, which owns the arithmetic and the
+ * projection trap underneath it.
  *
  * Search still matches the event's own name (`refName`) as well as the title,
  * because titles are template-derived now and typing what you actually called
@@ -81,7 +93,7 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { BudgetGlanceCard } from "../../../components/finance/budgets/BudgetGlanceCard";
-import { recurringWindowTotals } from "../../../components/finance/budgets/recurringWindowTotals";
+import { annualBudgetTotals } from "../../../components/finance/budgets/annualBudgetTotals";
 
 type Glance = FunctionReturnType<typeof api.finances.budgetsGlance>;
 type GlanceRow = Glance["oneTime"][number];
@@ -141,18 +153,6 @@ function sortPastYear(rows: GlanceRow[]): GlanceRow[] {
   });
 }
 
-function totalsOf(rows: GlanceRow[]) {
-  let capCents = 0;
-  let spentCents = 0;
-  let over = 0;
-  for (const r of rows) {
-    capCents += r.capCents;
-    spentCents += r.spentCents;
-    if (r.remainingCents < 0) over += 1;
-  }
-  return { capCents, spentCents, remainingCents: capCents - spentCents, over };
-}
-
 function Stat({
   label,
   value,
@@ -179,15 +179,35 @@ function Stat({
   );
 }
 
-/** The current year's headline. Scoped to ONE year — see the file header. */
-function TotalsStrip({ rows, year }: { rows: GlanceRow[]; year: number }) {
-  const totals = totalsOf(rows);
+/**
+ * THE YEAR'S HEADLINE — every budget on the page, one-time and standing alike.
+ *
+ * Counts BOTH sections. A standing bucket's cap is annualised first (a
+ * $500-a-month bucket is $6,000 committed for the year); its spend is not,
+ * because spend is money that already moved. `annualBudgetTotals` owns that
+ * arithmetic and the reasoning behind it.
+ */
+function TotalsStrip({
+  rows,
+  recurringRows,
+  year,
+}: {
+  rows: GlanceRow[];
+  recurringRows: GlanceRow[];
+  year: number;
+}) {
+  const totals = annualBudgetTotals([...rows, ...recurringRows]);
   const over = totals.remainingCents < 0;
   return (
     <View className="mb-4 rounded-lg border border-border bg-raised p-3 shadow-card">
-      <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
-        {year} · events &amp; projects
-      </Text>
+      <View className="mb-2 flex-row flex-wrap items-baseline gap-2">
+        <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+          {year} · all budgets
+        </Text>
+        <Text className="text-2xs text-faint">
+          {totals.count === 1 ? "1 budget" : `${totals.count} budgets`}
+        </Text>
+      </View>
       <View className="flex-row flex-wrap gap-3">
         <Stat label="Budgeted" value={formatCents(totals.capCents)} />
         <Stat label="Spent" value={formatCents(totals.spentCents)} />
@@ -197,66 +217,15 @@ function TotalsStrip({ rows, year }: { rows: GlanceRow[]; year: number }) {
           tone={over ? "danger" : "success"}
         />
       </View>
-    </View>
-  );
-}
-
-/**
- * The RECURRING section's headline — one row per cadence, each framed by the
- * window its budgets actually govern.
- *
- * Deliberately NOT merged into `TotalsStrip`: see the file header. Within a
- * row every budget shares a unit, so the sum means something; across rows they
- * don't, so there is no grand total and there must never be one.
- *
- * It reads the SAME rows the cards below render (post-filter, post-search) off
- * the same three fields their headers print, so the headline is always the
- * visible sum of what's under it.
- *
- * That agreement is also why it renders on a PAST year's page rather than
- * being gated to the current one. The window words ("This month") are the
- * card's own — `BudgetGlanceCard`'s `CADENCE_LABELS`, unconditional there
- * too — and on a past year the server reports the year's LAST window through
- * `throughMonth = 12`. That wording is inherited, not introduced here; going
- * quiet on those pages would just put the gap this strip exists to close back
- * exactly where cards are on screen. Fixing the words is a server-side
- * question about what a closed year's window even means.
- */
-function RecurringTotalsStrip({ rows, year }: { rows: GlanceRow[]; year: number }) {
-  const totals = recurringWindowTotals(rows);
-  if (totals.length === 0) return null;
-  return (
-    <View className="mb-4 rounded-lg border border-border bg-raised p-3 shadow-card">
-      <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
-        {year} · recurring
-      </Text>
-      <View className="gap-3">
-        {totals.map((t, i) => {
-          const over = t.remainingCents < 0;
-          return (
-            <View
-              key={t.cadence}
-              className={`gap-1.5 ${i > 0 ? "border-t border-border pt-3" : ""}`}
-            >
-              <View className="flex-row flex-wrap items-baseline gap-2">
-                <Text className="text-xs font-semibold text-ink">{t.label}</Text>
-                <Text className="text-2xs text-faint">
-                  {t.count === 1 ? "1 budget" : `${t.count} budgets`}
-                </Text>
-              </View>
-              <View className="flex-row flex-wrap gap-3">
-                <Stat label="Budgeted" value={formatCents(t.capCents)} />
-                <Stat label="Spent" value={formatCents(t.spentCents)} />
-                <Stat
-                  label={over ? "Over by" : "Left"}
-                  value={formatCents(Math.abs(t.remainingCents))}
-                  tone={over ? "danger" : "success"}
-                />
-              </View>
-            </View>
-          );
-        })}
-      </View>
+      {recurringRows.length > 0 ? (
+        // Say the conversion out loud. Without this the reader can't reconcile
+        // the headline against the cards — a $500 bucket contributes $6,000
+        // here and prints "$500.00 this month" below, and an unexplained gap
+        // in a money figure reads as a bug (which is how this one was found).
+        <Text className="mt-2 text-2xs text-faint">
+          Standing budgets counted at their full-year amount.
+        </Text>
+      ) : null}
     </View>
   );
 }
@@ -405,7 +374,7 @@ export default function BudgetsGlanceScreen() {
         ) : (
           <View className="gap-6">
             <View>
-              <TotalsStrip rows={rows} year={viewYear} />
+              <TotalsStrip rows={rows} recurringRows={recurringRows} year={viewYear} />
               <SectionHeader
                 title="Events & projects"
                 count={rows.length || undefined}
@@ -432,9 +401,6 @@ export default function BudgetsGlanceScreen() {
                 below Events & projects, indistinguishable from the feature not
                 existing. Every branch below is a sentence instead of a gap. */}
             <View>
-              {recurringRows.length > 0 ? (
-                <RecurringTotalsStrip rows={recurringRows} year={viewYear} />
-              ) : null}
               <SectionHeader
                 title="Recurring"
                 count={recurringRows.length || undefined}
