@@ -6635,6 +6635,38 @@ export const repaymentFeeCoverageAudit = internalQuery({
       }),
     ),
     withCoverageRow: v.number(),
+    /**
+     * THE OTHER HALF, and the reason this query grew.
+     *
+     * Coverage income is booked the instant a repayment settles; the fee it
+     * offsets is booked by the daily 09:30 UTC sweep inside the morning
+     * engine. Between the two, book value runs HIGH by the coverage — which is
+     * a real, visible wobble on the accounts page, and the founder hit it
+     * within the hour ("now, when I go to accounts, lo and behold, there's
+     * $3.35 not accounted for").
+     *
+     * So the audit reports both sides: every coverage row booked, and when the
+     * Stripe fee expense was last refreshed. A coverage row posted AFTER that
+     * refresh has no expense against it yet, and its amount is exactly the
+     * temporary gap.
+     */
+    coverageRows: v.array(
+      v.object({
+        amountCents: v.number(),
+        bookedAt: v.string(),
+        merchantName: v.union(v.string(), v.null()),
+        categorised: v.boolean(),
+      }),
+    ),
+    stripeFeeRows: v.array(
+      v.object({
+        month: v.string(),
+        amountCents: v.number(),
+        postedAt: v.string(),
+      }),
+    ),
+    /** Coverage booked with no fee sweep since — the size of the wobble. */
+    awaitingFeeSweepCents: v.number(),
   }),
   handler: async (ctx) => {
     const all = await ctx.db.query("personalRepayments").collect();
@@ -6673,10 +6705,40 @@ export const repaymentFeeCoverageAudit = internalQuery({
         chapterId: String(r.chapterId),
       });
     }
+    // ── THE PAIRING ───────────────────────────────────────────────────────
+    // Every coverage row, and every Stripe fee row it could be offset by. The
+    // fee rows are the monthly rollups `processorFees.ts` writes, found by the
+    // marker it stamps rather than by name or merchant.
+    const allTxns = await ctx.db.query("transactions").collect();
+    const coverage = allTxns.filter((t) => t.feeCoverageOrigin != null);
+    const feeRows = allTxns.filter((t) => t.feeOrigin === "stripe_processing");
+
+    // The most recent moment the Stripe fee expense was refreshed. A coverage
+    // row created after it is, by definition, not yet offset.
+    const lastFeeRefresh = feeRows.reduce(
+      (latest, t) => Math.max(latest, t.postedAt),
+      0,
+    );
+    const awaitingFeeSweepCents = coverage
+      .filter((t) => t.createdAt > lastFeeRefresh)
+      .reduce((sum, t) => sum + t.amountCents, 0);
+
     return {
       settledViaStripe: settled.length,
       missingCoverageRow: missing,
       withCoverageRow: withRow,
+      coverageRows: coverage.map((t) => ({
+        amountCents: t.amountCents,
+        bookedAt: new Date(t.createdAt).toISOString(),
+        merchantName: t.merchantName ?? null,
+        categorised: t.categoryId != null,
+      })),
+      stripeFeeRows: feeRows.map((t) => ({
+        month: new Date(t.postedAt).toISOString().slice(0, 7),
+        amountCents: t.amountCents,
+        postedAt: new Date(t.postedAt).toISOString(),
+      })),
+      awaitingFeeSweepCents,
     };
   },
 });

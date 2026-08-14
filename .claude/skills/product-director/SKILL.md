@@ -375,6 +375,64 @@ Before finishing a run of this skill, you MUST:
 
 ## Learnings Log (newest first)
 
+### 2026-08-14 — Run 21 (repayment receipt email + the manual "Send receipt" button)
+- **A builder declined an affordance for a correct reason and still got it wrong,
+  and the founder had to ask for it.** The receipt builder wrote: "no manual
+  resend — matches the 'there is no manual mark repaid' posture; every
+  settlement is a real payment, so nothing needs a manual trigger." True of the
+  SYSTEM, irrelevant to the HUMAN: people lose emails, and a backlog of
+  repayments settled before the feature existed had no receipt at all. New
+  question for every brief that omits a manual control: *the system may not
+  need this, but does a PERSON?* Absence of a machine trigger is not absence of
+  a human one.
+- **Stamp-before-send is right, and incomplete on its own.** Copying #727's
+  at-most-once claim gave duplicate-safety and, unexamined, silent permanent
+  LOSS: a payer with no email hit a bare `continue` with zero logging, a Resend
+  failure logged without recipient or row id, and nothing could ever retry.
+  Precedent transplants carry the precedent's tradeoffs — re-ask whether they
+  still hold. An approval FYI can afford a silent loss; EVIDENCE a person may
+  need to prove they paid cannot. The shape that worked: keep the claim, split
+  "claimed" from "delivered", record and log every failure path, ship a
+  backfill.
+- **A claim stamp is not a lock.** The claim commits, then the action does
+  network I/O OUTSIDE that transaction — so two claimers (manual vs backfill,
+  manual vs automatic) both sent, proven by probe: two emails, one payment,
+  nobody asked. Convex's mutation serializability protects the claim, not the
+  send. Any "claim then go do I/O" shape needs an explicit in-flight marker
+  checked by every claimer, cleared on BOTH outcome branches (a failure that
+  leaves the lock set wedges the row), with a staleness escape for a dead
+  process. Second cousin of Run 20's refuse-path lens; both now §6 items.
+- **Bank-feed strings render into HTML and the escaping held — but the
+  EXTERNAL-API string did not.** Merchant names (hostile payloads, quotes,
+  `</td>` breakouts) were all escaped. The Stripe `receipt_url` was not: gated
+  only on `startsWith("https://")`, which says nothing about an embedded quote,
+  and a probe rendered a live `<script>`. Generalize: when a file documents
+  "raw interpolation is safe because every call site builds this from X",
+  the FIRST call site to source that value from anywhere but X is the bug —
+  grep the invariant's justification, not just the sink.
+- **My own brief carried a stale number and the agent caught it.** I asserted a
+  ~373-error mobile tsc baseline; the real figure was 409. The agent proved
+  zero-new by diffing the error list byte-for-byte against the pre-change tree
+  rather than trusting my number. Keep writing "count the baseline YOURSELF and
+  prove zero new" into briefs — it survives an orchestrator being wrong.
+- **`actions_list` is a context hazard and its `branch` param does not help** —
+  passing `branch` still returned main's runs and burned ~15k tokens. The only
+  reliable shape is: call it, let it save to file, then
+  `python3 -c "json.load(...)"` filtering on `head_sha`. Never read the raw
+  result.
+- **The Academy changelog block conflicted on THREE separate merges in one
+  day** (once on the reconciliation PR, twice on this one), always the same
+  doc-comment, always resolvable by keeping both entries. It is a serialization
+  point for every concurrent finance PR. Recommend to the founder that it move
+  out of the source file; until then, expect it and resolve by appending, never
+  choosing.
+- **Founder asks this run, quoted:** "when people pay what they owe… hey,
+  thanks for paying this off. This is your receipt… just in case they need a
+  receipt for showing that they did the payment"; and "add an email button for
+  already paid repayments… say they forgot it, or they just need it resent, or
+  it's in the past." The second is the standing lesson above: ship the human
+  override alongside the automatic path, not after being asked.
+
 ### 2026-08-14 — Run 20 (morning reconciliation: ledger clutter, transfer history, "flag" reads as scary)
 - **I ASSERTED A LIVE BUG FROM SCAR TISSUE AND HAD TO CORRECT MYSELF TO THE
   FOUNDER.** I found `reverseExcludedSettlementLoop.ts` (a one-time cleanup

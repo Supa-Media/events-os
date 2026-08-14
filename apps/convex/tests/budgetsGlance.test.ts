@@ -210,17 +210,20 @@ describe("finances.budgetsGlance", () => {
   });
 
   /**
-   * THE CONTRACT THE RECURRING TOTALS STRIP IS BUILT ON.
+   * THE CONTRACT THE BUDGETS HEADLINE IS BUILT ON.
    *
-   * The Budgets tab now prints a headline over the standing buckets, totalled
-   * BY WINDOW — this month across every monthly bucket, this quarter across
-   * every quarterly one (`recurringWindowTotals.ts`). It sums nothing but each
-   * row's own `capCents` / `spentCents` / `remainingCents`, which is only
-   * meaningful while those three stay CURRENT-WINDOW figures and stay in one
-   * unit per cadence. If a recurring row's `spentCents` ever widened to a
-   * year (or a cadence's cap started meaning something else), the strip would
-   * keep adding and start lying — with no other test catching it, because
-   * every assertion above is about a single budget.
+   * The tab's top strip totals EVERY budget for the year, which means it has
+   * to convert a standing bucket's cap first — $500 monthly becomes $6,000
+   * (`annualBudgetTotals.ts`). That conversion is only correct while a
+   * recurring row's `capCents` means ONE WINDOW'S cap and its `spentCents`
+   * means THAT WINDOW'S spend. If either ever widened to a year, the headline
+   * would multiply an already-annual figure by twelve and no other test here
+   * would catch it, because every assertion above is about a single budget.
+   *
+   * So this pins the shape rather than the strip: per-cadence caps stay in one
+   * unit, and a charge outside the current window stays out of `spentCents`
+   * (the year's elapsed spend reaches the client through `periods`, which is
+   * what the headline actually sums).
    */
   test("recurring rows aggregate per cadence into current-window totals", async () => {
     const t = newT();
