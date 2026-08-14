@@ -586,8 +586,24 @@
  * quizLength stays 5, so every table below is unchanged; no slugs, sections or
  * courses moved. See `streams/finances.ts`'s header comment for the reasoning.
  *
- * 2026-08-14 — and a second notice when the money actually goes (same founder
- * ask, the other half: "let's also send emails when we actually pay people…
+ * 2026-08-14 — the other half of that same founder report, content-only again.
+ * "All payouts and transfers should be bank record only. No need for
+ * documentation": marked internal transfers join marked payouts in owing
+ * nothing, so `finance-transfers-and-payouts`' "Marked still means documented"
+ * — split only hours earlier, and re-titled here — became "Both markings are
+ * bank record only", keeping the Marked-column sentence the note above gave
+ * it. Its fourth quiz
+ * question taught the retired rule as the correct answer and was SWAPPED
+ * (still four; the old answer is now a distractor), and the same lesson's
+ * payout rule gained a paragraph on a marked payout being named "Stripe
+ * payout" rather than after whoever the bank feed reports as the ACH
+ * originator. `finance-reconcile-grid`'s filter table lost its claim that the
+ * chase keeps marked transfers. No title, slug, minutes, quizLength, section
+ * or course order moved: every table below is unchanged.
+ *
+ * 2026-08-14 — and a second notice when the money actually goes: the other
+ * half of the approval-notice ask two notes up, not of the transfers report
+ * immediately above ("let's also send emails when we actually pay people…
  * email when approved and email when paid"). Content-only on
  * `finance-reimbursements-and-flags` again: one bullet added on the PAID email
  * — what it names, that "paid" is our word for SENT rather than for landed,

@@ -131,6 +131,49 @@ describe("resolveBudgetTitles", () => {
     expect(titles.get("b")).toBe("genesis two");
   });
 
+  test("two hand-typed names that match get disambiguated too", () => {
+    // The founder's complaint was two rows reading the same thing. Fixing it
+    // only for template-derived titles would reproduce it one layer down —
+    // two ad-hoc events both called "Event" is exactly as unhelpful.
+    const titles = resolveBudgetTitles([
+      row("a", null, on(2025, 4), "Event"),
+      row("b", null, on(2026, 9), "Event"),
+    ]);
+    expect(titles.get("a")).toBe("Event 2025");
+    expect(titles.get("b")).toBe("Event 2026");
+  });
+
+  test("identical fallback names within one year fall through to the month", () => {
+    const titles = resolveBudgetTitles([
+      row("a", null, on(2026, 4), "Event"),
+      row("b", null, on(2026, 9), "Event"),
+    ]);
+    expect(titles.get("a")).toBe("Event Apr 2026");
+    expect(titles.get("b")).toBe("Event Sep 2026");
+  });
+
+  test("a hand-typed name colliding with a TEMPLATE title is caught", () => {
+    // Only a pass over FINAL titles sees this one: "Genesis" arrived from a
+    // real template on one row and from someone's typing on the other.
+    const titles = resolveBudgetTitles([
+      row("a", "Genesis", on(2026, 3)),
+      row("b", null, on(2025, 8), "Genesis"),
+    ]);
+    expect(titles.get("a")).toBe("Genesis 2026");
+    expect(titles.get("b")).toBe("Genesis 2025");
+  });
+
+  test("a dateless duplicate is left alone rather than mislabelled", () => {
+    // There is nothing true to add. Two identical rows is bad; inventing a
+    // year for one of them is worse.
+    const titles = resolveBudgetTitles([
+      row("a", null, null, "Event"),
+      row("b", null, null, "Event"),
+    ]);
+    expect(titles.get("a")).toBe("Event");
+    expect(titles.get("b")).toBe("Event");
+  });
+
   test("an empty list is an empty map, not a throw", () => {
     expect(resolveBudgetTitles([]).size).toBe(0);
   });

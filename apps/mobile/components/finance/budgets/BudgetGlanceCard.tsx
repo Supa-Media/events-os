@@ -48,6 +48,7 @@ import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { Meter } from "../dashboard/Meter";
 import { MiniBar, txnStatusTone } from "../dashboard/parts";
+import { RecurringPeriodStrip } from "./RecurringPeriodStrip";
 
 type GlanceRow = FunctionReturnType<
   typeof api.finances.budgetsGlance
@@ -110,6 +111,16 @@ export function BudgetGlanceCard({ row }: { row: GlanceRow }) {
         <Meter pct={row.pct} size="sm" />
       </Pressable>
 
+      {/* The window-by-window strip renders from data the row ALREADY carries,
+          so it paints the instant the card opens rather than after the charge
+          query resolves — and it sits above the drawer for that reason. */}
+      {open && row.periods && row.periods.length > 0 ? (
+        <RecurringPeriodStrip
+          periods={row.periods}
+          cadence={row.cadence}
+          capCents={row.capCents}
+        />
+      ) : null}
       {open ? <BudgetGlanceDrawer row={row} /> : null}
     </View>
   );
