@@ -2419,7 +2419,6 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
         ) {
           continue;
         }
-        const intended = Number(s.metadata?.giveIntendedCents);
         const wrote = await ctx.runMutation(
           internal.givingPending.recordPendingGift,
           {
@@ -2428,9 +2427,6 @@ async function snapshotBalances(ctx: ActionCtx): Promise<void> {
             isGiveDonation: s.metadata?.giveDonation === "1",
             ...(s.metadata?.giveDonorId
               ? { giveDonorId: s.metadata.giveDonorId }
-              : {}),
-            ...(Number.isFinite(intended)
-              ? { giveIntendedCents: intended }
               : {}),
             ...(typeof s.created === "number"
               ? { submittedAt: s.created * 1000 }
@@ -3975,11 +3971,13 @@ export const reconciliationSummary = query({
     let inFlightGiftCount = 0;
     let inFlightGiftCents = 0;
     // The CHARGE basis — what Stripe is actually holding while each debit
-    // clears (gift + fee coverage + any bundled tickets). This is the figure
-    // the netting needs, because the cash side counts the charge; using the
-    // gift figure would leave a coverage-sized sliver "unaccounted for" on
-    // every fee-covered ACH gift. Falls back to `amountCents` for rows
-    // written before `chargeTotalCents` existed.
+    // clears (the gift + any bundled tickets). Kept as its own figure because
+    // the cash side counts the charge; on a `/give` gift it now EQUALS
+    // `amountCents`, since the gift is the whole charge with the fee coverage
+    // inside it (`gifts.feeCoverageCents`). It used to differ by the coverage,
+    // which left a sliver "unaccounted for" on every fee-covered ACH gift —
+    // the sliver migration 0072 closed on the settled side too. Falls back to
+    // `amountCents` for rows written before `chargeTotalCents` existed.
     let inFlightChargeCents = 0;
     const inFlightRows: {
       donorName: string;

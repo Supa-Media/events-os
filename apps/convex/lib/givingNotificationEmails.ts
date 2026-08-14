@@ -79,7 +79,8 @@ export type NotificationGift = {
   giftId: string;
   amountCents: number;
   /** What the donor added to absorb the processor's cut. Shown beside the
-   *  gift, never folded into it — `gifts.feeCoverageCents`' invariant. */
+   *  gift and INSIDE the amount above, never a separate sum —
+   *  `gifts.feeCoverageCents`' invariant. */
   feeCoverageCents?: number;
   receivedAt: number;
   method: string;
@@ -280,7 +281,7 @@ export function renderImmediateGiftEmail(payload: ImmediateEmailPayload): {
         gift.feeCoverageCents
           ? detailRow(
               "Fees covered",
-              `${esc(formatCents(gift.feeCoverageCents))} on top of the gift`,
+              `${esc(formatCents(gift.feeCoverageCents))} of this, added by the donor`,
             )
           : "",
         detailRow("Donor", esc(donorFacts.join(" · "))),

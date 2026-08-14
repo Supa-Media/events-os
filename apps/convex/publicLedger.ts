@@ -948,6 +948,9 @@ const publicEntry = v.object({
     ...DOCUMENTATION_STATES.map((d) => v.literal(d)),
     v.null(),
   ),
+  /** Why no document was owed, or null when one was. A loose string for the
+   *  same freeze-must-keep-validating reason as the stored column. */
+  documentationExempt: v.union(v.string(), v.null()),
   reconstructed: v.boolean(),
   nonDiscretionaryFee: v.boolean(),
 });
@@ -983,6 +986,7 @@ function toPublicEntry(row: Doc<"financePublicationEntries">) {
     affiliationMix: row.affiliationMix ?? null,
     groupDescription: row.groupDescription ?? null,
     documentation: row.documentation ?? null,
+    documentationExempt: row.documentationExempt ?? null,
     reconstructed: row.reconstructed ?? false,
     nonDiscretionaryFee: row.nonDiscretionaryFee ?? false,
   };
@@ -1502,6 +1506,7 @@ function draftToPublicEntry(e: EntryDraft): PublicLedgerEntry {
     affiliationMix: e.affiliationMix ?? null,
     groupDescription: e.groupDescription ?? null,
     documentation: e.documentation ?? null,
+    documentationExempt: e.documentationExempt ?? null,
     reconstructed: e.reconstructed ?? false,
     nonDiscretionaryFee: e.nonDiscretionaryFee ?? false,
   };

@@ -395,8 +395,21 @@
  * (its neighbour sentence already uses "close" for closing the MONTH, and
  * reusing it for the rows would collide), and `works-finishing-well`'s giving
  * duty. The Reconcile SCREEN keeps its name too — this renamed a status, not a
- * page. The audit log stores the label, so rows written before today still read
- * "Reconciled"; that trail is append-only and is not being rewritten.
+ * page.
+ *
+ * SUPERSEDED (2026-08-14, same day): this block used to end "the audit log
+ * stores the label, so rows written before today still read 'Reconciled'; that
+ * trail is append-only and is not being rewritten." Half of that is still true
+ * and half of it isn't. The trail is still append-only and no word anyone saw
+ * has been rewritten — but it now also stores the STATUS KEY beside those words
+ * and renders today's label from it at read time (founder, asked to backdate
+ * the strings and offered this instead: "Store the status key and render the
+ * label. That'll be great."). So history reads "Closed" throughout without a
+ * single row being falsified. NO ACADEMY CONTENT CHANGES: no lesson teaches
+ * what the History section's before/after column shows — the one lesson that
+ * describes a change history at all is `finance-merchant-rename`, and a
+ * merchant name is free text with no key either way. See
+ * `@events-os/shared`'s `financeAuditValue.ts`.
  *
  * COLUMN SHOW/HIDE on the grid (2026-08-14, founder: "a way to enable and
  * disable columns quickly… so I could just narrow in on that"). Content-only,

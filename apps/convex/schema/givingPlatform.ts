@@ -312,31 +312,36 @@ export const gifts = defineTable({
   donationId: v.optional(v.id("donations")), // link to the event donation row
   externalRef: v.optional(v.string()), // Givebutter txn id (import dedup key)
   /**
-   * The EXTRA the donor paid so the processor's cut wouldn't come out of their
-   * gift — "cover the fees", ticked at checkout.
+   * How much of `amountCents` the donor added so the processor's cut wouldn't
+   * come out of what they typed — "cover the fees", ticked at checkout.
    *
-   * THE INVARIANT, and the whole reason this is a separate field rather than
-   * being rolled into `amountCents`: `amountCents` is what the donor MEANT to
-   * give and is what every giving report counts;
-   * `amountCents + feeCoverageCents` is what the card was charged. Deliberately
-   * the same arrangement as `sales.donationCents` and
-   * `ticketOrders.donationCents` — one payment, two meanings — rather than a
-   * second pattern for the same problem.
+   * THE INVARIANT: this is a NOTE ON the gift, already INSIDE `amountCents`,
+   * and nothing adds it to or subtracts it from any total. `amountCents` is the
+   * whole charge — what actually left the donor's account — and is what every
+   * giving report counts. A donor who typed $300, ticked the box and was
+   * charged $302.42 gave $302.42.
    *
-   * It is the right way round for the same reason it is there: it makes the
-   * DEFAULT read of a gift correct. Roll the coverage into `amountCents` and a
-   * $100 gift starts reporting as $103.30, every year-on-year giving comparison
-   * silently inflates as adoption grows, and every call site that sums the
-   * column would have to remember to subtract it — with the one that forgot
-   * double-counting. Keeping it beside means total giving is verifiable
-   * unchanged across the launch of the feature: the same donors giving the same
-   * amounts report the same numbers, and only the org's NET moves, which is the
-   * entire point of offering it.
+   * IT USED TO BE THE OTHER WAY ROUND, and that was wrong (#732). The original
+   * reasoning was that keeping the coverage outside `amountCents` made total
+   * giving comparable year-on-year as adoption of the feature grew. But the
+   * comparability it bought was fictional: the donor really did give the larger
+   * amount, the org really did bank it, and booking the smaller figure
+   * understated contribution revenue by exactly the amount the donor was most
+   * deliberate about. It also made the donor's own receipt disagree with the
+   * ledger — Charisma's $309.27 charge reported as a $300 gift, with no
+   * document anywhere stating the difference. The fee is an expense of the org;
+   * the gift is the gross. Migration `0072` folded the historical rows in.
+   *
+   * WHY KEEP THE FIGURE AT ALL, then? Because "they covered the fee" is worth
+   * knowing — the thank-you copy says so, the donor's receipt breaks it out,
+   * and it measures whether offering the option is working. It answers a
+   * question about intent, never one about how much money there is.
    *
    * THE FEE IS NOT SPLIT AND NOT DERIVED FROM THIS. This is what the donor
    * agreed to add, computed by `grossUpCents` from the schedule at checkout
-   * time. It is a prediction of the fee, not a measurement of it. Where Stripe
-   * states the actual fee, the actual always wins (`sales.feeCents`,
+   * time for THE RAIL THEY PICKED (`givingDonations.startGiveDonationCheckout`).
+   * It is a prediction of the fee, not a measurement of it. Where Stripe states
+   * the actual fee, the actual always wins (`sales.feeCents`,
    * `processorFeeEntries` — both documented as never-derived), and if the two
    * differ the difference is simply the org's, in whichever direction. Nothing
    * reconciles one against the other.
@@ -344,6 +349,28 @@ export const gifts = defineTable({
    * Absent/0 = the donor didn't cover, which is every historical row.
    */
   feeCoverageCents: v.optional(v.number()),
+  /**
+   * WHICH RULE THIS ROW WAS WRITTEN UNDER: `true` means `feeCoverageCents` is
+   * already inside `amountCents` — the rule above, and the only rule going
+   * forward. Absent means the row predates it and holds the pre-coverage
+   * figure.
+   *
+   * IT EXISTS BECAUSE FOLDING IS NOT IDEMPOTENT. `amountCents +=
+   * feeCoverageCents` run twice overstates a gift by its coverage, permanently
+   * and silently, and NOTHING in a row's own values distinguishes a folded row
+   * from an unfolded one. The migration ledger stops a second RUN; this stops
+   * the two cases the ledger cannot see — a re-run against a partially
+   * migrated table, and a gift that settles in the window between the deploy
+   * and the migration (written by the new code, already gross, and one fold
+   * away from being wrong).
+   *
+   * Set by `recordGiftForDonor` on every covered gift it writes, and by
+   * migration `0072` on every row it corrects, so the two populations are
+   * indistinguishable AFTERWARDS — which is the point. Only ever written
+   * alongside a `feeCoverageCents`; an uncovered gift has neither and needs
+   * neither, since a coverage of zero folds to nothing.
+   */
+  feeCoverageInAmount: v.optional(v.boolean()),
   // F-6 P4: set when this payment is against a sponsorship agreement.
   sponsorshipId: v.optional(v.id("sponsorships")),
   note: v.optional(v.string()),

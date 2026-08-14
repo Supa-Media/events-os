@@ -98,6 +98,12 @@ export function registerGiveApiRoutes(http: HttpRouter): void {
         // is verified rather than trusted and a hand-crafted request can't ask
         // to be charged a number we never quoted.
         ...(body.coverFees ? { coverFees: true } : {}),
+        // Which rail they picked on our form — it decides the rate the
+        // coverage is quoted at AND what Stripe's checkout will accept. Only
+        // the one literal is recognised; anything else (including a missing
+        // value from an older cached page) falls through to the action's card
+        // default rather than being passed on as junk.
+        ...(body.method === "ach_debit" ? { method: "ach_debit" as const } : {}),
       });
     }),
   });

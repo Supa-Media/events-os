@@ -23,6 +23,9 @@ import {
   RECEIPT_EXCEPTION_REASONS,
   RECEIPT_EXCEPTION_STATUSES,
   RECEIPT_EXCEPTION_REASON_LABELS,
+  financeAuditValueLabel,
+  receiptExceptionApprovedKey,
+  receiptExceptionFiledKey,
   DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS,
   exceptionNeedsSecondApprover,
   formatCents,
@@ -249,6 +252,7 @@ export const attest = mutation({
       actorPersonId,
       field: "receiptException",
       after: RECEIPT_EXCEPTION_REASON_LABELS[args.reason],
+      afterKey: receiptExceptionFiledKey(args.reason),
       reason: args.note.trim(),
       amountCents: txn.amountCents,
     });
@@ -310,6 +314,7 @@ export const attestBulk = mutation({
           actorPersonId,
           field: "receiptException",
           after: RECEIPT_EXCEPTION_REASON_LABELS[args.reason],
+          afterKey: receiptExceptionFiledKey(args.reason),
           reason: args.note.trim(),
           amountCents: txn.amountCents,
         });
@@ -342,8 +347,14 @@ export const attestBulk = mutation({
                 action: "receipt_exception_decide",
                 actorPersonId,
                 field: "receiptException",
-                before: "Awaiting approval",
+                before: financeAuditValueLabel(
+                  "receipt_exception",
+                  "pending",
+                  null,
+                ),
                 after: `Approved — ${RECEIPT_EXCEPTION_REASON_LABELS[args.reason]}`,
+                beforeKey: "pending",
+                afterKey: receiptExceptionApprovedKey(args.reason),
                 amountCents: txn.amountCents,
               });
               approved += 1;
@@ -447,8 +458,12 @@ export const approve = mutation({
       action: "receipt_exception_decide",
       actorPersonId,
       field: "receiptException",
-      before: "Awaiting approval",
+      before: financeAuditValueLabel("receipt_exception", "pending", null),
       after: `Approved — ${RECEIPT_EXCEPTION_REASON_LABELS[exception.reason as ReceiptExceptionReason]}`,
+      beforeKey: "pending",
+      afterKey: receiptExceptionApprovedKey(
+        exception.reason as ReceiptExceptionReason,
+      ),
       reason: args.decisionNote?.trim() ?? null,
       amountCents: exception.amountCents,
     });
@@ -486,8 +501,10 @@ export const reject = mutation({
       action: "receipt_exception_decide",
       actorPersonId,
       field: "receiptException",
-      before: "Awaiting approval",
-      after: "Rejected",
+      before: financeAuditValueLabel("receipt_exception", "pending", null),
+      after: financeAuditValueLabel("receipt_exception", "rejected", null),
+      beforeKey: "pending",
+      afterKey: "rejected",
       reason: args.decisionNote.trim(),
       amountCents: exception.amountCents,
     });
@@ -526,7 +543,11 @@ export const withdraw = mutation({
       before: RECEIPT_EXCEPTION_REASON_LABELS[
         exception.reason as ReceiptExceptionReason
       ],
-      after: "Withdrawn",
+      after: financeAuditValueLabel("receipt_exception", "withdrawn", null),
+      beforeKey: receiptExceptionFiledKey(
+        exception.reason as ReceiptExceptionReason,
+      ),
+      afterKey: "withdrawn",
       amountCents: exception.amountCents,
     });
     return null;

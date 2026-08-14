@@ -294,14 +294,15 @@ describe("an in-flight bank debit leaves exactly one trace", () => {
     return run(t, (ctx) => ctx.db.query("pendingGifts").collect());
   }
 
-  test("a submitted ACH gift is recorded as pending — with the amount, not the charge", async () => {
+  test("a submitted ACH gift is recorded as pending at the full charge", async () => {
     const t = newT();
     const donorId = await seedDonor(t);
 
     await postEvent(t, "checkout.session.completed", {
-      // The donor gave $100 and covered $3.30 of fees, so Stripe charges
-      // $103.30. The PENDING figure has to be the gift, or it would shrink by
-      // the coverage the day it settles and look like money went missing.
+      // The donor typed $100 and covered $3.30 of fees, so Stripe charges
+      // $103.30 — and the GIFT is $103.30, coverage included
+      // (`gifts.feeCoverageCents`). The pending figure has to be that same
+      // number, or the money would appear to change size the day it settles.
       id: "cs_ach_pending",
       amount_total: 10_330,
       payment_status: "unpaid",
@@ -315,7 +316,8 @@ describe("an in-flight bank debit leaves exactly one trace", () => {
 
     const rows = await pendingRows(t);
     expect(rows).toHaveLength(1);
-    expect(rows[0].amountCents).toBe(10_000);
+    expect(rows[0].amountCents).toBe(10_330);
+    expect(rows[0].chargeTotalCents).toBe(10_330);
     expect(rows[0].scope).toBe("central");
     expect(rows[0].donorName).toBe("Bank Giver");
     expect(rows[0].sessionId).toBe("cs_ach_pending");

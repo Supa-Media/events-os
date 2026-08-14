@@ -232,6 +232,24 @@ section{margin-bottom:32px}
 /* The card-or-bank-transfer footnote under the submit button. Centred and
    quiet — it sets an expectation on the way to Stripe, it isn't a warning. */
 .paynote{font-size:12px;line-height:1.45;color:var(--muted);margin:10px 0 0;text-align:center}
+/* "How are you paying?" — the rail picker (.paypick), asked before we quote a
+   fee so the quote can be the rail's real rate. Two stacked rows rather than
+   side-by-side buttons: each carries a rate underneath it, and two columns of
+   small print on a phone is where a donor stops reading. The whole row is the
+   label so the tap target is the row, not the 16px radio. */
+.paypick{border:0;padding:0;margin:0 0 14px}
+.paypick legend{font-size:13px;color:var(--ink);font-weight:600;padding:0;margin:0 0 8px}
+.payopt{display:flex;align-items:center;gap:8px;cursor:pointer;
+  border:1.5px solid var(--border-strong);border-radius:12px;padding:10px 12px;
+  font-size:13.5px;color:var(--ink);line-height:1.35;margin-bottom:8px}
+.payopt:last-child{margin-bottom:0}
+.payopt:hover{border-color:var(--accent)}
+.payopt.sel{background:var(--accent-soft);border-color:var(--accent)}
+.payopt input{width:16px;height:16px;accent-color:var(--accent);flex:0 0 auto}
+.payopt-name{font-weight:600;flex:0 0 auto}
+/* The live rate off the real schedule. Muted and pushed right — it is evidence
+   for the choice, not the choice itself. */
+.payopt-rate{color:var(--muted);font-size:12px;margin-left:auto;text-align:right}
 /* The live "you'll be charged X, and Y reaches us" line under the cover-fees
    box. Indented to sit under the hint it follows, and in the ink colour rather
    than muted: it is a number the donor is agreeing to, not small print. */

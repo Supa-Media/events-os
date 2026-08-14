@@ -506,7 +506,8 @@ export default function EventDetailScreen() {
         typeof window !== "undefined" &&
         window.confirm(
           "Delete this event, all its items, and its budget? This can't be undone. " +
-            "If any spending is already coded to the budget, the delete will be refused.",
+            "If spending is coded to the budget, or a reimbursement for it is still " +
+            "unsettled, the delete will be refused.",
         )
       ) {
         void doDelete();
@@ -515,8 +516,9 @@ export default function EventDetailScreen() {
     }
     Alert.alert(
       "Delete event?",
-      "This removes the event, all its items, and its budget. If any spending is " +
-        "already coded to the budget, the delete will be refused.",
+      "This removes the event, all its items, and its budget. If spending is coded " +
+        "to the budget, or a reimbursement for it is still unsettled, the delete will " +
+        "be refused.",
       [
         { text: "Cancel", style: "cancel" },
         { text: "Delete", style: "destructive", onPress: doDelete },

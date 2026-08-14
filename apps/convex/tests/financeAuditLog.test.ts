@@ -227,14 +227,16 @@ describe("setTransactionStatus — excluding requires a reason (the headline ins
     const trail = await trailFor(s, "transaction", txnId);
     const statusRow = trail.find((r) => r.action === "status_change")!;
     // "Closed", not "Reconciled": the stored status is STILL `"reconciled"`,
-    // but the trail records the human LABEL, and that label was renamed
-    // (founder, on the deployed grid: "I don't even know what reconciled is").
-    //
-    // DO NOT "FIX" HISTORY TO MATCH. Rows written before the rename legitimately
-    // still read "Reconciled" in production — the audit log is append-only, and
-    // a migration that rewrote them would be editing the trail to say something
-    // nobody typed. A mixed column here is the honest outcome, not drift.
+    // and the trail now STORES that key and words it at read time (founder:
+    // "Store the status key and render the label"). Rows written before #717
+    // read "Closed" here too, from the same key — while the words they were
+    // written with stay on the document untouched, because the log is
+    // append-only and rewriting them would be editing the trail to say
+    // something nobody typed. See `financeAuditKeys.test.ts` for that pair of
+    // guarantees, and `@events-os/shared`'s `financeAuditValue.ts` for the
+    // design.
     expect(statusRow.after).toBe("Closed");
+    expect(statusRow.afterKey).toBe("reconciled");
     expect(statusRow.reason).toBeNull();
   });
 });

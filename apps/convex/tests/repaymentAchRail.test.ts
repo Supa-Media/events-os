@@ -267,10 +267,73 @@ describe("repayment rails — the days-long gap", () => {
         .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
         .collect(),
     ).then((rows) => rows.filter((r) => r.source === "repayment"));
-    // ONE credit, at the DEBT's amount — the fee coverage went to Stripe and
-    // is never credited against anyone's balance.
-    expect(credits).toHaveLength(1);
-    expect(credits[0].amountCents).toBe(24_800);
+
+    // TWO rows, and the difference between them is the whole point.
+    //
+    // The CREDIT is still exactly the debt — a debt cannot be overpaid, and
+    // widening it would stop the pair netting the personal charge. That half
+    // of the old assertion was right and is unchanged.
+    //
+    // What was missing is the COVERAGE. The monthly fee sweep books every cent
+    // Stripe took, this payment's cut included, so a coverage that went
+    // unrecorded left the fee expense unfunded and sank book value by exactly
+    // it — 49¢ on a $6.00 repayment, and the org's own cash reading as
+    // unexplained (founder, 2026-08-14). It arrived; it is booked.
+    expect(credits).toHaveLength(2);
+
+    const credit = credits.find((r) => r.feeCoverageOrigin == null);
+    expect(credit?.amountCents).toBe(24_800);
+    expect(credit?.flow).toBe("transfer");
+
+    const coverage = credits.find((r) => r.feeCoverageOrigin === "repayment");
+    expect(coverage?.amountCents).toBe(prepared.feeCents);
+    // INFLOW, not transfer: nobody owed it and it came from outside the org,
+    // so it has to carry positive signed value or it cannot offset the fee.
+    expect(coverage?.flow).toBe("inflow");
+    expect(coverage?.externalId).toBe("stripe_repayment_fee_coverage:cs_ach");
+    // Together they equal what the payer was actually charged.
+    expect((credit?.amountCents ?? 0) + (coverage?.amountCents ?? 0)).toBe(
+      prepared.chargeCents,
+    );
+  });
+
+  test("a redelivered webhook does not book the coverage twice", async () => {
+    // Stripe delivers at least once. The credit is guarded by
+    // `creditTransactionId`, but the coverage row is posted outside that loop
+    // and needed its own guard — without it a redelivery credits the org money
+    // nobody sent, which is the same bug this whole change exists to fix,
+    // pointed the other way.
+    const t = newT();
+    const s = await setupChapter(t);
+    const payer = await seedPayer(s);
+    const repaymentId = await seedRepayment(s, payer, 24_800);
+    const prepared = await s.as.mutation(internal.cards.prepareRepaymentCheckout, {
+      repaymentIds: [repaymentId],
+      method: "ach",
+    });
+    await t.mutation(internal.cards.markRepaymentsProcessing, {
+      repaymentIds: [repaymentId],
+      sessionId: "cs_ach_dupe",
+    });
+
+    for (let i = 0; i < 3; i++) {
+      await t.mutation(internal.cards.applyRepaymentPaidFromStripe, {
+        repaymentIds: [repaymentId],
+        sessionId: "cs_ach_dupe",
+        paymentIntentId: "pi_ach_dupe",
+        amountTotalCents: prepared.chargeCents,
+        feeCoverageCents: prepared.feeCents,
+      });
+    }
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    ).then((all) => all.filter((r) => r.feeCoverageOrigin === "repayment"));
+    expect(rows).toHaveLength(1);
+    expect(rows[0].amountCents).toBe(prepared.feeCents);
   });
 
   test("a REFUSED debit puts the debt back, marked failed", async () => {

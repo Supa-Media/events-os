@@ -101,6 +101,8 @@ import {
   getAcademyCourse,
   formatCents,
   REPAYMENT_NUDGE_COOLDOWN_MS,
+  PAYER_ATTRIBUTION_LABELS,
+  PERSONAL_FLAG_LABELS,
   type CardType,
   type CardStatus,
   type CardSource,
@@ -2779,8 +2781,10 @@ export const flagPersonalCharge = mutation({
         action: "personal_flag",
         actorPersonId: access.personId ?? null,
         field: "personId",
-        before: "Unattributed",
-        after: "Billed to the named payer",
+        before: PAYER_ATTRIBUTION_LABELS.unattributed,
+        after: PAYER_ATTRIBUTION_LABELS.billed_to_payer,
+        beforeKey: "unattributed",
+        afterKey: "billed_to_payer",
         amountCents: transaction.amountCents,
       });
     }
@@ -2804,8 +2808,10 @@ export const flagPersonalCharge = mutation({
         action: "personal_flag",
         actorPersonId: access.personId ?? null,
         field: "isPersonal",
-        before: "Not personal",
-        after: "Personal",
+        before: PERSONAL_FLAG_LABELS.not_personal,
+        after: PERSONAL_FLAG_LABELS.personal,
+        beforeKey: "not_personal",
+        afterKey: "personal",
         amountCents: transaction.amountCents,
       });
     }
@@ -2925,8 +2931,10 @@ export const unflagPersonalCharge = mutation({
       action: "personal_flag",
       actorPersonId: access.personId ?? null,
       field: "isPersonal",
-      before: "Personal",
-      after: "Not personal",
+      before: PERSONAL_FLAG_LABELS.personal,
+      after: PERSONAL_FLAG_LABELS.not_personal,
+      beforeKey: "personal",
+      afterKey: "not_personal",
       amountCents: transaction.amountCents,
     });
     return null;
@@ -5018,11 +5026,20 @@ export const applyRepaymentPaidFromStripe = internalMutation({
     for (const repayment of outstanding) {
       await settleRepayment(ctx, repayment, { stripePaymentIntentId: paymentIntentId });
     }
+    await postRepaymentFeeCoverage(ctx, {
+      sessionId,
+      coverageCents: feeCoverageCents ?? 0,
+      // The chapter that owned the debt. Where a bundled session spans books
+      // this takes the first — see the helper's own note.
+      repayments: outstanding,
+    });
     // ONE schedule per call, covering every repayment THIS call settled —
     // see this file's "Payment receipt" section. A redelivered/duplicate
     // webhook for the same session re-derives `outstanding` as empty (every
     // row it lists is already `paid`), so a retry schedules nothing rather
-    // than a second receipt.
+    // than a second receipt. Scheduled AFTER the fee-coverage posting so the
+    // books already carry that entry by the time the receipt naming the same
+    // covered fee goes out.
     if (outstanding.length > 0) {
       await ctx.scheduler.runAfter(0, internal.cards.sendRepaymentReceiptEmail, {
         repaymentIds: outstanding.map((r) => r._id),
@@ -5032,6 +5049,98 @@ export const applyRepaymentPaidFromStripe = internalMutation({
     return null;
   },
 });
+
+/**
+ * Book the fee the PAYER covered, as its own inflow row.
+ *
+ * WHY A ROW AT ALL — the bug this closes. The monthly processor-fee sweep
+ * (`processorFees.ts`) books every cent Stripe took, the cut on a repayment
+ * included, as an expense against book value. But `settleRepayment` posts a
+ * credit for the DEBT, and the payer sent the debt PLUS the fee. So the
+ * expense had nothing funding it: a $6.00 personal charge repaid as $6.49
+ * moved Stripe's balance by $6.00 and the books by $6.00 − $0.49, leaving
+ * exactly 49¢ of the org's own money reading as unexplained cash in
+ * `reconciliationGap.ts` (founder, 2026-08-14: "the unaccounted for in our
+ * banking was 49 cents"). The coverage is real money that really arrived and
+ * it belongs in the books; this is where it goes.
+ *
+ * The identical bug on the GIVING side was fixed differently, and the
+ * difference is not an inconsistency: a gift's coverage folds into the gift
+ * because the donor genuinely gave the larger amount (`gifts.feeCoverageCents`).
+ * A debt cannot be overpaid — the payer owes $6.00 and owes $6.00 after
+ * covering — so the coverage cannot be credited to it without inventing debt
+ * repayment that never happened. Beside it, not inside it.
+ *
+ * IDEMPOTENT ON THE SESSION, via `externalId`. Stripe redelivers, and a second
+ * delivery finds every repayment already settled (so `outstanding` is empty)
+ * but would otherwise still reach this — a duplicate coverage row would credit
+ * the org money nobody sent.
+ */
+export async function postRepaymentFeeCoverage(
+  ctx: MutationCtx,
+  args: {
+    sessionId: string;
+    coverageCents: number;
+    repayments: Doc<"personalRepayments">[];
+  },
+): Promise<void> {
+  if (args.coverageCents <= 0 || !Number.isInteger(args.coverageCents)) return;
+  // No repayment settled on this delivery ⇒ either a redelivery (the row is
+  // already there, and the guard below would catch it anyway) or a session
+  // whose debts were paid by another rail. Either way there is nothing here
+  // this row could belong to.
+  const first = args.repayments[0];
+  if (!first) return;
+
+  const externalId = `stripe_repayment_fee_coverage:${args.sessionId}`;
+  const existing = await ctx.db
+    .query("transactions")
+    .withIndex("by_external_id", (q) => q.eq("externalId", externalId))
+    .first();
+  if (existing) return;
+
+  // A bundled session can in principle span books (one payer, cards on two
+  // chapters). The coverage is ONE payment and is booked whole to the first
+  // debt's book rather than split — splitting invents a rounding rule for a
+  // case that has never occurred, and a note nobody can follow is worse than a
+  // few cents on the wrong book. Logged so it stops being invisible if it does.
+  const books = new Set(args.repayments.map((r) => String(r.chapterId)));
+  if (books.size > 1) {
+    console.warn(
+      `[cards] repayment session ${args.sessionId} spans ${books.size} books; ` +
+        `booking its ${args.coverageCents}c of fee coverage entirely to ${first.chapterId}.`,
+    );
+  }
+
+  const now = Date.now();
+  await ctx.db.insert("transactions", {
+    chapterId: first.chapterId,
+    source: "repayment",
+    // INFLOW, not `transfer`. The repayment credit beside it is a transfer —
+    // it moves a receivable back into cash and nets the charge. This is not
+    // that: nobody owed it, it arrived from outside the org, and it has to
+    // carry positive signed value or it cannot offset the fee expense it
+    // exists to offset (`lib/bookBalance.ts`).
+    flow: "inflow",
+    amountCents: args.coverageCents,
+    currency: "usd",
+    postedAt: now,
+    personId: first.payerPersonId,
+    feeCoverageOrigin: "repayment",
+    externalId,
+    // Nothing left to reconcile: the amount came from the settled session and
+    // the row explains itself (`autoExplanationLine("fee_coverage")`). Left
+    // open it would sit in the coding queue and the receipt chase forever as a
+    // 49¢ chore nobody can action — the same reasoning the zeroed fee rows in
+    // `processorFees.ts` are closed under.
+    status: "reconciled",
+    note:
+      `Processing fee covered by the payer on their personal-charge repayment ` +
+      `(Stripe session ${args.sessionId}). Offsets the processor fee on the same ` +
+      `payment, which the monthly fee sweep books as an expense.`,
+    createdAt: now,
+  });
+}
 
 /**
  * Initiate a personal-charge repayment via the payer's chosen method. The payer
