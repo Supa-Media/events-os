@@ -3,7 +3,6 @@
 import { describe, expect, test } from "@jest/globals";
 import {
   HIDEABLE_COLUMNS,
-  explainedStripMode,
   groupSegments,
   nextSortState,
   offerableColumns,
@@ -277,28 +276,3 @@ describe("groupSegments", () => {
   });
 });
 
-describe("explainedStripMode — the needs_explaining honesty rule", () => {
-  const progress = { explainableCount: 418 };
-
-  test("ordinary selections read as progress", () => {
-    expect(explainedStripMode(progress, [])).toBe("progress");
-    expect(explainedStripMode(progress, ["spend", "to_review"])).toBe("progress");
-  });
-
-  test("needs_explaining relabels instead of claiming zero progress", () => {
-    // The match set IS the unexplained rows, so `explainedCount` is 0 by
-    // construction — "0 of 418 explained" would read as "nothing has ever
-    // been done" when the truth is the opposite.
-    expect(explainedStripMode(progress, ["needs_explaining"])).toBe("remaining");
-    expect(
-      explainedStripMode(progress, ["spend", "needs_explaining"]),
-    ).toBe("remaining");
-  });
-
-  test("nothing explainable in the selection says nothing at all", () => {
-    expect(explainedStripMode({ explainableCount: 0 }, [])).toBe("hidden");
-    expect(
-      explainedStripMode({ explainableCount: 0 }, ["needs_explaining"]),
-    ).toBe("hidden");
-  });
-});

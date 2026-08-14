@@ -63,6 +63,7 @@ import {
   cards,
   cardRequests,
   personalRepayments,
+  repaymentLinks,
   payouts,
   increaseAccounts,
   legacyAccounts,
@@ -312,6 +313,9 @@ const schema = defineSchema({
   // WP-C.1: card requests (member request → FM/Treasurer approve/deny).
   cardRequests,
   personalRepayments,
+  // Secret, no-login link a manager sends so somebody can pay their personal
+  // charges back — including a past team member with no account.
+  repaymentLinks,
   payouts,
   increaseAccounts,
   legacyAccounts,
