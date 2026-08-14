@@ -697,6 +697,30 @@
  * its Group-by rule's Person paragraph, which also picks up the one clause a
  * reader of THAT lesson needs: the chase acts on the view you are standing in.
  * No quiz there changed; none of its questions hung on the button's name.
+ *
+ * PAYMENT RECEIPT ON PAYING A PERSONAL CHARGE BACK (2026-08-14, founder: "when
+ * people pay what they owe, we need to make sure we send them an email
+ * saying, like, hey, thanks for paying this off. This is your receipt …
+ * just in case they need a receipt for showing that they did the payment").
+ * `finance-reimbursements-and-flags` already enumerated every email the "you
+ * owe Public Worship" side sends — the flag notice, the reminder — and was
+ * silently missing the one that closes the loop: settling the debt now mails
+ * a receipt naming the total, the settle date, and one line per charge, with
+ * Stripe's own hosted receipt linked in when the payment ran through Stripe
+ * (a bank debit through the org's own Increase account has no Stripe charge
+ * behind it, and the email is still a complete, standalone receipt either
+ * way). ONE bullet added, content-only, minutes unchanged.
+ *
+ * ONE QUIZ QUESTION SWAPPED, at the 5-question cap
+ * `apps/convex/tests/academy.test.ts` enforces. OUT: "your chapter's
+ * Treasurer submits their own reimbursement — who approves it", whose
+ * doctrine (approver ≠ requester is identity-based, not role-based) is
+ * taught and quizzed in full in `finance-raise-vs-manage`'s "Separation of
+ * duties is identity-based, not a courtesy" section — losing it here loses
+ * no coverage. IN: paying back several flagged charges in one
+ * bundled payment gets ONE receipt itemizing all of them, never one per
+ * charge, with the Stripe-link/no-Stripe-link distinction spelled out in the
+ * explanation.
  */
 
 import type {
@@ -1551,6 +1575,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
           "**Card or bank transfer — you choose, and you cover the fee:** the payment processor's cut is added on top so Public Worship gets the full amount back instead of losing three cents on the dollar to fix your mistake. Because it's YOUR money covering it, you pick the rail: card is instant and costs about 2.9% + 30¢, a bank transfer costs 0.8% capped at $5.00 and takes about four business days. On a $248 charge that's roughly $7.72 against $2.00. Both figures are on screen before you commit. The fee is charged once per PAYMENT, not per charge — so settling four charges in one go costs less than paying for them one at a time across four evenings.",
           "**A bank transfer is not instant, and the app says so:** once you authorise it the charge moves to *Clearing* — still owed, but no longer payable, so you can't accidentally pay for it twice while the bank moves the money. If your bank refuses the debit, it comes back as owed with a note saying the attempt failed. Only when the money lands does the charge clear.",
+          "**The moment it lands, you get a receipt:** \"thanks for paying this off — here's your receipt,\" naming the total, the date it settled, and one line per charge it covered — pay off three flagged charges in one go and you get ONE email itemizing all three, never three separate ones. Paid by card or bank transfer through Stripe? The email also links Stripe's own hosted receipt. Paid by bank debit through the org's own bank (no Stripe charge behind it)? The email is still a complete receipt on its own — it just doesn't carry that extra link. Either way it's evidence you can keep or forward if anyone ever asks whether you paid it back — never donation language, and never a claim that it's tax-deductible, because it isn't either of those things.",
           "**Nobody can mark a charge repaid by hand — not even the Financial Manager.** A repayment settles when a payment this app started actually arrives, full stop. So if you paid someone back in cash, the app can't record that: run it through the app instead. And if the charge was never personal in the first place, that's a different fix — a manager un-flags it and it goes back to being Public Worship's spend, which is honest in a way \"mark it repaid\" never was.",
           "**You'll be reminded, kindly:** if a personal charge sits unpaid, a finance manager can send a reminder listing what you owe and a link to settle it. One email per person, never one per charge, and never twice in the same few days — and a charge whose bank transfer is already clearing is never chased, because you already did the right thing.",
           "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once the money has landed, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
@@ -1672,16 +1697,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt. And the mirror rule: flagging says YOU made the charge, so a charge you genuinely don't recognize is not a flag — freeze the card yourself (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager right away so it gets investigated.",
       },
       {
-        prompt: "Your chapter's Treasurer submits a reimbursement request for their own out-of-pocket purchase. Who can approve it?",
+        prompt:
+          "You pay back two flagged personal charges in one bundled Stripe payment. What lands in your inbox?",
         options: [
-          "The Treasurer — they hold the seat that normally approves these",
-          "The Chapter Director — chapter finance items are theirs to sign off on",
-          "The central Financial Manager — SoD blocks the Treasurer from approving their own request, and the FM's central-scope grant reaches every chapter",
-          "The Executive Director, automatically, since they outrank the Treasurer",
+          "Two separate receipt emails, one per charge",
+          "One receipt email itemizing both charges, plus Stripe's own receipt link when the payment ran through Stripe",
+          "Nothing — you'd have to check the app yourself to confirm it went through",
+          "A donation receipt, since it's money going to Public Worship",
         ],
-        answerIndex: 2,
+        answerIndex: 1,
         explanation:
-          "Approver ≠ requester is identity-based — even a Treasurer can't approve their own request. A Chapter Director's finance access doesn't reach reimbursement approval, so the Financial Manager — whose grant covers every chapter — is the real failsafe.",
+          "One payment gets ONE receipt, itemizing every charge it cleared, no matter how many repayments it bundled. A Stripe-run payment (card or bank debit through Stripe) additionally links Stripe's own hosted receipt; a bank debit run through the org's own bank account has no Stripe charge behind it, so that email is still a complete, standalone receipt — it just skips that extra link. Either way it's proof of a REPAYMENT, never donation language and never a tax-deductibility claim, because it's neither.",
       },
       {
         prompt:
