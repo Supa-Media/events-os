@@ -1576,9 +1576,21 @@ describe("explaining a month", () => {
     const other = statement.incomeByStream.find((i) => i.stream === "other");
     expect(other?.cents ?? 0).toBe(0);
     // …but the credit still PUBLISHES — the bank really received it.
-    const row = statement.entries.find((e) => e.counterparty === "OLUSEYI OLUJIDE");
+    const row = statement.entries.find((e) => e.amountCents === 700_000);
     expect(row).toBeDefined();
     expect(row!.direction).toBe("internal");
+
+    // AND IT NAMES NOBODY. A wire's bank descriptor is the sender's name, so
+    // publishing this row's merchant printed a named giver and their $7,000
+    // on the same page that promises the giving roll has "no names, no
+    // amounts tied to a person". This assertion used to REQUIRE that leak.
+    expect(row!.counterparty).toBeNull();
+    expect(JSON.stringify(statement.entries)).not.toContain("OLUSEYI OLUJIDE");
+
+    // It says what it is, rather than falling through to the page's
+    // internal-transfer fallback ("Money moved between our own accounts —
+    // nothing earned or spent"), which was the opposite of the truth.
+    expect(row!.purpose).toContain("giving roll");
   });
 
   test("a wire split between two books counts once, in the book that earned it", async () => {
@@ -1626,6 +1638,8 @@ describe("explaining a month", () => {
     expect(statement.incomeCents).toBe(200_000);
     const other = statement.incomeByStream.find((i) => i.stream === "other");
     expect(other?.cents ?? 0).toBe(0);
+    // The giver is not named on the ledger for a split either.
+    expect(JSON.stringify(statement.entries)).not.toContain("OLUSEYI OLUJIDE");
   });
 
   test("a wire only HALF matched keeps its unclaimed remainder", async () => {
@@ -1668,6 +1682,11 @@ describe("explaining a month", () => {
     expect(statement.incomeCents).toBe(700_000);
     const other = statement.incomeByStream.find((i) => i.stream === "other");
     expect(other?.cents).toBe(500_000);
+    // And the line says which part is which, rather than claiming the whole
+    // deposit is giving or saying nothing at all.
+    const row = statement.entries.find((e) => e.amountCents === 700_000);
+    expect(row!.purpose).toContain("$2,000.00 of this deposit is giving");
+    expect(row!.purpose).toContain("not yet accounted for");
   });
 
   test("an UNCONFIRMED bank credit still counts — linking is the fix, not hiding", async () => {
