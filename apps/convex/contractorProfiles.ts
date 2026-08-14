@@ -29,6 +29,7 @@ import {
   CONTRACTOR_TAX_CLASSIFICATIONS,
   taxDocIsCurrent,
   taxDocReuseProblem,
+  extendedTaxDocPurgeAfter,
   unpaidTaxDocPurgeAfter,
   type ContractorTaxClassification,
 } from "@events-os/shared";
@@ -420,12 +421,29 @@ export const rememberPaidContractor = internalMutation({
         : {}),
       lastPaidAt: row.paidAt ?? Date.now(),
     });
-    // Slide an unpaid document's short window off it — this one substantiates
-    // real money now, so the four-year rule takes over.
+    // HAND THE DOCUMENT FROM THE SHORT WINDOW TO THE FOUR-YEAR RULE.
+    //
+    // A freshly collected form gets the 180-day unpaid window, because a form
+    // collected for a job that fell through is the one we have least right to
+    // keep. The moment a payment citing it actually PAYS, that stops being
+    // true: it now substantiates money that moved and a return that will be
+    // filed, and the retention window is four years from the year it covers.
+    //
+    // Writing only `lastUsedAt` here — as this did until 2026-08-15 — left a
+    // PAID contractor's W-9 on the short clock, so the sweep destroyed it about
+    // six months after upload. That is the same retention failure this feature
+    // was built to prevent, pointing the other way.
     if (row.taxDocumentId) {
       const doc = await ctx.db.get(row.taxDocumentId);
       if (doc) {
-        await ctx.db.patch(doc._id, { lastUsedAt: Date.now() });
+        const taxYear = new Date(
+          row.serviceDate ?? row.paidAt ?? Date.now(),
+        ).getUTCFullYear();
+        await ctx.db.patch(doc._id, {
+          lastTaxYear: Math.max(doc.lastTaxYear ?? doc.taxYear, taxYear),
+          purgeAfter: extendedTaxDocPurgeAfter(doc.purgeAfter, taxYear),
+          lastUsedAt: Date.now(),
+        });
       }
     }
     return null;

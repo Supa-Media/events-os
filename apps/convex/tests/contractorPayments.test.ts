@@ -858,6 +858,9 @@ describe("approval refuses what it should", () => {
       payeeEmail: AGREEMENT.payeeEmail,
       taxDocStorageId: storageId,
       taxDocKind: "w8ben",
+      // A W-8 must carry its signing date — it expires three years after, and
+      // an undated one reads as already expired.
+      taxDocSignedAt: Date.now() - 24 * 60 * 60 * 1000,
       externalAccountId: "extacct_test",
       bankAccountLast4: "3333",
       signature: "Jane",

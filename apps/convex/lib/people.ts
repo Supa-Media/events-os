@@ -242,9 +242,13 @@ export async function repointPersonReferences(
       (survivor.lastPaidAt == null || losing.lastPaidAt > survivor.lastPaidAt)
         ? { lastPaidAt: losing.lastPaidAt }
         : {}),
-      externalAccountId: undefined,
-      bankAccountLast4: undefined,
-      bankConfirmedAt: undefined,
+      // The SURVIVOR's own account is left exactly as it is — it was confirmed
+      // by the identity that is staying, and clearing it would make an active
+      // contractor re-enter details for no reason. What is never done is
+      // INHERITING the loser's: that account was confirmed by the other
+      // identity, and two candidate accounts is precisely where guessing sends
+      // money to the wrong place. So a survivor with no account keeps none, and
+      // the next payment asks.
       updatedAt: Date.now(),
     });
     await ctx.db.delete(losing._id);

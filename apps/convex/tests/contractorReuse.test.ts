@@ -211,12 +211,17 @@ describe("a reused form is kept for the LAST year it answers for", () => {
       async (ctx) => (await ctx.db.get(first))!.taxDocumentId!,
     );
     expect(docId).toBeTruthy();
-    await run(s.t, (ctx) =>
-      ctx.db.patch(docId, {
-        lastTaxYear: 2026,
-        purgeAfter: taxDocPurgeAfter(2026),
-      }),
-    );
+
+    // NOT hand-patched. This used to set `lastTaxYear` and `purgeAfter` itself
+    // "to put the document in a known state", and in doing so it performed the
+    // exact step the code was missing: `rememberPaidContractor` wrote only
+    // `lastUsedAt`, so a PAID contractor's W-9 stayed on the 180-day unpaid
+    // clock and the sweep destroyed it about six months after upload. The test
+    // asserted the mechanism while quietly supplying the broken half of it.
+    // Asserting the handover instead is the whole point.
+    const afterPaid = await run(s.t, (ctx) => ctx.db.get(docId));
+    expect(afterPaid!.lastTaxYear).toBe(2026);
+    expect(afterPaid!.purgeAfter).toBe(taxDocPurgeAfter(2026));
 
     // January 2027: same contractor, new job, REUSES the form on file.
     const { contractorPaymentId: second } = await s.as.mutation(
@@ -316,6 +321,255 @@ describe("a reused form is kept for the LAST year it answers for", () => {
       unpaidTaxDocPurgeAfter(doc!.uploadedAt),
       -4,
     );
+  });
+
+  test("re-completing the first payment does not destroy a form others rely on", async () => {
+    // Documents are shared now. Re-completing payment A after a send-back used
+    // to delete the file and row out from under payments B and C that cite it,
+    // leaving them with a dangling id, nothing recording what happened, and —
+    // since approve only asked whether a document existed — a clear path to
+    // being paid against no form at all.
+    const { s, budgetId } = await setup();
+    const approver = await seedApprover(s);
+    const jane = await seedPerson(s, {
+      name: "Jane Contractor",
+      email: "jane@example.com",
+    });
+    // Completed but NOT paid — a paid payment can't be sent back, and the
+    // scenario doesn't need one.
+    const { contractorPaymentId: first } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      {
+        payeeName: "Jane Contractor",
+        payeeEmail: "jane@example.com",
+        personId: jane,
+        serviceDescription: "Sound engineering for the spring concert",
+        serviceDate: DEC_2026,
+        agreedAmountCents: 50_000,
+        budgetId,
+      },
+    );
+    await s.as.mutation(api.contractorPayments.send, {
+      contractorPaymentId: first,
+    });
+    const firstToken = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(first))!.token,
+    );
+    const firstDoc = await storeBlob(s.t);
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token: firstToken,
+      payeeName: "Jane Contractor",
+      payeeEmail: "jane@example.com",
+      taxDocStorageId: firstDoc,
+      taxDocKind: "w9",
+      externalAccountId: "extacct_one",
+      bankAccountLast4: "6789",
+      signature: "Jane Contractor",
+    });
+    const docId = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(first))!.taxDocumentId!,
+    );
+
+    // A second payment reuses it.
+    const { contractorPaymentId: second } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      {
+        payeeName: "Jane Contractor",
+        payeeEmail: "jane@example.com",
+        personId: jane,
+        serviceDescription: "Sound engineering for the winter series",
+        serviceDate: JAN_2027,
+        agreedAmountCents: 60_000,
+        budgetId,
+      },
+    );
+    await s.as.mutation(api.contractorPayments.send, {
+      contractorPaymentId: second,
+    });
+    const token2 = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(second))!.token,
+    );
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token: token2,
+      payeeName: "Jane Contractor",
+      payeeEmail: "jane@example.com",
+      reuseTaxDoc: true,
+      externalAccountId: "extacct_two",
+      bankAccountLast4: "1122",
+      signature: "Jane Contractor",
+    });
+
+    // Now the FIRST payment is sent back and re-completed with a new form.
+    await approver.as.mutation(api.contractorPayments.requestChanges, {
+      contractorPaymentId: first,
+      note: "We need a clearer scan of that form, please.",
+    });
+    const token1 = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(first))!.token,
+    );
+    const replacement = await storeBlob(s.t);
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token: token1,
+      payeeName: "Jane Contractor",
+      payeeEmail: "jane@example.com",
+      taxDocStorageId: replacement,
+      taxDocKind: "w9",
+      externalAccountId: "extacct_one",
+      bankAccountLast4: "6789",
+      signature: "Jane Contractor",
+    });
+
+    // The document the SECOND payment stands on is untouched.
+    expect(await run(s.t, (ctx) => ctx.db.get(docId))).not.toBeNull();
+    const secondRow = await run(s.t, (ctx) => ctx.db.get(second));
+    expect(secondRow!.taxDocumentId).toBe(docId);
+  });
+
+  test("a submitted payment's form isn't purged while it waits for a decision", async () => {
+    // The unpaid window is short on purpose. It must still slide while a live
+    // payment is sitting in the queue, or the treasurer opens a payment whose
+    // form has evaporated.
+    const { s, budgetId } = await setup();
+    const jane = await seedPerson(s, {
+      name: "Jane Contractor",
+      email: "jane@example.com",
+    });
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      {
+        payeeName: "Jane Contractor",
+        payeeEmail: "jane@example.com",
+        personId: jane,
+        serviceDescription: "Sound engineering for the spring concert",
+        serviceDate: DEC_2026,
+        agreedAmountCents: 50_000,
+        budgetId,
+      },
+    );
+    await s.as.mutation(api.contractorPayments.send, { contractorPaymentId });
+    const token = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(contractorPaymentId))!.token,
+    );
+    const storageId = await storeBlob(s.t);
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token,
+      payeeName: "Jane Contractor",
+      payeeEmail: "jane@example.com",
+      taxDocStorageId: storageId,
+      taxDocKind: "w9",
+      externalAccountId: "extacct_wait",
+      bankAccountLast4: "4444",
+      signature: "Jane",
+    });
+    const doc = await run(s.t, async (ctx) => {
+      const row = await ctx.db.get(contractorPaymentId);
+      return await ctx.db.get(row!.taxDocumentId!);
+    });
+    // The window runs from the submission, not merely from the upload.
+    expect(doc!.purgeAfter).toBeGreaterThanOrEqual(
+      unpaidTaxDocPurgeAfter(doc!.uploadedAt),
+    );
+    expect(doc!.lastUsedAt).toBeTruthy();
+  });
+
+  test("an undated W-8 is refused at upload", async () => {
+    // Three comments claimed the server required a signing date and none did,
+    // so a direct POST could store an undated W-8 — read as permanently
+    // expired, so the payee is re-asked forever and can never reuse.
+    const { s, budgetId } = await setup();
+    const jane = await seedPerson(s, {
+      name: "Jane Contractor",
+      email: "jane@example.com",
+    });
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      {
+        payeeName: "Jane Contractor",
+        payeeEmail: "jane@example.com",
+        personId: jane,
+        serviceDescription: "Sound engineering for the spring concert",
+        serviceDate: DEC_2026,
+        agreedAmountCents: 50_000,
+        budgetId,
+      },
+    );
+    await s.as.mutation(api.contractorPayments.send, { contractorPaymentId });
+    const token = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(contractorPaymentId))!.token,
+    );
+    const storageId = await storeBlob(s.t);
+    await expect(
+      s.t.mutation(api.contractorPayments.completeAgreement, {
+        token,
+        payeeName: "Jane Contractor",
+        payeeEmail: "jane@example.com",
+        taxDocStorageId: storageId,
+        taxDocKind: "w8ben",
+        externalAccountId: "extacct_u",
+        bankAccountLast4: "5555",
+        signature: "Jane",
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a reused payment can still open the form that substantiates it", async () => {
+    // Resolving the document by `by_payment` alone made a reused payment report
+    // "no tax document" and refuse to open the form — while approve, which only
+    // asked whether one existed, waved it through unexamined.
+    const { s, budgetId } = await setup();
+    const approver = await seedApprover(s);
+    const jane = await seedPerson(s, {
+      name: "Jane Contractor",
+      email: "jane@example.com",
+    });
+    await payOnce(s, budgetId, approver, {
+      personId: jane,
+      serviceDate: DEC_2026,
+    });
+    const { contractorPaymentId: second } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      {
+        payeeName: "Jane Contractor",
+        payeeEmail: "jane@example.com",
+        personId: jane,
+        serviceDescription: "Sound engineering for the winter series",
+        serviceDate: JAN_2027,
+        agreedAmountCents: 60_000,
+        budgetId,
+      },
+    );
+    await s.as.mutation(api.contractorPayments.send, {
+      contractorPaymentId: second,
+    });
+    const token = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(second))!.token,
+    );
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token,
+      payeeName: "Jane Contractor",
+      payeeEmail: "jane@example.com",
+      reuseTaxDoc: true,
+      reuseBankDetails: true,
+      signature: "Jane Contractor",
+    });
+
+    const detail = await s.as.query(api.contractorPayments.get, {
+      contractorPaymentId: second,
+    });
+    expect(detail.taxDocument).not.toBeNull();
+    expect(detail.taxDocument?.kind).toBe("w9");
+
+    const opened = await s.as.mutation(api.contractorPayments.viewTaxDocument, {
+      contractorPaymentId: second,
+    });
+    expect(opened.url).toBeTruthy();
   });
 
   test("the purge stamps the payments that cited the destroyed form", async () => {

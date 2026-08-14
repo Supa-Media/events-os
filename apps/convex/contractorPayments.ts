@@ -381,6 +381,33 @@ async function recordApproval(
   });
 }
 
+/**
+ * The tax document substantiating a payment.
+ *
+ * `taxDocumentId` FIRST, because a reused document belongs to an earlier
+ * payment and the `by_payment` index will never find it. Resolving it the old
+ * way made a returning contractor's payment report "no tax document on file"
+ * on the detail screen and refuse to open the form that actually substantiates
+ * it — while `approve`, which only checked whether a document existed, waved it
+ * through unexamined.
+ *
+ * The `by_payment` fallback is for rows written before citations existed.
+ */
+async function taxDocFor(
+  ctx: QueryCtx,
+  row: Doc<"contractorPayments">,
+): Promise<Doc<"contractorTaxDocuments"> | null> {
+  if (row.taxDocumentId) {
+    const cited = await ctx.db.get(row.taxDocumentId);
+    if (cited) return cited;
+  }
+  return await ctx.db
+    .query("contractorTaxDocuments")
+    .withIndex("by_payment", (q) => q.eq("contractorPaymentId", row._id))
+    .order("desc")
+    .first();
+}
+
 // ── The one write path every create goes through ────────────────────────────
 /**
  * Create a contractor payment. THE SINGLE INVARIANT OWNER — both entry points
@@ -852,13 +879,7 @@ export const get = query({
     const canApprove = await hasContractorPaymentsApprove(ctx, chapterId);
     const canViewTaxDoc = await hasContractorTaxDocView(ctx, chapterId);
 
-    const taxDoc = await ctx.db
-      .query("contractorTaxDocuments")
-      .withIndex("by_payment", (q) =>
-        q.eq("contractorPaymentId", contractorPaymentId),
-      )
-      .order("desc")
-      .first();
+    const taxDoc = await taxDocFor(ctx, row!);
 
     const payout = row!.payoutId ? await ctx.db.get(row!.payoutId) : null;
 
@@ -960,15 +981,7 @@ export const approve = mutation({
       });
     }
 
-    const taxDoc = row.taxDocumentId
-      ? await ctx.db.get(row.taxDocumentId)
-      : await ctx.db
-          .query("contractorTaxDocuments")
-          .withIndex("by_payment", (q) =>
-            q.eq("contractorPaymentId", contractorPaymentId),
-          )
-          .order("desc")
-          .first();
+    const taxDoc = await taxDocFor(ctx, row);
     // An EXPIRED form establishes nothing. A W-9 never expires, but a W-8 does,
     // and reuse makes a lapsed one reachable in a way it never was when every
     // payment collected its own — so the gate belongs here, not only at the
@@ -1163,13 +1176,7 @@ export const viewTaxDocument = mutation({
     await requireContractorTaxDocView(ctx, chapterId);
     const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
 
-    const taxDoc = await ctx.db
-      .query("contractorTaxDocuments")
-      .withIndex("by_payment", (q) =>
-        q.eq("contractorPaymentId", contractorPaymentId),
-      )
-      .order("desc")
-      .first();
+    const taxDoc = await taxDocFor(ctx, row!);
     if (!taxDoc) {
       throw new ConvexError({
         code: "NOT_FOUND",
@@ -1442,13 +1449,7 @@ export const publicByToken = query({
     const row = await paymentByToken(ctx, token);
     if (!row) return null;
     const chapter = await ctx.db.get(row.chapterId);
-    const taxDoc = row.taxDocumentId
-      ? await ctx.db.get(row.taxDocumentId)
-      : await ctx.db
-          .query("contractorTaxDocuments")
-          .withIndex("by_payment", (q) => q.eq("contractorPaymentId", row._id))
-          .order("desc")
-          .first();
+    const taxDoc = await taxDocFor(ctx, row);
 
     // What this PERSON already has with us, independent of this payment. Only
     // resolved when the payment is linked to a roster person — a payee we have
@@ -1592,6 +1593,25 @@ async function attachTaxDocument(
   fileName?: string,
   signedAt?: number,
 ): Promise<void> {
+  // A W-8 EXPIRES, so its signing date is what decides when. Three comments in
+  // this file claimed the server required it and nothing did, which meant a
+  // direct POST could store an undated W-8 — read as permanently expired by
+  // `taxDocIsCurrent`, so the payee is re-asked forever and can never reuse.
+  // Enforced here, at the single place documents are created.
+  if (isForeignTaxDoc(kind) && signedAt == null) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message:
+        "Tell us the date you signed this form — a W-8 is only valid for three years after signing.",
+    });
+  }
+  if (signedAt != null && signedAt > Date.now() + 24 * 60 * 60 * 1000) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "That signing date is in the future.",
+    });
+  }
+
   const meta = await ctx.db.system.get(storageId);
   if (!meta) {
     throw new ConvexError({
@@ -1614,12 +1634,29 @@ async function attachTaxDocument(
     });
   }
 
-  // Supersede the previous one, file and all.
+  // Supersede the previous one, file and all — but ONLY when nothing else
+  // relies on it.
+  //
+  // Documents are shared now. A form first collected for payment A can be cited
+  // by payments B and C; re-completing A after a send-back would otherwise
+  // destroy the file and the row out from under them, leaving B and C with a
+  // dangling id, no `taxDocPurgedAt` to say what happened, and — because
+  // `approve` only asks whether a document exists — a clear path to being paid
+  // against no form at all.
   const previous = await ctx.db
     .query("contractorTaxDocuments")
     .withIndex("by_payment", (q) => q.eq("contractorPaymentId", row._id))
     .take(10);
   for (const old of previous) {
+    const citedElsewhere = await ctx.db
+      .query("contractorPayments")
+      .withIndex("by_tax_document", (q) => q.eq("taxDocumentId", old._id))
+      .take(5);
+    if (citedElsewhere.some((p) => p._id !== row._id)) {
+      // Another payment stands on it. Leave it entirely — the retention sweep
+      // owns its lifetime now, not this supersede.
+      continue;
+    }
     try {
       await ctx.storage.delete(old.storageId);
     } catch {
@@ -1878,6 +1915,13 @@ export const completeAgreement = mutation({
       reviewEscalatedAt: undefined,
       updatedAt: now,
     });
+
+    // Keep an UNPAID document's short window alive while a live payment is
+    // still waiting on a decision. Without this, a submission that sits in the
+    // queue past the unpaid window is purged mid-flight and the treasurer opens
+    // a payment whose form has evaporated.
+    const citedDoc = (await ctx.db.get(row._id))?.taxDocumentId;
+    if (citedDoc) await touchUnpaidTaxDoc(ctx, citedDoc);
 
     await ctx.scheduler.runAfter(
       0,
@@ -2456,10 +2500,9 @@ export const purgeExpiredTaxDocuments = internalMutation({
       // document is cited by a handful of payments, never an unbounded list.
       const citing = await ctx.db
         .query("contractorPayments")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", doc.chapterId))
-        .take(500);
+        .withIndex("by_tax_document", (q) => q.eq("taxDocumentId", doc._id))
+        .take(100);
       for (const payment of citing) {
-        if (payment.taxDocumentId !== doc._id) continue;
         await ctx.db.patch(payment._id, {
           taxDocumentId: undefined,
           taxDocPurgedAt: now,

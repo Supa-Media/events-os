@@ -1198,6 +1198,11 @@ export const contractorPayments = defineTable({
   .index("by_token", ["token"])
   .index("by_chapter_and_status", ["chapterId", "status"])
   .index("by_person", ["personId"])
+  // Which payments cite a given tax document — needed by the retention sweep,
+  // which has to stamp every citing payment BEFORE the document row goes.
+  // Scanning the chapter's payments instead worked only while a chapter had
+  // few of them, and silently stopped stamping past the scan bound.
+  .index("by_tax_document", ["taxDocumentId"])
   .index("by_status", ["status"]);
 
 /**

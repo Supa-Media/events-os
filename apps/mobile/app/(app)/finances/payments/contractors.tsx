@@ -95,6 +95,7 @@ function ContractorRoster() {
   if (roster === undefined) return <Screen loading />;
 
   const canManage = roster.canManage === true;
+  const canForget = roster.canForget === true;
   const rows = filterContractors(roster.contractors, query);
 
   function handleClassify(row: ContractorRosterRow, value: string) {
@@ -180,6 +181,7 @@ function ContractorRoster() {
                       key={row._id}
                       row={row}
                       canManage={canManage}
+                      canForget={canForget}
                       expanded={expanded === row._id}
                       onToggle={() =>
                         setExpanded((e) => (e === row._id ? null : row._id))
@@ -212,6 +214,7 @@ function ContractorRoster() {
 function ContractorCard({
   row,
   canManage,
+  canForget,
   expanded,
   onToggle,
   busy,
@@ -221,6 +224,7 @@ function ContractorCard({
 }: {
   row: ContractorRosterRow;
   canManage: boolean;
+  canForget: boolean;
   expanded: boolean;
   onToggle: () => void;
   busy: string | null;
@@ -334,7 +338,11 @@ function ContractorCard({
           ) : null}
 
           {/* ── Forgetting them ───────────────────────────────────────────── */}
-          {canManage ? (
+          {/* `canForget`, NOT `canManage`. The two share a body on the server
+              today and diverge by design later — forgetting is the irreversible
+              one — so gating this on "can manage" would start offering a button
+              the server refuses the moment they part company. */}
+          {canForget ? (
             <View className="items-start">
               <Button
                 title="Forget this contractor"
