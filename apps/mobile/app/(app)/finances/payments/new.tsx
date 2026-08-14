@@ -24,8 +24,19 @@
  * The live ledger preview (`LedgerPreviewCard`) sits under the description
  * because the description publishes verbatim and permanently — see that
  * component's doc.
+ *
+ * "IT'S THIS PERSON AGAIN" sits above everything (`ContractorPicker`). Picking
+ * a returning contractor fills WHO THEY ARE — name, email, phone — and attaches
+ * `personId` so the agreement lands on their existing profile, which is what
+ * lets the server reuse the tax form and bank details they already filed. It
+ * fills NOTHING ELSE, and that restraint is the feature rather than a
+ * limitation: the amount, the service description and the service date are this
+ * job's terms. A pre-filled amount is an amount nobody decided, and a
+ * pre-filled description is a sentence that publishes verbatim and permanently
+ * without anyone having written it for this piece of work. Their usual rate is
+ * offered as a hint somebody has to press.
  */
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Text, View } from "react-native";
 import { useRouter } from "expo-router";
 import { useMutation, useQuery } from "convex/react";
@@ -53,6 +64,8 @@ import {
   type AgreementDraft,
 } from "../../../../components/finance/payments/AgreementFields";
 import { ContractLinkCard } from "../../../../components/finance/payments/ContractLinkCard";
+import { ContractorPicker } from "../../../../components/finance/payments/ContractorPicker";
+import { contractorIdentityPatch } from "../../../../components/finance/payments/contractorHelpers";
 import { LedgerPreviewCard } from "../../../../components/finance/payments/LedgerPreviewCard";
 
 /** What the screen shows once the record exists. */
@@ -79,12 +92,54 @@ function NewAgreementScreen() {
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState<"draft" | "send" | null>(null);
   const [created, setCreated] = useState<Created | null>(null);
+  /** The returning contractor this agreement is FOR, when one was picked. It
+   *  lives here rather than in the draft because it is not a term — it is the
+   *  identity the server hangs the reusable tax form and bank details off. */
+  const [personId, setPersonId] = useState<Id<"people"> | null>(null);
+
+  // The roster read is the composer's only new gate, and it is asked ONLY once
+  // the server has said this caller may compose. Both powers are the finance
+  // manager rung today, so the two answers agree — but skipping until we know
+  // means a caller who may not compose never provokes a refusal the
+  // `FinanceBoundary` would render over the whole screen.
+  const roster = useQuery(
+    api.contractorProfiles.list,
+    access?.canCompose === true ? { limit: 200 } : "skip",
+  );
+  const onFile = useQuery(
+    api.contractorProfiles.onFileFor,
+    personId ? { personId } : "skip",
+  );
+
+  /** Which person the identity fields have already been filled from. Guards the
+   *  effect below against re-writing a field a staffer has since corrected —
+   *  the pick is a one-time fill, not a binding. */
+  const filledFor = useRef<string | null>(null);
+
+  // `onFileFor` is the only read that carries the phone (the roster rows don't),
+  // so the fill completes when it lands. IDENTITY ONLY: `contractorIdentityPatch`
+  // returns three keys and its unit test asserts it can never return a fourth.
+  useEffect(() => {
+    if (onFile == null || personId == null) return;
+    if (filledFor.current === String(onFile.personId)) return;
+    filledFor.current = String(onFile.personId);
+    setDraft((d) => ({ ...d, ...contractorIdentityPatch(onFile) }));
+  }, [onFile, personId]);
 
   const link = useContractLink(created?.token ?? null);
   const amountCents = draftAmountCents(draft) ?? 0;
 
   function patch(next: Partial<AgreementDraft>) {
     setDraft((d) => ({ ...d, ...next }));
+    setProblem(null);
+  }
+
+  /** Start over — used by "Write another" and by dropping a picked contractor,
+   *  so the two can't drift into leaving half a person behind. */
+  function resetForm() {
+    setDraft(emptyDraft());
+    setPersonId(null);
+    filledFor.current = null;
     setProblem(null);
   }
 
@@ -112,6 +167,12 @@ function NewAgreementScreen() {
           ...(draft.payeePhone.trim()
             ? { payeePhone: draft.payeePhone.trim() }
             : {}),
+          // Only sent when a roster pick actually happened. Typing a returning
+          // contractor's name by hand deliberately does NOT attach their
+          // profile — a name match is not identity, and quietly filing a
+          // payment under the wrong person is exactly what the backend's
+          // "never auto-merge on a weak signal" rule refuses to do.
+          ...(personId ? { personId } : {}),
           serviceDescription: draft.serviceDescription.trim(),
           ...(draft.serviceDate != null
             ? { serviceDate: draft.serviceDate }
@@ -234,7 +295,7 @@ function NewAgreementScreen() {
                 variant="secondary"
                 icon="plus"
                 onPress={() => {
-                  setDraft(emptyDraft());
+                  resetForm();
                   setCreated(null);
                 }}
               />
@@ -260,6 +321,33 @@ function NewAgreementScreen() {
             it, upload their W-9 and add their bank details — they can&apos;t
             change any of this.
           </Text>
+
+          <ContractorPicker
+            contractors={roster?.contractors}
+            onFile={onFile}
+            picked={personId != null}
+            onPick={(row) => {
+              setPersonId(row.personId);
+              filledFor.current = null;
+              // Fill what the roster row already carries so the fields don't
+              // sit empty for a frame; the phone arrives with `onFileFor` and
+              // the effect above completes the patch. Identity only, both
+              // times — see this screen's doc and `contractorIdentityPatch`.
+              patch(
+                contractorIdentityPatch({
+                  name: row.name,
+                  email: row.email,
+                  phone: undefined,
+                }),
+              );
+            }}
+            onClear={() => {
+              setPersonId(null);
+              filledFor.current = null;
+              patch({ payeeName: "", payeeEmail: "", payeePhone: "" });
+            }}
+            onUseUsualRate={(amountText) => patch({ amountText })}
+          />
 
           <AgreementFields
             value={draft}

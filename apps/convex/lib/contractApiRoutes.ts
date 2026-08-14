@@ -235,25 +235,62 @@ export function registerContractApiRoutes(http: HttpRouter): void {
   // for them — the terms are the org's testimony and are unrepresentable here,
   // so a crafted POST cannot edit what somebody is signing. This route does not
   // filter those keys out; there is nothing to filter them into.
+  //
+  // ── THE RETURNING CONTRACTOR ───────────────────────────────────────────────
+  // A person we have paid before can confirm the tax form and the bank account
+  // already on file instead of sending them again (see `contractPage.ts`'s
+  // "welcome back" state). Two things follow for this route, and both are the
+  // reason the branch lives here rather than in the mutation:
+  //
+  //  - REUSING THE BANK MEANS NOT CALLING THE BANK. `linkBankOrThrow` mints a
+  //    fresh Increase External Account every time it runs, so calling it for
+  //    somebody who just said "same account as last time" would both fail (there
+  //    are no digits in the body) and, if it didn't, litter the provider with a
+  //    duplicate for an account we already hold. So the whole hop is skipped.
+  //  - THE FLAGS ARE FORWARDED, NOT INFERRED. `reuseTaxDoc` / `reuseBankDetails`
+  //    are only ever `true` when the body says so literally. The absence of a
+  //    storage id or of routing digits never becomes a reuse decision here — an
+  //    empty form and a person attesting "that's still my account" are different
+  //    statements, and the mutation is entitled to see which one it got.
+  //
+  // The mutation still decides: it re-resolves what is actually on file for that
+  // person, refuses `reuseTaxDoc` with nothing on file, refuses an expired
+  // document, and refuses `reuseBankDetails` with no external account. This
+  // route is a courier for an attestation, never the thing that grants it.
   http.route({
     path: "/api/contract/complete",
     method: "POST",
     handler: jsonPost(async (ctx, body, req) => {
       const clientIp = clientIpFromRequest(req);
-      const bank = await linkBankOrThrow(ctx, body, clientIp);
+      const reuseTaxDoc = body.reuseTaxDoc === true;
+      const reuseBankDetails = body.reuseBankDetails === true;
+      const bank = reuseBankDetails
+        ? null
+        : await linkBankOrThrow(ctx, body, clientIp);
       return await ctx.runMutation(api.contractorPayments.completeAgreement, {
         token: String(body.token ?? ""),
         payeeName: String(body.payeeName ?? ""),
         payeeEmail: String(body.payeeEmail ?? ""),
         payeePhone: optStr(body.payeePhone),
         payeeBusinessName: optStr(body.payeeBusinessName),
-        taxDocStorageId: String(body.taxDocStorageId ?? "") as Id<"_storage">,
-        taxDocKind: toTaxDocKind(body.taxDocKind),
-        taxDocFileName: optStr(body.taxDocFileName),
+        // Either a new document or an attestation about the old one — never
+        // both, and never neither (the mutation rejects that pair).
+        reuseTaxDoc: reuseTaxDoc ? true : undefined,
+        taxDocStorageId: reuseTaxDoc
+          ? undefined
+          : (String(body.taxDocStorageId ?? "") as Id<"_storage">),
+        taxDocKind: reuseTaxDoc ? undefined : toTaxDocKind(body.taxDocKind),
+        taxDocFileName: reuseTaxDoc ? undefined : optStr(body.taxDocFileName),
+        // When they signed it — required by the mutation for the W-8 kinds,
+        // which lapse at the end of the third succeeding calendar year, and
+        // meaningless for a W-9, which never does. Nothing reads the file, so
+        // this date is the only thing that can date the form.
+        taxDocSignedAt: reuseTaxDoc ? undefined : optMs(body.taxDocSignedAt),
         // Never the raw digits — only the Increase reference id and a display
         // last-4 land in Convex.
-        externalAccountId: bank.externalAccountId,
-        bankAccountLast4: bank.last4,
+        externalAccountId: bank?.externalAccountId,
+        bankAccountLast4: bank?.last4,
+        reuseBankDetails: reuseBankDetails ? true : undefined,
         signature: String(body.signature ?? ""),
         // Forwarded so the mutation can rate-limit per IP and stamp
         // `acceptedIp` on the signature.
@@ -295,6 +332,9 @@ export function registerContractApiRoutes(http: HttpRouter): void {
         // `contractorAmountProblems`, which requires an integer.
         requestedAmountCents: Math.round(Number(body.requestedAmountCents)),
         agreementNotes: optStr(body.agreementNotes),
+        // A W-8's signing date decides when it lapses, so it travels as a real
+        // field rather than as prose in a note.
+        taxDocSignedAt: optMs(body.taxDocSignedAt),
         taxDocStorageId: String(body.taxDocStorageId ?? "") as Id<"_storage">,
         taxDocKind: toTaxDocKind(body.taxDocKind),
         taxDocFileName: optStr(body.taxDocFileName),
