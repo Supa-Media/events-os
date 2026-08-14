@@ -102,14 +102,31 @@ function PaymentsQueue() {
       <Narrow>
         <View className="mb-1 flex-row flex-wrap items-center justify-between gap-2">
           <Text className="font-display text-2xl text-ink">Payments</Text>
-          {canCompose ? (
-            <Button
-              title="New agreement"
-              size="sm"
-              icon="plus"
-              onPress={() => router.push("/finances/payments/new" as never)}
-            />
-          ) : null}
+          <View className="flex-row flex-wrap items-center gap-2">
+            {/* The people behind the queue. Gated on the same server flag as
+                composing — the roster read demands the finance-manager rung,
+                so offering it to a viewer would be a button that only ever
+                lands on a permission wall. */}
+            {canCompose ? (
+              <Button
+                title="Contractors"
+                size="sm"
+                variant="secondary"
+                icon="users"
+                onPress={() =>
+                  router.push("/finances/payments/contractors" as never)
+                }
+              />
+            ) : null}
+            {canCompose ? (
+              <Button
+                title="New agreement"
+                size="sm"
+                icon="plus"
+                onPress={() => router.push("/finances/payments/new" as never)}
+              />
+            ) : null}
+          </View>
         </View>
         <Text className="mb-4 text-sm text-muted">
           Paying a contractor — someone doing work for the chapter who

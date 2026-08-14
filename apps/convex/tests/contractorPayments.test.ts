@@ -14,6 +14,9 @@ import {
   CONTRACTOR_LEDGER_COUNTERPARTY,
   CONTRACTOR_PAYMENT_MAX_CENTS,
   publicTextProblems,
+  contractorDescriptionProblems,
+  CONTRACTOR_SERVICE_DESCRIPTION_MIN,
+  MIN_PURPOSE_LENGTH,
   taxDocPurgeAfter,
   displayMerchantName,
 } from "@events-os/shared";
@@ -305,6 +308,24 @@ describe("the public ledger never names the contractor", () => {
     ]) {
       expect(standalone(sample)).toEqual(publicTextProblems(sample));
     }
+  });
+
+
+  test("a description too short for the coding validator is refused at the door", () => {
+    // THE LANDMINE THIS CLOSES: the description is ported verbatim into the
+    // payout transaction's coding as `businessPurpose`, where the shared
+    // validator demands MIN_PURPOSE_LENGTH. Creation used to accept 3
+    // characters, so a short one passed composition, contractor completion and
+    // approval — then threw at the moment the treasurer pressed Pay, with a
+    // message about "which org work it served" that means nothing on a payout
+    // screen and money that didn't move for a reason nobody could act on.
+    expect(contractorDescriptionProblems("sound")).toHaveLength(1);
+    expect(contractorDescriptionProblems("Sound engineering")).toHaveLength(1);
+    expect(
+      contractorDescriptionProblems("Sound engineering for the spring concert"),
+    ).toEqual([]);
+    // The bar is the coding rule's own, not a number restated here.
+    expect(CONTRACTOR_SERVICE_DESCRIPTION_MIN).toBe(MIN_PURPOSE_LENGTH);
   });
 
   test("publicTextProblems catches the shapes people actually paste", () => {
@@ -837,6 +858,9 @@ describe("approval refuses what it should", () => {
       payeeEmail: AGREEMENT.payeeEmail,
       taxDocStorageId: storageId,
       taxDocKind: "w8ben",
+      // A W-8 must carry its signing date — it expires three years after, and
+      // an undated one reads as already expired.
+      taxDocSignedAt: Date.now() - 24 * 60 * 60 * 1000,
       externalAccountId: "extacct_test",
       bankAccountLast4: "3333",
       signature: "Jane",
