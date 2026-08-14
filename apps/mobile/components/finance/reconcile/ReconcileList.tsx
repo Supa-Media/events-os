@@ -437,9 +437,37 @@ export function ReconcileList({
     computedSegments != null && computedSegments.length > 0 ? computedSegments : null;
   const groupedRowCount =
     segments?.reduce((n, s) => n + s.shownCount, 0) ?? rows.length;
+  // The band's content width — see the `onLayout` below. `null` until the
+  // first layout (and forever in jsdom, where `onLayout` never fires), which
+  // is the band's own "lay out full width" fallback, so nothing on this grid
+  // waits on a measurement.
+  const [viewportWidth, setViewportWidth] = useState<number | null>(null);
+  // Never wider than the table itself: on a wide monitor with the panel closed
+  // the box can exceed ~1776px, and a band laid out at the box's width would
+  // then push its action past the last column instead of level with it.
+  const bandWidth =
+    viewportWidth == null ? null : Math.min(viewportWidth, Math.max(width, 320));
 
   return (
-    <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
+    <View
+      className="overflow-hidden rounded-lg border border-border bg-raised shadow-card"
+      // ── HOW WIDE THE WINDOW ONTO THIS GRID ACTUALLY IS ────────────────────
+      // The table is ~1776px and scrolls horizontally inside this box; this is
+      // the box's own width, which is what the reader can see at rest.
+      //
+      // The group bands need it. Their trailing action ("Send reminder" on a
+      // person band, Preview/Publish on a month band) used to be pushed to the
+      // far end of the TABLE, i.e. ~500px past the right edge of a laptop
+      // window — rendered, and unreachable without a scroll gesture nothing
+      // pointed at. Founder: "why can't I see the header?" So the band lays its
+      // content out at this width instead (see `ReconcileGroupHeader`), while
+      // its background still spans every column.
+      //
+      // Measured rather than assumed: this box is inside `Screen`'s max-width
+      // AND gives up 44% of the window when the side panel opens, so neither
+      // the window width nor a constant would be right in both frames.
+      onLayout={(e) => setViewportWidth(e.nativeEvent.layout.width)}
+    >
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
         <View style={{ width: Math.max(width, 320) }}>
           {/* Column header */}
@@ -538,6 +566,15 @@ export function ReconcileList({
                     count={seg.group.count}
                     totalCents={seg.group.totalCents}
                     shownCount={seg.shownCount}
+                    // MONTH BANDS ONLY, and only when the grid is narrowed —
+                    // the band then says "12 of 318 charges · -$4,102 of
+                    // -$88,201", which is what makes the Publish button beside
+                    // it about the month rather than about the selection.
+                    unfilteredCount={seg.group.unfilteredCount}
+                    unfilteredTotalCents={seg.group.unfilteredTotalCents}
+                    // Keeps the band's trailing action inside the window
+                    // rather than at the far end of a ~1776px table.
+                    contentWidth={bandWidth}
                     // The whole tally, passed through rather than picked
                     // apart: the band needs the live/backlog split as well as
                     // the combined figure, and `GroupSummary` already IS an
