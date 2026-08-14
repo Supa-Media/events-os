@@ -2,11 +2,17 @@
 // globals explicitly from @jest/globals (mirrors `forPicker.test.ts`).
 import { describe, expect, test } from "@jest/globals";
 import {
+  HIDEABLE_COLUMNS,
   groupSegments,
   nextSortState,
+  offerableColumns,
   parseGroupBy,
+  parseHiddenColumns,
   parseSortDir,
   parseSortKey,
+  serializeHiddenColumns,
+  showsCategoryColumn,
+  toggleHiddenColumn,
   type GroupSummary,
 } from "./gridView";
 
@@ -66,6 +72,143 @@ describe("URL param parsing", () => {
     expect(parseGroupBy(undefined)).toBeNull();
     expect(parseGroupBy("")).toBeNull();
     expect(parseGroupBy("week")).toBeNull();
+  });
+});
+
+describe("column visibility — `?cols=` is the HIDDEN set", () => {
+  test("nothing hidden is the default, and no param says so", () => {
+    expect(parseHiddenColumns(undefined)).toEqual([]);
+    expect(parseHiddenColumns(null)).toEqual([]);
+    expect(parseHiddenColumns("")).toEqual([]);
+    expect(serializeHiddenColumns([])).toBe("");
+  });
+
+  test("a real selection round-trips", () => {
+    expect(parseHiddenColumns("cardholder,category")).toEqual([
+      "cardholder",
+      "category",
+    ]);
+    expect(serializeHiddenColumns(["cardholder", "category"])).toBe(
+      "cardholder,category",
+    );
+  });
+
+  test("unknown column names are dropped, never thrown on", () => {
+    // A column that never existed, one renamed away, and a typo.
+    expect(parseHiddenColumns("fund")).toEqual([]);
+    expect(parseHiddenColumns("budget,link")).toEqual([]);
+    expect(parseHiddenColumns("cardholder,fund")).toEqual(["cardholder"]);
+    // Exact match only, mirroring `parseSortKey("AMOUNT")` → the default.
+    expect(parseHiddenColumns("CARDHOLDER")).toEqual([]);
+  });
+
+  test("the columns that CANNOT be hidden are not hideable through the URL", () => {
+    // Selection, the row's identity, and the way into a row's record. Asked
+    // for by name in a hand-written link, they still come back visible.
+    expect(parseHiddenColumns("check,merchant,actions")).toEqual([]);
+    expect(parseHiddenColumns("merchant,status")).toEqual(["status"]);
+  });
+
+  test("garbage never throws and never hides anything", () => {
+    for (const junk of [
+      ",",
+      ",,,",
+      "   ",
+      "%%%",
+      "cardholder;category",
+      "[object Object]",
+      '{"cols":["date"]}',
+      "-1",
+      "cardholder".repeat(500),
+    ]) {
+      expect(() => parseHiddenColumns(junk)).not.toThrow();
+      expect(parseHiddenColumns(junk)).toEqual([]);
+    }
+  });
+
+  test("blanks and duplicates collapse; order is canonical, not click order", () => {
+    expect(parseHiddenColumns(" cardholder , , category ")).toEqual([
+      "cardholder",
+      "category",
+    ]);
+    expect(parseHiddenColumns("cardholder,cardholder")).toEqual(["cardholder"]);
+    // Grid order (Cardholder sits left of Category), whichever way it's written
+    // — so two people who hid the same two columns share the same link.
+    expect(parseHiddenColumns("category,cardholder")).toEqual([
+      "cardholder",
+      "category",
+    ]);
+    expect(serializeHiddenColumns(["status", "date"])).toBe("date,status");
+  });
+
+  test("toggling adds, removes, and stays canonically ordered", () => {
+    expect(toggleHiddenColumn([], "category")).toEqual(["category"]);
+    expect(toggleHiddenColumn(["category"], "category")).toEqual([]);
+    // Added out of order; comes back in grid order.
+    expect(toggleHiddenColumn(["status"], "date")).toEqual(["date", "status"]);
+    // The input is never mutated — the screen holds it in state.
+    const hidden = ["status"] as const;
+    toggleHiddenColumn(hidden, "date");
+    expect(hidden).toEqual(["status"]);
+  });
+
+  test("every hideable column has a label, and none is listed twice", () => {
+    const keys = HIDEABLE_COLUMNS.map((c) => c.key);
+    expect(new Set(keys).size).toBe(keys.length);
+    for (const col of HIDEABLE_COLUMNS) expect(col.label.length).toBeGreaterThan(0);
+  });
+});
+
+describe("offerableColumns — capability, before anyone's preference", () => {
+  const ordinary = { showBook: false, showCategory: true, panelOpen: false };
+
+  test("a single-book chapter desk offers everything but Book", () => {
+    expect(offerableColumns(ordinary)).toEqual([
+      "date",
+      "amount",
+      "cardholder",
+      "explanation",
+      "category",
+      "forCol",
+      "receipt",
+      "status",
+    ]);
+  });
+
+  test("the merged all-books queue offers Book too", () => {
+    expect(offerableColumns({ ...ordinary, showBook: true })).toContain("book");
+  });
+
+  test("a scope with no Category column offers no tick box for it", () => {
+    expect(offerableColumns({ ...ordinary, showCategory: false })).not.toContain(
+      "category",
+    );
+  });
+
+  test("the side panel's own three step out of the menu while it is open", () => {
+    const offered = offerableColumns({ ...ordinary, panelOpen: true });
+    expect(offered).not.toContain("cardholder");
+    expect(offered).not.toContain("explanation");
+    expect(offered).not.toContain("receipt");
+    // What the panel doesn't render is still the reader's to hide.
+    expect(offered).toEqual(["date", "amount", "category", "forCol", "status"]);
+  });
+});
+
+describe("showsCategoryColumn", () => {
+  const chapterRow = { book: { id: "ch1" }, chargedTo: { id: "ch1" } };
+  const centralRow = { book: { id: "central" }, chargedTo: null };
+  const crossBookRow = { book: { id: "central" }, chargedTo: { id: "ch1" } };
+
+  test("a chapter scope always has one", () => {
+    expect(showsCategoryColumn(false, [])).toBe(true);
+    expect(showsCategoryColumn(false, [chapterRow])).toBe(true);
+  });
+
+  test("central scope: only when a cross-book row is actually in view", () => {
+    expect(showsCategoryColumn(true, [centralRow])).toBe(false);
+    expect(showsCategoryColumn(true, [])).toBe(false);
+    expect(showsCategoryColumn(true, [centralRow, crossBookRow])).toBe(true);
   });
 });
 

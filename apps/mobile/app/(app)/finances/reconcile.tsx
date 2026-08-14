@@ -112,6 +112,7 @@ import {
   stepSelection,
 } from "../../../components/finance/coding/panelNav";
 import { GroupByControl } from "../../../components/finance/reconcile/GroupByControl";
+import { ColumnsControl } from "../../../components/finance/reconcile/ColumnsControl";
 import { UNATTRIBUTED_GROUP_KEY } from "../../../components/finance/reconcile/gridView";
 import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
 import type { SingleBookScope } from "../../../components/finance/bookScope";
@@ -121,7 +122,13 @@ import {
   nextSortState,
   parseGroupBy,
   parseSortDir,
+  offerableColumns,
+  parseHiddenColumns,
   parseSortKey,
+  serializeHiddenColumns,
+  showsCategoryColumn,
+  toggleHiddenColumn,
+  type ReconcileColumnKey,
   type ReconcileGroupBy,
   type ReconcileSortDir,
   type ReconcileSortKey,
@@ -297,6 +304,12 @@ function ReconcileGrid() {
     sort?: string;
     dir?: string;
     group?: string;
+    // WHICH COLUMNS THE READER PUT AWAY — the hidden set, comma-separated
+    // (`?cols=cardholder,category`). Same rule again: a narrowed grid is a
+    // real answer ("just the merchant and the budget"), so it survives a
+    // refresh and travels in a link. Unknown or non-hideable names are
+    // dropped — see `gridView.ts#parseHiddenColumns`.
+    cols?: string;
   }>();
   const router = useRouter();
   // The filter SELECTION — a set, not a bucket. `?filters=a,b` is the current
@@ -384,6 +397,18 @@ function ReconcileGrid() {
   function applyGroupBy(next: ReconcileGroupBy | null) {
     setGroupBy(next);
     router.setParams({ group: next ?? "" });
+  }
+  // ── WHICH COLUMNS ARE ON SCREEN — URL-backed for the same reasons ──────────
+  // Held as the HIDDEN set so the default (everything visible) writes no param
+  // at all, exactly as `?sort=`/`?dir=` drop out at their defaults. Purely a
+  // rendering preference: it changes no query argument, so nothing is
+  // re-fetched when a column goes away.
+  const [hiddenColumns, setHiddenColumns] = useState<ReconcileColumnKey[]>(() =>
+    parseHiddenColumns(params.cols),
+  );
+  function applyHiddenColumns(next: ReconcileColumnKey[]) {
+    setHiddenColumns(next);
+    router.setParams({ cols: serializeHiddenColumns(next) });
   }
   const [query, setQuery] = useState("");
   // What the SERVER searches. See `listReconcile`'s `search` arg: the query
@@ -1995,9 +2020,36 @@ function ReconcileGrid() {
           {/* GROUP BY — last thing before the grid, because it restructures
               the grid and nothing above it. Kept out of the filter row on
               purpose: that row is already search + two dropdowns + a tooltip,
-              and it is the row that wraps first on a laptop. */}
-          <View className="mb-3 flex-row items-center">
+              and it is the row that wraps first on a laptop.
+
+              COLUMNS shares this row, pushed to the far end: it is the other
+              control that changes the SHAPE of the grid rather than which rows
+              are in it, and one row of two quiet controls directly above the
+              thing they act on is the whole of the page's chrome. Deliberately
+              ONE pill and not a rail of nine switches — this page has just had
+              a view menu and a chip row taken out of it for exactly that. */}
+          {/* Wraps rather than crushes: on a phone the segmented Group by and
+              this pill together exceed the width, and a squeezed pill is worse
+              than a second line. */}
+          <View className="mb-3 flex-row flex-wrap items-center justify-between gap-2">
             <GroupByControl value={groupBy} onChange={applyGroupBy} />
+            <ColumnsControl
+              hidden={hiddenColumns}
+              // Only what THIS scope can render at all, so no tick box ever
+              // does nothing: no Book outside the merged queue, no Category
+              // where central money has none, and none of the three the side
+              // panel is currently rendering itself. One rule, shared with the
+              // grid (`showsCategoryColumn`), not a second copy of it here.
+              offered={offerableColumns({
+                showBook: allBooksScope || viewingForeignChapter,
+                showCategory: showsCategoryColumn(centralScope, displayed),
+                panelOpen: showPanel,
+              })}
+              onToggle={(key) =>
+                applyHiddenColumns(toggleHiddenColumn(hiddenColumns, key))
+              }
+              onShowAll={() => applyHiddenColumns([])}
+            />
           </View>
         </Narrow>
 
@@ -2164,6 +2216,10 @@ function ReconcileGrid() {
               onSort={applySort}
               groups={groups}
               groupBy={groupBy}
+              // The reader's own `?cols=` set. A preference, applied on top of
+              // the capability rules the grid already runs and never against
+              // them — see `ReconcileList`'s `shown`.
+              hiddenColumns={hiddenColumns}
               // ONE NUDGE BUTTON PER PERSON — the chase list's own affordance,
               // rendered on the band instead of on a separate screen. Null for
               // every month band, for Unattributed (a marked transfer owes a
