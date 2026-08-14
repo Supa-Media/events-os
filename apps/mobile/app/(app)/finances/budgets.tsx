@@ -39,6 +39,19 @@
  *     budget ever PLUS this year's recurring buckets — lifetime money added to
  *     cadence-window money, a figure describing nothing on screen.
  *
+ * ── TWO STRIPS, BECAUSE THERE ARE TWO UNITS (founder, 2026-08-14) ───────────
+ * "Does budgeted and spent take into consideration recurring budgets? It
+ * doesn't seem like it — monthly spend and quarterly spend, and monthly budget
+ * and quarterly budget are missing here."
+ *
+ * They weren't. Point 4 above removed the sum and left the recurring half with
+ * no headline at all — a column of cards and nothing saying what they came to.
+ * The fix is a SECOND strip, not a re-merge: `RecurringTotalsStrip` totals the
+ * standing buckets BY WINDOW (this month across the monthly ones, this quarter
+ * across the quarterly ones), so every figure inside a row shares one unit.
+ * See `recurringWindowTotals.ts` for the arithmetic and why yearly gets a row
+ * of its own.
+ *
  * Search still matches the event's own name (`refName`) as well as the title,
  * because titles are template-derived now and typing what you actually called
  * the event otherwise found nothing. It searches WITHIN the chosen year and
@@ -68,6 +81,7 @@ import {
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { BudgetGlanceCard } from "../../../components/finance/budgets/BudgetGlanceCard";
+import { recurringWindowTotals } from "../../../components/finance/budgets/recurringWindowTotals";
 
 type Glance = FunctionReturnType<typeof api.finances.budgetsGlance>;
 type GlanceRow = Glance["oneTime"][number];
@@ -182,6 +196,66 @@ function TotalsStrip({ rows, year }: { rows: GlanceRow[]; year: number }) {
           value={formatCents(Math.abs(totals.remainingCents))}
           tone={over ? "danger" : "success"}
         />
+      </View>
+    </View>
+  );
+}
+
+/**
+ * The RECURRING section's headline — one row per cadence, each framed by the
+ * window its budgets actually govern.
+ *
+ * Deliberately NOT merged into `TotalsStrip`: see the file header. Within a
+ * row every budget shares a unit, so the sum means something; across rows they
+ * don't, so there is no grand total and there must never be one.
+ *
+ * It reads the SAME rows the cards below render (post-filter, post-search) off
+ * the same three fields their headers print, so the headline is always the
+ * visible sum of what's under it.
+ *
+ * That agreement is also why it renders on a PAST year's page rather than
+ * being gated to the current one. The window words ("This month") are the
+ * card's own — `BudgetGlanceCard`'s `CADENCE_LABELS`, unconditional there
+ * too — and on a past year the server reports the year's LAST window through
+ * `throughMonth = 12`. That wording is inherited, not introduced here; going
+ * quiet on those pages would just put the gap this strip exists to close back
+ * exactly where cards are on screen. Fixing the words is a server-side
+ * question about what a closed year's window even means.
+ */
+function RecurringTotalsStrip({ rows, year }: { rows: GlanceRow[]; year: number }) {
+  const totals = recurringWindowTotals(rows);
+  if (totals.length === 0) return null;
+  return (
+    <View className="mb-4 rounded-lg border border-border bg-raised p-3 shadow-card">
+      <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
+        {year} · recurring
+      </Text>
+      <View className="gap-3">
+        {totals.map((t, i) => {
+          const over = t.remainingCents < 0;
+          return (
+            <View
+              key={t.cadence}
+              className={`gap-1.5 ${i > 0 ? "border-t border-border pt-3" : ""}`}
+            >
+              <View className="flex-row flex-wrap items-baseline gap-2">
+                <Text className="text-xs font-semibold text-ink">{t.label}</Text>
+                <Text className="text-2xs text-faint">
+                  {t.count === 1 ? "1 budget" : `${t.count} budgets`}
+                </Text>
+              </View>
+              <View className="flex-row flex-wrap gap-3">
+                <Stat label="Budgeted" value={formatCents(t.capCents)} />
+                <Stat label="Spent" value={formatCents(t.spentCents)} />
+                <Stat
+                  label={over ? "Over by" : "Left"}
+                  value={formatCents(Math.abs(t.remainingCents))}
+                  tone={over ? "danger" : "success"}
+                />
+              </View>
+            </View>
+          );
+        })}
       </View>
     </View>
   );
@@ -351,24 +425,47 @@ export default function BudgetsGlanceScreen() {
               )}
             </View>
 
-            {recurringRows.length > 0 ? (
-              <View>
-                <SectionHeader title="Recurring" count={recurringRows.length} />
+            {/* The section ALWAYS renders its header, and always says
+                something under it. It used to render only when there were rows
+                to show, with the explanatory line gated on a PAST year — so a
+                current year with no standing buckets showed literally nothing
+                below Events & projects, indistinguishable from the feature not
+                existing. Every branch below is a sentence instead of a gap. */}
+            <View>
+              {recurringRows.length > 0 ? (
+                <RecurringTotalsStrip rows={recurringRows} year={viewYear} />
+              ) : null}
+              <SectionHeader
+                title="Recurring"
+                count={recurringRows.length || undefined}
+              />
+              {recurringRows.length > 0 ? (
                 <View className="gap-2.5">
                   {recurringRows.map((row) => (
                     <BudgetGlanceCard key={row.id} row={row} />
                   ))}
                 </View>
-              </View>
-            ) : recurring.length === 0 && !isCurrentYear ? (
-              // Say it rather than leave a gap — see the file header on why a
-              // past year has no recurring section.
-              <Text className="text-xs text-muted">
-                Recurring budgets are only shown for the current year — their
-                caps cover a month or a quarter, and {viewYear} has none left to
-                report against.
-              </Text>
-            ) : null}
+              ) : recurring.length > 0 ? (
+                // There ARE buckets; the filter or the search box hid them.
+                // Same wording the Events & projects section uses.
+                <Text className="text-xs text-muted">
+                  Nothing in {viewYear} matches this filter.
+                </Text>
+              ) : !isCurrentYear ? (
+                // See the file header on why a past year has no live window.
+                <Text className="text-xs text-muted">
+                  Recurring budgets are only shown for the current year — their
+                  caps cover a month or a quarter, and {viewYear} has none left
+                  to report against.
+                </Text>
+              ) : (
+                <Text className="text-xs text-muted">
+                  No standing budgets for {viewYear}. These are the buckets that
+                  reset every month, quarter, or year — operating expenses,
+                  equipment — as opposed to the one-off plans above.
+                </Text>
+              )}
+            </View>
           </View>
         )}
       </Narrow>

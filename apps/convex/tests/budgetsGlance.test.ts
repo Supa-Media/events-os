@@ -28,6 +28,12 @@ const now = easternParts(Date.now());
 // boundary, so the Eastern month/year are exactly as constructed.
 const otherMonth = now.month === 1 ? 2 : now.month - 1;
 const otherMonthTs = Date.UTC(now.year, otherMonth - 1, 15, 12);
+// A mid-month noon-UTC timestamp in a DIFFERENT QUARTER of the same year —
+// `otherMonth` alone isn't enough (last month is usually the same quarter), and
+// a quarterly bucket's window is the quarter.
+const nowQuarter = Math.ceil(now.month / 3);
+const otherQuarterMonth = nowQuarter === 1 ? 4 : (nowQuarter - 2) * 3 + 1;
+const otherQuarterTs = Date.UTC(now.year, otherQuarterMonth - 1, 15, 12);
 
 async function seedBudget(
   s: ChapterSetup,
@@ -201,5 +207,95 @@ describe("finances.budgetsGlance", () => {
       spentCents: 10_000,
       remainingCents: 40_000,
     });
+  });
+
+  /**
+   * THE CONTRACT THE RECURRING TOTALS STRIP IS BUILT ON.
+   *
+   * The Budgets tab now prints a headline over the standing buckets, totalled
+   * BY WINDOW — this month across every monthly bucket, this quarter across
+   * every quarterly one (`recurringWindowTotals.ts`). It sums nothing but each
+   * row's own `capCents` / `spentCents` / `remainingCents`, which is only
+   * meaningful while those three stay CURRENT-WINDOW figures and stay in one
+   * unit per cadence. If a recurring row's `spentCents` ever widened to a
+   * year (or a cadence's cap started meaning something else), the strip would
+   * keep adding and start lying — with no other test catching it, because
+   * every assertion above is about a single budget.
+   */
+  test("recurring rows aggregate per cadence into current-window totals", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+
+    const coffee = await seedBudget(s, {
+      amountCents: 20_000,
+      type: "recurring",
+      cadence: "monthly",
+      label: "Coffee",
+    });
+    const supplies = await seedBudget(s, {
+      amountCents: 30_000,
+      type: "recurring",
+      cadence: "monthly",
+      label: "Supplies",
+    });
+    const equipment = await seedBudget(s, {
+      amountCents: 100_000,
+      type: "recurring",
+      cadence: "quarterly",
+      label: "Equipment",
+    });
+    const insurance = await seedBudget(s, {
+      amountCents: 240_000,
+      type: "recurring",
+      cadence: "yearly",
+      label: "Insurance",
+    });
+
+    // In-window spend.
+    await seedTxn(s, { budgetId: coffee, amountCents: 5_000 });
+    await seedTxn(s, { budgetId: supplies, amountCents: 35_000 }); // over its cap
+    await seedTxn(s, { budgetId: equipment, amountCents: 40_000 });
+    await seedTxn(s, { budgetId: insurance, amountCents: 60_000 });
+    // OUT of window for their cadence, and so out of the strip's totals: a
+    // previous month for the monthly buckets, a previous quarter for the
+    // quarterly one. The yearly bucket's window is the whole year, so its
+    // earlier charge DOES count — which is exactly why yearly gets a row of
+    // its own rather than being folded in with the months.
+    await seedTxn(s, { budgetId: coffee, amountCents: 9_000, postedAt: otherMonthTs });
+    await seedTxn(s, {
+      budgetId: equipment,
+      amountCents: 7_000,
+      postedAt: otherQuarterTs,
+    });
+    await seedTxn(s, { budgetId: insurance, amountCents: 15_000, postedAt: otherMonthTs });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const byCadence = (cadence: string) =>
+      glance.recurring.filter((r) => r.cadence === cadence);
+    const sum = (cadence: string, key: "capCents" | "spentCents" | "remainingCents") =>
+      byCadence(cadence).reduce((total, r) => total + r[key], 0);
+
+    // THIS MONTH: $200 + $300 budgeted, $50 + $350 spent, $100 over.
+    expect(byCadence("monthly")).toHaveLength(2);
+    expect(sum("monthly", "capCents")).toBe(50_000);
+    expect(sum("monthly", "spentCents")).toBe(40_000);
+    expect(sum("monthly", "remainingCents")).toBe(10_000);
+
+    // THIS QUARTER: one bucket, last quarter's $70 excluded.
+    expect(sum("quarterly", "capCents")).toBe(100_000);
+    expect(sum("quarterly", "spentCents")).toBe(40_000);
+    expect(sum("quarterly", "remainingCents")).toBe(60_000);
+
+    // THIS YEAR: both charges count, and neither of the other rows moved.
+    expect(sum("yearly", "capCents")).toBe(240_000);
+    expect(sum("yearly", "spentCents")).toBe(75_000);
+    expect(sum("yearly", "remainingCents")).toBe(165_000);
+
+    // And the invariant the strip's "Left / Over by" reads: every row's own
+    // remainder is cap − spent, so summing remainders can't disagree with
+    // summing the other two columns.
+    for (const r of glance.recurring) {
+      expect(r.remainingCents).toBe(r.capCents - r.spentCents);
+    }
   });
 });
