@@ -7660,8 +7660,15 @@ export const listBudgetApprovalLog = query({
  * inline without this cascade). Does NOT touch `transactions` — callers that
  * need to unlink spend do that themselves first (only `deleteBudget` does;
  * `removeEmptyAutoBudgets` only ever reaches a budget with zero linked txns).
+ *
+ * Exported for the same reason it exists: a third ops caller
+ * (`deleteOrphanLtnBudget.ts`, a one-off) must delete a budget the way the
+ * app does, not re-implement the cascade beside it.
  */
-async function cascadeDeleteBudget(ctx: MutationCtx, budgetId: Id<"budgets">): Promise<void> {
+export async function cascadeDeleteBudget(
+  ctx: MutationCtx,
+  budgetId: Id<"budgets">,
+): Promise<void> {
   const links = await ctx.db
     .query("budgetTagLinks")
     .withIndex("by_budget", (q) => q.eq("budgetId", budgetId))
