@@ -104,6 +104,23 @@ on green).
      client-facing access query's RETURN SHAPE — if it doesn't distinguish the
      new rung, every screen renders for a persona whose every write throws,
      and the API-layer tests will all pass while the product is broken.
+   - **Cross-lane seams — MANDATORY whenever two lanes ran in parallel.** Each
+     lane is correct alone; the defect lives between them and NO lane can see
+     it. Two shapes, both caught live: (a) lane A RELOCATES information into a
+     channel (a `notes[]` log, a badge, a toast) that lane B is simultaneously
+     restyling, capping, or collapsing — A's justification ("the info is still
+     shown") is then false as shipped; (b) lane A edits a doc/lesson for
+     VOCABULARY while lane B changes the BEHAVIOUR that same sentence
+     describes, so the rename lands on a now-false claim. Ask of every lane:
+     what did it assume about a file it did not own, and who owned that file?
+   - **A new "refuse" path — trace what the CALLER does with the refusal.** A
+     guard that refuses rather than guesses is right, but it is only as good
+     as its caller's handling. Run 20: a one-time migration correctly refused
+     when it could not prove full scan coverage, but `migrations.ts#runPending`
+     ledgers on any normal return — so the refusal would have been recorded as
+     APPLIED, skipped forever, and the cleanup silently never happened while
+     the deploy reported success. Refusals reached through an automatic runner
+     must THROW so nothing is ledgered and the step goes red.
    Then FIX what they find and re-verify. Treat a subagent's "all green" as a
    hypothesis: re-run the suites yourself.
    **Reviews are not a substitute for CI.** Four review passes missed a
@@ -164,6 +181,17 @@ on green).
   one-shot waits. Stop the ticker (TaskStop) when nothing is outstanding.
   Monitor's `persistent: true` still times out (~30 min) in this harness —
   expect to re-arm on the timeout notification, every run.
+- **AGENT LIVENESS — the `output_file` is a SYMLINK. Always `stat -L`.**
+  `stat -c%s <output_file>` returns the length of the LINK TARGET PATH (~110
+  bytes) for EVERY agent — alive, dead, or long finished. Run 17's
+  "120-byte file = dead agent" rule is therefore wrong and will fire on a
+  perfectly healthy fan-out (it did, Run 20, on two agents writing 300KB+).
+  The correct check, cheap enough to run every tick:
+      stat -Lc%s <output_file>   # real transcript size, grows while alive
+      stat -Lc%y <output_file>   # last write; >~10 min idle = dead
+  Pair it with `git log`/`git status` in the agent's checkout or worktree —
+  a live transcript with zero commits past ~30 min is a STUCK agent (Run 15),
+  which is a different failure needing a concrete nudge, not a relaunch.
 - **Redirecting an in-flight agent: SendMessage is NOT reliable — verify,
   then kill (2026-07-27).** A deep-in-an-autonomous-run subagent may never
   surface queued messages. Two redirects went unread while the agent kept
@@ -272,6 +300,29 @@ on green).
   tool-result file with python and parse `name|conclusion|head_sha` instead
   of reading raw.
 - Read `apps/convex/_generated/ai/guidelines.md` before writing Convex code.
+- **Never read a SKIPPED check as a passing check** — absence of evidence.
+  Confirm against the last merged PR whether a skip is standing workflow
+  config, and run the tool locally anyway.
+- **On any confusing CI state, look at the BASE branch before your own diff:**
+  check `mergeable_state` first (GitHub schedules no checks on a `dirty` PR,
+  so "no check runs for 30 minutes" is usually a conflict, not a CI outage),
+  then main's last post-deploy run — someone else's broken migration on main
+  is invisible from your branch and will read as your failure.
+- Two easily-confused Stripe modules: `stripe.ts` = Checkout (card payments);
+  `stripeFinance.ts` = Financial Connections (bank sync). Briefs must say which.
+- **A one-time production DATA operation belongs in a MIGRATION, not a
+  hand-run mutation.** `.github/workflows/deploy-convex.yml` runs `npx convex
+  run migrations:runPending` post-deploy, so a registered migration executes
+  automatically with admin rights — no signed-in identity, no dashboard, no
+  human with prod credentials. A guarded mutation needs an access PATH the
+  intended persona may not have (a nonprofit ED/FM authenticates through the
+  app, not the Convex dashboard), and it is not in `_generated/api.d.ts` until
+  a `convex dev` cycle regenerates it. Ship the migration as the executor and
+  keep any mutation as the dry-run/inspection twin, with ONE shared guarded
+  core so the two can never disagree about what is safe. `runPending` ledgers
+  on normal return and skips forever after — so an automatic migration must
+  THROW on refusal (see §6's refuse-path lens) and its tests must prove no
+  ledger row is written when it does.
 - Adding a SEAT CAPABILITY is a six-step change, and steps 4-6 are the ones
   that get missed: (1) string in `SEAT_CAPABILITIES`; (2) on the seats;
   (3) `EXPECTED_CAPABILITIES_BY_SEAT` (seats.test.ts); (4) a MIGRATION —
@@ -323,6 +374,74 @@ Before finishing a run of this skill, you MUST:
    run's PR.
 
 ## Learnings Log (newest first)
+
+### 2026-08-14 — Run 20 (morning reconciliation: ledger clutter, transfer history, "flag" reads as scary)
+- **I ASSERTED A LIVE BUG FROM SCAR TISSUE AND HAD TO CORRECT MYSELF TO THE
+  FOUNDER.** I found `reverseExcludedSettlementLoop.ts` (a one-time cleanup
+  for a settlement feedback loop), matched its numbers to her screenshot, and
+  told her the loop was live and "worse than clutter" — before reading
+  `lib/bookBalance.ts`, the ONE file that decides the question. Line 68 zeroes
+  `balance_settlement` out of book value precisely so "the target would chase
+  itself" — the loop was fixed months ago. The real defect was duller and
+  exactly what she'd said: a $0 row that never closes the gap it measures, so
+  it re-books identically every morning forever. **A remediation script in the
+  tree is evidence a bug ONCE existed, never that it exists now.** Read the
+  authority file before characterizing severity; correcting upward ("worse
+  than you thought") costs more credibility than starting accurate.
+- **The cross-lane gap is real, and only the orchestrator can see it — now a
+  mandatory §6 lens.** Backend lane removed the ledger rows and moved the
+  finding into the run-summary `notes[]`, justified as "the UI already renders
+  notes." The UI lane, in a different file, simultaneously capped notes at 6
+  and collapsed past 3. Net: on any ordinary morning the advisory was hidden
+  behind a closed-by-default toggle, and past six notes it was DISCARDED —
+  and balance-settlement notes are pushed at step 8, LAST, so they were first
+  against the wall. A reviewer proved it with a slice-logic probe. Both lanes
+  were individually correct; the justification for the whole change was false
+  as shipped. Fix shape that worked: a TYPED field on the run payload, not a
+  string in a log, rendered unconditionally NEXT TO the toggle that causes the
+  condition — effect beside cause, which also makes the "Turn on" button
+  self-explanatory.
+- **A safety guard can be self-defeating through a different entry point.**
+  The migration lane independently added refuse-on-truncation, which fixed a
+  bug the security reviewer had separately proved (`.take(5000)` with no
+  `.order("desc")` reads the OLDEST rows, so a recent pair was invisible with
+  `problems: []`). Two lanes converging on one defect from opposite directions
+  is a good sign — but neither could see that `runPending` ledgers on normal
+  return, so a refusal would be recorded as APPLIED and skipped forever. Now
+  §6 lens + an invariant. Generalize: adding a refuse path is half the work;
+  the other half is what the caller does with it.
+- **`stat -c%s` on an agent's `output_file` is meaningless — it's a symlink.**
+  Every agent reads ~110 bytes, alive or dead. Run 17's "120 bytes = dead"
+  rule fired a false alarm on two agents that were writing 300KB+. Corrected
+  in place; use `stat -Lc%s` / `stat -Lc%y`.
+- **The dead-branch false positive struck a THIRD time**, from a haiku survey
+  that flagged `chore/reconcile-drop-ai-and-transfers` as an active collision
+  across all five hot files. Tip was 6 days old and every commit subject
+  matched an already-merged PR (#556-#559); "no merge base" was just the
+  shallow clone. Cost ~2 minutes to disprove because I checked rather than
+  believed. Keep checking — but consider telling survey lanes to apply the
+  tip-date-vs-merged-subjects test THEMSELVES rather than reporting raw.
+- **Refusing the stop hook was correct ~5 times and should be stated plainly
+  each time.** "Commit these changes" fired repeatedly while the only dirty
+  file was a component an agent held open mid-edit; committing would have
+  landed a typed field with no UI rendering it — the very bug being fixed.
+  Name the specific file, name the agent holding it, note its last-write
+  timestamp, decline. Push freely once a lane's tree is clean; a feature
+  branch with no PR yet costs nothing to push and satisfies the hook honestly.
+- **Founder decisions this run, quoted, now standing:** on the never-executed
+  `balance_settlement` backlog — **"delete them outright"** (chosen over
+  leave-them and mark-excluded, with the no-audit-trail cost stated); and
+  **"cant you run a migration to delete the rows"** — she was right and my
+  framing had been wrong, which produced the new migrations invariant above.
+  Her instinct that a machine-written row with no economic meaning "is just
+  wrong and cluttered" was correct on the merits: `signedBookCents` had been
+  returning 0 for those rows all along, i.e. the code already agreed with her.
+- **Vocabulary:** "Flag" on a money row reads as destructive even when the
+  action is a benign annotation. The repo already had the fix — `Button`
+  `variant="muted"`, added after a prior round where "every row looked
+  alarmed." Renamed to "Mark for review" throughout the presentation layer
+  with the Convex mutation names untouched. When a control's name is a
+  punitive VERB, prefer naming the STATE it produces.
 
 ### 2026-08-13 — Run 19 (finance IA: "what's the difference between reconcile and coding even?")
 - **An IA complaint is a request for a DIAGNOSIS, not a redesign — and the
@@ -415,9 +534,10 @@ Before finishing a run of this skill, you MUST:
   normally, which masked the pattern. The armed Monitor ticker fired once at
   +4min (agents looked alive — timestamps 4min old), then hit its ~30min
   timeout and I never re-armed it, so nothing checked again until the founder
-  asked "you seem stuck?". TWO rules hardened: (a) a 120-byte output file at
-  ANY tick after the first few minutes is a dead agent — size is a cheaper
-  and earlier signal than transcript timestamps; check BOTH. (b) The ticker
+  asked "you seem stuck?". TWO rules hardened: (a) check agent liveness on
+  every tick — see the CORRECTED mechanic in Run 20 below; the raw-size rule
+  originally written here was WRONG and produced a false dead-agent alarm.
+  (b) The ticker
   timeout notification is itself a poll tick: re-arm AND run the full check
   cycle in the same breath, never just re-arm. Recovery that worked: do the
   recon inline yourself (the orchestrator knew most of the ground), keep only
@@ -792,268 +912,3 @@ Before finishing a run of this skill, you MUST:
   false "unmerged" signal). Direction of the diff (deletions vs insertions)
   told me main was strictly ahead.
 
-### 2026-07-29 — Run 11 (maily.to overhaul: editor replaced, themes retired, templates merged)
-- **Whole-system-replacement asks: recon, don't relitigate.** "I kind of hate
-  the system we have right now… use maily.to instead" after two rounds of
-  editor feedback is a verdict, not a question. The run shape that worked:
-  4 recon lanes (library facts from CLONED SOURCE, not docs — the docs 403'd
-  and would have been thinner anyway; integration blast radius; artefact
-  reproducibility IN THE NEW SYSTEM; meta survey) → synthesis → staged
-  parallel workstreams with a contract file written first. The
-  reproducibility lane generalizes Run 9's diff-table rule: when replacing a
-  system, diff the NEW system's expressiveness against the old system's
-  ARTEFACTS (her newsletter), not its feature list.
-- **Vendoring a closed dependency is also an audit.** maily's render had no
-  extension API, so we vendored it (MIT) — and found THREE upstream bugs in
-  the process: two module-level singletons mutated in place (would have
-  cross-contaminated per-recipient sends invisibly) and a heading-level crash.
-  When the plan already requires owning a file, budget the copy-in as a review
-  pass, not a paste.
-- **Contract-file-first paid exactly as Run 8 predicted.** `emailDocFormat.ts`
-  written by the orchestrator before dispatching the two lanes that shared it:
-  zero API-shape rework, vs Run 8's full UI rewrite from a described shape.
-- **The orchestrator's own integration review between build lanes and
-  adversarial review found the two whole-feature gaps no lane could see**:
-  nothing SEEDED the new template (each lane's brief ended at its surface),
-  and the Academy taught a deleted product. Per-lane briefs cannot catch
-  absences that live between lanes — schedule an explicit "walk the feature
-  end to end as a user" pass before review, every large run.
-- **"A changed seeder body does not re-run a ledgered migration" — second
-  occurrence of the class.** The fix is always a NEW registered migration;
-  cron/opportunistic backstops are not deploy-time guarantees (the artwork
-  cron self-disables; the opportunistic path waits for a human). Prove which
-  mechanism fires, don't assume.
-- **git stash in a shared worktree: third incident (WS2b), despite warnings.**
-  Promote from war story to brief boilerplate: every implementation brief now
-  says NEVER stash/checkout/reset in the shared checkout, and the orchestrator
-  verifies surviving-lane files by marker grep after any disclosed mishap.
-- **Model economics after an orchestrator model switch**: subagents inherit
-  the parent model unless overridden — when the orchestrator moves to fable,
-  EVERY Agent call needs an explicit model. The founder audited this
-  mid-run; earlier same-night lanes had silently inherited opus.
-- **Founder decisions, quoted, now standing product facts:** *"the concept of
-  themes is pretty dumb… no need as long as we have templates"* (themes
-  retired; brand consistency = start from a template); *"templates should
-  literally just be saved emails… like google docs templates… I don't think
-  it should be a separate table"* (one table, kind discriminator, gates
-  re-anchored on row kind BY DESIGN this time); *"it's okay to only allow
-  email editing in the browser"* (web-only editing is the design, not a
-  compromise); the maily screenshot = the editing-anatomy spec.
-- **Convex+react-email bundling**: `@react-email/render@2.x` ships a `convex`
-  export condition and renders in the isolate incl. juice's inliner under the
-  edge-runtime harness; the residual risk is import-time `require("fs")` in
-  juice under Convex's REAL esbuild — only the first deploy proves it. A new
-  workspace package's tests also don't run in the framework's reusable CI;
-  the local-job pattern (`router-and-landing`) is the fix shape.
-
-### 2026-07-28 — Run 10 (campaign flow UX + terminology + compliance → PR #462)
-- **The headline: a capability rung is not a feature. `myCampaignsAccess`
-  returned `{canView, canApprove}` and nothing else, so when I added the
-  `campaigns.design` rung, the designer got the desk and every primary button
-  threw FORBIDDEN.** My own regression test passed at the API layer while the
-  product was broken, because no client could ask the question the backend had
-  just learned to answer. **When you add a rung to an access ladder, the FIRST
-  follow-up is "what does the client query return, and does it distinguish the
-  new rung?"** Grep for the access query's return shape in the same breath as
-  the resolver.
-- **Widening a visibility gate silently widens every authorization that was
-  leaning on it.** `campaigns.ts` gated 19 writes on `requireCampaignsAccess`
-  — a *correct* compose gate for as long as desk access implied
-  compose-or-above. Adding a lower rung turned all 19 into "any designer may
-  do this", plus audience writes and suppression. Nobody wrote a bug; the
-  meaning of an existing check changed underneath it. **Before adding a rung
-  BELOW an existing one, grep every call site of the gate it satisfies and
-  classify each read/write.** This is now the standing rule, not a war story.
-- **"Reachable only from tests" has a twin: "reachable only from a screen
-  that throws."** The dead-surface lens must ask both — does a production
-  caller exist, AND can the persona the feature is *for* actually reach it?
-  `updateTemplate` had a caller; the caller could only ever send `name` and
-  `description`, so template CONTENT was uneditable and the designer's
-  "ownership of templates" was rename/re-describe/archive.
-- **Agents in a shared worktree: my crash-safety `git add -A` snapshots swept
-  three reviewers' scratch probes onto the branch, and one landed in
-  `apps/convex/tests/` where the suite would have picked it up.** Tell review
-  agents to write probes under a single ignored path, and add that path to
-  `.git/info/exclude` BEFORE dispatching, not after finding one in `git
-  status`.
-- **A subagent pushing back on my brief was right, and I should design for
-  that.** I said "route the unsubscribe URL through `safeEmailHref` like every
-  other href"; `siteUrl()` returns `""` when unset, so that would have
-  collapsed a legitimate root-relative `/unsubscribe/<token>` to `#` and
-  DELETED the CAN-SPAM opt-out from any misconfigured deployment. Briefs
-  should say what must be TRUE, not only which function to call.
-- **Two lanes' fixes composed without coordination** — a test flake one lane
-  reported was already cured by another lane's fix. Verify a reported failure
-  yourself before dispatching a fix for it; it may no longer exist.
-- **Never read a SKIPPED check as a passing check.** PR #462's Lint job
-  reported `skipped`; I confirmed against the last merged PR that this is
-  standing framework-workflow config rather than something the PR caused, and
-  ran eslint locally anyway. Skipped is absence of evidence.
-- **New standing product principle from the founder (2026-07-28), quoted:**
-  *"when I think campaign, I think a string of things."* Vocabulary is his
-  call, and industry convention is an input, not the answer — I had cited
-  Mailchimp's "campaign = one email" as *the* standard when Klaviyo,
-  Customer.io, Braze and Iterable all use it for a SERIES. **Check whether the
-  convention you're citing is the dominant one or merely the famous one.**
-  Corollary he was right about: naming the small thing with the big word burns
-  the big word for later.
-- **Refusing to merge a green PR can be the correct call.** This PR makes the
-  CAN-SPAM postal address mandatory; merging deploys Convex, and the field is
-  null in production, so squash-merge-on-green would have taken sending down
-  for everyone. The rule exists to prevent self-inflicted outages, not to
-  cause them — surface the blocker and get the human's call.
-
-### 2026-07-28 — Run 9 (the same designer: "it looks nothing like this")
-- **The headline lesson, and it is a general one: I built a GENERIC FRAMEWORK
-  and painted her colours onto it.** Run 8 shipped themes, dark mode,
-  templates, polls and an image library — all real, all tested, all merged —
-  and the designer's verdict was that it looked nothing like her newsletter.
-  She was right. Feedback that says "this doesn't look like us" is a request
-  to reproduce a SPECIFIC ARTEFACT, not to build a capability that could in
-  principle express it. I had her actual HTML the whole time and treated it as
-  a colour reference instead of a specification.
-- **What "structural" meant, concretely** — worth keeping because these are
-  the categories that generic-framework thinking always misses:
-  page/container inverted (cream page + white card, where the real design is a
-  grey page + white container with cream as a CARD fill); one card style where
-  the design had four; no concept of full-bleed artwork, where the section
-  banners CARRY the headings; symmetric columns where the source is 44/56 and
-  52/48; one button style where there are filled and outline; browser-default
-  letter-spacing where headings are -0.04em.
-- **When feedback references an artefact, DIFF against it before designing.**
-  Enumerate: every distinct background fill, every distinct card treatment,
-  every column ratio, every button style, the type scale and tracking, and
-  which images are decoration versus which carry text. That table is the spec.
-  I produced exactly that table AFTER being told I'd failed; producing it
-  first would have cost twenty minutes and saved the whole rebuild.
-- **"No images" was the wrong risk trade, twice.** I refused to ship artwork
-  because a hardcoded URL would rot — correct — and concluded the template
-  should ship empty, which left something unrecognisable rather than a neutral
-  skeleton. Then in the rebuild I reached for a GUESSED placeholder URL and my
-  own Run-8 test ("no block references an image URL this deployment doesn't
-  own") caught it. The actual answer was a third option: import the assets to
-  stable storage (a one-off action, not a registry migration — a MutationCtx
-  cannot fetch), and render unfilled slots from theme tokens so an empty state
-  costs zero external requests. **When both options look wrong, the framing is
-  usually wrong.**
-- **Empty states must hold their geometry.** A card with no image returned ""
-  and collapsed to stacked text, so the template's layout was invisible until
-  artwork was attached — which defeats shipping a template. A placeholder that
-  preserves the cell is not decoration; it is the thing being demonstrated.
-- **Adversarial review keeps paying, and the test lens is the sharpest.** The
-  test agent found `headingTracking` never reached a standalone `heading`
-  block, so an author's headline set looser than the cards beside it in the
-  same email — invisible in every fixture because the template uses cards. The
-  mobile agent independently found FOUR pre-existing parity gaps where the
-  server rejected the whole document and the UI said nothing.
-- **Check `mergeable_state` and the BASE's deploy health before diagnosing
-  your own.** CI produced no check runs for 30 minutes because the PR was
-  `dirty`; separately, main's post-deploy migration step had been failing for
-  hours (a looped `.paginate()` in someone else's migration) which I flagged
-  and which others fixed. Both were invisible from my branch. Add to the §6
-  habit: on any confusing CI state, look at the base branch's last deploy
-  before looking at your own diff.
-
-### 2026-07-27 — Run 8 (designer feedback on campaign email → themes/templates/polls)
-- Shape: 3 recon lanes → I wrote the shared contract MYSELF → 4 implementation
-  agents on disjoint file sets → 4 adversarial review agents → fix → PR. The
-  disjoint-file-set split worked (zero write collisions across 4 concurrent
-  agents); the cost was that EVERY API signature I handed the UI agent was
-  wrong, and it rewrote once the backend landed. **If two lanes share a
-  contract, write the contract first and hand out the real file, not a
-  described shape.** I did this for the block model and not for the Convex
-  function signatures, and only the second one hurt.
-- **The adversarial review was the highest-value step of the run and it is now
-  §6.** Four passes over code with 3,300 passing tests found: one person able
-  to vote twice after a re-send (recipient rows are wiped and re-tokenised;
-  the uniqueness index keys on the dead id), a font stack able to escape the
-  `style` attribute (and the far likelier mundane version — pasting the
-  CONVENTIONAL `Inter,"Segoe UI",sans-serif` silently unstyles every element),
-  a dark-mode fallback block that had drifted to a subset leaving poll options
-  at 1.06:1, a query that could exceed Convex's transaction read limit, and a
-  tally computed inside its own write transaction. None was visible to tests.
-- **The "does it actually do what it claims?" lens is the one to keep.** It
-  found `ensureBuiltInTemplates` shipped with NO production caller — 12 tests
-  green while a real deployment's template picker would have been empty, i.e.
-  exactly the feature we were asked for, absent. Then it found my *fix* for
-  that had the same shape one level up: the migration's own comment claimed a
-  no-op "re-runs next deploy", but `runPending` ledgers unconditionally, so on
-  any freshly scaffolded deployment it would never run again. **A seeder is
-  not done when its test passes; it is done when you have traced the call from
-  a real production entry point.**
-- **CI caught what four reviewers missed.** `/poll/` was registered in
-  `apps/convex/http.ts` but absent from `infra/router`'s `CONVEX_PREFIXES`, so
-  the apex domain would have served the static site — every poll link dead in
-  production. The reviewer that traced the URL end-to-end confirmed builder
-  and parser agreed; they did, and both were irrelevant. Encoded in §6.
-- **Check `mergeable_state` early.** CI produced zero check runs for ~30
-  minutes and no webhook said why: the PR was `dirty`, and GitHub does not
-  schedule checks on a conflicted PR. Poll `pull_request_read`'s
-  `mergeable_state` as the FIRST diagnostic when checks don't appear, not the
-  last.
-- **Founder steer, quoted**: "Just choose whatever color is best, we'll
-  probably edit it later." Applies generally — when a decision is cheap to
-  reverse and the product surface is already editable, pick and move rather
-  than escalating. I'd surfaced three conflicting brand reds (`#891d1a` in her
-  real newsletter, `#D23B3A` in code, `#c93431` in the Academy brand kit) as a
-  decision; the right call was to unify on the one demonstrably in use and say
-  so. Corollary: an inconsistency worth REPORTING is not automatically a
-  decision worth BLOCKING on.
-- **Don't hoard a checkpoint.** I initially refused to commit in-flight agent
-  work to avoid a broken intermediate commit; the repo squash-merges, so
-  intermediate state never reaches `main` and the only real risk was losing
-  the work with the container. Checkpoint freely on a feature branch.
-
-### 2026-07-27 — Run 7 (PDF receipt preview bug + personal-expense flag/Stripe repayment)
-- Two founder items from screenshots. Shape: 4 parallel recon lanes → PDF
-  bug dispatched IMMEDIATELY once its lane returned (didn't wait for the
-  other three — that lane was self-contained and collision-free, and #440
-  was merged+deployed before the feature was even scoped). Ship the small
-  confirmed fix while the big one is still being designed.
-- **Both founder decisions from my AskUserQuestion were later REVERSED by
-  the founder** (status→flag, ACH→Stripe). See the new §3 guidance: my
-  options stated mechanism, not consequence. The reversal landed mid-build
-  and cost a full agent run. Corollary: when the founder picks against your
-  recommendation, that's a signal to make the consequence vivid, not to
-  argue — and to expect a possible reversal, so prefer the design whose
-  reversal is cheapest to absorb.
-- **My factual error, founder-corrected**: told them "no card rail exists"
-  from a reimbursement-payout trace. `stripe.ts` had `createCheckout` all
-  along. Now encoded as a §3 rule. Note the two Stripe modules are easy to
-  confuse and briefs must disambiguate: `stripe.ts` = Checkout (card
-  payments); `stripeFinance.ts` = Financial Connections (bank sync).
-- **SendMessage redirect failed twice** → new Agent-economics rule (verify
-  the redirect landed by grepping the worktree, then TaskStop+relaunch).
-  Salvaged a real fix out of the discarded tree before deleting it.
-- **Best design call of the run came from the implementation agent, not the
-  brief**: I specified "new field, subsume `isPersonal` via migration"; it
-  instead DERIVED the 3-state lifecycle from `isPersonal` + the linked
-  `personalRepayments.status`, both written by one code path — no new
-  persisted field, no second writer, drift structurally impossible rather
-  than merely tested. Generalize: when adding a lifecycle on top of a
-  boolean a money predicate already keys on, try deriving before persisting.
-  Brief the CONSTRAINT (one source of truth) and let the agent pick the
-  mechanism.
-- **New dead-end-control class**: two near-identically-named mutations where
-  one is a stub — `finances.flagPersonal` (boolean, no record, no email)
-  vs `cards.flagPersonalCharge` (real workflow). The founder had been
-  clicking the stub for months. Sibling of the spec'd-but-unwired class:
-  when feedback says "X doesn't do anything", grep for near-duplicate
-  mutation names before assuming the feature is missing.
-- Webhook-settled money: flip state ONLY on webhook confirmation, never on
-  the browser success-redirect, and settle through the EXISTING idempotent
-  core (here `settleRepayment`, guarded on `creditTransactionId`) so
-  at-least-once/out-of-order delivery is one guarantee, not a new one.
-- `actions_list` token-cap parse (the invariant says "slice with python" but
-  not the shape): the saved payload is a DICT — `json.loads(f)['workflow_runs']`,
-  then `r['name'] | r['status'] | r.get('conclusion') | r['head_sha'][:8]`.
-  `conclusion` is ABSENT (not null) on in-progress runs, so `.get` it.
-- Stop-hook "commit and push" fired twice while the only dirty tree was a
-  subagent's worktree holding the REJECTED design — declined both times and
-  said why. Refusing that hook is correct when committing would preserve
-  work already decided against; check `git status` in BOTH the main checkout
-  and every worktree before answering it.
-- Designated-branch mechanic worked cleanly for a second PR after the first
-  merged: `git checkout -B <designated> origin/main` → cherry-pick the
-  worktree branch's commits → `push --force-with-lease` (the branch held
-  only already-merged history, so the force was safe).
