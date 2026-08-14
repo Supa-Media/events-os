@@ -400,10 +400,43 @@ export async function deepCopyTemplate(
 }
 
 /** The chapter's ad-hoc "start from scratch" template. Exported because
- *  `budgetTitleResolve.ts` needs to recognise it on rows that predate the
+ *  `titlingTemplateName` needs to recognise it on rows that predate the
  *  `isBlank` flag — this template is lazily created per chapter, so some are
  *  older than the flag. */
 export const BLANK_TEMPLATE_SLUG = "blank-event";
+
+/**
+ * The template name that may TITLE something (a budget, today) — or `null`
+ * when this template has no name worth borrowing.
+ *
+ * The rule: a template name may stand in for a thing's own name only when a
+ * human authored that template and would say its name out loud. "Genesis" and
+ * "Love Thy Neighbor" pass. Two kinds don't:
+ *
+ *  - `isBlank` — the chapter's synthesized "start from scratch" option. It
+ *    exists so `createFromTemplate` has something to clone nothing from; it is
+ *    not a KIND of event. Titling budgets after it produced "Blank event Dec
+ *    2025" twice on one screen (founder, 2026-08-14), which says less than the
+ *    names their creators typed.
+ *  - `isPlatform` — a platform-seeded sandbox/Academy template. Same argument:
+ *    nobody in the chapter chose that name to mean anything about their event.
+ *
+ * `isArchived` deliberately does NOT disqualify. An archived "Genesis" still
+ * named the events that ran under it, and their budgets should keep reading
+ * "Genesis" rather than silently reverting to whatever was typed per instance.
+ *
+ * The slug is checked alongside the flag because the blank template is created
+ * lazily per chapter, so a chapter that first used it before `isBlank` existed
+ * has a row carrying only the slug.
+ */
+export function titlingTemplateName(
+  template: { name?: string; slug?: string; isBlank?: boolean; isPlatform?: boolean } | null,
+): string | null {
+  if (!template) return null;
+  if (template.isBlank || template.isPlatform) return null;
+  if (template.slug === BLANK_TEMPLATE_SLUG) return null;
+  return template.name?.trim() || null;
+}
 const BLANK_TEMPLATE_NAME = "Blank event";
 
 /**

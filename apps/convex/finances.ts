@@ -99,6 +99,7 @@ import { hasLedgerConsole, requireLedgerConsole } from "./lib/publicLedgerAccess
 // Budget display titles — template name, disambiguated only as much as the set
 // requires. See `lib/budgetTitles.ts` in shared for the rule itself.
 import { resolveTitlesForBudgets } from "./lib/budgetTitleResolve";
+import { requireBudgetGlance } from "./lib/budgetGlanceAccess";
 import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import {
@@ -5587,6 +5588,47 @@ export const myChargeCategories = query({
 
 // ── Budgets at a glance (member-visible, read-only) ──────────────────────────
 
+/**
+ * ONE CADENCE WINDOW of a recurring bucket, inside the viewed year.
+ *
+ * Founder, 2026-08-14: "for the recurring budgets, I want to see smaller
+ * chunks with all the past budgets — for example since we are in Q3, show me
+ * Q1 and Q2 and Q3 for the quarterly; if we are in the 7th month, show me all
+ * past months; maybe even show all and predict how much we will spend based on
+ * previous spending."
+ *
+ * A recurring card's headline answers "have I got room THIS window", which is
+ * the swipe-time question and stays exactly as it was. It cannot answer "are we
+ * usually under, or was this month a fluke" — for that you need the windows
+ * next to each other, which is what this is.
+ *
+ * `state` is the whole point of the shape:
+ *  - `past` / `current` → real spend, summed with the identical
+ *    `txnCountsTowardBudget` rule the headline uses, so window N's figure IS
+ *    what the headline read during window N.
+ *  - `projected` → NOT spend. An average of the COMPLETED windows, carried
+ *    forward over the ones that haven't happened. It must render differently
+ *    (dashed/tinted) because a solid bar claiming money was spent in November
+ *    would be a lie, and it is omitted entirely when there is nothing to
+ *    average from.
+ */
+const glanceRecurringPeriod = v.object({
+  /** Stable within a row — "m7" / "q3". */
+  key: v.string(),
+  /** Short human label: "Jul", "Q3". */
+  label: v.string(),
+  spentCents: v.number(),
+  /** This window's own cap — the cadence cap, identical for every window. */
+  capCents: v.number(),
+  pct: v.number(),
+  status: okWarnValidator,
+  state: v.union(
+    v.literal("past"),
+    v.literal("current"),
+    v.literal("projected"),
+  ),
+});
+
 // One budget's glance row: name/scope, the cap, spend to date, and the room
 // left. `capCents` is ALWAYS the EFFECTIVE cap (`effectiveCapCents`, B1) — a
 // pending increase is never advertised as already-spendable room.
@@ -5609,12 +5651,123 @@ const glanceBudgetRow = v.object({
   // details are." These two fields are the whole fix on the read side.
   refKind: v.union(refKindValidator, v.null()),
   scopeRefId: v.union(v.string(), v.null()),
+  /** The Eastern year this budget FILES UNDER — its linked event/project's
+   *  date when there is one, else the budget's own fiscal `year`. The Budgets
+   *  tab groups on this (current year expanded, previous years collapsed), and
+   *  it cannot be derived client-side: `refDate` used to be computed here and
+   *  thrown away before the response left. Deliberately the EVENT's year, not
+   *  the budget row's — a budget approved in November for a January event is a
+   *  January budget to everyone who looks for it. */
+  periodYear: v.number(),
+  /** The linked ref's date, for ordering within a year. Null for a recurring
+   *  bucket or an unlinked budget. */
+  refDate: v.union(v.number(), v.null()),
+  /** The event/project's OWN name, when it differs from the display title.
+   *  Since titles became template-derived, searching for the name somebody
+   *  actually typed ("genesis night 3") matched nothing — the search box only
+   *  ever saw the title. Null when there is no distinct underlying name. */
+  refName: v.union(v.string(), v.null()),
   capCents: v.number(),
   spentCents: v.number(),
   remainingCents: v.number(),
   pct: v.number(),
   status: okWarnValidator,
+  /**
+   * The year broken into this bucket's own cadence windows — see
+   * `glanceRecurringPeriod`. Present only for a REPEATING monthly/quarterly
+   * bucket: a `yearly` bucket's window already IS the page ("for the yearly
+   * budgets it's fine because obviously each page is a year"), a one-time
+   * budget has no cadence to repeat, and a bucket pinned to one specific
+   * month/quarter (`b.month`/`b.quarter` set) is a single window wearing a
+   * recurring cadence — a strip of twelve for it would be eleven empty bars.
+   *
+   * OPTIONAL on the wire on purpose: the backend deploys ahead of the client
+   * bundles, and a field an old bundle has never heard of is ignored, where a
+   * field it expects and no longer receives is `undefined` in arithmetic (the
+   * `$NaN` the founder caught on the repayments page, 2026-08-14).
+   */
+  periods: v.optional(v.array(glanceRecurringPeriod)),
 });
+
+/**
+ * A recurring bucket's year, window by window — the data behind
+ * `glanceRecurringPeriod`.
+ *
+ * Returns `null` for anything that isn't a REPEATING monthly/quarterly bucket,
+ * which is the caller's signal to omit the field entirely rather than send an
+ * empty array (see the `periods` validator comment for which shapes those are
+ * and why).
+ *
+ * ── THE PROJECTION ────────────────────────────────────────────────────────
+ * Averaged over COMPLETED windows only, never including the current one. The
+ * current window is partial by definition — on the 2nd of the month it holds
+ * two days of spend, and folding that into the average would predict a
+ * collapse in spending that is really just the calendar. With no completed
+ * window to average (January, or Q1), there is nothing honest to predict and
+ * the future windows are returned as projected zeroes… which would be equally
+ * misleading, so they are dropped: the strip then shows only what has actually
+ * happened.
+ */
+function recurringPeriodRows(
+  b: Doc<"budgets">,
+  txns: Doc<"transactions">[],
+  capCents: number,
+  viewYear: number,
+  throughMonth: number,
+): (typeof glanceRecurringPeriod.type)[] | null {
+  const monthly = b.cadence === "monthly";
+  const quarterly = b.cadence === "quarterly";
+  if (!monthly && !quarterly) return null;
+  // Pinned to one window — not a series. See the `periods` validator comment.
+  if (monthly ? b.month != null : b.quarter != null) return null;
+
+  const count = monthly ? 12 : 4;
+  const currentIndex = monthly ? throughMonth : quarterOfMonth(throughMonth);
+  // The month to hand `txnCountsTowardBudget` so it resolves window `i` — its
+  // own month for monthly, the quarter's first month for quarterly.
+  const contextMonth = (i: number) => (monthly ? i : (i - 1) * 3 + 1);
+  const label = (i: number) =>
+    monthly ? MONTH_NAMES[i - 1].slice(0, 3) : `Q${i}`;
+
+  const elapsed: (typeof glanceRecurringPeriod.type)[] = [];
+  for (let i = 1; i <= Math.min(currentIndex, count); i++) {
+    const spentCents = txns.reduce(
+      (sum, tr) =>
+        txnCountsTowardBudget(tr, b, contextMonth(i)) ? sum + tr.amountCents : sum,
+      0,
+    );
+    const pct = pctOf(spentCents, capCents);
+    elapsed.push({
+      key: monthly ? `m${i}` : `q${i}`,
+      label: label(i),
+      spentCents,
+      capCents,
+      pct,
+      status: statusFor(pct),
+      state: i === currentIndex ? "current" : "past",
+    });
+  }
+
+  const completed = elapsed.filter((p) => p.state === "past");
+  if (completed.length === 0) return elapsed;
+  const avg = Math.round(
+    completed.reduce((s, p) => s + p.spentCents, 0) / completed.length,
+  );
+  const projected: (typeof glanceRecurringPeriod.type)[] = [];
+  for (let i = currentIndex + 1; i <= count; i++) {
+    const pct = pctOf(avg, capCents);
+    projected.push({
+      key: monthly ? `m${i}` : `q${i}`,
+      label: label(i),
+      spentCents: avg,
+      capCents,
+      pct,
+      status: statusFor(pct),
+      state: "projected",
+    });
+  }
+  return [...elapsed, ...projected];
+}
 
 /**
  * BUDGETS AT A GLANCE — the whole chapter's "how much has been spent on X and
@@ -5649,23 +5802,72 @@ const glanceBudgetRow = v.object({
  * Current-Eastern-year budgets only, one bounded `loadPeriodTxns` read.
  */
 export const budgetsGlance = query({
-  args: {},
+  args: {
+    /** Which YEAR to show. Omitted = the current Eastern year. The tab is a
+     *  year at a time now (founder, 2026-08-14: "maybe budgets should be shown
+     *  year by year, so every year is a new page") — a page that scrolls
+     *  through every year the chapter has ever had buries the one somebody
+     *  opened it for. */
+     year: v.optional(v.number()),
+    /** Which BOOK. Omitted = the caller's own chapter, which is what every
+     *  member gets and the only thing that existed before. `"all"` and
+     *  `"central"` and another chapter's id require central finance reach and
+     *  are refused otherwise — this query is member-visible, and widening it
+     *  by URL would hand any volunteer every chapter's budgets. */
+    scope: v.optional(
+      v.union(v.literal("all"), v.literal("central"), v.id("chapters")),
+    ),
+  },
   returns: v.object({
     year: v.number(),
     month: v.number(),
+    /** TODAY's Eastern year — which is not `year` once the reader steps the
+     *  picker, and not `new Date().getFullYear()` either. Every period boundary
+     *  in finance is Eastern; a client deriving "am I on the current year's
+     *  page" from its own locale gets it wrong for whoever is west of Eastern
+     *  on New Year's Eve, and gets it wrong in the direction that matters
+     *  (agenda ordering and the recurring section both hang off this). */
+    currentYear: v.number(),
+    /** Every year that has a budget in this scope, newest first — what the
+     *  year picker offers. Always contains the current year, even when empty,
+     *  so the control never presents a year that isn't selectable. */
+    availableYears: v.array(v.number()),
     oneTime: v.array(glanceBudgetRow),
     recurring: v.array(glanceBudgetRow),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const now = easternParts(Date.now());
-    const empty = { year: now.year, month: now.month, oneTime: [], recurring: [] };
-    const chapterId = await readChapterId(ctx);
-    if (!chapterId) return empty;
-    // No requireFinanceRole here — see the doc comment above (member-visible
-    // by design; membership is the gate).
+    const empty = {
+      year: args.year ?? now.year,
+      month: now.month,
+      currentYear: now.year,
+      availableYears: [now.year],
+      oneTime: [],
+      recurring: [],
+    };
+    // Through the named resolver, not an inline membership check. This query
+    // is the whole reason `lib/budgetGlanceAccess.ts` exists, and it was still
+    // reading `readChapterId` directly — the resolver had zero call sites,
+    // which is precisely the drift the gating rule is meant to prevent.
+    const ownChapterId = await requireBudgetGlance(ctx);
+    if (!ownChapterId) return empty;
 
+    // WHICH BOOKS this call may read. Own chapter needs nothing beyond
+    // membership; anything wider is central-only. `requireFinanceCentral`
+    // throws, which `FinanceBoundary` renders — the right outcome for a URL
+    // asking for a book the caller doesn't hold, and better than silently
+    // showing them their own instead.
+    const requested = args.scope ?? ownChapterId;
+    if (requested !== ownChapterId) {
+      await requireFinanceCentral(ctx, ownChapterId);
+    }
+    const scopes: FinanceScope[] =
+      requested === "all"
+        ? [CENTRAL, ...(await listActiveChapters(ctx)).map((c) => c._id)]
+        : [requested as FinanceScope];
+
+    const viewYear = args.year ?? now.year;
     const sandboxMode = await readSandbox(ctx);
-    const yearTxns = await loadPeriodTxns(ctx, chapterId, now.year, sandboxMode);
     // ── EVERY YEAR'S BUDGETS, NOT JUST THIS ONE (founder, 2026-08-14) ──────
     // "Make sure it shows all the budgets."
     //
@@ -5677,25 +5879,38 @@ export const budgetsGlance = query({
     // The index prefix drops the year, so this is the same bounded read one
     // key shorter. What each budget then does with the wider set differs by
     // type, and `keepOnGlance` below is where that's decided.
-    const budgets = await ctx.db
-      .query("budgets")
-      .withIndex("by_chapter_and_period", (q) => q.eq("chapterId", chapterId))
-      .take(ROLLUP_SCAN_LIMIT);
-    // Same UNION as `dashboardChapter`'s budget cards — this screen is "budgets
-    // at a glance" for the whole team, so a cardholder checking room-left must
-    // see the identical figure the treasurer's dashboard shows. Leaving it
-    // custody-scoped would make the two disagree by exactly the cross-book
-    // charges, and by a one-time budget's spend from other years (see
-    // `loadExtraBudgetTxns`).
-    const extraBudgetTxns = await loadExtraBudgetTxns(
-      ctx,
-      budgets,
-      chapterId,
-      sandboxMode,
-      new Set(yearTxns.map((tr) => tr._id)),
-    );
-    const budgetTxns =
-      extraBudgetTxns.length > 0 ? [...yearTxns, ...extraBudgetTxns] : yearTxns;
+    // Read every book in scope. One chapter is the common case and costs
+    // exactly what it did before; "all" is bounded by the chapter count, which
+    // is small and already the shape `dashboardCentral` reads at.
+    const budgets: Doc<"budgets">[] = [];
+    const budgetTxns: Doc<"transactions">[] = [];
+    for (const scope of scopes) {
+      const scopeBudgets = await ctx.db
+        .query("budgets")
+        .withIndex("by_chapter_and_period", (q) => q.eq("chapterId", scope))
+        .take(ROLLUP_SCAN_LIMIT);
+      // Spend is read for the VIEWED year, not today's — that is what makes a
+      // past year's page report that year rather than an empty current one.
+      const yearTxns = await loadPeriodTxns(ctx, scope, viewYear, sandboxMode);
+      // Same UNION as `dashboardChapter`'s budget cards — this screen is
+      // "budgets at a glance" for the whole team, so a cardholder checking
+      // room-left must see the identical figure the treasurer's dashboard
+      // shows. Leaving it custody-scoped would make the two disagree by
+      // exactly the cross-book charges, and by a one-time budget's spend from
+      // other years (see `loadExtraBudgetTxns`).
+      const extra =
+        scope === CENTRAL
+          ? []
+          : await loadExtraBudgetTxns(
+              ctx,
+              scopeBudgets,
+              scope as Id<"chapters">,
+              sandboxMode,
+              new Set(yearTxns.map((tr) => tr._id)),
+            );
+      budgets.push(...scopeBudgets);
+      budgetTxns.push(...yearTxns, ...extra);
+    }
 
     const getEvent = nameCache(ctx, "events");
     const getProject = nameCache(ctx, "projects");
@@ -5706,7 +5921,7 @@ export const budgetsGlance = query({
     // Genesis budgets must not both read "Genesis" just because one of them
     // was filtered off this particular screen.
     const titles = await resolveTitlesForBudgets(ctx, budgets);
-    const oneTime: (typeof glanceBudgetRow.type & { refDate: number | null })[] = [];
+    const oneTime: (typeof glanceBudgetRow.type)[] = [];
     const recurring: (typeof glanceBudgetRow.type)[] = [];
     for (const b of budgets) {
       // Only a budget with an in-force cap is advertised to the whole team:
@@ -5723,11 +5938,14 @@ export const budgetsGlance = query({
       // live window to report against; it would render $0 of $500 forever,
       // which is worse than absent because it looks like a budget nobody is
       // using rather than one that ended. Those stay scoped to this year.
-      if (!isOneTime && b.year !== now.year) continue;
+      if (!isOneTime && b.year !== viewYear) continue;
+      // For a past year every window has ended, so the whole year is elapsed;
+      // for the current one the calendar stops at today's month.
+      const throughMonth = viewYear === now.year ? now.month : 12;
       const spentCents = budgetTxns.reduce((sum, tr) => {
         const counts = isOneTime
           ? tr.budgetId === b._id && isSpend(tr)
-          : txnCountsTowardBudget(tr, b, now.month);
+          : txnCountsTowardBudget(tr, b, throughMonth);
         return counts ? sum + tr.amountCents : sum;
       }, 0);
       const capCents = effectiveCapCents(b);
@@ -5742,9 +5960,22 @@ export const budgetsGlance = query({
       // Gated on `live` — see `glanceBudgetRow.refKind`'s own comment for why
       // a dangling ref must read as "no ref" rather than as a link.
       const refKind = live ? effectiveRefKind(b) : null;
+      // The year a reader files this budget under: the ref's date when there
+      // is one, else the budget's own. See `periodYear`'s validator comment.
+      const periodYear = refDate != null ? easternParts(refDate).year : b.year;
+      const title = titles.get(b._id) ?? name;
+      // `null` for everything that isn't a repeating monthly/quarterly bucket,
+      // and the field is then omitted rather than sent empty.
+      const periods = isOneTime
+        ? null
+        : recurringPeriodRows(b, budgetTxns, capCents, viewYear, throughMonth);
       const row = {
         id: b._id,
-        name: titles.get(b._id) ?? name,
+        name: title,
+        periodYear,
+        refDate: refDate ?? null,
+        // Only when it adds something the title doesn't already say.
+        refName: live && name !== title ? name : null,
         dateLabel,
         type: effectiveType(b),
         cadence: b.cadence,
@@ -5755,8 +5986,9 @@ export const budgetsGlance = query({
         remainingCents: capCents - spentCents,
         pct,
         status: statusFor(pct),
+        ...(periods ? { periods } : {}),
       };
-      if (isOneTime) oneTime.push({ ...row, refDate });
+      if (isOneTime) oneTime.push(row);
       else recurring.push(row);
     }
 
@@ -5769,12 +6001,73 @@ export const budgetsGlance = query({
     });
     recurring.sort((a, b) => a.name.localeCompare(b.name));
 
+    // Which years the picker offers: every year a one-time budget files under,
+    // plus the current one so the control can never be pointing at a year it
+    // won't offer. Computed BEFORE the viewed-year filter below, since that's
+    // the whole point of it.
+    const availableYears = [
+      ...new Set<number>([now.year, ...oneTime.map((r) => r.periodYear)]),
+    ].sort((a, b) => b - a);
+
     return {
-      year: now.year,
+      year: viewYear,
       month: now.month,
-      oneTime: oneTime.map(({ refDate: _refDate, ...row }) => row),
+      currentYear: now.year,
+      availableYears,
+      // ONE YEAR AT A TIME (founder, 2026-08-14: "every year is a new page").
+      // The whole set is loaded — that's what `availableYears` is derived from
+      // and what keeps "still load everything" true — and the page renders the
+      // year that was asked for.
+      //
+      // `refDate` USED to be stripped here — computed for the sort and then
+      // discarded, which is why this couldn't be grouped by year at all.
+      oneTime: oneTime.filter((r) => r.periodYear === viewYear),
       recurring,
     };
+  },
+});
+
+/**
+ * WHICH BOOKS this caller may put in the Budgets tab's picker.
+ *
+ * Founder, 2026-08-14: "some type of dropdown to select the book/chapter —
+ * all, central, NYC."
+ *
+ * The list is computed SERVER-SIDE from the caller's real reach rather than
+ * rendered client-side and enforced later. A picker offering a book the query
+ * will refuse is a screen that promises something it can't do, and a picker
+ * built from a client-side role guess is a second copy of the rule.
+ *
+ * A plain member gets exactly one entry — their own chapter — which is what
+ * the tab did before any of this and keeps the member experience unchanged
+ * (the client hides a one-entry picker entirely). Central reach adds "All
+ * books", "Central", and every active chapter.
+ */
+export const budgetsGlanceScopes = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      /** `"all"` / `"central"` / a chapter id — passed straight back as
+       *  `budgetsGlance`'s `scope`. */
+      key: v.string(),
+      label: v.string(),
+    }),
+  ),
+  handler: async (ctx) => {
+    const ownChapterId = await requireBudgetGlance(ctx);
+    if (!ownChapterId) return [];
+    const own = await ctx.db.get(ownChapterId);
+    const mine = { key: String(ownChapterId), label: own?.name ?? "My chapter" };
+
+    const access = await getFinanceRole(ctx, ownChapterId);
+    if (!access.isCentral) return [mine];
+
+    const chapters = await listActiveChapters(ctx);
+    return [
+      { key: "all", label: "All books" },
+      { key: "central", label: "Central" },
+      ...chapters.map((c) => ({ key: String(c._id), label: c.name })),
+    ];
   },
 });
 
