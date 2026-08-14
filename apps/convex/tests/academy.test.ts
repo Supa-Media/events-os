@@ -228,12 +228,24 @@ describe("curriculum content", () => {
     // comes back as a personal charge). Deliberately has no product mechanism
     // behind it; the founders were explicit that the tracks are taught and
     // reinforced in meetings rather than enforced in software.)
-    expect(ACADEMY_SECTION_COUNT).toBe(109);
+    // + 2 (finance-paying-a-contractor + finance-contractor-tax-and-privacy,
+    // 2026-08-14, inserted directly after finance-reimbursements-and-flags so
+    // the two money-out flows are taught back to back — both required. The
+    // first teaches the distinction that causes the real errors (a
+    // reimbursement pays back a receipt and is not income; a contractor
+    // payment buys work, is substantiated by the AGREEMENT, and IS reportable
+    // income), the two entry points into one queue, and the rule that editing
+    // an agreed term voids the contractor's acceptance. The second teaches the
+    // W-9 — who may open it, that every view is logged, and that it is
+    // destroyed four years on — and what publishes: the work, the amount, the
+    // date and the category, with "Contractor payment" standing in for the
+    // name we deliberately never publish.)
+    expect(ACADEMY_SECTION_COUNT).toBe(111);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 109 }, (_v, i) => i + 1),
+      Array.from({ length: 111 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(108);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(110);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

@@ -281,4 +281,37 @@ crons.cron(
   {},
 );
 
+// Daily 13:00 UTC = 9am EDT: contractor payments waiting on a treasurer.
+//
+// Nudges at 3 days, escalates to central at 7, and NEVER auto-cancels. The
+// asymmetry is deliberate: the cost of nagging an internal queue is mild
+// annoyance, and the cost of silently killing a payment is that somebody who
+// did the work doesn't get paid and nobody finds out until they ask. Each row
+// is stamped when nudged (`reviewNudgeSentAt` / `reviewEscalatedAt`) so this
+// gets louder on a schedule rather than every single run.
+//
+// Same hour as the reimbursement reminders above, on purpose — a treasurer
+// gets one morning's worth of "here is what's waiting on you", not two.
+crons.cron(
+  "contractor payment review reminders",
+  "0 13 * * *",
+  internal.contractorPayments.sweepPendingReviews,
+  {},
+);
+
+// Daily 04:00 UTC: destroy tax documents past their retention window.
+//
+// THE HALF OF THE RETENTION PROMISE THAT ACTUALLY PROTECTS ANYBODY. A policy
+// that says "we keep W-9s for four years" and never deletes one is just an SSN
+// sitting in a bucket forever. Deletes the FILE from storage and then the row,
+// batched and self-scheduling; the sweep is a single indexed range scan over
+// `by_purge_after`, so it costs nothing on the overwhelming majority of days
+// when nothing is due.
+crons.cron(
+  "contractor tax document retention purge",
+  "0 4 * * *",
+  internal.contractorPayments.purgeExpiredTaxDocuments,
+  {},
+);
+
 export default crons;

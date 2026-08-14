@@ -126,6 +126,9 @@ describe("academy course completions", () => {
       "doxology-what-we-sing",
       "duties",
       "executive-director",
+      // Paying contractors (2026-08-14) is quiz-only like the rest of the
+      // Finances stream — no capstone — so a full quiz pass earns it.
+      "finance-paying-contractors",
       "finances-for-everyone",
       "financial-manager",
       "giving-fundamentals",

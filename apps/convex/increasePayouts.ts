@@ -42,6 +42,9 @@ import {
 import { increaseEnvForObjectId, increasePost } from "./lib/increaseApi";
 import {
   payoutSummaryValidator,
+  reimbursementPayoutSummaryValidator,
+  toReimbursementPayoutSummary,
+  type ReimbursementPayoutSummary,
   toPayoutSummary,
   assertPositivePayout,
   assertDisbursementSoD,
@@ -260,13 +263,27 @@ export const applyAchTransfer = internalMutation({
     if (!payout) {
       throw new ConvexError({ code: "NOT_FOUND", message: "Payout not found." });
     }
-    const req = await ctx.db.get(payout.reimbursementId);
-    if (req && req.status === "approved") {
-      await ctx.db.patch(req._id, {
-        status: "paying",
-        payoutId: payout._id,
-        updatedAt: now,
-      });
+    // Move the SUBJECT to `paying`, whichever rail this payout belongs to. Both
+    // subjects use the same literal and the same two fields, so the branch is
+    // only about which table to patch.
+    if (payout.reimbursementId) {
+      const req = await ctx.db.get(payout.reimbursementId);
+      if (req && req.status === "approved") {
+        await ctx.db.patch(req._id, {
+          status: "paying",
+          payoutId: payout._id,
+          updatedAt: now,
+        });
+      }
+    } else if (payout.contractorPaymentId) {
+      const row = await ctx.db.get(payout.contractorPaymentId);
+      if (row && row.status === "approved") {
+        await ctx.db.patch(row._id, {
+          status: "paying",
+          payoutId: payout._id,
+          updatedAt: now,
+        });
+      }
     }
     return { kind: "applied", payout: toPayoutSummary(payout) };
   },
@@ -588,8 +605,8 @@ export const onIncreaseWebhookEvent = internalMutation({
  *  reimbursement/payout UI renders. */
 export const listPayouts = query({
   args: {},
-  returns: v.array(payoutSummaryValidator),
-  handler: async (ctx): Promise<PayoutSummary[]> => {
+  returns: v.array(reimbursementPayoutSummaryValidator),
+  handler: async (ctx): Promise<ReimbursementPayoutSummary[]> => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
     await requireFinanceRole(ctx, chapterId, "viewer");
@@ -605,6 +622,14 @@ export const listPayouts = query({
         .order("desc")
         .take(200)
     ).filter((p) => matchesMode(p.increaseTransferId ?? null, sandboxMode));
-    return payouts.map(toPayoutSummary);
+    // REIMBURSEMENT RAIL ONLY. The `payouts` table carries contractor payouts
+    // too now, and this query backs the reimbursements screen: without the
+    // filter, contractor rows would both appear there and compete for the
+    // 200-row cap above, pushing real reimbursement payouts out of a view that
+    // silently claims to be complete. Contractor payouts are read through
+    // `api.contractorPayments.get`'s own `payout` projection instead.
+    return payouts
+      .map(toReimbursementPayoutSummary)
+      .filter((p): p is ReimbursementPayoutSummary => p !== null);
   },
 });

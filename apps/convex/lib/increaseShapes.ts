@@ -39,6 +39,34 @@ export const payoutStatusValidator = v.union(
 /** The read shape the UI renders for a payout (also every action's return). */
 export const payoutSummaryValidator = v.object({
   id: v.id("payouts"),
+  // NULL for a contractor payout — the rail carries two subject kinds now, and
+  // exactly one of these two is set on any given row (see the `payouts` table).
+  reimbursementId: v.union(v.id("reimbursementRequests"), v.null()),
+  contractorPaymentId: v.union(v.id("contractorPayments"), v.null()),
+  payeePersonId: v.union(v.id("people"), v.null()),
+  amountCents: v.number(),
+  provider: payoutProviderValidator,
+  status: payoutStatusValidator,
+  increaseTransferId: v.union(v.string(), v.null()),
+  createdAt: v.number(),
+});
+
+/**
+ * The read shape for a REIMBURSEMENT-rail payout specifically — same as above
+ * but with `reimbursementId` non-null.
+ *
+ * Exists because `payoutSummaryValidator` had to widen that field to carry the
+ * contractor rail, and widening it silently broke the reimbursements screen,
+ * which keys a `Map<Id<"reimbursementRequests">, …>` on it
+ * (`app/(app)/finances/reimbursements/index.tsx`). A query that only ever
+ * returns reimbursement payouts should say so in its type rather than making
+ * every consumer re-narrow a field that cannot actually be null for them.
+ *
+ * Pair it with a `reimbursementId != null` filter at the query — the type is
+ * only honest if the query actually excludes the other rail.
+ */
+export const reimbursementPayoutSummaryValidator = v.object({
+  id: v.id("payouts"),
   reimbursementId: v.id("reimbursementRequests"),
   payeePersonId: v.union(v.id("people"), v.null()),
   amountCents: v.number(),
@@ -47,6 +75,29 @@ export const payoutSummaryValidator = v.object({
   increaseTransferId: v.union(v.string(), v.null()),
   createdAt: v.number(),
 });
+
+export interface ReimbursementPayoutSummary
+  extends Omit<PayoutSummary, "reimbursementId" | "contractorPaymentId"> {
+  reimbursementId: Id<"reimbursementRequests">;
+}
+
+/** Narrow a payout to the reimbursement rail, or `null` if it belongs to the
+ *  other one. The `null` return is what a caller filters on. */
+export function toReimbursementPayoutSummary(
+  p: Doc<"payouts">,
+): ReimbursementPayoutSummary | null {
+  if (!p.reimbursementId) return null;
+  return {
+    id: p._id,
+    reimbursementId: p.reimbursementId,
+    payeePersonId: p.payeePersonId ?? null,
+    amountCents: p.amountCents,
+    provider: p.provider,
+    status: p.status,
+    increaseTransferId: p.increaseTransferId ?? null,
+    createdAt: p.createdAt,
+  };
+}
 
 export const financeScopeValidator = v.union(
   v.id("chapters"),
@@ -65,7 +116,8 @@ export const increaseAccountSummaryValidator = v.object({
 
 export interface PayoutSummary {
   id: Id<"payouts">;
-  reimbursementId: Id<"reimbursementRequests">;
+  reimbursementId: Id<"reimbursementRequests"> | null;
+  contractorPaymentId: Id<"contractorPayments"> | null;
   payeePersonId: Id<"people"> | null;
   amountCents: number;
   provider: PayoutProvider;
@@ -122,7 +174,8 @@ export type BeginProvisionResult =
 export function toPayoutSummary(p: Doc<"payouts">): PayoutSummary {
   return {
     id: p._id,
-    reimbursementId: p.reimbursementId,
+    reimbursementId: p.reimbursementId ?? null,
+    contractorPaymentId: p.contractorPaymentId ?? null,
     payeePersonId: p.payeePersonId ?? null,
     amountCents: p.amountCents,
     provider: p.provider,

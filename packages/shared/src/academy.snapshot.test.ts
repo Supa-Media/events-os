@@ -667,6 +667,26 @@
  * stores the label and that old rows would keep reading "Reconciled" — half of
  * which this change makes false. No content, section, course, minutes or
  * quizLength moved: every table below is unchanged.
+ *
+ * 2026-08-14 — CONTRACTOR PAYMENTS (`specs/contractor-payments-pm-spec.md` §9).
+ * The one deliberate ADDITION in this pass, and the only movement in the tables
+ * below: two Finances sections INSERTED directly after
+ * `finance-reimbursements-and-flags` — `finance-paying-a-contractor` (5 min,
+ * 5-quiz) and `finance-contractor-tax-and-privacy` (4 min, 5-quiz) — forming a
+ * NEW course `finance-paying-contractors`, slotted into the Finances catalog
+ * between `chapter-money-model` and `treasurer`. Total: 111 sections; every
+ * section from the insert onward shifts two `order` values, which are derived
+ * from array position and so need no hand-editing. Both are required, not
+ * `optional`: a contractor payment is reportable income to a person and a
+ * permanent public statement about the work, so the rules should be learned
+ * before somebody's first agreement rather than after it. Nothing else moved —
+ * the two content-only corrections that shipped with it
+ * (`finance-reimbursements-and-flags`'s "Two situations, two flows" opener,
+ * which this feature made false, and `finance-publishing-the-books`'s "No
+ * names, ever" bullet) touch neither title, minutes nor quiz length. NOTE for
+ * the PR that lands this: `apps/convex/tests/academy.test.ts` pins
+ * ACADEMY_SECTION_COUNT (109 → 111) and ACADEMY_REQUIRED_SECTION_COUNT
+ * (108 → 110), and that file is outside this package.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -735,6 +755,12 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "finance-receipt-exceptions",
   "finance-coding-your-charges",
   "finance-reimbursements-and-flags",
+  // 2026-08-14, contractor payments: the two modules of the new
+  // `finance-paying-contractors` course, inserted directly after the
+  // reimbursement lesson because the error they exist to prevent is confusing
+  // the two flows.
+  "finance-paying-a-contractor",
+  "finance-contractor-tax-and-privacy",
   "finance-reconcile-grid",
   "finance-transfers-and-payouts",
   "finance-chasing-receipts",
@@ -1293,6 +1319,22 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "finance-paying-a-contractor",
+    title: "Paying a contractor",
+    minutes: 5,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "finance-contractor-tax-and-privacy",
+    title: "The W-9, and what publishes",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
     minutes: 5,
@@ -1804,6 +1846,17 @@ const EXPECTED_COURSES: {
       "finance-budget-lifecycle",
       "finance-one-home-per-dollar",
       "finance-publishing-the-books",
+    ],
+  },
+  {
+    // 2026-08-14, contractor payments: a SHARED desk course (Treasurer,
+    // Financial Manager, Executive Director all work the one queue), so it sits
+    // beside `chapter-money-model` rather than inside a single role course.
+    slug: "finance-paying-contractors",
+    themeKey: "finances",
+    moduleSlugs: [
+      "finance-paying-a-contractor",
+      "finance-contractor-tax-and-privacy",
     ],
   },
   {
