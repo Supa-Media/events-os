@@ -86,6 +86,7 @@ import { requireEvent } from "./lib/context";
 import { newGuestToken, newTicketCode } from "./ticketing";
 import { RSVP_STATUSES } from "./schema/ticketing";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
+import type { GivingScope } from "./lib/givingAccess";
 import { linkRsvpToPerson } from "./lib/rsvpPeople";
 
 /** Givebutter API base. `Authorization: Bearer <GIVEBUTTER_API_KEY>`. */
@@ -629,7 +630,29 @@ export const applyGivebutterTickets = triggerInternalMutation({
  */
 export const applyGivebutterDonations = triggerInternalMutation({
   args: {
-    eventId: v.id("events"),
+    /** The event whose campaign these came from. Absent for GENERAL giving —
+     *  see `general` below. */
+    eventId: v.optional(v.id("events")),
+    /**
+     * GIVING THAT BELONGS TO NO EVENT — the org's own Givebutter campaign,
+     * where recurring givers land.
+     *
+     * Until this existed, `syncAllGivebutterCampaigns` only ever swept
+     * campaigns attached to an event page, so a donation to the general
+     * Public Worship campaign was never booked at all — while its money still
+     * counted on the cash side of the reconciliation (`givebutterUndeposited
+     * Cents` is derived from Givebutter's own transactions, not from ours).
+     * The result was $50.00 of real recurring giving showing up as
+     * "unaccounted for" on the accounts page, with nothing naming it. Founder,
+     * 2026-08-14: "our system doesn't count recurring giving or stuff like
+     * that from Givebutter."
+     *
+     * Books at `"central"`, the same scope `/give` uses for a gift with no
+     * territory behind it (`givingDonations.ts`): the org's campaign is not a
+     * chapter's campaign, and counting its recurring givers as New York's
+     * would overstate one book's giving with money the whole org raised.
+     */
+    general: v.optional(v.boolean()),
     donations: v.array(gbDonationValidator),
   },
   returns: v.object({
@@ -638,12 +661,33 @@ export const applyGivebutterDonations = triggerInternalMutation({
     legacyCollisions: v.number(),
     converted: v.number(),
   }),
-  handler: async (ctx, { eventId, donations }) => {
-    const page = await ctx.db
-      .query("eventPages")
-      .withIndex("by_event", (q) => q.eq("eventId", eventId))
-      .unique();
-    if (!page) {
+  handler: async (ctx, { eventId, general, donations }) => {
+    // ONE loop, two provenances. The guards below — the externalRef dedup, the
+    // converted-donation suppression, the legacy-backfill twin check — are the
+    // hard-won part of this mutation, and a second copy of them for general
+    // giving is exactly how two paths come to disagree about what is already
+    // in the books. So only the SCOPE and the event link vary; everything
+    // after this block is shared verbatim.
+    let scope: GivingScope;
+    if (eventId) {
+      const page = await ctx.db
+        .query("eventPages")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .unique();
+      if (!page) {
+        return {
+          inserted: 0,
+          skipped: donations.length,
+          legacyCollisions: 0,
+          converted: 0,
+        };
+      }
+      scope = page.chapterId;
+    } else if (general) {
+      scope = "central";
+    } else {
+      // Neither an event nor general is not a provenance we can book against,
+      // and guessing one would file somebody's giving in an arbitrary book.
       return {
         inserted: 0,
         skipped: donations.length,
@@ -651,7 +695,6 @@ export const applyGivebutterDonations = triggerInternalMutation({
         converted: 0,
       };
     }
-    const scope = page.chapterId;
 
     let inserted = 0;
     let skipped = 0;
@@ -1939,6 +1982,168 @@ export const syncGivebutterCampaign = internalAction({
  * setting OR env — see `resolveGivebutterApiKey`). The manual button keeps
  * working forever regardless of the date gate.
  */
+/**
+ * Every campaign id an event page has claimed — the set general giving must
+ * NOT touch.
+ *
+ * ALL pages, not the active ones `listActiveGivebutterPages` returns. That
+ * query's staleness window decides what is worth re-syncing; this decides what
+ * is SOMEBODY ELSE'S, and a campaign does not stop belonging to its event
+ * because the event finished. Reading the narrower list here would let a past
+ * event's donations be re-booked as central giving — the same money in two
+ * books.
+ */
+export const listClaimedGivebutterCampaignIds = internalQuery({
+  args: {},
+  returns: v.array(v.string()),
+  handler: async (ctx) => {
+    const pages = await ctx.db.query("eventPages").take(500);
+    const ids: string[] = [];
+    for (const page of pages) {
+      const id = page.givebutterCampaignId?.trim();
+      if (id) ids.push(id);
+    }
+    return ids;
+  },
+});
+
+/**
+ * Book the giving that belongs to no event — the org's own campaign, where
+ * recurring givers land.
+ *
+ * ── THE MONEY THIS EXISTS FOR ───────────────────────────────────────────────
+ * `syncAllGivebutterCampaigns` only ever sweeps campaigns attached to an event
+ * page, so a donation to the general Public Worship campaign was never booked
+ * at all. Its money still counted on the CASH side, because
+ * `fetchGivebutterUndepositedCents` derives that from Givebutter's own
+ * transactions rather than from our records — so the reconciliation reported
+ * real recurring giving as "$50.00 unaccounted for", with nothing naming it.
+ * Founder, 2026-08-14: "our system doesn't count recurring giving or stuff like
+ * that from Givebutter… if you could find a way to sync it, just so that this
+ * can go back to zero."
+ *
+ * ── IT TAKES NO CAMPAIGN ID, ON PURPOSE ─────────────────────────────────────
+ * The obvious shape is a configured "general campaign" setting. It was not
+ * taken, for two reasons. Somebody has to find the id and keep it current, and
+ * a setting that is wrong or empty fails SILENTLY — the money simply stays
+ * unbooked, which is the exact failure being fixed. And it answers only the
+ * campaign somebody remembered: a second campaign, a Givebutter page made for
+ * one appeal, next year's recurring plan, all go missing the same way.
+ *
+ * So the rule is stated as what is actually true: A GIVEBUTTER TRANSACTION THAT
+ * NO EVENT CLAIMS IS GIVING TO THE ORG. Nothing to configure, and a campaign
+ * nobody has told us about is swept the first time it takes money.
+ *
+ * ── WHAT IT REFUSES TO TOUCH ────────────────────────────────────────────────
+ *  · A transaction on a campaign an event page claims — that is the event
+ *    sync's, and booking it here would put one payment in two books.
+ *  · A transaction carrying TICKET money. Tickets are revenue, not giving, and
+ *    they need an event to belong to; a transaction with line items is either
+ *    an event's (so, above) or something nobody has modelled yet, and inventing
+ *    a gift out of it would misstate what was sold. Left for a human.
+ *  · Anything refunded or unsuccessful — `sweepUnclaimedTransactions` applies
+ *    the same status rule as the balance derivation, so what is booked and what
+ *    is counted as held agree by construction.
+ *
+ * Everything else is booked through the SAME mutation the event path uses, with
+ * `general: true` — so the dedup, the converted-donation suppression and the
+ * legacy-backfill twin guard are the identical code, not a second copy that
+ * drifts.
+ *
+ * IDEMPOTENT: `applyGivebutterDonations` dedups on the Givebutter transaction
+ * id, so re-running books nothing twice — which is what lets this sit on a cron
+ * beside the event sweep.
+ */
+export const syncGeneralGivebutterGiving = internalAction({
+  args: {},
+  returns: v.object({
+    swept: v.number(),
+    inserted: v.number(),
+    skipped: v.number(),
+    truncated: v.boolean(),
+  }),
+  handler: async (ctx) => {
+    const key = await resolveGivebutterApiKey(ctx);
+    if (!key) {
+      console.warn(
+        "[givebutter] general giving sync skipped: no API key configured",
+      );
+      return { swept: 0, inserted: 0, skipped: 0, truncated: false };
+    }
+
+    const claimed: string[] = await ctx.runQuery(
+      internal.givebutterSync.listClaimedGivebutterCampaignIds,
+      {},
+    );
+    const { donations, truncated } = await sweepUnclaimedTransactions(
+      key,
+      new Set(claimed),
+    );
+
+    let inserted = 0;
+    let skipped = 0;
+    if (donations.length > 0) {
+      const result = await ctx.runMutation(
+        internal.givebutterSync.applyGivebutterDonations,
+        { general: true, donations },
+      );
+      inserted = result.inserted;
+      skipped = result.skipped;
+      console.log(
+        `[givebutter] general giving: ${result.inserted} recorded, ` +
+          `${result.skipped} skipped, ${result.legacyCollisions} legacy collisions, ` +
+          `${result.converted} reclassified`,
+      );
+    }
+    if (truncated) {
+      console.warn(
+        "[givebutter] general giving sweep hit the page cap — some " +
+          "transactions were not examined; the next run continues from a " +
+          "fresh read.",
+      );
+    }
+    return { swept: donations.length, inserted, skipped, truncated };
+  },
+});
+
+/**
+ * Every donation on a campaign no event claims, plus whether the page cap cut
+ * the read short.
+ *
+ * Mirrors `sweepCampaignTransactions`, with the campaign test INVERTED and one
+ * extra refusal: a transaction carrying ticket money is skipped outright rather
+ * than having its donation half taken. A mixed transaction belongs to an event
+ * that has not been linked yet, and taking half of it would book giving for a
+ * payment whose other half nobody has modelled.
+ */
+async function sweepUnclaimedTransactions(
+  key: string,
+  claimedCampaignIds: Set<string>,
+): Promise<{ donations: GbDonation[]; truncated: boolean }> {
+  const donations: GbDonation[] = [];
+  let url: string | null = `${GIVEBUTTER_API_BASE}/transactions`;
+  for (let page = 0; page < GIVEBUTTER_MAX_PAGES && url; page++) {
+    const res = await gbGet(key, url);
+    if (!res.ok) {
+      throw new Error(
+        `HTTP ${res.status} fetching Givebutter transactions.${await gbErrorDetail(res)}`,
+      );
+    }
+    const body = (await res.json()) as GivebutterTransactionsPage;
+    for (const txn of body.data ?? []) {
+      if (txn.id === undefined || txn.id === null || txn.id === "") continue;
+      if (claimedCampaignIds.has(String(txn.campaign_id))) continue;
+      if (isRefundedTransaction(txn)) continue;
+      // Ticket money present ⇒ not ours to book. See the doc above.
+      if (ticketCentsFromTransaction(txn) > 0) continue;
+      const donation = normalizeTransactionDonation(txn);
+      if (donation) donations.push(donation);
+    }
+    url = nextPageUrl(body.links?.next);
+  }
+  return { donations, truncated: url !== null };
+}
+
 export const syncAllGivebutterCampaigns = internalAction({
   args: {},
   returns: v.null(),
