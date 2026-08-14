@@ -40,6 +40,7 @@ import {
   BUDGET_APPROVAL_STATUSES,
   TRANSACTION_FLOWS,
   TRANSACTION_STATUSES,
+  easternParts,
   effectiveBudgetApprovalStatus,
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
@@ -48,6 +49,7 @@ import { readSandbox } from "./financeSettings";
 import {
   isSpend,
   txnMatchesMode,
+  txnCountsTowardBudget,
   effectiveCapCents,
   effectiveType,
   effectiveRefKind,
@@ -99,6 +101,15 @@ const txnRow = v.object({
 // A UI list, not a report — mirrors `dashboardCharts.ts#BUDGET_TXN_DRILLDOWN_CAP`.
 const TXN_PAGE_CAP = 200;
 
+/** A recurring cadence's window in plain words. The SAME strings
+ *  `budgetGlance.ts` and the Budgets tab use, so one budget is never described
+ *  two ways on two screens. */
+const CADENCE_WINDOW_LABELS: Record<string, string> = {
+  monthly: "this month",
+  quarterly: "this quarter",
+  yearly: "this year",
+};
+
 const budgetDetailResult = v.object({
   id: v.id("budgets"),
   // The display name: the linked event/project's name when live, else the
@@ -131,6 +142,11 @@ const budgetDetailResult = v.object({
   remainingCents: v.number(),
   pct: v.number(),
   status: v.union(v.literal("ok"), v.literal("warn")),
+  /** Which period `spentCents` covers, in plain words — "this month" for a
+   *  monthly bucket, null for a one-time budget whose window is its whole
+   *  life. The page prints it next to the figure, so the number can never
+   *  again be read as covering a period it doesn't. */
+  spendWindowLabel: v.union(v.string(), v.null()),
   categories: v.array(categoryBreakdownRow),
   transactions: v.array(txnRow),
   transactionTotalCount: v.number(),
@@ -168,6 +184,7 @@ export const getBudgetDetail = query({
     // gate; `canEdit` mirrors `updateBudget`'s own write gate (manager rank
     // at a chapter budget's own chapter, central reach for a central one) so
     // the page only offers "Edit" when the mutation would actually succeed.
+    const type = effectiveType(budget);
     const level = budget.chapterId === CENTRAL ? ("central" as const) : ("chapter" as const);
     const canEdit =
       level === "central"
@@ -176,7 +193,6 @@ export const getBudgetDetail = query({
           ? access.isManager
           : false;
 
-    const type = effectiveType(budget);
     const refKind = effectiveRefKind(budget);
 
     let refName: string | null = null;
@@ -228,10 +244,27 @@ export const getBudgetDetail = query({
       );
     }
     const inMode = linked.filter((tr) => txnMatchesMode(tr, sandboxMode));
-    // LIFETIME spend + category breakdown — see this file's own module doc
-    // for why the detail page doesn't narrow to a cadence window the way the
-    // dashboard's cards do.
-    const spendRows = inMode.filter((tr) => isSpend(tr));
+    // ── ONE ANSWER TO "WHAT HAS THIS SPENT" (2026-08-14) ──────────────────
+    // This page used to report LIFETIME spend for every budget, including
+    // recurring ones, on the reasoning that a detail page tells "the whole
+    // story of this budget". The story it actually told was a contradiction:
+    // a $500/month Coffee bucket showed "$25 of $500" on its card and "$900
+    // of $500" here — the same cap, a different numerator, and no label
+    // saying so. Read as 180% over.
+    //
+    // The window is now the SAME rule every other surface applies, because a
+    // number compared against a cap has to cover the period that cap governs:
+    // lifetime for a one-time (event/project) budget, whose cap IS its whole
+    // plan, and the current cadence window for a recurring bucket. The
+    // transactions list below stays lifetime and now says so on the client —
+    // "every charge ever" is genuinely useful, it just isn't the thing to
+    // divide by a monthly cap.
+    const nowParts = easternParts(Date.now());
+    const spendRows = inMode.filter((tr) =>
+      type === "one_time"
+        ? isSpend(tr)
+        : txnCountsTowardBudget(tr, budget, nowParts.month),
+    );
     const spentCents = spendRows.reduce((sum, tr) => sum + tr.amountCents, 0);
     const capCents = effectiveCapCents(budget);
     const byCat = new Map<string, number>();
@@ -314,6 +347,8 @@ export const getBudgetDetail = query({
       remainingCents: capCents - spentCents,
       pct,
       status: pct >= 80 ? ("warn" as const) : ("ok" as const),
+      spendWindowLabel:
+        type === "one_time" ? null : CADENCE_WINDOW_LABELS[budget.cadence] ?? null,
       categories,
       transactions,
       transactionTotalCount: totalCount,

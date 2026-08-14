@@ -172,7 +172,13 @@ function BudgetDetailBody({ budgetId }: { budgetId: Id<"budgets"> | undefined })
       <Card className="mt-3">
         <View className="flex-row items-baseline justify-between gap-2">
           <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            {/* Says WHICH period the figure covers for a recurring bucket.
+                Without it, "$900 of $500" on a monthly budget reads as 180%
+                over rather than as a different question — the exact
+                contradiction this page used to ship (see
+                `budgetDetail.ts`'s "ONE ANSWER" note). */}
             Spent of cap
+            {detail.spendWindowLabel ? ` · ${detail.spendWindowLabel}` : ""}
           </Text>
           <Text
             className={`text-xs font-semibold ${over ? "text-danger" : "text-muted"}`}
@@ -246,7 +252,7 @@ function BudgetDetailBody({ budgetId }: { budgetId: Id<"budgets"> | undefined })
       {/* ── Linked transactions ─────────────────────────────────────────────── */}
       <View className="mt-5">
         <SectionHeader
-          title="Transactions"
+          title={detail.spendWindowLabel ? "Transactions (all time)" : "Transactions"}
           count={
             detail.transactionTotalCount > detail.transactions.length
               ? `${detail.transactions.length} of ${detail.transactionTotalCount}`
