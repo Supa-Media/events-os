@@ -646,6 +646,38 @@ describe("a month band knows how big the WHOLE month is", () => {
     expect(june?.unfilteredCount).toBe(1);
   });
 
+  test("picking Transfers can put MORE rows in the band than the baseline holds", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // ONE ordinary row — so June's baseline is 1 — plus two transfer legs
+    // hidden from the default queue. Picking Transfers deliberately un-hides
+    // the legs into the match set while excluding the ordinary row, so the
+    // match set is not a subset of the baseline: it is BIGGER than it.
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024 });
+    await txn(s, { amountCents: 9_000, postedAt: JUNE_2024, flow: "transfer" });
+    await txn(s, { amountCents: 5_000, postedAt: JUNE_2024, flow: "transfer" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      groupBy: "month",
+      filters: ["transfers"],
+    });
+    const june = res.groups?.find((g) => g.key === "2024-06");
+    expect(june?.count).toBe(2);
+    // The baseline cannot describe them: they were never in the default
+    // queue's population. This is exactly why the BAND compares only when the
+    // baseline is a strict SUPERSET (`unfilteredCount > count`, see
+    // `ReconcileGroupHeader`) — a `!==` test would print "2 of 1 charges", a
+    // comparison against a population that does not contain what is on screen.
+    //
+    // The server states both figures honestly and lets the band decide. It
+    // must NOT paper over this by clamping the baseline up to `count`: that
+    // would claim the month holds rows the default queue would never show,
+    // and Publish — the button the baseline exists to make honest — acts on
+    // the default population, not on the un-hidden one.
+    expect(june?.unfilteredCount).toBe(1);
+  });
+
   test("person bands carry no baseline — a person is not a publishable unit", async () => {
     const t = newT();
     const s = await setupChapter(t);

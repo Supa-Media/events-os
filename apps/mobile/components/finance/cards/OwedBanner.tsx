@@ -1,261 +1,87 @@
 /**
- * "You owe Public Worship" banner — the SHARED personal-charge-repayment CTA
- * used on BOTH the Cards tab (`MemberCardsView`) and the Reimbursements
- * screen's "You owe" section (D4, bidirectional owe surface). Single data
- * source: `api.cards.myPersonalRepayments` — the caller's own personal-charge
+ * "You owe Public Worship" banner — the SHARED personal-charge summary used on
+ * BOTH the Cards tab (`MemberCardsView`) and the Reimbursements screen's "You
+ * owe" section (D4, bidirectional owe surface). Single data source:
+ * `api.cards.myPersonalRepayments` — the caller's own personal-charge
  * repayments (every status; this component filters to non-`paid`), whoever
- * flagged them (the cardholder themselves OR a finance manager). Previously
- * the Cards-tab banner only tracked charges
- * flagged THIS session (local React state, see PR #94's note); a
- * manager-flagged charge never showed up there. Now both surfaces read the
- * same live query, so this file is the ONE place the pay-back flow lives —
- * don't duplicate it into either screen.
+ * flagged them (the cardholder themselves OR a finance manager).
  *
- * Renders nothing while loading or once there's nothing owed — including
- * once every remaining repayment has been INITIATED this session (`initiated`
- * below), a state the banner tracks locally that no query alone reflects.
- * `onEmptyChange` reports that effective emptiness (whenever it changes) so a
- * caller with its own adjacent header/count (the Reimbursements screen's "You
- * owe Public Worship" section) can hide/collapse in lockstep instead of
- * showing a stale count over a banner that just went blank.
+ * ── IT IS A POINTER NOW, NOT THE PAY FLOW (founder, 2026-08-14) ──────────────
+ * This component used to BE the repayment flow: one "Pay by card" button that
+ * bundled every outstanding charge into a single Stripe Checkout, plus an
+ * inline routing/account form for an ACH rail. The founder's objection was
+ * that paying is not an all-or-nothing act —
  *
- * Pay by bank (ACH) pays ALL outstanding repayments at once via
- * `initiateRepayment`. The real ACH debit is feature-gated OFF
- * (`REPAYMENT_DEBIT_ENABLED` in cards.ts) — every call degrades to a `pending`
- * repayment, so a manager confirms receipt manually (`markRepaymentPaid`).
- * That gate is untouched here; the ACH button only ever calls the existing
- * degrade-safe action.
+ *   "It shouldn't be all at once, because for some things it's like 'oh, I
+ *    accidentally paid for a company expense with this'… but then another one,
+ *    'oh, that's a personal charge'. I want people to be able to break up what
+ *    card they use per transaction. So allow people to multi-select."
  *
- * Pay by card is a REAL rail (`stripe.ts#createRepaymentCheckout` +
- * `cards.ts`'s "Stripe repayment" section): bundles every outstanding
- * repayment into ONE Stripe Checkout session and redirects there
- * (`Linking.openURL`). The flag only actually clears once Stripe's webhook
- * confirms payment — never on this redirect alone (a closed tab / abandoned
- * checkout leaves the repayment exactly as outstanding as it was).
+ * — and a banner is the wrong surface for a list you select from. The flow
+ * moved to `/finances/repayments`, which shows the charges individually, lets
+ * you pick a subset, and quotes the Stripe fee the org would otherwise eat.
+ * This banner keeps what a banner is good at: saying that you owe something,
+ * how much, and where to go. Two things went away with the move:
+ *
+ *  · The local "initiated this session" state (and its `onEmptyChange`
+ *    reporting). It existed because the ACH rail below never changed a row's
+ *    status, so the button had to remember what it had already done. With one
+ *    real rail whose settlement is a webhook, the query IS the truth and a
+ *    banner that hid itself on a click that hadn't paid anything was lying.
+ *    Callers now hide their own section on the plain query result.
+ *  · The inline ACH form. It collected real routing and account numbers into
+ *    a debit rail that is feature-gated OFF (`cards.ts`'s
+ *    `REPAYMENT_DEBIT_ENABLED = false`, documented there as awaiting a bounce
+ *    state machine). Asking a volunteer for their bank details so that nothing
+ *    can happen with them is worse than not offering the option. The backend
+ *    (`linkRepaymentBankAccount` / `initiateRepayment`) is untouched and ready
+ *    for the day that gate flips.
  */
-import { useEffect, useState } from "react";
-import { Linking, Text, View } from "react-native";
-import { useAction, useQuery } from "convex/react";
+import { Text, View } from "react-native";
+import { useRouter } from "expo-router";
+import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import { formatCents } from "@events-os/shared";
-import { Button, Icon, Select, TextField, ToastView } from "../../ui";
+import { Button, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
-import { useActionRunner } from "../../../lib/useActionToast";
 
-export function OwedBanner({
-  onEmptyChange,
-}: {
-  /** Fires with the banner's effective emptiness (loading counts as NOT
-   *  empty, so a caller doesn't hide its section before data arrives). */
-  onEmptyChange?: (empty: boolean) => void;
-} = {}) {
+export function OwedBanner() {
+  const router = useRouter();
   const repayments = useQuery(api.cards.myPersonalRepayments, {});
-  // A member may only INITIATE a repayment (choose a method + kick it off) —
-  // the offsetting credit is posted by a manager confirming receipt (ACH), or
-  // the Stripe webhook (card), never directly by this component.
-  const initiateRepayment = useAction(api.cards.initiateRepayment);
-  const linkRepaymentBankAccount = useAction(api.cards.linkRepaymentBankAccount);
-  // "Pay by card" — a REAL rail now (Stripe Checkout, `cards.ts`'s "Stripe
-  // repayment" section): bundles every outstanding repayment into ONE
-  // checkout session and hands back a redirect URL. The flag only actually
-  // flips to "reimbursed" once Stripe's webhook confirms payment
-  // (`cards.applyRepaymentPaidFromStripe`) — never on this redirect alone.
-  const createRepaymentCheckout = useAction(api.stripe.createRepaymentCheckout);
-  const { run, toast, dismiss } = useActionRunner();
 
-  const [achFormOpen, setAchFormOpen] = useState(false);
-  const [achRouting, setAchRouting] = useState("");
-  const [achAccount, setAchAccount] = useState("");
-  const [achFunding, setAchFunding] = useState<"checking" | "savings">("checking");
-  const [achBusy, setAchBusy] = useState(false);
-  const [cardBusy, setCardBusy] = useState(false);
-  // Repayments this session already kicked off — the real debit is gated off
-  // (see file header), so `status` alone never flips away from "pending" here;
-  // this is purely so the button doesn't invite a repeat click.
-  const [initiated, setInitiated] = useState<Record<string, boolean>>({});
-
-  const toRepay = (repayments ?? []).filter(
-    (r) => r.status !== "paid" && !initiated[r.id],
-  );
+  const toRepay = (repayments ?? []).filter((r) => r.status !== "paid");
   const owedCents = toRepay.reduce((sum, r) => sum + r.amountCents, 0);
-
-  // Report effective emptiness to the caller (see file header). Skipped while
-  // still loading so a caller's section doesn't collapse before data arrives;
-  // recomputes on every `toRepay` change, including one driven purely by
-  // local `initiated` state (no query round-trip), so a caller's header stays
-  // in lockstep even when the underlying repayment rows haven't changed.
-  useEffect(() => {
-    if (repayments === undefined) return;
-    onEmptyChange?.(toRepay.length === 0);
-  }, [repayments, toRepay.length, onEmptyChange]);
-
-  async function payAll(method: "ach") {
-    for (const r of toRepay) {
-      const res = await run(
-        () => initiateRepayment({ repaymentId: r.id, method }),
-        { errorTitle: "Couldn't start repayment" },
-      );
-      if (res) setInitiated((m) => ({ ...m, [r.id]: true }));
-    }
-  }
-
-  /** "Pay by card" — ONE Stripe Checkout for everything currently owed. Opens
-   *  the Stripe-hosted page. Deliberately does NOT set the local `initiated`
-   *  optimistic flag ACH uses: this rail is REAL money, and the flag only
-   *  actually flips once Stripe's webhook confirms payment
-   *  (`applyRepaymentPaidFromStripe`) — a closed tab / abandoned checkout
-   *  must keep the "You owe" banner showing the true outstanding amount, not
-   *  hide it behind a click that didn't actually pay anything. `cardBusy`
-   *  alone prevents a double-click from opening two sessions back to back;
-   *  a second real click after that is harmless (Stripe just issues another
-   *  session; settlement stays idempotent either way). */
-  async function handlePayByCard() {
-    setCardBusy(true);
-    const result = await run(
-      () => createRepaymentCheckout({ repaymentIds: toRepay.map((r) => r.id) }),
-      { errorTitle: "Couldn't start checkout" },
-    );
-    setCardBusy(false);
-    if (!result) return;
-    void Linking.openURL(result.url);
-  }
-
-  /** "Pay by bank (ACH)" — link a bank account first if any charge still
-   *  needs one, else pay straight away. */
-  function handlePayByBank() {
-    const needsLink = toRepay.some((r) => !r.hasExternalAccount);
-    if (needsLink) {
-      setAchFormOpen(true);
-      return;
-    }
-    void payAll("ach");
-  }
-
-  async function handleLinkAndPay() {
-    setAchBusy(true);
-    const toLink = toRepay.filter((r) => !r.hasExternalAccount);
-    for (const r of toLink) {
-      await run(
-        () =>
-          linkRepaymentBankAccount({
-            repaymentId: r.id,
-            routingNumber: achRouting.trim(),
-            accountNumber: achAccount.trim(),
-            funding: achFunding,
-          }),
-        { errorTitle: "Couldn't link bank account" },
-      );
-    }
-    setAchBusy(false);
-    setAchFormOpen(false);
-    setAchRouting("");
-    setAchAccount("");
-    // Best-effort even if a link above failed — `initiateRepayment` just
-    // degrades that one to pending, same as before this feature existed.
-    await payAll("ach");
-  }
 
   if (repayments === undefined || toRepay.length === 0) return null;
 
   return (
-    <>
-      <View
-        className="rounded-lg border border-border bg-raised p-4 shadow-card"
-        style={{ borderLeftWidth: 3, borderLeftColor: colors.accent }}
-      >
-        <View className="flex-row flex-wrap items-center justify-between gap-3">
-          <View className="flex-1 flex-row items-start gap-3">
-            <View className="mt-0.5 h-8 w-8 items-center justify-center rounded-pill bg-accent-soft">
-              <Icon name="refresh-cw" size={16} color={colors.accent} />
-            </View>
-            <View className="flex-1">
-              <Text className="font-semibold text-ink">
-                You owe Public Worship {formatCents(owedCents)}
-              </Text>
-              <Text className="text-xs text-muted">
-                {toRepay.length} charge{toRepay.length === 1 ? "" : "s"} flagged
-                personal. Pay it back from your own debit card or bank (ACH) — a
-                manager confirms receipt and it posts an offsetting credit, no
-                reimbursement paperwork.
-              </Text>
-            </View>
+    <View
+      className="rounded-lg border border-border bg-raised p-4 shadow-card"
+      style={{ borderLeftWidth: 3, borderLeftColor: colors.accent }}
+    >
+      <View className="flex-row flex-wrap items-center justify-between gap-3">
+        <View className="flex-1 flex-row items-start gap-3">
+          <View className="mt-0.5 h-8 w-8 items-center justify-center rounded-pill bg-accent-soft">
+            <Icon name="refresh-cw" size={16} color={colors.accent} />
           </View>
-          <View className="flex-row items-center gap-2">
-            <Button
-              title="Pay by card"
-              variant="secondary"
-              size="sm"
-              icon="credit-card"
-              loading={cardBusy}
-              onPress={() => void handlePayByCard()}
-            />
-            <Button
-              title="Pay by bank (ACH)"
-              size="sm"
-              onPress={handlePayByBank}
-            />
+          <View className="flex-1">
+            <Text className="font-semibold text-ink">
+              You owe Public Worship {formatCents(owedCents)}
+            </Text>
+            <Text className="text-xs text-muted">
+              {toRepay.length} charge{toRepay.length === 1 ? "" : "s"} flagged
+              personal. Pick the ones you&apos;re ready to settle and pay them
+              with your own card — no reimbursement paperwork.
+            </Text>
           </View>
         </View>
-
-        {/* Inline ACH-destination capture — shown once, the first time a
-            charge in this batch has no linked bank account yet. */}
-        {achFormOpen ? (
-          <View className="mt-3 gap-2 border-t border-border pt-3">
-            <Text className="text-xs text-muted">
-              Link your bank account to pay by ACH — securely, through our
-              banking partner. We never store your full account number.
-            </Text>
-            <View className="flex-row gap-2">
-              <View className="flex-1">
-                <TextField
-                  label="Routing number"
-                  value={achRouting}
-                  onChangeText={(v) => setAchRouting(v.replace(/[^0-9]/g, "").slice(0, 9))}
-                  keyboardType="number-pad"
-                  maxLength={9}
-                  placeholder="9 digits"
-                />
-              </View>
-              <View className="flex-1">
-                <TextField
-                  label="Account number"
-                  value={achAccount}
-                  onChangeText={(v) => setAchAccount(v.replace(/[^0-9]/g, "").slice(0, 17))}
-                  keyboardType="number-pad"
-                  placeholder="e.g. 000123456789"
-                />
-              </View>
-              <View className="w-28">
-                <Select
-                  label="Type"
-                  value={achFunding}
-                  options={[
-                    { value: "checking", label: "Checking" },
-                    { value: "savings", label: "Savings" },
-                  ]}
-                  onChange={(v) => setAchFunding((v || "checking") as "checking" | "savings")}
-                />
-              </View>
-            </View>
-            <View className="flex-row justify-end gap-2">
-              <Button
-                title="Cancel"
-                variant="ghost"
-                size="sm"
-                onPress={() => setAchFormOpen(false)}
-              />
-              <Button
-                title="Link & pay"
-                size="sm"
-                loading={achBusy}
-                disabled={achRouting.length !== 9 || achAccount.length < 4}
-                onPress={handleLinkAndPay}
-              />
-            </View>
-          </View>
-        ) : null}
+        <Button
+          title="Review & pay"
+          size="sm"
+          icon="credit-card"
+          onPress={() => router.navigate("/finances/repayments" as never)}
+        />
       </View>
-      <ToastView toast={toast} onDismiss={dismiss} />
-    </>
+    </View>
   );
 }

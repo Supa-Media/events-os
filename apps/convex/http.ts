@@ -774,6 +774,14 @@ async function settleCheckoutSession(
     // offsetting credit. Handled BEFORE the ticket/donation fan-out: a
     // repayment session carries no pledgeId and is neither an order nor
     // an event donation.
+    // `repaymentFeeCents` is the fee-coverage line the checkout added on top
+    // of the debt; the settler subtracts it before reconciling against the sum
+    // of the repayments, or every fee-covered payment trips its discrepancy
+    // alarm. Absent (→ 0) on sessions created before fee coverage shipped, and
+    // parsed defensively: metadata is a string map, and a non-numeric value
+    // must degrade to "no coverage" rather than NaN its way into the
+    // comparison.
+    const feeCoverageCents = Number(obj.metadata.repaymentFeeCents ?? 0);
     await ctx.runMutation(internal.cards.applyRepaymentPaidFromStripe, {
       repaymentIds: obj.metadata.repaymentIds.split(",") as Id<
         "personalRepayments"
@@ -781,6 +789,7 @@ async function settleCheckoutSession(
       sessionId: obj.id,
       paymentIntentId: obj.payment_intent ?? undefined,
       amountTotalCents: obj.amount_total ?? 0,
+      feeCoverageCents: Number.isFinite(feeCoverageCents) ? feeCoverageCents : 0,
     });
   } else if (obj.metadata?.pledgeId) {
     const pledgeId = obj.metadata.pledgeId;

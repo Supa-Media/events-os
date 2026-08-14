@@ -123,13 +123,30 @@ export function ReconcileGroupHeader({
 }) {
   const partial = shownCount < count;
   // ── TWO FIGURES WHEN THE GRID IS NARROWED ────────────────────────────────
-  // Only when the server actually sent a baseline (month bands) AND it differs
-  // from the match set. Equal figures print once, so an unfiltered grid is
-  // untouched, and a person band — which has no baseline — can never start
-  // comparing itself to anything.
-  const narrowedCount = unfilteredCount != null && unfilteredCount !== count;
+  // Only when the server actually sent a baseline (month bands) AND the match
+  // set is a strict SUBSET of it. Equal figures print once, so an unfiltered
+  // grid is untouched, and a person band — which has no baseline — can never
+  // start comparing itself to anything.
+  //
+  // `>` rather than `!==`, and that is not pedantry. `unfilteredCount` is the
+  // DEFAULT QUEUE's population for the month, which excludes hidden transfer
+  // legs — but picking Transfers, or typing a search, deliberately UN-HIDES
+  // those legs into the match set (see `listReconcile`'s scan loop). A June
+  // holding one ordinary charge and two marked transfers, filtered to
+  // Transfers, is a match set of 2 against a baseline of 1, and a `!==` test
+  // would print "2 of 1 charges" — a comparison against a population that does
+  // not contain what is on screen, which is the same class of dead number the
+  // baseline was added to kill. Pinned server-side in
+  // `reconcileGridConsolidation.test.ts` ("picking Transfers can put MORE rows
+  // in the band than the baseline holds").
+  //
+  // When the two cannot be compared, the band says the one figure it can stand
+  // behind: what is actually in front of the reader.
+  const narrowed = unfilteredCount != null && unfilteredCount > count;
   const narrowedTotal =
-    unfilteredTotalCents != null && unfilteredTotalCents !== totalCents;
+    narrowed &&
+    unfilteredTotalCents != null &&
+    unfilteredTotalCents !== totalCents;
   // ── THE LIVE/BACKLOG SPLIT, IN A BAND ────────────────────────────────────
   // A month holding 450 rows reconstructed from the org's imported 2024-25
   // records and 3 of its own would read "3 of 453 explained" — the figure that
@@ -163,79 +180,79 @@ export function ReconcileGroupHeader({
       className="border-b border-border bg-sunken"
       accessibilityRole="header"
     >
-    <View
-      className="flex-row items-center gap-2 px-3 py-1.5"
-      style={contentWidth != null ? { width: contentWidth } : undefined}
-    >
-      {showAvatar ? <Avatar name={label || "?"} size={20} uri={imageUrl} /> : null}
-      <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
-        {label}
-      </Text>
-      {/* "12 of 318 charges" while narrowed, plain "318 charges" otherwise.
-          The band has to be able to name the WHOLE month, because the Publish
-          button at the far end of it acts on the whole month. */}
-      <Text
-        className="text-2xs text-muted"
-        style={{ fontVariant: ["tabular-nums"] }}
+      <View
+        className="flex-row items-center gap-2 px-3 py-1.5"
+        style={contentWidth != null ? { width: contentWidth } : undefined}
       >
-        {narrowedCount
-          ? `${count} of ${unfilteredCount} ${unfilteredCount === 1 ? "charge" : "charges"}`
-          : `${count} ${count === 1 ? "charge" : "charges"}`}
-      </Text>
-      {partial ? (
-        <Text className="text-2xs text-faint">{`${shownCount} shown`}</Text>
-      ) : null}
-      <Text
-        className={`text-2xs font-semibold ${
-          totalCents < 0 ? "text-warn" : "text-muted"
-        }`}
-        style={{ fontVariant: ["tabular-nums"] }}
-      >
-        {formatCents(totalCents)}
-      </Text>
-      {/* The month's own money, in faint type beside the selection's. A
-          separate node rather than one string, so the selection's figure keeps
-          its warn/muted colouring and the month's reads plainly as context. */}
-      {narrowedTotal ? (
+        {showAvatar ? <Avatar name={label || "?"} size={20} uri={imageUrl} /> : null}
+        <Text className="text-xs font-semibold text-ink" numberOfLines={1}>
+          {label}
+        </Text>
+        {/* "12 of 318 charges" while narrowed, plain "318 charges" otherwise.
+            The band has to be able to name the WHOLE month, because the Publish
+            button at the far end of it acts on the whole month. */}
         <Text
-          className="text-2xs text-faint"
+          className="text-2xs text-muted"
           style={{ fontVariant: ["tabular-nums"] }}
         >
-          {`of ${formatCents(unfilteredTotalCents as number)}`}
+          {narrowed
+            ? `${count} of ${unfilteredCount} ${unfilteredCount === 1 ? "charge" : "charges"}`
+            : `${count} ${count === 1 ? "charge" : "charges"}`}
         </Text>
-      ) : null}
-      {showProgress ? (
+        {partial ? (
+          <Text className="text-2xs text-faint">{`${shownCount} shown`}</Text>
+        ) : null}
         <Text
-          className={`text-2xs ${done ? "font-semibold text-success" : "text-muted"}`}
+          className={`text-2xs font-semibold ${
+            totalCents < 0 ? "text-warn" : "text-muted"
+          }`}
           style={{ fontVariant: ["tabular-nums"] }}
         >
-          {done
-            ? `✓ all explained${split ? " (this month's own rows)" : ""}`
-            : `${explainedCount} of ${explainableCount}${split ? " of this month's rows" : ""} explained`}
+          {formatCents(totalCents)}
         </Text>
-      ) : null}
-      {/* The reconstructed backlog, named but never folded into the headline
-          above — imported 2024–25 records still owe a human purpose, they just
-          are not what "did I finish this month" is asking about. */}
-      {split ? (
-        <Text
-          className="text-2xs text-faint"
-          style={{ fontVariant: ["tabular-nums"] }}
-        >
-          {`+ ${progress.backlogExplainedCount} of ${progress.backlogExplainableCount} imported`}
-        </Text>
-      ) : null}
-      {/* Pushed to the far end of the VISIBLE band, so the band's numbers
-          stay left-aligned with every other band's and the button lands in one
-          predictable place down a column of people — inside the window,
-          which is the whole point (see the module doc). */}
-      {action ? (
-        <>
-          <View className="flex-1" />
-          {action}
-        </>
-      ) : null}
-    </View>
+        {/* The month's own money, in faint type beside the selection's. A
+            separate node rather than one string, so the selection's figure keeps
+            its warn/muted colouring and the month's reads plainly as context. */}
+        {narrowedTotal ? (
+          <Text
+            className="text-2xs text-faint"
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {`of ${formatCents(unfilteredTotalCents as number)}`}
+          </Text>
+        ) : null}
+        {showProgress ? (
+          <Text
+            className={`text-2xs ${done ? "font-semibold text-success" : "text-muted"}`}
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {done
+              ? `✓ all explained${split ? " (this month's own rows)" : ""}`
+              : `${explainedCount} of ${explainableCount}${split ? " of this month's rows" : ""} explained`}
+          </Text>
+        ) : null}
+        {/* The reconstructed backlog, named but never folded into the headline
+            above — imported 2024–25 records still owe a human purpose, they just
+            are not what "did I finish this month" is asking about. */}
+        {split ? (
+          <Text
+            className="text-2xs text-faint"
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {`+ ${progress.backlogExplainedCount} of ${progress.backlogExplainableCount} imported`}
+          </Text>
+        ) : null}
+        {/* Pushed to the far end of the VISIBLE band, so the band's numbers
+            stay left-aligned with every other band's and the button lands in one
+            predictable place down a column of people — inside the window,
+            which is the whole point (see the module doc). */}
+        {action ? (
+          <>
+            <View className="flex-1" />
+            {action}
+          </>
+        ) : null}
+      </View>
     </View>
   );
 }

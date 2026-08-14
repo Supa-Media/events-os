@@ -456,6 +456,28 @@
  * "watch it happen" paragraph for Group by → Month plus the band's two
  * figures. Titles, minutes, quiz lengths, slugs and order are all unchanged,
  * so nothing in the tables below moved.
+ *
+ * The finance-tab rework (2026-08-14 — the Budgets tab becoming a drill-down,
+ * Reimbursements becoming its own tab again, and repayments becoming a
+ * multi-select page that covers the card fee) is CONTENT-ONLY on two existing
+ * sections; no section was added, moved, or removed, and no quiz length
+ * changed:
+ *
+ *  · `finance-three-tracks` — "is there enough left in it?" said "open it and
+ *    look; the app knows", which sent every volunteer to a screen that showed
+ *    a number and nothing else. It now names the route (Finances → Budgets),
+ *    says no finance role is needed, and teaches the drop-down: the charges
+ *    behind the number and the link through to the event or project.
+ *  · `finance-reimbursements-and-flags` — the pay-back bullet taught an
+ *    all-at-once "card or bank (ACH)" choice. The ACH form is gone from the
+ *    UI (its debit rail is feature-gated off, so it was collecting bank
+ *    details that could do nothing), and paying back is now a selection: the
+ *    bullet was rewritten around picking which charges to settle, and a NEW
+ *    bullet was added for the fee the payer now covers — including the
+ *    one-fee-per-payment rule, which is the only part of the arithmetic a
+ *    payer can't work out from what's on screen. The "both directions live in
+ *    one place" bullet now says Reimbursements is a top-level tab for
+ *    everyone, approvers included, rather than filed under Cards.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

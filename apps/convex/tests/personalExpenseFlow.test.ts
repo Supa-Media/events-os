@@ -731,8 +731,15 @@ describe("notifyPersonalChargeFlagged — the pay-back link", () => {
       // (`lib/emailShell.ts#emailButtonRow`) emits `class="pw-btn"` first, so
       // the anchor's attribute ORDER is not part of the contract — the link
       // target and its visible label are.
+      //
+      // The target moved from `/finances/cards` to `/finances/repayments`
+      // (2026-08-14): the Cards tab's member view used to own the pay-back
+      // flow as a single "pay everything" button, and the payer can now pick
+      // which charges to settle. This email says "you owe $42.00" about ONE
+      // charge, so it has to land on the page that has that charge on it with
+      // a checkbox next to it.
       expect(sent[0].html).toMatch(
-        /<a[^>]*href="https:\/\/app\.publicworship\.life\/finances\/cards"[^>]*>Pay it back/,
+        /<a[^>]*href="https:\/\/app\.publicworship\.life\/finances\/repayments"[^>]*>Pay it back/,
       );
     } finally {
       globalThis.fetch = realFetch;
