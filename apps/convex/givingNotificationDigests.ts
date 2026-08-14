@@ -70,6 +70,19 @@
  * mailed twice. `watermarkFromRun` is what distinguishes the two — full
  * reasoning on `digestWindowStart` and in the schema.
  *
+ * ── THREE READS, ONE WINDOW ────────────────────────────────────────────────
+ * A period holds three kinds of news, each on its own axis and each with its
+ * own read: gifts that ARRIVED (`receivedAt`), bank debits AUTHORISED
+ * (`submittedAt`), and people who BECAME BACKERS (`announcedAt`). Only the
+ * first two are money and only they are summed into the headline. A signup is a
+ * commitment — its first month is already in the gift total and the other eleven
+ * have not happened — so it gets its own section and its own two figures, and is
+ * never added to a total that claims to be the bank.
+ *
+ * The gift read owns the watermark and the truncation flag; the other two are
+ * bounded by whatever window it actually claimed. See `collectWindowPending` and
+ * `collectWindowBackers`.
+ *
  * ── THE ASYMMETRY ──────────────────────────────────────────────────────────
  * An empty DAILY digest is skipped and leaves the WATERMARK alone (it still
  * marks itself run for the day). An empty WEEKLY digest is SENT — "nothing
@@ -97,14 +110,17 @@ import {
   DIGEST_LAG_MS,
   MAX_DIGEST_GIFT_ROWS,
   MAX_RULES,
+  backerAnnualCents,
   cadencePeriodMs,
   digestWindowStart,
   isDigestDue,
+  ruleMatchesBackerSignup,
   ruleMatchesGift,
   runDayKey,
   shouldSendDigest,
 } from "./lib/givingNotificationRules";
 import {
+  buildNotificationBacker,
   buildNotificationGift,
   ruleScopeLabel,
   scopeLabel,
@@ -112,6 +128,7 @@ import {
 import {
   renderDigestEmail,
   type DigestBreakdownRow,
+  type NotificationBacker,
   type NotificationGift,
 } from "./lib/givingNotificationEmails";
 import { MAX_PENDING_AGE_MS } from "./givingPending";
@@ -372,6 +389,93 @@ export async function collectWindowPending(
   );
 }
 
+/**
+ * Hard bound on `pledges` rows one window's NEW BACKER read will take.
+ *
+ * A period's signups are single digits in practice; this is the same
+ * "an unbounded range read inside a transaction is a wedge waiting to happen"
+ * guard `MAX_DIGEST_PENDING_ROWS` is, not a limit anything is expected to reach.
+ */
+export const MAX_DIGEST_BACKER_ROWS = 500;
+
+/**
+ * The people who BECAME BACKERS in `(since, until]` that `rule` matches.
+ *
+ * ── THE WINDOW IS ON `announcedAt`, WHICH IS NOT `startedAt` ───────────────
+ * `startedAt` is the honest "backing since" date and is deliberately
+ * BACKDATABLE — the desk corrects it (`givingPledges.setPledgeStartedAt`) and
+ * an import writes whatever the old platform said. Ranging on it would let a
+ * correction drop a pledge into a window that has already been reported, which
+ * on this axis means announcing the same person twice — and a digest that
+ * congratulates a team on the same backer two weeks running is a digest they
+ * stop believing.
+ *
+ * `announcedAt` is stamped by system code at `now`, exactly once, and is never
+ * edited (see the schema). That is the same property `pendingGifts.submittedAt`
+ * earns its window with, and it is why this read needs none of the cut/resume
+ * machinery the gifts read carries: nothing can be inserted behind the
+ * watermark.
+ *
+ * ── THE FLOOR IS THE ANNUAL ONE ────────────────────────────────────────────
+ * `ruleMatchesBackerSignup`, not `ruleMatchesGift` — a $50/mo signup is weighed
+ * as the $600 commitment it is, exactly as the immediate path weighs it. The two
+ * paths ask the identical predicate so a rule can't hear about a backer in one
+ * and not the other.
+ *
+ * ── THE UPPER BOUND IS THE CLAIMED WINDOW ──────────────────────────────────
+ * Callers pass the `until` the GIFT read actually closed at, for the same reason
+ * `collectWindowPending` does: the watermark stops there, so the next window
+ * opens there, and reading past it would report the same signups twice.
+ *
+ * NO TRUNCATION SIGNAL, deliberately — the `truncated` flag drives the watermark
+ * and belongs to the gift read that owns it.
+ */
+export async function collectWindowBackers(
+  ctx: Pick<MutationCtx, "db">,
+  rule: Pick<
+    Doc<"givingNotificationRules">,
+    "isActive" | "scope" | "minAmountCents"
+  >,
+  since: number,
+  until: number,
+  cap: number = MAX_DIGEST_BACKER_ROWS,
+): Promise<Doc<"pledges">[]> {
+  // Scoped rules read only their own book — same reasoning as the two reads
+  // above: a quiet chapter must not walk every other book's rows.
+  const stream =
+    rule.scope === "all"
+      ? ctx.db
+          .query("pledges")
+          .withIndex("by_announced", (q) =>
+            q.gt("announcedAt", since).lte("announcedAt", until),
+          )
+      : ctx.db
+          .query("pledges")
+          .withIndex("by_scope_and_announced", (q) =>
+            q
+              .eq("scope", rule.scope as Doc<"pledges">["scope"])
+              .gt("announcedAt", since)
+              .lte("announcedAt", until),
+          );
+
+  // NEWEST FIRST, so if the cap ever bit, the rows kept are the ones a reader
+  // most wants — same call `collectWindowPending` makes.
+  const rows = await stream.order("desc").take(cap);
+  if (rows.length === cap) {
+    console.warn(
+      `[givingNotifications] new-backer read hit its ${cap}-row cap for rule ` +
+        `scope ${String(rule.scope)}; the signup figures are a floor.`,
+    );
+  }
+  // A CANCELED pledge is still announced — it happened, and a period's history
+  // shouldn't be rewritten by what came after it. Only `incomplete` is excluded,
+  // and it can't reach here anyway: a pledge is announced when it activates or
+  // when its first cycle is paid, never while its checkout is unfinished.
+  return rows.filter(
+    (row) => row.status !== "incomplete" && ruleMatchesBackerSignup(rule, row),
+  );
+}
+
 /** Which rules' moment has arrived. Rules only — no gift reads, so this can
  *  never approach a transaction limit however many rules exist. */
 export const dueDigestRuleIds = internalQuery({
@@ -507,16 +611,22 @@ async function buildDigestPayload(
   // `requestedUntil`.
   const pending = await collectWindowPending(ctx, rule, since, window.until);
 
-  // A WINDOW WITH ONLY PENDING MONEY IN IT STILL SENDS. `shouldSendDigest` asks
-  // "did anything happen?", and a $5,000 bank debit authorised today is
-  // emphatically something — skipping it as an "empty daily" would hide the
-  // single most interesting fact of the day behind the fact that the bank is
-  // slow. The asymmetry itself is untouched: with neither gifts nor pending,
-  // a daily is still skipped and a weekly is still sent.
+  // New backers, over that same claimed window and for the same reason. See
+  // `collectWindowBackers` — different axis (`announcedAt`), different floor
+  // test (annual), same bounds.
+  const signups = await collectWindowBackers(ctx, rule, since, window.until);
+
+  // A WINDOW WITH ONLY PENDING MONEY IN IT STILL SENDS, and so does one whose
+  // only news is a SIGNUP. `shouldSendDigest` asks "did anything happen?", and
+  // both a $5,000 bank debit authorised today and somebody committing to give
+  // every month from now on are emphatically something — skipping either as an
+  // "empty daily" would hide the most interesting fact of the day. The
+  // asymmetry itself is untouched: with none of the three, a daily is still
+  // skipped and a weekly is still sent.
   if (
     !shouldSendDigest(
       rule.cadence,
-      window.gifts.length + pending.length,
+      window.gifts.length + pending.length + signups.length,
       window.truncated,
     )
   ) {
@@ -536,6 +646,12 @@ async function buildDigestPayload(
   // "still clearing" list is read for the one number worth chasing.
   const pendingRows = [...pending].sort(
     (a, b) => b.submittedAt - a.submittedAt || b.amountCents - a.amountCents,
+  );
+
+  // Newest signup first, biggest pledge first within an instant.
+  const signupRows = [...signups].sort(
+    (a, b) =>
+      (b.announcedAt ?? 0) - (a.announcedAt ?? 0) || b.amountCents - a.amountCents,
   );
 
   const chapterNames = new Map<string, string>();
@@ -608,6 +724,17 @@ async function buildDigestPayload(
     addTo(byScope, await labelFor(row.scope), row.amountCents);
   }
 
+  // The signups, built through the same context builder the immediate path
+  // uses — donor rollups, the first-pledge flag, the $50-floor `isBacker` test
+  // and the deep link, all resolved in one place so the two emails can't
+  // describe the same person differently. Capped by the same row cap the gift
+  // list uses; the FIGURES above still count every signup.
+  const listedBackers: NotificationBacker[] = [];
+  for (const pledge of signupRows.slice(0, MAX_DIGEST_GIFT_ROWS)) {
+    const built = await buildNotificationBacker(ctx, pledge, chapterNames);
+    if (built) listedBackers.push(built);
+  }
+
   // LARGEST IS THE LARGEST SETTLED GIFT, and the email says so whenever
   // anything is pending. The callout exists to prompt a thank-you call today,
   // and it hangs off `buildNotificationGift` — donor rollups, a first-gift
@@ -646,6 +773,16 @@ async function buildDigestPayload(
           submittedAt: row.submittedAt,
           scopeLabel: await labelFor(row.scope),
         })),
+      ),
+      newBackers: listedBackers,
+      newBackerOmittedCount: Math.max(0, signupRows.length - listedBackers.length),
+      // Summed over EVERY signup in the window, listed or not, so the figures
+      // and the count can't tell different stories. Deliberately NOT added to
+      // `totalCents` — a commitment is not an arrival; see the field's doc.
+      newBackerMonthlyCents: signupRows.reduce((sum, p) => sum + p.amountCents, 0),
+      newBackerAnnualCents: signupRows.reduce(
+        (sum, p) => sum + backerAnnualCents(p.amountCents),
+        0,
       ),
       // SETTLED gifts counted but not listed. Pending rows have their own
       // section and their own cap, so they are deliberately not folded in here

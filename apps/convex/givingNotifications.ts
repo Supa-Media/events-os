@@ -25,6 +25,21 @@
  * amount and by nothing else. `giftProvenance` labels how each one arrived so
  * an in-kind gift can't be mistaken for cash in the bank.
  *
+ * ── A NEW BACKER IS THE SECOND THING A RULE ANNOUNCES ──────────────────────
+ * Somebody starting a recurring monthly pledge fires an immediate email of its
+ * own (`notifyBackerSignup`), scheduled once per pledge from
+ * `givingPledges.claimBackerAnnouncement`. It is deliberately NOT modelled as a
+ * gift: the first month's money already arrives as one, and a commitment and an
+ * arrival are added up differently.
+ *
+ * The one place the two paths judge differently is the FLOOR, and it is the
+ * point of the feature: a signup is tested at its ANNUAL value
+ * (`ruleMatchesBackerSignup`), because a $50/month backer is a $600 decision
+ * and every floor the desk actually sets would otherwise let the most important
+ * event on the giving desk pass in silence. Everything else — scope, the
+ * one-email-per-person fan-out, `lastDeliveredAt`, the failure posture — is the
+ * same machinery, deliberately.
+ *
  * ── SOFT DEACTIVATE, NEVER DELETE ──────────────────────────────────────────
  * A rule that mailed a team for six months is a record of who was told what.
  * `setRuleActive` turns it off. There is no delete mutation, matching the rest
@@ -63,10 +78,12 @@ import {
   MAX_RULES,
   firstRunDayKey,
   normalizeRecipients,
+  ruleMatchesBackerSignup,
   ruleMatchesGift,
   type RuleScope,
 } from "./lib/givingNotificationRules";
 import {
+  buildNotificationBacker,
   buildNotificationGift,
   ruleScopeLabel,
 } from "./lib/givingNotificationContext";
@@ -75,7 +92,10 @@ import {
   writeRuleAudit,
   type RuleSnapshot,
 } from "./lib/givingNotificationAudit";
-import { renderImmediateGiftEmail } from "./lib/givingNotificationEmails";
+import {
+  renderBackerSignupEmail,
+  renderImmediateGiftEmail,
+} from "./lib/givingNotificationEmails";
 import { sendEmailReporting } from "./ticketingEmails";
 
 /**
@@ -641,37 +661,138 @@ export const immediateTargets = internalQuery({
     const payload = await buildNotificationGift(ctx, gift);
     if (!payload) return null;
 
-    // ONE EMAIL PER PERSON, not one per rule. The two patterns the owner
-    // described — "every gift, to the dev team" and "gifts over $500, to Shay
-    // and AJ" — overlap on purpose, and anyone on both would have got the same
-    // gift twice. "We're getting double emails" is the complaint that gets a
-    // notification feature switched off, so the send is keyed on the RECIPIENT
-    // and the footer names every rule that reached them.
-    const byRecipient = new Map<
-      string,
-      { ruleNames: string[]; ruleIds: Id<"givingNotificationRules">[] }
-    >();
-    for (const rule of matched) {
-      for (const to of rule.recipients) {
-        const entry = byRecipient.get(to) ?? { ruleNames: [], ruleIds: [] };
-        // Names are de-duplicated for the FOOTER — two rules that happen to
-        // share a name shouldn't print it twice. Ids are collected separately
-        // and de-duplicated on their own, because two rules that share a name
-        // are still two rules and both of them just delivered.
-        if (!entry.ruleNames.includes(rule.name)) entry.ruleNames.push(rule.name);
-        if (!entry.ruleIds.includes(rule._id)) entry.ruleIds.push(rule._id);
-        byRecipient.set(to, entry);
+    return { gift: payload, sends: sendsByRecipient(matched) };
+  },
+});
+
+/**
+ * ONE EMAIL PER PERSON, not one per rule.
+ *
+ * The two patterns the owner described — "every gift, to the dev team" and
+ * "gifts over $500, to Shay and AJ" — overlap on purpose, and anyone on both
+ * would have got the same gift twice. "We're getting double emails" is the
+ * complaint that gets a notification feature switched off, so the send is keyed
+ * on the RECIPIENT and the footer names every rule that reached them.
+ *
+ * Shared by both immediate paths (a gift, and a new backer) so the two can
+ * never disagree about how a person on three rules is treated.
+ */
+function sendsByRecipient(
+  matched: readonly Doc<"givingNotificationRules">[],
+): {
+  to: string;
+  ruleNames: string[];
+  ruleIds: Id<"givingNotificationRules">[];
+}[] {
+  const byRecipient = new Map<
+    string,
+    { ruleNames: string[]; ruleIds: Id<"givingNotificationRules">[] }
+  >();
+  for (const rule of matched) {
+    for (const to of rule.recipients) {
+      const entry = byRecipient.get(to) ?? { ruleNames: [], ruleIds: [] };
+      // Names are de-duplicated for the FOOTER — two rules that happen to
+      // share a name shouldn't print it twice. Ids are collected separately
+      // and de-duplicated on their own, because two rules that share a name
+      // are still two rules and both of them just delivered.
+      if (!entry.ruleNames.includes(rule.name)) entry.ruleNames.push(rule.name);
+      if (!entry.ruleIds.includes(rule._id)) entry.ruleIds.push(rule._id);
+      byRecipient.set(to, entry);
+    }
+  }
+  return [...byRecipient.entries()].map(([to, entry]) => ({
+    to,
+    ruleNames: entry.ruleNames,
+    ruleIds: entry.ruleIds,
+  }));
+}
+
+/**
+ * Every ACTIVE immediate rule that cares about one NEW BACKER, plus the
+ * signup's own facts. `null` when the pledge or its donor is gone.
+ *
+ * The floor is tested against the pledge's ANNUAL value, not its monthly one —
+ * see `ruleMatchesBackerSignup`. That is the whole of the owner's ask ("a backer
+ * should count as a big gift — in a year a backer is $600"), and it lives in one
+ * pure predicate so the pre-filter that decides whether to schedule this at all
+ * can ask exactly the same question.
+ */
+export const backerSignupTargets = internalQuery({
+  args: { pledgeId: v.id("pledges") },
+  handler: async (ctx, { pledgeId }) => {
+    const pledge = await ctx.db.get(pledgeId);
+    if (!pledge) return null;
+
+    const rules: Doc<"givingNotificationRules">[] = await ctx.db
+      .query("givingNotificationRules")
+      .withIndex("by_cadence", (q) => q.eq("cadence", "immediate"))
+      .take(MAX_RULES);
+    const matched = rules.filter((r) => ruleMatchesBackerSignup(r, pledge));
+    if (matched.length === 0) return null;
+
+    const payload = await buildNotificationBacker(ctx, pledge);
+    if (!payload) return null;
+
+    return { backer: payload, sends: sendsByRecipient(matched) };
+  },
+});
+
+/**
+ * Mail every immediate rule that cares about one new backer. Scheduled from
+ * `givingPledges.claimBackerAnnouncement`, in the same transaction that stamps
+ * the pledge's one-time `announcedAt` — so it runs exactly once per backer, and
+ * (like every send path here) it cannot fail the money that caused it.
+ *
+ * Best effort PER RECIPIENT, same posture as `notifyGiftRecorded`: one bad
+ * address must not cost the rest of the team their notification.
+ */
+export const notifyBackerSignup = internalAction({
+  args: { pledgeId: v.id("pledges") },
+  returns: v.object({ emailsSent: v.number() }),
+  handler: async (ctx, { pledgeId }): Promise<{ emailsSent: number }> => {
+    const targets = await ctx.runQuery(
+      internal.givingNotifications.backerSignupTargets,
+      { pledgeId },
+    );
+    if (!targets) return { emailsSent: 0 };
+
+    let emailsSent = 0;
+    const delivered = new Set<Id<"givingNotificationRules">>();
+    for (const send of targets.sends) {
+      // The RENDER is inside the try for the same reason it is in
+      // `notifyGiftRecorded`: a throw while building one recipient's email must
+      // not cost every later recipient theirs.
+      try {
+        const { subject, html } = renderBackerSignupEmail({
+          ruleName: send.ruleNames.join(", "),
+          backer: targets.backer,
+        });
+        if (await sendEmailReporting(ctx, { to: send.to, subject, html })) {
+          emailsSent++;
+          for (const ruleId of send.ruleIds) delivered.add(ruleId);
+        }
+      } catch (err) {
+        console.error(
+          `[givingNotifications] backer signup send failed for ${send.to}`,
+          err,
+        );
       }
     }
 
-    return {
-      gift: payload,
-      sends: [...byRecipient.entries()].map(([to, entry]) => ({
-        to,
-        ruleNames: entry.ruleNames,
-        ruleIds: entry.ruleIds,
-      })),
-    };
+    if (delivered.size > 0) {
+      try {
+        await ctx.runMutation(internal.givingNotifications.markRulesDelivered, {
+          ruleIds: [...delivered],
+          at: Date.now(),
+        });
+      } catch (err) {
+        console.error(
+          "[givingNotifications] backer signup delivered, but couldn't stamp lastDeliveredAt",
+          err,
+        );
+      }
+    }
+    return { emailsSent };
   },
 });
 

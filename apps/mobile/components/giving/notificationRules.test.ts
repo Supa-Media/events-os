@@ -365,14 +365,14 @@ describe("weekdayLabel", () => {
 describe("scheduleSummary", () => {
   test("immediate says what it does", () => {
     expect(scheduleSummary({ cadence: "immediate" })).toBe(
-      "As each gift arrives",
+      "As each gift or new backer arrives",
     );
   });
 
   test("immediate ignores any stored send time", () => {
     expect(
       scheduleSummary({ cadence: "immediate", sendHourLocal: 17, sendWeekday: 3 }),
-    ).toBe("As each gift arrives");
+    ).toBe("As each gift or new backer arrives");
   });
 
   test("daily names the hour, in ET", () => {

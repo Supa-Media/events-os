@@ -881,7 +881,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "dev-backer-lifecycle",
     title: "A backer's lifecycle: subscribe, pay, sometimes falter",
     subtitle: "incomplete → active → past_due → canceled (+ a manual pause), and who does what",
-    minutes: 4,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
@@ -902,6 +902,20 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Each paid cycle is a gift, automatically",
         text: "Every month a subscription successfully charges, one new row lands in that donor's giving history — recurring backing shows up in the CRM exactly like a one-time check, no manual entry required. A chapter's backer count recomputes the instant any pledge's status or amount changes, so it's always current — and a paused pledge simply stops counting until it resumes.",
+      },
+      {
+        kind: "rule",
+        title: "The moment someone becomes a backer, two emails go out",
+        text: "Becoming a backer is the biggest single thing anyone does on the giving side, and the system treats it that way. **The backer gets a welcome** — a real thank-you naming what monthly giving makes possible and promising to keep them in the loop — instead of the routine monthly receipt on that first cycle. (Every cycle AFTER the first gets the ordinary receipt; a welcome that arrives monthly stops being a welcome.) **The giving desk gets a notification**, through the same notification rules that announce gifts. Both fire exactly once per backer, whichever Stripe event lands first — so a redelivered webhook can never thank somebody twice.",
+      },
+      {
+        kind: "rule",
+        title: "A new backer counts as a BIG gift — at their annual value",
+        text: "A notification rule's dollar threshold judges a signup by what they've committed over a year, not by the monthly charge. A $50/month backer is a $600 decision, so they clear a \"$500 and up\" rule that their $50 first cycle never would. That's deliberate: without it, the most consequential event on the giving desk would slip under every threshold the team actually sets while a one-off $500 cheque rang the bell. The emails always print BOTH figures — the monthly amount and the annual one — and new backers are reported in the daily/weekly digest as their own section, deliberately NOT added into the money total, because a commitment is a promise and the total is what actually arrived.",
+      },
+      {
+        kind: "tip",
+        text: "**Vocabulary matters here, and the emails hold it.** A pledge under the $50 backer floor produces the same warm welcome, but it says \"monthly giver\", not \"backer\" — because that person doesn't appear in the chapter's public backer count or move its milestone ladder. Never tell a $10/month giver they're a backer of a city; it's a promise about a page they're not on.",
       },
       {
         kind: "rule",
@@ -968,6 +982,30 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Recurring giving is real giving history — it lands in the CRM the same way any other gift does, without anyone typing it in.",
+      },
+      {
+        prompt: "A rule is set to notify the team about gifts of $500 and up. Someone starts a $50/month pledge. Does the team hear about it?",
+        options: [
+          "No — $50 is well under the $500 threshold",
+          "Yes — a signup is judged by its annual value ($600), because a backer IS a big gift, twelve payments at a time",
+          "Only if someone on the desk records it manually",
+          "Only in the weekly digest, never immediately",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Judging a signup by the monthly charge would let the most consequential event on the giving desk slip under every threshold the team sets. The notification prints both figures — $50/month and $600 a year — so nobody mistakes the annual number for money in the bank.",
+      },
+      {
+        prompt: "A new backer's first monthly cycle is paid. What lands in their inbox?",
+        options: [
+          "The standard monthly receipt, same as every other cycle",
+          "A welcome email instead of the receipt — thanking them for becoming a backer, and carrying the first month's details",
+          "Both a welcome and a receipt",
+          "Nothing until the second cycle",
+        ],
+        answerIndex: 1,
+        explanation:
+          "One email, not two: the welcome carries the receipt's facts so it can stand in for it exactly once. Two emails in the same minute about the same $50 is how a thank-you gets read as an auto-reply. Every cycle after the first gets the ordinary receipt.",
       },
       {
         prompt: "A backer asks to take a break, so you PAUSE their pledge. What happens to the chapter's backer count and the backers list?",

@@ -50,7 +50,13 @@ import {
 } from "./lib/givingAccess";
 import { matchOrCreateDonor, recordGiftForDonor } from "./lib/givingDonors";
 import { PLEDGE_STATUSES } from "./schema/givingPlatform";
-import { siteUrl, givePagePath } from "./lib/siteUrl";
+import { siteUrl, givePagePath, givePageUrl } from "./lib/siteUrl";
+import { renderBackerWelcomeEmail } from "./lib/backerWelcomeEmail";
+import {
+  MAX_RULES,
+  ruleMatchesBackerSignup,
+} from "./lib/givingNotificationRules";
+import { sendEmail } from "./ticketingEmails";
 import { territoryForChapter } from "./territories";
 import { requireUserId } from "./lib/context";
 import { writePledgeEvent, GIVING_AUDIT_READ_CAP } from "./lib/givingAudit";
@@ -117,6 +123,159 @@ async function logPledgeStatus(
     ...(opts?.note ? { note: opts.note } : {}),
   });
 }
+
+// ── Becoming a backer: the one-time announcement ──────────────────────────────
+
+/**
+ * Claim the "this pledge just became real" moment — ONCE per pledge — and
+ * schedule both things that moment owes: the backer's own welcome email, and
+ * the giving desk's "somebody became a backer" notification.
+ *
+ * ── WHY A CLAIM, RATHER THAN A CALL AT THE OBVIOUS PLACE ───────────────────
+ * There is no single obvious place. Two Stripe events each legitimately mean
+ * "they're a backer now" — `checkout.session.completed` (the subscription
+ * exists) and `invoice.paid` (the first month is actually paid) — and Stripe
+ * does not guarantee their order; `recoverPledgeInvoice` exists precisely
+ * because the second can arrive first. Both call this. The transaction that
+ * finds `announcedAt` absent stamps it and schedules the mail; the other finds
+ * it set and does nothing. Mutations are transactional, so the stamp settles
+ * the race with no cross-action coordination — and the backer gets exactly one
+ * welcome whichever event won.
+ *
+ * ── WHAT IT DELIBERATELY DOESN'T DO ────────────────────────────────────────
+ * It is never called from an IMPORT (`givingImport.ts`, `historicalBackfill.ts`
+ * both write pledges directly). A backer the org has had for two years is not
+ * news, and a migration that mails two hundred welcomes is an outbound-email
+ * incident rather than a feature — the same discipline `recordGiftForDonor`'s
+ * `notify: false` exists for. Those rows keep `announcedAt` absent forever,
+ * which is exactly what "never announced" means.
+ *
+ * ── IT CAN NEVER COST THE MONEY THAT CAUSED IT ─────────────────────────────
+ * Both sends are SCHEDULED, not awaited. Scheduling is a write inside this
+ * transaction; the actions run afterwards, in their own contexts, once the
+ * pledge has committed. A Resend outage fails an email and nothing else — and
+ * if this transaction rolls back, the jobs roll back with it, so nobody is ever
+ * welcomed to a pledge that doesn't exist. (`givingNotifications.ts`'s module
+ * doc makes the same argument for gifts.)
+ *
+ * Returns whether THIS call won the claim, so the caller can decide what else
+ * the moment means — see `recordPledgeInvoice`, which uses it to send the
+ * welcome INSTEAD of the ordinary monthly receipt on a first cycle.
+ */
+async function claimBackerAnnouncement(
+  ctx: MutationCtx,
+  pledge: Doc<"pledges">,
+): Promise<boolean> {
+  if (pledge.announcedAt !== undefined) return false;
+  await ctx.db.patch(pledge._id, { announcedAt: Date.now() });
+
+  // The BACKER's email. Unconditional: this one is the whole point, and it does
+  // not depend on anybody having configured a notification rule.
+  await ctx.scheduler.runAfter(
+    0,
+    internal.givingPledges.sendBackerWelcomeEmail,
+    { pledgeId: pledge._id },
+  );
+
+  // The DESK's email, pre-filtered so a signup nobody asked about schedules
+  // nothing — the same discipline `recordGiftForDonor` uses, with the same pure
+  // predicate on both sides so the filter can never disagree with the send.
+  const immediateRules = await ctx.db
+    .query("givingNotificationRules")
+    .withIndex("by_cadence", (q) => q.eq("cadence", "immediate"))
+    .take(MAX_RULES);
+  if (immediateRules.some((rule) => ruleMatchesBackerSignup(rule, pledge))) {
+    await ctx.scheduler.runAfter(
+      0,
+      internal.givingNotifications.notifyBackerSignup,
+      { pledgeId: pledge._id },
+    );
+  }
+  return true;
+}
+
+/** Everything the welcome email needs, or `null` when the pledge or its donor
+ *  is gone, or the donor has no address to write to. Mirrors
+ *  `getPledgeReceiptPayload` — the email it stands in for on a first cycle. */
+export const getBackerWelcomePayload = internalQuery({
+  args: { pledgeId: v.id("pledges") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      email: v.string(),
+      name: v.string(),
+      monthlyCents: v.number(),
+      chapterName: v.union(v.string(), v.null()),
+      territorySlug: v.union(v.string(), v.null()),
+      isBacker: v.boolean(),
+    }),
+  ),
+  handler: async (ctx, { pledgeId }) => {
+    const pledge = await ctx.db.get(pledgeId);
+    if (!pledge) return null;
+    const donor = await ctx.db.get(pledge.donorId);
+    if (!donor?.email) return null;
+
+    let chapterName: string | null = null;
+    let territorySlug: string | null = null;
+    if (pledge.scope !== "central") {
+      const chapter = await ctx.db.get(pledge.scope);
+      chapterName = chapter?.name ?? null;
+      const territory = await territoryForChapter(ctx, pledge.scope);
+      // Only a PUBLIC territory earns a link — the button would otherwise point
+      // a brand-new backer at a page they can't see.
+      territorySlug =
+        territory && territory.publiclyVisible ? territory.slug : null;
+    }
+
+    return {
+      email: donor.email,
+      name: donor.name,
+      monthlyCents: pledge.amountCents,
+      chapterName,
+      territorySlug,
+      // The org's own vocabulary, and the donor's email has to hold it as
+      // carefully as the staff one does: the pledge floor is $5 and the BACKER
+      // floor is $50. Telling a $10/month giver they're "a backer of Brooklyn"
+      // is a promise about a public count they don't appear in.
+      isBacker: pledge.amountCents >= BACKER_UNIT_CENTS,
+    };
+  },
+});
+
+/**
+ * Welcome a brand-new backer — the email the owner asked for, and the one this
+ * flow was missing entirely. Scheduled exactly once per pledge by
+ * `claimBackerAnnouncement`.
+ *
+ * On a first billing cycle this REPLACES the ordinary monthly receipt (see
+ * `recordPledgeInvoice`), so it has to carry the receipt's facts too: what will
+ * be charged, that the first month is in, and how to change it. `sendEmail`
+ * degrades to a logged no-op with no Resend key configured, like every other
+ * transactional send here.
+ */
+export const sendBackerWelcomeEmail = internalAction({
+  args: { pledgeId: v.id("pledges") },
+  returns: v.null(),
+  handler: async (ctx, { pledgeId }) => {
+    const payload = await ctx.runQuery(
+      internal.givingPledges.getBackerWelcomePayload,
+      { pledgeId },
+    );
+    if (!payload) return null;
+    const { subject, html } = renderBackerWelcomeEmail({
+      name: payload.name,
+      monthlyCents: payload.monthlyCents,
+      chapterName: payload.chapterName,
+      isBacker: payload.isBacker,
+      givePageUrl: payload.territorySlug
+        ? givePageUrl(payload.territorySlug)
+        : null,
+    });
+    await sendEmail(ctx, { to: payload.email, subject, html });
+    return null;
+  },
+});
 
 // ── Guards ────────────────────────────────────────────────────────────────────
 
@@ -662,6 +821,10 @@ export const activatePledgeFromCheckout = internalMutation({
       await logPledgeStatus(ctx, pledge, pledge.status, "active");
     }
     await recomputePledgeCounters(ctx, pledge);
+    // THE MOMENT SOMEBODY BECOMES A BACKER — welcome them, and tell the desk.
+    // Claimed rather than simply called, because `invoice.paid` can beat this
+    // event to it and means the same thing; see `claimBackerAnnouncement`.
+    await claimBackerAnnouncement(ctx, pledge);
     return true;
   },
 });
@@ -734,11 +897,37 @@ export const recordPledgeInvoice = internalMutation({
         stripeInvoiceId: args.invoiceId,
         note: "Monthly backer gift",
       });
-      await ctx.scheduler.runAfter(
-        0,
-        internal.ticketingEmails.sendPledgeReceiptEmail,
-        { giftId },
-      );
+      // ── THE FIRST CYCLE GETS A WELCOME; EVERY CYCLE AFTER IT GETS A RECEIPT ──
+      //
+      // Never both. Two emails in the same minute about the same $50 — one
+      // saying "welcome, this matters enormously" and one saying "your monthly
+      // gift came through" — is how a thank-you gets read as an auto-reply. The
+      // welcome carries the receipt's facts (amount, first month received, how
+      // to change it) precisely so it can stand in for it once.
+      //
+      // "First cycle" is asked of the LEDGER, not of the pledge's status: the
+      // gift above is already written, so a `by_pledge` read of two rows answers
+      // "is this the only gift this pledge has ever produced?" — which is true
+      // exactly once, whatever order Stripe delivered the events in, and stays
+      // true for a pledge whose checkout event never arrived at all.
+      const priorCycles = await ctx.db
+        .query("gifts")
+        .withIndex("by_pledge", (q) => q.eq("pledgeId", pledge._id))
+        .take(2);
+      if (priorCycles.length <= 1) {
+        // The claim settles the race with `activatePledgeFromCheckout`, which
+        // means the same thing and can arrive either side of this. Whether this
+        // call wins it or finds it already won, the outcome for this cycle is
+        // the same and is deliberate: the welcome is the email, and no receipt
+        // follows it.
+        await claimBackerAnnouncement(ctx, pledge);
+      } else {
+        await ctx.scheduler.runAfter(
+          0,
+          internal.ticketingEmails.sendPledgeReceiptEmail,
+          { giftId },
+        );
+      }
     }
 
     // A paid cycle recovers a past_due pledge and refreshes the period end.

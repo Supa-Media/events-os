@@ -943,6 +943,35 @@ export const pledges = defineTable({
   startedAt: v.optional(v.number()), // when the subscription first went active
   canceledAt: v.optional(v.number()),
   currentPeriodEnd: v.optional(v.number()), // synced from the subscription
+  /**
+   * The instant this pledge was ANNOUNCED as a new backer — the one-time claim
+   * stamp behind the backer's welcome email and the team's "someone just became
+   * a backer" notification (`givingPledges.claimBackerAnnouncement`).
+   *
+   * ── IT IS A CLAIM, WHICH IS WHY IT ISN'T `startedAt` ──────────────────────
+   * Two events can each be the moment a pledge becomes real — the checkout
+   * completing and the first invoice being paid — and Stripe does not order
+   * them. Both call the claim; the transaction that finds this field absent
+   * wins it and schedules the mail, and the other finds it set and schedules
+   * nothing. One welcome per backer, whichever event lands first, with no
+   * cross-action coordination to get wrong.
+   *
+   * ── AND IT IS THE AXIS THE DIGESTS RANGE ON ──────────────────────────────
+   * `startedAt` is the honest "backing since" date and is deliberately
+   * BACKDATABLE — the desk corrects it (`givingPledges.setPledgeStartedAt`),
+   * and an import writes whatever the old platform said. A digest window on a
+   * backdatable key can have rows inserted behind a watermark it has already
+   * passed, and a correction landing INSIDE an open window would announce a
+   * backer twice. This field is stamped by system code at `now`, exactly once,
+   * and is never edited — the same discipline `pendingGifts.submittedAt` earns
+   * its window with. See `givingNotificationDigests.collectWindowBackers`.
+   *
+   * Absent on every pledge written before this shipped, and on every IMPORTED
+   * pledge — an import must not mail a hundred welcomes, and a backer the org
+   * has had for two years is not news. Absent therefore means exactly "never
+   * announced", and no backfill will change that.
+   */
+  announcedAt: v.optional(v.number()),
   createdAt: v.number(),
 })
   .index("by_donor", ["donorId"])
@@ -950,4 +979,10 @@ export const pledges = defineTable({
   // scope) both read this.
   .index("by_scope_and_status", ["scope", "status"])
   // Webhook resolution: an invoice/subscription event → its pledge.
-  .index("by_stripe_subscription", ["stripeSubscriptionId"]);
+  .index("by_stripe_subscription", ["stripeSubscriptionId"])
+  // The digest windows over NEW BACKERS: `by_announced` for an `"all"` rule,
+  // the compound for a scoped one — the same pair, for the same reason, that
+  // `gifts` and `pendingGifts` carry (a quiet chapter's rule must not walk
+  // every other book's rows).
+  .index("by_announced", ["announcedAt"])
+  .index("by_scope_and_announced", ["scope", "announcedAt"]);

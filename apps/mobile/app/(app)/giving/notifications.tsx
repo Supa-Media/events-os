@@ -482,7 +482,7 @@ function RuleForm({
       />
       <TextField
         label="Only gifts of at least (USD)"
-        hint="Leave blank to hear about every gift. A gift of exactly this amount counts."
+        hint="Leave blank to hear about every gift. A gift of exactly this amount counts. A new backer is weighed at what they commit over a year, so a $50/month backer clears a $500 threshold."
         value={minAmount}
         onChangeText={setMinAmount}
         keyboardType="decimal-pad"

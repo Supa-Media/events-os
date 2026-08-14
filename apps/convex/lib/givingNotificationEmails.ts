@@ -1,5 +1,6 @@
 /**
- * The two giving-notification emails: one gift, and a period of gifts.
+ * The three giving-notification emails: one gift, one new backer, and a period
+ * of both.
  *
  * Built with `lib/emailShell.ts`'s fragment builders — the same shell every
  * other transactional mail in this backend is painted with (receipts,
@@ -103,6 +104,52 @@ export type ImmediateEmailPayload = {
   gift: NotificationGift;
 };
 
+/**
+ * One new backer: somebody who just started a recurring monthly pledge.
+ *
+ * Deliberately NOT a `NotificationGift` with a note on it. A gift is money that
+ * has arrived; a signup is a promise of money arriving every month, and the two
+ * are added up differently, dated differently, and thanked differently. Giving
+ * it its own shape is what stops a commitment ever being summed into a total
+ * that claims to be the bank.
+ */
+export type NotificationBacker = {
+  pledgeId: string;
+  /** The monthly pledge, in integer cents — the amount that will actually be
+   *  charged, every month. */
+  monthlyCents: number;
+  /** The same pledge over a year (`backerAnnualCents`) — the weight a rule's
+   *  floor was tested against, and never a figure that has arrived. */
+  annualCents: number;
+  /** When the backing began. */
+  startedAt: number;
+  /** "Central", or the chapter's name. */
+  scopeLabel: string;
+  /** This donor's first pledge — a brand-new monthly relationship rather than a
+   *  second one alongside an existing pledge. */
+  isFirstPledge: boolean;
+  /**
+   * The pledge is at or above `BACKER_UNIT_CENTS` ($50/mo), so this person is a
+   * BACKER in the org's vocabulary — the thing a chapter's public count and its
+   * milestone ladder actually count.
+   *
+   * It exists because the pledge FLOOR is $5 and the BACKER floor is $50, and
+   * the Academy teaches that distinction as a rule ("every backer is a donor;
+   * a donor only becomes a backer at the $50 floor"). An email calling a
+   * $10/month giver a backer would teach the staff the wrong word from the one
+   * place they'd most trust it, and would name them as moving a milestone they
+   * do not move. Below the floor these templates say "monthly giver" — a real,
+   * valued, recurring relationship, just not the counted one.
+   */
+  isBacker: boolean;
+  donor: NotificationDonor;
+};
+
+export type BackerSignupEmailPayload = {
+  ruleName: string;
+  backer: NotificationBacker;
+};
+
 export type DigestBreakdownRow = {
   label: string;
   cents: number;
@@ -166,6 +213,24 @@ export type DigestEmailPayload = {
   gifts: NotificationGift[];
   /** The itemized IN-FLIGHT ACH gifts, newest authorisation first, capped. */
   pending: DigestPendingGift[];
+  /**
+   * The people who BECAME BACKERS in this period, newest first, capped.
+   *
+   * Kept out of `totalCents`, `giftCount` and every breakdown, on purpose. A
+   * signup is a commitment, not an arrival: the first month's money is already
+   * in the totals as an ordinary gift, and folding the other eleven in would
+   * make the headline a number nobody can reconcile against the bank. It gets
+   * its own section, with its own two figures.
+   */
+  newBackers: NotificationBacker[];
+  /** How many new backers this period had beyond the ones listed. */
+  newBackerOmittedCount: number;
+  /** Every new backer's monthly pledge, summed — recurring money added to the
+   *  org's monthly base in this period. Counts ALL of them, listed or not. */
+  newBackerMonthlyCents: number;
+  /** The same signups over a year (`backerAnnualCents`), summed. Printed beside
+   *  the monthly figure and never instead of it. */
+  newBackerAnnualCents: number;
   /** How many settled gifts the totals counted but the list omitted. */
   omittedCount: number;
   /** How many pending gifts the totals counted but the list omitted. */
@@ -314,6 +379,125 @@ export function renderImmediateGiftEmail(payload: ImmediateEmailPayload): {
   return { subject, html: emailShell(inner) };
 }
 
+// ── The new-backer email ─────────────────────────────────────────────────────
+
+/** "$50.00/mo · $600.00 a year" — a signup's two figures, always together and
+ *  always in that order. The monthly one is what will be charged; the annual
+ *  one is what it is worth. Neither is money that has arrived. */
+export function backerAmountLine(backer: NotificationBacker): string {
+  return `${formatCents(backer.monthlyCents)}/mo · ${formatCents(
+    backer.annualCents,
+  )} a year`;
+}
+
+/**
+ * One new backer, the moment they sign up.
+ *
+ * ── WHY THIS IS A LOUDER EMAIL THAN A GIFT'S ───────────────────────────────
+ * It leads with the MONTHLY figure and names the annual one immediately under
+ * it, because those are two facts a reader needs in that order: what will be
+ * charged, and what it is worth. Leading with the annual number would be the
+ * easy way to make the email feel big and the wrong way — it is not money in
+ * the bank and this template must never be the reason somebody thinks it is.
+ *
+ * The subject carries both for the same reason it carries the amount on a
+ * gift: it is where a busy fundraiser triages, and it is what gets pasted into
+ * a chat. "New backer" is the phrase the org uses out loud; the email says it
+ * in as many words rather than making the reader infer it from a recurring
+ * gift's provenance line, which is how this used to arrive — as a $50 gift,
+ * indistinguishable from a $50 cheque.
+ */
+export function renderBackerSignupEmail(payload: BackerSignupEmailPayload): {
+  subject: string;
+  html: string;
+} {
+  const { backer } = payload;
+  const donor = backer.donor;
+  // The org's own vocabulary, held exactly: a pledge under $50/mo is a monthly
+  // giver, not a backer. See `NotificationBacker.isBacker`.
+  const noun = backer.isBacker ? "backer" : "monthly giver";
+  // CLAMPED, like the gift subject: a donor name comes off the public backing
+  // form and nothing else bounds it.
+  const who = clampSubjectName(donor.name);
+  const subject =
+    `New ${noun}: ${who} — ${formatCents(backer.monthlyCents)}/mo ` +
+    `(${formatCents(backer.annualCents)} a year) — ${backer.scopeLabel}`;
+
+  const donorFacts: string[] = [
+    donor.isFirstGift
+      ? "First gift"
+      : `${donor.giftCount} gifts · ${formatCents(donor.lifetimeCents)} lifetime`,
+  ];
+  if (donor.email) donorFacts.push(donor.email);
+
+  const inner = [
+    emailEyebrow(
+      backer.isBacker
+        ? "Someone just became a backer"
+        : "Someone just started giving monthly",
+    ),
+    emailHeading(esc(`${formatCents(backer.monthlyCents)}/mo`), {
+      size: 34,
+      margin: "0 0 4px",
+    }),
+    emailParagraph(
+      `${donorNameHtml(donor)} · ${esc(backer.scopeLabel)}`,
+      { strong: true, margin: "0 0 20px" },
+    ),
+    emailPanel(
+      emailParagraph(
+        `<b>${esc(formatCents(backer.annualCents))} over the year ahead</b>, if this pledge simply keeps running — ` +
+          `${esc(formatCents(backer.monthlyCents))} a month, every month. ` +
+          `That's the number to weigh this against a one-time gift by; it is not money that has arrived. ` +
+          `The first month lands in the giving ledger as an ordinary gift, and so does every month after it.`,
+        { margin: "0" },
+      ),
+      { margin: "0 0 16px" },
+    ),
+    emailPanel(
+      [
+        detailRow("Monthly", esc(formatCents(backer.monthlyCents))),
+        detailRow("Over a year", esc(formatCents(backer.annualCents))),
+        detailRow("Book", esc(backer.scopeLabel)),
+        detailRow("Giving monthly since", esc(giftDate(backer.startedAt))),
+        detailRow(
+          "Counts as a backer",
+          backer.isBacker
+            ? "Yes — at or above the $50/mo backer floor, so it moves this chapter's count"
+            : "Not yet — under the $50/mo backer floor, so the chapter's count is unchanged",
+        ),
+        detailRow(
+          "Relationship",
+          backer.isFirstPledge
+            ? "Their first monthly pledge"
+            : "They already had a pledge — this is another",
+        ),
+        detailRow("Donor", esc(donorFacts.join(" · "))),
+      ].join(""),
+      { margin: "0 0 16px" },
+    ),
+    emailParagraph(
+      `${backer.isBacker ? "Backers" : "Monthly givers"} are the reason this work keeps going. Somebody should say thank you today — they've already had ours by email.`,
+      { margin: "0 0 16px" },
+    ),
+    donor.url
+      ? emailButtonRow(donor.url, "Open this donor in the OS")
+      : emailParagraph(
+          "Set APP_URL on this deployment to get a link straight to the donor's record.",
+          { margin: "0" },
+        ),
+    emailRule(),
+    emailParagraph(`Sent by the giving rule “${esc(payload.ruleName)}”.`, {
+      size: 12,
+      margin: "0",
+    }),
+  ]
+    .filter(Boolean)
+    .join("\n");
+
+  return { subject, html: emailShell(inner) };
+}
+
 // ── The digest email ─────────────────────────────────────────────────────────
 
 /** `$1,200.00 (3)` — a breakdown row's money and how many gifts made it. */
@@ -439,6 +623,93 @@ function pendingRowHtml(gift: DigestPendingGift): string {
   );
 }
 
+/** One new backer in a digest. Prints both figures on the same line the name is
+ *  on, so the section can be skimmed without opening anything. */
+function backerRowHtml(backer: NotificationBacker): string {
+  const t = EMAIL_THEME;
+  const meta = `Backing since ${giftDate(backer.startedAt)} · ${backer.scopeLabel}`;
+  return (
+    `<div style="padding:10px 0;border-bottom:1px solid ${t.border}">` +
+    `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ strong: true })}">` +
+    `${esc(backerAmountLine(backer))} — ${donorNameHtml(backer.donor)}` +
+    // The per-row chip is the PRECISE answer to "does this one count", which the
+    // section heading can only generalise about. See `NotificationBacker.isBacker`.
+    (backer.isBacker
+      ? ` <span style="color:${t.accent};font-weight:700">backer</span>`
+      : ` <span style="color:${t.muted}">under the $50 backer floor</span>`) +
+    `</div>` +
+    `<div class="${EMAIL_CLS.text}" style="${emailTextStyle({ size: 12 })}">${esc(meta)}</div>` +
+    `</div>`
+  );
+}
+
+/**
+ * How many new monthly givers a digest is reporting, and what to call them.
+ *
+ * "N new backers" whenever every one of them clears the $50/mo backer floor,
+ * which is the ordinary case; the moment one doesn't, the heading widens to the
+ * true superset rather than mislabelling the group. The per-row chips still say
+ * precisely which is which — the heading only has to avoid being wrong.
+ *
+ * Shared by the subject line and the section heading so the two can't disagree
+ * about the same period.
+ */
+export function newBackerHeadline(
+  payload: Pick<
+    DigestEmailPayload,
+    "newBackers" | "newBackerOmittedCount"
+  >,
+): string {
+  const n = payload.newBackers.length + payload.newBackerOmittedCount;
+  const allBackers = payload.newBackers.every((b) => b.isBacker);
+  if (allBackers) return n === 1 ? "1 new backer" : `${n} new backers`;
+  return n === 1 ? "1 new monthly giver" : `${n} new monthly givers`;
+}
+
+/**
+ * The new-backer section, whole — heading, the two summed figures, the rows.
+ *
+ * ── IT SITS OUTSIDE EVERY TOTAL, AND SAYS SO ───────────────────────────────
+ * The headline above it is money that arrived. This is money that has been
+ * PROMISED, monthly, and the paragraph states the relationship between the two
+ * plainly: the first month is already counted up there as a gift, and the rest
+ * is a commitment. Without that sentence a reader adds the two numbers, and a
+ * digest that can be added up wrong is a digest that will be.
+ */
+function newBackersHtml(payload: DigestEmailPayload): string {
+  const backers = payload.newBackers;
+  if (payload.newBackerMonthlyCents <= 0 && backers.length === 0) return "";
+  const n = backers.length + payload.newBackerOmittedCount;
+  return [
+    emailSubheading(esc(newBackerHeadline(payload)), {
+      size: 14,
+      margin: "20px 0 6px",
+    }),
+    emailPanel(
+      [
+        emailParagraph(
+          `<b>${esc(formatCents(payload.newBackerMonthlyCents))} a month</b> ` +
+            `(<b>${esc(formatCents(payload.newBackerAnnualCents))} over a year</b>) ` +
+            `was added to the org's recurring base this ${payload.cadence === "weekly" ? "week" : "day"}. ` +
+            `This is separate from the total above and is NOT added to it: a signup is a promise, not an arrival. ` +
+            `Each backer's first month is already counted above as an ordinary gift, and so is every month after it.`,
+          { margin: "0" },
+        ),
+      ].join(""),
+      { margin: "0 0 8px" },
+    ),
+    backers.map(backerRowHtml).join(""),
+    payload.newBackerOmittedCount > 0
+      ? emailParagraph(
+          `…and ${payload.newBackerOmittedCount} more new backers, counted in the figures above.`,
+          { size: 12, margin: "12px 0 0" },
+        )
+      : "",
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
 function giftRowHtml(gift: NotificationGift): string {
   const t = EMAIL_THEME;
   const meta = [
@@ -470,6 +741,11 @@ function giftRowHtml(gift: NotificationGift): string {
  * add up to the headline figure and a reader can see that they do. They are
  * three answers to three different questions about one number, not three
  * samples of it.
+ *
+ * NEW BACKERS ARE THE ONE SECTION OUTSIDE THAT ARITHMETIC, and the only one
+ * that isn't money that moved. It sits last, states in its own words that it is
+ * not added to the total above it, and takes over the subject line on a period
+ * whose only news is a signup — see `newBackersHtml`.
  *
  * An EMPTY weekly digest still renders, and says so plainly. See
  * `lib/givingNotificationRules.ts` for why that is deliberate and why the
@@ -506,14 +782,26 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
     payload.pendingCents > 0
       ? ` (${formatCents(payload.pendingCents)} still clearing)`
       : "";
+  // NEW BACKERS RIDE IN THE SUBJECT TOO, and on a quiet week they take it over
+  // entirely. A week with two signups and no gifts is not "no giving" — it is
+  // the best week a development team can have, and a subject that called it
+  // nothing would be the single most misleading line this file can produce.
+  const backerCount = payload.newBackers.length + payload.newBackerOmittedCount;
+  const backerPhrase = newBackerHeadline(payload);
+  const backerSubject =
+    backerCount > 0
+      ? ` · ${backerPhrase} (${formatCents(payload.newBackerMonthlyCents)}/mo)`
+      : "";
   const subject =
     payload.giftCount === 0
       ? payload.countTruncated
         ? `Giving digest cut short — ${payload.scopeLabel}`
-        : `No giving ${when} — ${payload.scopeLabel}`
+        : backerCount > 0
+          ? `${backerPhrase} (${formatCents(payload.newBackerMonthlyCents)}/mo), no gifts ${when} — ${payload.scopeLabel}`
+          : `No giving ${when} — ${payload.scopeLabel}`
       : `${formatCents(payload.totalCents)} from ${payload.giftCount} ${
           payload.giftCount === 1 ? "gift" : "gifts"
-        }${clearing} ${when} — ${payload.scopeLabel}`;
+        }${clearing}${backerSubject} ${when} — ${payload.scopeLabel}`;
 
   const header = [
     emailEyebrow(esc(`${payload.cadence} giving digest`)),
@@ -521,7 +809,9 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
       payload.giftCount === 0
         ? payload.countTruncated
           ? "This digest was cut short"
-          : "No gifts came in"
+          : backerCount > 0
+            ? esc(backerPhrase)
+            : "No gifts came in"
         : esc(formatCents(payload.totalCents)),
       { size: payload.giftCount === 0 ? 26 : 34, margin: "0 0 4px" },
     ),
@@ -537,10 +827,18 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
       emailParagraph(
         payload.countTruncated
           ? `Nothing matched this rule in the stretch of the ledger this digest was able to read — but the read stopped short of the whole ${period}, so this is not the same as "no giving". The next digest carries on from where this one stopped.`
-          : `Nothing was recorded in the giving ledger ${when}. That's the whole report — if you expected gifts here, that's worth a look.`,
+          : backerCount > 0
+            ? // The one case where "no gifts" needs walking back in the very next
+              // breath. Nothing landed in the ledger, and somebody still committed
+              // to giving every month from now on.
+              `No gifts were recorded in the giving ledger ${when} — but ${backerCount === 1 ? "somebody became a backer" : `${backerCount} people became backers`}, which is the better half of the story. The details are below.`
+            : `Nothing was recorded in the giving ledger ${when}. That's the whole report — if you expected gifts here, that's worth a look.`,
         { margin: "0 0 16px" },
       ),
       overrunNote(overrun, payload, period),
+      // A "no gifts" digest still carries its new backers in full — they are the
+      // reason it is not an empty one.
+      newBackersHtml(payload),
       emailRule(),
       emailParagraph(`Sent by the giving rule “${esc(payload.ruleName)}”.`, {
         size: 12,
@@ -623,6 +921,10 @@ export function renderDigestEmail(payload: DigestEmailPayload): {
           { size: 12, margin: "12px 0 0" },
         )
       : "",
+    // LAST, and outside every total above it. A signup is the period's biggest
+    // news and the one thing here that is not an amount of money — putting it
+    // among the gifts would either inflate the headline or read as one.
+    newBackersHtml(payload),
     payload.countTruncated
       ? emailParagraph(
           "This period held more giving than one digest reads at a time, so the total above is a FLOOR, not the figure — open the gifts ledger for the real number. The rest has not been lost: the next digest carries on from exactly where this one stopped.",

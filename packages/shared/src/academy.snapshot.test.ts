@@ -102,6 +102,15 @@
  * reveal added paused as a second non-counting reason (prose only — no snapshot
  * change). No slugs, titles, minutes, or order moved beyond those two quiz bumps.
  *
+ * The BACKER SIGNUP NOTIFICATIONS PR then taught what happens the moment
+ * somebody becomes a backer — the one-time welcome email that replaces the first
+ * cycle's receipt, the desk notification through the existing giving rules, and
+ * the annual-value threshold that makes a $50/month signup clear a $500 rule.
+ * `dev-backer-lifecycle` gained two rule blocks, a vocabulary tip (under the $50
+ * floor the emails say "monthly giver", not "backer"), and two quiz questions —
+ * quiz length 5→7 and minutes 4→5, both bumped below. Nothing else moved: no
+ * slugs, no titles, no order.
+ *
  * Two-party campaign approval (founder requirement, 2026-07-24):
  * `dev-relationship-workflow` gained a rule ("A personal thank-you and a
  * campaign are different tools") + one quiz question, contrasting the
@@ -1744,8 +1753,8 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-backer-lifecycle",
     title: "A backer's lifecycle: subscribe, pay, sometimes falter",
-    minutes: 4,
-    quizLength: 5,
+    minutes: 5,
+    quizLength: 7,
     optional: false,
     capstoneKind: null,
   },
