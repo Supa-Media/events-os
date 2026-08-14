@@ -21,8 +21,11 @@
  *  - The money model moved to `/give/how-it-works`; the books are at
  *    `/finances`, which neither give page linked to before v3 despite it being
  *    the org's strongest asset.
- *  - The wall shows EVERY settled gift, anonymous unless the giver signed it
- *    (D6), which is what let the territory page drop `noindex` (D10).
+ *  - The wall shows every gift given THROUGH THESE PAGES, anonymous unless the
+ *    giver signed it (D6), which is what let the territory page drop `noindex`
+ *    (D10). Money that arrives another way (desk-entered checks, imports) is
+ *    counted in the totals but has no row — `/finances` is the complete
+ *    record, and the wall's own footer says so.
  *  - Program cards merged into the milestone ladder — they were always the same
  *    three things, rendered twice.
  *
@@ -152,26 +155,6 @@ export type GiveFeeRates = {
   /** Above this, suggest a bank transfer. NOT a break-even — see
    *  `ACH_NUDGE_THRESHOLD_CENTS`. */
   achThresholdCents: number;
-};
-
-/**
- * One row of the territory page's public activity wall (F6) — a recurring
- * backer or a one-time gift that opted in to "share this on the wall" (see
- * `givePageSections.ts`'s `giveFormExtrasHtml`). Fed by
- * `api.givingActivity.getTerritoryActivity` (up to 20 newest VISIBLE rows).
- * PII-free: `displayName` is the giver's own self-provided public name, NEVER
- * an email.
- */
-export type TerritoryActivityEntry = {
-  kind: "backer" | "gift";
-  // `null` when the giver left no display name / message — the shape the
-  // PII-free `givingActivity.getTerritoryActivity` validator returns (which
-  // uses `v.union(v.string(), v.null())`); `undefined` is accepted too so a
-  // caller can simply omit them. The renderer truthiness-checks both.
-  displayName?: string | null;
-  amountCents: number;
-  message?: string | null;
-  at: number;
 };
 
 // ── Preset give amounts ──────────────────────────────────────────────────────
@@ -608,11 +591,17 @@ export function renderGiveMapPage(
     .map((t) => `<option value="${esc(t.slug)}">${esc(t.name)}, ${esc(t.region)}</option>`)
     .join("");
 
-  const oneTimeSection = `<section id="gc_once">
-  <h2 class="sectionhead">Or give once</h2>
-  <div class="oncebox">
-    <div class="once-l">
-      <h2>Where should it go?</h2>
+  // WITH NO BACKABLE CITY, THERE IS NO CHOICE TO OFFER — so the picker isn't
+  // rendered at all. The `<select>` is populated from the same non-prospect
+  // list the city grid draws from; when that list is empty, "A specific city"
+  // opened an empty dropdown and submitted with no slug, which the API reads as
+  // a CENTRAL gift. A giver who deliberately picked "a specific city" and
+  // silently got the other thing is the one outcome D4 exists to prevent. The
+  // client script is already tolerant: `destinationSlug()` returns '' when
+  // `#gc_dest` is missing, which is exactly "central".
+  const hasBackableCities = backableCities.length > 0;
+  const destBlock = hasBackableCities
+    ? `<h2>Where should it go?</h2>
       <p>Both are unrestricted gifts, and both are receipted the same way. Pick whichever you meant.</p>
       <fieldset class="destpick" id="gc_dest">
         <label class="destopt sel"><input type="radio" name="gc_dest_choice" value="central" checked>
@@ -623,16 +612,26 @@ export function renderGiveMapPage(
           <label class="sr-only" for="gc_dest_slug">Which city</label>
           <select id="gc_dest_slug">${cityOptions}</select>
         </div>
-      </fieldset>
+      </fieldset>`
+    : `<h2>Where it goes</h2>
+      <p>Straight to central operations &mdash; keeping the whole thing running, and seeding the first city's launch fund. It's an unrestricted gift, and it's receipted by email.</p>`;
+
+  const oneTimeSection = `<section id="gc_once">
+  <h2 class="sectionhead">Or give once</h2>
+  <div class="oncebox">
+    <div class="once-l">
+      ${destBlock}
     </div>
     <div class="once-r">
       ${oneTimeGiveFormHtml({
         presetsCents: ONE_TIME_PRESETS_CENTS,
         defaultIndex: ONE_TIME_DEFAULT_INDEX,
         submitLabel: "Give now",
-        // The wall opt-in lives on the thank-you return now, not on the
-        // critical path to payment — three extra fields before checkout for a
-        // feature that only matters after it succeeds.
+        // No wall opt-in on this form: three more fields in front of checkout
+        // for something that only matters after it succeeds. There is no
+        // thank-you flow that collects it afterwards either — so a one-time
+        // gift given here appears on the wall (D6) and is ALWAYS anonymous.
+        // See `oneTimeGiveFormHtml`'s doc for the full trade.
         showWallOptIn: false,
       })}
       ${transparencyNoteHtml()}

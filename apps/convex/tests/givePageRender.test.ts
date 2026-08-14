@@ -401,7 +401,11 @@ describe("give map page — structure", () => {
   test("the proof strip reports the wall's real counts", () => {
     expect(html).toContain('class="proofstrip"');
     expect(html).toMatch(/>21<\/div>\s*<div class="pv">monthly backers/);
-    expect(html).toMatch(/>38<\/div>\s*<div class="pv">people have given/);
+    // "givers, counted once in each city they give to" — the label carries the
+    // counting rule, because `giverCount` sums per-city donor rows and a person
+    // who gives to two cities is two of them (see `givingActivity.ts`).
+    expect(html).toMatch(/>38<\/div>\s*<div class="pv">givers, counted once/);
+    expect(html).not.toMatch(/people have given/);
     expect(html).toMatch(/>2<\/div>\s*<div class="pv">cities taking/);
   });
 
@@ -449,10 +453,35 @@ describe("giving once, from the map (D4)", () => {
     expect(html).toMatch(/gift to a specific chapter stays with that chapter/i);
   });
 
-  test("does not ask for wall consent it would then throw away", () => {
-    // A central (no-slug) gift has no wall to appear on, so the opt-in is off
-    // the map's form entirely rather than asked and discarded.
+  test("does not put the wall opt-in in front of checkout", () => {
+    // Three more fields before payment for something that only matters after
+    // it succeeds. The consequence — a one-time gift from /give is on the wall
+    // but always anonymous — is documented on `oneTimeGiveFormHtml`.
     expect(html).not.toContain('id="gc_onetime_share"');
+  });
+
+  test("with no backable cities, 'a specific city' is not offered at all", () => {
+    // The `<select>` is built from the same non-prospect list the city grid
+    // uses. Empty, the option was still rendered and choosing it submitted no
+    // slug — which the API books as a CENTRAL gift, i.e. silently not what the
+    // giver picked.
+    const prospectsOnly = renderGiveMapPage(
+      TERRITORIES.filter((t) => t.stage === "prospect"),
+      STATS,
+      false,
+      SITE,
+      null,
+      WALL,
+    );
+    expect(prospectsOnly).not.toContain('id="gc_dest"');
+    expect(prospectsOnly).not.toContain('id="gc_dest_slug"');
+    expect(prospectsOnly).not.toMatch(/A specific city/);
+    // The copy answers the question instead of asking it, and the form itself
+    // is untouched — giving once is still one tap from the hero (D4).
+    expect(prospectsOnly).toMatch(/Where it goes/);
+    expect(prospectsOnly).toMatch(/central operations/i);
+    expect(prospectsOnly).toContain("/api/give/donate");
+    expect(prospectsOnly).toContain('id="gc_onetime_form"');
   });
 });
 
@@ -527,8 +556,13 @@ describe("no compensation claim, anywhere (D3)", () => {
 
   test("the ban is on the CLAIM, not on the word 'volunteer'", () => {
     // Guards the guard: the pages legitimately describe a volunteer team, and a
-    // regex that banned the bare word would fail for the wrong reason.
-    expect(MAP_HTML).toMatch(/volunteer/i);
+    // regex that banned the bare word would fail for the wrong reason. The hero
+    // subhead, the og:description and the city progress card all say it, and
+    // `giveHowItWorksPage.test.ts` now shares this exact pattern rather than
+    // banning the phrase on its own page.
+    expect(MAP_HTML).toMatch(/volunteer team/i);
+    expect(TERRITORY_HTML).toMatch(/volunteer team/i);
+    expect(MAP_HTML).not.toMatch(COMP_CLAIM);
   });
 });
 
@@ -769,12 +803,29 @@ describe("the public giving wall (D6/D7)", () => {
   test("the org wall leads with the LIVE total (D8), the city wall with backers", () => {
     expect(orgWall).toContain('class="livepill"');
     expect(orgWall).toContain("$12,845"); // raisedCents, live
-    expect(orgWall).toMatch(/from 38 people/);
+    expect(orgWall).toMatch(/from 38 givers across our books/);
     expect(cityWall).toMatch(/21 backers/);
     expect(cityWall).toMatch(/plus 46 gifts to this chapter/);
     // The books' "published month by month" promise belongs to /finances, and
     // the footer says which number is which.
     expect(orgWall).toMatch(/These totals are live; <a href="\/finances">the books<\/a> are published month by month\./);
+  });
+
+  test("the wall does not claim to be every gift the org receives", () => {
+    // Only `startGiveDonationCheckout` / `startPledgeCheckout` write wall rows.
+    // A desk-entered check, an event-page donation and a canonical import all
+    // go through `recordGiftForDonor`, which writes none — while still moving
+    // the live total above the feed. The old heading ("Every gift, in public")
+    // and footer ("Every settled gift appears here") said otherwise.
+    for (const wall of [orgWall, cityWall]) {
+      expect(wall).not.toMatch(/every settled gift appears here/i);
+      expect(wall).not.toMatch(/every gift, in public/i);
+      // …and it points at the thing that IS complete.
+      expect(wall).toContain('href="/finances"');
+    }
+    expect(MAP_HTML).not.toMatch(/Every gift, in public/);
+    expect(MAP_HTML).toMatch(/Giving, as it comes in/);
+    expect(orgWall).toMatch(/in the books with everything else/);
   });
 
   test("keeps times coarse — no precise timestamps beside an amount", () => {

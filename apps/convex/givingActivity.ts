@@ -14,8 +14,9 @@
  *    per-city feed plus the live totals. The `/give` and `/give/<slug>`
  *    renderers' single source.
  *  - `getTerritoryActivity` (PUBLIC query, no auth) — the pre-v3 per-city
- *    wall, still serving the city page until its renderer is swapped onto
- *    `getPublicWall`.
+ *    wall. NOTHING CALLS IT: the city page was swapped onto `getPublicWall` in
+ *    this same change. Kept for one release as the rollback read; see its own
+ *    doc.
  *  - `listActivityAdmin` / `hideActivity` / `restoreActivity` (central
  *    `giving.view`/`giving.manage`) — OS moderation, surfaced at
  *    `/giving/wall` in the app so a takedown never requires a developer.
@@ -343,13 +344,19 @@ const territoryActivityRowValidator = v.object({
  * `resolveTerritoryForCheckout` does (a hidden/unknown slug renders an empty
  * wall, not an error — a public page should never leak whether a slug exists).
  *
- * SUPERSEDED BY `getPublicWall` (v3 C1) AND DELIBERATELY UNCHANGED. The city
- * page still calls this until its renderer is swapped, and that renderer draws
- * a NAMED row: it has no anonymous layout to fall back to, so feeding it the
- * v3 population (every settled gift, most of them nameless) would print rows
- * with a blank where the name goes. Keeping the consent filter here keeps this
- * query returning exactly what it always returned — the attributed subset —
- * while `getPublicWall` serves the full feed to the renderer built for it.
+ * SUPERSEDED BY `getPublicWall` (v3 C1), AND IT NOW HAS NO CALLER. `http.ts`'s
+ * `/give/<slug>` handler reads `getPublicWall` as of this change, so nothing in
+ * the app renders this: it is a public, unauthed endpoint that no page asks
+ * for. It is kept for ONE release rather than deleted alongside its consumer —
+ * if the new wall has to come back out, this is what the old renderer read —
+ * and it should be deleted once that is no longer a question.
+ *
+ * DELIBERATELY UNCHANGED while it lives. The pre-v3 renderer drew a NAMED row
+ * and had no anonymous layout to fall back to, so feeding it the v3 population
+ * (every gift through checkout, most of them nameless) would have printed rows
+ * with a blank where the name goes. The consent filter therefore stays: this
+ * query returns exactly what it always returned — the attributed subset — while
+ * `getPublicWall` serves the full feed to the renderer built for it.
  *
  * The `consent === true` filter is therefore still doing its original job, and
  * is still the last gate before a donor's name and gift amount become public:
@@ -469,6 +476,27 @@ async function readScopeRollups(
 }
 
 /**
+ * Is this territory one of the "cities taking backers right now" the proof
+ * strip counts (C1's `cityCount`)?
+ *
+ * A `prospect` is NOT. Its chapter is a shadow chapter (`isActive: false` until
+ * launch — `schema/territories.ts`); `raising` is the stage that means "this
+ * place is collecting backers now". The renderer already draws exactly that
+ * line: `givePageSections.ts#cityCardsHtml` filters `stage !== "prospect"` out
+ * of the city grid and folds prospects into the single "Ask for a chapter here"
+ * card. Counting them here put "6 cities taking backers right now" directly
+ * above a grid of 2 — the one number on the strip a reader can check by
+ * counting, wrong, on the page's proof block.
+ *
+ * `publiclyVisible` is still required and still separate: it decides whether a
+ * giver can reach the page at all, this decides whether the page is asking for
+ * backers.
+ */
+function takingBackers(t: Doc<"territories">): boolean {
+  return t.stage !== "prospect";
+}
+
+/**
  * The public giving wall (give-redesign-v3 C1) — the org-wide feed, or one
  * city's when `slug` is given. NO AUTH: this is what `/give` and
  * `/give/<slug>` render, and after D10 those pages are indexable.
@@ -489,9 +517,22 @@ async function readScopeRollups(
  * other giving surface already trusts.
  *
  * `giftCount` / `giverCount` come from the same rows (`giftCount` /
- * `donorCount`) for the same reason. `giverCount` is therefore DONORS, not
- * distinct payers — a donor who gave eleven times counts once, which is what
- * "givers" means to a reader.
+ * `donorCount`) for the same reason. `giverCount` is therefore DONOR ROWS, not
+ * distinct humans: a donor who gave eleven times to one city counts once, but
+ * `donors` is scoped per chapter (`donors.scope`, like `gifts.scope`), so
+ * somebody who gives to New York AND to Columbus has two donor rows and is
+ * counted twice in the org-wide sum.
+ *
+ * THAT IS DELIBERATE, AND THE COPY CARRIES IT rather than the query. Making the
+ * number a true head-count means reading `donors` itself and de-duplicating on
+ * email/person — an unbounded scan in a public, unauthed, uncacheable query,
+ * which is the exact cost the rollups exist to avoid (see above) and which
+ * would get slower every month on the page whose numbers must never go stale.
+ * So the cheap number stays and the LABEL says how it counts: the proof strip
+ * reads "givers, counted once in each city they give to", not "people"
+ * (`givePageSections.ts#proofStripHtml`). If a true distinct-person count is
+ * ever wanted, it belongs in a maintained rollup (a `people`-linked counter
+ * bumped on `recordGiftForDonor`), not in this read.
  *
  * ── ATTRIBUTION IS DECIDED HERE, ON EVERY READ ──────────────────────────────
  * Every settled row appears (D6). `displayName` and `message` come back only
@@ -621,9 +662,20 @@ export const getPublicWall = query({
         .withIndex("by_event", (q) => q.eq("eventId", row.eventId!))
         .unique();
       const event = await ctx.db.get(row.eventId);
+      // A TRAINING-SANDBOX event never reaches a public page — mirrors
+      // `territories.ts#fundraisersForChapter`, which drops `isTraining` before
+      // it builds a public fundraiser row. Nothing writes `kind: "fundraiser"`
+      // today, so this is unreachable; it is here because the day something
+      // does, the page is search-indexable (D10) and a sandbox event's name
+      // must not be the thing that gets indexed.
       goalByEvent.set(
         key,
-        page && page.published && page.goalCents && page.goalCents > 0 && event
+        page &&
+          page.published &&
+          page.goalCents &&
+          page.goalCents > 0 &&
+          event &&
+          !event.isTraining
           ? {
               label: event.name,
               // The same three-part sum `territories.ts` reports for a
@@ -684,23 +736,21 @@ export const getPublicWall = query({
     if (territory) {
       const chapter = await ctx.db.get(territory.chapterId);
       backerCount = chapter?.backerCount ?? 0;
-      cityCount = 1; // the city being read is, by definition, taking backers
+      cityCount = takingBackers(territory) ? 1 : 0;
     } else {
-      // "Cities currently taking backers" is exactly the set with a public
-      // give page — a `publiclyVisible` territory, at any stage. A launched
-      // city still takes backers (its ladder keeps climbing), and a prospect
-      // city is the whole point of the ask, so stage is not the filter;
-      // whether a giver can reach the page is.
       const territories = await ctx.db
         .query("territories")
         .take(TERRITORY_LIST_LIMIT);
       for (const t of territories) {
         if (!t.publiclyVisible) continue;
-        cityCount += 1;
+        if (takingBackers(t)) cityCount += 1;
         const chapter = await ctx.db.get(t.chapterId);
         // The ONE backer counter per place (`chapters.backerCount`, derived by
         // `givingPledges.recomputeChapterBackerCount`) — territories
         // deliberately carry none of their own, so this can never drift.
+        // Counted for EVERY public territory, prospect included: a prospect
+        // with backers has them, and hiding real money would be a different
+        // lie from the one `cityCount` is fixing.
         backerCount += chapter?.backerCount ?? 0;
       }
     }

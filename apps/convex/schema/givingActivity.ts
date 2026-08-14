@@ -53,7 +53,8 @@ import { givingScope } from "./givingPlatform";
  *     giver typed into the checkout form.
  *  3. `givingActivity.getPublicWall` (public, no auth) is the v3 read: the
  *     org-wide or per-city feed plus the live totals. `getTerritoryActivity`
- *     is its predecessor, still serving the un-swapped city-page renderer.
+ *     is its predecessor and now has no caller at all — the city page reads
+ *     `getPublicWall` too (see that query's doc for why it is still here).
  *     Both are PII-FREE: `displayName` is a self-provided public name, NEVER
  *     the giver's real name or email, and it is only ever returned for a row
  *     that consented to be named.

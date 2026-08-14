@@ -18,9 +18,9 @@ import type { Id } from "../_generated/dataModel";
  *    payment-reversed one stays off, `raisedCents` comes from the scope
  *    rollups (D8) and never from a `gifts` scan, and a territory with fewer
  *    than three lifetime gifts is not named;
- *  - `getTerritoryActivity` (the pre-v3 read the un-swapped city renderer
- *    still calls) is UNCHANGED: only visible, consented rows for the right
- *    territory, newest first, capped, PII-free;
+ *  - `getTerritoryActivity` (the pre-v3 read, kept one release as the
+ *    rollback path now that no renderer calls it) is UNCHANGED: only visible,
+ *    consented rows for the right territory, newest first, capped, PII-free;
  *  - the admin surfaces (`listActivityAdmin` / `hideActivity`) are gated to
  *    central `giving.view`/`giving.manage`;
  *  - CONSENT: attribution is withheld from any row that lacks BOTH an
@@ -84,6 +84,25 @@ async function makeTerritory(
   });
   const territory = await run(s.t, (ctx) => ctx.db.get(territoryId));
   return territory!.chapterId;
+}
+
+/** Move a territory to a stage `saveTerritory` can't create directly (it always
+ *  starts a territory as a `prospect`). Patched rather than driven through
+ *  `setTerritoryStage` because a `launched` transition provisions banking and
+ *  seeds a chapter, none of which these wall tests are about. */
+async function setStage(
+  s: ChapterSetup,
+  slug: string,
+  stage: "prospect" | "raising" | "launched",
+): Promise<void> {
+  await run(s.t, async (ctx) => {
+    const territory = await ctx.db
+      .query("territories")
+      .withIndex("by_slug", (q) => q.eq("slug", slug))
+      .unique();
+    if (!territory) throw new Error(`no territory ${slug}`);
+    await ctx.db.patch(territory._id, { stage });
+  });
 }
 
 async function activityByRefKey(t: ReturnType<typeof newT>, refKey: string) {
@@ -1075,12 +1094,16 @@ describe("getPublicWall", () => {
       donorCount: 2,
     });
 
+    // Both territories are visibly asking for backers — `cityCount`'s own rule
+    // is exercised by its own test below.
+    await setStage(s, "totals-city", "raising");
+    await setStage(s, "other-city", "raising");
+
     // Org-wide: every book, summed.
     const orgWide = await s.t.query(api.givingActivity.getPublicWall, {});
     expect(orgWide.totals.raisedCents).toBe(400000);
     expect(orgWide.totals.giftCount).toBe(19);
     expect(orgWide.totals.giverCount).toBe(12);
-    // Both territories are publicly visible, so both are taking backers.
     expect(orgWide.totals.cityCount).toBe(2);
 
     // Scoped: that city's book only.
@@ -1108,6 +1131,113 @@ describe("getPublicWall", () => {
       slug: "totals-city",
     });
     expect(after.totals.raisedCents).toBe(260000);
+  });
+
+  test("cityCount counts only cities actually taking backers — a prospect is not one", async () => {
+    const s = await devDirectorSetup();
+    await makeTerritory(s, "raising-city");
+    await makeTerritory(s, "launched-city");
+    await makeTerritory(s, "prospect-city"); // stays a prospect
+    await makeTerritory(s, "hidden-city");
+    await setStage(s, "raising-city", "raising");
+    await setStage(s, "launched-city", "launched");
+    // Raising, but not published — `publiclyVisible` is the other half of the
+    // rule and still applies.
+    await run(s.t, async (ctx) => {
+      const t = await ctx.db
+        .query("territories")
+        .withIndex("by_slug", (q) => q.eq("slug", "hidden-city"))
+        .unique();
+      await ctx.db.patch(t!._id, { stage: "raising", publiclyVisible: false });
+    });
+
+    // The proof strip prints this number directly above the city grid, and
+    // `givePageSections.ts#cityCardsHtml` filters `stage !== "prospect"` out of
+    // that grid — so counting prospects here reads "4 cities taking backers
+    // right now" over 2 cards. A prospect's chapter is a shadow chapter; it is
+    // asking for a chapter, not collecting backers.
+    const orgWide = await s.t.query(api.givingActivity.getPublicWall, {});
+    expect(orgWide.totals.cityCount).toBe(2);
+
+    // A scoped read applies the same rule rather than assuming the city it is
+    // reading must qualify.
+    const raising = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "raising-city",
+    });
+    expect(raising.totals.cityCount).toBe(1);
+    const prospect = await s.t.query(api.givingActivity.getPublicWall, {
+      slug: "prospect-city",
+    });
+    expect(prospect.totals.cityCount).toBe(0);
+  });
+
+  test("a fundraiser row never renders a TRAINING-SANDBOX event's goal", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "sandbox-city");
+    await seedRollup(s, chapterId, {
+      lifetimeCents: 90000,
+      giftCount: 9,
+      donorCount: 5,
+    });
+    // A published page with a real money goal — the only thing keeping it off
+    // the public page is `events.isTraining`, exactly as in
+    // `territories.ts#fundraisersForChapter`.
+    const eventId = await run(s.t, async (ctx) => {
+      const now = Date.now();
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId,
+        name: "Type",
+        slug: "type-sandbox",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const id = await ctx.db.insert("events", {
+        chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "SANDBOX Practice Gala",
+        eventDate: now,
+        status: "planning",
+        isTraining: true,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.insert("eventPages", {
+        eventId: id,
+        chapterId,
+        slug: "sandbox-gala",
+        published: true,
+        goingCount: 0,
+        maybeCount: 0,
+        notGoingCount: 0,
+        ticketsSoldCount: 0,
+        revenueCents: 120000,
+        goalCents: 300000,
+        createdBy: s.userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      return id;
+    });
+
+    await settledRow(s, {
+      scope: chapterId,
+      kind: "fundraiser",
+      amountCents: 7500,
+      refKey: "give:cs_sandbox_fundraiser",
+      settledAt: Date.now(),
+      eventId,
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {});
+    expect(wall.rows).toHaveLength(1);
+    // The gift is still public — it is real money. What must never reach an
+    // indexed page (D10) is the sandbox event's name and goal.
+    expect(wall.rows[0]!.goal).toBeNull();
+    expect(JSON.stringify(wall.rows[0])).not.toContain("SANDBOX");
   });
 
   test("backerCount is the chapter's own derived counter, summed across public cities", async () => {
@@ -1413,6 +1543,43 @@ describe("0074 wall backfill", () => {
     // … and the pre-existing consented row keeps its name.
     expect(wall.rows.find((r) => r.amountCents === 30000)!.displayName).toBe(
       "Consented Giver",
+    );
+  });
+
+  test("a backfilled row can be taken down by the reversal paths — it carries the gift's OWN key", async () => {
+    const s = await devDirectorSetup();
+    const chapterId = await makeTerritory(s, "reversible-history");
+    const base = Date.now() - 10_000;
+    // A historical Stripe gift: `externalRef` is `give:<checkout session>`,
+    // which is exactly the string `givingReversals`/`givingComms` hand to
+    // `withdrawActivity` when the money goes back.
+    await seedGift(s, {
+      scope: chapterId,
+      amountCents: 25000,
+      receivedAt: base,
+      externalRef: "give:cs_history_reversed",
+    });
+    // …and one that never went through Checkout, so it has no external key of
+    // its own and falls back to the synthetic one.
+    await seedGift(s, { scope: chapterId, amountCents: 5000, receivedAt: base + 1 });
+
+    const result = await run(s.t, (ctx) => runBackfillWallFromGifts(ctx));
+    expect(result.inserted).toBe(2);
+
+    const keyed = await activityByRefKey(s.t, "give:cs_history_reversed");
+    expect(keyed?.amountCents).toBe(25000);
+
+    // The gift is disputed / the debit is returned. If the backfill had keyed
+    // this row `gift:<id>`, this call would find nothing and the wall would
+    // keep publishing money that came back.
+    await s.t.mutation(internal.givingActivity.withdrawActivity, {
+      refKey: "give:cs_history_reversed",
+    });
+
+    const wall = await s.t.query(api.givingActivity.getPublicWall, {});
+    expect(wall.rows.map((r) => r.amountCents)).toEqual([5000]);
+    expect((await activityByRefKey(s.t, "give:cs_history_reversed"))?.hiddenReason).toBe(
+      "payment_reversed",
     );
   });
 });

@@ -33,11 +33,7 @@ import {
   PUBLIC_BACKER_TIERS,
   type MoneyLine,
 } from "@events-os/shared";
-import type {
-  MapTerritory,
-  PublicTerritoryData,
-  TerritoryActivityEntry,
-} from "./givePage";
+import type { MapTerritory, PublicTerritoryData } from "./givePage";
 
 // ── Share-on-the-wall extras (F6) ────────────────────────────────────────────
 
@@ -46,9 +42,10 @@ import type {
  *  and an optional public message (capped 280 chars client-side via
  *  `maxlength`, and again server-side). `givePageClient.ts`'s `wireAmountForm`
  *  only sends `publicName`/`message`/`shareOnWall` in the POST payload when
- *  the checkbox is checked — the backend only records a public activity-wall
- *  entry (F6, `givingActivity.recordPendingActivity`) when `shareOnWall` is
- *  set, so an unchecked box means nothing public is ever stored.
+ *  the checkbox is checked. An unchecked box no longer means NO ROW (v3, D6 —
+ *  the gift is on the wall either way); it means no NAME on it, for ever:
+ *  `recordPendingActivity` stores `displayName`/`message` only alongside
+ *  `consent === true`, and `getPublicWall` re-checks consent on every read.
  *
  *  DEFAULT UNCHECKED, and the label says the two things that actually become
  *  public — the name they type here AND the amount. The old copy ("Share this
@@ -175,12 +172,24 @@ function coverFeesHtml(prefix: string): string {
  *  and the territory's slug on a territory page.
  *
  *  `showWallOptIn` (default `true`) controls whether the public-giving-wall
- *  consent block renders. The MAP page passes `false`: the wall is
- *  per-territory, so a central (no-slug) gift has no wall to appear on and
- *  `startGiveDonationCheckout` discards `shareOnWall` for it outright. Showing
- *  the box there asked people to agree to something that then silently never
- *  happened — harmless in that nothing was published, but it is not honest to
- *  ask a consent question whose answer you intend to throw away. */
+ *  consent block renders. The MAP page passes `false` — and NOT for the reason
+ *  this comment used to give. It said a central (no-slug) gift "has no wall to
+ *  appear on", which was true only before v3, when `givingActivity.scope` could
+ *  not hold `"central"` and the checkout dropped the write. D7 reversed that:
+ *  central gifts are on the wall, tagged `central`, and
+ *  `startGiveDonationCheckout` records their consent like any other gift's.
+ *
+ *  The real reason is length: the map's one-time form already asks for a
+ *  destination, an amount, a payment method, a name and an email before it can
+ *  reach checkout, and these three fields are the only ones on it that matter
+ *  *after* the payment succeeds.
+ *
+ *  THE COST, stated plainly so nobody has to rediscover it: a one-time gift
+ *  given from `/give` gets a wall row (D6 — existence is unconditional) but can
+ *  never carry a name, because this form captures no consent to record and
+ *  there is no later flow that collects one. Giving from a city page still
+ *  offers the opt-in. If attribution from `/give` is ever wanted, it comes back
+ *  by passing `showWallOptIn: true` here — not from anywhere downstream. */
 export function oneTimeGiveFormHtml(opts: {
   presetsCents: readonly number[];
   defaultIndex: number;
@@ -553,9 +562,13 @@ export function givingWallHtml(
     : esc(formatCents(wall.totals.raisedCents, { showCents: false }));
   const subline = isCity
     ? `plus ${wall.totals.giftCount} gift${wall.totals.giftCount === 1 ? "" : "s"} to this chapter`
-    : `given toward the mission, from ${wall.totals.giverCount} ${
-        wall.totals.giverCount === 1 ? "person" : "people"
-      }`;
+    : // "givers across our books", not "people": `giverCount` counts donor rows,
+      // and those are per-city, so one person who gives to two cities is two of
+      // them. See `givingActivity.ts#getPublicWall` for why the honest label is
+      // the fix and a distinct head-count is not.
+      `given toward the mission, from ${wall.totals.giverCount} giver${
+        wall.totals.giverCount === 1 ? "" : "s"
+      } across our books`;
 
   const rows = wall.rows.map((r) => walletRowHtml(r, isCity)).join("\n");
 
@@ -652,13 +665,23 @@ function walletRowHtml(r: PublicWallRow, isCity: boolean): string {
  * Deliberately does NOT repeat the wall's dollar total: the strip establishes
  * that the thing is real, the wall carries the money. Saying the same number
  * twice on one screen reads as anxiety rather than emphasis.
+ *
+ * TWO OF THESE LABELS ARE LOAD-BEARING, because the numbers under them are
+ * cheap by design:
+ *  - `giverCount` counts DONOR ROWS, which are per-city, so one person giving
+ *    to two cities is two of them. It used to read "people have given at least
+ *    once", which that number cannot support. The label now says how it counts.
+ *    (Why not fix the number: `givingActivity.ts#getPublicWall`.)
+ *  - `cityCount` is non-prospect public territories only — the same filter
+ *    `cityCardsHtml` uses for the grid directly below, so "N cities taking
+ *    backers right now" and the number of cards a reader can count agree.
  */
 export function proofStripHtml(totals: PublicWallData["totals"]): string {
   const cell = (k: string, v: string) =>
     `<div class="proofcell"><div class="pk">${k}</div><div class="pv">${v}</div></div>`;
   return `<div class="proofstrip">
   ${cell(String(totals.backerCount), "monthly backers<br>funding city teams")}
-  ${cell(String(totals.giverCount), "people have given<br>at least once")}
+  ${cell(String(totals.giverCount), "givers, counted once<br>in each city they give to")}
   ${cell(String(totals.cityCount), `${totals.cityCount === 1 ? "city" : "cities"} taking<br>backers right now`)}
   ${cell("100%", `of our spending is public &mdash;<br><a href="${esc(ledgerPath())}">every line item &rarr;</a>`)}
 </div>`;
