@@ -72,6 +72,7 @@ import {
 import {
   codingForTransaction,
   codingPolicy,
+  codingWriteFieldsFrom,
   decideCoding,
   normalizeCodingFields,
   submitCoding,
@@ -665,6 +666,117 @@ export const submit = mutation({
       amountCents: txn.amountCents,
     });
     return codingId;
+  },
+});
+
+/**
+ * CHANGE THE SENTENCE, AND NOTHING ELSE — the grid's inline "What it was for"
+ * cell.
+ *
+ * ## Why the cell needed its own mutation
+ *
+ * The column exists so a month's explanations are readable without opening
+ * anything. Tapping a cell nevertheless opened the documentation modal, which
+ * the founder named as self-defeating: "There's a whole column for it. When
+ * you click on it, it opens the side panel. That kinda defeats the purpose."
+ *
+ * The original reasoning was sound as far as it went — `submitCoding` refuses
+ * an APPROVED coding, so a cell that accepted typing would work on some rows
+ * and throw on others. But that solved a per-row problem by making every row
+ * worse. The cell can simply know which row it is on (`explanation.editable`,
+ * see `finances.ts#reconcileRow`), and this mutation is what it calls when the
+ * answer is yes.
+ *
+ * ## What it must not do
+ *
+ * `submit` above is not usable here. It takes the WHOLE field set, and
+ * `submitCoding` writes with `db.replace` — so calling it with a purpose and a
+ * type would silently erase a meal's attendee list, a trip's route or a stay's
+ * place. On the §274(d) record, quietly. So the existing coding is read back
+ * into its own write fields (`codingWriteFieldsFrom`), ONLY
+ * `businessPurpose` is replaced, and the result goes through the same
+ * `submitCoding` as every other path: same length floor, same documentation
+ * gate, same lodging rule, same `CODING_APPROVED` refusal. There is no laxer
+ * write here, which is the whole point of routing an inline edit through the
+ * same door.
+ *
+ * ## It EDITS; it does not CREATE
+ *
+ * With no coding on the row there is nothing to preserve and no type to keep,
+ * and inventing `general` for a restaurant charge would be writing a coding
+ * that fails substantiation on a screen with no way to say who was there. Those
+ * rows keep their route into the full sheet — which is also where the bulk
+ * Explain flow sends a selection, for the same reason. `NO_CODING` says so.
+ *
+ * The audit entry is the ordinary `coding_submit` round, carrying the new
+ * sentence as its reason exactly as `submit` does: this IS a revision of the
+ * record, and the trail should read as one rather than as a lesser kind of
+ * edit because of which control it was typed into.
+ */
+export const setPurpose = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    businessPurpose: v.string(),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, scope, actorPersonId } = await requireSubmitCoding(
+      ctx,
+      args.transactionId,
+    );
+    const existing = await codingForTransaction(ctx, args.transactionId);
+    if (!existing) {
+      throw new ConvexError({
+        code: "NO_CODING",
+        message:
+          "This charge has no coding yet. Open it and say what kind of expense it was — a meal needs who was there, travel needs where from and to, and none of that fits in one line.",
+      });
+    }
+    // Refused HERE as well as inside `submitCoding`, so the message names the
+    // inline edit rather than arriving as a generic write failure on a cell
+    // that should not have offered a cursor in the first place. The cell hides
+    // its input on these rows; this is the guarantee behind that, for a stale
+    // client or a direct call.
+    if (existing.status === "approved") {
+      throw new ConvexError({
+        code: "CODING_APPROVED",
+        message:
+          "This coding is already approved, so its sentence is the record. Ask a reviewer to send it back if it needs to change — that reopening is itself an audited decision.",
+      });
+    }
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    const { namesMaxHeadcount, sinceMs } = await codingPolicy(ctx);
+    const { resubmission } = await submitCoding(ctx, {
+      txn,
+      scope,
+      // EVERY OTHER FIELD CARRIED FORWARD VERBATIM — see
+      // `codingWriteFieldsFrom` for why a partial set here would be a silent
+      // deletion rather than a partial update.
+      fields: {
+        ...codingWriteFieldsFrom(existing),
+        businessPurpose: args.businessPurpose,
+      },
+      namesMaxHeadcount,
+      codingRequiredSinceMs: sinceMs,
+      codedByPersonId: actorPersonId,
+      codedByUserId: userId,
+    });
+    await logFinanceAudit(ctx, {
+      chapterId: scope,
+      subjectType: "transaction",
+      subjectId: args.transactionId,
+      action: "coding_submit",
+      actorPersonId,
+      field: "coding",
+      before:
+        TRANSACTION_CODING_STATUS_LABELS[
+          existing.status as TransactionCodingStatus
+        ],
+      after: resubmission ? "Resubmitted" : "Awaiting review",
+      reason: args.businessPurpose.trim(),
+      amountCents: txn.amountCents,
+    });
+    return null;
   },
 });
 
