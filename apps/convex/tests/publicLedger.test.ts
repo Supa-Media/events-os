@@ -2391,24 +2391,28 @@ describe("the public page speaks in chapters", () => {
   });
 });
 
-// ── "Who gets paid" — the compensation table ─────────────────────────────────
+// ── "Who gets paid" — the compensation grid ──────────────────────────────────
 // The page used to PROMISE, in prose, that it would one day publish pay by
 // position rather than by person. It now does it: every position in the seat
-// chart, grouped central vs chapter, with its pay under it — and today every
-// row reads "Volunteer." Publishing the format before there is a figure in it
-// is the whole point (founder, 2026-08-14): the day somebody is paid, a reader
-// meets a number in a table they already know how to read, and the change is a
-// data edit rather than a page redesign.
+// chart, banded org-wide then chapter, each a tile with its pay under it — and
+// today every one of them reads "Volunteer." Publishing the format before
+// there is a figure in it is the whole point (founder, 2026-08-14): the day
+// somebody is paid, a reader meets a number on a tile they already know how to
+// read, and the change is a data edit rather than a page redesign.
 //
 // What these tests pin is the part that could quietly rot:
-//  - the table is the WHOLE chart, once each — a position added to
+//  - the grid is the WHOLE chart, once each — a position added to
 //    `SEAT_DEFS` and silently missing here would be an undisclosed position;
-//  - it is POSITIONS ONLY. There is no path from `compensationTable()` to
-//    `seatHolders`/`seatAssignments`, and the privacy assert below is what
-//    keeps it that way — the same promise the page makes about givers and
-//    attendees, turned on ourselves;
-//  - it renders on every published month, backdated ones included, because it
-//    is read live from the shared constant rather than frozen per publication.
+//  - a paid tile is styled EXACTLY like a volunteer one. Colour-coding a
+//    salary reads as an alarm, and this section publishes salaries precisely
+//    because paying people is normal;
+//  - a tile carries a headcount, and NOTHING ELSE about the people in it. That
+//    number is the only fact about holders this section has ever published
+//    (`lib/positionHeadcount.ts` is the one path, and it returns integers), so
+//    the privacy assert below — no holder's name anywhere in the HTML — is now
+//    load-bearing rather than a formality;
+//  - it renders on every published month, backdated ones included, because pay
+//    and headcount alike are read live rather than frozen per publication.
 
 describe("who gets paid — every POSITION, never a person", () => {
   /** The compensation section alone, so an assertion can't be satisfied by a
@@ -2427,7 +2431,35 @@ describe("who gets paid — every POSITION, never a person", () => {
   const occurrences = (haystack: string, needle: string) =>
     haystack.split(needle).length - 1;
 
+  /** The ONE tile carrying `title` — so a count assertion can never be
+   *  satisfied by a number belonging to the tile next to it. */
+  function tile(section: string, title: string): string {
+    const found = section
+      .split('<div class="paytile">')
+      .slice(1)
+      .filter((chunk) => chunk.includes(positionCell(title)));
+    expect(found).toHaveLength(1);
+    return found[0];
+  }
+
+  const badge = (n: number) => `<span class="paycount">${n}</span>`;
+
   const NON_DERIVED = SEAT_IDS.filter((id) => SEAT_DEFS[id].derived !== true);
+
+  /** A second (and third) city, so a chapter position has more than one
+   *  chapter to be held in. */
+  async function addChapter(
+    s: ChapterSetup,
+    name: string,
+  ): Promise<Id<"chapters">> {
+    return run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name,
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+  }
 
   /**
    * Render with one position temporarily paid, then put the constant back.
@@ -2477,24 +2509,27 @@ describe("who gets paid — every POSITION, never a person", () => {
     for (const id of NON_DERIVED) {
       expect(occurrences(section, positionCell(SEAT_DEFS[id].title))).toBe(1);
     }
-    expect(occurrences(section, '<div class="payrow">')).toBe(NON_DERIVED.length);
+    expect(occurrences(section, '<div class="paytile">')).toBe(
+      NON_DERIVED.length,
+    );
 
     // `chapter_directors` is a rollup of every chapter's chapter_director
     // holder — a view of other seats, not a position anyone is appointed to.
-    // Listing it would publish the same position twice under two names.
+    // Listing it would publish the same position twice under two names, and
+    // count the same people twice with it.
     expect(section).not.toContain(positionCell("Chapter Directors"));
     expect(section).toContain(positionCell("Chapter Director"));
   });
 
-  test("central and chapter are two labelled groups, each holding only its own chart", async () => {
+  test("central and chapter are two labelled bands, each holding only its own chart", async () => {
     const s = await aPublishedMonth();
     const section = paySection(await publishedBody(s));
 
-    const groups = section.split('<div class="paygroup">').slice(1);
-    expect(groups).toHaveLength(2);
-    const [central, chapter] = groups;
-    expect(central).toContain("Org-wide positions");
-    expect(chapter).toContain("Chapter positions");
+    const bands = section.split('<div class="payband">').slice(1);
+    expect(bands).toHaveLength(2);
+    const [central, chapter] = bands;
+    expect(central).toContain('<div class="paybandhead">Org-wide<span');
+    expect(chapter).toContain('<div class="paybandhead">Chapter<span');
 
     for (const id of NON_DERIVED) {
       const def = SEAT_DEFS[id];
@@ -2504,7 +2539,13 @@ describe("who gets paid — every POSITION, never a person", () => {
       expect(other).not.toContain(positionCell(def.title));
     }
 
-    // Leadership reads first in each group: the chart's root is row one.
+    // Each band header states the scale of its own list, in one line.
+    const centralPositions = NON_DERIVED.filter(
+      (id) => SEAT_DEFS[id].chart === "central",
+    ).length;
+    expect(central).toContain(`${centralPositions} positions ·`);
+
+    // Leadership reads first in each band: the chart's root is tile one.
     expect(central.indexOf(positionCell("Executive Director"))).toBeLessThan(
       central.indexOf(positionCell("Financial Manager")),
     );
@@ -2513,56 +2554,76 @@ describe("who gets paid — every POSITION, never a person", () => {
     );
   });
 
-  test("while nobody is paid, every row reads Volunteer — one per position, no exceptions", async () => {
+  test("while nobody is paid, every tile reads Volunteer — one per position, no exceptions", async () => {
     const s = await aPublishedMonth();
     const section = paySection(await publishedBody(s));
 
     expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(true);
-    expect(occurrences(section, '<span class="paypay">Volunteer</span>')).toBe(
-      NON_DERIVED.length,
-    );
-    // Nothing is styled as a stated figure yet, and no dollar amount appears
-    // anywhere in the section — a pay cell rendering a number today would be a
-    // false disclosure, not a formatting bug.
-    expect(section).not.toContain('class="paypay paid"');
+    expect(
+      occurrences(section, '<span class="paypay volunteer">Volunteer</span>'),
+    ).toBe(NON_DERIVED.length);
+    // No dollar amount appears anywhere in the section — a pay line rendering
+    // a number today would be a false disclosure, not a formatting bug.
     expect(section).not.toMatch(/\$\d/);
-    // The claim sentence still publishes above the table…
-    expect(section).toContain(COMPENSATION_DISCLOSURE.headline);
-    // …and so does the forward promise the table now demonstrates.
-    expect(section).toContain("by position rather than by person");
+    // One line of intro, and one line of policy. The paragraph that used to
+    // narrate the layout is gone: the grid's own vocabulary is legible without
+    // being explained, and a reader should get it in one pass.
+    expect(section).toContain(COMPENSATION_DISCLOSURE.intro);
+    expect(section).toContain(COMPENSATION_DISCLOSURE.policy);
+    expect(section).toContain("by position, never by person");
+    expect(section).not.toContain("one row covers everyone holding it");
   });
 
-  test("a paid position prints an ANNUAL figure, styled as a figure, with no renderer change", async () => {
-    // The day one row turns paid, the reader is not shown a new section — they
-    // are shown a number in a row they have already read a dozen times. This
-    // pins that end to end by paying one position for the length of one page
-    // render (see `withPaidPosition`) and reading the HTML that comes back.
+  test("a paid position prints its figure and is styled EXACTLY like a volunteer one", async () => {
+    // The day one position turns paid, the reader is not shown a new section —
+    // they are shown a figure on a tile they have already read a dozen times.
+    // This pins that end to end by paying one position for the length of one
+    // page render (see `withPaidPosition`) and reading the HTML back.
     const s = await aPublishedMonth();
 
     const section = await withPaidPosition("music_director", 4_800_000, async () =>
       paySection(await publishedBody(s)),
     );
 
-    // Annual, spelled out. The unit is a deliberate choice — the policy line
-    // promises pay "the way public offices publish theirs," and public offices
-    // publish a yearly salary. A bare "$48,000.00" in this column is a number
-    // a reader would be entitled to read as monthly.
-    expect(section).toContain(
-      '<span class="paypay paid">$48,000.00 per year</span>',
+    // Annual, and the unit is stated. The policy commits to publishing pay the
+    // way public offices publish theirs, and public offices publish a yearly
+    // salary — a bare "$48,000" here is a number a reader would be entitled to
+    // read as monthly.
+    const paid = tile(section, "Music Director");
+    const volunteer = tile(section, "Marketing Director");
+    expect(paid).toContain('<span class="paypay">$48,000/yr</span>');
+    expect(volunteer).toContain(
+      '<span class="paypay volunteer">Volunteer</span>',
     );
-    // The paid glyph, not the volunteer handshake, on that row only.
-    expect(section).toContain("💵");
-    expect(occurrences(section, "💵")).toBe(1);
-    expect(occurrences(section, "🤝")).toBe(NON_DERIVED.length - 1);
-    // Still one row per position — a figure is a value, not an extra row.
-    expect(occurrences(section, '<div class="payrow">')).toBe(NON_DERIVED.length);
-    expect(occurrences(section, '<span class="paypay">Volunteer</span>')).toBe(
-      NON_DERIVED.length - 1,
+
+    // NO SECOND TREATMENT. Strip the two lines that are allowed to differ (the
+    // position's name and its pay) and the two tiles are byte-identical — same
+    // wrapper class, same circle, same badge, same glyph. A paid tile carries
+    // nothing at all to mark it: red reads as an alarm, and a salary is not
+    // one. Note which side carries the modifier — the figure is the DEFAULT
+    // and "Volunteer" is the variant, so a paid tile has no extra class.
+    const shape = (t: string) => t.replace(/<span class="payposition">[\s\S]*$/, "");
+    expect(shape(paid)).toBe(shape(volunteer));
+    expect(section).not.toContain("paytile paid");
+    expect(section).not.toContain('class="paypay paid"');
+
+    // One glyph for every position, paid or not — the two-icon scheme this
+    // replaced made the paid tile the story of the section.
+    expect(occurrences(section, "💵")).toBe(0);
+    expect(occurrences(section, "🤝")).toBe(0);
+    expect(occurrences(section, "👤")).toBe(NON_DERIVED.length);
+
+    // Still one tile per position — a figure is a value, not an extra tile.
+    expect(occurrences(section, '<div class="paytile">')).toBe(
+      NON_DERIVED.length,
     );
+    expect(
+      occurrences(section, '<span class="paypay volunteer">Volunteer</span>'),
+    ).toBe(NON_DERIVED.length - 1);
 
     // And the flag/data guard in `packages/shared/src/publicLedger.test.ts`
     // would be failing this whole time: the authored `allVolunteer` is still
-    // true while the table now disproves it two inches below.
+    // true while the grid now disproves it two inches below.
     expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(true);
 
     // Back to the authored truth once the override is gone.
@@ -2570,11 +2631,83 @@ describe("who gets paid — every POSITION, never a person", () => {
     expect(after).not.toMatch(/\$\d/);
   });
 
+  test("the badge counts the people in each position, and a vacancy is a plain 0", async () => {
+    // A reader shown a pay figure is entitled to know whether it is paid once
+    // or thirty times, which is the whole reason the badge exists.
+    const s = await asPublisher();
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const [ed, org1, org2] = await Promise.all([
+      seedPerson(s, "Adaeze Okonkwo"),
+      seedPerson(s, "Bartholomew Kingsley-Verne"),
+      seedPerson(s, "Rosalind Achterberg"),
+    ]);
+    await assignSeatDirect(s, ed, "executive_director", "central");
+    await assignSeatDirect(s, org1, "event_organizers", s.chapterId);
+    await assignSeatDirect(s, org2, "event_organizers", s.chapterId);
+
+    const txnId = await insertTxn(s, { amountCents: 1200 });
+    await approveCoding(s, txnId, { businessPurpose: "Chairs for the setup team" });
+    await publishMonth(s);
+    const section = paySection(await publishedBody(s));
+
+    // The count lands on the tile it belongs to, and nowhere else.
+    expect(tile(section, "Executive Director")).toContain(badge(1));
+    expect(tile(section, "Event Organizers")).toContain(badge(2));
+    // Still one tile for a multi-holder position: two people, one tile, one
+    // badge — never two tiles and never a name.
+    expect(occurrences(section, positionCell("Event Organizers"))).toBe(1);
+
+    // A VACANCY IS NOT AN ERROR STATE. A position nobody holds keeps its tile,
+    // reads `0`, and still says what it pays — which is what it pays whether
+    // or not anybody is in it. No dimming, no "vacant" label, no styling of
+    // its own.
+    const vacant = tile(section, "Music Director");
+    expect(vacant).toContain(badge(0));
+    expect(vacant).toContain('<span class="paypay volunteer">Volunteer</span>');
+    expect(vacant.replace(/<span class="payposition">[\s\S]*$/, "")).toBe(
+      tile(section, "Marketing Director").replace(
+        /<span class="payposition">[\s\S]*$/,
+        "",
+      ),
+    );
+  });
+
+  test("a chapter position sums across chapters, and the band says how many cities", async () => {
+    // "Chapter Director · 3" means three cities each have one — the only
+    // reading that makes a single tile per chapter position honest.
+    const s = await asPublisher();
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const boston = await addChapter(s, "Boston");
+    const atlanta = await addChapter(s, "Atlanta");
+    const directors = await Promise.all([
+      seedPerson(s, "Ngozi Adeyemi-Fairweather"),
+      seedPerson(s, "Thaddeus Blomqvist"),
+      seedPerson(s, "Marisol Etchegaray"),
+    ]);
+    await assignSeatDirect(s, directors[0], "chapter_director", s.chapterId);
+    await assignSeatDirect(s, directors[1], "chapter_director", boston);
+    await assignSeatDirect(s, directors[2], "chapter_director", atlanta);
+
+    const txnId = await insertTxn(s, { amountCents: 1200 });
+    await approveCoding(s, txnId, { businessPurpose: "Chairs for the setup team" });
+    await publishMonth(s);
+    const body = await publishedBody(s);
+    const section = paySection(body);
+
+    expect(tile(section, "Chapter Director")).toContain(badge(3));
+    const chapterBand = section.split('<div class="payband">')[2];
+    expect(chapterBand).toContain("3 people across 3 cities");
+    // The rollup seat is still absent — counting it would count the same three
+    // directors a second time, under a second name.
+    expect(section).not.toContain(positionCell("Chapter Directors"));
+    for (const name of directors) expect(body).not.toContain(name);
+  });
+
   test("NO holder's name can reach the page, however many people hold a position", async () => {
-    // The privacy property, pinned end to end: real `seatAssignments` rows
-    // exist for three named people across two seats — including a
-    // multi-holder seat, the case that would tempt a renderer into printing
-    // "Event Organizers (2)" or, worse, the names.
+    // The privacy property, pinned end to end — and it matters more since the
+    // badge landed. Until then there was NO path from the grid to a holder
+    // record; there is one now (`lib/positionHeadcount.ts`), it returns
+    // integers, and this is the assertion that says so out loud.
     const s = await asPublisher();
     await run(s.t, (ctx) => runSeedSeatDefs(ctx));
     const holders = [
@@ -2597,23 +2730,32 @@ describe("who gets paid — every POSITION, never a person", () => {
     // The POSITIONS are there…
     expect(section).toContain(positionCell("Executive Director"));
     expect(section).toContain(positionCell("Event Organizers"));
-    // …exactly once each, however many people sit in them.
-    expect(occurrences(section, positionCell("Event Organizers"))).toBe(1);
-    // …and not one holder is named, anywhere on the page.
+    // …and not one holder is named, anywhere on the page — not in the grid,
+    // not in a title attribute, not in the ledger table below it.
     for (const name of holders) {
       expect(section).not.toContain(name);
       expect(body).not.toContain(name);
+      // Nor either half of a name, which is how a leak would actually look.
+      for (const part of name.split(" ")) expect(body).not.toContain(part);
     }
-    // Nor is a count of holders published — "three event coordinators" is one
-    // row by construction, and the page never says three.
-    expect(section).not.toMatch(/\bholder/i);
+    // And the count query itself hands back numbers, not rows.
+    const headcount = await s.as.query(
+      api.publicLedger.publicPositionHeadcount,
+      {},
+    );
+    expect(headcount).toEqual({
+      byPosition: { executive_director: 1, event_organizers: 2 },
+      chapterCount: 1,
+    });
   });
 
-  test("every published month carries the same table — including a backdated one, and the year rollup", async () => {
+  test("every published month carries the same grid — including a backdated one, and the year rollup", async () => {
     // Compensation is a standing statement about the org, not a fact about a
     // month's transactions, so it is deliberately NOT frozen into a
-    // publication. A reader of a backdated July and a reader of August must
-    // get the same answer, because only one answer can be true today.
+    // publication — headcounts included. A reader of a backdated July and a
+    // reader of August must get the same answer, because only one answer can
+    // be true today. The cost is stated in `lib/positionHeadcount.ts`: a
+    // backdated month shows today's team, not that month's.
     const s = await asPublisher();
     const julTxn = await insertTxn(s, {
       postedAt: Date.UTC(2026, 6, 14, 16),

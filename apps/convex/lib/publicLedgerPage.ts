@@ -42,8 +42,12 @@ import {
   AMENDMENT_REASON_LABELS,
   ATTENDEE_AFFILIATION_LABELS,
   COMPENSATION_DISCLOSURE,
+  compensationGroupSummary,
   compensationTable,
+  POSITION_GLYPH,
   positionPayLabel,
+  type CompensationRow,
+  type PositionHeadcount,
   DOCUMENTATION_STATE_LABELS,
   DOCUMENTATION_EXEMPTIONS,
   DOCUMENTATION_EXEMPTION_LABELS,
@@ -370,7 +374,51 @@ function statsHtml(s: StatementCore): string {
 }
 
 /**
- * WHO GETS PAID — stated up front, not buried in an accordion, and as a TABLE.
+ * One position: a circle with a person in it, a count on the circle's rim, the
+ * position's name, and what it pays.
+ *
+ * ── THE COUNT RIDES THE RIM; IT NEVER REPLACES THE GLYPH ─────────────────────
+ * The obvious compaction — put the number INSIDE the circle and drop the
+ * person — was tried and is wrong. A circle containing "7" stops reading as
+ * people and starts reading as a quantity of something unstated; the tile
+ * needs a person in it for the number beside it to mean people at all. So the
+ * glyph stays and the badge sits on the rim, which is also the arrangement
+ * every reader has already learned from a notification dot.
+ *
+ * ── A VACANCY IS NOT AN ERROR ────────────────────────────────────────────────
+ * A position nobody holds shows a plain `0` and still reads "Volunteer", with
+ * no dimming, no dashed border, no "vacant" label. That is what the position
+ * pays whether or not somebody is in it, and a page that styled empty seats as
+ * a problem would be making a claim about our staffing that this section is
+ * not making.
+ *
+ * ── NO SECOND TREATMENT FOR A PAID POSITION ──────────────────────────────────
+ * The paid tile gets no colour, no border, no fill and no extra class — it is
+ * `paytile` exactly like its neighbours. Red would read as an alarm and a
+ * salary is not one; any accent at all would editorialise about a figure we
+ * publish precisely because paying people is normal and defensible. The whole
+ * difference is the last line: a word, or a figure. The figure carries the
+ * page's ink colour and the word sits back a shade (`.paypay.volunteer`) —
+ * enough that a reader scanning for numbers finds them, not enough to make one
+ * tile the story of the section. Note which of the two carries the modifier
+ * class: the DEFAULT is the figure, so a paid tile is the one with nothing
+ * special on it.
+ */
+function payTileHtml(row: CompensationRow): string {
+  const held =
+    row.peopleCount === 0
+      ? "Nobody holds this position right now"
+      : `${row.peopleCount} ${row.peopleCount === 1 ? "person holds" : "people hold"} this position`;
+  const paid = row.payCents > 0;
+  return `<div class="paytile">
+      <span class="paydisc" title="${esc(held)}"><span class="payglyph" aria-hidden="true">${esc(POSITION_GLYPH)}</span><span class="paycount">${row.peopleCount}</span></span>
+      <span class="payposition">${esc(row.title)}</span>
+      <span class="paypay${paid ? "" : " volunteer"}">${esc(positionPayLabel(row.payCents))}</span>
+    </div>`;
+}
+
+/**
+ * WHO GETS PAID — stated up front, not buried in an accordion.
  *
  * This sat inside the "Why are there no names?" FAQ, which is exactly the
  * wrong place for it: "nobody here is paid" is one of the strongest things
@@ -382,61 +430,54 @@ function statsHtml(s: StatementCore): string {
  * know how much of it went to the people spending it, and the answer is
  * currently none.
  *
- * ── THE TABLE IS THE PROMISE, KEPT EARLY ─────────────────────────────────────
+ * ── THE GRID IS THE PROMISE, KEPT EARLY ──────────────────────────────────────
  * The prose here used to say we WOULD one day publish pay by position rather
- * than by person. It now does it: every position in the org chart, grouped
- * central vs chapter, each with its pay under it — and today every one of them
- * reads "Volunteer." Publishing the format before there is a figure in it
- * means the day one appears, the reader meets a number in a table they already
+ * than by person. It now does it: every position in the org chart, banded
+ * org-wide then chapter, each with its pay under it — and today every one of
+ * them reads "Volunteer." Publishing the format before there is a figure in it
+ * means the day one appears, the reader meets a number on a tile they already
  * know how to read, rather than a new section that arrived with the salary.
  *
- * Two things this renderer deliberately does NOT do, both enforced upstream by
- * `compensationTable()` (see `COMPENSATION_DISCLOSURE`'s doc for the full
- * reasoning):
- *  - It never touches holders. Rows are seat DEFS; there is no path from here
- *    to a person's name, which is the same promise the rest of this page makes
- *    about givers and attendees, applied to ourselves.
- *  - It hardcodes no pay string. "Volunteer" is what a position's pay of zero
- *    prints as, so stating a real figure for one position is a one-line data
- *    edit that never reaches this file.
+ * ── WHY A GRID AND NOT A LIST ────────────────────────────────────────────────
+ * The list this replaced was 26 rows in two tall columns, every one of them
+ * ending in the same word. Length was doing the work of emphasis: a reader
+ * scrolling that far learned "there are a lot of positions" long before they
+ * learned "none of them are paid." The grid states the same facts in a third
+ * of the height, which is the only form in which the pay line is legible AS a
+ * repeated answer rather than as a wall.
  *
- * And it renders on EVERY published month, backdated ones included, because it
- * is read live from the shared constant rather than frozen into a publication:
- * a compensation policy is a statement about the org right now, not a fact
- * about a month's transactions.
+ * ── NO LEGEND ────────────────────────────────────────────────────────────────
+ * There is no key explaining the badge or the pay line, deliberately.
+ * "Volunteer" and "$48,000/yr" say themselves, and a legend would be the page
+ * teaching a notation it doesn't actually use.
+ *
+ * The two things this renderer deliberately does NOT do are enforced upstream
+ * by `compensationTable()` (see `COMPENSATION_DISCLOSURE`'s doc for the full
+ * reasoning): tiles are seat DEFS plus an integer count, so there is no path
+ * from here to a person's name; and no pay string is hardcoded, so stating a
+ * real figure for one position is a one-line data edit that never reaches this
+ * file.
+ *
+ * It renders on EVERY published month, backdated ones included — pay and
+ * headcount alike are read live rather than frozen into a publication, because
+ * this is a statement about the org right now, not a fact about a month's
+ * transactions.
  */
-function compensationHtml(): string {
+function compensationHtml(headcount: PositionHeadcount): string {
   const c = COMPENSATION_DISCLOSURE;
-  const groups = compensationTable()
+  const bands = compensationTable(headcount)
     .map(
-      (g) => `<div class="paygroup">
-    <div class="paygrouphead">${esc(g.heading)}<span class="paygroupnote">${esc(g.blurb)}</span></div>
-    ${g.rows
-      .map(
-        (r) => `<div class="payrow">
-      <span class="payicon" aria-hidden="true">${esc(r.icon)}</span>
-      <span class="payposition">${esc(r.title)}</span>
-      <span class="paypay${r.payCents > 0 ? " paid" : ""}">${esc(positionPayLabel(r.payCents))}</span>
-    </div>`,
-      )
-      .join("")}
+      (g) => `<div class="payband">
+    <div class="paybandhead">${esc(g.heading)}<span class="paybandcount">${esc(compensationGroupSummary(g))}</span></div>
+    <div class="paygrid">${g.rows.map(payTileHtml).join("")}</div>
   </div>`,
     )
     .join("");
 
   return `<section id="pay">
   <h2 class="sectionhead">Who gets paid</h2>
-  <p class="sectionsub">${esc(c.tableIntro)}</p>
-  ${
-    // The headline sentence is a claim about TODAY, so it stops rendering the
-    // day it stops being true — while the table, which carries the figures
-    // that replaced it, keeps going. That is the only difference between the
-    // two states of this section.
-    c.allVolunteer
-      ? `<div class="note pay"><strong>${esc(c.headline)}</strong> ${esc(c.present)}</div>`
-      : ""
-  }
-  <div class="paytable">${groups}</div>
+  <p class="sectionsub">${esc(c.intro)}</p>
+  ${bands}
   <p class="paypolicy">${esc(c.policy)}</p>
 </section>`;
 }
@@ -934,12 +975,17 @@ function howToReadHtml(): string {
  * likely isn't published yet — the simplest way to not invite a 404 rather
  * than teaching the picker a second, preview-aware mode. Omitted, this
  * function's output is byte-identical to before `opts` existed.
+ *
+ * `headcount` is required, not defaulted: a caller that forgot to wire it
+ * would otherwise publish a confident grid of zero-holder positions, which is
+ * a false statement about the org rather than a missing feature.
  */
 export function renderLedgerPage(
   statement: PublicStatement,
   months: PublishedMonth[],
   years: PublishedYear[],
   totalBooks: number,
+  headcount: PositionHeadcount,
   opts: { preview?: boolean } = {},
 ): string {
   const preview = opts.preview ?? false;
@@ -959,7 +1005,7 @@ ${
       })
 }
 ${statsHtml(statement)}
-${compensationHtml()}
+${compensationHtml(headcount)}
 ${disclosuresHtml(statement, totalBooks)}
 ${amendmentsHtml(statement, false)}
 ${incomeHtml(statement)}
@@ -1004,6 +1050,7 @@ export function renderLedgerYearPage(
   months: PublishedMonth[],
   years: PublishedYear[],
   totalBooks: number,
+  headcount: PositionHeadcount,
 ): string {
   const monthLinks = statement.months
     .map(
@@ -1020,7 +1067,7 @@ export function renderLedgerYearPage(
 </div>
 ${periodPickerHtml({ years, months, selectedYear: statement.year, selectedMonth: "" })}
 ${statsHtml(statement)}
-${compensationHtml()}
+${compensationHtml(headcount)}
 <div class="note"><strong>${statement.months.length} of 12 months published for ${esc(statement.label)}.</strong> ${
     complete
       ? "This is the complete year."

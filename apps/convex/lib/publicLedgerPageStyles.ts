@@ -148,32 +148,49 @@ td.purpose{color:var(--muted);min-width:260px}
 .note{background:var(--raised);border:1px solid var(--border);border-left:3px solid var(--accent);
   border-radius:12px;padding:14px 18px;margin-top:16px;font-size:14.5px;color:var(--muted);box-shadow:var(--shadow)}
 .note strong{color:var(--ink)}
-.note.pay{border-left-color:var(--lavender);margin-top:18px;font-size:15.5px}
-.note.pay strong{font-size:16.5px}
-.paypolicy{margin-top:14px;max-width:74ch;font-size:14.5px;color:var(--muted)}
+.paypolicy{margin-top:16px;max-width:74ch;font-size:14.5px;color:var(--muted)}
 
-/* ── Who gets paid (the compensation table) ── */
-/* Two columns because the two groups are independent lists, not a ranking:
-   the central chart and the chapter chart are read side by side, not one
-   after the other. They stack on a phone. */
-.paytable{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:16px;align-items:start}
-@media(max-width:760px){.paytable{grid-template-columns:1fr}}
-.paygroup{background:var(--raised);border:1px solid var(--border);border-radius:16px;
-  padding:4px 18px 12px;box-shadow:var(--shadow)}
-.paygrouphead{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
-  color:var(--faint);padding:14px 0 10px}
-.paygroupnote{display:block;margin-top:5px;font-size:12.5px;font-weight:500;letter-spacing:0;
-  text-transform:none;color:var(--muted);max-width:46ch}
-.payrow{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-top:1px solid var(--border);font-size:14.5px}
-/* Decorative and aria-hidden — it repeats what the pay cell already says in
-   words, so it must never be the only carrier of that meaning. */
-.payicon{flex:0 0 auto;font-size:14px;line-height:1}
-.payposition{flex:1 1 auto;font-weight:600}
-.paypay{flex:0 0 auto;text-align:right;font-weight:600;color:var(--muted);
-  font-variant-numeric:tabular-nums;white-space:nowrap}
-/* A real figure reads at full strength; "Volunteer" is a statement, not a
-   number, and sits back a shade so a paid row is the one the eye finds. */
-.paypay.paid{color:var(--ink);font-weight:700}
+/* ── Who gets paid (the compensation grid) ── */
+/* One tile per position, in two bands: org-wide, then chapter. The band
+   header is one line — the label and the scale of the list — because the
+   tiles below it already say what a tile is. */
+.payband{margin-top:20px}
+.paybandhead{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 10px;
+  padding-bottom:7px;border-bottom:1px solid var(--border);
+  font-size:11.5px;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--faint)}
+.paybandcount{font-size:12px;font-weight:500;letter-spacing:0;text-transform:none;color:var(--muted)}
+/* auto-fill, not auto-fit: a band with few positions keeps tile-sized tiles
+   rather than stretching four of them across the full width. */
+.paygrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(80px,1fr));gap:15px 4px;
+  padding:16px 0 4px}
+/* EVERY TILE IS THIS TILE. A paid position gets no border, fill or accent of
+   its own — colour-coding a salary reads as an alarm, and this section
+   publishes salaries precisely because paying people is normal. The only
+   difference is the last line (see .paypay below). */
+.paytile{display:flex;flex-direction:column;align-items:center;text-align:center;gap:5px}
+.paydisc{position:relative;flex:0 0 auto;width:34px;height:34px;border-radius:999px;
+  background:var(--sunken);border:1px solid var(--border);
+  display:flex;align-items:center;justify-content:center}
+.payglyph{font-size:15px;line-height:1}
+/* The count rides the circle's RIM. Putting the number inside the circle
+   would take the person out of it, and a circle containing "7" stops reading
+   as people at all. */
+.paycount{position:absolute;right:-5px;bottom:-4px;min-width:17px;height:17px;padding:0 4px;
+  border-radius:999px;background:var(--raised);border:1px solid var(--border);
+  font-size:10px;font-weight:700;line-height:15px;color:var(--muted);
+  font-variant-numeric:tabular-nums}
+/* Two lines' height is RESERVED whether the name needs them or not, so every
+   pay line in a row sits on one baseline. Without it a row of tiles reads
+   ragged, and the eye reads the ragged edge as meaning something. */
+.payposition{font-size:10.5px;line-height:1.25;font-weight:600;min-height:2.5em}
+.paypay{font-size:10.5px;line-height:1.25;font-weight:700;color:var(--ink);
+  font-variant-numeric:tabular-nums}
+/* The MODIFIER is on the volunteer tile, not the paid one — a figure reads at
+   full ink strength by default, so a paid tile carries nothing extra at all.
+   "Volunteer" is a statement rather than a number and sits back a shade:
+   enough that a reader scanning for figures finds them, not enough to make
+   one tile the story of the section. */
+.paypay.volunteer{color:var(--faint);font-weight:500}
 .note.missing{border-left-color:var(--success);margin-top:14px}
 .misslist{margin:10px 0 0;padding-left:20px}
 .misslist li{margin-bottom:6px;max-width:72ch}

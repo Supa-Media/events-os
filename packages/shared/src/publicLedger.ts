@@ -365,8 +365,8 @@ export function publicGiftMethodLabel(method: string): string {
  * What the page says about who gets paid — and the SHAPE it says it in.
  *
  * ⚠ THIS IS A CLAIM ABOUT THE PRESENT AND IT CAN GO STALE. ⚠ The moment one
- * person at Public Worship draws a salary, an honorarium, or a fee, the
- * "everyone is a volunteer" half below becomes false — on a public page whose
+ * person at Public Worship draws a salary, an honorarium, or a fee, every tile
+ * still reading "Volunteer" is a false statement — on a public page whose
  * entire argument is that it does not say false things. There is no way to
  * derive this from the ledger (the schema has no notion of compensation, and
  * matching on category names would be a guess), so it is a stated fact with a
@@ -378,34 +378,51 @@ export function publicGiftMethodLabel(method: string): string {
  *    publishing a month.
  *  - The Academy lesson lists it in the pre-publish checklist.
  *
- * ── THE PROMISE, AND THE TABLE THAT KEEPS IT ─────────────────────────────────
+ * ── THE PROMISE, AND THE GRID THAT KEEPS IT ──────────────────────────────────
  * The page used to make the forward-looking promise in prose — "when that
  * changes, we'll publish what people are paid by position rather than by
  * person." A promise about a FORMAT is worth much less than the format itself:
- * published the day it first costs something, a compensation table reads as a
- * disclosure extracted under pressure, and a reader meets an unfamiliar layout
- * at the exact moment they are least inclined to be generous about it.
+ * published the day it first costs something, a compensation disclosure reads
+ * as something extracted under pressure, and a reader meets an unfamiliar
+ * layout at the exact moment they are least inclined to be generous about it.
  *
- * So the table publishes NOW, while every row reads "Volunteer." The day
+ * So the grid publishes NOW, while every tile reads "Volunteer." The day
  * somebody is paid, the reader is not shown a new section — they are shown a
- * number in a row they have already read a dozen times, in a table they
+ * figure on a tile they have already read a dozen times, in a grid they
  * already trust. That is the whole design: this becomes a DATA change, never a
  * page redesign.
  *
  * ── POSITIONS, NEVER PEOPLE ──────────────────────────────────────────────────
- * Rows come from `SEAT_DEFS` (`./seats`), which is exactly right for this: a
+ * Tiles come from `SEAT_DEFS` (`./seats`), which is exactly right for this: a
  * seat def IS a position, not an assignment. "Three event coordinators" is one
- * row by construction, and there is no code path from this table to
- * `seatHolders`/`seatAssignments` — the privacy property is structural, not a
- * rule a renderer has to remember. It is the same promise the rest of the page
- * makes about givers and attendees, applied to ourselves: we publish what a
- * POSITION is paid because the public is entitled to know what its money buys;
- * we do not publish what a named person earns, because that is theirs.
+ * tile by construction: we publish what a POSITION is paid because the public
+ * is entitled to know what its money buys; we do not publish what a named
+ * person earns, because that is theirs. It is the same promise the rest of the
+ * page makes about givers and attendees, applied to ourselves.
+ *
+ * ⚠ ONE COUNT IS THE ONLY THING THAT CROSSES FROM PEOPLE TO THE PAGE. ⚠ Each
+ * tile carries a headcount badge — a `3` on the rim of the Chapter Director
+ * circle — because a reader being shown a pay figure is entitled to know
+ * whether it is paid once or thirty times. That number is the ONLY fact about
+ * holders this section has ever published, and it is deliberately contained:
+ *
+ *   - `compensationTable()` takes a `PositionHeadcount` — a map of NUMBERS.
+ *     It has no ctx, no db, and no way to reach a holder record even if a
+ *     future editor wanted one, so nothing downstream of here can widen.
+ *   - The counting itself happens in exactly one place
+ *     (`apps/convex/lib/positionHeadcount.ts`), which reads holder rows and
+ *     returns integers. Its doc says so in as many words.
+ *
+ * Before this existed the privacy property was STRUCTURAL — there was no path
+ * from this module to `seatAssignments` at all. It is now DISCIPLINED: one
+ * narrow path exists, it carries integers, and the page test asserts that no
+ * assigned holder's name appears anywhere in the rendered HTML. Widening that
+ * path is the thing to refuse.
  *
  * `derived` seats are skipped. `chapter_directors` (central) is a rollup of
  * every chapter's `chapter_director` holder — a view of other seats, never
  * a position anybody is appointed to, so listing it would print the same
- * position twice under two names.
+ * position twice under two names, and count the same people twice with it.
  *
  * ── WHY IT RENDERS ON EVERY MONTH, INCLUDING BACKDATED ONES ──────────────────
  * This is deliberately NOT part of a publication's frozen snapshot, which is
@@ -420,103 +437,131 @@ export function publicGiftMethodLabel(method: string): string {
  * of which nobody would remember. Rendering it from this constant makes every
  * published month, backdated ones included, say the same true thing at once.
  *
+ * THE HEADCOUNTS ARE LIVE FOR THE SAME REASON, and the consequence is worth
+ * stating plainly: a reader opening a backdated month sees TODAY'S team, not
+ * the team that month had. That is the honest reading of what this section
+ * claims — "these are our positions and this is what they pay, right now" —
+ * and a per-month frozen headcount would quietly turn it into a historical
+ * staffing record nobody reviewed, published under a heading about pay.
+ *
  * ── WHAT A POSITION'S PAY IS: ONE NUMBER, ANNUAL, IN CENTS ───────────────────
  * A position's pay is integer cents PER YEAR, and `0` means volunteer. Not a
  * union, not an amount-plus-period pair — one number, because that is what the
- * page has to print and every extra degree of freedom is a way for two rows to
+ * page has to print and every extra degree of freedom is a way for two tiles to
  * disagree about what they mean.
  *
- * ANNUAL IS THE UNIT, AND IT IS A DELIBERATE CHOICE, NOT A DEFAULT. The policy
- * sentence below commits to publishing pay "the way public offices publish
- * theirs," and public offices publish an ANNUAL SALARY: it is the figure a
- * reader can compare against a city payroll, a 990, or another nonprofit,
- * without doing arithmetic that the page should have done for them. Storing an
- * amount plus a period would let one row say "$65.00 per hour" beside another
- * saying "$48,000.00 per year" and quietly leave the comparison to the reader
- * — which is the thing this table exists to spare them.
+ * ANNUAL IS THE UNIT, AND IT IS A DELIBERATE CHOICE, NOT A DEFAULT. Public
+ * offices publish an ANNUAL SALARY: it is the figure a reader can compare
+ * against a city payroll, a 990, or another nonprofit, without doing
+ * arithmetic that the page should have done for them. Storing an amount plus a
+ * period would let one tile say "$65/hr" beside another saying "$48,000/yr"
+ * and quietly leave the comparison to the reader — which is the thing this
+ * grid exists to spare them.
  *
  * So there is no period field to set, and no unit to get wrong. The cost of
  * that is real and worth stating plainly: an HOURLY or PER-ENGAGEMENT
  * arrangement — a session player, a mix engineer, a part-time coordinator — is
  * NOT expressible here, and must not be smuggled in by annualizing a guess at
  * the hours. When one of those arrives it needs a real product decision about
- * how the table presents it (a second column? a qualifier under the figure? a
- * separate "paid per engagement" list?), made in the open, and NOT a silent
- * change of what the number in this file means. A reader who learned to read
- * this column as a yearly salary must never be handed an hourly rate in the
- * same shape.
+ * how the grid presents it (a qualifier under the figure? a separate "paid per
+ * engagement" band?), made in the open, and NOT a silent change of what the
+ * number in this file means. A reader who learned to read this line as a
+ * yearly salary must never be handed an hourly rate in the same shape.
  *
  * ── WHAT A FUTURE EDITOR CHANGES ─────────────────────────────────────────────
  * The day the Music Director starts drawing $48,000 a year:
  *   1. `byPosition.music_director = 4_800_000` (cents, per year)
- *   2. `allVolunteer: false` (the headline sentence stops rendering; the table
- *      and the policy stay).
- *   3. Rewrite `present` if it still needs to say something true.
- * Nothing in the renderer, the CSS, or a test fixture moves — which is the
- * point of modelling "Volunteer" as a VALUE a position's pay can take (zero)
- * rather than as a string in the HTML.
+ *   2. `allVolunteer: false` — the authored claim the publish console makes a
+ *      human re-affirm every month, and the one `everyPositionIsVolunteer()`
+ *      cross-checks against the data.
+ * Nothing in the renderer, the CSS, the copy or a test fixture moves — which
+ * is the point of modelling "Volunteer" as a VALUE a position's pay can take
+ * (zero) rather than as a string in the HTML.
  */
 
 /**
- * The row icon. Exactly two, and chosen by whether there is a figure at all.
+ * The glyph inside every tile's circle. ONE glyph, for every position, paid or
+ * not.
  *
- * A per-position icon table would be 26 emoji to invent, 26 more to argue
- * about, and one more to forget every time a seat is added — and it would
- * decorate the position, which is the half of the row that is already a word.
- * Keying it to the pay means the icon carries information: the day one row
- * turns paid, its glyph changes with it and the eye lands on the row that
- * changed. Emoji because the other public pages already use them as card icons
+ * This replaced a two-icon scheme (a handshake for volunteers, a banknote for
+ * anyone paid), and the replacement is the whole design argument in miniature:
+ * a paid position gets NO distinct treatment here — no second glyph, no
+ * colour, no border. A page that visually flags the paid tile is editorialising
+ * about a salary it publishes precisely because a salary is a normal, defensible
+ * thing for an org to have. The only difference between a paid tile and a
+ * volunteer one is the last line: a word, or a figure.
+ *
+ * A person, rather than a job-shaped icon, because the badge on its rim counts
+ * PEOPLE — and because a per-position icon table would be 26 emoji to invent,
+ * 26 more to argue about, and one more to forget every time a seat is added.
+ * Emoji because the other public pages already use them as card icons
  * (`givePageSections.ts#PROGRAM_CARDS`, `landingPage.ts`).
  */
-export const VOLUNTEER_PAY_ICON = "🤝";
-export const PAID_PAY_ICON = "💵";
+export const POSITION_GLYPH = "👤";
 
-/** Whether a stated figure exists at all. One predicate, so the label, the
- *  icon and the `allVolunteer` cross-check can never disagree about where the
- *  line between "volunteer" and "paid" falls. */
+/** Whether a stated figure exists at all. One predicate, so the label and the
+ *  `allVolunteer` cross-check can never disagree about where the line between
+ *  "volunteer" and "paid" falls. */
 function isPaidCents(cents: number): boolean {
   return cents > 0;
 }
 
-/** "Volunteer" for `0`, otherwise the yearly figure: "$48,000.00 per year".
- *  Cents show, matching the rest of the page — a figure that rounds is a
- *  figure a reader can't reconcile. The period is spelled out even though it
- *  is the only one there is, because a bare "$48,000.00" in a column of
- *  salaries is exactly the kind of number a reader silently assumes is
- *  monthly. */
+/**
+ * "Volunteer" for `0`, otherwise the annual figure: "$48,000/yr".
+ *
+ * SHORT, BECAUSE IT SITS UNDER AN 80px TILE. "$48,000.00 per year" wrapped
+ * onto three lines there and pushed the one word every neighbouring tile
+ * prints out of alignment with it. The unit is still stated — an abbreviation
+ * a reader resolves instantly is not the same as the bare "$48,000.00" this
+ * has always refused to print, which in a grid of salaries is exactly the
+ * number somebody reads as monthly.
+ *
+ * CENTS SHOW ONLY WHEN THERE ARE CENTS. Everywhere else on this page a figure
+ * is evidence about a transaction and must reconcile against the CSV to the
+ * penny; a salary is a stated policy figure, and "$48,000.00/yr" spends four
+ * characters saying nothing. But a rounded figure would be a figure a reader
+ * can't check, so a salary that genuinely isn't a whole number of dollars
+ * prints its cents rather than being tidied into a lie.
+ */
 export function positionPayLabel(cents: number): string {
   if (!isPaidCents(cents)) return "Volunteer";
-  return `${formatCents(cents)} per year`;
+  return `${formatCents(cents, { showCents: cents % 100 !== 0 })}/yr`;
 }
 
 export interface CompensationDisclosure {
-  /** Set to `false` the day anybody starts being paid — this only governs the
-   *  "everyone is a volunteer" SENTENCE. The table below is always published,
-   *  and stays correct on its own through `byPosition`. */
+  /**
+   * The authored "nobody here is paid" claim.
+   *
+   * It renders NOTHING on the public page — the grid says it, tile by tile,
+   * better than a sentence could, and a sentence beside 26 tiles all reading
+   * "Volunteer" was the page repeating itself. It survives because it is the
+   * thing a human re-affirms in the publish console every month
+   * (`PublishMonth.tsx`), and because `everyPositionIsVolunteer()` cross-checks
+   * it against `byPosition` — a paid position added without clearing this flag
+   * fails a test rather than reaching the page.
+   */
   readonly allVolunteer: boolean;
-  readonly headline: string;
-  readonly present: string;
+  /** The ONE line above the grid. One line, deliberately: the grid's own
+   *  vocabulary — a name, a badge, a pay line — is legible without being
+   *  narrated, and the paragraph that used to sit here explained three times
+   *  over what a reader gets in one pass. */
+  readonly intro: string;
+  /** The forward-looking policy, in one sentence, under the grid. */
   readonly policy: string;
-  /** The sentence above the table, stating what a row is (and isn't). */
-  readonly tableIntro: string;
   /** Annual pay, in integer cents, for a position `byPosition` says nothing
    *  about. `0` — every position today — prints as "Volunteer". */
   readonly defaultPayCents: number;
   /** Per-position annual pay, in integer cents. Empty today; one entry the day
-   *  one position is paid — never a full 26-row table anybody has to keep in
+   *  one position is paid — never a full 26-entry table anybody has to keep in
    *  sync with `SEAT_DEFS`. */
   readonly byPosition: Readonly<Partial<Record<SeatId, number>>>;
 }
 
 export const COMPENSATION_DISCLOSURE: CompensationDisclosure = {
   allVolunteer: true,
-  headline: "Everyone here is a volunteer.",
-  present:
-    "Nobody at Public Worship draws a salary today — not the leadership, not the team. None of the money above was paid to any of us.",
+  intro: "Positions, not people. The badge is how many hold each one.",
   policy:
-    "When that changes, we'll publish what people are paid by position rather than by person — the way public offices publish theirs — and positions at the same level will be paid the same. It will appear in the table above, and like everything else here, it will show up in the lines.",
-  tableIntro:
-    "Every position at Public Worship, and what it is paid. These are positions, not people: one row covers everyone holding it, nobody is named, and a position held by three people is still one row.",
+    "Pay is published by position, never by person, and positions at the same level are paid the same.",
   defaultPayCents: 0,
   byPosition: {},
 };
@@ -543,18 +588,35 @@ export function everyPositionIsVolunteer(): boolean {
   );
 }
 
-/** The two group headings. Central and chapter are the split `SEAT_DEFS`
+/** The two band headings. Central and chapter are the split `SEAT_DEFS`
  *  already draws (`chart`), and it is the split a reader needs: one of these
- *  lists exists once, the other exists once per city. */
+ *  lists exists once, the other exists once per city. Two words, because the
+ *  rest of each band's header is the count line beside it. */
 export const COMPENSATION_GROUP_HEADINGS: Record<SeatChart, string> = {
-  central: "Org-wide positions",
-  chapter: "Chapter positions",
+  central: "Org-wide",
+  chapter: "Chapter",
 };
 
-export const COMPENSATION_GROUP_BLURBS: Record<SeatChart, string> = {
-  central: "These serve the whole organization — one of each, across everything we do.",
-  chapter:
-    "Every chapter has these. A row covers the position in all of them, in every city.",
+/**
+ * How many people hold each position right now — COUNTS AND NOTHING ELSE.
+ *
+ * This is the only shape in which holder data is allowed to reach the public
+ * page (see `COMPENSATION_DISCLOSURE`'s containment note). It is a map of
+ * integers with no document, id, name or scope in it, and it must stay that
+ * way: the moment this type can carry a holder, every renderer downstream can
+ * print one.
+ *
+ * A missing key means zero, so a chart the counter has never heard of (a
+ * brand-new seat, a fresh install with nothing assigned) reads as an honest
+ * "nobody holds this yet" rather than dropping the tile.
+ */
+export type PositionHeadcount = {
+  readonly byPosition: Readonly<Partial<Record<SeatId, number>>>;
+  /** How many chapters the CHAPTER counts are summed across — "3 cities". A
+   *  chapter position's count is the total across every chapter, so without
+   *  this a reader can't tell nine Chapter Directors in nine cities from nine
+   *  in one. */
+  readonly chapterCount: number;
 };
 
 export interface CompensationRow {
@@ -565,41 +627,84 @@ export interface CompensationRow {
    *  because a bare `pay: number` is a currency-and-period ambiguity waiting
    *  at every call site. */
   payCents: number;
-  icon: string;
+  /** How many people hold it right now, summed across chapters for a chapter
+   *  position. `0` is a real answer and renders as one — a vacancy is not an
+   *  error state and gets no styling of its own, because the pay line under it
+   *  is what the position pays whether or not anybody is in it. */
+  peopleCount: number;
 }
 
 export interface CompensationGroup {
   chart: SeatChart;
   heading: string;
-  blurb: string;
   rows: CompensationRow[];
+  /** Tiles in this band. */
+  positionCount: number;
+  /** People across those tiles. */
+  peopleCount: number;
+  /** Chapters the counts span, or `null` for the org-wide band, where the
+   *  question doesn't arise. */
+  chapterCount: number | null;
 }
 
 /**
- * The published table: both charts, hierarchy order, positions only.
+ * The published grid: both charts, hierarchy order, positions only.
  *
- * Built here rather than in the renderer so the three rules that make it
- * honest — positions not people, no derived rollups, leadership first — live
- * beside the doc that explains them, and so a second surface (the publish
- * console's pre-publish preview, say) cannot render a subtly different table.
+ * Built here rather than in the renderer so the rules that make it honest —
+ * positions not people, no derived rollups, leadership first, counts as
+ * integers — live beside the doc that explains them, and so a second surface
+ * (the publish console's pre-publish preview, say) cannot render a subtly
+ * different grid.
+ *
+ * `headcount` is a required argument rather than an optional one with a `{}`
+ * default on purpose: a caller that forgot to wire the counter would otherwise
+ * publish a confident grid of zeroes, which is a false statement about the org
+ * rather than a missing feature.
  */
-export function compensationTable(): CompensationGroup[] {
-  return SEAT_CHARTS.map((chart) => ({
-    chart,
-    heading: COMPENSATION_GROUP_HEADINGS[chart],
-    blurb: COMPENSATION_GROUP_BLURBS[chart],
-    rows: seatChartOrder(chart)
+export function compensationTable(
+  headcount: PositionHeadcount,
+): CompensationGroup[] {
+  return SEAT_CHARTS.map((chart) => {
+    const rows = seatChartOrder(chart)
       .filter((def) => def.derived !== true)
-      .map((def) => {
-        const payCents = positionPay(def.id);
-        return {
-          seatId: def.id,
-          title: def.title,
-          payCents,
-          icon: isPaidCents(payCents) ? PAID_PAY_ICON : VOLUNTEER_PAY_ICON,
-        };
-      }),
-  }));
+      .map((def) => ({
+        seatId: def.id,
+        title: def.title,
+        payCents: positionPay(def.id),
+        peopleCount: headcount.byPosition[def.id] ?? 0,
+      }));
+    return {
+      chart,
+      heading: COMPENSATION_GROUP_HEADINGS[chart],
+      rows,
+      positionCount: rows.length,
+      peopleCount: rows.reduce((total, row) => total + row.peopleCount, 0),
+      chapterCount: chart === "chapter" ? headcount.chapterCount : null,
+    };
+  });
+}
+
+/** `n` with a noun that agrees with it. The band header is four numbers in a
+ *  row; "1 positions · 1 people" in the middle of a disclosure about care is
+ *  the kind of detail that costs more than it saves. */
+function countOf(n: number, one: string, many: string): string {
+  return `${n} ${n === 1 ? one : many}`;
+}
+
+/** "17 positions · 31 people", or "9 positions · 27 people across 3 cities"
+ *  for the chapter band. The whole band header — a reader needs the scale of
+ *  each list, not a sentence explaining what a band is.
+ *
+ *  The cities clause is dropped rather than printed as "across 0 cities" when
+ *  there are no chapters yet: a true zero here is a fresh install, and the
+ *  clause would be the only wrong-sounding thing on the page. */
+export function compensationGroupSummary(group: CompensationGroup): string {
+  const counts = `${countOf(group.positionCount, "position", "positions")} · ${countOf(
+    group.peopleCount,
+    "person",
+    "people",
+  )}`;
+  return group.chapterCount ? `${counts} across ${countOf(group.chapterCount, "city", "cities")}` : counts;
 }
 
 // ── Where a reader goes when the page is wrong ───────────────────────────────
