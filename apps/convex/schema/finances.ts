@@ -73,7 +73,13 @@ import {
 
 // ── Funds ────────────────────────────────────────────────────────────────────
 /** A top-level money bucket. Unrestricted = general operating; designated =
- *  earmarked for a purpose. Budgets + categories nest beneath a fund. */
+ *  earmarked for a purpose. Budgets + categories nest beneath a fund.
+ *
+ *  EVERY LIVE FUND IS `unrestricted` — Public Worship holds no designated money
+ *  by decision, not by omission, and `designated` is a reserved value for the
+ *  day that changes. See `FUND_RESTRICTIONS` in `@events-os/shared` for the
+ *  decision and what it means for the UI (the fund column is hidden; the
+ *  General Fund is filled in automatically). */
 export const funds = defineTable({
   chapterId: v.id("chapters"),
   name: v.string(),

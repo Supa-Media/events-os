@@ -16,6 +16,23 @@
 // A fund is the top bucket money lives in. "unrestricted" is general operating
 // money; "designated" money is earmarked for a purpose (a grant, a designated
 // gift) and may only be spent against that purpose.
+//
+// PUBLIC WORSHIP HAS NO DESIGNATED FUNDS, AND THAT IS A DECISION RATHER THAN A
+// GAP (owner, 2026-08-14: "everything right now that Public Worship gets is not
+// gonna have any restrictions… only unrestricted funds… right now that's not
+// gonna mean anything to anyone"). Every dollar the org takes in is general
+// operating money. `designated` is kept as a reserved second value so that the
+// day a restricted grant DOES arrive it is a data change, not a schema
+// migration — but until that day, no surface should ask a human to pick a
+// restriction and no copy should explain the distinction to them.
+//
+// The product already behaves this way, which is why the concept is easy to
+// misread from the code: the reconcile grid hides the fund column outright and
+// `defaultFundId` (`apps/convex/lib/finance.ts`) silently fills the General
+// Fund on categorize. So in daily use a fund is not a choice anyone makes.
+// Don't mistake that for the fund being vestigial — it is the chapter-owned
+// pot the money actually sits in, and it is the axis that would carry a real
+// restriction the moment one exists.
 export const FUND_RESTRICTIONS = ["unrestricted", "designated"] as const;
 export type FundRestriction = (typeof FUND_RESTRICTIONS)[number];
 
