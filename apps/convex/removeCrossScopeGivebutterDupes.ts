@@ -72,6 +72,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import type { MutationCtx } from "./_generated/server";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
 import { formatCents } from "@events-os/shared";
+import { applyScopeDelta, removeGiftRow } from "./lib/givingDonors";
+import { syncDonorIdentity } from "./lib/donorIdentity";
 
 /** What was measured in production on 2026-08-14. The runner refuses unless it
  *  re-derives exactly this. */
@@ -87,11 +89,27 @@ const norm = (s: string | undefined) => (s ?? "").trim().toLowerCase();
  *  the duplicates include "Jude Omodon" vs "Chukwuka Jude Omodon", so names
  *  are known to disagree on the very rows this is about, and accepting them
  *  would also let two different people with one common name collapse. */
-function samePerson(a: Doc<"donors"> | null, b: Doc<"donors"> | null): boolean {
+async function samePerson(
+  ctx: MutationCtx,
+  a: Doc<"donors"> | null,
+  b: Doc<"donors"> | null,
+): Promise<boolean> {
   if (!a || !b) return false;
   if (a._id === b._id) return true;
-  if (a.identityId && b.identityId && a.identityId === b.identityId) return true;
-  return norm(a.email) !== "" && norm(a.email) === norm(b.email);
+  // Email equality is the strong evidence, and it is what 71 of these 74 pairs
+  // actually share.
+  if (norm(a.email) !== "" && norm(a.email) === norm(b.email)) return true;
+  // A shared identity counts ONLY when the identity is email-derived.
+  // `donorIdentityKey` falls back to `p:<phone>` and then `n:<name>`, so a
+  // shared identity can mean nothing more than a shared NAME — and every
+  // blank-named donor becomes "Anonymous", which would put strangers on one
+  // identity. Accepting that would be the name-only evidence this module's
+  // header rejects, smuggled in through a different field.
+  if (a.identityId && b.identityId && a.identityId === b.identityId) {
+    const identity = await ctx.db.get(a.identityId);
+    return (identity?.key ?? "").startsWith("e:");
+  }
+  return false;
 }
 
 type Pair = { dupe: Doc<"gifts">; keep: Doc<"gifts"> };
@@ -133,8 +151,13 @@ export async function findCrossScopeDupes(ctx: MutationCtx): Promise<{
   // made the pairing rules untestable — convex-test stamps every fixture row
   // with the current time, so no fixture can put an "original" before an
   // "import".
+  // `method === "givebutter"` as well as the ref shape: the totals assertion
+  // checks the SUM, not the composition, so without this an unrelated gift that
+  // happens to carry a colon-free ref could take a slot in the 88 and a real
+  // duplicate could go unremoved with the arithmetic still adding up.
   const candidates = gifts.filter(
     (g) =>
+      g.method === "givebutter" &&
       typeof g.externalRef === "string" &&
       g.externalRef.length > 0 &&
       !g.externalRef.includes(":"),
@@ -160,7 +183,7 @@ export async function findCrossScopeDupes(ctx: MutationCtx): Promise<{
     // consumed and cannot be claimed again.
     let idx = -1;
     for (let i = 0; i < bucket.length; i++) {
-      if (samePerson(dupeDonor, await donorOf(bucket[i]))) {
+      if (await samePerson(ctx, dupeDonor, await donorOf(bucket[i]))) {
         idx = i;
         break;
       }
@@ -214,26 +237,71 @@ export const removeCrossScopeGivebutterDupes = internalMutation({
     const touchedDonors = new Set<Id<"donors">>();
     for (const p of pairs) {
       if (p.dupe.donorId) touchedDonors.add(p.dupe.donorId);
-      if (write) await ctx.db.delete(p.dupe._id);
+      // `removeGiftRow`, NOT a raw delete. Every rollup `recordGiftForDonor`
+      // bumped on the way in has to come back down: the donor's
+      // lifetime/count/bookends and derived status, the scope's
+      // `lifetimeCents`/`giftCount` (which drive the giving dashboard and the
+      // public wall's `raisedCents`), the identity aggregate, the territory
+      // launch pot, and the event's `externalGiftsCents`. Nothing recomputes
+      // those on a schedule, so a raw delete would remove the gift rows — and
+      // fix the reconciliation page, which reads `gifts` directly — while
+      // leaving the duplicated $7,324.75 standing on every rollup-driven
+      // surface.
+      if (write) await removeGiftRow(ctx, p.dupe._id);
     }
 
     // A donor row goes only if it is left holding nothing. Checked AFTER the
     // gift deletions so the answer is about the post-cleanup world; on a dry
     // run the gifts are still there, so this counts what WOULD be emptied.
     let donorsDeleted = 0;
+    const dupeIds = new Set(pairs.map((p) => p.dupe._id));
     for (const donorId of touchedDonors) {
       const donor = await ctx.db.get(donorId);
       if (!donor) continue;
+      // Read the donor's whole gift history, not a page of it: on a dry run the
+      // duplicates are still present, so a `take(5)` could return five
+      // duplicates and hide a sixth REAL gift — making the dry run promise a
+      // deletion the execute run then (correctly) refuses. The dry run is the
+      // approval basis, so it has to agree with the real one.
       const remaining = await ctx.db
         .query("gifts")
         .withIndex("by_donor", (q) => q.eq("donorId", donorId))
-        .take(5);
-      const stillHeld = write
-        ? remaining
-        : remaining.filter((g) => !pairs.some((p) => p.dupe._id === g._id));
+        .take(ROLLUP_SCAN_LIMIT);
+      const stillHeld = remaining.filter((g) => write || !dupeIds.has(g._id));
       if (stillHeld.length > 0) continue;
+      // A donor is referenced by more than gifts. `pledges` and `sponsorships`
+      // both hold a NON-optional `donorId`, so deleting a row either points at
+      // would leave a dangling required reference — worse than an unused donor.
+      const pledge = await ctx.db
+        .query("pledges")
+        .withIndex("by_donor", (q) => q.eq("donorId", donorId))
+        .first();
+      const sponsorship = await ctx.db
+        .query("sponsorships")
+        .withIndex("by_donor", (q) => q.eq("donorId", donorId))
+        .first();
+      if (pledge || sponsorship) continue;
       donorsDeleted += 1;
-      if (write) await ctx.db.delete(donorId);
+      if (write) {
+        // The scope's donorCount and per-status buckets were bumped when this
+        // row was created; both have to come back down, exactly as
+        // `dataHygiene.mergeDonors` does when it retires a duplicate.
+        await applyScopeDelta(ctx, donor.scope, {
+          donorDelta: -1,
+          statusFrom: donor.status,
+        });
+        const identityId = donor.identityId;
+        await ctx.db.delete(donorId);
+        // The identity outlives the row; refresh its aggregate and `scopes` so
+        // it stops claiming the deleted donor's money and its book.
+        if (identityId) {
+          const sibling = await ctx.db
+            .query("donors")
+            .withIndex("by_identity", (q) => q.eq("identityId", identityId))
+            .first();
+          if (sibling) await syncDonorIdentity(ctx, sibling._id);
+        }
+      }
     }
 
     console.log(

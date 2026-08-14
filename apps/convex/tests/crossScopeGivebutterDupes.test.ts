@@ -133,11 +133,38 @@ describe("findCrossScopeDupes", () => {
     expect(pairs).toEqual([]);
   });
 
-  test("matches on identity when emails disagree", async () => {
+  test("REFUSES a name-derived identity — 'Anonymous' is not a person", async () => {
+    const s = await setupChapter(newT());
+    // `donorIdentityKey` falls back to `n:<name>` with no email/phone, and
+    // `matchOrCreateDonor` names every blank donor "Anonymous" — so a shared
+    // identity here means a shared NAME, which is the evidence this module
+    // rejects. Two different people, two real $25 gifts on one day.
+    const identityId = await run(s.t, (ctx) =>
+      ctx.db.insert("donorIdentities", {
+        key: "n:anonymous",
+        name: "Anonymous",
+        lifetimeCents: 0,
+        giftCount: 0,
+        scopes: [],
+        createdAt: Date.now(),
+      }),
+    );
+    const ny = await donor(s, { name: "Anonymous", scope: s.chapterId, identityId });
+    const central = await donor(s, { name: "Anonymous", scope: "central", identityId });
+    await gift(s, { donorId: ny, cents: 2500, ref: "gb:txn:11" });
+    await gift(s, { donorId: central, cents: 2500, ref: "cccccccccccccccc" });
+
+    const { pairs } = await run(s.t, (ctx) => findCrossScopeDupes(ctx));
+
+    expect(pairs).toEqual([]);
+  });
+
+  test("matches on an EMAIL-derived identity when emails disagree", async () => {
     const s = await setupChapter(newT());
     const identityId = await run(s.t, (ctx) =>
       ctx.db.insert("donorIdentities", {
-        key: "e:jude@x.com",
+        key: "e:jude@x.com", // email-derived — the only identity kind accepted
+
         name: "Jude Omodon",
         lifetimeCents: 0,
         giftCount: 0,

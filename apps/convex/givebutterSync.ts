@@ -73,7 +73,7 @@ import {
   internalQuery,
   mutation,
 } from "./_generated/server";
-import type { ActionCtx } from "./_generated/server";
+import type { ActionCtx, MutationCtx } from "./_generated/server";
 // Triggers-wrapped builder for `applyGivebutterTickets`/
 // `applyGivebutterDonations` below (insert `rsvps`/`people` via
 // `matchOrCreateDonor`) — see `lib/peopleAggregate.ts`'s module doc.
@@ -121,6 +121,61 @@ const CRON_STALE_AFTER_MS = 7 * 24 * 60 * 60 * 1000;
  *  built for — a handful of chapters plus central — so this is a runaway
  *  backstop, not a working limit. */
 const SIBLING_DONOR_SCAN_LIMIT = 50;
+
+/**
+ * Every gift held by any donor row belonging to the SAME PERSON as `donorId` —
+ * the reach the legacy-backfill guard needs (see its comment).
+ *
+ * MEMOIZED PER SYNC RUN, and that is not a nicety. The donation loop this
+ * serves is unbounded — attaching a campaign replays its entire history — and
+ * an unmemoized version costs up to 50 donor reads plus 200 gifts each, per
+ * donation. A campaign backfill would walk into Convex's per-transaction
+ * document ceiling and fail the whole batch rather than one row. Repeat donors
+ * are the common case, so the cache does most of the work.
+ */
+async function siblingGiftHistory(
+  ctx: MutationCtx,
+  donorId: Id<"donors">,
+  cache: Map<Id<"donors">, Doc<"gifts">[]>,
+): Promise<Doc<"gifts">[]> {
+  const cached = cache.get(donorId);
+  if (cached) return cached;
+  const donorRow = await ctx.db.get(donorId);
+  const siblingIds = new Set<Id<"donors">>([donorId]);
+  if (donorRow?.identityId) {
+    const identityId = donorRow.identityId;
+    for (const sib of await ctx.db
+      .query("donors")
+      .withIndex("by_identity", (q) => q.eq("identityId", identityId))
+      .take(SIBLING_DONOR_SCAN_LIMIT)) {
+      siblingIds.add(sib._id);
+    }
+  }
+  // Normalized, because `by_email` stores the normalized form and an
+  // unnormalized probe silently finds nothing.
+  const donorEmail = normalizeEmail(donorRow?.email);
+  if (donorEmail) {
+    for (const sib of await ctx.db
+      .query("donors")
+      .withIndex("by_email", (q) => q.eq("email", donorEmail))
+      .take(SIBLING_DONOR_SCAN_LIMIT)) {
+      siblingIds.add(sib._id);
+    }
+  }
+  const history: Doc<"gifts">[] = [];
+  for (const sibId of siblingIds) {
+    history.push(
+      ...(await ctx.db
+        .query("gifts")
+        .withIndex("by_donor", (q) => q.eq("donorId", sibId))
+        .take(200)),
+    );
+  }
+  // Cached under every sibling id: the next donation from any row of this
+  // person is answered without a single extra read.
+  for (const sibId of siblingIds) cache.set(sibId, history);
+  return history;
+}
 
 /** Trim + lowercase for name matching (mirror-type dedup by ticket-type name). */
 function normalizeName(name: string): string {
@@ -706,6 +761,9 @@ export const applyGivebutterDonations = triggerInternalMutation({
     let skipped = 0;
     let legacyCollisions = 0;
     let converted = 0;
+    /** Per-run memo for the legacy-backfill guard's sibling lookup — see
+     *  `siblingGiftHistory`. Lives outside the loop deliberately. */
+    const historyCache = new Map<Id<"donors">, Doc<"gifts">[]>();
     for (const d of donations) {
       if (!Number.isInteger(d.donationCents) || d.donationCents <= 0) {
         skipped += 1;
@@ -818,34 +876,15 @@ export const applyGivebutterDonations = triggerInternalMutation({
       // right notion of sameness here, with email as the fallback for a row
       // that predates the layer. Bounded: one person's donor rows and their
       // gift histories, never a table scan.
-      const donorRow = await ctx.db.get(donorId);
-      const siblingIds = new Set<Id<"donors">>([donorId]);
-      if (donorRow?.identityId) {
-        const identityId = donorRow.identityId;
-        for (const sib of await ctx.db
-          .query("donors")
-          .withIndex("by_identity", (q) => q.eq("identityId", identityId))
-          .take(SIBLING_DONOR_SCAN_LIMIT)) {
-          siblingIds.add(sib._id);
-        }
-      } else if (donorRow?.email) {
-        const donorEmail = donorRow.email;
-        for (const sib of await ctx.db
-          .query("donors")
-          .withIndex("by_email", (q) => q.eq("email", donorEmail))
-          .take(SIBLING_DONOR_SCAN_LIMIT)) {
-          siblingIds.add(sib._id);
-        }
-      }
-      const priorForDonor: Doc<"gifts">[] = [];
-      for (const sibId of siblingIds) {
-        priorForDonor.push(
-          ...(await ctx.db
-            .query("gifts")
-            .withIndex("by_donor", (q) => q.eq("donorId", sibId))
-            .take(200)),
-        );
-      }
+      // BOTH lookups, unioned — never `else`. `matchOrCreateDonor` calls
+      // `syncDonorIdentity` on every path, so the freshly minted donor ALWAYS
+      // has an `identityId` and an `else if` would make the email branch dead
+      // for exactly the rows this guard exists for. And `syncDonorIdentity`
+      // attaches only the donor it is handed, so a legacy sibling written
+      // before the identity layer has no `identityId` at all and is invisible
+      // to `by_identity` — email is what finds it. Each alone misses the case
+      // the other catches.
+      const priorForDonor = await siblingGiftHistory(ctx, donorId, historyCache);
       const day = (ms: number) => new Date(ms).toISOString().slice(0, 10);
       const legacyTwin = priorForDonor.find(
         (g) =>
