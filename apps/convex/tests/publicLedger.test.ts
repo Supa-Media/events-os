@@ -8,7 +8,8 @@ import { PREVIEW_BANNER_TEXT } from "../lib/publicLedgerPage";
 import { assertPublishable } from "../publicLedger";
 import type { Snapshot } from "../lib/publicLedgerSnapshot";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
-import { CENTRAL } from "@events-os/shared";
+import { escapeHtml } from "../lib/html";
+import { CENTRAL, COMPENSATION_DISCLOSURE, SEAT_DEFS, SEAT_IDS } from "@events-os/shared";
 
 /**
  * THE PUBLIC LEDGER — publishing the books, and being held to them.
@@ -2387,5 +2388,250 @@ describe("the public page speaks in chapters", () => {
       "We publish our finances month by month — every transaction, across every chapter",
     );
     expect(body).not.toMatch(/\bbooks?\b/i);
+  });
+});
+
+// ── "Who gets paid" — the compensation table ─────────────────────────────────
+// The page used to PROMISE, in prose, that it would one day publish pay by
+// position rather than by person. It now does it: every position in the seat
+// chart, grouped central vs chapter, with its pay under it — and today every
+// row reads "Volunteer." Publishing the format before there is a figure in it
+// is the whole point (founder, 2026-08-14): the day somebody is paid, a reader
+// meets a number in a table they already know how to read, and the change is a
+// data edit rather than a page redesign.
+//
+// What these tests pin is the part that could quietly rot:
+//  - the table is the WHOLE chart, once each — a position added to
+//    `SEAT_DEFS` and silently missing here would be an undisclosed position;
+//  - it is POSITIONS ONLY. There is no path from `compensationTable()` to
+//    `seatHolders`/`seatAssignments`, and the privacy assert below is what
+//    keeps it that way — the same promise the page makes about givers and
+//    attendees, turned on ourselves;
+//  - it renders on every published month, backdated ones included, because it
+//    is read live from the shared constant rather than frozen per publication.
+
+describe("who gets paid — every POSITION, never a person", () => {
+  /** The compensation section alone, so an assertion can't be satisfied by a
+   *  word that happens to appear elsewhere on a very long page. */
+  function paySection(body: string): string {
+    const start = body.indexOf('<section id="pay">');
+    expect(start).toBeGreaterThan(-1);
+    const end = body.indexOf("</section>", start);
+    expect(end).toBeGreaterThan(start);
+    return body.slice(start, end);
+  }
+
+  const positionCell = (title: string) =>
+    `<span class="payposition">${escapeHtml(title)}</span>`;
+
+  const occurrences = (haystack: string, needle: string) =>
+    haystack.split(needle).length - 1;
+
+  const NON_DERIVED = SEAT_IDS.filter((id) => SEAT_DEFS[id].derived !== true);
+
+  /**
+   * Render with one position temporarily paid, then put the constant back.
+   *
+   * `COMPENSATION_DISCLOSURE` is a `readonly` authored constant on purpose —
+   * a figure is a reviewed edit to `packages/shared/src/publicLedger.ts`, and
+   * there is no setter for it anywhere in the app. A test still has to see
+   * what the paid path publishes, so it writes through the type for the length
+   * of one page render and restores in a `finally`. Rendering the REAL page is
+   * the point: a hand-built fixture would prove the fixture formats, not the
+   * page.
+   */
+  async function withPaidPosition<T>(
+    seatId: string,
+    cents: number,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const byPosition = COMPENSATION_DISCLOSURE.byPosition as Record<string, number>;
+    try {
+      byPosition[seatId] = cents;
+      return await fn();
+    } finally {
+      delete byPosition[seatId];
+    }
+  }
+
+  /** A published month, fetched. */
+  async function publishedBody(
+    s: ChapterSetup,
+    periodKey = AUG_KEY,
+  ): Promise<string> {
+    return (await s.t.fetch(`/finances/${periodKey}`, {})).text();
+  }
+
+  async function aPublishedMonth(): Promise<ChapterSetup> {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, { amountCents: 4783, merchantName: "Costco" });
+    await approveCoding(s, txnId, { businessPurpose: "Water and cups for setup" });
+    await publishMonth(s);
+    return s;
+  }
+
+  test("every position in the chart appears exactly once — and the derived rollup not at all", async () => {
+    const s = await aPublishedMonth();
+    const section = paySection(await publishedBody(s));
+
+    for (const id of NON_DERIVED) {
+      expect(occurrences(section, positionCell(SEAT_DEFS[id].title))).toBe(1);
+    }
+    expect(occurrences(section, '<div class="payrow">')).toBe(NON_DERIVED.length);
+
+    // `chapter_directors` is a rollup of every chapter's chapter_director
+    // holder — a view of other seats, not a position anyone is appointed to.
+    // Listing it would publish the same position twice under two names.
+    expect(section).not.toContain(positionCell("Chapter Directors"));
+    expect(section).toContain(positionCell("Chapter Director"));
+  });
+
+  test("central and chapter are two labelled groups, each holding only its own chart", async () => {
+    const s = await aPublishedMonth();
+    const section = paySection(await publishedBody(s));
+
+    const groups = section.split('<div class="paygroup">').slice(1);
+    expect(groups).toHaveLength(2);
+    const [central, chapter] = groups;
+    expect(central).toContain("Org-wide positions");
+    expect(chapter).toContain("Chapter positions");
+
+    for (const id of NON_DERIVED) {
+      const def = SEAT_DEFS[id];
+      const own = def.chart === "central" ? central : chapter;
+      const other = def.chart === "central" ? chapter : central;
+      expect(own).toContain(positionCell(def.title));
+      expect(other).not.toContain(positionCell(def.title));
+    }
+
+    // Leadership reads first in each group: the chart's root is row one.
+    expect(central.indexOf(positionCell("Executive Director"))).toBeLessThan(
+      central.indexOf(positionCell("Financial Manager")),
+    );
+    expect(chapter.indexOf(positionCell("Chapter Director"))).toBeLessThan(
+      chapter.indexOf(positionCell("Treasurer")),
+    );
+  });
+
+  test("while nobody is paid, every row reads Volunteer — one per position, no exceptions", async () => {
+    const s = await aPublishedMonth();
+    const section = paySection(await publishedBody(s));
+
+    expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(true);
+    expect(occurrences(section, '<span class="paypay">Volunteer</span>')).toBe(
+      NON_DERIVED.length,
+    );
+    // Nothing is styled as a stated figure yet, and no dollar amount appears
+    // anywhere in the section — a pay cell rendering a number today would be a
+    // false disclosure, not a formatting bug.
+    expect(section).not.toContain('class="paypay paid"');
+    expect(section).not.toMatch(/\$\d/);
+    // The claim sentence still publishes above the table…
+    expect(section).toContain(COMPENSATION_DISCLOSURE.headline);
+    // …and so does the forward promise the table now demonstrates.
+    expect(section).toContain("by position rather than by person");
+  });
+
+  test("a paid position prints an ANNUAL figure, styled as a figure, with no renderer change", async () => {
+    // The day one row turns paid, the reader is not shown a new section — they
+    // are shown a number in a row they have already read a dozen times. This
+    // pins that end to end by paying one position for the length of one page
+    // render (see `withPaidPosition`) and reading the HTML that comes back.
+    const s = await aPublishedMonth();
+
+    const section = await withPaidPosition("music_director", 4_800_000, async () =>
+      paySection(await publishedBody(s)),
+    );
+
+    // Annual, spelled out. The unit is a deliberate choice — the policy line
+    // promises pay "the way public offices publish theirs," and public offices
+    // publish a yearly salary. A bare "$48,000.00" in this column is a number
+    // a reader would be entitled to read as monthly.
+    expect(section).toContain(
+      '<span class="paypay paid">$48,000.00 per year</span>',
+    );
+    // The paid glyph, not the volunteer handshake, on that row only.
+    expect(section).toContain("💵");
+    expect(occurrences(section, "💵")).toBe(1);
+    expect(occurrences(section, "🤝")).toBe(NON_DERIVED.length - 1);
+    // Still one row per position — a figure is a value, not an extra row.
+    expect(occurrences(section, '<div class="payrow">')).toBe(NON_DERIVED.length);
+    expect(occurrences(section, '<span class="paypay">Volunteer</span>')).toBe(
+      NON_DERIVED.length - 1,
+    );
+
+    // And the flag/data guard in `packages/shared/src/publicLedger.test.ts`
+    // would be failing this whole time: the authored `allVolunteer` is still
+    // true while the table now disproves it two inches below.
+    expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(true);
+
+    // Back to the authored truth once the override is gone.
+    const after = paySection(await publishedBody(s));
+    expect(after).not.toMatch(/\$\d/);
+  });
+
+  test("NO holder's name can reach the page, however many people hold a position", async () => {
+    // The privacy property, pinned end to end: real `seatAssignments` rows
+    // exist for three named people across two seats — including a
+    // multi-holder seat, the case that would tempt a renderer into printing
+    // "Event Organizers (2)" or, worse, the names.
+    const s = await asPublisher();
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const holders = [
+      "Adaeze Okonkwo",
+      "Bartholomew Kingsley-Verne",
+      "Rosalind Achterberg",
+    ];
+    const [ed, org1, org2] = await Promise.all(holders.map((n) => seedPerson(s, n)));
+    await assignSeatDirect(s, ed, "executive_director", "central");
+    await assignSeatDirect(s, org1, "event_organizers", s.chapterId);
+    await assignSeatDirect(s, org2, "event_organizers", s.chapterId);
+
+    const txnId = await insertTxn(s, { amountCents: 1200, merchantName: "Costco" });
+    await approveCoding(s, txnId, { businessPurpose: "Chairs for the setup team" });
+    await publishMonth(s);
+
+    const body = await publishedBody(s);
+    const section = paySection(body);
+
+    // The POSITIONS are there…
+    expect(section).toContain(positionCell("Executive Director"));
+    expect(section).toContain(positionCell("Event Organizers"));
+    // …exactly once each, however many people sit in them.
+    expect(occurrences(section, positionCell("Event Organizers"))).toBe(1);
+    // …and not one holder is named, anywhere on the page.
+    for (const name of holders) {
+      expect(section).not.toContain(name);
+      expect(body).not.toContain(name);
+    }
+    // Nor is a count of holders published — "three event coordinators" is one
+    // row by construction, and the page never says three.
+    expect(section).not.toMatch(/\bholder/i);
+  });
+
+  test("every published month carries the same table — including a backdated one, and the year rollup", async () => {
+    // Compensation is a standing statement about the org, not a fact about a
+    // month's transactions, so it is deliberately NOT frozen into a
+    // publication. A reader of a backdated July and a reader of August must
+    // get the same answer, because only one answer can be true today.
+    const s = await asPublisher();
+    const julTxn = await insertTxn(s, {
+      postedAt: Date.UTC(2026, 6, 14, 16),
+      merchantName: "July Vendor",
+    });
+    await approveCoding(s, julTxn, { businessPurpose: "Backdated July supplies" });
+    await publishMonth(s, "2026-07");
+
+    const augTxn = await insertTxn(s, { merchantName: "August Vendor" });
+    await approveCoding(s, augTxn, { businessPurpose: "August supplies" });
+    await publishMonth(s, AUG_KEY);
+
+    const july = paySection(await publishedBody(s, "2026-07"));
+    const august = paySection(await publishedBody(s, AUG_KEY));
+    const year = paySection(await (await s.t.fetch("/finances/2026", {})).text());
+
+    expect(july).toBe(august);
+    expect(year).toBe(august);
+    expect(july).toContain(positionCell("Executive Director"));
   });
 });

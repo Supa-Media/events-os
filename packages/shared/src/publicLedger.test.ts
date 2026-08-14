@@ -1,7 +1,14 @@
 import { describe, expect, test } from "vitest";
 import {
+  COMPENSATION_DISCLOSURE,
+  COMPENSATION_GROUP_HEADINGS,
+  compensationTable,
   contactMailto,
+  everyPositionIsVolunteer,
   formatAffiliationMix,
+  PAID_PAY_ICON,
+  VOLUNTEER_PAY_ICON,
+  positionPayLabel,
   parsePeriodKey,
   periodKey,
   periodLabel,
@@ -15,6 +22,7 @@ import {
   hasLiveRevision,
 } from "./publicLedger";
 import { ATTENDEE_AFFILIATION_LABELS } from "./finance";
+import { SEAT_DEFS, SEAT_IDS, SEAT_ROOT, type SeatId } from "./seats";
 
 /**
  * The public ledger's shared vocabulary.
@@ -141,6 +149,130 @@ describe("published columns", () => {
     );
     for (const forbidden of ["name", "donor", "attendee", "email", "giver"]) {
       expect(columns.some((c) => c.includes(forbidden))).toBe(false);
+    }
+  });
+});
+
+/**
+ * Run `fn` with one position temporarily paid, then put the constant back.
+ *
+ * `COMPENSATION_DISCLOSURE` is a `readonly` authored constant on purpose —
+ * there is no setter and there must never be one, because the whole design is
+ * that a figure is a reviewed edit to this file. A test still has to be able
+ * to see what the paid path prints, so it writes through the type for the
+ * duration of one assertion and restores in a `finally`. The alternative — a
+ * fake disclosure object threaded through `compensationTable()` — would test a
+ * parallel table rather than the one that publishes.
+ */
+function withPaidPosition(seatId: SeatId, cents: number, fn: () => void): void {
+  const byPosition = COMPENSATION_DISCLOSURE.byPosition as Record<string, number>;
+  try {
+    byPosition[seatId] = cents;
+    fn();
+  } finally {
+    delete byPosition[seatId];
+  }
+}
+
+describe("compensation — the table, and the flag that must agree with it", () => {
+  test("every position resolves to a pay value; today all of them are Volunteer", () => {
+    const rows = compensationTable().flatMap((g) => g.rows);
+    expect(rows.length).toBeGreaterThan(0);
+    for (const row of rows) {
+      expect(row.payCents).toBe(0);
+      expect(positionPayLabel(row.payCents)).toBe("Volunteer");
+      expect(row.icon).toBe(VOLUNTEER_PAY_ICON);
+    }
+  });
+
+  test("the authored `allVolunteer` flag agrees with what the table would print", () => {
+    // The flag governs one SENTENCE ("Everyone here is a volunteer") and the
+    // table governs the figures. If a paid position were ever added without
+    // clearing the flag, the page would print a claim its own table disproves
+    // two inches below — the exact failure this disclosure exists to prevent.
+    expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(everyPositionIsVolunteer());
+  });
+
+  test("a stated figure needs no renderer change — it is the same field, non-zero", () => {
+    // Pinned as the future editor's one-line edit (see
+    // `COMPENSATION_DISCLOSURE`'s doc): a number on `byPosition` formats
+    // itself, and `everyPositionIsVolunteer` immediately stops agreeing with a
+    // still-true `allVolunteer` flag.
+    //
+    // The unit is ANNUAL cents and the label says so out loud — a bare
+    // "$48,000.00" in a column of salaries is the kind of number a reader
+    // silently assumes is monthly.
+    expect(positionPayLabel(4_800_000)).toBe("$48,000.00 per year");
+    expect(positionPayLabel(0)).toBe("Volunteer");
+  });
+
+  test("a paid position takes the paid icon — and drags the flag out of agreement", () => {
+    // The guard above is only worth anything if it actually fires. Pay one
+    // position and re-run it: the row formats itself, the icon changes with
+    // it, and `everyPositionIsVolunteer()` stops agreeing with the authored
+    // `allVolunteer: true` — which is exactly the failure a future editor
+    // needs to be stopped by when they add a salary and forget the flag.
+    withPaidPosition("music_director", 4_800_000, () => {
+      const row = compensationTable()
+        .flatMap((g) => g.rows)
+        .find((r) => r.seatId === "music_director");
+      expect(row?.payCents).toBe(4_800_000);
+      expect(positionPayLabel(row?.payCents ?? 0)).toBe("$48,000.00 per year");
+      expect(row?.icon).toBe(PAID_PAY_ICON);
+
+      expect(everyPositionIsVolunteer()).toBe(false);
+      // The flag is still what a human authored — so the agreement test above
+      // would now fail, loudly, in this exact situation.
+      expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(true);
+      expect(COMPENSATION_DISCLOSURE.allVolunteer).not.toBe(
+        everyPositionIsVolunteer(),
+      );
+    });
+
+    // …and the constant is back to the authored truth afterwards.
+    expect(everyPositionIsVolunteer()).toBe(true);
+  });
+
+  test("rows are positions from the seat chart — never holders, never a derived rollup", () => {
+    const rows = compensationTable().flatMap((g) => g.rows);
+    const ids = rows.map((r) => r.seatId);
+    // Exactly the non-derived seats, each once.
+    expect(new Set(ids).size).toBe(ids.length);
+    expect(new Set(ids)).toEqual(
+      new Set(SEAT_IDS.filter((id) => SEAT_DEFS[id].derived !== true)),
+    );
+    // `chapter_directors` is a rollup of every chapter's chapter_director
+    // holder, not a position anybody is appointed to.
+    expect(ids).not.toContain("chapter_directors");
+    // Every printed title is the seat def's own title.
+    for (const row of rows) expect(row.title).toBe(SEAT_DEFS[row.seatId].title);
+  });
+
+  test("both charts are groups, and each row sits in its own chart's group", () => {
+    const groups = compensationTable();
+    expect(groups.map((g) => g.chart)).toEqual(["central", "chapter"]);
+    for (const group of groups) {
+      expect(group.rows.length).toBeGreaterThan(0);
+      expect(group.heading).toBe(COMPENSATION_GROUP_HEADINGS[group.chart]);
+      for (const row of group.rows) {
+        expect(SEAT_DEFS[row.seatId].chart).toBe(group.chart);
+      }
+    }
+  });
+
+  test("leadership reads first — a position never appears above the one it reports to", () => {
+    for (const group of compensationTable()) {
+      const order = group.rows.map((r) => r.seatId);
+      expect(SEAT_DEFS[order[0]].parentId).toBe(SEAT_ROOT);
+      for (const [i, id] of order.entries()) {
+        const parentId = SEAT_DEFS[id].parentId;
+        if (parentId === SEAT_ROOT) continue;
+        // A derived parent is skipped from the table, so its children (none
+        // today) would legitimately have no ancestor row above them.
+        if (SEAT_DEFS[parentId].derived) continue;
+        expect(order.indexOf(parentId)).toBeGreaterThan(-1);
+        expect(order.indexOf(parentId)).toBeLessThan(i);
+      }
     }
   });
 });

@@ -255,9 +255,10 @@ export function PublishMonthBody({
               becoming false on a public page. */}
           {COMPENSATION_DISCLOSURE.allVolunteer ? (
             <Text className="mt-2 text-sm text-muted">
-              This month will publish “{COMPENSATION_DISCLOSURE.headline}” — is
-              that still true? If anyone is now paid, that line has to change
-              before you publish.
+              This month will publish “{COMPENSATION_DISCLOSURE.headline}”, and
+              a table listing every position with “Volunteer” under it — is that
+              still true? If anyone is now paid, their position&apos;s figure
+              goes in before you publish.
             </Text>
           ) : null}
           {preview.truncated || preview.overCap ? (

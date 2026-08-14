@@ -10,6 +10,7 @@ import {
   type SeatId,
   isMultiHolder,
   seatAncestors,
+  seatChartOrder,
   seatChildren,
   seatsForChart,
 } from "./seats";
@@ -103,6 +104,41 @@ describe("parent/child tree shape", () => {
         "expansion_director",
       ]),
     );
+  });
+
+  test("seatChartOrder covers a chart completely, root first, parents before their children", () => {
+    // The reading order the org-chart panel and the public compensation table
+    // both use. Two properties, and the first is why the walk is safe: a seat
+    // unreachable from SEAT_ROOT (only possible if the defs ever grew a cycle)
+    // would go MISSING here rather than looping forever, so completeness is
+    // the assertion that catches it.
+    for (const chart of SEAT_CHARTS) {
+      const ordered = seatChartOrder(chart);
+      expect(new Set(ordered.map((d) => d.id))).toEqual(
+        new Set(seatsForChart(chart).map((d) => d.id)),
+      );
+      expect(ordered).toHaveLength(seatsForChart(chart).length);
+
+      const ids = ordered.map((d) => d.id);
+      expect(SEAT_DEFS[ids[0]].parentId).toBe(SEAT_ROOT);
+      for (const [i, id] of ids.entries()) {
+        const { parentId } = SEAT_DEFS[id];
+        if (parentId === SEAT_ROOT) continue;
+        expect(ids.indexOf(parentId)).toBeLessThan(i);
+      }
+    }
+  });
+
+  test("seatChartOrder puts a subtree together — a director is followed by their own associates", () => {
+    const ids = seatChartOrder("central").map((d) => d.id);
+    expect(ids.slice(0, 2)).toEqual(["executive_director", "financial_manager"]);
+    const dd = ids.indexOf("development_director");
+    expect(ids.slice(dd, dd + 3)).toEqual([
+      "development_director",
+      "partnership_associate",
+      "fundraising_associate",
+    ]);
+    expect(seatChartOrder("chapter")[0].id).toBe("chapter_director");
   });
 
   test("seatsForChart only returns defs for the requested chart", () => {
