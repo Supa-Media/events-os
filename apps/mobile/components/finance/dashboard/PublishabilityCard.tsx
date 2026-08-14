@@ -5,7 +5,7 @@
  * (`docs/plans/transaction-coding.md`, phase 4). A period is publishable only
  * when all THREE axes are green on every row it contains: documentation (a
  * receipt or an approved receipt exception), coding (an approved
- * substantiation record — what/why/who), and review (reconciled). This card is
+ * substantiation record — what/why/who), and review (closed). This card is
  * the close-gate artifact on the dashboard: one headline the ED can read in a
  * meeting, and a tap for the per-axis breakdown behind it.
  *
@@ -139,7 +139,7 @@ export function PublishabilityCard({
           <AxisRow
             icon="check-square"
             label="Review"
-            hint="Not reconciled yet"
+            hint="Not closed yet"
             gap={totals.axes.review}
           />
 

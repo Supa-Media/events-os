@@ -237,7 +237,7 @@ export function MemberCardsView() {
       ) : charges.length === 0 ? (
         <EmptyState
           title="No charges yet"
-          message="Charges on your card show up here to receipt and reconcile."
+          message="Charges on your card show up here to receipt and close."
         />
       ) : (
         <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">

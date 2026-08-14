@@ -8,7 +8,7 @@
  *
  * The design point is that the HONEST option has to be the cheap one. A
  * per-row-only path means acknowledging 200 transit fares costs 200 modals
- * while marking them Reconciled document-less costs one click — so the
+ * while marking them Closed document-less costs one click — so the
  * dishonest option wins on effort, which is exactly how a ledger becomes
  * unpublishable. This makes the two cost the same.
  *

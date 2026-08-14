@@ -641,7 +641,7 @@ describe("bulk backfill", () => {
     // Approved means DOCUMENTED: the pointer is set and the rows leave both
     // the chase and the publishing backlog. This is the whole point of the
     // flow — acknowledging has to actually clear the queue, or people go back
-    // to marking things Reconciled bare.
+    // to marking things Closed bare.
     for (const id of [a, b]) {
       expect(
         (await run(s.t, (ctx) => ctx.db.get(id)))?.approvedReceiptExceptionId,

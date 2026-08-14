@@ -574,7 +574,7 @@ function TransactionDetailBody({
 
       {/* Coding — the structured what/why/who substantiation record, with
           its own review loop. Spend posted at/after the policy date
-          (2026-09-01) can't be reconciled without an approved one. See
+          (2026-09-01) can't be closed without an approved one. See
           `docs/plans/transaction-coding.md`. */}
       <TransactionCodingSection
         transactionId={txn.id}

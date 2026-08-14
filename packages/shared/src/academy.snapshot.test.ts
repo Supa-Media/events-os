@@ -506,6 +506,18 @@
  * exclusion reason, stated verbatim in the `try_status` caption above the
  * quiz). No slugs, sections, courses or totals moved.
  *
+ * 2026-08-14 — "Reconciled" is called **Closed** everywhere a human reads it
+ * (founder, on the deployed grid: "I don't even know what reconciled is"), so
+ * the status finally pairs with the "Ready to close" roll-up that points at it.
+ * A LABEL change only — the stored value is still `"reconciled"` — and so a
+ * content-only Academy edit across four Finances sections and one Works
+ * section. Two quizzes were rewritten IN PLACE (a wrong-fix option, a
+ * distractor, two explanations); nothing was added or removed, so every
+ * snapshotted title, minutes and quizLength below is unchanged, as is the
+ * section and course order. See `streams/finances.ts`'s header comment for
+ * which sentences moved and, more importantly, which kept the word "reconcile"
+ * because they mean real bank reconciliation.
+ *
  * 2026-08-14 — the grid's Columns control. `finance-reconcile-grid` is the only
  * section touched, and only its prose: the page's control count went four → five
  * and one paragraph now explains hiding columns (a rendering choice, not a

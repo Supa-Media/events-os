@@ -155,7 +155,7 @@ export function TransactionCodingSection({
         <View>
           <Text className="text-xs text-muted">
             {requiresCoding
-              ? "Uncoded. This charge can't be reconciled until what it was for — and who was involved — is on the record and approved."
+              ? "Uncoded. This charge can't be closed until what it was for — and who was involved — is on the record and approved."
               : "Uncoded. Not required for this row, but any spend can carry one."}
           </Text>
           {/* SAID BEFORE THE EDITOR OPENS, not after somebody types into it.

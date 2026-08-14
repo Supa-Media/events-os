@@ -293,10 +293,15 @@ export const TRANSACTION_STATUSES = [
 ] as const;
 export type TransactionStatus = (typeof TRANSACTION_STATUSES)[number];
 
+// LABELS ONLY. The stored values above never change — `"reconciled"` is still
+// the string in the schema, in filter keys, in URL params and in Convex args.
+// The founder's words on the deployed grid were "I don't even know what
+// reconciled is", so the STATE is shown as "Closed", pairing with the
+// "Ready to close" filter that already funnels rows toward it.
 export const TRANSACTION_STATUS_LABELS: Record<TransactionStatus, string> = {
   unreviewed: "Unreviewed",
   categorized: "Categorized",
-  reconciled: "Reconciled",
+  reconciled: "Closed",
   excluded: "Excluded",
 };
 
