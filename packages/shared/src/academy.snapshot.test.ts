@@ -442,6 +442,17 @@
  * lesson's own tip still states, and one that changes the day it's automated)
  * and the past-due-pledge edge case (taught at length in the Development
  * stream's backer-model course, which is where the lifecycle lives).
+ *
+ * 2026-08-14 — bulk explanation, and Approve as one undoable tap. Both land in
+ * `finance-reconcile-grid`: an "Explained" filter row, a new rule block on
+ * explaining a backlog without lying about it, and the undo/confirm folded
+ * into the existing "Reconciled means coded, too". Its `minutes` moves 4 → 5
+ * below — the ONLY movement in these tables. Its quiz was at the 5-question
+ * cap, so two questions were SWAPPED, not added (in: the bulk apply's per-row
+ * honesty, what Undo actually calls; out: the "To review 80" tap, whose
+ * doctrine two other questions in the same quiz already carry, and the blank
+ * exclusion reason, stated verbatim in the `try_status` caption above the
+ * quiz). No slugs, sections, courses or totals moved.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -1070,7 +1081,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
-    minutes: 4,
+    minutes: 5,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

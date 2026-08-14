@@ -46,8 +46,31 @@
  * item for someone clearing a biggest-first list, not the auto-advance the
  * founder ruled out for submit, which is a live decision about a coding still
  * on the table, not the mechanical fact that a row physically left the list.
+ *
+ * ── APPROVE IS ONE UNDOABLE TAP (2026-08-14) ─────────────────────────────────
+ * Everything above stays true, and it is exactly what made Approve the most
+ * consequential unconfirmed tap in the app: it PUBLISHES a sentence, it makes
+ * the coding IMMUTABLE (`submitCoding` throws `CODING_APPROVED`), and then the
+ * row leaves the list, so there was nothing left to look at and no way back on
+ * this screen. For somebody writing four hundred of these, that meant you
+ * could not re-read what you had just published, and the only reopen path
+ * (`transactionCodings.requestChanges`) lived on another surface.
+ *
+ * Three things answer that, and they are deliberately small:
+ *  1. A CONFIRM BEAT inside `ReviewActions` — one inline step naming the
+ *     consequence, not a modal and not a typed confirmation. A wall on a
+ *     screen someone works down four hundred times is either clicked through
+ *     blind or makes the job untenable.
+ *  2. AN UNDO WINDOW (`ApproveUndoBar`, ~10s), which calls the REAL
+ *     `requestChanges` — the audited amendment path — rather than hiding a
+ *     button. It lives at PANEL level because `renderReview` unmounts the
+ *     instant the coding stops being `submitted`.
+ *  3. RE-READABILITY from the grid, which is the Reconcile grid's own
+ *     `explained` facet (`RECONCILE_FILTER_LABELS.explained`): the complement
+ *     of `needs_explaining`, one tap, and every approved row opens right back
+ *     into this panel showing its final state.
  */
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { ScrollView, Text, View } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -76,6 +99,26 @@ function dateStr(ts: number): string {
   });
 }
 
+/**
+ * HOW LONG THE UNDO STANDS, in seconds.
+ *
+ * Long enough to catch the tap you regret the instant you make it; short
+ * enough that it is plainly a beat and not a pending state. It is NOT the only
+ * way back — `requestChanges` reopens an approved coding at any time from this
+ * same panel — so nothing is lost when it expires. It just makes the common
+ * correction free.
+ */
+const APPROVE_UNDO_SECONDS = 10;
+
+/** The row an undo is offered for, with the name the person was looking at
+ *  when they approved it. Held by the PANEL, not by `ReviewActions`, because
+ *  `renderReview` only mounts while a coding is `submitted` — the instant the
+ *  approval lands, the component that made it is gone. */
+interface PendingUndo {
+  transactionId: Id<"transactions">;
+  label: string;
+}
+
 /** The Approve/Send back block — the same `approve`/`requestChanges`
  *  mutations `ReviewQueue`'s `QueueRow` calls, wired into
  *  `FinishChargeSheetBody`'s `renderReview` slot so it renders right under
@@ -88,6 +131,7 @@ function ReviewActions({
   coding,
   canReview,
   runAction,
+  onApproved,
 }: {
   transactionId: Id<"transactions">;
   coding: {
@@ -98,11 +142,22 @@ function ReviewActions({
   };
   canReview: boolean;
   runAction: (fn: () => Promise<unknown>, errorTitle: string) => Promise<unknown>;
+  /** Fired once the approval has actually landed — the panel arms its undo. */
+  onApproved: () => void;
 }) {
   const approve = useMutation(api.transactionCodings.approve);
   const requestChanges = useMutation(api.transactionCodings.requestChanges);
   const [sendingBack, setSendingBack] = useState(false);
   const [note, setNote] = useState("");
+  // THE BEAT BEFORE PUBLISHING. Approve used to be one unconfirmed tap on a
+  // button sitting inches from Prev/Next, and what it does is irreversible in
+  // place (the coding becomes immutable) and PUBLIC (the sentence goes on the
+  // ledger). Deliberately not a modal and not a typed confirmation: this is a
+  // screen somebody works down four hundred times, and a wall would either be
+  // clicked through blind or make the whole job untenable. One inline step
+  // that names the consequence is the proportionate answer — and the undo
+  // below it is what lets that step stay small.
+  const [confirming, setConfirming] = useState(false);
 
   // `PublicPurposeEditor` speaks `ReviewQueue`'s `RunAction` shape
   // (`options?: { errorTitle? }`); the panel's `runAction` is
@@ -128,25 +183,58 @@ function ReviewActions({
             runAction={runActionForEditor}
           />
           <View className="mt-2 flex-row flex-wrap gap-2">
-            <Button
-              title="Approve"
-              size="sm"
-              onPress={() =>
-                void runAction(
-                  () => approve({ transactionId }),
-                  "Couldn't record that decision",
-                )
-              }
-            />
-            <Button
-              title="Send back"
-              size="sm"
-              variant="secondary"
-              onPress={() => {
-                setSendingBack((s) => !s);
-                setNote("");
-              }}
-            />
+            {confirming ? (
+              // THE BEAT. Named consequence, then the same word on the button
+              // that started the step, so nobody has to work out which of two
+              // similar buttons commits.
+              <View className="w-full gap-2 rounded-md border border-accent/50 bg-raised px-3 py-2.5">
+                <Text className="text-xs text-ink">
+                  This publishes the sentence above to the public ledger and
+                  locks the coding — reopening it afterwards is its own recorded
+                  decision.
+                </Text>
+                <View className="flex-row gap-2">
+                  <Button
+                    title="Approve & publish"
+                    size="sm"
+                    icon="check"
+                    onPress={() =>
+                      void runAction(async () => {
+                        await approve({ transactionId });
+                        setConfirming(false);
+                        onApproved();
+                      }, "Couldn't record that decision")
+                    }
+                  />
+                  <Button
+                    title="Cancel"
+                    size="sm"
+                    variant="secondary"
+                    onPress={() => setConfirming(false)}
+                  />
+                </View>
+              </View>
+            ) : (
+              <Button
+                title="Approve"
+                size="sm"
+                onPress={() => {
+                  setConfirming(true);
+                  setSendingBack(false);
+                }}
+              />
+            )}
+            {!confirming ? (
+              <Button
+                title="Send back"
+                size="sm"
+                variant="secondary"
+                onPress={() => {
+                  setSendingBack((s) => !s);
+                  setNote("");
+                }}
+              />
+            ) : null}
           </View>
           {sendingBack ? (
             <View className="mt-2 gap-2 rounded-md border border-border bg-raised px-3 py-2.5">
@@ -184,6 +272,87 @@ function ReviewActions({
           Yours — another reviewer decides it.
         </Text>
       )}
+    </View>
+  );
+}
+
+/**
+ * THE UNDO WINDOW — the real reopen, not a hidden button.
+ *
+ * Approving is publishing, and the row it happened to LEAVES the list (an
+ * approved coding is out of `needs_explaining`), so the moment before this
+ * existed the sequence was: tap, row vanishes, no way back on this screen.
+ * The only reopen path lived on another surface.
+ *
+ * This calls `transactionCodings.requestChanges` — the actual audited
+ * amendment path, which works on an approved coding by design and carries the
+ * same separation-of-duties rule (plus the same solo-operator carve-out, which
+ * is what makes it usable by the one-person finance team it is aimed at). The
+ * server therefore sees a reopen, exactly as if the reviewer had opened the
+ * row tomorrow and sent it back; nothing is erased and nothing is special-
+ * cased. The note goes in the audit trail, where a reader can see what
+ * happened.
+ *
+ * It is a CONVENIENCE, not the only way back. When the ten seconds lapse, the
+ * row is still reopenable from this panel's own Send-back — and, with the
+ * grid's `explained` facet, still findable. So there is no state that depends
+ * on catching it.
+ */
+function ApproveUndoBar({
+  pending,
+  onDone,
+}: {
+  pending: PendingUndo;
+  onDone: () => void;
+}) {
+  const requestChanges = useMutation(api.transactionCodings.requestChanges);
+  const [left, setLeft] = useState(APPROVE_UNDO_SECONDS);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    setLeft(APPROVE_UNDO_SECONDS);
+    const tick = setInterval(() => setLeft((n) => n - 1), 1000);
+    return () => clearInterval(tick);
+  }, [pending.transactionId]);
+
+  useEffect(() => {
+    if (left > 0) return;
+    onDone();
+    // `onDone` is a stable setter from the parent; re-running on its identity
+    // would restart the window every render.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [left]);
+
+  return (
+    <View className="flex-row items-center gap-3 border-t border-border bg-sunken px-4 py-2.5">
+      <Text className="flex-1 text-xs text-ink" numberOfLines={2}>
+        Published {pending.label}.
+      </Text>
+      <Button
+        title={`Undo (${Math.max(left, 0)})`}
+        size="sm"
+        variant="secondary"
+        icon="corner-up-left"
+        loading={busy}
+        onPress={() => {
+          setBusy(true);
+          requestChanges({
+            transactionId: pending.transactionId,
+            // REQUIRED by the mutation, and rightly so — a reopen with no
+            // reason is how a policy stops being followed. This one states what
+            // actually happened rather than inventing a complaint about the
+            // coding.
+            reviewNote:
+              "Undone by the approver moments after approving — reopened for edits.",
+          })
+            .then(onDone)
+            // A FAILED UNDO MUST BE LOUD and must NOT close the bar: the
+            // coding is still approved, and silently dismissing would leave
+            // the person believing they took it back.
+            .catch(alertError)
+            .finally(() => setBusy(false));
+        }}
+      />
     </View>
   );
 }
@@ -260,6 +429,14 @@ export function CodingWorkbenchPanel({
   const shownMerchant = displayMerchantName(txn, "—");
   const renameMerchant = useMutation(api.finances.renameMerchant);
   const clearMerchantRename = useMutation(api.finances.clearMerchantRename);
+  // The undo window lives HERE rather than in `ReviewActions`, because
+  // `renderReview` only mounts while a coding is `submitted` — the instant the
+  // approval lands the component that made it is unmounted, and on the
+  // Reconcile grid the ROW ITSELF leaves the list a moment later (an approved
+  // coding is out of `needs_explaining`, so the panel steps to the next row).
+  // The undo has to outlive both, which is why it carries the transaction id
+  // and the name that was on screen when the tap happened.
+  const [pendingUndo, setPendingUndo] = useState<PendingUndo | null>(null);
 
   function onCommitMerchant(next: string) {
     const trimmed = next.trim();
@@ -399,11 +576,30 @@ export function CodingWorkbenchPanel({
                 coding={coding}
                 canReview={canReview}
                 runAction={runAction}
+                onApproved={() => {
+                  setPendingUndo({
+                    transactionId: tid,
+                    // The name that was on screen when they tapped — the undo
+                    // may well outlive this row's place in the list.
+                    label: `${shownMerchant} · ${dateStr(txn.postedAt)}`,
+                  });
+                }}
               />
             )}
           />
         </View>
       </ScrollView>
+
+      {/* THE UNDO WINDOW, pinned to the bottom of the panel rather than
+          floating over the grid: this belongs to the row that was just
+          decided, and the panel is where that decision was made. */}
+      {pendingUndo ? (
+        <ApproveUndoBar
+          key={pendingUndo.transactionId}
+          pending={pendingUndo}
+          onDone={() => setPendingUndo(null)}
+        />
+      ) : null}
     </View>
   );
 }

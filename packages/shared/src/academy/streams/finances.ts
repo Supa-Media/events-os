@@ -277,6 +277,43 @@
  * (superuser-only single-party approval, recorded as such — shipped
  * 2026-08-11/12), and teaching the separation as absolute with no stated
  * exception would have the lesson contradict a button the founder can see.
+ *
+ * BULK EXPLANATION + the undoable approve (2026-08-14). Two shipped changes,
+ * both in the Book, both taught in `finance-reconcile-grid` and deliberately
+ * NOWHERE ELSE:
+ *
+ *  - Multi-select → **Explain** writes one typed sentence onto every selected
+ *    charge (`transactionCodings.submitBulk`). This one HAD to be taught,
+ *    because the reader has just been told a coding is a person's own
+ *    testimony and that nothing is machine-composed — both still true, and a
+ *    bulk button discovered without that framing reads like the rule quietly
+ *    lapsed. Its own rule block ("Explaining a backlog without lying about
+ *    it") states the framing, the meal refusal (who was at a meal is a
+ *    per-occasion fact and is not offered in bulk), and the per-row refusal
+ *    reporting.
+ *  - Approve gained a confirm beat, a ~10s **Undo** wired to the real reopen
+ *    (`requestChanges`, audited — not a hidden button), and the grid gained an
+ *    **Explained** filter so a published sentence stays re-readable. Folded
+ *    into the existing "Reconciled means coded, too" rule and the filter
+ *    table rather than given new blocks — they change how one act behaves, not
+ *    what the act means.
+ *
+ * `finance-coding-your-charges` is deliberately UNTOUCHED: it is the
+ * cardholder's lesson, the bulk bar is the Book's (bookkeeper+), and its "no
+ * machine ever composes an answer" rule is still exactly true — nothing there
+ * became stale.
+ *
+ * Two quiz questions IN, two OUT, so the length stays 5 (the per-section cap
+ * `apps/convex/tests/academy.test.ts` enforces). IN: the bulk apply's per-row
+ * honesty, and what Undo actually calls. OUT, both because this lesson already
+ * teaches them elsewhere rather than because they stopped mattering:
+ *  - "the dashboard says To review 80, where do you land" — its doctrine (a
+ *    number you can see is a number you can tap through to) is carried twice
+ *    more in the same quiz, by the Unattributed item and the Ready-to-close
+ *    item;
+ *  - "you mark a charge Excluded and leave the reason blank" — stated verbatim
+ *    in the `try_status` caption immediately above the quiz.
+ * Minutes 4 → 5 for the added rule block.
  */
 
 import type {
@@ -1290,7 +1327,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
     subtitle: "Your home screen: code every charge, explicitly",
-    minutes: 4,
+    minutes: 5,
     blocks: [
       {
         kind: "p",
@@ -1310,6 +1347,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It also keeps the marked internal transfers and processor payouts that owe a statement rather than a person — the Book hides those from the default queue, and picking this brings them back. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
           ["Closed without documentation", "Somebody marked it Reconciled with neither a receipt nor an approved exception behind it. Nobody left to nudge, and a published ledger still can't tell that row from a documented one"],
           ["Needs explaining", "Every row that will publish with a BLANK where its explanation should be — the whole backlog, including the 2024-25 history the coding policy grandfathers out. This is the one that ignores the policy date on purpose: \"Needs coding\" answers what policy demands of whom, this answers what a stranger will see a gap next to when the month publishes. Fees, refunded pairs and personal charges are already excluded — they explain themselves"],
+          ["Explained", "The other half of the row above — everything in the same population that HAS an approved explanation. It exists because approving one publishes it and takes the row out of \"Needs explaining\", which used to mean the sentence you had just written became unreachable. This is how you re-read what you published, spot-check twenty of them a week later, or hand somebody the month you finished"],
           ["Needs coding", "Spend under the coding policy (posted Sept 1, 2026 or later) still waiting on its author — what it was for, and who was involved. It only appears once the policy starts; before then it could only ever return zero rows, and a filter that's always empty just teaches people to distrust the filters"],
           ["Coding review", "A submitted coding waiting on YOU to approve it or send it back with a note. Same policy-start rule as above"],
           ["To review", "Still sitting at Unreviewed — nobody has touched it yet. This is the number the dashboard's \"To review\" tile shows, and tapping that tile lands you right here"],
@@ -1361,8 +1399,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "Explaining a backlog without lying about it",
+        text: "Selecting rows and pressing **Explain** writes ONE sentence you typed onto every charge you picked. That is not the app writing for you and it is not a shortcut around the rule that a coding is a person's own testimony — it is you saying a true thing once instead of forty times. Forty subway fares between the same two outreach sites really are one fact about one month, and making you retype it forty times doesn't make the record truer; it just makes the honest option cost more than the dishonest one, which is how a book ends up published with blanks in it.\n\nWhat it will not let you do is assert something you haven't checked. **Meals aren't offered in bulk** — a meal's proof is who was at it, and that is a different set of names for every meal. Travel and overnight stays are, because their extra element is a route or a place, and that genuinely is the same across a batch of identical fares: you type it once and it lands on all of them. So only ever select rows the sentence is actually true of. Charges that need different explanations want separate passes.\n\nAnd it never quietly does less than it claims. Each charge gets its OWN coding, under your name, with its own audit entry — nothing is waived or written in aggregate. Rows that can't take it (no receipt yet, or a coding already approved and therefore locked) are refused one at a time and listed straight back to you by name, still selected, so the ones you still owe are the next thing in front of you rather than something you'd have to go hunting for. Up to 100 charges at a time; ask for more and it says so rather than doing the first hundred silently.",
+      },
+      {
+        kind: "rule",
         title: "Reconciled means coded, too",
-        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, your OWN charges at /code, and the review queue under the Book\'s view menu (\"Waiting on me\"). Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.',
+        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, your OWN charges at /code, and the review queue under the Book\'s view menu (\"Waiting on me\"). Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.\n\nApproving is publishing, so the app asks once — a single line naming what the tap does, then Approve & publish — and then gives you about ten seconds to take it back. **Undo is a real reopen**, not a hidden button: it sends the coding back to its author exactly as if you had done it tomorrow, note and all, recorded in the trail. Miss the window and nothing is lost — Send back still reopens an approved coding at any time, and the **Explained** filter is how you find it again. An approved coding is otherwise locked, which is why re-reading it is the only review left: it is worth a pass over a month\'s Explained rows before you publish it.',
       },
       {
         kind: "try_status",
@@ -1403,16 +1446,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Unattributed is a first-class, visible bucket with a one-tap path into the exact filtered Reconcile view — it's designed to be noticed, not hidden.",
       },
       {
-        prompt: "The dashboard says \"To review 80\". You tap it. Where do you land, and what should you see?",
+        prompt:
+          "You approve a coding, then immediately realise the sentence names someone it shouldn't. The Undo is still on screen. What does pressing it do?",
         options: [
-          "The Needs budget filter — 80 charges missing a budget link",
-          "The To review filter, showing exactly those 80 charges still sitting at Unreviewed",
-          "The All filter, where you scroll to find them",
-          "The Reconciled filter — they've already been cleared",
+          "Deletes the coding so you can start again",
+          "Hides the approval locally — the record stays approved",
+          "Sends the coding back to its author, exactly as Send back would, and records the reopen in the trail",
+          "Nothing — an approved coding is permanent",
         ],
-        answerIndex: 1,
+        answerIndex: 2,
         explanation:
-          "Every number on the dashboard opens the exact rows behind it. \"To review\" counts charges still at the Unreviewed status, so it lands on the To review filter — same word, same rows, same count. If a figure you tap ever doesn't appear on the screen it opens, that's a bug worth reporting.",
+          "Undo is the real reopen, not a cosmetic one — it's the same audited path as Send back, which works on an approved coding by design. Nothing is erased. Miss the ten seconds and you still have Send back, and the Explained filter to find the row again — worth knowing, because an approved coding is otherwise locked and re-reading it is the only review left before the month publishes.",
       },
       {
         prompt:
@@ -1428,16 +1472,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Ready to close is the complement of Needs attention over the open rows, so the two always add back up to the single \"to clear\" number they replaced — and in a real book, 76 of those 127 were a keystroke, not a backlog. Multi-select is what turns them into a minute's work: the bulk bar also sets Category and Budget, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
       },
       {
-        prompt: "You mark a charge \"Excluded\" but leave the reason field blank. What happens?",
+        prompt:
+          "You select 40 subway fares that all ran the same route and press Explain, typing one sentence. What happens?",
         options: [
-          "It saves — the reason is just a nice-to-have",
-          "The app blocks the save until you type a reason",
-          "It saves, but flags the row for the Chapter Director to review",
-          "It silently defaults to \"Duplicate\"",
+          "The app drafts a purpose for each charge based on the merchant",
+          "Each charge gets its own coding carrying your sentence, under your name — and any that can't take it (no receipt yet, already approved) are refused one by one and listed back to you",
+          "One shared explanation is attached to all 40 rows at once",
+          "The 40 are marked reconciled without a coding",
         ],
         answerIndex: 1,
         explanation:
-          "Excluding drops a charge out of every budget/category/actuals total — a blank reason is refused so the trail always explains why, not just that it happened.",
+          "Writing a true sentence once instead of forty times is still your testimony — nothing is composed for you, and nothing is waived in aggregate. It's per-row underneath: one coding, one author, one audit entry each. And it never claims more than it did: rows that can't take the explanation come back named, still selected, so what you still owe is in front of you. Meals aren't offered in bulk at all — a meal's proof is who was at it, and that's different every time.",
       },
     ],
   },

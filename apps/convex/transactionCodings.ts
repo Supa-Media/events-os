@@ -47,6 +47,7 @@ import {
   CENTRAL,
   EXPENSE_TYPES,
   EXPENSE_TYPE_LABELS,
+  MAX_BULK_EXPLANATION_ROWS,
   MIN_PURPOSE_LENGTH,
   TRANSACTION_CODING_STATUSES,
   TRANSACTION_CODING_STATUS_LABELS,
@@ -667,26 +668,6 @@ export const submit = mutation({
 
 // ── BULK EXPLANATION ────────────────────────────────────────────────────────
 
-/**
- * THE CAP, stated out loud rather than enforced by truncation.
- *
- * One Convex mutation is one transaction, and this one is not cheap per row:
- * `requireSubmitCoding` re-resolves the caller's chapter + finance role (~4-6
- * document reads), `submitCoding` reads the existing coding and — on a row
- * that owes one — its receipt exceptions, then writes the coding row, patches
- * `transactions.codingState`, and `logFinanceAudit` inserts an audit row. Call
- * it ~15 reads and 3 writes per transaction, so 100 rows is ~1,500 reads and
- * ~300 writes: comfortably inside a Convex transaction's budget, with room for
- * a book whose access resolution is heavier than this one's.
- *
- * A selection over the cap is REFUSED, naming the number. Silently taking the
- * first 100 of 140 would hand back "100 applied" while 40 rows the person
- * selected, watched highlight, and believed they had done sat untouched — the
- * exact failure this whole mutation's per-row reporting exists to prevent,
- * just moved one level up.
- */
-export const BULK_EXPLANATION_MAX = 100;
-
 /** One selected row's fate. `code`/`message` are the `ConvexError` the single
  *  submit path threw for THIS row — never a summary, never a bucket the UI has
  *  to guess at. */
@@ -802,10 +783,10 @@ export const submitBulk = mutation({
     // DEDUPED. A repeated id would otherwise submit twice, and the second pass
     // would read as a `resubmitted` row nobody asked for.
     const transactionIds = [...new Set(args.transactionIds)];
-    if (transactionIds.length > BULK_EXPLANATION_MAX) {
+    if (transactionIds.length > MAX_BULK_EXPLANATION_ROWS) {
       throw new ConvexError({
         code: "BULK_LIMIT",
-        message: `Explain up to ${BULK_EXPLANATION_MAX} charges at a time — you selected ${transactionIds.length}. Doing the first ${BULK_EXPLANATION_MAX} and staying quiet about the rest is how rows get believed-done and left blank.`,
+        message: `Explain up to ${MAX_BULK_EXPLANATION_ROWS} charges at a time — you selected ${transactionIds.length}. Doing the first ${MAX_BULK_EXPLANATION_ROWS} and staying quiet about the rest is how rows get believed-done and left blank.`,
       });
     }
 
@@ -896,7 +877,7 @@ export const submitBulk = mutation({
     return {
       applied,
       failed: rows.length - applied,
-      limit: BULK_EXPLANATION_MAX,
+      limit: MAX_BULK_EXPLANATION_ROWS,
       rows,
     };
   },
