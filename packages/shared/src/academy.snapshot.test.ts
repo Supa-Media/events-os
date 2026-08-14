@@ -890,6 +890,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "dev-public-gift-wall",
   "dev-backer-floor-and-ladder",
   "dev-backer-lifecycle",
+  "dev-backer-portal",
   "dev-givebutter-migration",
   "dev-sponsor-packages",
   "dev-sponsorship-pipeline",
@@ -1764,6 +1765,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "dev-backer-portal",
+    title: "The backer portal: their own page",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "dev-givebutter-migration",
     title: "The Givebutter migration: history in, recurring gifts re-signed",
     minutes: 4,
@@ -2039,6 +2048,7 @@ const EXPECTED_COURSES: {
     moduleSlugs: [
       "dev-backer-floor-and-ladder",
       "dev-backer-lifecycle",
+      "dev-backer-portal",
       "dev-givebutter-migration",
     ],
   },

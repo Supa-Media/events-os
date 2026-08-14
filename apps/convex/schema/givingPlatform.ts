@@ -932,7 +932,14 @@ export const pledges = defineTable({
   // pledges scoped `"central"` + a now-retired `cityCampaignId` field;
   // migration 0029 re-scoped every one of those rows onto its chapter.)
   scope: givingScope,
-  amountCents: v.number(), // int ≥ 2000 ($20 floor), enforced at the write path
+  // The monthly pledge, in integer cents. The floor is $5
+  // (`givingPledges.PLEDGE_FLOOR_CENTS`), enforced at the write path — NOT the
+  // $20 this comment claimed until 2026-08-14, which had been stale since the
+  // floor was lowered on the owner's request. A pledge at or above
+  // `BACKER_UNIT_CENTS` ($50) is what makes its donor a BACKER; below that they
+  // are a recurring giver who simply isn't counted (see
+  // `recomputeChapterBackerCount`).
+  amountCents: v.number(),
   status: v.union(...PLEDGE_STATUSES.map((s) => v.literal(s))),
   origin: v.union(...PLEDGE_ORIGINS.map((o) => v.literal(o))),
   // Present once a Stripe subscription is created/linked (absent while

@@ -38,6 +38,7 @@ import { formatCents } from "@events-os/shared";
 import {
   emailButton,
   emailHeading,
+  emailLink,
   emailList,
   emailPanel,
   emailParagraph,
@@ -74,6 +75,10 @@ export type BackerWelcomePayload = {
    *  milestones they just moved are rendered. `null` degrades to no button
    *  rather than a dead link. */
   givePageUrl: string | null;
+  /** Their own portal — where they manage the card, the amount, and read their
+   *  giving. Named here rather than assumed, so a deployment with no site URL
+   *  degrades to the reply-to-us sentence instead of a dead button. */
+  portalUrl: string | null;
 };
 
 /**
@@ -147,14 +152,30 @@ export function renderBackerWelcomeEmail(payload: BackerWelcomePayload): {
       "We'll keep you in the loop — where the nights are happening, what your city is up to, what the giving is unlocking, and the honest version when something's hard. You're in the room now, not on a mailing list.",
       { margin: "0 0 20px" },
     ),
+    payload.portalUrl
+      ? emailButton(payload.portalUrl, "See your giving")
+      : "",
     payload.givePageUrl
-      ? emailButton(payload.givePageUrl, `See what ${city} is building`)
+      ? emailParagraph(
+          `Or see what ${esc(city)} is building: ${emailLink(payload.givePageUrl, payload.givePageUrl)}`,
+          { size: 12, margin: "12px 0 0" },
+        )
       : "",
     emailRule(),
-    emailParagraph(
-      "Need to change your amount, update your card, or stop your monthly gift? Just reply to this email — a person reads it, and we'll send you a secure link. No hoops, ever.",
-      { size: 12, margin: "0 0 8px" },
-    ),
+    // THE PORTAL, NAMED. This sentence used to be "reply to this email and
+    // we'll send you a secure link" — a manual process standing in for a page
+    // that now exists. A welcome email is the single best place a backer will
+    // ever learn the portal is there, so it says so plainly and keeps the
+    // human offer underneath rather than instead.
+    payload.portalUrl
+      ? emailParagraph(
+          `Change your amount, update your card, or stop any time — it's all on your own page: ${emailLink(payload.portalUrl, payload.portalUrl)}. Prefer a person? Reply to this email and one will read it.`,
+          { size: 12, margin: "0 0 8px" },
+        )
+      : emailParagraph(
+          "Need to change your amount, update your card, or stop your monthly gift? Just reply to this email — a person reads it, and we'll send you a secure link. No hoops, ever.",
+          { size: 12, margin: "0 0 8px" },
+        ),
     emailParagraph(
       "Thank you for standing with us. Genuinely — this is the biggest thing anyone does here.",
       { size: 12, margin: "0" },
