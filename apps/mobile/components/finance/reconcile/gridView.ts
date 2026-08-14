@@ -208,27 +208,21 @@ export function toggleHiddenColumn(
     : HIDEABLE_KEYS.filter((k) => k === key || hidden.includes(k));
 }
 
-/**
- * DOES THIS SCOPE HAVE A CATEGORY COLUMN AT ALL? — capability, not preference.
+/*
+ * GONE (2026-08-14): `showsCategoryColumn`.
  *
- * The Category column is chapter-only, so a single-central scope normally
- * drops it — but a CROSS-BOOK row in that scope is absorbed by a chapter's
- * budget and DOES take that chapter's category, so hiding the column there
- * would put the one control that spend needs on a screen it isn't on.
- * Data-driven: the column appears in central scope exactly when there's
- * something in it.
+ * It answered "does this scope have a Category column at all?", and the answer
+ * used to be genuinely no in a single-central scope — categories were
+ * chapter-scoped, so a central row had none to show. It had already grown one
+ * exception (a CROSS-BOOK row in central scope IS absorbed by a chapter's
+ * budget, so hiding the column there took away the one control that spend
+ * needed) and was data-driven for exactly that case.
  *
- * Lives here, over the narrowest row shape that answers it, so the GRID (which
- * renders the column) and the COLUMNS MENU (which decides whether to offer a
- * tick box for it) read one rule instead of two copies of it.
+ * Categories are org-wide now. EVERY row in every book can carry one, so the
+ * column is unconditional and there is no rule left to share between the grid
+ * and the Columns menu. Whether it is on screen is now purely the reader's
+ * preference (`hidden`), which is where it belonged all along.
  */
-export function showsCategoryColumn(
-  centralScope: boolean,
-  rows: readonly { book: { id: string }; chargedTo: { id: string } | null }[],
-): boolean {
-  if (!centralScope) return true;
-  return rows.some((r) => r.chargedTo != null && r.chargedTo.id !== r.book.id);
-}
 
 // ── WHAT A ROW HAS BEEN MARKED AS ────────────────────────────────────────────
 /**
@@ -326,8 +320,8 @@ export function rowMarkings<P extends string>(row: {
  * have something to put in it — and even then a reader can put it away, which
  * is the point of it being in {@link HIDEABLE_COLUMNS}.
  *
- * Same shape and same reasoning as {@link showsCategoryColumn}: data-driven,
- * over the narrowest row shape that answers the question, and read by BOTH the
+ * Data-driven, over the narrowest row shape that answers the question, and
+ * read by BOTH the
  * grid (which renders the column) and the Columns menu (which decides whether
  * to offer a tick box for it), so the two can never answer differently.
  */
@@ -349,8 +343,8 @@ export function showsMarkedColumn(
  *
  * A tick box for a column the scope has no room for is a dead control: Book
  * exists only in the merged all-books queue (and on a foreign chapter's desk),
- * Category only where {@link showsCategoryColumn} says so, Marked only where
- * {@link showsMarkedColumn} does, and the panel's three belong to the panel
+ * Marked only where {@link showsMarkedColumn} does, and the panel's three
+ * belong to the panel
  * while it is open. Offering them anyway would be the "affordance that can't
  * work" this screen keeps removing.
  *
@@ -360,7 +354,6 @@ export function showsMarkedColumn(
  */
 export function offerableColumns(scope: {
   showBook: boolean;
-  showCategory: boolean;
   /** Anything on this page is actually marked — see {@link showsMarkedColumn}.
    *  A grid of ordinary spend has no Marked column and so no tick box for one. */
   showMarked: boolean;
@@ -370,7 +363,8 @@ export function offerableColumns(scope: {
 }): ReconcileColumnKey[] {
   return HIDEABLE_KEYS.filter((key) => {
     if (key === "book") return scope.showBook;
-    if (key === "category") return scope.showCategory;
+    // No `category` case: every book's rows can carry an org-wide category, so
+    // the tick box is always offered.
     if (key === "marked") return scope.showMarked;
     if (key === "cardholder" || key === "explanation" || key === "receipt") {
       return !scope.panelOpen;

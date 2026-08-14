@@ -89,9 +89,12 @@ const CATEGORY_NAME_HINT: Record<string, string | null> = {
 const EVENT_SCAN_LIMIT = 20000;
 const LINES_PER_EVENT_LIMIT = 500;
 
-/** Best-effort v1 category -> v2 `budgetCategories._id`, scoped to the
- *  event's own chapter (categories are always chapter-scoped, never central —
- *  mirrors `budgetLines.ts#verifyCategory`'s own rule). */
+/** Best-effort v1 category -> v2 `budgetCategories._id`, matched against the
+ *  ORG's category list. It used to be scoped to the event's own chapter, back
+ *  when categories were chapter-scoped; 0076 made them org-wide, so the
+ *  `chapterId` here only survives as part of the cache key (kept so a re-run
+ *  of this historical migration behaves identically to the run that already
+ *  happened in production). */
 async function resolveCategoryId(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
@@ -106,10 +109,7 @@ async function resolveCategoryId(
     cache.set(cacheKey, null);
     return undefined;
   }
-  const categories = await ctx.db
-    .query("budgetCategories")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .collect();
+  const categories = await ctx.db.query("budgetCategories").collect();
   const match = categories.find((c) => c.name.trim().toLowerCase() === hint);
   cache.set(cacheKey, match?._id ?? null);
   return match?._id;

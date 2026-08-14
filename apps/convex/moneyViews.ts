@@ -269,8 +269,9 @@ function toMoneyTxnSummary(tr: Doc<"transactions">) {
  * — already explicit, no override concept) wins; otherwise the row's default
  * category NAME (`MODULE_DEFAULT_CATEGORY_NAMES[module]` for an item,
  * `VENDOR_DEFAULT_CATEGORY_NAME` for a vendor) is matched EXACTLY against
- * this event's own chapter's `budgetCategories` (loaded once, up front) —
- * unresolvable (no override, no name match — e.g. a chapter renamed/deleted
+ * the ORG's `budgetCategories` (loaded once, up front — one list since
+ * 2026-08-14, so this no longer depends on which chapter the event is in) —
+ * unresolvable (no override, no name match — e.g. somebody renamed/deleted
  * the default category) resolves to `categoryId: null` /
  * `categoryIsDefault: false` (nothing was actually resolved), which reads as
  * the existing "Uncategorized" bucket at every consumer. `categoryName` here
@@ -279,8 +280,8 @@ function toMoneyTxnSummary(tr: Doc<"transactions">) {
  * default), falling back to the caller-supplied label (a module's own
  * display label for `event_item`/`vendor` rows, "Uncategorized" for a
  * `budget_line` row) only when nothing resolves — this is UNCHANGED display
- * behavior for the common (no chapter categories seeded / no default match)
- * case, matching every pre-PR2 `eventCostGrid` fixture.
+ * behavior for the common (no categories seeded / no default match) case,
+ * matching every pre-PR2 `eventCostGrid` fixture.
  *
  * Every read here is `.take(GRID_SCAN_LIMIT)`-bounded, mirroring the rest of
  * this file's scan limits.
@@ -320,22 +321,25 @@ function dollarsToCents(value: unknown): number | null {
   return Math.round(n * 100);
 }
 
+// The `eventChapterId` parameter this used to take is GONE: it existed only to
+// pick which chapter's category list to match default names against, and there
+// is one org-wide list now.
 async function collectEventPlannedRows(
   ctx: QueryCtx,
   eventId: Id<"events">,
-  eventChapterId: Id<"chapters">,
   authz: { ownChapterId: Id<"chapters">; chapterId: Id<"chapters">; access: FinanceAccess },
 ): Promise<PlannedRow[]> {
-  // The event's own chapter's categories, loaded ONCE — feeds the
-  // default-name-match table below AND (for ids already in this set) saves a
-  // redundant `ctx.db.get` when resolving an explicit override's name.
-  const chapterCategories = await ctx.db
+  // The ORG's categories, loaded ONCE — feeds the default-name-match table
+  // below AND (for ids already in this set) saves a redundant `ctx.db.get` when
+  // resolving an explicit override's name. Org-wide since 2026-08-14, which
+  // also means the default-NAME match below can no longer miss because the
+  // event's chapter happened not to have seeded "Food & Meals".
+  const orgCategories = await ctx.db
     .query("budgetCategories")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", eventChapterId))
     .take(GRID_SCAN_LIMIT);
   const categoryNameById = new Map<Id<"budgetCategories">, string>();
   const categoryIdByDefaultName = new Map<string, Id<"budgetCategories">>();
-  for (const cat of chapterCategories) {
+  for (const cat of orgCategories) {
     categoryNameById.set(cat._id, cat.name);
     if (!categoryIdByDefaultName.has(cat.name)) categoryIdByDefaultName.set(cat.name, cat._id);
   }
@@ -352,8 +356,8 @@ async function collectEventPlannedRows(
     return doc?.name;
   }
 
-  /** Explicit override wins; else match the default NAME against this
-   *  chapter's categories; else unresolved. */
+  /** Explicit override wins; else match the default NAME against the org's
+   *  categories; else unresolved. */
   async function resolveCategory(
     explicitId: Id<"budgetCategories"> | undefined,
     defaultName: string | undefined,
@@ -760,12 +764,7 @@ export const refMoney = query({
     const plannedEntries: { categoryId: CatKey; plannedCents: number }[] =
       args.refKind === "event"
         ? (
-            await collectEventPlannedRows(
-              ctx,
-              args.refId as Id<"events">,
-              authz.chapterId,
-              authz,
-            )
+            await collectEventPlannedRows(ctx, args.refId as Id<"events">, authz)
           ).map((row) => ({ categoryId: row.categoryId, plannedCents: row.plannedCents }))
         : lines.map((line) => ({ categoryId: line.categoryId ?? null, plannedCents: line.plannedCents }));
 
@@ -1060,7 +1059,7 @@ export const eventCostGrid = query({
     // The full items ∪ vendors ∪ budgetLines sweep. `possibleDuplicate`
     // (below) is the only thing left for this query to compute itself.
     const rows: GridWorkingRow[] = (
-      await collectEventPlannedRows(ctx, args.eventId, authz.chapterId, authz)
+      await collectEventPlannedRows(ctx, args.eventId, authz)
     ).map((row) => ({ ...row, possibleDuplicate: false }));
     const budgetLineRows = rows.filter((r) => r.sourceKind === "budget_line");
 

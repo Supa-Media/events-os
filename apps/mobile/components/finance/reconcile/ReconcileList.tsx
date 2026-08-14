@@ -199,7 +199,6 @@ import { ReconcileGroupHeader } from "./ReconcileGroupHeader";
 import {
   groupSegments,
   rowMarkings,
-  showsCategoryColumn,
   showsMarkedColumn,
   type GroupSummary,
   type ReconcileColumnKey,
@@ -301,9 +300,7 @@ export function ReconcileList({
   selected,
   onToggle,
   onToggleAll,
-  centralScope = false,
   showBook = false,
-  ownChapterId = null,
   centralForItems,
   isManager = false,
   canRename = false,
@@ -333,22 +330,18 @@ export function ReconcileList({
   selected: Set<string>;
   onToggle: (id: string) => void;
   onToggleAll: () => void;
-  /** The caller's OWN chapter, or null. Decides whether a CROSS-BOOK row's
-   *  Category cell is editable: the categories this grid loads are the
-   *  caller's chapter's, so a charge absorbed by a different chapter can't be
-   *  categorized from here (the server enforces the same rule against the
-   *  BUDGET's chapter — see `requireCategoryForCentralTxn`). */
-  ownChapterId?: Id<"chapters"> | null;
+  /* `ownChapterId` and `centralScope` are GONE (2026-08-14). Both existed
+   * only to decide whether a row's Category cell could be edited — the grid
+   * loaded the CALLER's chapter's categories, so a central row (or one
+   * absorbed by a different chapter) got an inert "—" instead of a picker.
+   * One org-wide list means every row gets a real picker and neither prop has
+   * a question left to answer. */
   /** Render the Book column — true when "whose money is this?" stops being
    *  answerable from the page chrome alone: the merged all-books queue (rows
    *  from different books sit next to each other), or a view into a chapter
    *  that isn't the caller's own desk (the chrome names their desk, not the
    *  book on screen). */
   showBook?: boolean;
-  // WP-2.1: reconciling CENTRAL-owned txns. Central money carries no
-  // chapter-scoped links (funds/categories/projects/events are chapter-only), so
-  // the Category column is hidden — central coding is For + Status.
-  centralScope?: boolean;
   // R1b: the caller's finance-MANAGER rank (not just any finance seat) — gates
   // the "Mark personal" row action, which mirrors `cards.flagPersonalCharge`'s
   // own server-side manager-or-cardholder authz.
@@ -440,14 +433,10 @@ export function ReconcileList({
     RECONCILE_COLUMNS_STORAGE_KEY,
     DEFAULT_COLS,
   );
-  // The Category column is chapter-only, so single-central scope normally drops
-  // it — but a CROSS-BOOK row in that scope is absorbed by a chapter's budget
-  // and DOES take that chapter's category. The rule itself lives in `gridView`
-  // (`showsCategoryColumn`) because the Columns menu has to ask the same
-  // question — whether to offer a tick box for a column at all — and two copies
-  // of it would eventually answer differently.
-  const showCategory = showsCategoryColumn(centralScope, rows);
-  // Same shape, same reason: the Marked column exists exactly when the page
+  // The Category column is UNCONDITIONAL since categories went org-wide
+  // (2026-08-14) — every row in every book can carry one, so there is no
+  // capability question left, only the reader's `hidden` preference below.
+  // The Marked column exists exactly when the page
   // has something marked on it, and the Columns menu asks `showsMarkedColumn`
   // too rather than keeping a second copy of the rule.
   const showMarked = showsMarkedColumn(rows);
@@ -474,17 +463,18 @@ export function ReconcileList({
   const hidesForPanel = panelOpen;
   // ── CAPABILITY FIRST, PREFERENCE SECOND ───────────────────────────────────
   // Two different questions, and they must not be allowed to become one. The
-  // clauses above answer CAN this scope render the column (a central row has
-  // no category; the panel is already rendering these three). `hiddenColumns`
+  // clauses above answer CAN this scope render the column (the panel is
+  // already rendering three of them; Book and Marked are data-driven).
+  // `hiddenColumns`
   // answers WANTS TO — the reader's own `?cols=` set, founder ask 2026-08-14:
   // "if I don't want to look at the cardholder and I don't want to look at the
   // category, and I just want to focus on adding things to budgets".
   //
   // They are AND-ed, in that order, so preference can only ever NARROW what
   // capability allows: un-ticking always hides, ticking never conjures a
-  // Category column onto a scope that has none. A preference for a column that
-  // has stepped out is kept (it lives in the URL, not here), so closing the
-  // panel restores exactly the view that was set.
+  // Marked column onto a page with nothing marked. A preference for a column
+  // that has stepped out is kept (it lives in the URL, not here), so closing
+  // the panel restores exactly the view that was set.
   //
   // `check` / `merchant` / `actions` are absent from `ReconcileColumnKey`
   // entirely rather than defaulted to true here — selection, identity and the
@@ -498,7 +488,7 @@ export function ReconcileList({
     amount: !hidden("amount"),
     cardholder: !hidesForPanel && !hidden("cardholder"),
     explanation: !hidesForPanel && !hidden("explanation"),
-    category: showCategory && !hidden("category"),
+    category: !hidden("category"),
     forCol: !hidden("forCol"),
     receipt: !hidesForPanel && !hidden("receipt"),
     status: !hidden("status"),
@@ -508,7 +498,7 @@ export function ReconcileList({
   // The table is exactly as wide as the columns actually on screen — hiding one
   // NARROWS the grid rather than leaving a gap where it used to be.
   //
-  // This used to be a full-width sum with a `(showCategory ? 0 : widths.category)`
+  // This used to be a full-width sum with a `(showBook ? 0 : widths.book)`
   // subtraction per absent column. That reads fine at five and becomes a trap at
   // twelve: every new hideable column is a term somebody has to remember to
   // subtract, and forgetting one is invisible until a bookkeeper wonders why
@@ -533,8 +523,6 @@ export function ReconcileList({
       selected={selected.has(row.id)}
       onToggle={() => onToggle(row.id)}
       isLast={i === rows.length - 1}
-      centralScope={centralScope}
-      ownChapterId={ownChapterId}
       centralForItems={centralForItems}
       isManager={isManager}
       canRename={canRename}
@@ -763,8 +751,6 @@ function ReconcileRow({
   selected,
   onToggle,
   isLast,
-  centralScope,
-  ownChapterId,
   centralForItems,
   isManager,
   canRename,
@@ -780,8 +766,6 @@ function ReconcileRow({
   selected: boolean;
   onToggle: () => void;
   isLast: boolean;
-  centralScope: boolean;
-  ownChapterId: Id<"chapters"> | null;
   centralForItems?: PickerItem[];
   isManager: boolean;
   canRename: boolean;
@@ -817,35 +801,24 @@ function ReconcileRow({
   // read-only rendering below rather than being re-derived client-side, so
   // the grid and the mutations can't drift apart on who may edit what.
   const readOnly = !row.book.canEdit;
-  // Is THIS row central-owned? In a single-book scope the answer is uniform
-  // (`centralScope` covers it), but the merged all-books queue interleaves
-  // central and chapter rows — and they don't accept the same coding. So the
-  // "For" picker offers that row's own valid options rather than offering
-  // options the backend would reject, which is the same "affordance that can't
-  // work" this whole change set is about removing.
+  // Is THIS row central-owned? In a single-book scope the answer is uniform,
+  // but the merged all-books queue interleaves central and chapter rows — and
+  // they still don't accept the same BUDGET. So the "For" picker offers that
+  // row's own valid options rather than offering options the backend would
+  // reject, which is the same "affordance that can't work" this whole change
+  // set is about removing. (Category no longer differs between books.)
   const isCentralRow = row.book.id === CENTRAL;
   // One book paid, a different book's budget absorbed it — see the For cell's
   // CROSS-BOOK FLAG comment. `chargedTo` is null while the row is unattributed,
   // which is most of the review queue, so this is false for those by
   // construction rather than by a separate check.
   const isCrossBook = row.chargedTo != null && row.chargedTo.id !== row.book.id;
-  // CATEGORY on a central-book row: normally none (categories are
-  // chapter-scoped), EXCEPT on a cross-book charge absorbed by the caller's own
-  // chapter — that spend lands on their budget card, and if it isn't
-  // categorized here it can never be, since the row lives in central's book and
-  // the chapter's treasurer can't write it (`requireCategoryForCentralTxn`).
-  // Scoped to the caller's OWN chapter because `categoryItems` is their
-  // chapter's list; a charge absorbed by some OTHER chapter would need that
-  // chapter's categories, which this screen doesn't load.
-  const canCategorizeCrossBook =
-    isCentralRow &&
-    isCrossBook &&
-    ownChapterId != null &&
-    row.chargedTo?.id === ownChapterId;
-  // Only CENTRAL rows are ever inert here, exactly as before — a chapter row
-  // (including a read-only peeked one, whose whole body is already
-  // non-interactive) still renders its real category rather than a bare dash.
-  const hideCategory = centralScope || (isCentralRow && !canCategorizeCrossBook);
+  // CATEGORY is offered on EVERY row now, central included. It used to be inert
+  // ("—") on a central-book row unless the row was cross-book AND absorbed by
+  // the caller's own chapter — a carve-out that existed because the category
+  // list was the caller's chapter's, and a central charge had no list of its
+  // own. There is one org-wide list, so the picker is correct everywhere and
+  // `hideCategory` (and the `canCategorizeCrossBook` test behind it) is gone.
   // A transfer leg has no category and no budget BY DESIGN — it isn't spend,
   // it's the same money moving between two books, and `signedBookCents`
   // deliberately keeps it out of both. Rendering it as an empty "Uncategorized"
@@ -1429,21 +1402,17 @@ function ReconcileRow({
       </Cell>
       ) : null}
 
-      {/* Category (inline dropdown) — chapter-only; central txns have none.
-          The COLUMN is present whenever any chapter row could be in view; an
-          individual central row renders an inert dash in it (see
-          `hideCategory`) so the grid stays aligned without offering a picker
-          that can't commit. */}
+      {/* Category (inline dropdown) — offered on EVERY row, in every book,
+          since categories went org-wide. A central row used to render an inert
+          "—" here, which is the bug this change set started from. The one row
+          that still declines a category is a transfer leg, which isn't spend
+          at all. */}
       {shown.category ? (
         isTransferLeg ? (
           <Cell width={widths.category}>
             <Text className="flex-1 px-2 py-1.5 text-sm text-muted">
               Internal transfer
             </Text>
-          </Cell>
-        ) : hideCategory ? (
-          <Cell width={widths.category}>
-            <Text className="flex-1 px-2 py-1.5 text-sm text-faint">—</Text>
           </Cell>
         ) : (
         <Cell width={widths.category}>

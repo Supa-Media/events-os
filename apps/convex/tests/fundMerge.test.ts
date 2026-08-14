@@ -10,10 +10,15 @@ import { seedChapterFinance } from "../lib/seed/finance";
  *  - the chapter seed creates exactly ONE fund (General Fund, unrestricted),
  *  - the `runMergeFundsIntoGeneral` migration merges every extra fund a
  *    chapter already has into its General Fund, repointing every reference
- *    (`budgetCategories.fundId` — required, `budgets.fundId`,
- *    `transactions.fundId`,
+ *    (`budgets.fundId`, `transactions.fundId`,
  *    `reimbursementLineItems.fundId`, `legacyAccounts.defaultFundId`) before
  *    deleting the extra fund docs,
+ *
+ * `budgetCategories.fundId` used to head that list, and had to: the field was
+ * REQUIRED, so deleting a fund out from under a category broke it outright.
+ * Categories went ORG-WIDE on 2026-08-14 and carry no fund at all, so
+ * `categoriesRepointed` is permanently 0 — asserted below so a future
+ * re-introduction of the link can't pass silently.
  *  - the whole migration is idempotent (a settled re-run is a no-op) and safe
  *    on a fund-less chapter or a chapter already down to one fund.
  */
@@ -77,11 +82,10 @@ describe("runMergeFundsIntoGeneral (WP-1.4 fund merge migration)", () => {
       sortOrder: 1,
     });
 
-    // A category REQUIRED to live under the extra fund (required field).
+    // An org-wide category — deliberately fund-less, to pin that a fund merge
+    // has nothing to do to this table any more.
     const categoryId = await run(s.t, (ctx) =>
       ctx.db.insert("budgetCategories", {
-        chapterId: s.chapterId,
-        fundId: designatedId,
         name: "Missions",
         kind: "category",
         sortOrder: 0,
@@ -156,16 +160,18 @@ describe("runMergeFundsIntoGeneral (WP-1.4 fund merge migration)", () => {
     );
     expect(result.chaptersMerged).toBe(1);
     expect(result.fundsDeleted).toBe(1);
-    expect(result.categoriesRepointed).toBe(1);
+    // Permanently 0: a category has no fund to repoint.
+    expect(result.categoriesRepointed).toBe(0);
     expect(result.budgetsRepointed).toBe(1);
     expect(result.transactionsRepointed).toBe(1);
     expect(result.reimbursementLineItemsRepointed).toBe(1);
     expect(result.legacyAccountsRepointed).toBe(1);
 
-    // Every reference now points at the keeper (General Fund).
+    // Every reference now points at the keeper (General Fund) — and the
+    // category, which never pointed anywhere, is untouched.
     expect(
       (await run(s.t, (ctx) => ctx.db.get(categoryId)))?.fundId,
-    ).toBe(generalId);
+    ).toBeUndefined();
     expect((await run(s.t, (ctx) => ctx.db.get(budgetId)))?.fundId).toBe(
       generalId,
     );

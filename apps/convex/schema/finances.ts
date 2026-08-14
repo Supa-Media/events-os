@@ -96,12 +96,40 @@ export const funds = defineTable({
   createdAt: v.number(),
 }).index("by_chapter", ["chapterId"]);
 
-// ── Budget categories (self-nesting under a fund) ────────────────────────────
-/** A category (grouping) or line item (leaf) under a fund. Self-nests via
- *  `parentCategoryId`, kept acyclic by the mutation layer. */
+// ── Budget categories (ORG-WIDE taxonomy, self-nesting) ──────────────────────
+/**
+ * WHAT KIND OF SPEND THIS IS — "Supplies", "Software", "Transportation". ONE
+ * list for the whole org (owner, 2026-08-14: "the category should be the same
+ * across all chapters — unwire the category scope to a specific chapter").
+ *
+ * A category is a pure TAXONOMY LABEL. It is not a pot of money and it holds no
+ * balance; the chapter that spent the dollar is on the TRANSACTION
+ * (`transactions.chapterId`), never on the label. That is the whole reason this
+ * table is org-wide while `funds` above stays chapter-scoped: a fund IS money
+ * — a chapter-owned pot under a donor restriction — and merging those across
+ * chapters would merge real balances. Merging labels merges nothing but words.
+ *
+ * The cost of the old design was concrete: a CENTRAL-book charge could not
+ * carry a category at all (there were no central categories to give it), so a
+ * Public Worship card buying something for New York sat in an "Uncategorized"
+ * bar on New York's budget that literally nobody could close — the central FM
+ * was refused, and New York's treasurer can't write a row in central's book.
+ * With one org list that refusal has no reason to exist and is gone.
+ *
+ * Self-nests via `parentCategoryId`, kept acyclic by the mutation layer.
+ *
+ * `chapterId` / `fundId` are LEGACY, VESTIGIAL columns. Migration 0076
+ * collapses same-named categories across chapters into one row, repoints every
+ * reference, and CLEARS both fields — nothing in the app reads or writes them
+ * any more. They survive in the validator only because Convex fails a deploy on
+ * any document carrying a field the validator doesn't allow, and the deploy
+ * lands before the migration does (the same constraint documented on
+ * `transactions.aiSuggestion` below). Dropping the two columns is a follow-up
+ * once no production row still carries them.
+ */
 export const budgetCategories = defineTable({
-  chapterId: v.id("chapters"),
-  fundId: v.id("funds"),
+  chapterId: v.optional(v.id("chapters")),
+  fundId: v.optional(v.id("funds")),
   parentCategoryId: v.optional(v.id("budgetCategories")),
   name: v.string(),
   kind: v.union(...BUDGET_CATEGORY_KINDS.map((k) => v.literal(k))),
@@ -120,8 +148,11 @@ export const budgetCategories = defineTable({
   expenseType: v.optional(v.union(...EXPENSE_TYPES.map((t) => v.literal(t)))),
   createdAt: v.number(),
 })
-  .index("by_chapter", ["chapterId"])
-  .index("by_fund", ["fundId"])
+  // No `by_chapter` / `by_fund` index any more: both columns are vestigial (see
+  // the table doc), and an index over a field every row leaves empty is an
+  // invitation to re-scope the taxonomy by accident. The table is small by
+  // nature — one org-wide list, dozens of rows — so every read is a bounded
+  // full scan, the same shape `reconciliation.ts` already used for it.
   .index("by_parent", ["parentCategoryId"]);
 
 // ── Finance teams / departments ──────────────────────────────────────────────

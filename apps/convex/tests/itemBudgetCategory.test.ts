@@ -9,8 +9,12 @@ import type { Id } from "../_generated/dataModel";
  * Money-page unification PR1: `eventItems.budgetCategoryId` is an optional
  * override an item can carry (unset → the module default mapping applies at
  * read time, a follow-up PR). Covers set / clear (null) / omit-leaves-alone,
- * plus tenancy + active-status validation mirroring
+ * plus existence + active-status validation mirroring
  * `budgetLines.ts#verifyCategory`.
+ *
+ * The TENANCY half of that validation is gone (2026-08-14): categories are
+ * org-wide, so there is no chapter on the label for an item's chapter to be
+ * checked against. Existence and active are what remain.
  */
 
 async function seedEventItem(
@@ -51,31 +55,22 @@ async function seedEventItem(
   });
 }
 
-/** Insert a fund + category directly (bypassing the finance-manager gate on
- *  `finances.createCategory`, which is out of scope for this write path). */
+/** Insert a category directly (bypassing the finance-manager gate on
+ *  `finances.createCategory`, which is out of scope for this write path).
+ *  Categories are ORG-WIDE since 2026-08-14 — no chapter, no fund. */
 async function seedCategory(
   setup: ChapterSetup,
-  opts: { chapterId?: Id<"chapters">; isActive?: boolean } = {},
+  opts: { name?: string; isActive?: boolean } = {},
 ): Promise<Id<"budgetCategories">> {
   const { t } = setup;
-  const chapterId = opts.chapterId ?? setup.chapterId;
-  return await run(t, async (ctx) => {
-    const fundId = await ctx.db.insert("funds", {
-      chapterId,
-      name: "General",
-      restriction: "unrestricted",
-      sortOrder: 0,
-      createdAt: Date.now(),
-    });
-    return await ctx.db.insert("budgetCategories", {
-      chapterId,
-      fundId,
-      name: "Supplies",
+  return await run(t, async (ctx) =>
+    ctx.db.insert("budgetCategories", {
+      name: opts.name ?? "Supplies",
       kind: "lineItem",
       isActive: opts.isActive ?? true,
       createdAt: Date.now(),
-    });
-  });
+    }),
+  );
 }
 
 describe("updateEventItem budgetCategoryId", () => {
@@ -133,30 +128,43 @@ describe("updateEventItem budgetCategoryId", () => {
     expect(item?.title).toBe("Renamed");
   });
 
-  test("a category from another chapter is rejected", async () => {
+  // Categories went ORG-WIDE on 2026-08-14, so "a category from another
+  // chapter" no longer names anything — every category is everyone's. What
+  // replaces that rejection is the only category-shaped refusal left here: an
+  // id that isn't a category at all (a deleted one) still can't be attached.
+  test("a category that no longer exists is rejected", async () => {
     const t = newT();
     const setup = await setupChapter(t);
     const itemId = await seedEventItem(setup);
-    const otherChapterId = await run(t, (ctx) =>
-      ctx.db.insert("chapters", {
-        name: "Boston",
-        isActive: true,
-        createdAt: Date.now(),
-      }),
-    );
-    const foreignCategoryId = await seedCategory(setup, {
-      chapterId: otherChapterId,
-    });
+    const goneCategoryId = await seedCategory(setup, { name: "Deleted" });
+    await run(t, (ctx) => ctx.db.delete(goneCategoryId));
 
     await expect(
       setup.as.mutation(api.items.updateEventItem, {
         itemId,
-        budgetCategoryId: foreignCategoryId,
+        budgetCategoryId: goneCategoryId,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
 
     const item = await run(t, (ctx) => ctx.db.get(itemId));
     expect(item?.budgetCategoryId).toBeUndefined();
+  });
+
+  // ...and the org's list really is one list: a category seeded with no
+  // chapter attaches to an item on any chapter's event.
+  test("an org-wide category attaches to any chapter's item", async () => {
+    const t = newT();
+    const setup = await setupChapter(t);
+    const itemId = await seedEventItem(setup);
+    const categoryId = await seedCategory(setup, { name: "Transportation" });
+
+    await setup.as.mutation(api.items.updateEventItem, {
+      itemId,
+      budgetCategoryId: categoryId,
+    });
+
+    const item = await run(t, (ctx) => ctx.db.get(itemId));
+    expect(item?.budgetCategoryId).toBe(categoryId);
   });
 
   test("an inactive category is rejected", async () => {

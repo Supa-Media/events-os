@@ -330,37 +330,50 @@ describe("addLine: authz + validation", () => {
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
-  test("a category from another chapter is rejected", async () => {
+  // Was "a category from another chapter is rejected". Categories are ORG-WIDE
+  // (2026-08-14) — the label a Boston treasurer picks IS the label a New York
+  // treasurer picks — so a plan line takes any real category and rejects only
+  // an id with nothing behind it.
+  test("an org-wide category is accepted on any chapter's plan line", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const budgetId = await makeChapterBudget(s);
-    const foreignCategoryId = await run(t, async (ctx) => {
-      const other = await ctx.db.insert("chapters", {
-        name: "Boston",
-        isActive: true,
-        createdAt: Date.now(),
-      });
-      const fundId = await ctx.db.insert("funds", {
-        chapterId: other,
-        name: "General",
-        restriction: "unrestricted",
-        sortOrder: 0,
-        createdAt: Date.now(),
-      });
-      return ctx.db.insert("budgetCategories", {
-        chapterId: other,
-        fundId,
+    const categoryId = await run(t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
         name: "Food",
         kind: "lineItem",
         createdAt: Date.now(),
-      });
+      }),
+    );
+    const lineId = await s.as.mutation(api.budgetLines.addLine, {
+      budgetId,
+      description: "Snacks",
+      plannedCents: 1000,
+      categoryId,
     });
+    expect((await run(t, (ctx) => ctx.db.get(lineId)))?.categoryId).toBe(
+      categoryId,
+    );
+  });
+
+  test("a category that no longer exists is rejected", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const budgetId = await makeChapterBudget(s);
+    const goneCategoryId = await run(t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        name: "Deleted",
+        kind: "lineItem",
+        createdAt: Date.now(),
+      }),
+    );
+    await run(t, (ctx) => ctx.db.delete(goneCategoryId));
     await expect(
       s.as.mutation(api.budgetLines.addLine, {
         budgetId,
         description: "Snacks",
         plannedCents: 1000,
-        categoryId: foreignCategoryId,
+        categoryId: goneCategoryId,
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });
@@ -395,7 +408,6 @@ describe("updateLine + removeLine", () => {
       restriction: "unrestricted",
     });
     const categoryId = await s.as.mutation(api.finances.createCategory, {
-      fundId,
       name: "Food",
       kind: "lineItem",
     });
@@ -646,23 +658,18 @@ describe("mergeLineIntoItem: human-confirmed dedup of a duplicate plan line (PR6
     });
   }
 
-  async function seedCategory(s: ChapterSetup): Promise<Id<"budgetCategories">> {
-    return await run(s.t, async (ctx) => {
-      const fundId = await ctx.db.insert("funds", {
-        chapterId: s.chapterId,
-        name: "General",
-        restriction: "unrestricted",
-        sortOrder: 0,
-        createdAt: Date.now(),
-      });
-      return await ctx.db.insert("budgetCategories", {
-        chapterId: s.chapterId,
-        fundId,
-        name: "AV",
+  /** An org-wide category (no chapter, no fund — see `schema/finances.ts`). */
+  async function seedCategory(
+    s: ChapterSetup,
+    name = "AV",
+  ): Promise<Id<"budgetCategories">> {
+    return await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
+        name,
         kind: "lineItem",
         createdAt: Date.now(),
-      });
-    });
+      }),
+    );
   }
 
   /** A one_time EVENT budget scoped to `eventId`, created as a manager (the
@@ -872,7 +879,15 @@ describe("mergeLineIntoItem: human-confirmed dedup of a duplicate plan line (PR6
     ).rejects.toBeInstanceOf(ConvexError);
   });
 
-  test("a central-budget line whose category belongs to a DIFFERENT chapter than the event: merge still succeeds (line deleted), category NOT copied", async () => {
+  // Was: "a central-budget line whose category belongs to a DIFFERENT chapter
+  // than the event — merge succeeds, category NOT copied". That exploit shape
+  // died with chapter-scoped categories: a line on a central budget for a
+  // chapter-A event carrying a category somebody created while standing in
+  // chapter B is now simply a line carrying an org category, and copying it
+  // onto the item is the CORRECT outcome, not a leak. The merge's own
+  // re-verify still stands — it just has one clause left (active), covered by
+  // the deactivated-category test below.
+  test("a central-budget line's category is copied onto the item on merge", async () => {
     const t = newT();
     const s = await setupChapter(t, { chapterName: "Chapter A" });
     const { eventId, itemId } = await seedEvent(s);
@@ -905,18 +920,16 @@ describe("mergeLineIntoItem: human-confirmed dedup of a duplicate plan line (PR6
       }),
     );
 
-    // A category that belongs to a DIFFERENT chapter than the event's — only
-    // reachable by direct-inserting the line (addLine's own verifyCategory
-    // would reject this category for a chapter-A-homed caller; this exploit
-    // shape is what the merge's OWN re-verify must catch, per the bug fix).
+    // A category created while standing in a DIFFERENT chapter. It is the same
+    // org category either way now, so the merge copies it.
     const chapterB = await setupChapter(t, { chapterName: "Chapter B" });
-    const foreignCategoryId = await seedCategory(chapterB);
+    const orgCategoryId = await seedCategory(chapterB, "AV (org)");
     const lineId = await run(t, (ctx) =>
       ctx.db.insert("budgetLines", {
         budgetId: centralBudgetId,
         description: "AV rental",
         plannedCents: 15000,
-        categoryId: foreignCategoryId,
+        categoryId: orgCategoryId,
         sortOrder: 0,
         createdBy: s.userId,
         createdAt: Date.now(),
@@ -927,7 +940,7 @@ describe("mergeLineIntoItem: human-confirmed dedup of a duplicate plan line (PR6
 
     expect(await run(t, (ctx) => ctx.db.get(lineId))).toBeNull();
     const item = await run(t, (ctx) => ctx.db.get(itemId));
-    expect(item?.budgetCategoryId).toBeUndefined();
+    expect(item?.budgetCategoryId).toBe(orgCategoryId);
   });
 
   test("a deactivated category on the line: merge still succeeds (line deleted), category NOT copied", async () => {

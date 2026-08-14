@@ -118,6 +118,8 @@ import { fetchGivebutterFeeEntries } from "./givebutterSync";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 const PAGE = 100;
+/** A generous bound on the org's one category list (dozens of rows). */
+const CATEGORY_SCAN_LIMIT = 5000;
 
 /** The rails whose fees are swept. Both write one ledger row per month. */
 const FEE_RAIL = {
@@ -343,11 +345,10 @@ export const upsertFeeRows = internalMutation({
       .first();
     if (!chapter) throw new ConvexError({ code: "NO_CHAPTER", message: "NY chapter not found." });
 
+    // "Bank & Fees" off the ORG's one category list (chapter-scoped until
+    // 2026-08-14). Bounded read; the table is dozens of rows.
     const category = (
-      await ctx.db
-        .query("budgetCategories")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-        .collect()
+      await ctx.db.query("budgetCategories").take(CATEGORY_SCAN_LIMIT)
     ).find((c) => c.name === "Bank & Fees");
 
     /**

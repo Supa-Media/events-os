@@ -207,11 +207,11 @@ export const expenses = query({
     const spentCents = counted.reduce((sum, tr) => sum + tr.amountCents, 0);
     const capCents = effectiveCapCents(budget);
 
-    // Category names, resolved through the budget's own chapter (bounded
-    // chapter-wide read — the same convention `budgetDetail.ts` uses).
+    // Category names — the org's one list (bounded read, the same convention
+    // `budgetDetail.ts` uses). Categories stopped being chapter-scoped on
+    // 2026-08-14, so there is no chapter to resolve them "through".
     const categoryDocs = await ctx.db
       .query("budgetCategories")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
       .take(ROLLUP_SCAN_LIMIT);
     const catName = new Map(categoryDocs.map((c) => [c._id, c.name] as const));
 

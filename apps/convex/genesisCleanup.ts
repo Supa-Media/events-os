@@ -168,10 +168,8 @@ async function loadContext(ctx: MutationCtx, write = false): Promise<Ctxs> {
     if (b.label && !budgetByLabel.has(b.label)) budgetByLabel.set(b.label, b._id);
   }
 
-  const cats = await ctx.db
-    .query("budgetCategories")
-    .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
-    .collect();
+  // The ORG's one category list (chapter-scoped until 2026-08-14).
+  const cats = await ctx.db.query("budgetCategories").collect();
   const categoryByName = new Map<string, Id<"budgetCategories">>();
   for (const c of cats) if (!categoryByName.has(c.name)) categoryByName.set(c.name, c._id);
 

@@ -793,6 +793,33 @@
  * in-flight lock landed later in the same branch to stop a runaway loop and a
  * double-send race, so both were corrected to say it still works on demand
  * across any gap but refuses a back-to-back double-press.
+ *
+ * ── 2026-08-14 · ONE CATEGORY LIST FOR THE WHOLE ORG ───────────────────────
+ * Owner: "the category should be the same across all chapters — unwire the
+ * category scope to a specific chapter." `budgetCategories` stopped being
+ * chapter-scoped; `funds` did not, and the difference is the lesson: a fund is
+ * a chapter-owned pot of restricted money, a category is a word for what kind
+ * of spend something was.
+ *
+ * ONE SECTION MOVED, `finance-cross-chapter-audit`, because it is the only
+ * place the old scoping was taught as a RULE rather than assumed. Its "Whose
+ * card paid ≠ whose budget it counts against" block instructed an FM to give a
+ * cross-book row the receiving chapter's category "in the same pass — it's the
+ * only chance anyone gets", because the charge lives in Central's book and that
+ * chapter's Treasurer can't edit it. That was true, and it described a HOLE:
+ * with no central category list, cross-book spend that missed its one chance
+ * sat in an "Uncategorized" bar that neither person could ever close. The
+ * paragraph now teaches one org list and the surviving asymmetry, and still
+ * says to code it on the spot — not because it's the last chance, but because
+ * you are the person who knows what it was for.
+ *
+ * ONE QUIZ QUESTION SWAPPED, never grown (the 5-question cap
+ * `apps/convex/tests/academy.test.ts` enforces). IN: whose categories a charge
+ * on a Central card picks from — the one fact a reader could get wrong from
+ * memory of the old rule, with funds named as the deliberate opposite. OUT:
+ * "what's the FM's actual relationship to a chapter's spending", whose answer
+ * the "Trust, not permission" rule two blocks above states verbatim; its
+ * content is carried in the new question's explanation, so nothing is lost.
  */
 
 import type {
@@ -3062,7 +3089,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Whose card paid ≠ whose budget it counts against",
-        text: "Every charge carries **two** facts, and they're different questions. **Paid from** is whose card or account the money actually left — that's what reconciles against a bank statement, and coding a charge never changes it. **Charged to** is whose budget it counts against — that's what a budget's spent-vs-left is measuring. Usually they match. When they don't, one book fronted money for another: a Public Worship card buying something for New York is *paid from Central, charged to New York*. Reconcile flags that row so you see it as you code it, the charge counts against New York's budget (not Central's), and the app works out what's owed — no spreadsheet, no accrual to remember. Settle it whenever you like from the central dashboard's **Inter-chapter balances**; the balance is recomputed live from the ledger, so a miscode you fix simply disappears from it.\n\nDon't reach for **Fix who paid** for this. That button rewrites which account the money left — it's for correcting a charge that landed in the wrong book, not for deciding whose budget carries the cost. Use it on the venue deposit and you'd be claiming New York's account paid, which its bank statement would flatly contradict, and the amount Central is owed would vanish with it.\n\nGive that row New York's **category** too, in the same pass. It's the only chance anyone gets: the charge lives in Central's book, so New York's Treasurer can't edit it — leave the category blank and that spend sits in an \"Uncategorized\" bar on their budget forever. (Fund stays Central's business either way. A fund records whose *restricted* money paid, and Central's card didn't draw on New York's.)",
+        text: "Every charge carries **two** facts, and they're different questions. **Paid from** is whose card or account the money actually left — that's what reconciles against a bank statement, and coding a charge never changes it. **Charged to** is whose budget it counts against — that's what a budget's spent-vs-left is measuring. Usually they match. When they don't, one book fronted money for another: a Public Worship card buying something for New York is *paid from Central, charged to New York*. Reconcile flags that row so you see it as you code it, the charge counts against New York's budget (not Central's), and the app works out what's owed — no spreadsheet, no accrual to remember. Settle it whenever you like from the central dashboard's **Inter-chapter balances**; the balance is recomputed live from the ledger, so a miscode you fix simply disappears from it.\n\nDon't reach for **Fix who paid** for this. That button rewrites which account the money left — it's for correcting a charge that landed in the wrong book, not for deciding whose budget carries the cost. Use it on the venue deposit and you'd be claiming New York's account paid, which its bank statement would flatly contradict, and the amount Central is owed would vanish with it.\n\nGive that row a **category** too, in the same pass. There is ONE category list for the whole org — Supplies is Supplies whether Central or New York paid — so every charge in every book takes one, and the picker offers you the same labels wherever you are standing. It used to be different, and the difference was a hole: categories belonged to a chapter, a Central charge had none to pick from, and cross-book spend sat in an \"Uncategorized\" bar on the receiving chapter's budget that literally nobody could close. That's gone. Still do it while you're on the row, though — you're the person who knows what it was for. (Fund is the one thing that stays Central's business. A fund records whose *restricted* money paid, and Central's card didn't draw on New York's — funds are chapter-owned money, categories are just words.)",
       },
       {
         kind: "rule",
@@ -3129,16 +3156,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Paid-from never moves — Central's account really did pay, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap between the two is a receivable the app computes for you, visible in Inter-chapter balances — and settled automatically by the morning reconciliation engine, which books the transfer overnight so every book reads true by morning (the Accounts page shows each one for audit, and when the Financial Manager has turned on Real cash movement, the actual money moves between the Increase accounts to match).",
       },
       {
-        prompt: "What's the FM's actual relationship to a chapter's spending?",
+        prompt:
+          "Whose categories does a charge on a Central card get to pick from?",
         options: [
-          "A gate every purchase must pass first",
-          "An auditor who can verify any chapter's numbers at any time — oversight, not pre-approval",
-          "No relationship — chapters are fully independent",
-          "The FM personally approves every transaction",
+          "None — a Central charge carries no category",
+          "The same list every chapter uses — there's one category list for the whole org",
+          "Only the categories of the chapter whose budget it's charged to",
+          "Central has its own separate list, kept apart from the chapters'",
         ],
         answerIndex: 1,
         explanation:
-          "The FM audits and can escalate receipt-chasing, but chapter budgets are approved by the Chapter Director, not pre-cleared by the FM.",
+          "Categories are org-wide: Supplies means Supplies in every book, so every charge anywhere takes one from the same list and the picker offers you the same labels wherever you're standing. Funds are the opposite, deliberately — a fund is a chapter's own restricted money, so it stays chapter-owned. And on your actual relationship to a chapter's spending: you're an auditor who can verify any chapter's numbers at any time, not a gate purchases wait behind. Chapter budgets are approved by the Chapter Director, never pre-cleared by you.",
       },
     ],
   },

@@ -50,19 +50,16 @@ export async function runLabelFeeCoverageRows(
     }
 
     let categoryId: string | null = null;
-    // `transactions.chapterId` admits the `"central"` sentinel; categories are
-    // chapter-only. A coverage row cannot currently be central (a repayment's
-    // book is always a real chapter), so this is the type system being right
-    // about a case that does not arise — skip the lookup rather than pretend.
-    if (row.categoryId == null && row.chapterId !== "central") {
-      const chapterId = row.chapterId;
-      const key = String(chapterId);
+    // Categories went ORG-WIDE on 2026-08-14, so this no longer keys off the
+    // row's book at all — there is one list, and a central row can now carry a
+    // category exactly like a chapter row. The per-chapter memo below survives
+    // as a single-entry cache under a constant key rather than being unwound,
+    // so a re-run of this historical migration keeps its shape.
+    if (row.categoryId == null) {
+      const key = "org";
       if (!categoryByChapter.has(key)) {
         const found = (
-          await ctx.db
-            .query("budgetCategories")
-            .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-            .collect()
+          await ctx.db.query("budgetCategories").collect()
         ).find((c) => c.name === FEE_CATEGORY_NAME);
         categoryByChapter.set(key, found ? String(found._id) : null);
       }

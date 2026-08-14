@@ -373,14 +373,16 @@ export function registerReimburseApiRoutes(http: HttpRouter): void {
 // ── Public read queries backing the page (registered as api functions) ────────
 
 // A generous bound on a public-facing category list (mirrors
-// `insertDefaultExpenseCategories`'s own scan limit, but small — a chapter's
+// `insertDefaultExpenseCategories`'s own scan limit, but small — the org's
 // categories number in the dozens, and this rides on every form load).
 const PUBLIC_CATEGORY_LIMIT = 500;
 
 /**
  * Chapter display data for the public reimburse form, by slug. Public (no auth)
- * — the chapter's name + its own slug, PLUS its active budget categories
- * (id, name, `expenseType` hint).
+ * — the chapter's name + its own slug, PLUS the ORG's active budget categories
+ * (id, name, `expenseType` hint). The list stopped being the chapter's own on
+ * 2026-08-14; every chapter's form now offers the same labels, which is what
+ * the claimant-facing copy already implied.
  *
  * Category names ride here (founder decision, verbatim: "i don't see an
  * issue with allowing them to see the buckets and then we can correct it on
@@ -388,9 +390,9 @@ const PUBLIC_CATEGORY_LIMIT = 500;
  * category names are already public via the published ledger (every
  * transaction prints its category), so handing them to the form ahead of
  * time discloses nothing new. What a claimant picks here is a SUGGESTION,
- * not a decision: `submitPublicReimbursement` re-validates the id belongs to
- * THIS chapter and is active before persisting it, and a finance manager can
- * always correct it at review (see that mutation's own doc, and
+ * not a decision: `submitPublicReimbursement` re-validates the id is a real,
+ * active category before persisting it, and a finance manager can always
+ * correct it at review (see that mutation's own doc, and
  * `reimbursements.ts#get`'s line projection).
  *
  * It DOES carry the org's coding policy numbers (the meal-names threshold and
@@ -411,7 +413,6 @@ export const chapterForReimburse = query({
     const { namesMaxHeadcount } = await codingPolicy(ctx);
     const categoryRows = await ctx.db
       .query("budgetCategories")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapter._id))
       .take(PUBLIC_CATEGORY_LIMIT);
     const categories = categoryRows
       .filter((c) => c.isActive !== false)

@@ -106,28 +106,27 @@ async function fundsFor(
   );
 }
 
-/** Count `budgetCategories` in a chapter (raw read — bypasses role/active-chapter). */
-async function categoryCount(
-  s: ChapterSetup,
-  chapterId: Id<"chapters">,
-): Promise<number> {
-  const rows = await run(s.t, (ctx) =>
-    ctx.db
-      .query("budgetCategories")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-      .collect(),
-  );
-  return rows.length;
+/** Every `budgetCategories` row (raw read — bypasses role/active-chapter).
+ *  There is ONE org-wide list since 2026-08-14, so this takes no chapter. */
+async function allCategories(s: ChapterSetup) {
+  return await run(s.t, (ctx) => ctx.db.query("budgetCategories").collect());
+}
+
+/** Size of the org's one category list. */
+async function categoryCount(s: ChapterSetup): Promise<number> {
+  return (await allCategories(s)).length;
 }
 
 describe("Part A — seedDefaultExpenseCategories", () => {
-  test("creates the full default set for an empty chapter; idempotent; chapter-scoped", async () => {
+  test("creates the full default set ONCE for the whole org; idempotent; NOT chapter-scoped", async () => {
     const t = newT();
     // Superuser gates the public seed mutation.
     const s = await setupChapter(t, { email: "seyi@publicworship.life" });
     await insertGeneralFund(s, s.chapterId);
 
-    // A second chapter (with a fund) that we never seed — proves scoping.
+    // A second chapter (with its own fund). This used to prove the categories
+    // were chapter-SCOPED; it now proves the opposite — seeding "for" it finds
+    // the org's list already there and adds nothing.
     const otherChapterId = await run(t, (ctx) =>
       ctx.db.insert("chapters", {
         name: "Other",
@@ -148,32 +147,30 @@ describe("Part A — seedDefaultExpenseCategories", () => {
 
     const first = await s.as.mutation(api.finances.seedDefaultExpenseCategories, {});
     expect(first.inserted).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
-    expect(await categoryCount(s, s.chapterId)).toBe(
-      DEFAULT_EXPENSE_CATEGORIES.length,
-    );
+    expect(await categoryCount(s)).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
 
-    // Every seeded row is a `kind: "category"` under the General Fund and names
-    // exactly the default set.
-    const rows = await run(t, (ctx) =>
-      ctx.db
-        .query("budgetCategories")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
-        .collect(),
-    );
+    // Every seeded row is a `kind: "category"`, names exactly the default set,
+    // and belongs to NO chapter and NO fund — a category is a label now.
+    const rows = await allCategories(s);
     expect(rows.every((r) => r.kind === "category")).toBe(true);
     expect(new Set(rows.map((r) => r.name))).toEqual(
       new Set(DEFAULT_EXPENSE_CATEGORIES),
     );
+    expect(rows.every((r) => r.chapterId === undefined)).toBe(true);
+    expect(rows.every((r) => r.fundId === undefined)).toBe(true);
 
-    // Chapter-scoped: the untouched chapter still has none.
-    expect(await categoryCount(s, otherChapterId)).toBe(0);
+    // ORG-WIDE: seeding against the OTHER chapter adds nothing, because the
+    // list it would create is the one that already exists.
+    const forOther = await s.as.mutation(api.finances.seedDefaultExpenseCategories, {
+      chapterId: otherChapterId,
+    });
+    expect(forOther.inserted).toBe(0);
+    expect(await categoryCount(s)).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
 
     // Idempotent: a re-run inserts nothing and leaves the count unchanged.
     const second = await s.as.mutation(api.finances.seedDefaultExpenseCategories, {});
     expect(second.inserted).toBe(0);
-    expect(await categoryCount(s, s.chapterId)).toBe(
-      DEFAULT_EXPENSE_CATEGORIES.length,
-    );
+    expect(await categoryCount(s)).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
   });
 
   test("seeds the one default fund first for a fund-less chapter, then categories; idempotent", async () => {
@@ -197,18 +194,12 @@ describe("Part A — seedDefaultExpenseCategories", () => {
     expect(funds).toHaveLength(1);
     const general = funds.find((f) => f.name === "General Fund");
     expect(general?.restriction).toBe("unrestricted");
-    expect(await categoryCount(s, s.chapterId)).toBe(
-      DEFAULT_EXPENSE_CATEGORIES.length,
-    );
+    expect(await categoryCount(s)).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
 
-    // Categories hang off the newly-created General Fund.
-    const rows = await run(t, (ctx) =>
-      ctx.db
-        .query("budgetCategories")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
-        .collect(),
-    );
-    expect(rows.every((r) => r.fundId === general?._id)).toBe(true);
+    // Categories DON'T hang off the fund any more — the fund is the chapter's
+    // restricted money, the categories are the org's vocabulary.
+    const rows = await allCategories(s);
+    expect(rows.every((r) => r.fundId === undefined)).toBe(true);
 
     // Idempotent: a re-run adds neither funds nor categories.
     const second = await s.as.mutation(
@@ -217,9 +208,7 @@ describe("Part A — seedDefaultExpenseCategories", () => {
     );
     expect(second.inserted).toBe(0);
     expect(await fundsFor(s, s.chapterId)).toHaveLength(DEFAULT_FUNDS.length);
-    expect(await categoryCount(s, s.chapterId)).toBe(
-      DEFAULT_EXPENSE_CATEGORIES.length,
-    );
+    expect(await categoryCount(s)).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
   });
 
   test("non-superuser is rejected", async () => {
@@ -231,7 +220,7 @@ describe("Part A — seedDefaultExpenseCategories", () => {
     ).rejects.toThrow();
   });
 
-  test("runSeedDefaultExpenseCategories (internal) seeds every category-less chapter, idempotently", async () => {
+  test("runSeedDefaultExpenseCategories (internal) seeds the org list once, idempotently", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await insertGeneralFund(s, s.chapterId);
@@ -242,11 +231,9 @@ describe("Part A — seedDefaultExpenseCategories", () => {
     );
     expect(first.chaptersSeeded).toBe(1);
     expect(first.inserted).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
-    expect(await categoryCount(s, s.chapterId)).toBe(
-      DEFAULT_EXPENSE_CATEGORIES.length,
-    );
+    expect(await categoryCount(s)).toBe(DEFAULT_EXPENSE_CATEGORIES.length);
 
-    // Re-run: the chapter already has categories → skipped.
+    // Re-run: the org already has the list → nothing inserted.
     const second = await t.mutation(
       internal.finances.runSeedDefaultExpenseCategories,
       {},
