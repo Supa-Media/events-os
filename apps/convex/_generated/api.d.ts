@@ -319,7 +319,7 @@ import type * as migrations_0069_materialize_reimbursement_receipts from "../mig
 import type * as migrations_0070_link_wire_gifts_to_their_deposit from "../migrations/0070_link_wire_gifts_to_their_deposit.js";
 import type * as migrations_0071_remove_unexecuted_balance_settlements from "../migrations/0071_remove_unexecuted_balance_settlements.js";
 import type * as migrations_0072_fold_fee_coverage_into_gifts from "../migrations/0072_fold_fee_coverage_into_gifts.js";
-import type * as migrations_0073_backfill_repayment_fee_coverage from "../migrations/0073_backfill_repayment_fee_coverage.js";
+import type * as migrations_0073_book_known_repayment_fee_coverage from "../migrations/0073_book_known_repayment_fee_coverage.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -749,7 +749,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0070_link_wire_gifts_to_their_deposit": typeof migrations_0070_link_wire_gifts_to_their_deposit;
   "migrations/0071_remove_unexecuted_balance_settlements": typeof migrations_0071_remove_unexecuted_balance_settlements;
   "migrations/0072_fold_fee_coverage_into_gifts": typeof migrations_0072_fold_fee_coverage_into_gifts;
-  "migrations/0073_backfill_repayment_fee_coverage": typeof migrations_0073_backfill_repayment_fee_coverage;
+  "migrations/0073_book_known_repayment_fee_coverage": typeof migrations_0073_book_known_repayment_fee_coverage;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
