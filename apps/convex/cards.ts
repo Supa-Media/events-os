@@ -5083,6 +5083,8 @@ export const FEE_COVERAGE_LABEL = "Processing fee covered by payer";
  *  the coverage joins them there so a book's fee line and the money that
  *  funded it are read together. */
 const FEE_CATEGORY_NAME = "Bank & Fees";
+/** A generous bound on the org's one category list (dozens of rows). */
+const CATEGORY_SCAN_LIMIT = 5000;
 
 export async function postRepaymentFeeCoverage(
   ctx: MutationCtx,
@@ -5137,13 +5139,12 @@ export async function postRepaymentFeeCoverage(
   // The CATEGORY is the same one the fee it offsets is booked to, so the cost
   // and the money that covered it land together rather than the funding
   // appearing as uncategorised income beside a categorised expense. Looked up
-  // by name on the row's own book and simply left unset if that book has no
-  // such category — a missing category must not cost the row.
+  // by name on the ORG's one category list (chapter-scoped until 2026-08-14 —
+  // which also means this can no longer miss because the row's own book
+  // happened not to have seeded the label), and simply left unset if no such
+  // category exists — a missing category must not cost the row.
   const feeCategory = (
-    await ctx.db
-      .query("budgetCategories")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", first.chapterId))
-      .collect()
+    await ctx.db.query("budgetCategories").take(CATEGORY_SCAN_LIMIT)
   ).find((c) => c.name === FEE_CATEGORY_NAME);
 
   const now = Date.now();

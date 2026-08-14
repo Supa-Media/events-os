@@ -91,6 +91,7 @@ import {
 } from "@events-os/shared";
 import { normalizeEmail, getUserEmail } from "./lib/access";
 import { requireChapterId, requireInChapter } from "./lib/context";
+import { requireBudgetCategory } from "./lib/budgetCategoryAccess";
 import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { appUrl, siteUrl } from "./lib/siteUrl";
@@ -413,17 +414,24 @@ async function createContractorPayment(
 
   // Every client-supplied id must belong to THIS chapter — the rule that keeps
   // a crafted request from coding spend into somebody else's budget.
+  //
+  // CATEGORY is deliberately NOT in this loop. It is an org-wide label as of
+  // 2026-08-14 (`schema/finances.ts#budgetCategories`) and carries no
+  // `chapterId` for `requireInChapter` to compare, so running it through here
+  // would reject EVERY category — the one shape of bug this loop's own
+  // tightening was meant to prevent, inverted. Its check is existence, via the
+  // resolver every other category call site uses.
   for (const [id, table, label] of [
     [args.eventId, "events", "Event"],
     [args.projectId, "projects", "Project"],
     [args.budgetId, "budgets", "Budget"],
-    [args.categoryId, "budgetCategories", "Category"],
     [args.fundId, "funds", "Fund"],
   ] as const) {
     if (!id) continue;
     const doc = await ctx.db.get(id as Id<"events">);
     await requireInChapter(ctx, args.chapterId, doc, label);
   }
+  if (args.categoryId) await requireBudgetCategory(ctx, args.categoryId);
 
   const now = Date.now();
   const token = mintToken();
@@ -705,8 +713,10 @@ export const updateTerms = mutation({
       // category pays them, so this voids nothing.
       patch.categoryId = undefined;
     } else if (rest.categoryId !== undefined) {
-      const doc = await ctx.db.get(rest.categoryId);
-      await requireInChapter(ctx, chapterId, doc, "Category");
+      // Existence only — a category is org-wide and has no chapter to match
+      // against (see the create path's own note, and
+      // `lib/budgetCategoryAccess.ts`). The FUND below stays chapter-checked.
+      await requireBudgetCategory(ctx, rest.categoryId);
       patch.categoryId = rest.categoryId;
     }
     if (rest.fundId !== undefined) {

@@ -536,24 +536,19 @@ describe("emptying a field is not silently ignored", () => {
   test("clearCategory removes the category and voids nothing", async () => {
     const { s, budgetId } = await setup();
     const id = await sendAndComplete(s, budgetId);
-    const categoryId = await run(s.t, async (ctx) => {
-      const fundId = await ctx.db.insert("funds", {
-        chapterId: s.chapterId,
-        name: "General",
-        restriction: "unrestricted",
-        sortOrder: 0,
-        createdAt: Date.now(),
-      });
-      return await ctx.db.insert("budgetCategories", {
-        chapterId: s.chapterId,
-        fundId,
+    // An ORG-WIDE category — no chapter, no fund (2026-08-14). Seeded in that
+    // shape deliberately: `updateTerms` used to run this id through
+    // `requireInChapter`, which would reject every category once the column is
+    // cleared. Its check is existence now.
+    const categoryId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgetCategories", {
         name: "Production",
         kind: "lineItem",
         isActive: true,
         sortOrder: 0,
         createdAt: Date.now(),
-      });
-    });
+      }),
+    );
     await s.as.mutation(api.contractorPayments.updateTerms, {
       contractorPaymentId: id,
       categoryId,
