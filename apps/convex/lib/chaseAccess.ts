@@ -82,7 +82,8 @@ export async function hasCodingChase(
   const peeking =
     args.scope === "central" ||
     (args.chapterId != null && args.chapterId !== homeChapterId);
-  if (peeking) return access.isCentral && financeRoleAtLeast(access.role, "manager");
+  if (peeking)
+    return access.isCentral && financeRoleAtLeast(access.role, "manager");
   return financeRoleAtLeast(access.role, "manager");
 }
 

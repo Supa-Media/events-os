@@ -1916,85 +1916,85 @@ export function reconcileFlagsFor(
   const { codingSinceMs, isPersonalUnpaid } = deps;
   const open = tr.status !== "reconciled";
   const base = {
-  spend: isSpend(tr),
-  // EVERY internal transfer leg, not just the MARKED ones. This used to be
-  // `isMarkedTransfer`, which left the app-created legs (a
-  // `transfers.recordTransfer` pair, a reimbursement/repayment leg, the
-  // reconciliation engine's allocation legs, the retired skim/launch_grant/
-  // settlement kinds still on prod) matchable by no key at all. That was
-  // survivable while they sat in the default queue; it isn't now that the
-  // queue hides them (see `isHiddenTransferLeg` below), because Kind →
-  // Transfers is what brings them back. `isMarkedTransfer` still decides
-  // whether Un-mark is offered, and (since 2026-08-14) that the row owes no
-  // documentation at all — widening the FILTER doesn't touch either.
-  transfers: tr.flow === "transfer",
-  payouts: isProcessorPayout(tr),
-  to_review: tr.status === "unreviewed",
-  // OPEN rows only. `needsBudget` is deliberately status-blind — the
-  // dashboards' unbudgeted-spend tiles want every status, because
-  // unattributed money is unattributed whether someone closed the row or
-  // not — but a closed row is not queue work, and 4 of the 14 rows this
-  // facet showed in production were already `reconciled`. Matches what
-  // `needsDocumentation` has always done. THE PREDICATE IS UNCHANGED.
-  needs_budget: needsBudget(tr) && open,
-  missing_receipt: needsDocumentation(tr),
-  // ── THE CHASE, AS ONE EXPRESSION ────────────────────────────────────
-  // Byte for byte what `receiptChase` filters on and what `chaseCount`
-  // counts below — `isChaseable`, called by all three, so the facet, the
-  // number on the "Chase receipts" entry point and the chase list itself
-  // cannot describe different populations.
-  //
-  // It is a UNION and neither half is redundant: `missing_receipt` above
-  // is only `needsDocumentation`, which misses a charge whose receipt is
-  // attached and whose CODING is not (the chase absorbed coding when the
-  // policy landed); and `chargeOutstanding` alone drops a fully-refunded
-  // charge and every spend row with no cardholder behind it. See the key's
-  // doc in `@events-os/shared`.
-  needs_chasing: isChaseable(tr, codingSinceMs),
-  // The substantiation chase (`docs/plans/transaction-coding.md`):
-  // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
-  // `coding_review` waits on a REVIEWER — deliberately keyed off
-  // `codingState` alone, so a voluntarily-coded pre-policy row still
-  // reaches the review queue.
-  uncoded: isUncoded(tr, codingSinceMs),
-  // WHAT WILL PUBLISH BLANK — the publishing question, not the policy one,
-  // and the SAME function `monthCodingWorklist` runs (`needsExplaining`,
-  // never a copy of it). `uncoded` above grandfathers everything posted
-  // before `codingRequiredSinceMs`, which is right about obligation and
-  // meant the ~400 reconstructed 2024–25 rows were unreachable from this
-  // grid entirely — the gap the month-at-a-time Explain screen exists to
-  // cover. Note it also ignores `status`: a treasurer closing a row is not
-  // an explanation, and the public page doesn't care that it's closed.
-  needs_explaining: needsExplaining(tr),
-  // THE COMPLEMENT, inside the same denominator — `explanationPopulation`
-  // AND an approved coding. Written as the population predicate plus the
-  // status rather than `!needsExplaining(tr)`, because the negation would
-  // also be true of every row that can't carry an explanation at all (an
-  // inflow, a transfer leg, an auto-explained fee) and this facet must
-  // mean "somebody explained it", not "nobody has to".
-  //
-  // Approving a coding is what removes a row from `needs_explaining`, and
-  // that used to make the sentence you had just published unreachable from
-  // this grid. This is where it goes.
-  explained:
-    explanationPopulation(tr) && tr.codingState === "approved",
-  coding_review: tr.codingState === "submitted",
-  personal_unpaid: isPersonalUnpaid(tr),
-  reconciled: tr.status === "reconciled",
-  // "Closed without documentation" — the DIFFERENCE, not the superset.
-  //
-  // `isUndocumented` ignores status entirely, which made this facet a
-  // strict superset of `missing_receipt`: in production, overlap 42,
-  // only-undocumented 3, only-missing-receipt 0. Two options with
-  // near-identical labels and near-identical numbers, where picking the
-  // bigger one showed you the rows you had just looked at plus three you
-  // hadn't. Restricting the facet to the CLOSED tail leaves two disjoint
-  // options whose labels are both literally true; the publishing backlog is
-  // their OR, which — same group — is what multi-select already gives you.
-  //
-  // THE PREDICATE IS UNCHANGED: `isUndocumented` is still the publishing
-  // gate and still mirrors `documentationState(...)` for the ledger.
-  undocumented: isUndocumented(tr) && !open,
+    spend: isSpend(tr),
+    // EVERY internal transfer leg, not just the MARKED ones. This used to be
+    // `isMarkedTransfer`, which left the app-created legs (a
+    // `transfers.recordTransfer` pair, a reimbursement/repayment leg, the
+    // reconciliation engine's allocation legs, the retired skim/launch_grant/
+    // settlement kinds still on prod) matchable by no key at all. That was
+    // survivable while they sat in the default queue; it isn't now that the
+    // queue hides them (see `isHiddenTransferLeg` below), because Kind →
+    // Transfers is what brings them back. `isMarkedTransfer` still decides
+    // whether Un-mark is offered, and (since 2026-08-14) that the row owes no
+    // documentation at all — widening the FILTER doesn't touch either.
+    transfers: tr.flow === "transfer",
+    payouts: isProcessorPayout(tr),
+    to_review: tr.status === "unreviewed",
+    // OPEN rows only. `needsBudget` is deliberately status-blind — the
+    // dashboards' unbudgeted-spend tiles want every status, because
+    // unattributed money is unattributed whether someone closed the row or
+    // not — but a closed row is not queue work, and 4 of the 14 rows this
+    // facet showed in production were already `reconciled`. Matches what
+    // `needsDocumentation` has always done. THE PREDICATE IS UNCHANGED.
+    needs_budget: needsBudget(tr) && open,
+    missing_receipt: needsDocumentation(tr),
+    // ── THE CHASE, AS ONE EXPRESSION ────────────────────────────────────
+    // Byte for byte what `receiptChase` filters on and what `chaseCount`
+    // counts below — `isChaseable`, called by all three, so the facet, the
+    // number on the "Chase receipts" entry point and the chase list itself
+    // cannot describe different populations.
+    //
+    // It is a UNION and neither half is redundant: `missing_receipt` above
+    // is only `needsDocumentation`, which misses a charge whose receipt is
+    // attached and whose CODING is not (the chase absorbed coding when the
+    // policy landed); and `chargeOutstanding` alone drops a fully-refunded
+    // charge and every spend row with no cardholder behind it. See the key's
+    // doc in `@events-os/shared`.
+    needs_chasing: isChaseable(tr, codingSinceMs),
+    // The substantiation chase (`docs/plans/transaction-coding.md`):
+    // `uncoded` waits on the AUTHOR (nothing submitted, or sent back);
+    // `coding_review` waits on a REVIEWER — deliberately keyed off
+    // `codingState` alone, so a voluntarily-coded pre-policy row still
+    // reaches the review queue.
+    uncoded: isUncoded(tr, codingSinceMs),
+    // WHAT WILL PUBLISH BLANK — the publishing question, not the policy one,
+    // and the SAME function `monthCodingWorklist` runs (`needsExplaining`,
+    // never a copy of it). `uncoded` above grandfathers everything posted
+    // before `codingRequiredSinceMs`, which is right about obligation and
+    // meant the ~400 reconstructed 2024–25 rows were unreachable from this
+    // grid entirely — the gap the month-at-a-time Explain screen exists to
+    // cover. Note it also ignores `status`: a treasurer closing a row is not
+    // an explanation, and the public page doesn't care that it's closed.
+    needs_explaining: needsExplaining(tr),
+    // THE COMPLEMENT, inside the same denominator — `explanationPopulation`
+    // AND an approved coding. Written as the population predicate plus the
+    // status rather than `!needsExplaining(tr)`, because the negation would
+    // also be true of every row that can't carry an explanation at all (an
+    // inflow, a transfer leg, an auto-explained fee) and this facet must
+    // mean "somebody explained it", not "nobody has to".
+    //
+    // Approving a coding is what removes a row from `needs_explaining`, and
+    // that used to make the sentence you had just published unreachable from
+    // this grid. This is where it goes.
+    explained:
+      explanationPopulation(tr) && tr.codingState === "approved",
+    coding_review: tr.codingState === "submitted",
+    personal_unpaid: isPersonalUnpaid(tr),
+    reconciled: tr.status === "reconciled",
+    // "Closed without documentation" — the DIFFERENCE, not the superset.
+    //
+    // `isUndocumented` ignores status entirely, which made this facet a
+    // strict superset of `missing_receipt`: in production, overlap 42,
+    // only-undocumented 3, only-missing-receipt 0. Two options with
+    // near-identical labels and near-identical numbers, where picking the
+    // bigger one showed you the rows you had just looked at plus three you
+    // hadn't. Restricting the facet to the CLOSED tail leaves two disjoint
+    // options whose labels are both literally true; the publishing backlog is
+    // their OR, which — same group — is what multi-select already gives you.
+    //
+    // THE PREDICATE IS UNCHANGED: `isUndocumented` is still the publishing
+    // gate and still mirrors `documentationState(...)` for the ledger.
+    undocumented: isUndocumented(tr) && !open,
   };
   // THE HEADER ROLL-UPS, defined as complements over the OPEN set so
   // `needs_attention + ready_to_close === toClearCount` holds by

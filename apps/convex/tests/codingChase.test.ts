@@ -85,7 +85,10 @@ async function asBookkeeper(s: ChapterSetup): Promise<void> {
 /** Arm the coding policy `sinceDaysAgo` days back, so a fixture aged less than
  *  that is POST-policy (owes a coding) and one aged more is PRE-policy
  *  (grandfathered — owes a receipt and nothing else). */
-async function armCodingPolicy(s: ChapterSetup, sinceDaysAgo = 30): Promise<void> {
+async function armCodingPolicy(
+  s: ChapterSetup,
+  sinceDaysAgo = 30,
+): Promise<void> {
   const patch = {
     codingRequiredSinceMs: Date.now() - sinceDaysAgo * DAY_MS,
     codingConversionSinceMs: Date.now() - sinceDaysAgo * DAY_MS,
@@ -94,7 +97,8 @@ async function armCodingPolicy(s: ChapterSetup, sinceDaysAgo = 30): Promise<void
   await run(s.t, async (ctx) => {
     const existing = await ctx.db.query("financeSettings").first();
     if (existing) await ctx.db.patch(existing._id, patch);
-    else await ctx.db.insert("financeSettings", { sandboxMode: false, ...patch });
+    else
+      await ctx.db.insert("financeSettings", { sandboxMode: false, ...patch });
   });
 }
 
@@ -159,7 +163,10 @@ async function seedCharge(
 /** Every charge the chase resolved, flattened — the assertion most of these
  *  tests actually want ("who was asked for what"). */
 function chargesOf(
-  targets: Array<{ cardholderName: string; charges: Array<{ merchantName: string | null }> }>,
+  targets: Array<{
+    cardholderName: string;
+    charges: Array<{ merchantName: string | null }>;
+  }>,
 ): string[] {
   return targets
     .flatMap((t) => t.charges.map((c) => c.merchantName ?? "?"))
@@ -171,7 +178,9 @@ describe("chaseOutstandingFor — the union, at the predicate", () => {
   /** A minimal spend row. Only the fields the chase predicates read matter;
    *  the rest of the document is irrelevant to them, which is the point of
    *  testing the predicate rather than only the query. */
-  const spend = (over: Partial<Doc<"transactions">> = {}): Doc<"transactions"> =>
+  const spend = (
+    over: Partial<Doc<"transactions">> = {},
+  ): Doc<"transactions"> =>
     ({
       _id: "t1" as Id<"transactions">,
       _creationTime: 0,
@@ -190,7 +199,9 @@ describe("chaseOutstandingFor — the union, at the predicate", () => {
   const SINCE = 1_000;
 
   test("a post-policy charge with nothing on it owes both", () => {
-    expect(chaseOutstandingFor(spend(), SINCE)).toBe("needs coding and a receipt");
+    expect(chaseOutstandingFor(spend(), SINCE)).toBe(
+      "needs coding and a receipt",
+    );
   });
 
   test("a receipt alone does not settle it — the coding is still owed", () => {
@@ -217,7 +228,10 @@ describe("chaseOutstandingFor — the union, at the predicate", () => {
   });
 
   test("pre-policy history WITH a receipt owes nothing", () => {
-    const settled = spend({ postedAt: 500, receiptStorageId: "s1" as Id<"_storage"> });
+    const settled = spend({
+      postedAt: 500,
+      receiptStorageId: "s1" as Id<"_storage">,
+    });
     expect(chaseOutstandingFor(settled, SINCE)).toBeNull();
   });
 
@@ -230,8 +244,12 @@ describe("chaseOutstandingFor — the union, at the predicate", () => {
   });
 
   test("a closed row has nobody left to chase", () => {
-    expect(chaseOutstandingFor(spend({ status: "reconciled" }), SINCE)).toBeNull();
-    expect(chaseOutstandingFor(spend({ status: "excluded" }), SINCE)).toBeNull();
+    expect(
+      chaseOutstandingFor(spend({ status: "reconciled" }), SINCE),
+    ).toBeNull();
+    expect(
+      chaseOutstandingFor(spend({ status: "excluded" }), SINCE),
+    ).toBeNull();
   });
 
   test("a personal charge is a debt to collect, not an account to write", () => {
@@ -240,7 +258,9 @@ describe("chaseOutstandingFor — the union, at the predicate", () => {
 
   test("a sent-back coding outranks everything the row also owes", () => {
     const sentBack = spend({ codingState: "changes_requested" });
-    expect(chaseOutstandingFor(sentBack, SINCE)).toBe("sent back — needs your edit");
+    expect(chaseOutstandingFor(sentBack, SINCE)).toBe(
+      "sent back — needs your edit",
+    );
   });
 });
 
@@ -256,8 +276,12 @@ describe("getCodingChaseTargets — selection > filters + search > everything ow
     const s = await setupChapter(t);
     await armCodingPolicy(s);
     await asManager(s);
-    const ada = await seedCardholder(s, "Ada", { pwEmail: "ada@publicworship.life" });
-    const bo = await seedCardholder(s, "Bo", { pwEmail: "bo@publicworship.life" });
+    const ada = await seedCardholder(s, "Ada", {
+      pwEmail: "ada@publicworship.life",
+    });
+    const bo = await seedCardholder(s, "Bo", {
+      pwEmail: "bo@publicworship.life",
+    });
 
     const adaHotel = await seedCharge(s, {
       cardId: ada.cardId,
@@ -294,7 +318,10 @@ describe("getCodingChaseTargets — selection > filters + search > everything ow
 
   test("nothing narrowed: everyone, everything they owe", async () => {
     const { s } = await fixture();
-    const targets = await s.as.query(internal.finances.getCodingChaseTargets, {});
+    const targets = await s.as.query(
+      internal.finances.getCodingChaseTargets,
+      {},
+    );
     expect(targets.map((t) => t.cardholderName).sort()).toEqual(["Ada", "Bo"]);
     expect(chargesOf(targets)).toEqual([
       "Blue Bottle",
@@ -389,7 +416,9 @@ describe("getCodingChaseTargets — what a client id list cannot do", () => {
     const s = await setupChapter(t);
     await armCodingPolicy(s);
     await asManager(s);
-    const ada = await seedCardholder(s, "Ada", { pwEmail: "ada@publicworship.life" });
+    const ada = await seedCardholder(s, "Ada", {
+      pwEmail: "ada@publicworship.life",
+    });
     const settled = await seedCharge(s, {
       cardId: ada.cardId,
       merchantName: "Settled",
@@ -416,7 +445,9 @@ describe("getCodingChaseTargets — what a client id list cannot do", () => {
     const s = await setupChapter(t);
     await armCodingPolicy(s);
     await asManager(s);
-    const ada = await seedCardholder(s, "Ada", { pwEmail: "ada@publicworship.life" });
+    const ada = await seedCardholder(s, "Ada", {
+      pwEmail: "ada@publicworship.life",
+    });
     await seedCharge(s, { cardId: ada.cardId, merchantName: "Hilton" });
     // A chaseable row that belongs to CENTRAL's book, not this chapter's.
     const centralRow = await run(s.t, (ctx) =>
@@ -446,9 +477,16 @@ describe("getCodingChaseTargets — what a client id list cannot do", () => {
     const s = await setupChapter(t);
     await armCodingPolicy(s);
     await asManager(s);
-    const ada = await seedCardholder(s, "Ada", { pwEmail: "ada@publicworship.life" });
-    const bo = await seedCardholder(s, "Bo", { pwEmail: "bo@publicworship.life" });
-    const adaHotel = await seedCharge(s, { cardId: ada.cardId, merchantName: "Hilton" });
+    const ada = await seedCardholder(s, "Ada", {
+      pwEmail: "ada@publicworship.life",
+    });
+    const bo = await seedCardholder(s, "Bo", {
+      pwEmail: "bo@publicworship.life",
+    });
+    const adaHotel = await seedCharge(s, {
+      cardId: ada.cardId,
+      merchantName: "Hilton",
+    });
 
     // Ask for Ada's charge while naming Bo. There is no combination of args
     // that mails Bo about a charge that isn't his — `personId` FILTERS the
@@ -482,7 +520,10 @@ describe("getCodingChaseTargets — the gate and the edges", () => {
     const unreachable = await seedCardholder(s, "No Address");
     await seedCharge(s, { cardId: unreachable.cardId, merchantName: "Hilton" });
 
-    const targets = await s.as.query(internal.finances.getCodingChaseTargets, {});
+    const targets = await s.as.query(
+      internal.finances.getCodingChaseTargets,
+      {},
+    );
     expect(targets).toHaveLength(1);
     expect(targets[0].cardholderName).toBe("No Address");
     // `email: null` is what `cards.sendCodingChase` turns into
@@ -501,7 +542,10 @@ describe("getCodingChaseTargets — the gate and the edges", () => {
     // it owes it to nobody with an inbox.
     await seedCharge(s, { merchantName: "ATM withdrawal" });
 
-    const targets = await s.as.query(internal.finances.getCodingChaseTargets, {});
+    const targets = await s.as.query(
+      internal.finances.getCodingChaseTargets,
+      {},
+    );
     expect(targets).toEqual([]);
   });
 
@@ -510,12 +554,29 @@ describe("getCodingChaseTargets — the gate and the edges", () => {
     const s = await setupChapter(t);
     await armCodingPolicy(s);
     await asManager(s);
-    const ada = await seedCardholder(s, "Ada", { pwEmail: "ada@publicworship.life" });
-    await seedCharge(s, { cardId: ada.cardId, merchantName: "Small", amountCents: 500 });
-    await seedCharge(s, { cardId: ada.cardId, merchantName: "Big", amountCents: 90_000 });
-    await seedCharge(s, { cardId: ada.cardId, merchantName: "Middling", amountCents: 4_000 });
+    const ada = await seedCardholder(s, "Ada", {
+      pwEmail: "ada@publicworship.life",
+    });
+    await seedCharge(s, {
+      cardId: ada.cardId,
+      merchantName: "Small",
+      amountCents: 500,
+    });
+    await seedCharge(s, {
+      cardId: ada.cardId,
+      merchantName: "Big",
+      amountCents: 90_000,
+    });
+    await seedCharge(s, {
+      cardId: ada.cardId,
+      merchantName: "Middling",
+      amountCents: 4_000,
+    });
 
-    const targets = await s.as.query(internal.finances.getCodingChaseTargets, {});
+    const targets = await s.as.query(
+      internal.finances.getCodingChaseTargets,
+      {},
+    );
     expect(targets[0].charges.map((c) => c.merchantName)).toEqual([
       "Big",
       "Middling",
