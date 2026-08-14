@@ -1640,6 +1640,16 @@ describe("explaining a month", () => {
     expect(other?.cents ?? 0).toBe(0);
     // The giver is not named on the ledger for a split either.
     expect(JSON.stringify(statement.entries)).not.toContain("OLUSEYI OLUJIDE");
+
+    // AND THE LINE ACCOUNTS FOR THE WHOLE DEPOSIT. A reader on this page sees
+    // a $7,000 arrival against $2,000 of giving; without this the page said
+    // nothing about the other $5,000 and the gap read as a discrepancy
+    // (founder, 2026-08-14: "hey 2K isn't this book, but the donor attributed
+    // the rest to other books").
+    const row = statement.entries.find((e) => e.amountCents === 700_000);
+    expect(row!.purpose).toContain("$2,000.00 of this deposit is");
+    expect(row!.purpose).toContain("$5,000.00");
+    expect(row!.purpose).toContain("other books");
   });
 
   test("a wire only HALF matched keeps its unclaimed remainder", async () => {
@@ -1685,7 +1695,7 @@ describe("explaining a month", () => {
     // And the line says which part is which, rather than claiming the whole
     // deposit is giving or saying nothing at all.
     const row = statement.entries.find((e) => e.amountCents === 700_000);
-    expect(row!.purpose).toContain("$2,000.00 of this deposit is giving");
+    expect(row!.purpose).toContain("$2,000.00 of this deposit is");
     expect(row!.purpose).toContain("not yet accounted for");
   });
 

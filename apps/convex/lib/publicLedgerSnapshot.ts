@@ -46,6 +46,7 @@ import type { QueryCtx } from "../_generated/server";
 import {
   autoExplainedKind,
   autoExplanationLine,
+  giftCreditExplanation,
   personalExpenseState,
   CENTRAL,
   displayMerchantName,
@@ -73,7 +74,7 @@ import {
 import { signedBookCents } from "./bookBalance";
 import {
   coveredSignedBookCents,
-  giftCoverageByTransaction,
+  giftCoverageDetailByTransaction,
 } from "./giftCoverage";
 import { codingPolicy } from "./transactionCoding";
 import type { FinanceScope } from "./finance";
@@ -385,7 +386,13 @@ export async function buildSnapshot(
   // for central and $2,000 for New York), so this is a sum, not a flag: the
   // credit contributes whatever no gift has claimed. See `lib/giftCoverage.ts`
   // for why the lookup is per-transaction rather than by the period's gifts.
-  const giftCoverage = await giftCoverageByTransaction(ctx, rawTxns);
+  // Split by whose giving it is: the totals drive the arithmetic, the
+  // in-scope share is what the line can honestly tell a reader.
+  const giftCoverage = await giftCoverageDetailByTransaction(
+    ctx,
+    rawTxns,
+    String(book),
+  );
 
   for (const tr of rawTxns) {
     if (!txnMatchesMode(tr, sandboxMode)) continue;
@@ -400,7 +407,8 @@ export async function buildSnapshot(
     // the payout deposits `signedBookCents` already zeroes. A PARTLY matched
     // deposit keeps its unclaimed remainder, which is the honest reading:
     // that much really did arrive and nobody has said what it was.
-    const coveredCents = giftCoverage.get(tr._id as string) ?? 0;
+    const coverage = giftCoverage.get(tr._id as string);
+    const coveredCents = coverage?.totalCents ?? 0;
     const signed = coveredSignedBookCents(tr, coveredCents);
     // WHAT THIS ROW IS, in its own words. Without it the row fell through to
     // the page's `direction === "internal"` fallback and told every reader
@@ -412,11 +420,14 @@ export async function buildSnapshot(
     // A PARTLY matched deposit says exactly how much of it is giving, because
     // the rest still counts and still owes an answer.
     const giftLine =
-      coveredCents <= 0
+      coverage === undefined
         ? undefined
-        : signed === 0
-          ? autoExplanationLine("gift_credit")
-          : `${formatCents(coveredCents)} of this deposit is giving, counted once in the giving roll below. The rest is not yet accounted for.`;
+        : giftCreditExplanation({
+            bookLabel,
+            inScopeCents: coverage.inScopeCents,
+            otherBooksCents: coverage.totalCents - coverage.inScopeCents,
+            unclaimedCents: signed > 0 ? signed : 0,
+          });
     // Direction from the book-value sign where there is one; otherwise the row
     // moves cash without changing value, which is exactly `internal`.
     const direction: EntryDraft["direction"] =
