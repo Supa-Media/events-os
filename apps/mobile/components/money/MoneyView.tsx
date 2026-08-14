@@ -431,7 +431,7 @@ function TxnRow({
 }: {
   tr: TxnRowData;
   first: boolean;
-  /** Present only when `canEditTransactions` — opens `TxnEditModal`. Reconciled
+  /** Present only when `canEditTransactions` — opens `TxnEditModal`. Closed
    *  status (shown via the badge below) stays DISPLAY-ONLY either way — this
    *  never lets a tap change it, only note/receipt/category inside the modal. */
   onPress?: () => void;
@@ -470,7 +470,7 @@ function TxnRow({
  * gate — for whoever has `canEditTransactions` (bookkeeper+, or the event's
  * own owner/lead). The "For" bucket is a LOCKED display-only chip (never a
  * picker) — reattribution stays Finances/Reconcile's bookkeeper+ power, never
- * reachable from here. Reconciled status is likewise display-only (the
+ * reachable from here. Closed status is likewise display-only (the
  * Treasurer's job) — this modal has no status control at all.
  */
 function TxnEditModal({ tr, onClose }: { tr: TxnRowData; onClose: () => void }) {

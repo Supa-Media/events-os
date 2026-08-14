@@ -11,7 +11,11 @@
  */
 import { Component, type ReactNode } from "react";
 import { Text, View, Pressable } from "react-native";
-import { formatCents, type TransactionFlow } from "@events-os/shared";
+import {
+  formatCents,
+  TRANSACTION_STATUS_LABELS,
+  type TransactionFlow,
+} from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { Icon, type BadgeTone, InfoTooltip } from "../../ui";
 
@@ -263,11 +267,18 @@ export function Chip({ label }: { label: string }) {
   );
 }
 
-/** The status → Badge tone map for a transaction. */
+/**
+ * The status → Badge tone map for a transaction.
+ *
+ * The terminal status reads its label from `TRANSACTION_STATUS_LABELS` rather
+ * than restating it, so a rename lands here for free. The other two are
+ * DELIBERATELY shorter than the canonical labels — a dashboard badge has less
+ * room than the grid's Status▾ cell — so they stay literal.
+ */
 export function txnStatusTone(status: string): { tone: BadgeTone; label: string } {
   switch (status) {
     case "reconciled":
-      return { tone: "success", label: "Reconciled" };
+      return { tone: "success", label: TRANSACTION_STATUS_LABELS.reconciled };
     case "categorized":
       return { tone: "info", label: "Coded" };
     case "excluded":

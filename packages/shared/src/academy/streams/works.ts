@@ -887,7 +887,7 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Reconcile the last charges.** Nothing should be sitting unattributed once the project wraps.",
+          "**Close the last charges.** Nothing should be sitting unattributed once the project wraps.",
           "**True up the amount.** If you underspent or overspent the approved cap, the record should say so honestly — that's data the next Project Lead needs.",
           "**Hand off, don't abandon.** If anything's still open — a reimbursement, a pending invoice — name it explicitly so it doesn't fall through the cracks.",
         ],
@@ -901,7 +901,7 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "reveal",
         prompt: "The giving page project just shipped. What's left before you mark it Done and move on?",
         answer:
-          "Run the debrief (what worked, what didn't, what the next lead should know — written down), reconcile the budget so nothing's left unattributed, and thank the specific people who helped — including anyone pulled in from another team. Done with none of that is done only for you.",
+          "Run the debrief (what worked, what didn't, what the next lead should know — written down), close out the budget's last charges so nothing's left unattributed, and thank the specific people who helped — including anyone pulled in from another team. Done with none of that is done only for you.",
       },
       {
         kind: "link",
@@ -927,12 +927,12 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
         options: [
           "Financial cleanup is the Treasurer's job, never the Project Lead's",
           "Only the approved amount needs to be correct, not actual spend",
-          "Every charge reconciled and attributed, and the budget trued up to reflect what actually got spent",
+          "Every charge closed and attributed, and the budget trued up to reflect what actually got spent",
           "Nothing — the budget can stay open indefinitely",
         ],
         answerIndex: 2,
         explanation:
-          "A project marked Done with an open budget just becomes someone else's cleanup — reconcile and true up the numbers before you close it out.",
+          "A project marked Done with an open budget just becomes someone else's cleanup — close the charges and true up the numbers before you call it done.",
       },
       {
         prompt: "What's the better way to thank the people who helped on a project?",

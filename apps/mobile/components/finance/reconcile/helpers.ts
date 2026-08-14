@@ -14,7 +14,12 @@
  * a card-level state shown in the Cards tab, not this grid.
  */
 import type { FunctionReturnType } from "convex/server";
-import { formatCents, type TransactionStatus } from "@events-os/shared";
+import {
+  formatCents,
+  TRANSACTION_STATUSES,
+  TRANSACTION_STATUS_LABELS,
+  type TransactionStatus,
+} from "@events-os/shared";
 import { api } from "@events-os/convex/_generated/api";
 import type { SelectOption } from "../../ui";
 
@@ -36,13 +41,23 @@ export type TxnRow =
 // `FilterKey`, `FilterCounts`) is deleted rather than re-exported: nothing but
 // its own test still referenced it once the grid moved to the shared module.
 
-// ── Status select options (the inline Status▾ cell + bulk "mark reconciled") ──
-export const STATUS_OPTIONS: SelectOption<TransactionStatus>[] = [
-  { value: "unreviewed", label: "Unreviewed", color: "gray" },
-  { value: "categorized", label: "Categorized", color: "amber" },
-  { value: "reconciled", label: "Reconciled", color: "green" },
-  { value: "excluded", label: "Excluded", color: "red" },
-];
+// ── Status select options (the inline Status▾ cell + bulk "mark closed") ──
+// Labels come from `TRANSACTION_STATUS_LABELS`, never restated here: this list
+// used to hard-code them, so renaming the "reconciled" status to "Closed" meant
+// finding this copy too. Only the tone is local, since colour is a grid concern.
+const STATUS_COLORS: Record<TransactionStatus, SelectOption<TransactionStatus>["color"]> = {
+  unreviewed: "gray",
+  categorized: "amber",
+  reconciled: "green",
+  excluded: "red",
+};
+
+export const STATUS_OPTIONS: SelectOption<TransactionStatus>[] =
+  TRANSACTION_STATUSES.map((value) => ({
+    value,
+    label: TRANSACTION_STATUS_LABELS[value],
+    color: STATUS_COLORS[value],
+  }));
 
 // ── Money + dates ────────────────────────────────────────────────────────────
 /** U+2212 true minus (matches the prototype), not an ASCII hyphen. */

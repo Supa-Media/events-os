@@ -17,7 +17,7 @@
  * Filtering is SERVER-SIDE via `listReconcile({ filter })`, so each pill is
  * truthful across ALL of the chapter's charges (not just one page) and carries a
  * live count. Multi-select drives a bulk bar (set Category / set For / mark
- * Reconciled).
+ * Closed).
  *
  * Reconciliation is finance-manager/bookkeeper territory. Gated on the caller's
  * REAL finance seats (`financeRoles.mySeats`, WP-0.2) — same fix as the Cards
@@ -63,7 +63,7 @@
  *    admits a finance VIEWER, and `receipts.listForTransaction` is
  *    bookkeeper+, so the answer here genuinely can be `false`.
  *  - NOT `todo` — `chargeTodo`'s chase semantics call a `reconciled` row
- *    settled, and most of this grid is reconciled. Correct for chasing a
+ *    settled, and most of this grid is in that state. Correct for chasing a
  *    cardholder, wrong for a book. `explain.tsx` omits it for the same reason.
  *  - NOT `canRename` — the rename affordance stays in the Merchant column,
  *    which remains on screen beside the panel. Two live rename fields on one
@@ -975,7 +975,7 @@ function ReconcileGrid() {
   const openRow = displayed.find((r) => r.id === openId) ?? null;
 
   // A ROW CAN LEAVE THIS LIST UNDER AN OPEN PANEL, and unlike `explain.tsx`
-  // it happens constantly: reconcile it, exclude it, code it while a State
+  // it happens constantly: close it, exclude it, code it while a State
   // filter is on, and the very next query result no longer contains it.
   // `lastKnownIndexRef` tracks the selected row's position while it IS in the
   // list; the moment it isn't, `selectionAfterRowsShrink` lands on whichever
@@ -1284,7 +1284,7 @@ function ReconcileGrid() {
   // is book-specific — a central charge takes neither a category nor a chapter
   // budget — so a selection mixing books has no single valid option list, and
   // offering one would guarantee a partial failure. Book-agnostic actions
-  // (Mark reconciled, Reassign, the transfer/payout markings) are unaffected
+  // (Mark closed, Reassign, the transfer/payout markings) are unaffected
   // and stay available.
   const selectedRows = useMemo(
     () =>
@@ -1611,7 +1611,7 @@ function ReconcileGrid() {
             setStatus({ transactionId: id, status: "reconciled" }),
           ),
         ),
-      { errorTitle: "Couldn't reconcile" },
+      { errorTitle: "Couldn't close" },
     );
     clearSelection();
   }
@@ -1861,7 +1861,7 @@ function ReconcileGrid() {
               />
             ))}
             <InfoTooltip
-              text="Spend: every dollar that counts as actual spend. Transfers: money moving between your own books — hidden from this queue by default, since a transfer owes no coding, no receipt and no close; pick it to see them. Needs budget: categorized but no budget linked — processor and bank fees are excluded, since a fee is charged rather than chosen. Needs documentation: no receipt and no acknowledged reason there isn't one. Undocumented: the same, but counting rows already marked Reconciled too — the backlog to clear before publishing. To review: still Unreviewed — nobody has touched it. Reconciled: already cleared. Personal (unpaid): flagged personal, not yet repaid."
+              text="Spend: every dollar that counts as actual spend. Transfers: money moving between your own books — hidden from this queue by default, since a transfer owes no coding, no receipt and no close; pick it to see them. Needs budget: categorized but no budget linked — processor and bank fees are excluded, since a fee is charged rather than chosen. Needs documentation: no receipt and no acknowledged reason there isn't one. Undocumented: the same, but counting rows already marked Closed too — the backlog to clear before publishing. To review: still Unreviewed — nobody has touched it. Closed: already cleared. Personal (unpaid): flagged personal, not yet repaid."
               size={14}
             />
           </View>
@@ -2094,7 +2094,7 @@ function ReconcileGrid() {
             <EmptyState
               icon="check-circle"
               title="Nothing in this view"
-              message="Try another filter — new charges land here to code and reconcile."
+              message="Try another filter — new charges land here to code and close."
             />
           )
         ) : (

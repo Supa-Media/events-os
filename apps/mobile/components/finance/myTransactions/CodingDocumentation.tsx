@@ -291,7 +291,7 @@ function settledLine(detail?: DocumentationDetail | null): string {
   }
   return `Exception filed${
     detail.pendingReasonLabel ? ` (${detail.pendingReasonLabel.toLowerCase()})` : ""
-  } — enough to submit this coding, but a Finance manager still has to approve it before the charge can be reconciled.`;
+  } — enough to submit this coding, but a Finance manager still has to approve it before the charge can be closed.`;
 }
 
 function SuggestionRow({

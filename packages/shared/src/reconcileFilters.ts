@@ -32,7 +32,7 @@
  * are DISJOINT. The first is the CHASE worklist: still open, still owes a
  * receipt, there is someone to nudge. The second — "Closed without
  * documentation" — is the tail nobody will ever send a receipt for, because a
- * treasurer already marked it Reconciled with nothing behind it. The PUBLISHING
+ * treasurer already marked it Closed with nothing behind it. The PUBLISHING
  * backlog is the union of the two, which, being one group, is exactly what
  * selecting both gives you. See `docs/plans/receipt-exceptions.md`.
  *
@@ -290,7 +290,10 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   // one group, is exactly what multi-select already gives you.
   undocumented: "Closed without documentation",
   personal_unpaid: "Personal (unpaid)",
-  reconciled: "Reconciled",
+  // Label only — the key stays `reconciled` (stored status, URL param, Convex
+  // arg). "Closed" is what the status is called to a user now, and it lands
+  // where "Ready to close" below points.
+  reconciled: "Closed",
   // The header roll-ups. Phrased as the job rather than the state, because
   // that's the distinction they exist to draw: one pile needs a decision, the
   // other needs a keystroke.
