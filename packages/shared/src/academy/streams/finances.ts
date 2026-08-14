@@ -2655,7 +2655,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         criteria: [
           "The month is closed — every charge Closed, receipts chased, queue clear",
           "You have read the preview's disclosure lines and can defend each one out loud",
-          "The \"everyone here is a volunteer\" line is still true — if anyone is now paid, it changes before you publish",
+          "The \"Who gets paid\" table is still true — it lists every POSITION we have with \"Volunteer\" under it, so if anyone is now paid, that position's figure goes in before you publish",
           "Someone other than you is available to review and publish it",
           "Any correction you are making has a sentence a stranger could understand",
         ],

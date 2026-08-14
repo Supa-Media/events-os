@@ -42,6 +42,8 @@ import {
   AMENDMENT_REASON_LABELS,
   ATTENDEE_AFFILIATION_LABELS,
   COMPENSATION_DISCLOSURE,
+  compensationTable,
+  positionPayLabel,
   DOCUMENTATION_STATE_LABELS,
   DOCUMENTATION_EXEMPTIONS,
   DOCUMENTATION_EXEMPTION_LABELS,
@@ -368,7 +370,7 @@ function statsHtml(s: StatementCore): string {
 }
 
 /**
- * WHO GETS PAID — stated up front, not buried in an accordion.
+ * WHO GETS PAID — stated up front, not buried in an accordion, and as a TABLE.
  *
  * This sat inside the "Why are there no names?" FAQ, which is exactly the
  * wrong place for it: "nobody here is paid" is one of the strongest things
@@ -380,22 +382,67 @@ function statsHtml(s: StatementCore): string {
  * know how much of it went to the people spending it, and the answer is
  * currently none.
  *
- * The forward-looking half publishes even though there is nothing yet to
- * disclose. A compensation policy announced the year it first costs something
- * reads as a defence; announced before, it reads as a commitment. See
- * `COMPENSATION_DISCLOSURE`'s doc for the staleness hazard this carries.
+ * ── THE TABLE IS THE PROMISE, KEPT EARLY ─────────────────────────────────────
+ * The prose here used to say we WOULD one day publish pay by position rather
+ * than by person. It now does it: every position in the org chart, grouped
+ * central vs chapter, each with its pay under it — and today every one of them
+ * reads "Volunteer." Publishing the format before there is a figure in it
+ * means the day one appears, the reader meets a number in a table they already
+ * know how to read, rather than a new section that arrived with the salary.
+ *
+ * Two things this renderer deliberately does NOT do, both enforced upstream by
+ * `compensationTable()` (see `COMPENSATION_DISCLOSURE`'s doc for the full
+ * reasoning):
+ *  - It never touches holders. Rows are seat DEFS; there is no path from here
+ *    to a person's name, which is the same promise the rest of this page makes
+ *    about givers and attendees, applied to ourselves.
+ *  - It hardcodes no pay string. "Volunteer" is one VALUE of a position's pay,
+ *    so stating a real figure for one position is a one-line data edit that
+ *    never reaches this file.
+ *
+ * And it renders on EVERY published month, backdated ones included, because it
+ * is read live from the shared constant rather than frozen into a publication:
+ * a compensation policy is a statement about the org right now, not a fact
+ * about a month's transactions.
  */
 function compensationHtml(): string {
   const c = COMPENSATION_DISCLOSURE;
-  if (!c.allVolunteer) {
-    // Once somebody IS paid, the honest render is the policy alone — the
-    // numbers themselves are in the lines, where they belong.
-    return `<div class="note pay"><p>${esc(c.policy)}</p></div>`;
+  const groups = compensationTable()
+    .map(
+      (g) => `<div class="paygroup">
+    <div class="paygrouphead">${esc(g.heading)}<span class="paygroupnote">${esc(g.blurb)}</span></div>
+    ${g.rows
+      .map(
+        (r) => `<div class="payrow">
+      <span class="payicon" aria-hidden="true">${esc(r.icon)}</span>
+      <span class="payposition">${esc(r.title)}</span>
+      <span class="paypay${r.pay.kind === "paid" ? " paid" : ""}">${esc(positionPayLabel(r.pay))}${
+        r.pay.kind === "paid" && r.pay.note
+          ? `<span class="paynote">${esc(r.pay.note)}</span>`
+          : ""
+      }</span>
+    </div>`,
+      )
+      .join("")}
+  </div>`,
+    )
+    .join("");
+
+  return `<section id="pay">
+  <h2 class="sectionhead">Who gets paid</h2>
+  <p class="sectionsub">${esc(c.tableIntro)}</p>
+  ${
+    // The headline sentence is a claim about TODAY, so it stops rendering the
+    // day it stops being true — while the table, which carries the figures
+    // that replaced it, keeps going. That is the only difference between the
+    // two states of this section.
+    c.allVolunteer
+      ? `<div class="note pay"><strong>${esc(c.headline)}</strong> ${esc(c.present)}</div>`
+      : ""
   }
-  return `<div class="note pay">
-  <strong>${esc(c.headline)}</strong> ${esc(c.present)}
+  <div class="paytable">${groups}</div>
   <p class="paypolicy">${esc(c.policy)}</p>
-</div>`;
+</section>`;
 }
 
 function barRowsHtml(
@@ -864,7 +911,7 @@ function howToReadHtml(): string {
 
   <details class="faq"><summary>Why are there no names?</summary>
   <p>Nobody is named on this page — not givers, not the people at a meal we paid for. Givers didn't sign up for a public financial record, and some of the people we feed are minors. So a meal publishes as "12 people — 5 team members, 7 community members," which answers who it was for without publishing a person.</p>
-  <p>Compensation is the one place we'd name a role rather than hide behind the rule — see the note near the top of this page.</p></details>
+  <p>Compensation is the one place we name a role rather than hide behind the rule: "Who gets paid," near the top of this page, lists every position we have and what it's paid — by position, never by person.</p></details>
 
   <details class="faq"><summary>What has to be true before a line publishes?</summary>
   <p>For anything spent from here on: a receipt, and a written explanation of what it was for — who was at the meal and how many, where a trip went from and to. That's the IRS substantiation standard, and we hold ourselves to it because it's also just the answer a giver deserves.</p>

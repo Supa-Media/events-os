@@ -597,6 +597,39 @@ export function seatsForChart(chart: SeatChart): SeatDef[] {
   );
 }
 
+/**
+ * A chart's seats in READING order: the root first, then each seat
+ * immediately followed by its own subtree (depth-first, pre-order), siblings
+ * in `SEAT_IDS` declaration order.
+ *
+ * `seatsForChart` returns the same set in OBJECT-KEY order, which is only
+ * hierarchical because the constants above happen to be written that way
+ * today. Anything that prints the chart for a human — the org-chart panel,
+ * the public compensation table (`publicLedger.ts#compensationTable`) — wants
+ * leadership to read first and an associate to sit under the director they
+ * report to, and wants that to survive somebody appending a seat to the
+ * bottom of `SEAT_IDS`. So the order is derived from `parentId` rather than
+ * trusted to authoring discipline.
+ *
+ * A seat whose parent chain does NOT reach `SEAT_ROOT` (only possible if the
+ * defs ever grow a cycle) is simply never reached, so this cannot loop
+ * forever — it under-reports instead, which `seats.test.ts` pins by asserting
+ * this covers every seat of the chart.
+ */
+export function seatChartOrder(chart: SeatChart): SeatDef[] {
+  const ordered: SeatDef[] = [];
+  const walk = (parentId: SeatId | typeof SEAT_ROOT): void => {
+    for (const id of SEAT_IDS) {
+      const def = SEAT_DEFS[id];
+      if (def.chart !== chart || def.parentId !== parentId) continue;
+      ordered.push(def);
+      walk(id);
+    }
+  };
+  walk(SEAT_ROOT);
+  return ordered;
+}
+
 /** True iff `def` is a "*" (multi-holder) seat. */
 export function isMultiHolder(def: SeatDef): boolean {
   return def.maxHolders === MULTI_HOLDER_CAP;

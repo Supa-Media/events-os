@@ -35,6 +35,13 @@
  * the server-rendered public page, the mobile publish console, and the tests
  * cannot drift on what a status means or what a column is called.
  */
+import { formatCents } from "./finance";
+import {
+  SEAT_CHARTS,
+  seatChartOrder,
+  type SeatChart,
+  type SeatId,
+} from "./seats";
 
 // ── Period keys ──────────────────────────────────────────────────────────────
 // A publication is identified by `YYYY-MM` in the finance timezone
@@ -355,38 +362,240 @@ export function publicGiftMethodLabel(method: string): string {
 
 // ── Compensation ─────────────────────────────────────────────────────────────
 /**
- * What the page says about who gets paid.
+ * What the page says about who gets paid — and the SHAPE it says it in.
  *
  * ⚠ THIS IS A CLAIM ABOUT THE PRESENT AND IT CAN GO STALE. ⚠ The moment one
- * person at Public Worship draws a salary, an honorarium, or a fee, the first
- * sentence below becomes false — on a public page whose entire argument is
- * that it does not say false things. There is no way to derive this from the
- * ledger (the schema has no notion of compensation, and matching on category
- * names would be a guess), so it is a stated fact with a human behind it.
+ * person at Public Worship draws a salary, an honorarium, or a fee, the
+ * "everyone is a volunteer" half below becomes false — on a public page whose
+ * entire argument is that it does not say false things. There is no way to
+ * derive this from the ledger (the schema has no notion of compensation, and
+ * matching on category names would be a guess), so it is a stated fact with a
+ * human behind it.
  *
  * Two guards, since a constant can't check reality:
- *  - The publish console shows this line back to the publisher every month,
- *    beside the other disclosures, BEFORE the button. Re-affirming it is part
- *    of publishing a month.
+ *  - The publish console shows this back to the publisher every month, beside
+ *    the other disclosures, BEFORE the button. Re-affirming it is part of
+ *    publishing a month.
  *  - The Academy lesson lists it in the pre-publish checklist.
  *
- * The FORWARD-LOOKING half is the org's stated policy, not a status, so it
- * does not go stale: compensation publishes by POSITION, never by person, and
- * positions at the same level are paid the same (the founder's model,
- * explicitly modelled on how public offices publish theirs). Keeping that
- * promise here — visible before there is anything to disclose — is the point.
- * Announcing it later, once there is a salary to explain, would read as a
- * defence rather than a commitment.
+ * ── THE PROMISE, AND THE TABLE THAT KEEPS IT ─────────────────────────────────
+ * The page used to make the forward-looking promise in prose — "when that
+ * changes, we'll publish what people are paid by position rather than by
+ * person." A promise about a FORMAT is worth much less than the format itself:
+ * published the day it first costs something, a compensation table reads as a
+ * disclosure extracted under pressure, and a reader meets an unfamiliar layout
+ * at the exact moment they are least inclined to be generous about it.
+ *
+ * So the table publishes NOW, while every row reads "Volunteer." The day
+ * somebody is paid, the reader is not shown a new section — they are shown a
+ * number in a row they have already read a dozen times, in a table they
+ * already trust. That is the whole design: this becomes a DATA change, never a
+ * page redesign.
+ *
+ * ── POSITIONS, NEVER PEOPLE ──────────────────────────────────────────────────
+ * Rows come from `SEAT_DEFS` (`./seats`), which is exactly right for this: a
+ * seat def IS a position, not an assignment. "Three event coordinators" is one
+ * row by construction, and there is no code path from this table to
+ * `seatHolders`/`seatAssignments` — the privacy property is structural, not a
+ * rule a renderer has to remember. It is the same promise the rest of the page
+ * makes about givers and attendees, applied to ourselves: we publish what a
+ * POSITION is paid because the public is entitled to know what its money buys;
+ * we do not publish what a named person earns, because that is theirs.
+ *
+ * `derived` seats are skipped. `chapter_directors` (central) is a rollup of
+ * every chapter's `chapter_director` holder — a view of other seats, never
+ * a position anybody is appointed to, so listing it would print the same
+ * position twice under two names.
+ *
+ * ── WHY IT RENDERS ON EVERY MONTH, INCLUDING BACKDATED ONES ──────────────────
+ * This is deliberately NOT part of a publication's frozen snapshot, which is
+ * the one place this page departs from "what is published is what was
+ * approved" — so it is worth being explicit about why. A frozen figure is
+ * evidence about a month's TRANSACTIONS. This is not a transaction and not a
+ * fact about any month: it is a standing statement of the org's compensation
+ * policy, which is either true of us right now or is not true at all. Storing
+ * a copy per publication would mean a reader of March saw one answer and a
+ * reader of April another, with no way to tell which one describes today —
+ * and it would mean twelve rows to correct the day the answer changes, eleven
+ * of which nobody would remember. Rendering it from this constant makes every
+ * published month, backdated ones included, say the same true thing at once.
+ *
+ * ── WHAT A FUTURE EDITOR CHANGES ─────────────────────────────────────────────
+ * The day the Music Director starts drawing $48,000 a year:
+ *   1. `byPosition.music_director = { kind: "paid", amountCents: 4_800_000,
+ *      period: "year" }`
+ *   2. `allVolunteer: false` (the headline sentence stops rendering; the table
+ *      and the policy stay).
+ *   3. Rewrite `present` if it still needs to say something true.
+ * Nothing in the renderer, the CSS, or a test fixture moves — which is the
+ * point of modelling "Volunteer" as one possible VALUE of a position's pay
+ * rather than as a string in the HTML.
  */
-export const COMPENSATION_DISCLOSURE = {
-  /** Set to `false` the day anybody starts being paid, and say so here. */
+
+/** How often a stated figure recurs. `engagement` is the per-event/per-release
+ *  fee shape (a session player, a mix engineer) — real for this org and not
+ *  expressible as a salary, so it is here from the start rather than being
+ *  forced into "month" the day it is first needed. */
+export const PAY_PERIODS = ["year", "month", "hour", "engagement"] as const;
+export type PayPeriod = (typeof PAY_PERIODS)[number];
+
+export const PAY_PERIOD_LABELS: Record<PayPeriod, string> = {
+  year: "per year",
+  month: "per month",
+  hour: "per hour",
+  engagement: "per engagement",
+};
+
+/**
+ * What one POSITION is paid. A discriminated union rather than a nullable
+ * amount, because "volunteer" is a real, stated answer — not a missing figure
+ * — and the page must never print an empty cell where a reader would have to
+ * guess whether we withheld it or nobody is paid.
+ */
+export type PositionPay =
+  | { readonly kind: "volunteer" }
+  | {
+      readonly kind: "paid";
+      readonly amountCents: number;
+      readonly period: PayPeriod;
+      /** Optional qualifier printed under the figure ("part-time, 20 hrs/wk").
+       *  For the one thing a bare number would misrepresent — not for
+       *  softening it. */
+      readonly note?: string;
+    };
+
+/** The answer today, for every position. Named rather than repeated so the
+ *  day one seat diverges, the diff shows exactly one seat diverging. */
+export const VOLUNTEER: PositionPay = { kind: "volunteer" };
+
+/**
+ * The row icon, keyed by PAY KIND rather than by seat.
+ *
+ * A per-position icon table would be 26 emoji to invent, 26 more to argue
+ * about, and one more to forget every time a seat is added — and it would
+ * decorate the position, which is the half of the row that is already a
+ * word. Keying it to the pay means the icon carries information: the day one
+ * row turns paid, its glyph changes with it and the eye lands on the row that
+ * changed. Emoji because the other public pages already use them as card
+ * icons (`givePageSections.ts#PROGRAM_CARDS`, `landingPage.ts`).
+ */
+export const PAY_KIND_ICONS: Record<PositionPay["kind"], string> = {
+  volunteer: "🤝",
+  paid: "💵",
+};
+
+/** "Volunteer" / "$48,000.00 per year". Cents show, matching the rest of the
+ *  page — a figure that rounds is a figure a reader can't reconcile. */
+export function positionPayLabel(pay: PositionPay): string {
+  if (pay.kind === "volunteer") return "Volunteer";
+  return `${formatCents(pay.amountCents)} ${PAY_PERIOD_LABELS[pay.period]}`;
+}
+
+export interface CompensationDisclosure {
+  /** Set to `false` the day anybody starts being paid — this only governs the
+   *  "everyone is a volunteer" SENTENCE. The table below is always published,
+   *  and stays correct on its own through `byPosition`. */
+  readonly allVolunteer: boolean;
+  readonly headline: string;
+  readonly present: string;
+  readonly policy: string;
+  /** The sentence above the table, stating what a row is (and isn't). */
+  readonly tableIntro: string;
+  /** What a position is paid unless `byPosition` says otherwise. */
+  readonly defaultPay: PositionPay;
+  /** Per-position overrides. Empty today; one entry the day one position is
+   *  paid — never a full 26-row table anybody has to keep in sync with
+   *  `SEAT_DEFS`. */
+  readonly byPosition: Readonly<Partial<Record<SeatId, PositionPay>>>;
+}
+
+export const COMPENSATION_DISCLOSURE: CompensationDisclosure = {
   allVolunteer: true,
   headline: "Everyone here is a volunteer.",
   present:
     "Nobody at Public Worship draws a salary today — not the leadership, not the team. None of the money above was paid to any of us.",
   policy:
-    "When that changes, we'll publish what people are paid by position rather than by person — the way public offices publish theirs — and positions at the same level will be paid the same. Like everything else here, it will show up in the lines.",
-} as const;
+    "When that changes, we'll publish what people are paid by position rather than by person — the way public offices publish theirs — and positions at the same level will be paid the same. It will appear in the table above, and like everything else here, it will show up in the lines.",
+  tableIntro:
+    "Every position at Public Worship, and what it is paid. These are positions, not people: one row covers everyone holding it, nobody is named, and a position held by three people is still one row.",
+  defaultPay: VOLUNTEER,
+  byPosition: {},
+};
+
+/** What `seatId` is paid. The ONLY way the page resolves a position's pay, so
+ *  a future override lands everywhere at once. */
+export function positionPay(seatId: SeatId): PositionPay {
+  return COMPENSATION_DISCLOSURE.byPosition[seatId] ?? COMPENSATION_DISCLOSURE.defaultPay;
+}
+
+/** The `allVolunteer` claim, read off the DATA instead of the flag. The flag
+ *  is what a human authored; this is what the table will actually print, and
+ *  a test pins that the two agree — so the headline sentence can never
+ *  survive a paid position being added underneath it. */
+export function everyPositionIsVolunteer(): boolean {
+  return (
+    COMPENSATION_DISCLOSURE.defaultPay.kind === "volunteer" &&
+    Object.values(COMPENSATION_DISCLOSURE.byPosition).every(
+      (pay) => pay.kind === "volunteer",
+    )
+  );
+}
+
+/** The two group headings. Central and chapter are the split `SEAT_DEFS`
+ *  already draws (`chart`), and it is the split a reader needs: one of these
+ *  lists exists once, the other exists once per city. */
+export const COMPENSATION_GROUP_HEADINGS: Record<SeatChart, string> = {
+  central: "Org-wide positions",
+  chapter: "Chapter positions",
+};
+
+export const COMPENSATION_GROUP_BLURBS: Record<SeatChart, string> = {
+  central: "These serve the whole organization — one of each, across everything we do.",
+  chapter:
+    "Every chapter has these. A row covers the position in all of them, in every city.",
+};
+
+export interface CompensationRow {
+  seatId: SeatId;
+  /** The position's name. Never a holder's. */
+  title: string;
+  pay: PositionPay;
+  icon: string;
+}
+
+export interface CompensationGroup {
+  chart: SeatChart;
+  heading: string;
+  blurb: string;
+  rows: CompensationRow[];
+}
+
+/**
+ * The published table: both charts, hierarchy order, positions only.
+ *
+ * Built here rather than in the renderer so the three rules that make it
+ * honest — positions not people, no derived rollups, leadership first — live
+ * beside the doc that explains them, and so a second surface (the publish
+ * console's pre-publish preview, say) cannot render a subtly different table.
+ */
+export function compensationTable(): CompensationGroup[] {
+  return SEAT_CHARTS.map((chart) => ({
+    chart,
+    heading: COMPENSATION_GROUP_HEADINGS[chart],
+    blurb: COMPENSATION_GROUP_BLURBS[chart],
+    rows: seatChartOrder(chart)
+      .filter((def) => def.derived !== true)
+      .map((def) => {
+        const pay = positionPay(def.id);
+        return {
+          seatId: def.id,
+          title: def.title,
+          pay,
+          icon: PAY_KIND_ICONS[pay.kind],
+        };
+      }),
+  }));
+}
 
 // ── Where a reader goes when the page is wrong ───────────────────────────────
 /**

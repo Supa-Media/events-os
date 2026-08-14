@@ -150,7 +150,31 @@ td.purpose{color:var(--muted);min-width:260px}
 .note strong{color:var(--ink)}
 .note.pay{border-left-color:var(--lavender);margin-top:18px;font-size:15.5px}
 .note.pay strong{font-size:16.5px}
-.paypolicy{margin-top:10px;max-width:74ch}
+.paypolicy{margin-top:14px;max-width:74ch;font-size:14.5px;color:var(--muted)}
+
+/* ── Who gets paid (the compensation table) ── */
+/* Two columns because the two groups are independent lists, not a ranking:
+   the central chart and the chapter chart are read side by side, not one
+   after the other. They stack on a phone. */
+.paytable{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px;margin-top:16px;align-items:start}
+@media(max-width:760px){.paytable{grid-template-columns:1fr}}
+.paygroup{background:var(--raised);border:1px solid var(--border);border-radius:16px;
+  padding:4px 18px 12px;box-shadow:var(--shadow)}
+.paygrouphead{font-size:12px;font-weight:700;letter-spacing:.08em;text-transform:uppercase;
+  color:var(--faint);padding:14px 0 10px}
+.paygroupnote{display:block;margin-top:5px;font-size:12.5px;font-weight:500;letter-spacing:0;
+  text-transform:none;color:var(--muted);max-width:46ch}
+.payrow{display:flex;align-items:baseline;gap:10px;padding:9px 0;border-top:1px solid var(--border);font-size:14.5px}
+/* Decorative and aria-hidden — it repeats what the pay cell already says in
+   words, so it must never be the only carrier of that meaning. */
+.payicon{flex:0 0 auto;font-size:14px;line-height:1}
+.payposition{flex:1 1 auto;font-weight:600}
+.paypay{flex:0 0 auto;text-align:right;font-weight:600;color:var(--muted);
+  font-variant-numeric:tabular-nums;white-space:nowrap}
+/* A real figure reads at full strength; "Volunteer" is a statement, not a
+   number, and sits back a shade so a paid row is the one the eye finds. */
+.paypay.paid{color:var(--ink);font-weight:700}
+.paynote{display:block;font-size:12px;font-weight:500;color:var(--faint);white-space:normal;max-width:22ch}
 .note.missing{border-left-color:var(--success);margin-top:14px}
 .misslist{margin:10px 0 0;padding-left:20px}
 .misslist li{margin-bottom:6px;max-width:72ch}
