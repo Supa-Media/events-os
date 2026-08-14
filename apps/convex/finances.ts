@@ -94,6 +94,9 @@ import { signedBookCents } from "./lib/bookBalance";
 // Same gate as the publish console: this worklist reads exactly the rows that
 // console is about to publish.
 import { hasLedgerConsole, requireLedgerConsole } from "./lib/publicLedgerAccess";
+// Budget display titles — template name, disambiguated only as much as the set
+// requires. See `lib/budgetTitles.ts` in shared for the rule itself.
+import { resolveTitlesForBudgets } from "./lib/budgetTitleResolve";
 import { MAX_MILESTONES } from "./backerMilestones";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import {
@@ -2234,7 +2237,19 @@ export async function resolveBudgetRef(
   b: Doc<"budgets">,
   getEvent: (id: Id<"events">) => Promise<Doc<"events"> | null>,
   getProject: (id: Id<"projects">) => Promise<Doc<"projects"> | null>,
-): Promise<{ name: string; dateLabel: string | null; refDate: number | null; live: boolean }> {
+): Promise<{
+  name: string;
+  dateLabel: string | null;
+  refDate: number | null;
+  live: boolean;
+  /** The linked event's TEMPLATE, when there is one. Callers that render a
+   *  LIST of budgets resolve this to a template name and let
+   *  `lib/budgetTitles.ts` decide the display title — an event budget is
+   *  titled after the template it came from, not after whatever somebody
+   *  typed when they created that instance (founder, 2026-08-14). Null for a
+   *  project, a recurring bucket, or a dead ref. */
+  eventTypeId: Id<"eventTypes"> | null;
+}> {
   const refKind = effectiveRefKind(b);
   if (refKind === "event" && b.scopeRefId) {
     const ev = await getEvent(b.scopeRefId as Id<"events">);
@@ -2244,6 +2259,7 @@ export async function resolveBudgetRef(
         dateLabel: easternDateStr(ev.eventDate),
         refDate: ev.eventDate,
         live: true,
+        eventTypeId: ev.eventTypeId ?? null,
       };
     }
   } else if (refKind === "project" && b.scopeRefId) {
@@ -2254,10 +2270,17 @@ export async function resolveBudgetRef(
         dateLabel: pr.deadline ? easternDateStr(pr.deadline) : null,
         refDate: pr.deadline ?? pr.startDate ?? null,
         live: true,
+        eventTypeId: null,
       };
     }
   }
-  return { name: budgetDisplayName(b), dateLabel: null, refDate: null, live: false };
+  return {
+    name: budgetDisplayName(b),
+    dateLabel: null,
+    refDate: null,
+    live: false,
+    eventTypeId: null,
+  };
 }
 
 /**
@@ -3471,6 +3494,12 @@ export const dashboardChapter = query({
     // keeps every one-time card, unchanged. Resolve the ref (name/dateLabel/
     // refDate) BEFORE deciding relevance since the relevance check itself
     // needs the ref's date.
+    // Same template-derived titles the Budgets tab renders — one budget must
+    // not be called two things depending on which screen you opened it from
+    // (`lib/budgetTitleResolve.ts`). Resolved over ALL the chapter's budgets,
+    // not just the cards that survive the month-relevance gate below, so a
+    // card hidden this month still counts toward whether a name is ambiguous.
+    const dashTitles = await resolveTitlesForBudgets(ctx, budgets);
     const oneTimeBudgets: (typeof projectBudgetCard.type)[] = [];
     for (const b of budgets) {
       if (effectiveType(b) !== "one_time") continue;
@@ -3494,7 +3523,7 @@ export const dashboardChapter = query({
       const pct = pctOf(spentCents, capCents);
       oneTimeBudgets.push({
         id: b._id,
-        name,
+        name: dashTitles.get(b._id) ?? name,
         cadence: b.cadence === "per_instance" ? "per_instance" : "one_off",
         sourceBadge: null,
         dateLabel,
@@ -5574,11 +5603,20 @@ export const budgetsGlance = query({
 
     const sandboxMode = await readSandbox(ctx);
     const yearTxns = await loadPeriodTxns(ctx, chapterId, now.year, sandboxMode);
+    // ── EVERY YEAR'S BUDGETS, NOT JUST THIS ONE (founder, 2026-08-14) ──────
+    // "Make sure it shows all the budgets."
+    //
+    // This read used to pin `year` to the current one, which meant a budget
+    // stamped to last November for a January event simply wasn't on the tab —
+    // not zeroed, not greyed, absent. The person looking for it concluded the
+    // app had lost it.
+    //
+    // The index prefix drops the year, so this is the same bounded read one
+    // key shorter. What each budget then does with the wider set differs by
+    // type, and `keepOnGlance` below is where that's decided.
     const budgets = await ctx.db
       .query("budgets")
-      .withIndex("by_chapter_and_period", (q) =>
-        q.eq("chapterId", chapterId).eq("year", now.year),
-      )
+      .withIndex("by_chapter_and_period", (q) => q.eq("chapterId", chapterId))
       .take(ROLLUP_SCAN_LIMIT);
     // Same UNION as `dashboardChapter`'s budget cards — this screen is "budgets
     // at a glance" for the whole team, so a cardholder checking room-left must
@@ -5598,6 +5636,13 @@ export const budgetsGlance = query({
 
     const getEvent = nameCache(ctx, "events");
     const getProject = nameCache(ctx, "projects");
+    // Titles come from the EVENT TEMPLATE, disambiguated only as much as the
+    // set requires (`lib/budgetTitleResolve.ts`). Resolved over ALL the
+    // chapter's budgets, not just the ones that survive the filters below, so
+    // a hidden sibling still counts toward "is this name ambiguous?" — two
+    // Genesis budgets must not both read "Genesis" just because one of them
+    // was filtered off this particular screen.
+    const titles = await resolveTitlesForBudgets(ctx, budgets);
     const oneTime: (typeof glanceBudgetRow.type & { refDate: number | null })[] = [];
     const recurring: (typeof glanceBudgetRow.type)[] = [];
     for (const b of budgets) {
@@ -5606,6 +5651,16 @@ export const budgetsGlance = query({
       // increase mid-review (`approvedCents` — its old cap still governs).
       if (b.approvedCents == null && !isAttributableBudget(b)) continue;
       const isOneTime = effectiveType(b) === "one_time";
+      // A ONE-TIME budget belongs on the tab for as long as it exists: its cap
+      // is a whole plan, its spend is lifetime, and "the Genesis budget" is a
+      // thing people ask about years later.
+      //
+      // A RECURRING bucket is different in kind. Its cap governs a cadence
+      // window inside ONE year, so last year's "Coffee — monthly" has no
+      // live window to report against; it would render $0 of $500 forever,
+      // which is worse than absent because it looks like a budget nobody is
+      // using rather than one that ended. Those stay scoped to this year.
+      if (!isOneTime && b.year !== now.year) continue;
       const spentCents = budgetTxns.reduce((sum, tr) => {
         const counts = isOneTime
           ? tr.budgetId === b._id && isSpend(tr)
@@ -5626,7 +5681,7 @@ export const budgetsGlance = query({
       const refKind = live ? effectiveRefKind(b) : null;
       const row = {
         id: b._id,
-        name,
+        name: titles.get(b._id) ?? name,
         dateLabel,
         type: effectiveType(b),
         cadence: b.cadence,

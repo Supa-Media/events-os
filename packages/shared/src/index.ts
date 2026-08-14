@@ -2271,6 +2271,10 @@ export * from "./guestTeams";
 // ── What each payment rail costs: the schedule, the gross-up, the ACH nudge ──
 export * from "./processorFees";
 
+// How a budget is titled — template name, plus only as much date as it takes
+// to tell two apart. See the module doc.
+export * from "./budgetTitles";
+
 // ── Receipt files: the ONE "is this an image / a PDF / a document?" rule ────
 export * from "./receiptFile";
 

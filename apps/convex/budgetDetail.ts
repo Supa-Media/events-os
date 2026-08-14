@@ -45,6 +45,7 @@ import {
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { requireFinanceRole, requireFinanceCentral, type FinanceAccess } from "./lib/finance";
+import { resolveTitleForBudget } from "./lib/budgetTitleResolve";
 import { readSandbox } from "./financeSettings";
 import {
   isSpend,
@@ -213,7 +214,15 @@ export const getBudgetDetail = query({
         refLive = true;
       }
     }
-    const name = refName ?? (budget.label?.trim() || BUDGET_TYPE_LABELS[type]);
+    // The SAME title the Budgets tab and the dashboard show — resolved against
+    // the whole chapter, because "is this name ambiguous?" is a question about
+    // the set (see `lib/budgetTitleResolve.ts`). Two names for one budget
+    // would be worse than a clumsy name.
+    const name = await resolveTitleForBudget(
+      ctx,
+      budget,
+      refName ?? (budget.label?.trim() || BUDGET_TYPE_LABELS[type]),
+    );
 
     // Category names, resolved through the budget's OWN chapter — bounded
     // chapter-wide read, same convention `finances.ts` rollups use.

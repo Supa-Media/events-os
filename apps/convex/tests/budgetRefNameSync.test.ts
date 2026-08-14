@@ -140,7 +140,18 @@ describe("dashboardChapter one-time cards follow the ref's LIVE name/date (WP-wa
     expect(card?.dateLabel).toBe("2026-09-15");
   });
 
-  test("renaming an event updates its budget card's name", async () => {
+  test("a TEMPLATE-linked budget is titled by its template, not the event's own name", async () => {
+    // This test used to assert the opposite: rename the event, and its budget
+    // card followed. That was the right rule while a budget's title WAS its
+    // event's title. Founder, 2026-08-14: "when a budget is based on an event
+    // template, it should get its title from the event template" — because
+    // event names are typed per instance ("Genesis LTN", "genesis night 3")
+    // and a list of them can't be scanned, while the template name is the
+    // thing the org actually says out loud.
+    //
+    // What the ref sync still drives is unchanged and still covered by the
+    // sibling tests below: the DATE label, the live/dead link state, and the
+    // fallback name for a budget with no template behind it.
     const t = newT();
     const s = await setupChapter(t);
     await seedManager(s);
@@ -158,7 +169,11 @@ describe("dashboardChapter one-time cards follow the ref's LIVE name/date (WP-wa
     await s.as.mutation(api.events.updateDetails, { eventId, name: "Fall Retreat Worship" });
 
     const dash = await s.as.query(api.finances.dashboardChapter, { year, period: "ytd" });
-    expect(dash.oneTimeBudgets.find((b) => b.id === budgetId)?.name).toBe("Fall Retreat Worship");
+    // `seedEvent` builds its event on a "Service" template — that's the title,
+    // and renaming the instance doesn't move it. One budget on the template
+    // means no date is appended either (precision is only added when there is
+    // something to tell apart).
+    expect(dash.oneTimeBudgets.find((b) => b.id === budgetId)?.name).toBe("Service");
   });
 
   test("a deleted ref falls back to the budget's own stored label — never a crash or blank card", async () => {

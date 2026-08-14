@@ -1078,7 +1078,8 @@ describe("enriched dashboards (prototype shapes)", () => {
     const dash = await s.as.query(api.finances.dashboardChapter, { year, month });
     const card = dash.oneTimeBudgets.find((p) => p.id === budgetId);
     expect(card).toBeDefined();
-    expect(card?.name).toBe("May Worship");
+    // Titled by the event TEMPLATE now, not the event instance.
+    expect(card?.name).toBe("Worship with Strangers");
     expect(card?.cadence).toBe("per_instance");
     expect(card?.spentCents).toBe(10000); // transfer excluded
     expect(card?.budgetCents).toBe(40000);

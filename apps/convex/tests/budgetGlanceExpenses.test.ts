@@ -126,6 +126,112 @@ async function seedCharge(
   );
 }
 
+describe("the Budgets tab lists every budget worth listing", () => {
+  test("a budget stamped to a PAST year is on the tab, not missing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const lastYear = new Date().getFullYear() - 1;
+    // The founder's complaint: a budget created last November for a January
+    // event simply wasn't on the tab. Not zeroed, not greyed — absent, so the
+    // person looking for it concluded the app had lost it.
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: lastYear,
+      cadence: "one_off",
+      type: "one_time",
+      label: "Last year's Genesis",
+    });
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 12_000,
+      postedAt: tsOn(lastYear, 11, 20),
+    });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const card = glance.oneTime.find((r) => r.id === budgetId);
+    expect(card).toBeDefined();
+    // …and it reports its real lifetime spend, not a hopeful zero.
+    expect(card?.spentCents).toBe(12_000);
+  });
+
+  test("a PAST-YEAR recurring bucket stays off — its cap governs a window that has ended", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const lastYear = new Date().getFullYear() - 1;
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: lastYear,
+      cadence: "monthly",
+      type: "recurring",
+      label: "Last year's coffee",
+    });
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 2_000,
+      postedAt: tsOn(lastYear, 6, 4),
+    });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    // A monthly bucket from a year that's over has no live window to report
+    // against; it would read "$0.00 of $500.00" forever, which looks like a
+    // budget nobody is using rather than one that ended.
+    expect(glance.recurring.find((r) => r.id === budgetId)).toBeUndefined();
+  });
+
+  test("THIS year's recurring bucket is still listed", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: new Date().getFullYear(),
+      cadence: "monthly",
+      type: "recurring",
+      label: "Coffee",
+    });
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 2_000,
+      postedAt: Date.now(),
+    });
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    expect(glance.recurring.find((r) => r.id === budgetId)).toBeDefined();
+  });
+
+  test("budgets on one template are told apart by year, and by month within a year", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const lastYear = thisYear - 1;
+    // Three events on the SAME template: one last year, two this year.
+    const mk = async (name: string, year: number, month: number) => {
+      const eventId = await seedEvent(s, { name, eventDate: tsOn(year, month, 12) });
+      return await seedBudget(s, {
+        amountCents: 50_000,
+        year,
+        cadence: "per_instance",
+        type: "one_time",
+        scope: "event",
+        refKind: "event",
+        scopeRefId: eventId,
+      });
+    };
+    const older = await mk("Genesis A", lastYear, 5);
+    const springId = await mk("Genesis B", thisYear, 3);
+    const autumnId = await mk("Genesis C", thisYear, 10);
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const byId = new Map(glance.oneTime.map((r) => [r.id, r.name]));
+    // Grouping is by template NAME, not by template row id — `seedEvent`
+    // inserts a separate "Service" eventTypes row per event, and three things
+    // a reader would call "Service" must still be told apart. That is the
+    // founder's rule exactly: year where a year is enough, month where it
+    // isn't, and nothing at all when there's nothing to disambiguate.
+    expect(byId.get(older)).toBe(`Service ${lastYear}`);
+    expect(byId.get(springId)).toBe(`Service Mar ${thisYear}`);
+    expect(byId.get(autumnId)).toBe(`Service Oct ${thisYear}`);
+  });
+});
+
 describe("budgetGlance.expenses", () => {
   test("the lines add up to the card's own spent figure (one-time, lifetime)", async () => {
     const t = newT();
@@ -233,7 +339,9 @@ describe("budgetGlance.expenses", () => {
     const detail = await s.as.query(api.budgetGlance.expenses, { budgetId });
     expect(detail!.refKind).toBe("event");
     expect(detail!.scopeRefId).toBe(eventId);
-    expect(detail!.name).toBe("Genesis LTN");
+    // The TEMPLATE's name (`seedEvent` uses "Service"), not the event
+    // instance's — see `lib/budgetTitles.ts` in shared.
+    expect(detail!.name).toBe("Service");
 
     const glance = await s.as.query(api.finances.budgetsGlance, {});
     const card = glance.oneTime.find((r) => r.id === budgetId);

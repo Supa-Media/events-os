@@ -46,6 +46,7 @@ import {
   easternParts,
 } from "@events-os/shared";
 import { requireBudgetExpenses } from "./lib/budgetGlanceAccess";
+import { resolveTitleForBudget } from "./lib/budgetTitleResolve";
 import { getFinanceRole } from "./lib/finance";
 import { readSandbox } from "./financeSettings";
 import {
@@ -224,7 +225,14 @@ export const expenses = query({
       });
     }
 
-    const { name, refKind, scopeRefId } = await resolveLiveRef(ctx, budget, type);
+    const { name: refName, refKind, scopeRefId } = await resolveLiveRef(
+      ctx,
+      budget,
+      type,
+    );
+    // Must match the card this drawer expands, exactly — see
+    // `lib/budgetTitleResolve.ts`.
+    const name = await resolveTitleForBudget(ctx, budget, refName);
 
     // The detail page's own gate, resolved server-side (see `canOpenDetail`).
     const access = await getFinanceRole(ctx, chapterId);
