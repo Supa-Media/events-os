@@ -1092,11 +1092,13 @@ function ReconcileGrid() {
   // facet counts, so every number shown is one the current selection could
   // actually produce.
   //
-  // `RECONCILE_DROPDOWN_GROUPS`, not every group: the roll-up keys behind the
-  // header chips are a group for set-semantics purposes but must not appear in
-  // this menu, where a 51 sitting next to a 7 and a 42 that are subsets of it
-  // would recreate the "which number is the real one" problem the chips exist
-  // to end.
+  // `RECONCILE_DROPDOWN_GROUPS`, not every group: `needs_attention` and
+  // `ready_to_close` are a group for set-semantics purposes but must not
+  // appear in this menu, where a 51 sitting next to a 7 and a 42 that are
+  // subsets of it would recreate the "which number is the real one" problem
+  // this whole area exists to end. They have no control of their own on the
+  // page now that the header chips are gone; they are reachable by URL and are
+  // what the Dashboard's tiles drill through on.
   const filterOptionsByGroup = useMemo(
     () =>
       RECONCILE_DROPDOWN_GROUPS.map((group) => ({

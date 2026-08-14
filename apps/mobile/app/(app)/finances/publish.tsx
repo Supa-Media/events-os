@@ -113,7 +113,7 @@ function Body() {
   // holder peeking at a chapter would work their own queue while believing
   // they were working that chapter's.
   //
-  // But `?scope=` is written by the reconcile grid's view menu, which speaks a
+  // But `?scope=` is written by the reconcile grid, which speaks a
   // WIDER vocabulary than `publicLedger`'s `scopeValidator`
   // (`v.id("chapters") | "central"`) accepts — its default for a dual-hat
   // caller is `"all"`, the merged queue, and there is no such thing as

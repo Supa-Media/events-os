@@ -48,9 +48,9 @@ const ACCOUNTS_TAB: Tab = { label: "Accounts", path: "/finances/accounts" };
 //   · Code            → `/code`, its own page outside the finance tabs
 //                       entirely (no seat required — it's the one surface a
 //                       cardholder with no finance grant can use).
-//   · By month        → a view in the Book's own menu.
-//   · Publish         → a view in the Book's own menu, and still the
-//                       Dashboard's publishability card.
+//   · By month        → Group by → Month on the Transactions grid.
+//   · Publish         → a month band's own Publish button there, and still
+//                       the Dashboard's publishability card.
 //   · Reimbursements  → a view in the Cards page's own menu.
 // Every route still exists and every deep link still resolves; nothing is
 // reachable ONLY from a chip that no longer exists.
