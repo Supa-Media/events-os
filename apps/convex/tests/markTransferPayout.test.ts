@@ -369,7 +369,51 @@ describe("finances.markAsTransfer", () => {
     expect(counts.transfers).toBe(2);
   });
 
-  test("both legs still owe a receipt after marking (founder constraint)", async () => {
+  test("marking a pair leaves the receipt chase entirely (founder reversal, 2026-08-14)", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+
+    const out = await seedTxn(s, { amountCents: 100_000, flow: "outflow" });
+    const inn = await seedTxn(s, { amountCents: 100_000, flow: "inflow" });
+
+    // BEFORE: the outflow leg is ordinary spend and owes its receipt like any
+    // other charge. Asserted first so what marking actually does here is the
+    // difference between two measurements rather than a claim.
+    const before = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(before.chaseCount).toBe(1);
+
+    await s.as.mutation(api.finances.markAsTransfer, {
+      transactionId: out,
+      counterpartTransactionId: inn,
+    });
+
+    // AFTER: nothing. This test used to assert the opposite — "both legs still
+    // owe a receipt after marking (founder constraint)" — and the constraint it
+    // pinned was that marking must never be a way to stop being chased. The
+    // founder reversed it on 2026-08-14 ("all payouts and transfers should be
+    // bank record only. No need for documentation"), so the assertion is
+    // inverted rather than deleted: this is the exact surface where the
+    // protection was, and it should keep saying so out loud.
+    //
+    // The escape hatch is therefore real and open: a bookkeeper who marks an
+    // awkward outflow as a transfer removes it from the chase. What stands in
+    // its place is that the pair is REQUIRED (a lone leg can't be marked), the
+    // marking is logged per leg with an actor, and it is reversible. See
+    // `finances.ts#owesDocumentation` for the narrower version not taken.
+    const res = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(res.counts.missing_receipt).toBe(0);
+    expect(res.chaseCount).toBe(0);
+
+    const chase = await s.as.query(api.finances.receiptChase, {});
+    expect(chase.count).toBe(0);
+  });
+
+  test("un-marking puts the outflow leg back in the chase", async () => {
+    // The other half of the reversal, and the reason it is survivable: the
+    // exemption follows the MARKING, not the row, so a mis-marked pair that
+    // somebody un-marks owes its receipt again immediately. An exemption that
+    // outlived the marking would be a one-way door.
     const t = newT();
     const s = await setupChapter(t);
     await setupBookkeeper(s);
@@ -380,27 +424,14 @@ describe("finances.markAsTransfer", () => {
       transactionId: out,
       counterpartTransactionId: inn,
     });
+    expect(
+      (await s.as.query(api.finances.listReconcile, { filter: "all" })).chaseCount,
+    ).toBe(0);
 
-    // Before this feature the outflow leg would have vanished from the chase
-    // the instant it stopped being spend, and the inflow leg was never in it.
-    //
-    // THE CHASE IS THE SURFACE THAT OWNS THIS CONSTRAINT, so it's what gets
-    // asserted. Reconcile no longer lists transfer legs by default — nothing to
-    // code, nothing to close — which means its `missing_receipt` FACET goes
-    // quiet here (a facet count promises rows the queue would show, and it
-    // would show none). That is a change of venue, not of obligation: both legs
-    // still return true from `needsDocumentation`, both still appear on the
-    // chase page, and `chaseCount` — what the "Chase receipts" button is gated
-    // on — still counts them, so the route to them stays open.
-    const res = await s.as.query(api.finances.listReconcile, { filter: "all" });
-    expect(res.counts.missing_receipt).toBe(0);
-    expect(res.chaseCount).toBe(2);
-
-    const chase = await s.as.query(api.finances.receiptChase, {});
-    expect(chase.count).toBe(2);
-    expect(chase.groups.flatMap((g) => g.transactions.map((c) => c.id)).sort()).toEqual(
-      [out, inn].sort(),
-    );
+    await s.as.mutation(api.finances.unmarkTransfer, { transactionId: out });
+    expect(
+      (await s.as.query(api.finances.listReconcile, { filter: "all" })).chaseCount,
+    ).toBe(1);
   });
 
   test("requires two DIFFERENT rows", async () => {
@@ -858,11 +889,17 @@ describe("finances.markAsPayout — allocateToScope", () => {
  * same assertion is in `publishability.test.ts`, which reads the other
  * predicate, `isUndocumented`.)
  *
- * A marked TRANSFER is asserted alongside in each case, unchanged: it still
- * owes its bank statement. The two markings were deliberately symmetric here
- * and are now deliberately not, so the tests say both halves out loud.
+ * A marked TRANSFER is asserted alongside in each case, and the SAME DAY it
+ * joined the payout: "all payouts and transfers should be bank record only. No
+ * need for documentation." So these read as one rule again — but not for one
+ * reason. The payout exemption admits something that was always true (a
+ * deposit has no purchase behind it); the transfer exemption GIVES UP the
+ * protection that a marking can never make a row stop being chased, which is
+ * why `finances.ts#owesDocumentation` spells out the hatch it opens and the
+ * narrower version that would have kept it shut. Both halves are asserted here
+ * so a future reader can see which is which.
  */
-describe("a marked payout owes no documentation", () => {
+describe("marked payouts and marked transfers owe no documentation", () => {
   async function markedPair(s: ChapterSetup): Promise<{
     payout: Id<"transactions">;
     transferOut: Id<"transactions">;
@@ -894,11 +931,12 @@ describe("a marked payout owes no documentation", () => {
     // `chaseCount` is what gates the "Chase receipts" entry point and
     // `receiptChase` is the list behind it; both run `isChaseable`, so a
     // number that still counted the payout would open a list that didn't show
-    // it. Only the two marked transfer legs are left.
+    // it. Nothing is left: the payout and both marked transfer legs are all
+    // out, which is the whole of the founder's sentence.
     const res = await s.as.query(api.finances.listReconcile, { filter: "all" });
-    expect(res.chaseCount).toBe(2);
+    expect(res.chaseCount).toBe(0);
     const chase = await s.as.query(api.finances.receiptChase, {});
-    expect(chase.count).toBe(2);
+    expect(chase.count).toBe(0);
     expect(
       chase.groups.flatMap((g) => g.transactions.map((c) => c.id)),
     ).not.toContain(payout);
@@ -943,18 +981,65 @@ describe("a marked payout owes no documentation", () => {
     expect((await txn(s, payout))!.status).toBe("reconciled");
   });
 
-  test("a marked TRANSFER still owes one — the founder rule that did NOT change", async () => {
+  test("a marked TRANSFER can be closed with nothing attached too", async () => {
+    // The assertion this replaces was `RECEIPT_REQUIRED` — "the founder rule
+    // that did NOT change" — written hours before the founder changed it. The
+    // documented-before-closed gate reads `isUndocumented`, so the transfer
+    // exemption has to reach it for the same reason the payout one did:
+    // otherwise a row owes no receipt and still can't be closed.
     const t = newT();
     const s = await setupChapter(t);
     await setupBookkeeper(s);
     const { transferOut } = await markedPair(s);
 
-    await expect(
-      s.as.mutation(api.finances.setTransactionStatus, {
-        transactionId: transferOut,
-        status: "reconciled",
-      }),
-    ).rejects.toMatchObject({ data: { code: "RECEIPT_REQUIRED" } });
+    await s.as.mutation(api.finances.setTransactionStatus, {
+      transactionId: transferOut,
+      status: "reconciled",
+    });
+    expect((await txn(s, transferOut))!.status).toBe("reconciled");
+  });
+
+  test("the grid says WHY each one owes nothing, instead of 'No receipt'", async () => {
+    // The half of the founder's report that isn't a count: the Documentation
+    // cell renders `documentation.exemptReason`, and a row dropped from the
+    // backlog with no reason attached goes back to offering an Upload button
+    // and the words "No receipt" ("For Stripe payouts it's saying no receipts
+    // still, but it should literally show that it's a payout — bank record
+    // only"). The predicate and the label come from ONE function
+    // (`documentationExemption`), so this asserts the projection carries it.
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const { payout, transferOut } = await markedPair(s);
+
+    const rows = (
+      await s.as.query(api.finances.listReconcile, {
+        filter: "all",
+        filters: ["transfers", "payouts"],
+      })
+    ).rows;
+    const byId = new Map(rows.map((r) => [r.id, r]));
+    expect(byId.get(payout)!.documentation.exemptReason).toBe("processor_payout");
+    expect(byId.get(transferOut)!.documentation.exemptReason).toBe(
+      "internal_transfer",
+    );
+  });
+
+  test("an ordinary spend charge carries NO exemption reason", async () => {
+    // The null case is the one that matters for the cell: `documentationExemption`
+    // must not answer for a row that simply isn't exempt, or every charge in
+    // the book would render "Bank record only" instead of its upload control.
+    const t = newT();
+    const s = await setupChapter(t);
+    await setupBookkeeper(s);
+    const charge = await seedTxn(s, { amountCents: 4_200, flow: "outflow" });
+
+    const rows = (
+      await s.as.query(api.finances.listReconcile, { filter: "all" })
+    ).rows;
+    expect(
+      rows.find((r) => r.id === charge)!.documentation.exemptReason,
+    ).toBeNull();
   });
 
   test("an UNMARKED deposit is unaffected — it never owed anything", async () => {

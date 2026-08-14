@@ -38,6 +38,7 @@ async function seedBudget(
     amountCents: number;
     year: number;
     month?: number;
+    quarter?: number;
     cadence: "monthly" | "quarterly" | "yearly" | "per_instance" | "one_off";
     /** Set EXPLICITLY in every seed below. `effectiveType` only infers
      *  "one_time" from a legacy event/project `scope`, so a chapter-scoped
@@ -58,6 +59,7 @@ async function seedBudget(
       amountCents: fields.amountCents,
       year: fields.year,
       month: fields.month,
+      quarter: fields.quarter,
       cadence: fields.cadence,
       type: fields.type,
       scope: fields.scope ?? "chapter",
@@ -127,7 +129,7 @@ async function seedCharge(
 }
 
 describe("the Budgets tab lists every budget worth listing", () => {
-  test("a budget stamped to a PAST year is on the tab, not missing", async () => {
+  test("a budget stamped to a PAST year is REACHABLE — on that year's page, and that year is offered", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const lastYear = new Date().getFullYear() - 1;
@@ -147,8 +149,16 @@ describe("the Budgets tab lists every budget worth listing", () => {
       postedAt: tsOn(lastYear, 11, 20),
     });
 
-    const glance = await s.as.query(api.finances.budgetsGlance, {});
-    const card = glance.oneTime.find((r) => r.id === budgetId);
+    // The tab is now a YEAR AT A TIME ("every year is a new page"), so the fix
+    // for "it's missing" is no longer "it's in the default list" — it's that
+    // the year picker OFFERS the year it lives on. Both halves are the
+    // contract, and the second is what makes the first discoverable.
+    const current = await s.as.query(api.finances.budgetsGlance, {});
+    expect(current.oneTime.find((r) => r.id === budgetId)).toBeUndefined();
+    expect(current.availableYears).toContain(lastYear);
+
+    const past = await s.as.query(api.finances.budgetsGlance, { year: lastYear });
+    const card = past.oneTime.find((r) => r.id === budgetId);
     expect(card).toBeDefined();
     // …and it reports its real lifetime spend, not a hopeful zero.
     expect(card?.spentCents).toBe(12_000);
@@ -321,8 +331,21 @@ describe("the Budgets tab lists every budget worth listing", () => {
     const springId = await mk("Genesis B", thisYear, 3);
     const autumnId = await mk("Genesis C", thisYear, 10);
 
-    const glance = await s.as.query(api.finances.budgetsGlance, {});
-    const byId = new Map(glance.oneTime.map((r) => [r.id, r.name]));
+    // Titles resolve against the WHOLE chapter, not against one year's page —
+    // which is the point of `resolveTitlesForBudgets` loading every sibling.
+    // So last year's budget is still told apart by year even though it renders
+    // on a page where it is the only "Service", and this year's two still need
+    // their months even though last year's isn't beside them.
+    const thisYearGlance = await s.as.query(api.finances.budgetsGlance, {});
+    const lastYearGlance = await s.as.query(api.finances.budgetsGlance, {
+      year: lastYear,
+    });
+    const byId = new Map(
+      [...thisYearGlance.oneTime, ...lastYearGlance.oneTime].map((r) => [
+        r.id,
+        r.name,
+      ]),
+    );
     // Grouping is by template NAME, not by template row id — `seedEvent`
     // inserts a separate "Service" eventTypes row per event, and three things
     // a reader would call "Service" must still be told apart. That is the
@@ -588,5 +611,272 @@ describe("budgetGlance.expenses", () => {
 
     const detail = await s.as.query(api.budgetGlance.expenses, { budgetId });
     expect(detail!.canOpenDetail).toBe(true);
+  });
+});
+
+/**
+ * A RECURRING BUCKET'S YEAR, WINDOW BY WINDOW.
+ *
+ * Founder, 2026-08-14: "for the recurring budgets, I want to see smaller
+ * chunks with all the past budgets — since we are in Q3, show me Q1 and Q2 and
+ * Q3 for the quarterly; if we are in the 7th month, show me all past months;
+ * maybe even show all and predict how much we will spend based on previous
+ * spending. For the yearly budgets it's fine because obviously each page is a
+ * year."
+ *
+ * These tests are written against the CURRENT month rather than a frozen one —
+ * `budgetsGlance` returns its own `month`, so every assertion is derived from
+ * the same clock the query used. A test that hard-codes "we are in Q3" passes
+ * for eleven weeks and then fails for forty-one.
+ */
+describe("a recurring bucket is broken into its own windows", () => {
+  test("monthly: every elapsed month, then a projection from the completed ones", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: thisYear,
+      cadence: "monthly",
+      type: "recurring",
+      label: "Operating Expenses",
+    });
+    const nowMonth = (await s.as.query(api.finances.budgetsGlance, {})).month;
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 10_000,
+      postedAt: tsOn(thisYear, 1, 15),
+    });
+    if (nowMonth !== 1) {
+      await seedCharge(s, {
+        budgetId,
+        amountCents: 30_000,
+        postedAt: tsOn(thisYear, nowMonth, 5),
+      });
+    }
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const row = glance.recurring.find((r) => r.id === budgetId);
+    const periods = row?.periods ?? [];
+    const elapsed = periods.filter((p) => p.state !== "projected");
+    const projected = periods.filter((p) => p.state === "projected");
+
+    // Every month up to and including this one, in order, exactly once.
+    expect(elapsed.map((p) => p.key)).toEqual(
+      Array.from({ length: nowMonth }, (_, i) => `m${i + 1}`),
+    );
+    expect(elapsed[0].label).toBe("Jan");
+    // Exactly one window is "current", and it's the last elapsed one.
+    expect(elapsed.filter((p) => p.state === "current")).toHaveLength(1);
+    expect(elapsed[elapsed.length - 1].state).toBe("current");
+    // Each window reports ITS OWN spend, not the year's running total — the
+    // whole point of the strip. January holds January's charge and nothing
+    // else, and the cap is the cadence cap in every window.
+    expect(elapsed[0].spentCents).toBe(nowMonth === 1 ? 40_000 : 10_000);
+    expect(periods.every((p) => p.capCents === 50_000)).toBe(true);
+    if (nowMonth !== 1) {
+      expect(elapsed[elapsed.length - 1].spentCents).toBe(30_000);
+    }
+
+    if (nowMonth === 1) {
+      // Nothing has COMPLETED yet, so there is nothing honest to predict —
+      // and a strip of eleven projected zeroes would be a prediction.
+      expect(projected).toHaveLength(0);
+    } else {
+      const completed = elapsed.slice(0, -1);
+      const avg = Math.round(
+        completed.reduce((sum, p) => sum + p.spentCents, 0) / completed.length,
+      );
+      expect(projected.map((p) => p.key)).toEqual(
+        Array.from({ length: 12 - nowMonth }, (_, i) => `m${nowMonth + i + 1}`),
+      );
+      // The projection averages COMPLETED windows only. The current month is
+      // partial by definition — folding it in would predict a collapse in
+      // spending that is really just the calendar.
+      expect(projected.every((p) => p.spentCents === avg)).toBe(true);
+    }
+  });
+
+  test("quarterly: Q1 through the current quarter, labelled as quarters", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const budgetId = await seedBudget(s, {
+      amountCents: 40_000,
+      year: thisYear,
+      cadence: "quarterly",
+      type: "recurring",
+      label: "Culture Fund",
+    });
+    const nowMonth = (await s.as.query(api.finances.budgetsGlance, {})).month;
+    const nowQuarter = Math.ceil(nowMonth / 3);
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 12_000,
+      postedAt: tsOn(thisYear, 2, 10),
+    });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const periods = glance.recurring.find((r) => r.id === budgetId)?.periods ?? [];
+    const elapsed = periods.filter((p) => p.state !== "projected");
+
+    expect(elapsed.map((p) => p.label)).toEqual(
+      Array.from({ length: nowQuarter }, (_, i) => `Q${i + 1}`),
+    );
+    // February's charge lands in Q1 and only Q1 — the quarter window is three
+    // months wide, not the whole year to date.
+    expect(elapsed[0].spentCents).toBe(12_000);
+    if (nowQuarter > 1) {
+      expect(elapsed.slice(1).every((p) => p.spentCents === 0)).toBe(true);
+    }
+    expect(periods.filter((p) => p.state === "projected")).toHaveLength(
+      nowQuarter === 1 ? 0 : 4 - nowQuarter,
+    );
+  });
+
+  test("a yearly bucket has no windows — the page already IS its window", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: thisYear,
+      cadence: "yearly",
+      type: "recurring",
+      label: "Education & Growth",
+    });
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 1_636,
+      postedAt: tsOn(thisYear, 2, 3),
+    });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const row = glance.recurring.find((r) => r.id === budgetId);
+    // Omitted, not an empty array: the field's absence is what an older client
+    // bundle safely ignores.
+    expect(row?.periods).toBeUndefined();
+    // …and the headline number is untouched by any of this.
+    expect(row?.spentCents).toBe(1_636);
+  });
+
+  test("a bucket pinned to ONE month is a single window, not a series of twelve", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    // A "monthly" cadence with its own `month` set governs exactly one window.
+    // Twelve bars for it would be eleven empty ones plus a claim it repeats.
+    const budgetId = await seedBudget(s, {
+      amountCents: 20_000,
+      year: thisYear,
+      month: 2,
+      cadence: "monthly",
+      type: "recurring",
+      label: "February push",
+    });
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 5_000,
+      postedAt: tsOn(thisYear, 2, 14),
+    });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    expect(
+      glance.recurring.find((r) => r.id === budgetId)?.periods,
+    ).toBeUndefined();
+  });
+
+  test("a one-time budget never carries windows", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: thisYear,
+      cadence: "one_off",
+      type: "one_time",
+      label: "Genesis",
+    });
+    await seedCharge(s, {
+      budgetId,
+      amountCents: 9_000,
+      postedAt: tsOn(thisYear, 3, 3),
+    });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    expect(glance.oneTime.find((r) => r.id === budgetId)?.periods).toBeUndefined();
+  });
+});
+
+/**
+ * ONE YEAR PER PAGE, ONE BOOK AT A TIME — the `year` and `scope` args.
+ *
+ * `scope` is the one that has teeth: `budgetsGlance` is DELIBERATELY the one
+ * finance read any team member can make, so a widening argument on it is a
+ * widening argument on the least-gated surface in the domain. It has to be
+ * refused by the server, not hidden by the client.
+ */
+describe("budgetsGlance's year and book arguments", () => {
+  test("availableYears offers every year that has a budget, plus this one", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    for (const year of [thisYear - 2, thisYear - 1]) {
+      const budgetId = await seedBudget(s, {
+        amountCents: 50_000,
+        year,
+        cadence: "one_off",
+        type: "one_time",
+        label: `Genesis ${year}`,
+      });
+      await seedCharge(s, {
+        budgetId,
+        amountCents: 1_000,
+        postedAt: tsOn(year, 6, 1),
+      });
+    }
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    // Newest first, and the current year is always offered even though nothing
+    // files under it — a picker must never sit on a year it won't offer.
+    expect(glance.availableYears).toEqual([thisYear, thisYear - 1, thisYear - 2]);
+    expect(glance.year).toBe(thisYear);
+    expect(glance.oneTime).toHaveLength(0);
+
+    const older = await s.as.query(api.finances.budgetsGlance, {
+      year: thisYear - 2,
+    });
+    expect(older.year).toBe(thisYear - 2);
+    expect(older.oneTime).toHaveLength(1);
+    // The picker's options don't shrink to the page you're on.
+    expect(older.availableYears).toEqual([thisYear, thisYear - 1, thisYear - 2]);
+  });
+
+  test("a caller without central reach cannot widen the scope by URL", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A chapter admin is not a central finance holder. Asking for every book
+    // has to THROW — silently answering with their own chapter would teach the
+    // client that the argument works.
+    await expect(
+      s.as.query(api.finances.budgetsGlance, { scope: "all" }),
+    ).rejects.toThrow(/central/i);
+    await expect(
+      s.as.query(api.finances.budgetsGlance, { scope: "central" }),
+    ).rejects.toThrow(/central/i);
+    // Their own book needs nothing beyond membership.
+    await expect(
+      s.as.query(api.finances.budgetsGlance, { scope: s.chapterId }),
+    ).resolves.toBeDefined();
+  });
+
+  test("the book picker offers a plain member exactly one book — their own", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const scopes = await s.as.query(api.finances.budgetsGlanceScopes, {});
+    // One option means the client renders no picker at all, which is the
+    // whole point: a member's screen is unchanged by this feature.
+    expect(scopes).toHaveLength(1);
+    expect(scopes[0].key).toBe(s.chapterId);
   });
 });

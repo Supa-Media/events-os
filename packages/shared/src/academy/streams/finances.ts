@@ -448,13 +448,135 @@
  *    Reconcile filter table's "Owes a receipt or coding" row lost its
  *    "…and processor payouts" clause for the same reason.
  *
+ * THE GRID'S LAST COLUMN, SPLIT BY KIND (founder, 2026-08-14: "the last column
+ * is very cluttered. It contains like a bunch of different rows and information
+ * and things like that… it could be much cleaner and have things broken down").
+ * Reconcile's Actions cell had collected three kinds of thing in one 112px
+ * space: the way INTO a record, badges saying what the row IS, and buttons that
+ * ACT on it. The markings moved to their own hideable "Marked" column (which
+ * only renders when the page actually has one on it), every row action moved
+ * behind a single `⋯` menu, and the speech-bubble stayed exactly where it was.
+ * Content-only here, in the four places a lesson named an affordance by its old
+ * shape:
+ *
+ *  - `finance-reconcile-grid` / "Some rows you can correct": hand-entered rows
+ *    no longer "carry a pencil in the Actions column" — they offer **Correct
+ *    amount, date or merchant** in the row's ⋯ menu. The rule's whole point is
+ *    unchanged and is the reason it needed the edit: it teaches the reader to
+ *    look for an affordance and conclude something real from its ABSENCE (a
+ *    bank row can't be corrected), so a lesson pointing at a pencil that no
+ *    longer exists would have them concluding it from the wrong thing.
+ *  - `finance-reconcile-grid` / "Renaming a merchant is not correcting a row"
+ *    ended by pointing at "the pencil" for the same act; it now points at the
+ *    correction in the ⋯ menu.
+ *  - `finance-reconcile-grid` / "Personal is a flag, not a status" now names
+ *    the **Marked** column the flag actually reads out in ("Personal" while
+ *    owed, "Repaid" once settled) — which is the rule's own argument made
+ *    visible: the flag has its own column precisely because it is not one of
+ *    the four statuses. Its "The pile that was never a backlog" rule also
+ *    picks up one clause on Marked coming and going with the data, since a
+ *    column that isn't always there is otherwise a support question.
+ *  - `finance-transfers-and-payouts` / "Marked still means documented" already
+ *    promised that "any marking can be undone"; it now says where the marking
+ *    shows and where the undo went.
+ *
+ * No quiz changed. Every question in both sections was checked against the
+ * moves and none hung on an icon's shape — and `finance-reconcile-grid` is at
+ * the 5-question cap, where a swap would have cost real coverage to restate
+ * what the rule blocks already say. No title, slug, minutes or quiz length
+ * moved.
+ *
+ * APPROVAL NOW EMAILS THE CLAIMANT (2026-08-14; founder: "when their
+ * reimbursement was approved and it's coming to them, there's no email sent…
+ * we just need to make sure people know that their money is coming once it's
+ * approved"). Approval really was the one decision in the reimbursement state
+ * machine that reached the person waiting on it through no channel at all, and
+ * `finance-reimbursements-and-flags` is the lesson that teaches the flow, so it
+ * carries the change. Content-only — no section added, moved or removed, and
+ * minutes stay 5.
+ *
+ *  · ONE BULLET ADDED, "You'll be told when it's approved — and approved is
+ *    not paid": the notice goes to the address on the REQUEST rather than an
+ *    account (most claimants are accountless), it names the approved amount
+ *    and, on a partial approval, the submitted one too, and it deliberately
+ *    stops short of saying the money has moved. The state pair matters more
+ *    than the email: `approve` records a decision, and the payout is the step
+ *    after it. The existing "Reimbursement — Public Worship owes you" bullet
+ *    already taught the auto-ACH-on-approval mechanic and needed no change.
+ *  · ONE QUIZ QUESTION SWAPPED, never grown — this quiz is at the 5-question
+ *    cap `apps/convex/tests/academy.test.ts` enforces. IN: what an approval
+ *    email does and does not mean about your money (approved ≠ paid, and
+ *    partial approvals exist). OUT: "you spot a charge you don't recognize",
+ *    whose answer is stated verbatim in the bullet a few lines above it and
+ *    which was the only question here not about the two flows this lesson is
+ *    named for. Its doctrine was NOT dropped — flagging says YOU made the
+ *    charge, so a mystery charge is a freeze plus a phone call, not a flag —
+ *    it moved into the explanation of the flagging question that was already
+ *    in this quiz, which is its natural home.
+ *  · The one-shot catch-up mailing to everyone approved before this shipped
+ *    (`reimbursementApprovedNoticeBackfill`) is deliberately NOT taught: it is
+ *    an operator action that runs once and then means nothing, not a durable
+ *    rule anybody needs to learn.
+ *
+ * 2026-08-14, the same founder report's other half — TRANSFERS JOIN PAYOUTS,
+ * and a payout stops being named after a person. Both land in
+ * `finance-transfers-and-payouts`; no title, slug, minutes, quiz length or
+ * order moved.
+ *  - "All payouts and transfers should be bank record only. No need for
+ *    documentation." So the split drawn earlier the same day — transfer owes,
+ *    payout doesn't — is gone: "Marked still means documented" is now "Both
+ *    markings are bank record only", and it teaches the Documentation column's
+ *    actual words. (It keeps the Marked-column / ⋯-menu sentence the note
+ *    above added; only the obligation half was rewritten.) This is the SECOND reversal of the
+ *    same rule in one day and it costs something the first one didn't —
+ *    marking a pair as a transfer is now the one move in Reconcile that
+ *    removes a row from the chase, which is precisely the escape hatch
+ *    "marking must never be a way to stop being chased" existed to shut. The
+ *    lesson says that out loud rather than presenting the exemption as free:
+ *    mark a row because it IS a transfer, never because it is awkward, and
+ *    every marking is logged and reversible. `apps/convex/finances.ts`'s
+ *    `owesDocumentation` carries the same warning for whoever reads the code.
+ *    The quiz's fourth question taught the retired rule as its correct answer,
+ *    so it was SWAPPED (still four): the old right answer is now a distractor
+ *    and "Bank record only" is the answer. Two prose lines that said excluding
+ *    drops a transfer out of the receipt chase were corrected — it isn't in
+ *    one — and `finance-reconcile-grid`'s filter table lost its claim that the
+ *    chase keeps marked transfers.
+ *  - A MARKED PAYOUT ISN'T NAMED AFTER A PERSON ("Stripe payouts still have my
+ *    name… I know I'm the one that initiated the payout, but come on, that
+ *    can't mean I'm the merchant"). Bank feeds hand us the ACH ORIGINATOR as
+ *    the counterparty, and on a Stripe payout that string can be a human
+ *    being's name; a marked row now reads "Stripe payout" / "Givebutter
+ *    payout" instead. Taught as a paragraph on the existing "A payout is NOT a
+ *    transfer" rule rather than as a new block, because it is the same fact
+ *    the rule already teaches — a payout has no merchant — finally showing up
+ *    in the merchant cell. It says the bank's original string is kept (the
+ *    rename editor and the name history still show it) and that a
+ *    bookkeeper's own rename still wins, so nobody reads this as the app
+ *    quietly editing the statement.
+ *
  * Reconciliation "flag" → "mark for review" (2026-08-14, founder: "what does
  * 'flag' do, it feels like a scary button"). Presentation-only rename on the
  * Accounts page's payout/transfer audit rows — the Convex mutation names and
  * `ReconciliationFlagKind` are unchanged, so nothing here about the DATA
  * model moved. `finance-transfers-and-payouts`'s STRIPE-payouts tip said the
  * Financial Manager can "audit and flag them"; it now says "audit it and mark
- * it for review" to match. No title, minutes, or quiz content changed.
+ * it for review" to match. NOTE this is a DIFFERENT flag from the personal-
+ * expense one the "Personal is a flag, not a status" rule teaches — that one
+ * is untouched here, and the entry above moved it to the Marked column.
+ *
+ * BALANCE SETTLEMENT ONLY BOOKS WHEN CASH REALLY MOVES (2026-08-14, founder:
+ * "it creates actual things on the ledger which is just wrong and cluttered").
+ * The morning engine used to book a `balance_settlement` transfer pair every
+ * morning whether or not Real cash movement was on — and since that pair is
+ * worth $0 to book value by construction, it never closed the gap it measured
+ * and re-booked an identical row the next day, forever. Booking is now gated
+ * on the same setting that decides execution. `finance-transfers-and-payouts`'s
+ * STRIPE-payouts tip taught the old behaviour ("books each chapter's share as
+ * an automatic transfer") and now teaches the real one: detection and deposit
+ * labelling always happen, booking AND moving are both gated, and with the
+ * toggle off the engine reports the gap instead of writing a row. The same tip
+ * also lost a stale "badged 'Payout allocation'" claim, dead since #553.
  */
 
 import type {
@@ -626,7 +748,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Which budget does this come out of?** Not \"the chapter's money\" — a specific, named, approved budget. Event budgets are named after the event template they came from (\"Genesis\"), with a year or a month added only when there's more than one to tell apart, so the name you say out loud is the name you'll find on the Budgets tab. If you can't name one, you've already found your answer: this isn't green.",
-          "**Is there enough left in it?** Not what the budget started at — what's left after everything already charged to it. Open Finances → Budgets and look; the app knows, and you don't need a finance role to see it. Tap any budget to drop it open: the individual charges behind that number, who made each one, what's been coded where, and a link straight through to the event or project it belongs to. If the number surprises you, the answer to why is one tap away — don't guess, and don't ask around.",
+          "**Is there enough left in it?** Not what the budget started at — what's left after everything already charged to it. Open Finances → Budgets and look; the app knows, and you don't need a finance role to see it. The tab shows **one year at a time** — this year by default, with arrows to step back to a previous one, so a budget you can't find is almost always on another year's page rather than gone. Tap any budget to drop it open: the individual charges behind that number, who made each one, what's been coded where, and a link straight through to the event or project it belongs to. If the number surprises you, the answer to why is one tap away — don't guess, and don't ask around. For a standing bucket that resets every month or quarter (operating expenses, equipment), dropping it open also gives you the year window by window — every month or quarter so far side by side, plus a faded estimate of where the year lands if spending keeps up. Faded bars are a forecast from the months that have already finished, not money anyone has spent.",
           "**Which track is this on — green, yellow, or red?** The rest of this lesson.",
         ],
       },
@@ -1302,6 +1424,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
+          "**You'll be told when it's approved — and approved is not paid:** the moment a reviewer approves your request, an email goes out saying so and naming the amount. It goes to the address you put ON THE REQUEST, not to wherever your account lives, because plenty of claimants have no account at all. Read the amount before you celebrate: a reviewer can approve SOME of your lines and not others, so when the approved figure differs from what you submitted the email names both, and your Treasurer can tell you which lines didn't make it and why. What that email will never tell you is that the money has already moved — approved and paid are two different states, and sending the payout is the step after. If nothing has landed within a week or so, contact your Treasurer; that's the right person to ask, and asking is welcome.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Book (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Closed AND an unpaid personal expense at the same time.",
           "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
@@ -1425,7 +1548,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 3,
         explanation:
-          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt.",
+          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt. And the mirror rule: flagging says YOU made the charge, so a charge you genuinely don't recognize is not a flag — freeze the card yourself (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager right away so it gets investigated.",
       },
       {
         prompt: "Your chapter's Treasurer submits a reimbursement request for their own out-of-pocket purchase. Who can approve it?",
@@ -1440,16 +1563,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Approver ≠ requester is identity-based — even a Treasurer can't approve their own request. A Chapter Director's finance access doesn't reach reimbursement approval, so the Financial Manager — whose grant covers every chapter — is the real failsafe.",
       },
       {
-        prompt: "You spot a charge on the Public Worship card you genuinely don't recognize. What's the right move?",
+        prompt:
+          "An email lands saying your $240 reimbursement was approved. What does that actually mean about your money?",
         options: [
-          "Flag it as a personal charge so it's tracked as an owed balance",
-          "Freeze the card yourself right away, then tell your Treasurer or the Financial Manager immediately",
-          "Wait to see if it happens again before doing anything",
-          "Ignore it — the 7-day receipt rule will catch it automatically",
+          "It's been sent — approved and paid are the same event, so it's already left the account",
+          "It's approved but not yet paid: sending the payout is the next step, and the request moves to Paid when the money settles",
+          "Nothing yet — approval emails go out before anyone has really reviewed it",
+          "It means the full amount you submitted was approved, since partial approvals aren't possible",
         ],
         answerIndex: 1,
         explanation:
-          "Flagging \"personal\" says you made the charge — wrong move for a genuine mystery. Freezing your own card is instant and self-serve, and looping in your Treasurer or the Financial Manager gets it actually investigated.",
+          "Approved and paid are separate states, and the email is careful never to claim otherwise — it tells you the decision, not that the money has moved. Read the figure too: a reviewer can approve some of your lines and not others, and when the approved amount differs from what you submitted the email names both. If nothing arrives within a week or so, contact your Treasurer.",
       },
       {
         prompt:
@@ -1489,7 +1613,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Open, categorized, and still not linked to a budget. A row somebody already closed isn't queue work, so it doesn't count here. Processor and bank fees are deliberately absent — a fee is charged, not chosen, so there is no decision for a budget to control. That covers every processor fee we book: Stripe and Givebutter each book one monthly row, and Cash App's fees are marked per payment from a one-off backfill rather than rolled up. None of them will ever ask you for a budget — or for a coding or a receipt: a fee has no testimony to give and no receipt exists, so the processor's own itemized ledger is its record and the public page prints the fee's standing explanation for it. The exemption is by ORIGIN, not by category — a Givebutter paid tier or any other subscription you chose to buy is a decision, so it stays budgeted (and coded) even though it lands in Bank & Fees alongside them"],
           ["Needs documentation", "Still open, still owing a receipt or an acknowledged reason there isn't one"],
-          ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It also keeps the marked internal transfers that owe a statement rather than a person — the Book hides those from the default queue, and picking this brings them back. Marked payouts are NOT in it: a payout owes no documentation at all. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
+          ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It does NOT contain marked internal transfers or marked payouts: neither owes documentation at all, and both read Bank record only. The rows in it with nobody to email are spend charges with no card behind them, chased with a statement rather than a person. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
           ["Closed without documentation", "Somebody marked it Closed with neither a receipt nor an approved exception behind it. Nobody left to nudge, and a published ledger still can't tell that row from a documented one"],
           ["Needs explaining", "Every row that will publish with a BLANK where its explanation should be — the whole backlog, including the 2024-25 history the coding policy grandfathers out. This is the one that ignores the policy date on purpose: \"Needs coding\" answers what policy demands of whom, this answers what a stranger will see a gap next to when the month publishes. Fees, refunded pairs and personal charges are already excluded — they explain themselves"],
           ["Explained", "The other half of the row above — everything in the same population that HAS an approved explanation. It exists because approving one publishes it and takes the row out of \"Needs explaining\", which used to mean the sentence you had just written became unreachable. This is how you re-read what you published, spot-check twenty of them a week later, or hand somebody the month you finished"],
@@ -1505,7 +1629,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The pile that was never a backlog",
-        text: "The page is called **Transactions**, and it has six controls and nothing else: Search, Book (if you hold a central seat), Kind and State on one row, then Group by and Columns under it. There is no view menu and there are no summary pills. Anything you want to look at is those controls set a particular way, which is why they are the only things on the page: a saved view would just be them, set for you, under a different name.\n\n**Columns** is the newest of them and the only one that changes nothing about which rows you are looking at — it puts columns away. Open it and tick off what you don't need right now: hide Cardholder and Category when you are only assigning budgets, hide Documentation and Status when you are only reading what things were for. The checkbox, Merchant and the row's actions always stay, because those are how you select rows, tell them apart, and open a charge's record. Nothing is deleted and nothing is filtered — put a column back and it is exactly where it was. And like everything else here, it travels: the narrowed view is in the link, so a screenshot of it can be reproduced.\n\nThat matters most for the two roll-ups the header used to advertise. **Needs attention** is open with something genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** is open with none of those — categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark closed.\n\nThey are complements over the open rows, so together they are the whole backlog. And the split is worth knowing about even without a pill announcing it: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done.\n\nSo start a session on the second pile: open **State**, pick the states that describe a row with nothing left owing, select all, Mark closed. Then what's left on the page is work that's actually work.\n\nMulti-select is what turns those into a minute's work, and the bulk bar does more than close rows: it sets Category and Budget across a selection, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
+        text: "The page is called **Transactions**, and it has six controls and nothing else: Search, Book (if you hold a central seat), Kind and State on one row, then Group by and Columns under it. There is no view menu and there are no summary pills. Anything you want to look at is those controls set a particular way, which is why they are the only things on the page: a saved view would just be them, set for you, under a different name.\n\n**Columns** is the newest of them and the only one that changes nothing about which rows you are looking at — it puts columns away. Open it and tick off what you don't need right now: hide Cardholder and Category when you are only assigning budgets, hide Documentation and Status when you are only reading what things were for. The checkbox, Merchant and the row's actions always stay, because those are how you select rows, tell them apart, open a charge's record, and do anything to it. One column comes and goes on its own: **Marked** only appears when something on the page has actually been marked a transfer, a payout or personal — an ordinary month of spend has nothing to put in it, so it doesn't take the width. Nothing is deleted and nothing is filtered — put a column back and it is exactly where it was. And like everything else here, it travels: the narrowed view is in the link, so a screenshot of it can be reproduced.\n\nThat matters most for the two roll-ups the header used to advertise. **Needs attention** is open with something genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** is open with none of those — categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark closed.\n\nThey are complements over the open rows, so together they are the whole backlog. And the split is worth knowing about even without a pill announcing it: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done.\n\nSo start a session on the second pile: open **State**, pick the states that describe a row with nothing left owing, select all, Mark closed. Then what's left on the page is work that's actually work.\n\nMulti-select is what turns those into a minute's work, and the bulk bar does more than close rows: it sets Category and Budget across a selection, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
       },
       {
         kind: "rule",
@@ -1515,22 +1639,22 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Some rows you can correct; bank rows you never can",
-        text: "A chunk of our early history was rebuilt from spreadsheets and Notion docs rather than watched as it happened, and some of it came out wrong. Those rows — hand-entered ones — carry a pencil in the Actions column: a Finance manager can fix the amount, date, merchant or description, with a required note saying why. Every field you change is logged, before and after, under your name.\n\nRows that came from Relay, Increase or Stripe have no pencil, and no role adds one. Those are the bank's own record of money that moved: if we edit them, our books stop matching the statement, and matching the statement is the reason anyone should believe the rest. Same for a reimbursement or transfer leg — it's paired to another record, so editing one side quietly breaks the pair. If one of those is wrong, add a note, exclude it with a reason, or rename it (below); don't reach for a correction that isn't there.",
+        text: "A chunk of our early history was rebuilt from spreadsheets and Notion docs rather than watched as it happened, and some of it came out wrong. Those rows — hand-entered ones — offer **Correct amount, date or merchant** in the row's **⋯** menu, the last thing on the row: a Finance manager can fix the amount, date, merchant or description, with a required note saying why. Every field you change is logged, before and after, under your name.\n\nRows that came from Relay, Increase or Stripe don't offer it, and no role adds it. Those are the bank's own record of money that moved: if we edit them, our books stop matching the statement, and matching the statement is the reason anyone should believe the rest. Same for a reimbursement or transfer leg — it's paired to another record, so editing one side quietly breaks the pair. If one of those is wrong, add a note, exclude it with a reason, or rename it (below); don't reach for a correction that isn't there.",
       },
       {
         kind: "rule",
         title: "Renaming a merchant is not correcting a row",
-        text: "Bank feeds hand us machine strings: \"IC* COSTCO BY IN CAR\", \"AMAZON MKTPL*56OXD2TB2\", \"Purchase from AMAZON.COM*569A3 | Address: SEATTLE, WA, US | **8728\". Type over the Merchant cell in Reconcile and call it what it actually was — \"Costco\", \"Amazon — sound cables\". A bookkeeper can do this on ANY row, bank rows included, which is why it's a different thing from the corrections above.\n\nIt's safe on a bank row because it changes nothing about the bank's record. The name you type is stored beside the original, never over it: the statement's own string is still on the row, still searchable (typing either name finds the charge), and one tap away behind the clock icon that appears on every renamed row. That icon opens the name history — what the bank called it, every name since, and who changed it when. Clear the rename and the bank's name simply shows through again; nothing had to be restored, because nothing was ever overwritten.\n\nSo rename freely for readability, and understand what you have NOT done: renaming doesn't correct an amount, a date, or a claim about what happened. If the row itself is wrong, that's the pencil — or a note and an exclusion.",
+        text: "Bank feeds hand us machine strings: \"IC* COSTCO BY IN CAR\", \"AMAZON MKTPL*56OXD2TB2\", \"Purchase from AMAZON.COM*569A3 | Address: SEATTLE, WA, US | **8728\". Type over the Merchant cell in Reconcile and call it what it actually was — \"Costco\", \"Amazon — sound cables\". A bookkeeper can do this on ANY row, bank rows included, which is why it's a different thing from the corrections above.\n\nIt's safe on a bank row because it changes nothing about the bank's record. The name you type is stored beside the original, never over it: the statement's own string is still on the row, still searchable (typing either name finds the charge), and one tap away behind the clock icon that appears on every renamed row. That icon opens the name history — what the bank called it, every name since, and who changed it when. Clear the rename and the bank's name simply shows through again; nothing had to be restored, because nothing was ever overwritten.\n\nSo rename freely for readability, and understand what you have NOT done: renaming doesn't correct an amount, a date, or a claim about what happened. If the row itself is wrong, that's the correction in the ⋯ menu — or a note and an exclusion.",
       },
       {
         kind: "rule",
         title: "\"What it was for\" is the sentence that publishes",
-        text: "The column reads the charge's coding — what it bought and which of our work it served — straight on the row. A blank one says \"Not written\" when that charge owes an account of itself, so an unexplained month is visible at a glance instead of one row at a time. Tap the cell to open the full record: the receipt, who was there, the route, and Approve / Send back if it's yours to decide.\n\nWhat it shows is the PUBLISHED wording, not always the author's. When an approver has redacted a sentence — stripping a name out of \"Dinner with Michael Reid and the volunteers\" — the grid shows the redaction, with a small pencil beside it. The author's original is never overwritten and is still on the coding for an auditor; it simply doesn't render on the surface most likely to end up in a screenshot. So don't read this column as a quote of what somebody typed. Read it as what the public page will say.\n\nAnd you can fix it right there. Click the cell and type — the sentence saves when you click away or press Enter, and everything else about the coding is left exactly as it was, so editing a meal's wording never touches who was at it. Three things it deliberately will not do. An APPROVED coding doesn't take a cursor at all: testimony a second person signed off on doesn't get quietly reworded, so clicking it just opens the sentence out in full and tells you a reviewer has to send it back first. A charge with NO coding yet still opens the record, because there is nothing to edit and no way to say in one line whether it was a meal, a trip or a stay. And the length floor applies here exactly as it does in the sheet — a few words won't save.",
+        text: "The column reads the charge's coding — what it bought and which of our work it served — straight on the row. A blank one says \"Not written\" when that charge owes an account of itself, so an unexplained month is visible at a glance instead of one row at a time. Tap the cell to open the full record: the receipt, who was there, the route, and Approve / Send back if it's yours to decide.\n\nWhat it shows is the PUBLISHED wording, not always the author's. When an approver has redacted a sentence — stripping a name out of \"Dinner with Michael Reid and the volunteers\" — the grid shows the redaction, with a small pencil beside it. The author's original is never overwritten and is still on the coding for an auditor; it simply doesn't render on the surface most likely to end up in a screenshot. So don't read this column as a quote of what somebody typed. Read it as what the public page will say.\n\nAnd you can fix it right there. Click the cell and type — the sentence saves when you click away or press Enter, and everything else about the coding is left exactly as it was, so editing a meal's wording never touches who was at it. Three things it deliberately will not do. An APPROVED coding doesn't take a cursor at all: testimony a second person signed off on doesn't get quietly reworded, so clicking it just opens the sentence out in full and tells you a reviewer has to send it back first. A blank one takes a cursor too — what you type becomes a **general** coding, which is complete as typed because that kind owes no extra elements. If the charge was really a meal, a trip or a stay, the cell says so and hands you the sheet, because who was there and where you went do not fit on one line. And the length floor applies here exactly as it does in the sheet — a few words won't save.",
       },
       {
         kind: "rule",
         title: "Personal is a flag, not a status",
-        text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — it's a separate fact about the row, which is exactly why it isn't one of the four statuses. Mark or un-mark it right from a row's actions (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.\n\nWhat it does change is CLOSING. **A charge that is personal and not yet repaid cannot be closed.** Mark closed refuses it and says why: somebody still owes the chapter that money, and closing a row means the treasurer is finished with it. The refusal names the only two ways out, because there are only two — the money comes back through the app, or it was never personal and the flag comes off. In a bulk close it refuses one row at a time: the rows that could close do, and the ones that couldn't come back listed by name, still selected.\n\nThe other direction still works, and it matters. A row you had ALREADY closed and only later discovered was personal stays closed — it reads as closed AND awaiting repayment at the same time, and nothing rewrites it. The rule is about the act of closing, not about which pair of facts a row is allowed to hold.",
+        text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — it's a separate fact about the row, which is exactly why it isn't one of the four statuses. It has its own place to say so: the **Marked** column reads \"Personal\" while the money is still owed and \"Repaid\" once it's back, beside \"Transfer\" and a processor's name for the other two markings. Mark or un-mark it from the row's **⋯** menu at the far right (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.\n\nWhat it does change is CLOSING. **A charge that is personal and not yet repaid cannot be closed.** Mark closed refuses it and says why: somebody still owes the chapter that money, and closing a row means the treasurer is finished with it. The refusal names the only two ways out, because there are only two — the money comes back through the app, or it was never personal and the flag comes off. In a bulk close it refuses one row at a time: the rows that could close do, and the ones that couldn't come back listed by name, still selected.\n\nThe other direction still works, and it matters. A row you had ALREADY closed and only later discovered was personal stays closed — it reads as closed AND awaiting repayment at the same time, and nothing rewrites it. The rule is about the act of closing, not about which pair of facts a row is allowed to hold.",
       },
       {
         kind: "rule",
@@ -1661,17 +1785,17 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "A payout is NOT a transfer — it's your revenue arriving",
-        text: "When Givebutter or Stripe pays out, that deposit is donation and ticket money you've ALREADY earned — the gifts live in the donor records, and that's where the org counts its revenue (the Accounts page's book value = everything earned — donations, ticket sales, in-person sales and course registrations — minus spend). So \"Mark as payout\" tells the books this bank credit is the arrival of already-counted revenue: it keeps the deposit honest and stops the same dollars being counted twice. Never mark a payout as a transfer — a transfer is money between two of OUR accounts, and this money came from outside.",
+        text: "When Givebutter or Stripe pays out, that deposit is donation and ticket money you've ALREADY earned — the gifts live in the donor records, and that's where the org counts its revenue (the Accounts page's book value = everything earned — donations, ticket sales, in-person sales and course registrations — minus spend). So \"Mark as payout\" tells the books this bank credit is the arrival of already-counted revenue: it keeps the deposit honest and stops the same dollars being counted twice. Never mark a payout as a transfer — a transfer is money between two of OUR accounts, and this money came from outside.\n\nA marked payout also stops pretending to have a merchant. Bank feeds hand us whoever ORIGINATED the deposit, and for a Stripe payout that string can be the name of the person whose account sent it — which is a true record of the statement and a nonsense answer to \"who did we buy this from\" (\"I know I'm the one that initiated the payout, but come on, that can't mean I'm the merchant\"). Once marked, the row reads **Stripe payout** or **Givebutter payout**. The bank's original string isn't lost — it's what the rename editor shows you and what the name history keeps — it just stops being the headline. And if you rename a payout row yourself, your name still wins; this only replaces the one nobody chose.",
       },
       {
         kind: "rule",
-        title: "Marked still means documented",
-        text: "Marking a row is not a way to make it go away. A marked TRANSFER still appears under Needs documentation until you attach something — a bank statement. That's our own money moving between our own accounts, and the statement is what shows it moved.\n\n**A payout is the exception, and it owes nothing.** Nobody bought anything: a payout is donation and ticket money you already counted at the donor and order records, arriving in one batch. There is no receipt to chase, and asking for one just parks the row in a backlog that can never clear — which is what it was doing (\"nine rows not publishable, no documentation — and most of them are quite literally payouts\"). What substantiates a payout is the processor's settlement report. For STRIPE we already hold that ourselves: the payout id, the amount, the arrival date and each book's share, linked both ways to the bank row. For Givebutter and hand-marked \"other\" payouts we don't — there the record lives in the processor's own dashboard, so if you ever need to prove one out, that's where you go.\n\nEvery marking is logged with who did it and what changed, so a reclassification is always traceable, and any marking can be undone.",
+        title: "Both markings are bank record only",
+        text: "Neither a marked transfer nor a marked payout is chased for a receipt. Nobody bought anything on either one, so there is no receipt that could ever exist, and asking for one only parks the row in a backlog that can never clear — which is exactly what it was doing (\"nine rows not publishable, no documentation — and most of them are quite literally payouts\"). Both now read **Bank record only** in the Documentation column, which is what they are: the bank statement line is the evidence.\n\n**A transfer** is our own money moving between our own accounts, and both legs are already in the ledger. **A payout** is donation and ticket money you already counted at the donor and order records, arriving in one batch — and what substantiates it beyond the bank line is the processor's settlement report. For STRIPE we hold that ourselves: the payout id, the amount, the arrival date and each book's share, linked both ways to the bank row. For Givebutter and hand-marked \"other\" payouts we don't — there the record lives in the processor's own dashboard, so if you ever need to prove one out, that's where you go.\n\nThis is why marking is a decision, not a shortcut. It is the ONE thing in Reconcile that takes a row out of the documentation chase, so mark a row a transfer because it IS one — never because it's awkward. Every marking is logged with who did it and what changed, and any marking can be undone. You'll see what a row has been marked as in the **Marked** column on Transactions — \"Transfer\", or the processor's name — and the undo lives in that row's **⋯** menu (\"Un-mark internal transfer\" takes BOTH legs; a payout has no leg to pair with, so it un-marks alone).",
       },
       {
         kind: "rule",
         title: "Don't reach for Excluded",
-        text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, only ever fixes one of the two legs, and drops it out of the receipt chase. Using it on a payout hides the settlement record your books need — and for a deposit nobody marked yet, it erases real income. Both now have a marking that keeps the row honest and visible.",
+        text: "Excluded is for a row that should never count at all — a duplicate, a bank error. Using it on a transfer hides the row instead of explaining it, and only ever fixes one of the two legs. Using it on a payout hides the settlement record your books need — and for a deposit nobody marked yet, it erases real income. Both now have a marking that keeps the row honest and visible, and neither marking costs you a receipt.",
       },
       {
         kind: "tip",
@@ -1695,7 +1819,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           {
             text: "Exclude all three so nothing double-counts",
             feedback:
-              "Excluding hides rather than explains, and it drops the transfer pair out of the receipt chase. The payout deposit isn't chased for a receipt either way — but it still needs its marking, because that's what tells the books it's settled, already-counted donation revenue rather than new income.",
+              "Excluding hides rather than explains — and on a transfer it only ever fixes one of the two legs, leaving the other stranded. Neither of these is chased for a receipt once marked, but both still need their marking: it's what tells the books the $5,000 moved rather than left, and that the $2,400 is settled, already-counted donation revenue rather than new income.",
           },
           {
             text: "Mark only the $5,000 withdrawal — the deposit side is obvious",
@@ -1743,16 +1867,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "A transfer is a pair by definition. Marking only the side that left would leave the arriving side sitting there as income with no source — swapping one wrong number for another.",
       },
       {
-        prompt: "You mark a transfer. What happens to its receipt obligation?",
+        prompt: "You mark a pair of rows as an internal transfer. What does the Documentation column say about them afterwards?",
         options: [
-          "It disappears — marked rows aren't chased",
-          "It stays: both legs still show under Needs documentation until you attach a statement",
-          "Only the outgoing leg still needs one",
-          "It becomes optional after 30 days",
+          "Needs documentation, until you attach a bank statement to each leg",
+          "Bank record only — a marked transfer owes nothing, and neither does a marked payout",
+          "Only the outgoing leg still owes something",
+          "Nothing at all — marked rows leave the grid",
         ],
         answerIndex: 1,
         explanation:
-          "Marking changes how a row COUNTS, never whether it must be explained. Both legs keep owing documentation until something is attached — that's the difference between marking and hiding.",
+          "Nobody bought anything on either leg, so there is no receipt that could exist — the bank statement line IS the record, and the column says exactly that instead of nagging for an upload. It also means marking is the one move in Reconcile that takes a row out of the documentation chase, so mark a pair because it really is money between our own accounts, never because the row is awkward. Every marking is logged with who did it, and any of them can be undone.",
       },
     ],
   },

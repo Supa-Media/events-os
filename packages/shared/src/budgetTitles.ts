@@ -155,5 +155,54 @@ export function resolveBudgetTitles(
     for (const row of dateless) out.set(row.key, row.fallbackName);
   }
 
-  return out;
+  // ── FALLBACK NAMES COLLIDE TOO ────────────────────────────────────────────
+  // Everything above disambiguates TEMPLATE-derived titles. Fallback names —
+  // an ad-hoc event somebody called "Event", two projects both named "Merch"
+  // — were left alone, which reproduces the exact complaint that started this
+  // (two rows reading the same thing) one layer down. So the same rule runs
+  // once more over the finished set: identical titles get a year, and a year
+  // that still collides gets a month.
+  //
+  // Deliberately a SECOND pass over the output rather than a branch inside the
+  // first: a fallback name can collide with a template-derived title too
+  // ("Genesis" typed by hand next to a real Genesis template), and only a pass
+  // that sees final titles catches that.
+  return disambiguateFinalTitles(rows, out);
+}
+
+/** Append a year — then a month — to any title that appears more than once. */
+function disambiguateFinalTitles(
+  rows: readonly BudgetTitleInput[],
+  titles: Map<string, string>,
+): Map<string, string> {
+  const byTitle = new Map<string, BudgetTitleInput[]>();
+  for (const row of rows) {
+    const title = titles.get(row.key)!;
+    const list = byTitle.get(title) ?? [];
+    list.push(row);
+    byTitle.set(title, list);
+  }
+
+  for (const [title, group] of byTitle) {
+    if (group.length === 1) continue;
+    const byYear = new Map<number, BudgetTitleInput[]>();
+    for (const row of group) {
+      if (row.date == null) continue; // nothing to add; leave it as it is
+      const { year } = easternYearMonth(row.date);
+      const list = byYear.get(year) ?? [];
+      list.push(row);
+      byYear.set(year, list);
+    }
+    for (const [year, yearRows] of byYear) {
+      if (yearRows.length === 1) {
+        titles.set(yearRows[0].key, `${title} ${year}`);
+        continue;
+      }
+      for (const row of yearRows) {
+        const { month } = easternYearMonth(row.date!);
+        titles.set(row.key, `${title} ${MONTH_ABBR[month - 1]} ${year}`);
+      }
+    }
+  }
+  return titles;
 }

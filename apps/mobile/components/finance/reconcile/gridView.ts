@@ -110,11 +110,17 @@ export type ExplainProgress = {
  *     grid's main verb away, not just a fact.
  *   - Merchant — the row's identity. A grid of rows you cannot tell apart is
  *     not a condensed view of anything.
- *   - Actions — the speech-bubble there is the ONE affordance on every row, in
- *     every frame, that opens the charge's full record (Date/Amount only
- *     become a way in when the side panel is mounted, and "What it was for" is
- *     itself hideable). Hiding it could strand a row's record behind nothing.
- * Everything else is the reader's business.
+ *   - Actions — it holds the two things a row can never be without: the
+ *     speech-bubble, the ONE affordance on every row in every frame that opens
+ *     the charge's full record (Date/Amount only become a way in when the side
+ *     panel is mounted, and "What it was for" is itself hideable), and the
+ *     `⋯` menu, which after the 2026-08-14 split is the ONLY route to this
+ *     row's verbs — correct it, mark it personal, un-mark a marking. Hiding it
+ *     would strand a row's record behind nothing AND take every row-level act
+ *     off the screen at once.
+ * Everything else is the reader's business — including {@link rowMarkings}'
+ * own column, which is new here and hideable precisely because it is a fact
+ * about the row rather than a way to do anything to it.
  */
 export type ReconcileColumnKey =
   | "book"
@@ -125,7 +131,8 @@ export type ReconcileColumnKey =
   | "category"
   | "forCol"
   | "receipt"
-  | "status";
+  | "status"
+  | "marked";
 
 /**
  * The hideable columns in GRID ORDER, with the header each one carries — so
@@ -152,6 +159,7 @@ export const HIDEABLE_COLUMNS: readonly {
   { key: "forCol", label: "For" },
   { key: "receipt", label: "Documentation" },
   { key: "status", label: "Status" },
+  { key: "marked", label: "Marked" },
 ];
 
 const HIDEABLE_KEYS: readonly ReconcileColumnKey[] = HIDEABLE_COLUMNS.map(
@@ -222,14 +230,106 @@ export function showsCategoryColumn(
   return rows.some((r) => r.chargedTo != null && r.chargedTo.id !== r.book.id);
 }
 
+// ── WHAT A ROW HAS BEEN MARKED AS ────────────────────────────────────────────
+/**
+ * THE FOUR WAYS A ROW SAYS "THIS MONEY ISN'T WHAT IT LOOKS LIKE".
+ *
+ * Founder, on the deployed grid's last column: "it contains like a bunch of
+ * different rows and information and things like that… it could be much
+ * cleaner and have things broken down." The reason it read as a jumble is that
+ * it held three different KINDS at once — the way IN to a record, the row's
+ * STATE, and the ACTIONS you can take on it — and the eye has no way to sort
+ * icons by kind. These are the STATE half, pulled out into their own column:
+ *
+ *   transfer — a bookkeeper marked this leg an internal transfer
+ *              (`markAsTransfer`). Not spend; the same dollars moving between
+ *              two of our own accounts.
+ *   payout   — a donation-processor settlement deposit (`markAsPayout`). Not
+ *              new revenue; money already counted at the donor records
+ *              arriving in a batch.
+ *   personal — flagged personal and NOT yet repaid. Somebody owes the chapter
+ *              this money, and the row cannot be closed until they don't.
+ *   repaid   — flagged personal and settled. Kept as its own marking rather
+ *              than dropped, because "this was personal and has been paid
+ *              back" is a different, publishable fact from "ordinary spend".
+ *
+ * AN ARRAY, not one value, and deliberately so: `isPersonal` is a FLAG that
+ * sits beside the transfer/payout markings rather than replacing them (see the
+ * Academy's "Personal is a flag, not a status"), so a row can honestly carry
+ * two. The grid used to render exactly this pair in two unrelated places in
+ * one cell; collapsing them to one would be losing a fact to tidy a column,
+ * which is the wrong trade.
+ *
+ * Transfer and payout ARE mutually exclusive — `markAsPayout` refuses a
+ * transfer leg and vice versa — but the ordering here is a `switch`-free
+ * `if/else` for the same reason the grid's own JSX was: if the data ever
+ * disagreed, printing one of them is better than printing a contradiction.
+ *
+ * Kinds, not labels: "Other processor" is presentation and lives with the
+ * `Badge` that draws it, so this module stays dependency-free (no
+ * `@events-os/shared` import) and keeps running under the package's jest
+ * config, exactly as its header promises.
+ */
+export type RowMarking<P extends string = string> =
+  | { kind: "transfer" }
+  | { kind: "payout"; processor: P }
+  | { kind: "personal" }
+  | { kind: "repaid" };
+
+export function rowMarkings<P extends string>(row: {
+  isMarkedTransfer: boolean;
+  payoutProcessor: P | null;
+  isPersonal: boolean;
+  repaymentStatus: string | null;
+}): RowMarking<P>[] {
+  const out: RowMarking<P>[] = [];
+  if (row.isMarkedTransfer) out.push({ kind: "transfer" });
+  else if (row.payoutProcessor != null) {
+    out.push({ kind: "payout", processor: row.payoutProcessor });
+  }
+  if (row.isPersonal) {
+    out.push({ kind: row.repaymentStatus === "paid" ? "repaid" : "personal" });
+  }
+  return out;
+}
+
+/**
+ * DOES THE PAGE HAVE A "MARKED" COLUMN AT ALL? — capability, not preference,
+ * and the answer to what a new column COSTS.
+ *
+ * A tenth column on a table already ~1776px wide has to earn its width, and
+ * this one earns it by not being there most of the time: a month with no
+ * transfers, no payouts and no personal charges renders no Marked column, and
+ * the grid comes out NARROWER than before the split (Actions shrank from 112px
+ * to 72px once it stopped holding badges). It only appears on the pages that
+ * have something to put in it — and even then a reader can put it away, which
+ * is the point of it being in {@link HIDEABLE_COLUMNS}.
+ *
+ * Same shape and same reasoning as {@link showsCategoryColumn}: data-driven,
+ * over the narrowest row shape that answers the question, and read by BOTH the
+ * grid (which renders the column) and the Columns menu (which decides whether
+ * to offer a tick box for it), so the two can never answer differently.
+ */
+export function showsMarkedColumn(
+  rows: readonly {
+    isMarkedTransfer: boolean;
+    payoutProcessor: string | null;
+    isPersonal: boolean;
+    repaymentStatus: string | null;
+  }[],
+): boolean {
+  return rows.some((row) => rowMarkings(row).length > 0);
+}
+
 /**
  * WHICH COLUMNS THIS SCOPE CAN RENDER AT ALL — the menu's contents.
  *
  * A tick box for a column the scope has no room for is a dead control: Book
  * exists only in the merged all-books queue (and on a foreign chapter's desk),
- * Category only where {@link showsCategoryColumn} says so, and the panel's
- * three belong to the panel while it is open. Offering them anyway would be
- * the "affordance that can't work" this screen keeps removing.
+ * Category only where {@link showsCategoryColumn} says so, Marked only where
+ * {@link showsMarkedColumn} does, and the panel's three belong to the panel
+ * while it is open. Offering them anyway would be the "affordance that can't
+ * work" this screen keeps removing.
  *
  * A preference for a column that steps out stays RECORDED — it lives in the
  * URL, not in this list — so closing the panel or changing books brings back
@@ -238,6 +338,9 @@ export function showsCategoryColumn(
 export function offerableColumns(scope: {
   showBook: boolean;
   showCategory: boolean;
+  /** Anything on this page is actually marked — see {@link showsMarkedColumn}.
+   *  A grid of ordinary spend has no Marked column and so no tick box for one. */
+  showMarked: boolean;
   /** The side panel is mounted, and renders Cardholder / What it was for /
    *  Documentation itself. */
   panelOpen: boolean;
@@ -245,6 +348,7 @@ export function offerableColumns(scope: {
   return HIDEABLE_KEYS.filter((key) => {
     if (key === "book") return scope.showBook;
     if (key === "category") return scope.showCategory;
+    if (key === "marked") return scope.showMarked;
     if (key === "cardholder" || key === "explanation" || key === "receipt") {
       return !scope.panelOpen;
     }

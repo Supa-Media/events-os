@@ -11,6 +11,9 @@ import {
   documentationState,
   DOCUMENTATION_STATES,
   DOCUMENTATION_STATE_LABELS,
+  DOCUMENTATION_EXEMPTIONS,
+  DOCUMENTATION_EXEMPTION_LABELS,
+  documentationExemptionLine,
   exceptionNeedsSecondApprover,
   DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS,
   RECEIPT_EXCEPTION_REASONS,
@@ -188,6 +191,65 @@ describe("documentationState", () => {
   });
 });
 
+/**
+ * The exemption vocabulary — founder, 2026-08-14: "For Stripe payouts it's
+ * saying no receipts still, but it should literally show that it's a payout —
+ * bank record only." The counts had already stopped chasing these rows; what
+ * these pin is that the reason is a VALUE the cell can render, and that it is
+ * borrowed from what the app already says rather than invented here.
+ */
+describe("documentation exemptions", () => {
+  test("a payout and a transfer both read 'Bank record only' — the founder's own words", () => {
+    expect(DOCUMENTATION_EXEMPTION_LABELS.processor_payout).toBe(
+      "Bank record only",
+    );
+    expect(DOCUMENTATION_EXEMPTION_LABELS.internal_transfer).toBe(
+      "Bank record only",
+    );
+  });
+
+  test("every label is borrowed from a reason a human could attest by hand", () => {
+    // NO NEW VOCABULARY is the rule: a row exempt by construction should read
+    // exactly like one somebody had to file an exception for. If a label ever
+    // stops matching a `RECEIPT_EXCEPTION_REASON_LABELS` entry, that rule has
+    // been broken silently.
+    const attestable = Object.values(RECEIPT_EXCEPTION_REASON_LABELS);
+    for (const kind of DOCUMENTATION_EXEMPTIONS) {
+      expect(attestable).toContain(DOCUMENTATION_EXEMPTION_LABELS[kind]);
+    }
+  });
+
+  test("every exemption has a label and a sentence, and vice versa", () => {
+    for (const kind of DOCUMENTATION_EXEMPTIONS) {
+      expect(DOCUMENTATION_EXEMPTION_LABELS[kind]).toBeTruthy();
+      expect(documentationExemptionLine(kind).length).toBeGreaterThan(40);
+    }
+    expect(Object.keys(DOCUMENTATION_EXEMPTION_LABELS).sort()).toEqual(
+      [...DOCUMENTATION_EXEMPTIONS].sort(),
+    );
+  });
+
+  test("the fee sentence IS the public ledger's, not a second copy of it", () => {
+    // Two sentences saying nearly the same thing about the same row on two
+    // screens is how the cashback class arrived wearing the fee's line.
+    expect(documentationExemptionLine("processor_fee")).toBe(
+      autoExplanationLine("fee"),
+    );
+  });
+
+  test("the payout and transfer sentences say WHAT the row is, not what it lacks", () => {
+    expect(documentationExemptionLine("processor_payout")).toContain(
+      "already counted",
+    );
+    expect(documentationExemptionLine("processor_payout")).toContain(
+      "bank record",
+    );
+    expect(documentationExemptionLine("internal_transfer")).toContain(
+      "own accounts",
+    );
+  });
+});
+
 describe("exceptionNeedsSecondApprover", () => {
   test("the default threshold is the IRS substantiation line, and it's inclusive", () => {
     expect(DEFAULT_EXCEPTION_APPROVAL_THRESHOLD_CENTS).toBe(7_500);
@@ -350,10 +412,63 @@ describe("merchant display name", () => {
     expect(displayMerchantName({}, "Transaction")).toBe("Transaction");
   });
 
-  test("the provider's own name stays retrievable behind a rename", () => {
+  test("a MARKED payout is named for what it is, not for whoever the bank says sent it", () => {
+    // Founder, 2026-08-14: "Stripe payouts still have my name — the merchant is
+    // being called Oluseyi Olujide as a default… I know I'm the one that
+    // initiated the payout, but come on, that can't mean I'm the merchant." The
+    // bank feed hands us the ACH ORIGINATOR as the counterparty, and on a
+    // Stripe payout that string can be a person.
+    expect(
+      displayMerchantName({
+        merchantName: "OLUSEYI OLUJIDE",
+        payoutProcessor: "stripe",
+      }),
+    ).toBe("Stripe payout");
+    expect(
+      displayMerchantName({ merchantName: "GB PAYOUT", payoutProcessor: "givebutter" }),
+    ).toBe("Givebutter payout");
+    // "Other processor payout" would read as a differently-named processor
+    // rather than an unnamed one.
+    expect(displayMerchantName({ payoutProcessor: "other" })).toBe(
+      "Processor payout",
+    );
+  });
+
+  test("an UNMARKED deposit keeps the bank's string — the label follows the marking", () => {
+    // The exemption and the name are both consequences of `payoutProcessor`,
+    // so un-marking restores the statement's own words with no second write.
+    expect(displayMerchantName({ merchantName: "OLUSEYI OLUJIDE" })).toBe(
+      "OLUSEYI OLUJIDE",
+    );
+    expect(
+      displayMerchantName({ merchantName: "OLUSEYI OLUJIDE", payoutProcessor: null }),
+    ).toBe("OLUSEYI OLUJIDE");
+  });
+
+  test("a bookkeeper's rename still beats the payout label", () => {
+    // Only the string nobody chose is replaced. A human who typed a name over
+    // a payout row meant it.
+    expect(
+      displayMerchantName({
+        merchantNameOverride: "August Stripe settlement",
+        merchantName: "OLUSEYI OLUJIDE",
+        payoutProcessor: "stripe",
+      }),
+    ).toBe("August Stripe settlement");
+  });
+
+  test("the provider's own name stays retrievable behind a rename OR a payout label", () => {
     expect(
       providerMerchantName({ merchantNameOverride: "Costco", merchantName: BANK }),
     ).toBe(BANK);
+    // The audit answer to "what did the statement say" survives the payout
+    // label too — that label is rendered in front of the row, never into it.
+    expect(
+      providerMerchantName({
+        merchantName: "OLUSEYI OLUJIDE",
+        payoutProcessor: "stripe",
+      }),
+    ).toBe("OLUSEYI OLUJIDE");
     // An engine-written row has no merchant at all — its description IS what
     // the row was called before anyone renamed it.
     expect(

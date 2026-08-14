@@ -552,6 +552,54 @@
  * coverage to restate what the rule blocks already say. No title, slug,
  * minutes, quizLength, section or course order moved: every table below is
  * unchanged.
+ *
+ * 2026-08-14 — the grid's last column, split by KIND (founder: "the last
+ * column is very cluttered… it could be much cleaner and have things broken
+ * down"). Reconcile's Actions cell had accumulated three different kinds of
+ * thing — the way INTO a record, badges saying what the row IS, and buttons
+ * that act on it — so the markings moved to a new hideable "Marked" column and
+ * every row action moved behind one `⋯` menu. Two sections are touched, both
+ * content-only, because both named an affordance by its old shape:
+ * `finance-reconcile-grid`'s "Some rows you can correct" said hand-entered
+ * rows "carry a pencil in the Actions column" (now: "Correct amount, date or
+ * merchant" in the row's ⋯ menu), its "Renaming a merchant" rule pointed at
+ * "the pencil" for the same act, and its "Personal is a flag, not a status"
+ * now names the Marked column the flag reads out in; `finance-transfers-and-
+ * payouts`' "Marked still means documented" says where a marking shows and
+ * where its undo went. Neither quiz hung on the old shapes — both were checked
+ * question by question, and `finance-reconcile-grid` is at the 5-cap — so
+ * nothing was swapped. No title, slug, minutes, quizLength, section or course
+ * order moved: every table below is unchanged.
+ *
+ * 2026-08-14 — approving a reimbursement now emails the claimant (founder:
+ * "there's no email sent… we just need to make sure people know that their
+ * money is coming once it's approved"). Content-only on
+ * `finance-reimbursements-and-flags`: one bullet added on the notice itself
+ * and on the state pair behind it — the email goes to the address on the
+ * REQUEST, names the approved amount (and the submitted one when a partial
+ * approval makes them differ), and never claims the money has moved, because
+ * approved and paid are different states. Its quiz was at the 5-question cap,
+ * so one question was SWAPPED, not added (in: what an approval email does and
+ * does not mean about your money; out: the "charge you don't recognize"
+ * question, whose answer is stated verbatim in a bullet above the quiz — its
+ * doctrine moved into the flagging question's explanation). Minutes stay 5 and
+ * quizLength stays 5, so every table below is unchanged; no slugs, sections or
+ * courses moved. See `streams/finances.ts`'s header comment for the reasoning.
+ *
+ * 2026-08-14 — the other half of that same founder report, content-only again.
+ * "All payouts and transfers should be bank record only. No need for
+ * documentation": marked internal transfers join marked payouts in owing
+ * nothing, so `finance-transfers-and-payouts`' "Marked still means documented"
+ * — split only hours earlier, and re-titled here — became "Both markings are
+ * bank record only", keeping the Marked-column sentence the note above gave
+ * it. Its fourth quiz
+ * question taught the retired rule as the correct answer and was SWAPPED
+ * (still four; the old answer is now a distractor), and the same lesson's
+ * payout rule gained a paragraph on a marked payout being named "Stripe
+ * payout" rather than after whoever the bank feed reports as the ACH
+ * originator. `finance-reconcile-grid`'s filter table lost its claim that the
+ * chase keeps marked transfers. No title, slug, minutes, quizLength, section
+ * or course order moved: every table below is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
