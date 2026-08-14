@@ -180,6 +180,7 @@ import type * as lib_org from "../lib/org.js";
 import type * as lib_people from "../lib/people.js";
 import type * as lib_peopleAggregate from "../lib/peopleAggregate.js";
 import type * as lib_personEmails from "../lib/personEmails.js";
+import type * as lib_personalRepaymentReceiptEmail from "../lib/personalRepaymentReceiptEmail.js";
 import type * as lib_phoneCodes from "../lib/phoneCodes.js";
 import type * as lib_placements from "../lib/placements.js";
 import type * as lib_platformGuides from "../lib/platformGuides.js";
@@ -620,6 +621,7 @@ declare const fullApi: ApiFromModules<{
   "lib/people": typeof lib_people;
   "lib/peopleAggregate": typeof lib_peopleAggregate;
   "lib/personEmails": typeof lib_personEmails;
+  "lib/personalRepaymentReceiptEmail": typeof lib_personalRepaymentReceiptEmail;
   "lib/phoneCodes": typeof lib_phoneCodes;
   "lib/placements": typeof lib_placements;
   "lib/platformGuides": typeof lib_platformGuides;
