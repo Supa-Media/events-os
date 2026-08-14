@@ -80,9 +80,44 @@ function giveFormExtrasHtml(prefix: string): string {
  * Deliberately placed under the submit button rather than as a banner — the
  * actual choice happens on Stripe's page, and this is the last thing they read
  * before going there. Kept to one line: it is a footnote, not a warning.
+ *
+ * MONTHLY ONLY, now. The one-time form asks the question outright
+ * (`payMethodPickerHtml`) instead of previewing a choice that happens later.
  */
 function payMethodNoteHtml(): string {
   return `<p class="paynote">You can give by card or bank transfer. Bank transfers take about 2&ndash;4 business days to clear &mdash; we'll email you either way.</p>`;
+}
+
+/**
+ * "How are you paying?" — asked HERE, before anything is priced.
+ *
+ * WHY THE FORM ASKS A QUESTION STRIPE WAS ALREADY ASKING. Stripe Checkout needs
+ * the amount when the session is created and doesn't say which rail the donor
+ * picked until after that, so any page that leaves the choice to Stripe's own
+ * screen has to guess a rate when it quotes "cover the fee". This one guessed
+ * card — the expensive rail — for everybody, and a donor giving $300 by bank
+ * was charged $9.27 to cover a fee that turned out to be $2.47 (#732). On a
+ * $5,000 gift the same guess is $150 against ACH's $5.00 cap.
+ *
+ * There is no way to be exact after the fact — a Checkout session's amount
+ * cannot be changed once it exists — so the only honest fix is to ask first.
+ * The rail then pins `payment_method_types` on the session, which has the
+ * happy side effect of opening Stripe straight into the chosen method instead
+ * of asking the question twice.
+ *
+ * CARD IS PRESELECTED, because it is what most people use and because a
+ * preselection that costs MORE cannot be a dark pattern. The rate under each
+ * option is filled in live by the client script from the real schedule, so the
+ * cheaper rail argues for itself rather than being editorialised at.
+ */
+function payMethodPickerHtml(prefix: string): string {
+  return `<fieldset class="paypick" id="${prefix}_paypick">
+  <legend>How are you paying?</legend>
+  <label class="payopt sel"><input type="radio" name="${prefix}_method" value="card" checked>
+    <span class="payopt-name">Card</span><span class="payopt-rate" id="${prefix}_rate_card"></span></label>
+  <label class="payopt"><input type="radio" name="${prefix}_method" value="ach_debit">
+    <span class="payopt-name">Bank transfer</span><span class="payopt-rate" id="${prefix}_rate_ach"></span></label>
+</fieldset>`;
 }
 
 // ── Cover the processing fees ────────────────────────────────────────────────
@@ -108,7 +143,7 @@ function payMethodNoteHtml(): string {
  */
 function coverFeesHtml(prefix: string): string {
   return `<label class="sharewall"><input type="checkbox" id="${prefix}_covfees"> Cover the processing fee so my whole gift gets through</label>
-  <p class="sharewall-hint">Card processors take a cut of every gift. Tick this and it's added to your total instead of coming out of what you gave. Completely optional &mdash; your gift is welcome either way.</p>
+  <p class="sharewall-hint">Whichever way you pay, the processor takes a cut of every gift. Tick this and it's added to your total instead of coming out of what you gave &mdash; priced for the method you picked above. Completely optional &mdash; your gift is welcome either way.</p>
   <p class="covline" id="${prefix}_covline" style="display:none"></p>`;
 }
 
@@ -146,13 +181,14 @@ export function oneTimeGiveFormHtml(opts: {
     <span class="cur">$</span>
     <input id="gc_onetime_custom" type="text" inputmode="decimal" placeholder="Other amount">
   </div>
-  ${coverFeesHtml("gc_onetime")}
+  ${payMethodPickerHtml("gc_onetime")}
   <div class="achnote" id="gc_onetime_achnote" style="display:none"></div>
+  ${coverFeesHtml("gc_onetime")}
   <div class="fld"><label for="gc_onetime_name">Your name</label><input id="gc_onetime_name" autocomplete="name" placeholder="First and last name"></div>
   <div class="fld"><label for="gc_onetime_email">Email</label><input id="gc_onetime_email" type="email" autocomplete="email" placeholder="you@example.com"></div>
   ${opts.showWallOptIn === false ? "" : giveFormExtrasHtml("gc_onetime")}
   <button type="submit" class="submitbtn" id="gc_onetime_submit">${esc(opts.submitLabel)}</button>
-  ${payMethodNoteHtml()}
+  <p class="paynote" id="gc_onetime_paynote"></p>
   <div class="formerr" id="gc_onetime_err"></div>
   <div class="formok" id="gc_onetime_ok"></div>
 </form>`;

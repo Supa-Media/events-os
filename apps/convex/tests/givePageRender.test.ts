@@ -421,10 +421,35 @@ describe("the fee surfaces on the give form", () => {
     const html = renderGiveMapPage(TERRITORIES, STATS, false, SITE, RATES);
     expect(html).toContain('id="gc_onetime_covfees"');
     expect(html).toMatch(/Cover the processing fee so my whole gift gets through/);
-    expect(html).toMatch(/Card processors take a cut of every gift/);
+    // Rail-neutral, because the form now offers both — and it says the quote
+    // follows the method they picked, which is the fix for #732.
+    expect(html).toMatch(/the processor takes a cut of every gift/);
+    expect(html).toMatch(/priced for the method you picked above/);
     expect(html).toMatch(/Completely optional/);
     // A pre-ticked box that quietly adds money to a total is a dark pattern.
     expect(html).not.toMatch(/id="gc_onetime_covfees"[^>]*checked/);
+  });
+
+  test("the rail picker is asked BEFORE the fee is quoted, and defaults to card", () => {
+    // The order is the point: Stripe needs the amount when the session is
+    // created, so the only way to quote the right rate is to ask first. Card
+    // is preselected because a preselection that costs MORE cannot be a dark
+    // pattern — and because it is what most people use.
+    const html = renderGiveMapPage(TERRITORIES, STATS, false, SITE, RATES);
+    expect(html).toContain('id="gc_onetime_paypick"');
+    expect(html).toMatch(/How are you paying\?/);
+    expect(html).toMatch(
+      /<input type="radio" name="gc_onetime_method" value="card" checked>/,
+    );
+    expect(html).toMatch(
+      /<input type="radio" name="gc_onetime_method" value="ach_debit">/,
+    );
+    expect(html.indexOf("gc_onetime_paypick")).toBeLessThan(
+      html.indexOf("gc_onetime_covfees"),
+    );
+    // The monthly form is a SUBSCRIPTION and offers no fee coverage, so it
+    // keeps the old footnote rather than growing a picker.
+    expect(html).not.toContain('name="gc_monthly_method"');
   });
 
   test("the live figure and the nudge render hidden, for the script to fill", () => {
