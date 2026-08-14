@@ -848,6 +848,27 @@ export const reimbursementRequests = defineTable({
   eventId: v.optional(v.id("events")),
   projectId: v.optional(v.id("projects")),
   budgetId: v.optional(v.id("budgets")),
+  // What the "For" column said at the moment the linked event/project was
+  // DELETED — written only by `releaseReimbursementsForDeletedRef`
+  // (`reimbursements.ts`), never by a submit path.
+  //
+  // A settled reimbursement is an audit record: the org has to be able to say
+  // what it paid $110.60 for, years later. `forLabel` resolves the ref LIVE and
+  // returns `null` the moment that row is gone — and returns EARLY, so it
+  // doesn't even fall through to `budgetId` — so deleting an old event silently
+  // blanked the "For" on every settled reimbursement that named it, with
+  // nothing left to say it ever had one. Unlinking alone doesn't fix that; it
+  // only makes the same blank honest.
+  //
+  // So the name is snapshotted into the row before the link is cleared, and
+  // `forLabel` falls back to it. Exactly the trick `createBudget` already plays
+  // with `budgets.label` — snapshot the ref's name, let `budgetDisplayName`
+  // read it once the live lookup misses. Same problem, so the same answer
+  // rather than a second one.
+  //
+  // Only ever set on a TERMINAL request: a live one blocks the deletion
+  // outright, so no in-flight reimbursement ever has a vanished ref.
+  forLabelSnapshot: v.optional(v.string()),
 
   // Denormalized sum of line-item amounts (integer cents), and the approved
   // subtotal once a manager approves (supports partial approval).

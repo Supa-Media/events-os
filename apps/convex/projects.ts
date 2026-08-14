@@ -28,6 +28,7 @@ import {
   canViewChapterWork,
 } from "./lib/org";
 import { requireCentralReach } from "./lib/centralReach";
+import { releaseReimbursementsForDeletedRef } from "./reimbursements";
 import { getFinanceRole, type FinanceAccess, type FinanceScope } from "./lib/finance";
 import {
   assertIntegerCents,
@@ -968,6 +969,12 @@ export const remove = mutation({
     // `finances.ts#releaseBudgetsForDeletedRef`. Runs before anything is
     // destroyed.
     await releaseBudgetsForDeletedRef(ctx, "project", projectId, "project");
+    await releaseReimbursementsForDeletedRef(
+      ctx,
+      { kind: "project", id: projectId },
+      project.name,
+      project.chapterId,
+    );
 
     const children = await ctx.db
       .query("projects")

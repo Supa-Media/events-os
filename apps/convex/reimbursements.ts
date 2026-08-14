@@ -71,12 +71,14 @@ import { Doc, Id } from "./_generated/dataModel";
 import {
   REIMBURSEMENT_STATUSES,
   REIMBURSEMENT_STATUS_LABELS,
+  REIMBURSEMENT_TERMINAL_STATUSES,
   EXTERNAL_ACCOUNT_FUNDINGS,
   ATTENDEE_AFFILIATIONS,
   EXPENSE_TYPES,
   EXPENSE_TYPE_LABELS,
   MAX_PURPOSE_LENGTH,
   MIN_PURPOSE_LENGTH,
+  formatCents,
   codingFieldProblems,
   type ReimbursementStatus,
   type ExternalAccountFunding,
@@ -782,26 +784,32 @@ async function fundName(
  *  name, or (WP: recurring budgets) the recurring budget's own display name
  *  (`budgetDisplayNameFor`, e.g. "Education"). Exactly one of the three is
  *  ever set (`createReimbursement`'s mutual-exclusivity check); null when
- *  none were tagged. */
+ *  none were tagged.
+ *
+ *  `snapshot` is the name captured when a linked event/project was DELETED
+ *  (`reimbursementRequests.forLabelSnapshot`). It is the LAST resort, never
+ *  the first: a live ref is always re-read, so a rename still shows through
+ *  the way it always has, and the snapshot only speaks once the row it
+ *  described is gone. Without it a settled reimbursement's "For" went blank
+ *  the moment somebody tidied up an old event. */
 async function forLabel(
   ctx: QueryCtx,
   eventId: Id<"events"> | undefined,
   projectId: Id<"projects"> | undefined,
   budgetId: Id<"budgets"> | undefined,
+  snapshot?: string | undefined,
 ): Promise<string | null> {
   if (eventId) {
     const event = await ctx.db.get(eventId);
-    return event?.name ?? null;
-  }
-  if (projectId) {
+    if (event) return event.name;
+  } else if (projectId) {
     const project = await ctx.db.get(projectId);
-    return project?.name ?? null;
-  }
-  if (budgetId) {
+    if (project) return project.name;
+  } else if (budgetId) {
     const budget = await ctx.db.get(budgetId);
-    return budget ? budgetDisplayNameFor(budget) : null;
+    if (budget) return budgetDisplayNameFor(budget);
   }
-  return null;
+  return snapshot?.trim() || null;
 }
 
 /**
@@ -2321,7 +2329,13 @@ export const get = query({
       purpose: request.purpose ?? null,
       // When the claimant plans to buy (pre-approval asks only; see `list`).
       plannedPurchaseDate: request.plannedPurchaseDate ?? null,
-      forLabel: await forLabel(ctx, request.eventId, request.projectId, request.budgetId),
+      forLabel: await forLabel(
+        ctx,
+        request.eventId,
+        request.projectId,
+        request.budgetId,
+        request.forLabelSnapshot,
+      ),
       requesterType: await requesterType(ctx, request.personId),
       totalCents: request.totalCents,
       approvedCents: request.approvedCents,
@@ -3354,3 +3368,107 @@ export const sendReimbursementPaidEmail = internalAction({
     return null;
   },
 });
+
+// ── A ref (event/project) is being deleted ──────────────────────────────────
+/**
+ * Settle this event's/project's reimbursements before it disappears: REFUSE
+ * the deletion while any of them is still live, and preserve the "For" answer
+ * on the ones that are finished.
+ *
+ * ── WHY THE LIVE ONES BLOCK ─────────────────────────────────────────────────
+ * A non-terminal reimbursement is money the org still owes someone, and its
+ * ref is the justification a manager approves against. `forLabel` resolves
+ * that ref LIVE, so deleting the event turned an in-flight $40.64 request's
+ * "For" into a blank — no name, no marker, nothing to say it ever had one —
+ * and left an approver deciding on money with the reason silently removed.
+ * Same principle as `releaseBudgetsForDeletedRef` (`finances.ts`): deleting an
+ * event is not a decision about money, and the person tidying up an old event
+ * is not usually the person who can answer for it.
+ *
+ * ── WHY THE FINISHED ONES DON'T ─────────────────────────────────────────────
+ * Blocking on a settled request would mean an event could never be deleted
+ * once anyone had ever been paid for it — the ledger would pin the calendar
+ * forever. `paid`/`rejected`/`canceled` (`REIMBURSEMENT_TERMINAL_STATUSES` —
+ * note `failed` is NOT among them; a failed payout can be retried, so that
+ * money is still live) are history, and history should stay readable rather
+ * than stay linked. So the name is snapshotted onto the row and the link
+ * cleared, which is strictly better than either alternative: leaving the
+ * pointer dangling keeps a lie, and unlinking without the snapshot makes the
+ * blank permanent and honest instead of just permanent.
+ *
+ * The line items of a released request get the same treatment — a per-line
+ * `eventId` would dangle exactly as loudly, and they are read through the same
+ * request.
+ *
+ * No finance gate here, deliberately, unlike its budget sibling: this path
+ * never deletes anything and never moves money. It rewrites a dead pointer
+ * into the words it used to resolve to, which is strictly information-
+ * preserving — and the alternative (refusing until a finance manager arrives)
+ * would block ordinary event cleanup to protect a row nobody can act on.
+ */
+export async function releaseReimbursementsForDeletedRef(
+  ctx: MutationCtx,
+  ref: { kind: "event"; id: Id<"events"> } | { kind: "project"; id: Id<"projects"> },
+  refName: string,
+  chapterId: Id<"chapters">,
+): Promise<void> {
+  // `by_event` exists; there is no `by_project`, so the project side scans its
+  // chapter and filters. Bounded and cheap (single digits in production), and
+  // an unindexed read beats a dangling FK on a money row.
+  const candidates =
+    ref.kind === "event"
+      ? await ctx.db
+          .query("reimbursementRequests")
+          .withIndex("by_event", (q) => q.eq("eventId", ref.id))
+          .take(ROLLUP_SCAN_LIMIT)
+      : (
+          await ctx.db
+            .query("reimbursementRequests")
+            .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+            .take(ROLLUP_SCAN_LIMIT)
+        ).filter((r) => r.projectId === ref.id);
+  if (candidates.length === 0) return;
+
+  const live = candidates.filter(
+    (r) => !REIMBURSEMENT_TERMINAL_STATUSES.includes(r.status),
+  );
+  if (live.length > 0) {
+    const total = live.reduce((sum, r) => sum + r.totalCents, 0);
+    const first = live[0];
+    const who = `${first.payeeName}'s ${formatCents(first.totalCents)} reimbursement`;
+    const subject =
+      live.length === 1
+        ? `${who} (${REIMBURSEMENT_STATUS_LABELS[first.status].toLowerCase()})`
+        : `${live.length} reimbursements totalling ${formatCents(total)}`;
+    throw new ConvexError({
+      code: "REIMBURSEMENT_IN_FLIGHT",
+      message:
+        `Can't delete this ${ref.kind} — ${subject} ${live.length === 1 ? "says it was" : "say they were"} ` +
+        `for it, and ${live.length === 1 ? "hasn't" : "haven't"} been settled yet. Deleting it now would ` +
+        `blank out what the money was for while someone still has to approve or pay it. ` +
+        `Settle or re-tag ${live.length === 1 ? "it" : "them"} first, then delete this ${ref.kind}.`,
+    });
+  }
+
+  for (const request of candidates) {
+    await ctx.db.patch(request._id, {
+      ...(ref.kind === "event" ? { eventId: undefined } : { projectId: undefined }),
+      // Never clobber an existing snapshot: a request can only carry one ref,
+      // so a value already here belongs to an earlier release and is the older,
+      // truer answer.
+      ...(request.forLabelSnapshot ? {} : { forLabelSnapshot: refName }),
+      updatedAt: Date.now(),
+    });
+    const lines = await ctx.db
+      .query("reimbursementLineItems")
+      .withIndex("by_reimbursement", (q) => q.eq("reimbursementId", request._id))
+      .take(ROLLUP_SCAN_LIMIT);
+    for (const line of lines) {
+      if (ref.kind === "event" && line.eventId === ref.id) {
+        await ctx.db.patch(line._id, { eventId: undefined });
+      } else if (ref.kind === "project" && line.projectId === ref.id) {
+        await ctx.db.patch(line._id, { projectId: undefined });
+      }
+    }
+  }
+}

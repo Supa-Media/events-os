@@ -243,7 +243,7 @@ export function ProjectCard({
             onPress={() =>
               confirmAction({
                 title: "Delete project?",
-                message: `${project.name || "This project"} and its budget will be deleted. Sub-projects are kept. If any spending is already coded to the budget, the delete will be refused.`,
+                message: `${project.name || "This project"} and its budget will be deleted. Sub-projects are kept. If spending is coded to the budget, or a reimbursement for it is still unsettled, the delete will be refused.`,
                 confirmLabel: "Delete",
                 destructive: true,
                 onConfirm: () => {
