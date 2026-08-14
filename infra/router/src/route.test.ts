@@ -16,6 +16,11 @@ describe("route: apex landing paths -> assets", () => {
   );
 
   it("an unrelated path that merely starts with a Convex-ish word does not match", () => {
+    // "/backers" must NOT match the exact "/backer" route — it is one page
+    // with nothing beneath it, so anything longer belongs to the static site.
+    expect(route(u("https://publicworship.life/backers"))).toEqual({
+      kind: "assets",
+    });
     // "/giveaway" must NOT match the "/give" Convex route.
     expect(route(u("https://publicworship.life/giveaway"))).toEqual({
       kind: "assets",
@@ -75,6 +80,9 @@ describe("route: Convex prefixes -> proxy unchanged", () => {
     ["/api/tickets/checkout", `${CONVEX_ORIGIN}/api/tickets/checkout`],
     ["/api/reimburse/submit", `${CONVEX_ORIGIN}/api/reimburse/submit`],
     ["/api/give/pledge", `${CONVEX_ORIGIN}/api/give/pledge`],
+    // The backer portal: one exact path (the page) plus its posts under /api/.
+    ["/backer", `${CONVEX_ORIGIN}/backer`],
+    ["/api/backer/verify", `${CONVEX_ORIGIN}/api/backer/verify`],
     ["/stripe/webhook", `${CONVEX_ORIGIN}/stripe/webhook`],
     ["/increase/webhook", `${CONVEX_ORIGIN}/increase/webhook`],
   ])("%s proxies to %s", (path, expectedTarget) => {
