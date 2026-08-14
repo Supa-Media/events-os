@@ -1576,6 +1576,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Card or bank transfer — you choose, and you cover the fee:** the payment processor's cut is added on top so Public Worship gets the full amount back instead of losing three cents on the dollar to fix your mistake. Because it's YOUR money covering it, you pick the rail: card is instant and costs about 2.9% + 30¢, a bank transfer costs 0.8% capped at $5.00 and takes about four business days. On a $248 charge that's roughly $7.72 against $2.00. Both figures are on screen before you commit. The fee is charged once per PAYMENT, not per charge — so settling four charges in one go costs less than paying for them one at a time across four evenings.",
           "**A bank transfer is not instant, and the app says so:** once you authorise it the charge moves to *Clearing* — still owed, but no longer payable, so you can't accidentally pay for it twice while the bank moves the money. If your bank refuses the debit, it comes back as owed with a note saying the attempt failed. Only when the money lands does the charge clear.",
           "**The moment it lands, you get a receipt:** \"thanks for paying this off — here's your receipt,\" naming the total, the date it settled, and one line per charge it covered — pay off three flagged charges in one go and you get ONE email itemizing all three, never three separate ones. Paid by card or bank transfer through Stripe? The email also links Stripe's own hosted receipt. Paid by bank debit through the org's own bank (no Stripe charge behind it)? The email is still a complete receipt on its own — it just doesn't carry that extra link. Either way it's evidence you can keep or forward if anyone ever asks whether you paid it back — never donation language, and never a claim that it's tax-deductible, because it isn't either of those things.",
+          "**Lost it, or it settled before this existed? A manager can (re)send it.** Every settled row on the Personal charges screen carries its own **Send receipt** button — it says **Resend receipt** once one has actually been delivered, so the row is honest about whether you ever got one. Nothing about the automatic send changes: it still goes out on its own the moment a payment lands, exactly once. This is a second, manual door to the SAME email for the times that isn't enough — you misplaced it, or the charge settled before the button existed at all.",
           "**Nobody can mark a charge repaid by hand — not even the Financial Manager.** A repayment settles when a payment this app started actually arrives, full stop. So if you paid someone back in cash, the app can't record that: run it through the app instead. And if the charge was never personal in the first place, that's a different fix — a manager un-flags it and it goes back to being Public Worship's spend, which is honest in a way \"mark it repaid\" never was.",
           "**You'll be reminded, kindly:** if a personal charge sits unpaid, a finance manager can send a reminder listing what you owe and a link to settle it. One email per person, never one per charge, and never twice in the same few days — and a charge whose bank transfer is already clearing is never chased, because you already did the right thing.",
           "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once the money has landed, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
@@ -1698,16 +1699,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "You pay back two flagged personal charges in one bundled Stripe payment. What lands in your inbox?",
+          "Someone repaid a personal charge months ago, before this org even had the receipt button, and now needs proof they paid. What can a manager do?",
         options: [
-          "Two separate receipt emails, one per charge",
-          "One receipt email itemizing both charges, plus Stripe's own receipt link when the payment ran through Stripe",
-          "Nothing — you'd have to check the app yourself to confirm it went through",
-          "A donation receipt, since it's money going to Public Worship",
+          "Nothing — the receipt only ever goes out at the moment of payment",
+          "Mark the charge repaid again to trigger a fresh email",
+          "Open it on the Personal charges screen and press Send receipt — every settled row keeps that button, no matter how old",
+          "Ask the payer to screenshot their bank statement instead, since the app can't help",
         ],
-        answerIndex: 1,
+        answerIndex: 2,
         explanation:
-          "One payment gets ONE receipt, itemizing every charge it cleared, no matter how many repayments it bundled. A Stripe-run payment (card or bank debit through Stripe) additionally links Stripe's own hosted receipt; a bank debit run through the org's own bank account has no Stripe charge behind it, so that email is still a complete, standalone receipt — it just skips that extra link. Either way it's proof of a REPAYMENT, never donation language and never a tax-deductibility claim, because it's neither.",
+          "A settled row's receipt button never expires or locks after one use — a manager can send it as many times as it's genuinely needed, which is exactly what makes it useful for a debt settled long before the button existed. It's a manual door to the SAME receipt email the automatic send uses, not a new record; there is still no way to \"mark repaid\" a charge that hasn't actually been paid through the app.",
       },
       {
         prompt:
