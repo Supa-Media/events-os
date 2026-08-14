@@ -251,7 +251,10 @@ export const createRepaymentCheckout = action({
       });
     }
 
-    const returnUrl = appUrl("/finances/cards");
+    // Back to the repayments page, which is where the payer started and where
+    // the remaining balance lives — not the Cards tab, which is where this
+    // flow USED to be filed before it got its own surface (2026-08-14).
+    const returnUrl = appUrl("/finances/repayments");
     if (!returnUrl) {
       // Degrade LOUDLY rather than start a Checkout with no return URL — the
       // same "conditional link ships silently broken" trap this feature was
@@ -273,6 +276,13 @@ export const createRepaymentCheckout = action({
     // Bundled into ONE session — the webhook reads this back to know which
     // repayments to settle (`http.ts`'s `checkout.session.completed` branch).
     body.set("metadata[repaymentIds]", repaymentIds.join(","));
+    // The fee-coverage line's amount, carried so the webhook can subtract it
+    // before reconciling Stripe's total against the sum of the debts. Without
+    // it, `applyRepaymentPaidFromStripe`'s discrepancy alarm fires on every
+    // fee-covered payment (see that mutation's doc).
+    if (prepared.feeCents > 0) {
+      body.set("metadata[repaymentFeeCents]", String(prepared.feeCents));
+    }
     prepared.lines.forEach((line, i) => {
       body.set(`line_items[${i}][quantity]`, "1");
       body.set(`line_items[${i}][price_data][currency]`, "usd");
@@ -285,6 +295,23 @@ export const createRepaymentCheckout = action({
         `Repayment — ${line.merchantName ?? "personal charge"}`,
       );
     });
+    // ONE fee-coverage line for the whole batch, never one per charge —
+    // Stripe's fixed 30¢ is per PAYMENT, so per-line coverage would
+    // over-collect it on every charge past the first (see
+    // `cards.prepareRepaymentCheckout`'s doc). Named with the rate so the
+    // payer reads WHY on Stripe's own page, not just a mystery surcharge.
+    if (prepared.feeCents > 0) {
+      const i = prepared.lines.length;
+      body.set(`line_items[${i}][quantity]`, "1");
+      body.set(`line_items[${i}][price_data][currency]`, "usd");
+      body.set(`line_items[${i}][price_data][unit_amount]`, String(prepared.feeCents));
+      body.set(
+        `line_items[${i}][price_data][product_data][name]`,
+        prepared.feeRateLabel
+          ? `Card processing fee (${prepared.feeRateLabel})`
+          : "Card processing fee",
+      );
+    }
 
     const response = await fetch(`${STRIPE_API}/checkout/sessions`, {
       method: "POST",

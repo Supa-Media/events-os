@@ -99,6 +99,8 @@ import {
   isSandboxObjectId,
   isCardEligible,
   getAcademyCourse,
+  describeFeeRate,
+  feeCoverageCents,
   type CardType,
   type CardStatus,
   type CardSource,
@@ -158,6 +160,8 @@ import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
 import { normalizePhone, resolveTwilioCredentials, sendSms } from "./lib/twilio";
 import { logFinanceAudit } from "./lib/financeAuditLog";
+import { resolveFeeRate } from "./lib/feeSchedule";
+import { markPublicationsStale } from "./lib/publicLedgerStale";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -3004,10 +3008,12 @@ export const notifyPersonalChargeFlagged = internalAction({
         : auto
           ? `${what} passed the receipt deadline with no receipt attached, so it was automatically converted to a personal charge.`
           : `a finance manager marked ${what} as a personal charge.`;
-      // The Cards tab's member view (`MemberCardsView`) owns the per-charge
-      // flag/pay-back list this charge lives in — not Reimbursements (which
-      // only shows the aggregate "you owe" total).
-      const link = appUrl("/finances/cards");
+      // The repayments page owns the per-charge pay-back list this charge
+      // lives in (2026-08-14). It used to be the Cards tab's member view,
+      // which showed a single "pay everything" button; the payer can now pick
+      // which charges to settle, and the page they land on from this email
+      // should be the one with their charge on it and a checkbox next to it.
+      const link = appUrl("/finances/repayments");
       // KNOWN REPO TRAP: a `link ? <a> : ""` pattern here would silently ship
       // a CTA-less transactional email whenever APP_URL is unset — the
       // recipient would read "you owe $X" with no way to act on it and no
@@ -3022,7 +3028,7 @@ export const notifyPersonalChargeFlagged = internalAction({
       }
       const ctaHtml = link
         ? emailButtonRow(link, "Pay it back →")
-        : emailParagraph("Open the app and go to Finances → Cards to pay it back.", {
+        : emailParagraph("Open the app and go to Finances → Reimbursements → Review & pay to pay it back.", {
             size: 12,
             margin: "0",
           });
@@ -3031,7 +3037,7 @@ export const notifyPersonalChargeFlagged = internalAction({
         subject,
         html: emailShell(`
           ${emailHeading(escapeHtml(subject))}
-          ${emailParagraph(`Hi ${escapeHtml(contact.cardholderName)} — ${reason} Pay it back from the Cards tab in the app.`)}
+          ${emailParagraph(`Hi ${escapeHtml(contact.cardholderName)} — ${reason} Pay it back from Reimbursements in the app — pick the charges you're ready to settle.`)}
           ${ctaHtml}`),
       });
     } catch (err) {
@@ -3179,7 +3185,16 @@ const myRepaymentValidator = v.object({
   amountCents: v.number(),
   status: repaymentStatusValidator,
   merchantName: v.union(v.string(), v.null()),
+  // The charge's own description — the fallback line when a bank feed gave a
+  // transaction no merchant name. Without it the repayments page showed rows
+  // reading only "personal charge", which is not enough to decide whether a
+  // charge really WAS personal before paying for it.
+  description: v.union(v.string(), v.null()),
   postedAt: v.number(),
+  // When the charge was flagged personal (the repayment row's own creation) —
+  // distinct from `postedAt`, and the honest answer to "how long have I owed
+  // this?" on a charge flagged weeks after it posted.
+  flaggedAt: v.number(),
   // Whether the payer already linked a real Increase External Account (used to
   // decide whether "Pay by bank" needs the inline ACH-linking form first).
   hasExternalAccount: v.boolean(),
@@ -3225,11 +3240,88 @@ export const myPersonalRepayments = query({
           amountCents: r.amountCents,
           status: r.status,
           merchantName: txn?.merchantName ?? null,
+          description: txn?.description ?? null,
           postedAt: txn?.postedAt ?? r.createdAt,
+          flaggedAt: r.createdAt,
           hasExternalAccount: !!r.payerExternalAccountId,
         };
       }),
     );
+  },
+});
+
+/**
+ * WHAT WOULD I BE CHARGED IF I PAID THESE? — the quote the payer sees BEFORE
+ * committing, so the fee is a number they agreed to rather than a surprise on
+ * Stripe's page.
+ *
+ * Founder, 2026-08-14: repayments shouldn't be all-or-nothing — "for some
+ * things it's like, oh, I accidentally paid for a company expense with this…
+ * but then on another, oh, that's a personal charge. I want people to be able
+ * to break up what card they use per transaction. So just allow people to
+ * multiselect: okay, I'm ready to pay these off."
+ *
+ * So the quote takes the SELECTION, not the whole debt, and recomputes as the
+ * checkboxes change. Same `repaymentFeeQuote` the checkout itself uses, so the
+ * number quoted here is the number billed — including the one-fee-per-batch
+ * rule, which is exactly what makes "pay these three now, that one later" cost
+ * more in total than paying all four at once. The client says so out loud.
+ *
+ * Self-service (no finance-role gate, mirroring `myPersonalRepayments`): every
+ * id is verified to be the CALLER'S OWN outstanding repayment, and anything
+ * else — someone else's, an unknown id, one already settled — is silently
+ * dropped rather than throwing, so a stale checkbox can't wedge the page.
+ * A manager paying on a member's behalf uses the checkout path's own OR-gate;
+ * this read deliberately answers only for yourself.
+ */
+export const quoteRepayment = query({
+  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  returns: v.object({
+    /** How many of the submitted ids were actually billable. */
+    count: v.number(),
+    /** The debt — what the org nets. */
+    totalCents: v.number(),
+    /** What covering Stripe's cut adds. */
+    feeCents: v.number(),
+    /** What the card is charged: `totalCents + feeCents`. */
+    chargeCents: v.number(),
+    feeRateLabel: v.union(v.string(), v.null()),
+  }),
+  handler: async (ctx, { repaymentIds }) => {
+    const none = {
+      count: 0,
+      totalCents: 0,
+      feeCents: 0,
+      chargeCents: 0,
+      feeRateLabel: null,
+    };
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return none;
+    const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
+    if (!person) return none;
+
+    let totalCents = 0;
+    let count = 0;
+    const seen = new Set<string>();
+    for (const id of repaymentIds) {
+      if (seen.has(id)) continue; // a duplicated id must not double the quote
+      seen.add(id);
+      const repayment = await ctx.db.get(id);
+      if (!repayment) continue;
+      if (repayment.chapterId !== chapterId) continue;
+      if (repayment.payerPersonId !== person._id) continue;
+      if (repayment.status === "paid" || repayment.creditTransactionId) continue;
+      totalCents += repayment.amountCents;
+      count += 1;
+    }
+    const { feeCents, feeRateLabel } = await repaymentFeeQuote(ctx, totalCents);
+    return {
+      count,
+      totalCents,
+      feeCents,
+      chargeCents: totalCents + feeCents,
+      feeRateLabel,
+    };
   },
 });
 
@@ -3399,6 +3491,27 @@ async function settleRepayment(
     stripePaymentIntentId: ref?.stripePaymentIntentId ?? repayment.stripePaymentIntentId,
     updatedAt: now,
   });
+
+  // ── ASK TO REPUBLISH (founder, 2026-08-14) ────────────────────────────────
+  // "Once it's paid off, that should clear it out… and then it should update
+  // the things. It should probably ask to republish the public ledgers and
+  // statements if they're already published."
+  //
+  // Settling moves TWO months' published statements: the month the charge
+  // posted in (whose public line said "awaiting repayment" and now says "paid
+  // back" — `lib/publicLedgerSnapshot.ts`) and the month this credit posts in,
+  // which gains a line it didn't have. Both are marked; already-equal months
+  // dedupe, unpublished ones no-op. This ASKS — the publish console shows the
+  // prompt — it never republishes on its own, because an amendment carries a
+  // human's sentence explaining it (see `lib/publicLedgerStale.ts`).
+  const charge = await ctx.db.get(repayment.transactionId);
+  await markPublicationsStale(
+    ctx,
+    repayment.chapterId,
+    [charge?.postedAt ?? now, now],
+    "A personal charge was paid back",
+  );
+
   return (await ctx.db.get(repayment._id))!;
 }
 
@@ -3725,6 +3838,25 @@ interface RepaymentCheckoutLine {
  * is silently skipped (not an error) — a stale button click that raced a
  * manager's `markRepaymentPaid` degrades to "bill whatever's still owed"
  * instead of failing outright; this throws only when NOTHING is left to bill.
+ *
+ * ── THE PAYER COVERS STRIPE'S CUT (founder, 2026-08-14) ──────────────────────
+ * "Make sure that we add any Stripe fees that are associated with that,
+ * because they're reimbursing — we have to get back whatever Stripe fees we
+ * lose from that transaction."
+ *
+ * Before this, a $100 personal charge was billed at exactly $100.00 and the
+ * org netted $96.71: the volunteer's mistake cost the ministry $3.29 to
+ * correct. The debt is now grossed up so the org nets the debt WHOLE, using
+ * the same `grossUpCents` algebra and the same live rate the giving page's
+ * "cover the fees" option uses (`lib/feeSchedule.ts` → the stored override, or
+ * the published 2.9% + 30¢).
+ *
+ * ONE GROSS-UP PER BATCH, NOT PER LINE. Stripe's 30¢ is charged per PAYMENT,
+ * not per line item, so grossing up each charge separately would over-collect
+ * 30¢ for every charge past the first — on a five-charge batch, $1.20 of
+ * over-collection that nobody agreed to. `feeCoverageCents` is therefore
+ * computed once, over the batch total, and billed as a single extra line.
+ * `financeRepaymentFee.test.ts` asserts exactly this.
  */
 export const prepareRepaymentCheckout = internalMutation({
   args: { repaymentIds: v.array(v.id("personalRepayments")) },
@@ -3736,7 +3868,17 @@ export const prepareRepaymentCheckout = internalMutation({
         merchantName: v.union(v.string(), v.null()),
       }),
     ),
+    /** The debt itself — what the org must NET. */
     totalCents: v.number(),
+    /** What covering Stripe's cut adds on top. 0 when no card rail is
+     *  configured, in which case the org simply eats the fee as it did
+     *  before — never a blocked repayment over a missing rate row. */
+    feeCents: v.number(),
+    /** `totalCents + feeCents` — what Stripe actually charges the card. */
+    chargeCents: v.number(),
+    /** "2.9% + $0.30" — the rate as a person reads it, for the line item's
+     *  own label so the payer sees WHY, not just how much. */
+    feeRateLabel: v.union(v.string(), v.null()),
     payerEmail: v.union(v.string(), v.null()),
     payerName: v.string(),
   }),
@@ -3773,14 +3915,50 @@ export const prepareRepaymentCheckout = internalMutation({
       });
     }
     const payer = payerPersonId ? await ctx.db.get(payerPersonId) : null;
+    const totalCents = lines.reduce((sum, l) => sum + l.amountCents, 0);
+    const { feeCents, feeRateLabel } = await repaymentFeeQuote(ctx, totalCents);
     return {
       lines,
-      totalCents: lines.reduce((sum, l) => sum + l.amountCents, 0),
+      totalCents,
+      feeCents,
+      chargeCents: totalCents + feeCents,
+      feeRateLabel,
       payerEmail: payer?.pwEmail ?? payer?.email ?? null,
       payerName: payer?.name ?? "Repayment",
     };
   },
 });
+
+/**
+ * What covering Stripe's card fee adds to a repayment of `intendedCents`, and
+ * the rate that produced it — the ONE place that arithmetic happens, shared by
+ * the checkout preparer above and the `quoteRepayment` read the payer's page
+ * shows before they commit. Two implementations of this would agree right up
+ * until someone edited the fee schedule.
+ *
+ * Degrades to `{ feeCents: 0 }` when no `stripe:card` rail resolves at all.
+ * That is deliberate: a missing rate row must not block a member from paying
+ * the org back, and eating the fee is exactly the behavior that shipped before
+ * this feature existed. It is a quiet, recoverable loss, not a broken screen.
+ */
+async function repaymentFeeQuote(
+  ctx: QueryCtx,
+  intendedCents: number,
+): Promise<{ feeCents: number; feeRateLabel: string | null }> {
+  if (intendedCents <= 0) return { feeCents: 0, feeRateLabel: null };
+  const rate = await resolveFeeRate(ctx, "stripe", "card");
+  if (!rate) {
+    console.warn(
+      "[cards] repaymentFeeQuote: no stripe:card rail resolved — billing the " +
+        "repayment at face value and absorbing the processing fee.",
+    );
+    return { feeCents: 0, feeRateLabel: null };
+  }
+  return {
+    feeCents: feeCoverageCents(intendedCents, rate),
+    feeRateLabel: describeFeeRate(rate),
+  };
+}
 
 /** Stamp the Checkout Session id onto every repayment it bundled — best
  *  effort per row (a repayment settled in the TOCTOU gap between
@@ -3823,6 +4001,19 @@ export const attachRepaymentStripeSession = internalMutation({
  * `amountCents` (never at a share of Stripe's total), and the mismatch is
  * logged loudly for manual review — mirroring `applyRepaymentPaid`'s own
  * double-collection guard.
+ *
+ * `feeCoverageCents` is the fee-coverage line the checkout added on top of the
+ * debt (`prepareRepaymentCheckout`, 2026-08-14) and is SUBTRACTED before that
+ * comparison. It has to be: Stripe's `amount_total` now includes it, so
+ * comparing the raw total against the sum of debts would fire the
+ * discrepancy alarm above on every single fee-covered payment — the loudest
+ * possible false positive, on the exact path it exists to police. Absent on
+ * sessions created before the fee line shipped, where it correctly reads 0.
+ *
+ * The coverage itself is NOT credited to the payer's debt: it is money that
+ * passes straight through to Stripe, and crediting it would make the org's
+ * books claim income it never received. The org's real Stripe fees are booked
+ * from the fee ledger as they always were.
  */
 export const applyRepaymentPaidFromStripe = internalMutation({
   args: {
@@ -3830,9 +4021,13 @@ export const applyRepaymentPaidFromStripe = internalMutation({
     sessionId: v.string(),
     paymentIntentId: v.optional(v.string()),
     amountTotalCents: v.number(),
+    feeCoverageCents: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { repaymentIds, sessionId, paymentIntentId, amountTotalCents }) => {
+  handler: async (
+    ctx,
+    { repaymentIds, sessionId, paymentIntentId, amountTotalCents, feeCoverageCents },
+  ) => {
     const outstanding: Doc<"personalRepayments">[] = [];
     for (const id of repaymentIds) {
       const repayment = await ctx.db.get(id);
@@ -3849,11 +4044,15 @@ export const applyRepaymentPaidFromStripe = internalMutation({
       }
     }
     const expectedCents = outstanding.reduce((sum, r) => sum + r.amountCents, 0);
-    if (outstanding.length > 0 && expectedCents !== amountTotalCents) {
+    // The fee-coverage line is Stripe's, not the payer's debt — see the doc.
+    const debtPaidCents = amountTotalCents - (feeCoverageCents ?? 0);
+    if (outstanding.length > 0 && expectedCents !== debtPaidCents) {
       console.error(
         `[cards] applyRepaymentPaidFromStripe: amount mismatch for session ${sessionId} — ` +
-          `Stripe reports ${amountTotalCents}c paid, still-outstanding repayments sum to ` +
-          `${expectedCents}c. Settling each at its OWN stored amount anyway; flag for manual review.`,
+          `Stripe reports ${amountTotalCents}c paid (${feeCoverageCents ?? 0}c of it fee ` +
+          `coverage, leaving ${debtPaidCents}c against the debt), still-outstanding ` +
+          `repayments sum to ${expectedCents}c. Settling each at its OWN stored amount ` +
+          `anyway; flag for manual review.`,
       );
     }
     for (const repayment of outstanding) {

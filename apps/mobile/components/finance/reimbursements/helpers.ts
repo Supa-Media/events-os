@@ -129,6 +129,66 @@ export function isOpen(status: ReimbursementStatus): boolean {
   return !TERMINAL.has(status);
 }
 
+// ── Queue sections: grouped by WHO IS BLOCKED (founder, 2026-08-14) ──────────
+/**
+ * "It shows all reimbursements, like, just in a line. Things are already paid,
+ * things haven't been paid, doesn't collapse anything. It doesn't make any
+ * sense."
+ *
+ * The queue's only structure used to be a row of filter pills over one flat,
+ * newest-first list, so a paid request from March sat between two things
+ * waiting on a decision today. Pills are a way to ASK a question; they are not
+ * an answer to "what do I need to do".
+ *
+ * These four sections answer that instead, and the axis is deliberately WHO IS
+ * BLOCKED rather than status-alphabetical:
+ *
+ *  - `waiting`   — a manager has to act: decide it, or pay it. Includes
+ *                  `approved` (approved but the payout hasn't started) and
+ *                  `failed` (the ACH bounced and needs a retry), both of which
+ *                  are easy to read as "done" and are not.
+ *  - `in_flight` — money is moving; nobody is blocked. `paying` only.
+ *  - `sent_back` — the ball is with the claimant. Visible so a reviewer can
+ *                  chase it, but never mixed in with their own to-do list.
+ *  - `history`   — finished (`isTerminal`: paid / rejected / canceled).
+ *
+ * Deliberately derived from the SAME predicates the cards already use rather
+ * than a second status taxonomy: `history` is exactly `isTerminal`, and
+ * `waiting` is exactly "not terminal, not paying, not sent back". A status
+ * added to the shared union therefore lands in `waiting` — the section someone
+ * actually looks at — rather than being silently dropped from the screen.
+ */
+export type QueueSectionKey = "waiting" | "in_flight" | "sent_back" | "history";
+
+export function queueSection(status: ReimbursementStatus): QueueSectionKey {
+  if (isTerminal(status)) return "history";
+  if (status === "paying") return "in_flight";
+  if (isAwaitingRevision(status)) return "sent_back";
+  return "waiting";
+}
+
+/** Section order + copy. `collapsed` is the DEFAULT collapse state: the two
+ *  sections nobody is blocked on start closed, so opening the tab shows the
+ *  work and not the archive. */
+export const QUEUE_SECTIONS: {
+  key: QueueSectionKey;
+  title: string;
+  /** Shown when the section is empty (and only for the sections worth
+   *  celebrating being empty — history's emptiness says nothing). */
+  emptyMessage?: string;
+  collapsed: boolean;
+}[] = [
+  {
+    key: "waiting",
+    title: "Waiting on you",
+    emptyMessage: "Nothing needs a decision or a payout right now.",
+    collapsed: false,
+  },
+  { key: "in_flight", title: "Paying", collapsed: false },
+  { key: "sent_back", title: "Sent back — with the claimant", collapsed: true },
+  { key: "history", title: "History", collapsed: true },
+];
+
 // ── Member "bidirectional owe" grouping (D4) ─────────────────────────────────
 /** The statuses at which Public Worship owes the member money — i.e.
  *  everything that ISN'T terminal ({@link isTerminal} / the shared
