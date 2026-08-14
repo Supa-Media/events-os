@@ -95,10 +95,14 @@
  *
  * ── BOUNDED READS, AND REFUSING RATHER THAN GUESSING ON TRUNCATION ─────────
  * Chapters (`ctx.db.query("chapters").take(ROLLUP_SCAN_LIMIT)`) and each
- * chapter's transactions (`by_chapter`, `.take(ROLLUP_SCAN_LIMIT)`) are read
- * through an index with an explicit bound — the same `ROLLUP_SCAN_LIMIT`
- * convention `reconciliation.ts`/`finances.ts`/`dashboardDrill.ts` use, not
- * an unbounded `.collect()`. Each candidate group's two legs are then loaded
+ * chapter's transactions (`by_chapter`, `.order("desc")`,
+ * `.take(ROLLUP_SCAN_LIMIT)`) are read through an index with an explicit
+ * bound — the same `ROLLUP_SCAN_LIMIT` convention `reconciliation.ts`/
+ * `finances.ts`/`dashboardDrill.ts` use, not an unbounded `.collect()`. The
+ * transaction scan reads NEWEST-first (see `discoverCandidateGroupIds`'s own
+ * doc): the pairs this module cleans up are recent by construction, so a
+ * newest-first scan finds them long before a busy chapter's full history
+ * could approach the cap. Each candidate group's two legs are then loaded
  * by exact `transferGroupId` match (`by_transfer_group`), which is bounded by
  * construction (a pair is two rows). Production carries a low double-digit
  * number of chapters, each with a transaction history far under the 5000-row
@@ -223,7 +227,14 @@ export type RemoveUnexecutedBalanceSettlementsResult = {
  * `ROLLUP_SCAN_LIMIT`, this run cannot prove it saw every candidate leg, so
  * it reports that as a problem — refusing the WHOLE run rather than deleting
  * an unverifiable partial set (see the module doc's "refusing rather than
- * guessing on truncation" section).
+ * guessing on truncation" section). Scanned NEWEST-FIRST (`.order("desc")`,
+ * the same bounded-scan-plus-recency pattern `reconciliation.ts` and
+ * `lib/audienceResolve.ts` use elsewhere): the pairs this module exists to
+ * clean up are recent by construction (the morning engine wrote them daily,
+ * and the sibling change that stops new ones being written just shipped), so
+ * scanning newest-first finds them well before a busy chapter's history could
+ * ever approach the cap — making the truncation refusal above a rare
+ * last-resort rather than something this module's own read order provokes.
  */
 async function discoverCandidateGroupIds(
   ctx: MutationCtx,
@@ -244,6 +255,7 @@ async function discoverCandidateGroupIds(
     const rows = await ctx.db
       .query("transactions")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .order("desc")
       .take(ROLLUP_SCAN_LIMIT);
     if (rows.length === ROLLUP_SCAN_LIMIT) {
       problems.push(

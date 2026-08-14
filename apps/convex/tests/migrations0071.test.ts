@@ -1,10 +1,14 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { anyApi } from "convex/server";
-import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { internal } from "../_generated/api";
+import { newT, run, setupChapter, type ChapterSetup, type TestConvex } from "./setup.helpers";
 import type { Doc, Id } from "../_generated/dataModel";
 import { CENTRAL } from "@events-os/shared";
 import { runRemoveUnexecutedBalanceSettlementsMigration } from "../migrations/0071_remove_unexecuted_balance_settlements";
+import { MIGRATIONS } from "../migrations/index";
+
+const MIGRATION_NAME = "0071_remove_unexecuted_balance_settlements";
 
 /**
  * `anyApi` (not the generated `api` from `_generated/api`), deliberately —
@@ -137,7 +141,7 @@ describe("0071_remove_unexecuted_balance_settlements — migration path", () => 
     expect(rows.every((r) => r == null)).toBe(true);
   });
 
-  test("deletes NOTHING — not even the clean pair — when one candidate carries an externalId", async () => {
+  test("throws — deletes NOTHING, not even the clean pair — when one candidate carries an externalId", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const clean = await seedBalanceSettlementPair(s, {
@@ -150,25 +154,14 @@ describe("0071_remove_unexecuted_balance_settlements — migration path", () => 
       externalIdOnChapterLeg: "increase_txn_real_cash",
     });
 
-    const result = await run(s.t, (ctx) =>
-      runRemoveUnexecutedBalanceSettlementsMigration(ctx),
-    );
-
-    expect(result.refused).toBe(true);
-    expect(result.deletedLegs).toBe(0);
-    // The clean pair still shows up as a passing candidate (it's the tainted
-    // one that failed a precondition) — but `refused` blocks the WRITE for
-    // the whole run, so `deletedLegs` stays 0 and both pairs' rows survive.
-    expect(result.candidates).toEqual([
-      {
-        transferGroupId: clean.groupId,
-        chapterId: s.chapterId,
-        postedAt: expect.any(Number),
-        amountCents: 100_000,
-        legCount: 2,
-      },
-    ]);
-    expect(result.problems.some((p) => /externalId/i.test(p))).toBe(true);
+    // Unlike the mutation, the migration entry point THROWS on a refusal
+    // (see the migration's module doc: `runPending` ledgers whatever `run`
+    // returns unconditionally, so returning a refusal would be recorded as
+    // permanently applied). The thrown message carries the `problems`
+    // verbatim, not a generic failure.
+    await expect(
+      run(s.t, (ctx) => runRemoveUnexecutedBalanceSettlementsMigration(ctx)),
+    ).rejects.toThrow(/externalId/i);
 
     // The WHOLE run refused — the otherwise-clean pair is untouched too.
     const cleanRows = await getRows(s, clean.legIds);
@@ -177,7 +170,7 @@ describe("0071_remove_unexecuted_balance_settlements — migration path", () => 
     expect(taintedRows.every((r) => r != null)).toBe(true);
   });
 
-  test("deletes nothing on an anomalous leg count (3 legs on one group)", async () => {
+  test("throws and deletes nothing on an anomalous leg count (3 legs on one group)", async () => {
     const t = newT();
     const s = await setupChapter(t);
     const { groupId, legIds } = await seedBalanceSettlementPair(s, {
@@ -198,15 +191,9 @@ describe("0071_remove_unexecuted_balance_settlements — migration path", () => 
       }),
     );
 
-    const result = await run(s.t, (ctx) =>
-      runRemoveUnexecutedBalanceSettlementsMigration(ctx),
-    );
-
-    expect(result.refused).toBe(true);
-    expect(result.deletedLegs).toBe(0);
-    expect(result.problems.some((p) => p.includes("expected exactly 2"))).toBe(
-      true,
-    );
+    await expect(
+      run(s.t, (ctx) => runRemoveUnexecutedBalanceSettlementsMigration(ctx)),
+    ).rejects.toThrow(/expected exactly 2/);
 
     const rows = await getRows(s, [...legIds, strayId]);
     expect(rows.every((r) => r != null)).toBe(true);
@@ -236,7 +223,18 @@ describe("0071_remove_unexecuted_balance_settlements — migration path", () => 
 });
 
 describe("0071 — the shared core is genuinely shared, not two implementations that happen to agree", () => {
-  test("mutation (execute:true) and migration agree byte-for-byte on a refusal", async () => {
+  /**
+   * The two entry points now deliberately DIFFER at the refusal edge — the
+   * mutation returns `{ refused: true, problems }`, the migration throws
+   * (see both files' module docs for why). That is a difference in HOW each
+   * reports a refusal, not in WHAT they consider unsafe: this proves the
+   * WHAT still agrees, by running the mutation first (it refuses and writes
+   * nothing), then running the migration against the SAME unmutated data and
+   * asserting its thrown message contains every problem the mutation found,
+   * verbatim. Any drift in a precondition's wording, ordering, or threshold
+   * between the two entry points would break this.
+   */
+  test("mutation (execute:true) and migration agree on exactly which problems block a refusal", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asCentralEd(s);
@@ -246,21 +244,23 @@ describe("0071 — the shared core is genuinely shared, not two implementations 
       externalIdOnChapterLeg: "increase_txn_shared_core",
     });
 
-    // The mutation refuses and writes nothing, so the migration afterward
-    // sees IDENTICAL data — any drift between the two entry points'
-    // precondition logic (wording, ordering, thresholds) would show up as a
-    // mismatch here.
     const viaMutation = await s.as.mutation(removeUnexecutedBalanceSettlements, {
       execute: true,
     });
     expect(viaMutation.refused).toBe(true);
     expect(viaMutation.deletedLegs).toBe(0);
+    expect(viaMutation.problems.length).toBeGreaterThan(0);
 
-    const viaMigration = await run(s.t, (ctx) =>
-      runRemoveUnexecutedBalanceSettlementsMigration(ctx),
-    );
-
-    expect(viaMigration).toEqual(viaMutation);
+    let thrown: Error | undefined;
+    try {
+      await run(s.t, (ctx) => runRemoveUnexecutedBalanceSettlementsMigration(ctx));
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    for (const problem of viaMutation.problems) {
+      expect(thrown!.message).toContain(problem);
+    }
   });
 
   test("mutation's dry run predicts exactly what the migration actually deletes", async () => {
@@ -306,11 +306,101 @@ describe("0071 — the shared core is genuinely shared, not two implementations 
     const viaMutation = await s.as.mutation(removeUnexecutedBalanceSettlements, {
       execute: true,
     });
-    const viaMigration = await run(s.t, (ctx) =>
-      runRemoveUnexecutedBalanceSettlementsMigration(ctx),
+    expect(viaMutation.refused).toBe(true);
+
+    let thrown: Error | undefined;
+    try {
+      await run(s.t, (ctx) => runRemoveUnexecutedBalanceSettlementsMigration(ctx));
+    } catch (e) {
+      thrown = e as Error;
+    }
+    expect(thrown).toBeInstanceOf(Error);
+    for (const problem of viaMutation.problems) {
+      expect(thrown!.message).toContain(problem);
+    }
+  });
+});
+
+describe("0071 — a refusal must NOT be ledgered (retryable on the next deploy)", () => {
+  /**
+   * Pre-seeds the ledger with every OTHER registered migration (simulating a
+   * deployment that has already applied everything through the one before
+   * 0071 in prior deploys — the realistic production shape), then seeds data
+   * that makes 0071 refuse and calls the REAL `runPending` entry point (not
+   * the bare `run` function) so this exercises the actual transaction
+   * boundary `migrations.ts#runPending` runs inside.
+   */
+  async function preLedgerEverythingExcept0071(t: TestConvex): Promise<void> {
+    const before = MIGRATIONS.filter((m) => m.name !== MIGRATION_NAME);
+    await run(t, async (ctx) => {
+      for (const m of before) {
+        await ctx.db.insert("schemaMigrations", { name: m.name, ranAt: Date.now() });
+      }
+    });
+  }
+
+  async function ledgerNames(t: TestConvex): Promise<string[]> {
+    return run(t, async (ctx) =>
+      (await ctx.db.query("schemaMigrations").collect()).map((r) => r.name),
+    );
+  }
+
+  test("runPending rejects and writes NO ledger row for 0071 when it refuses", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await preLedgerEverythingExcept0071(t);
+    await seedBalanceSettlementPair(s, {
+      date: "2026-08-10",
+      amountCents: 461_690,
+      externalIdOnChapterLeg: "increase_txn_ledger_safety",
+    });
+
+    await expect(t.mutation(internal.migrations.runPending, {})).rejects.toThrow(
+      /externalId/i,
     );
 
-    expect(viaMigration.refused).toBe(true);
-    expect(viaMigration).toEqual(viaMutation);
+    const names = await ledgerNames(t);
+    expect(names).not.toContain(MIGRATION_NAME);
+
+    // Everything pre-ledgered before this call is UNTOUCHED — `runPending`
+    // skipped every one of them (already-ledgered) before ever reaching
+    // 0071, so this run's throw had nothing of theirs to roll back.
+    const before = MIGRATIONS.filter((m) => m.name !== MIGRATION_NAME).map(
+      (m) => m.name,
+    );
+    for (const name of before) {
+      expect(names).toContain(name);
+    }
+    expect(names).toHaveLength(before.length);
+  });
+
+  test("genuinely retryable: fixing the data and calling runPending again applies 0071 cleanly", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await preLedgerEverythingExcept0071(t);
+    const { legIds } = await seedBalanceSettlementPair(s, {
+      date: "2026-08-10",
+      amountCents: 461_690,
+      externalIdOnChapterLeg: "increase_txn_will_be_cleared",
+    });
+
+    await expect(t.mutation(internal.migrations.runPending, {})).rejects.toThrow();
+    expect(await ledgerNames(t)).not.toContain(MIGRATION_NAME);
+
+    // A human resolves the refusal the way the runbook says to — here,
+    // simulated by clearing the externalId a human would have investigated
+    // and confirmed was a data-entry mistake (not real cash movement).
+    await run(t, async (ctx) => {
+      for (const id of legIds) {
+        await ctx.db.patch(id, { externalId: undefined });
+      }
+    });
+
+    const res = await t.mutation(internal.migrations.runPending, {});
+    expect(res.applied).toEqual([MIGRATION_NAME]);
+    expect(await ledgerNames(t)).toContain(MIGRATION_NAME);
+
+    const rows = await getRows(s, legIds);
+    expect(rows.every((r) => r == null)).toBe(true);
   });
 });

@@ -418,6 +418,10 @@ export const MIGRATIONS: Migration[] = [
   // (`lib/removeUnexecutedBalanceSettlements.ts`), invoked here with
   // `execute: true` under deploy-admin privileges instead of waiting on a
   // signed-in ED/FM session. Refuses the WHOLE run rather than partially
-  // cleaning up if any candidate anywhere fails any precondition. See 0071.
+  // cleaning up if any candidate anywhere fails any precondition — and,
+  // unlike the mutation, THROWS on a refusal instead of returning it, since
+  // `runPending` ledgers whatever `run` returns unconditionally; a returned
+  // refusal would be recorded as permanently applied and never retried. See
+  // 0071.
   removeUnexecutedBalanceSettlementsMigration,
 ];

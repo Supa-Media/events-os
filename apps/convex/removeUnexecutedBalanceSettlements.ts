@@ -21,6 +21,18 @@
  * by hand. Both entry points share ONE implementation of every precondition
  * — this file adds authorization and nothing else.
  *
+ * A REFUSAL RETURNS HERE; IT THROWS ON THE MIGRATION. This handler passes the
+ * shared core's result straight through — a refusal comes back as
+ * `{ refused: true, problems: [...] }` for a human to read, exactly like any
+ * other result, because a person is on the other end of this call. The
+ * migration entry point cannot afford that: `migrations.ts#runPending`
+ * ledgers whatever `run` returns UNCONDITIONALLY, so a migration that merely
+ * RETURNED a refusal would be permanently (and silently) recorded as
+ * "applied" and never retried. See
+ * `migrations/0071_remove_unexecuted_balance_settlements.ts`'s doc for why it
+ * throws instead — that asymmetry is deliberate, lives only at the two entry
+ * points, and the shared core itself has no opinion about it.
+ *
  * ── GATED — the strongest finance authority in this codebase ───────────────
  * `requireReconciliationAudit` (`lib/reconciliationAccess.ts`) — the same
  * Executive-Director/Financial-Manager gate every OTHER control on the
