@@ -39,7 +39,10 @@ export const payoutStatusValidator = v.union(
 /** The read shape the UI renders for a payout (also every action's return). */
 export const payoutSummaryValidator = v.object({
   id: v.id("payouts"),
-  reimbursementId: v.id("reimbursementRequests"),
+  // NULL for a contractor payout — the rail carries two subject kinds now, and
+  // exactly one of these two is set on any given row (see the `payouts` table).
+  reimbursementId: v.union(v.id("reimbursementRequests"), v.null()),
+  contractorPaymentId: v.union(v.id("contractorPayments"), v.null()),
   payeePersonId: v.union(v.id("people"), v.null()),
   amountCents: v.number(),
   provider: payoutProviderValidator,
@@ -65,7 +68,8 @@ export const increaseAccountSummaryValidator = v.object({
 
 export interface PayoutSummary {
   id: Id<"payouts">;
-  reimbursementId: Id<"reimbursementRequests">;
+  reimbursementId: Id<"reimbursementRequests"> | null;
+  contractorPaymentId: Id<"contractorPayments"> | null;
   payeePersonId: Id<"people"> | null;
   amountCents: number;
   provider: PayoutProvider;
@@ -122,7 +126,8 @@ export type BeginProvisionResult =
 export function toPayoutSummary(p: Doc<"payouts">): PayoutSummary {
   return {
     id: p._id,
-    reimbursementId: p.reimbursementId,
+    reimbursementId: p.reimbursementId ?? null,
+    contractorPaymentId: p.contractorPaymentId ?? null,
     payeePersonId: p.payeePersonId ?? null,
     amountCents: p.amountCents,
     provider: p.provider,

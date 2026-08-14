@@ -60,6 +60,8 @@ import {
   processorFeeSchedule,
   reimbursementRequests,
   reimbursementLineItems,
+  contractorPayments,
+  contractorTaxDocuments,
   cards,
   cardRequests,
   personalRepayments,
@@ -309,6 +311,14 @@ const schema = defineSchema({
   processorFeeSchedule,
   reimbursementRequests,
   reimbursementLineItems,
+  // Paying a contractor: an agreement (pre-filled + sent, or requested blank)
+  // that ends in an ACH. Sibling of reimbursements, not a flavour of one — a
+  // reimbursement pays back a receipt, this pays for work.
+  contractorPayments,
+  // The W-9 / W-8 behind a contractor payment. Its own table so a payment row
+  // can be read freely without ever carrying a storage id for a PDF with an
+  // SSN on it.
+  contractorTaxDocuments,
   cards,
   // WP-C.1: card requests (member request → FM/Treasurer approve/deny).
   cardRequests,

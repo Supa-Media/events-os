@@ -15,6 +15,9 @@ import {
   PAYOUT_PROCESSORS,
   TRANSACTION_STATUSES,
   REIMBURSEMENT_STATUSES,
+  CONTRACTOR_PAYMENT_STATUSES,
+  CONTRACTOR_PAYMENT_ORIGINS,
+  CONTRACTOR_TAX_DOC_KINDS,
   CARD_TYPES,
   CARD_STATUSES,
   CARD_SOURCES,
@@ -421,6 +424,12 @@ export const transactions = defineTable({
   engagementId: v.optional(v.id("engagements")),
   cardId: v.optional(v.id("cards")),
   reimbursementId: v.optional(v.id("reimbursementRequests")),
+  // The contractor payment this row settles — the ledger-side idempotency key
+  // for the contractor rail, exactly as `reimbursementId` above is for
+  // reimbursements. `postContractorSpend` looks this up unconditionally before
+  // inserting, which is also why a bounced payout must DELETE the row rather
+  // than flag it (see `reverseSettledPayout`).
+  contractorPaymentId: v.optional(v.id("contractorPayments")),
   // The shared reference linking the two legs of a central↔chapter transfer
   // pair. Both legs carry the SAME id (see `transfers.ts#genericTransferGroupId`
   // — random-but-explicit, not deterministic; a generic transfer has no
@@ -703,6 +712,7 @@ export const transactions = defineTable({
   .index("by_event", ["eventId"])
   .index("by_person", ["personId"])
   .index("by_reimbursement", ["reimbursementId"])
+  .index("by_contractor_payment", ["contractorPaymentId"])
   .index("by_transfer_group", ["transferGroupId"])
   .index("by_card_payment", ["cardPaymentId"]);
 
@@ -992,6 +1002,178 @@ export const reimbursementLineItems = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_reimbursement", ["reimbursementId"]);
 
+// ── Contractor payments (paying someone who has nothing to reimburse) ────────
+/**
+ * One agreement to pay a contractor, from "we owe this person" to "the ACH
+ * left". Sibling of `reimbursementRequests`, deliberately NOT a `kind` on it —
+ * see `packages/shared/src/contractorPayments.ts` for the vocabulary and
+ * `specs/contractor-payments-pm-spec.md` §2 for the three load-bearing
+ * differences (tax treatment, no receipt to file, and a ledger label that must
+ * not say "Reimbursement to <name>").
+ *
+ * TWO ENTRY POINTS, ONE ROW (`origin`): staff pre-fills the terms and sends a
+ * link (`draft → sent`), or a blank request comes in asking to be approved
+ * (born `submitted`). From `submitted` on they are the same queue.
+ *
+ * WHAT IS AND IS NOT HERE. The contractor's bank details are NOT on this row:
+ * exactly as reimbursements do it, the raw routing + account number go to
+ * Increase once and only `externalAccountId` + `bankAccountLast4` come back.
+ * The tax document is NOT on this row either — it lives in
+ * `contractorTaxDocuments` so that reading a payment can never accidentally
+ * hand out a storage id for a PDF with an SSN on it.
+ */
+export const contractorPayments = defineTable({
+  chapterId: v.id("chapters"),
+  // Secret token for the contractor's public link. Returned to staff (they
+  // copy it) and to the contractor's own browser; NEVER returned by in-app list
+  // queries, same rule as `reimbursementRequests.token`.
+  token: v.string(),
+  status: v.union(...CONTRACTOR_PAYMENT_STATUSES.map((s) => v.literal(s))),
+  origin: v.union(...CONTRACTOR_PAYMENT_ORIGINS.map((o) => v.literal(o))),
+
+  // ── Payee identity (accountless — a contractor rarely has a login) ────────
+  payeeName: v.string(),
+  payeeEmail: v.optional(v.string()),
+  payeePhone: v.optional(v.string()),
+  // Roster link when the contractor matches a known person. Best-effort on the
+  // public path (email match), server-derived on the in-app path.
+  personId: v.optional(v.id("people")),
+  // The business name the payee wants on file, when they invoice as an entity
+  // rather than as themselves. Internal only — nothing about the payee reaches
+  // the public ledger (see `CONTRACTOR_LEDGER_COUNTERPARTY`).
+  payeeBusinessName: v.optional(v.string()),
+
+  // ── The agreement itself ──────────────────────────────────────────────────
+  // What the work was, in the contractor's or the staffer's words. THIS STRING
+  // PUBLISHES VERBATIM on the public ledger, which is why it is length-capped
+  // and run through `publicTextProblems` on every write path.
+  serviceDescription: v.string(),
+  // When the work was done / is to be done (ms, noon-local by the same
+  // convention as reimbursement line dates).
+  serviceDate: v.optional(v.number()),
+  agreedAmountCents: v.number(),
+  // Free-text terms beyond the one-line description — the "this is for this
+  // service on this date for this thing" long form. Internal; never published.
+  agreementNotes: v.optional(v.string()),
+
+  // Bumped every time a term the contractor agreed to (amount, description,
+  // service date) is edited after they accepted. Bumping CLEARS the acceptance
+  // and reverts the row to `sent` — see `contractorPayments.ts#updateTerms`.
+  // Without this we would hold a signature against terms nobody agreed to.
+  agreementTermsVersion: v.number(),
+  // When the contractor accepted the terms, and the exact version they saw.
+  // Cleared by a terms bump, which is the whole point of keeping the pair.
+  acceptedAt: v.optional(v.number()),
+  acceptedTermsVersion: v.optional(v.number()),
+  // The typed-name signature the contractor gave when accepting, and the IP it
+  // came from — the two facts that make the acceptance evidence rather than a
+  // boolean.
+  acceptedSignature: v.optional(v.string()),
+  acceptedIp: v.optional(v.string()),
+
+  // ── Coding (what budget this spend belongs to) ────────────────────────────
+  // Mutually exclusive, enforced in `createContractorPayment`, exactly as
+  // reimbursements enforce it: at most ONE of event/project/budget.
+  eventId: v.optional(v.id("events")),
+  projectId: v.optional(v.id("projects")),
+  budgetId: v.optional(v.id("budgets")),
+  categoryId: v.optional(v.id("budgetCategories")),
+  fundId: v.optional(v.id("funds")),
+
+  // ── Review ───────────────────────────────────────────────────────────────
+  createdByPersonId: v.optional(v.id("people")),
+  reviewedByPersonId: v.optional(v.id("people")),
+  approvedCents: v.optional(v.number()),
+  rejectedReason: v.optional(v.string()),
+  // The reviewer's latest send-back note while `changes_requested`. Cleared on
+  // the contractor's resubmission; the round-by-round history lives in
+  // `financeAuditLog`, not here.
+  reviewNote: v.optional(v.string()),
+
+  // ── Payout destination ───────────────────────────────────────────────────
+  // Increase's reusable reference for the payee's bank account. The RAW
+  // routing + account number are NEVER persisted — see
+  // `increaseExternalAccounts.ts`, which also suppresses the response body
+  // because Increase echoes the digits back.
+  externalAccountId: v.optional(v.string()),
+  bankAccountLast4: v.optional(v.string()),
+  payoutId: v.optional(v.id("payouts")),
+
+  // ── Lifecycle stamps ─────────────────────────────────────────────────────
+  sentAt: v.optional(v.number()),
+  submittedAt: v.optional(v.number()),
+  approvedAt: v.optional(v.number()),
+  paidAt: v.optional(v.number()),
+  // Exactly-once guards for the two payee notices, claimed before the send by
+  // whichever path gets there first — the identical mechanism (and the
+  // identical reasoning) as `reimbursementRequests.approvedNoticeSentAt` /
+  // `paidNoticeSentAt`; read those for the ordering and the why.
+  //
+  // `paidNoticeSentAt` is likewise CLEARED by a bounce walk-back and
+  // `approvedNoticeSentAt` is not, for the same reason: an approval that
+  // happened stays true, a payment that came back out does not.
+  approvedNoticeSentAt: v.optional(v.number()),
+  paidNoticeSentAt: v.optional(v.number()),
+  // When the treasurer queue nudge and the central-FM escalation were last
+  // sent, so the daily sweep nags on a schedule instead of every run.
+  reviewNudgeSentAt: v.optional(v.number()),
+  reviewEscalatedAt: v.optional(v.number()),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  .index("by_chapter", ["chapterId"])
+  .index("by_token", ["token"])
+  .index("by_chapter_and_status", ["chapterId", "status"])
+  .index("by_person", ["personId"])
+  .index("by_status", ["status"]);
+
+/**
+ * A contractor's tax document — the W-9 (or W-8BEN/-E for a foreign payee).
+ *
+ * ITS OWN TABLE, AND THAT IS THE POINT. This row holds a `storageId` for a PDF
+ * with a Social Security or Employer Identification Number printed on it: the
+ * most sensitive thing this application will ever hold. `storage.getUrl` is
+ * gated only by `requireUserId` (`storage.ts`), so any query that returned this
+ * storage id would put every member one hop from someone's SSN. Keeping it off
+ * `contractorPayments` means the payment row can be read freely by the screens
+ * that need it without a reviewer, a list query, or a public page ever
+ * carrying the id by accident — the same structural argument
+ * `financePublicationGiverKeys` makes for donor identities.
+ *
+ * NOTHING PARSES THE FORM. We do not extract, store, or index a TIN; see
+ * `CONTRACTOR_TAX_DOC_KINDS` for what that costs us at 1099 time and why we
+ * took the trade.
+ *
+ * Reading the file requires `requireContractorTaxDocView` and writes a
+ * `financeAuditLog` row per view. Rows are purged by the retention sweep once
+ * `purgeAfter` passes.
+ */
+export const contractorTaxDocuments = defineTable({
+  chapterId: v.id("chapters"),
+  contractorPaymentId: v.id("contractorPayments"),
+  // Denormalized so the retention sweep and a future 1099 export can group by
+  // payee without loading every payment row.
+  personId: v.optional(v.id("people")),
+  payeeName: v.string(),
+  kind: v.union(...CONTRACTOR_TAX_DOC_KINDS.map((k) => v.literal(k))),
+  storageId: v.id("_storage"),
+  // What the uploader's browser called the file, and what it actually was.
+  fileName: v.optional(v.string()),
+  contentType: v.optional(v.string()),
+  sizeBytes: v.optional(v.number()),
+  // The tax year this document substantiates — the payment's service year,
+  // which is what drives `purgeAfter`.
+  taxYear: v.number(),
+  // Denormalized from `taxDocPurgeAfter(taxYear)` at insert so the sweep is a
+  // single indexed range scan rather than a full-table filter.
+  purgeAfter: v.number(),
+  uploadedAt: v.number(),
+})
+  .index("by_payment", ["contractorPaymentId"])
+  .index("by_chapter", ["chapterId"])
+  .index("by_person", ["personId"])
+  .index("by_purge_after", ["purgeAfter"]);
+
 // ── Cards (person-owned) ─────────────────────────────────────────────────────
 /** A member card, owned by ONE person (they own its receipts + reconciliation).
  *  Only two controls: a monthly safety cap + a validity window. Auto-locks if a
@@ -1171,12 +1353,26 @@ export const repaymentLinks = defineTable({
 
 // ── Payouts (ACH from the chapter's Increase account) ────────────────────────
 /** An ACH payout originating from the chapter's Increase account. Idempotency-
- *  keyed on `reimbursementId` so an approved reimbursement can never double-pay.
+ *  keyed on its SUBJECT — `reimbursementId` or `contractorPaymentId`, exactly
+ *  one of which is set — so an approved reimbursement, and equally an approved
+ *  contractor payment, can never double-pay.
  *  `provider: "manual"` covers the "mark paid" fallback when Increase isn't set. */
 export const payouts = defineTable({
   chapterId: v.id("chapters"),
-  // Idempotency key: at most one live payout per reimbursement.
-  reimbursementId: v.id("reimbursementRequests"),
+  // ── What this payout is FOR: exactly one of the two below ────────────────
+  // The rail carries two kinds of subject now. `reimbursementId` was required
+  // and was the sole idempotency key until contractor payments shipped
+  // (2026-08-14); it is `v.optional` so a contractor payout can omit it, NOT
+  // because a reimbursement payout may. `beginPayout` enforces that exactly one
+  // subject is set, and each subject keeps its own uniqueness index below — so
+  // "at most one live payout per subject" still holds on both rails.
+  //
+  // Deliberately two nullable columns rather than a `subjectType`/`subjectId`
+  // pair: `v.id()` cannot express a union of table types, so a generic pair
+  // would have to be a string and would lose referential typing on the field
+  // that decides where money goes. Two typed columns keep `ctx.db.get` honest.
+  reimbursementId: v.optional(v.id("reimbursementRequests")),
+  contractorPaymentId: v.optional(v.id("contractorPayments")),
   payeePersonId: v.optional(v.id("people")),
   amountCents: v.number(),
   provider: v.union(...PAYOUT_PROVIDERS.map((p) => v.literal(p))),
@@ -1191,6 +1387,7 @@ export const payouts = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_reimbursement", ["reimbursementId"])
+  .index("by_contractor_payment", ["contractorPaymentId"])
   .index("by_increase_transfer", ["increaseTransferId"])
   .index("by_chapter_and_status", ["chapterId", "status"]);
 
@@ -1412,6 +1609,7 @@ export const approvals = defineTable({
   chapterId: v.id("chapters"),
   subjectType: v.union(
     v.literal("reimbursement"),
+    v.literal("contractor_payment"),
     v.literal("payout"),
     v.literal("budget"),
     v.literal("transaction"),
@@ -2371,6 +2569,13 @@ export const transactionCodings = defineTable({
   // multi-line or incomplete reimbursement, which still goes through the
   // normal editor.
   portedFromReimbursementId: v.optional(v.id("reimbursementRequests")),
+  // The same provenance receipt for the CONTRACTOR rail. A contractor payment
+  // is ported unconditionally rather than only when a single line is complete
+  // (see `lib/contractorTxnFields.ts` for why the reimbursement rail's
+  // narrowness doesn't apply: there is one piece of work, so there is nothing
+  // a machine could wrongly merge). At most one of these two is ever set — the
+  // transaction they hang off belongs to one rail or the other.
+  portedFromContractorPaymentId: v.optional(v.id("contractorPayments")),
 })
   // At most one row per transaction (enforced by `lib/transactionCoding.ts`).
   .index("by_transaction", ["transactionId"])

@@ -2212,6 +2212,9 @@ export * from "./finance";
 // ── Finance audit trail: state KEYS + the one renderer that words them ───────
 export * from "./financeAuditValue";
 
+// ── Contractor payments: paying someone who has nothing to be reimbursed for ─
+export * from "./contractorPayments";
+
 // ── Org-chart seat taxonomy (template constants + capability vocabulary) ─────
 export * from "./seats";
 
