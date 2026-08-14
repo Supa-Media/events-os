@@ -86,6 +86,25 @@ const REIMBURSEMENTS_TAB: Tab = {
   path: "/finances/reimbursements",
 };
 
+// ── DELIBERATE OVERRIDE OF "ONE ROW, NO NESTING" (founder, 2026-08-14) ───────
+// Contractor payments gets its OWN top-level chip. The founder decided this
+// knowing it adds a chip to a bar the directive above exists to hold down, and
+// the trade was made on purpose rather than by accretion — recorded here so a
+// future reader doesn't "fix" the contradiction by quietly deleting it.
+//
+// Why it survived the test the flattening applies ("is this a VIEW of something
+// already on the bar, or a place of its own?"): a contractor payment is the one
+// direction of money the bar didn't have. Reimbursements pays a member back for
+// money they already spent; Cards is money the org spends directly. This is the
+// org promising an OUTSIDE person income for work not yet done — a different
+// counterparty, a different substantiation (the agreement, not a receipt), a
+// different tax consequence (reportable income, a W-9 on file), and its own
+// approval queue with its own separation-of-duties rules. Filing it under
+// Reimbursements would repeat exactly the mistake that hid Reimbursements under
+// Cards, and the persona who lives here — the treasurer with someone waiting on
+// money — is the one who can least afford a destination two taps deep.
+const PAYMENTS_TAB: Tab = { label: "Payments", path: "/finances/payments" };
+
 // "Book", not "Reconcile": the tab now holds every question you can ask of
 // the ledger — what needs attention, what's waiting on you, a month's
 // backfill, the receipt chase — and "reconcile" names only one of them (close
@@ -99,6 +118,10 @@ const SEAT_TABS: Tab[] = [
   BUDGETS_TAB,
   { label: "Cards", path: "/finances/cards" },
   REIMBURSEMENTS_TAB,
+  // Seat holders only: `api.contractorPayments.list` has a viewer floor, so a
+  // no-seat member would land on a permission wall — the exact thing the
+  // reduced MEMBER_TABS set exists to prevent.
+  PAYMENTS_TAB,
 ];
 
 // The member (no-seat) set. Their own charges live at `/code` now — off this

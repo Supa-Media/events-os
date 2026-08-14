@@ -24,6 +24,10 @@ import {
   codingPolicy,
   materializePortedReimbursementCoding,
 } from "./transactionCoding";
+import {
+  deriveContractorTxnFields,
+  deriveContractorCodingMaterialization,
+} from "./contractorTxnFields";
 
 /**
  * The single transaction recording a reimbursement payout leaving the account.
@@ -313,7 +317,20 @@ export async function applyPayoutOutcome(
   // is an idempotent no-op (this ALSO catches a returned payout post-reversal).
   if (payout.status === "returned" || payout.status === "failed") return;
 
-  const req = await ctx.db.get(payout.reimbursementId);
+  // WHICH RAIL IS THIS? A payout carries exactly one subject — a reimbursement
+  // or a contractor payment (`beginPayout`/`beginContractorPayout` enforce it).
+  // Everything below dispatches on that, and a payout with NEITHER (impossible
+  // through the mutation layer, but reachable by a hand-edited row) advances
+  // the payout itself and touches no subject, rather than throwing inside a
+  // webhook handler.
+  if (payout.contractorPaymentId) {
+    await applyContractorPayoutOutcome(ctx, payout, target, failureReason);
+    return;
+  }
+
+  const req = payout.reimbursementId
+    ? await ctx.db.get(payout.reimbursementId)
+    : null;
 
   if (payout.status === "paid") {
     if (target !== "returned") return; // otherwise paid is terminal
@@ -341,6 +358,209 @@ export async function applyPayoutOutcome(
       // Walk the reimbursement back so a manager can retry / mark it paid.
       if (req && req.status === "paying") {
         await ctx.db.patch(req._id, { status: "approved", updatedAt: now });
+      }
+      return;
+  }
+}
+
+// ── The contractor rail ─────────────────────────────────────────────────────
+/**
+ * The single transaction recording a CONTRACTOR payout leaving the account.
+ * IDEMPOTENT: at most one per payment, keyed via `transactions.by_contractor_payment`.
+ *
+ * `flow:"outflow"` — this row IS the expense, for the same reason the
+ * reimbursement twin is: nothing else ever books contract labour into the
+ * ledger, so if this row didn't count as spend the work would be invisible to
+ * every budget and category rollup.
+ *
+ * Descriptive fields come from `deriveContractorTxnFields`, which is where the
+ * public-ledger redaction is enforced — read that module's header before
+ * changing anything here about `merchantName` or `description`.
+ *
+ * NO RECEIPT IS MATERIALIZED, deliberately. The reimbursement twin turns each
+ * filed receipt into a real `receipts` row; a contractor payment has no
+ * receipt, because the AGREEMENT is the substantiation. The tax document is
+ * emphatically NOT a receipt and must never be linked here — a W-9 in the
+ * receipt library would be an SSN reachable from Reconcile.
+ */
+export async function postContractorSpend(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  row: Doc<"contractorPayments">,
+  payout: Doc<"payouts">,
+): Promise<Id<"transactions">> {
+  const existing = await ctx.db
+    .query("transactions")
+    .withIndex("by_contractor_payment", (q) =>
+      q.eq("contractorPaymentId", row._id),
+    )
+    .first();
+  if (existing) {
+    if (!payout.transactionId) {
+      await ctx.db.patch(payout._id, {
+        transactionId: existing._id,
+        updatedAt: Date.now(),
+      });
+    }
+    return existing._id;
+  }
+
+  const now = Date.now();
+  const ported = deriveContractorTxnFields(row);
+  const txnId = await ctx.db.insert("transactions", {
+    chapterId,
+    source: "contractor_payment",
+    flow: "outflow", // the expense itself — counts toward category/budget spend
+    amountCents: payout.amountCents,
+    currency: "usd",
+    postedAt: now,
+    // NOTE: `personId` is deliberately NOT set from `row.personId`. On the
+    // reimbursement rail that field names the member being made whole; here it
+    // would attach a contractor's roster identity to a ledger row, and identity
+    // on this rail lives on the payment record instead.
+    contractorPaymentId: row._id,
+    status: "reconciled",
+    createdAt: now,
+    ...ported,
+  });
+  await ctx.db.patch(payout._id, { transactionId: txnId, updatedAt: now });
+
+  // Port the approved coding so nobody re-types testimony a reviewer already
+  // approved — and so the published `purpose` column says what the work was.
+  const { namesMaxHeadcount } = await codingPolicy(ctx);
+  const materialization = await deriveContractorCodingMaterialization(ctx, row);
+  if (materialization.eligible) {
+    await materializePortedReimbursementCoding(ctx, {
+      transactionId: txnId,
+      scope: chapterId,
+      fields: materialization.fields,
+      namesMaxHeadcount,
+      codedByPersonId: materialization.codedByPersonId,
+      codedByUserId: materialization.codedByUserId,
+      decidedByPersonId: materialization.decidedByPersonId,
+      decidedByUserId: materialization.decidedByUserId,
+      decidedAt: materialization.decidedAt,
+      submittedAt: materialization.submittedAt,
+      approvalParty: materialization.approvalParty,
+      portedFromContractorPaymentId: row._id,
+    });
+  }
+
+  return txnId;
+}
+
+/** Settle a contractor payout: mark the payment `paid`, post the `outflow` row,
+ *  and tell the contractor their money went out. THE ONE PLACE A CONTRACTOR
+ *  PAYMENT BECOMES PAID, which is why the notice hangs here rather than at
+ *  either call site — same argument as `settleReimbursementPaid`. */
+export async function settleContractorPaid(
+  ctx: MutationCtx,
+  row: Doc<"contractorPayments">,
+  payout: Doc<"payouts">,
+): Promise<void> {
+  const now = Date.now();
+  if (row.status !== "paid") {
+    await ctx.db.patch(row._id, {
+      status: "paid",
+      paidAt: row.paidAt ?? now,
+      payoutId: payout._id,
+      updatedAt: now,
+    });
+    await ctx.scheduler.runAfter(
+      0,
+      internal.contractorPayments.sendPaidNotice,
+      { contractorPaymentId: row._id },
+    );
+  }
+  await postContractorSpend(ctx, row.chapterId, row, payout);
+}
+
+/**
+ * Reverse an already-`paid` contractor payout whose ACH bounced days later.
+ *
+ * Mirrors `reverseSettledPayout` exactly, including the part that looks
+ * destructive: the ledger transaction is DELETED, not flagged. The money never
+ * left, so its spend has to come back out of the budget it now contributes to —
+ * and `postContractorSpend` looks up `by_contractor_payment` unconditionally, so
+ * a row left in place would make a retried payout mistake it for "already
+ * posted" and silently skip booking the real one.
+ *
+ * The bounce history survives on the `payouts` row (`status:"returned"` +
+ * `failureReason`).
+ */
+async function reverseSettledContractorPayout(
+  ctx: MutationCtx,
+  row: Doc<"contractorPayments"> | null,
+  payout: Doc<"payouts">,
+  failureReason?: string,
+): Promise<void> {
+  const now = Date.now();
+  const transactionId = payout.transactionId;
+  await ctx.db.patch(payout._id, {
+    status: "returned",
+    failureReason,
+    transactionId: undefined,
+    updatedAt: now,
+  });
+  if (row && row.status === "paid") {
+    await ctx.db.patch(row._id, {
+      status: "approved",
+      paidAt: undefined,
+      // Give back the paid notice: we told them the money was sent and it came
+      // back out, so a later successful retry is a real payment on a later date
+      // that they have never been told about. Contrast `approvedNoticeSentAt`,
+      // left alone — the approval never stopped being true.
+      paidNoticeSentAt: undefined,
+      updatedAt: now,
+    });
+  }
+  if (transactionId) {
+    const txn = await ctx.db.get(transactionId);
+    if (txn && row && txn.contractorPaymentId === row._id) {
+      await ctx.db.delete(transactionId);
+    }
+  }
+}
+
+/** The contractor-rail half of `applyPayoutOutcome`, split out so each rail's
+ *  transitions read as one piece rather than as a thicket of conditionals. */
+async function applyContractorPayoutOutcome(
+  ctx: MutationCtx,
+  payout: Doc<"payouts">,
+  target: PayoutTarget,
+  failureReason?: string,
+): Promise<void> {
+  const now = Date.now();
+  const row = payout.contractorPaymentId
+    ? await ctx.db.get(payout.contractorPaymentId)
+    : null;
+
+  if (payout.status === "paid") {
+    if (target !== "returned") return; // otherwise paid is terminal
+    await reverseSettledContractorPayout(ctx, row, payout, failureReason);
+    return;
+  }
+
+  switch (target) {
+    case "processing":
+      if (payout.status === "pending") {
+        await ctx.db.patch(payout._id, { status: "processing", updatedAt: now });
+      }
+      return;
+    case "paid":
+      await ctx.db.patch(payout._id, { status: "paid", updatedAt: now });
+      if (row) await settleContractorPaid(ctx, row, payout);
+      return;
+    case "failed":
+    case "returned":
+      await ctx.db.patch(payout._id, {
+        status: target,
+        failureReason,
+        updatedAt: now,
+      });
+      // Walk the payment back so a manager can retry or fix the bank details.
+      if (row && row.status === "paying") {
+        await ctx.db.patch(row._id, { status: "approved", updatedAt: now });
       }
       return;
   }

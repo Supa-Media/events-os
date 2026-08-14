@@ -244,12 +244,18 @@ export const ROLE_PATHS: RolePath[] = [
     // finance-tiers-and-skim) already teaches that the backer count feeding
     // their dashboard is now reported from the Giving page. See the PR
     // body's explicit decision.
+    // Contractor payments (2026-08-14): the Treasurer is the seat that pre-fills
+    // an agreement and the seat that works the review queue, so the desk course
+    // lands on this path. Note the separation-of-duties consequence the lesson
+    // teaches — a Treasurer who WROTE an agreement cannot approve it, which is
+    // why the same course is on the Financial Manager's and ED's paths too.
     courseSlugs: [
       "welcome-to-public-worship",
       "how-we-work",
       "finances-for-everyone",
       "chapter-money-model",
       "treasurer",
+      "finance-paying-contractors",
     ],
   },
   {
@@ -301,6 +307,10 @@ export const ROLE_PATHS: RolePath[] = [
       "chapter-money-model",
       "executive-director",
       "financial-manager",
+      // The ED's seat carries central reach, which is what
+      // `hasContractorPaymentsApprove` resolves on — so the ED is the backstop
+      // approver when the chapter Treasurer wrote the agreement.
+      "finance-paying-contractors",
       "partnerships",
     ],
   },
@@ -316,6 +326,10 @@ export const ROLE_PATHS: RolePath[] = [
       "chapter-money-model",
       "treasurer",
       "financial-manager",
+      // The central FM is the standing failsafe approver on this flow: when the
+      // person who wrote an agreement is the chapter's Treasurer, the FM's
+      // central reach is what makes a second party available at all.
+      "finance-paying-contractors",
     ],
   },
   {
