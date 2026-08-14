@@ -176,6 +176,15 @@ export async function requireContractorRosterView(
   await requireFinanceRole(ctx, chapterId, "manager");
 }
 
+/** Non-throwing form, for deciding whether to OFFER roster editing. */
+export async function hasContractorRosterManage(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<boolean> {
+  const access = await getFinanceRole(ctx, chapterId);
+  return access.isManager || access.isCentral;
+}
+
 /**
  * May the caller create or edit a contractor profile — save someone as a
  * returning contractor, correct their business name, record how they're
@@ -190,6 +199,19 @@ export async function requireContractorRosterManage(
   chapterId: Id<"chapters">,
 ): Promise<void> {
   await requireFinanceRole(ctx, chapterId, "manager");
+}
+
+/** Non-throwing form, for deciding whether to OFFER the forget control. Kept
+ *  SEPARATE from the manage check even though both bodies are the finance
+ *  ladder today: the two graduate to different powers, and a screen that gates
+ *  "forget" on "can manage" would start offering a button the server refuses
+ *  the moment they diverge. */
+export async function hasContractorForget(
+  ctx: QueryCtx,
+  chapterId: Id<"chapters">,
+): Promise<boolean> {
+  const access = await getFinanceRole(ctx, chapterId);
+  return access.isManager || access.isCentral;
 }
 
 /**

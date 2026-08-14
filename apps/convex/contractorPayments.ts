@@ -498,6 +498,12 @@ export const createAgreement = mutation({
     payeeName: v.string(),
     payeeEmail: v.optional(v.string()),
     payeePhone: v.optional(v.string()),
+    // The name they invoice under, when they invoice as an entity. Accepted
+    // here so a remembered one carries from the roster picker — the internal
+    // `createContractorPayment` always supported it and only the public path
+    // could supply it, which meant picking a returning contractor silently
+    // dropped the business name we already knew.
+    payeeBusinessName: v.optional(v.string()),
     personId: v.optional(v.id("people")),
     serviceDescription: v.string(),
     serviceDate: v.optional(v.number()),
@@ -1906,6 +1912,13 @@ export const submitPublicRequest = mutation({
     taxDocStorageId: v.id("_storage"),
     taxDocKind: v.union(...CONTRACTOR_TAX_DOC_KINDS.map((k) => v.literal(k))),
     taxDocFileName: v.optional(v.string()),
+    // When they signed it — required for the W-8 kinds, which expire, and
+    // meaningless for a W-9, which doesn't. Present here for the same reason it
+    // is on `completeAgreement`: without it a W-8 arriving through the blank
+    // request form is stored undated, `taxDocIsCurrent` reads an undated W-8 as
+    // expired, and the contractor is asked for a fresh form on their next
+    // payment despite having given us a perfectly current one.
+    taxDocSignedAt: v.optional(v.number()),
     externalAccountId: v.string(),
     bankAccountLast4: v.string(),
     signature: v.string(),
@@ -1983,6 +1996,7 @@ export const submitPublicRequest = mutation({
       args.taxDocStorageId,
       args.taxDocKind,
       args.taxDocFileName,
+      args.taxDocSignedAt,
     );
     const now = Date.now();
     await ctx.db.patch(id, {

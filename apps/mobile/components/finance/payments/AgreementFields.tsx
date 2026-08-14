@@ -8,9 +8,17 @@
  *     an AGREED term after acceptance voids that acceptance.
  *
  * Validation runs the SHARED rules the server throws on — `contractorAmountProblems`
- * and `publicTextProblems` from `@events-os/shared` — so nobody learns about a
- * $0 amount or a phone number in the description from a round-trip. The server
- * still checks; this just means it never has to say no.
+ * from `@events-os/shared`, and `contractorDescriptionProblems` by way of
+ * `contractorHelpers#descriptionProblems` — so nobody learns about a $0 amount
+ * or a phone number in the description from a round-trip. The server still
+ * checks; this just means it never has to say no.
+ *
+ * THE DESCRIPTION FLOOR IS LOAD-BEARING, not a nicety. The payout path codes
+ * the transaction through the shared `MIN_PURPOSE_LENGTH` rule, so a shorter
+ * description used to pass composition, the contractor's acceptance AND
+ * approval, and then fail at the moment a treasurer pressed Pay. It is enforced
+ * here at the door, and shown inline under the field rather than only at
+ * submit, because the person is looking at the sentence while they write it.
  *
  * The "For" picker is one `Select` standing in for three mutually-exclusive
  * optional ids (event / project / budget), decoded back into
@@ -28,8 +36,8 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   BUDGET_CADENCE_LABELS,
   CONTRACTOR_SERVICE_DESCRIPTION_MAX,
+  CONTRACTOR_SERVICE_DESCRIPTION_MIN,
   contractorAmountProblems,
-  publicTextProblems,
 } from "@events-os/shared";
 import { Field, Icon, Select, TextField } from "../../ui";
 import { Calendar } from "../../ui/Calendar";
@@ -39,6 +47,7 @@ import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { parseDollars } from "../../event/ticketing/helpers";
 import { centsToAmountText } from "./helpers";
+import { descriptionProblems } from "./contractorHelpers";
 
 export type NewRequestOptions = FunctionReturnType<
   typeof api.reimbursements.newRequestOptions
@@ -145,16 +154,7 @@ export function decodeForValue(value: string): {
 export function draftProblems(draft: AgreementDraft): string[] {
   const problems: string[] = [];
   if (draft.payeeName.trim().length < 2) problems.push("Who is being paid?");
-  const description = draft.serviceDescription.trim();
-  if (description.length < 3) {
-    problems.push("Say what the work was — this appears on the public ledger.");
-  } else {
-    for (const p of publicTextProblems(description)) {
-      problems.push(
-        `${p} This description is published publicly, so please reword it without personal details.`,
-      );
-    }
-  }
+  problems.push(...descriptionProblems(draft.serviceDescription));
   const cents = draftAmountCents(draft);
   if (cents == null) problems.push("Enter an amount.");
   else problems.push(...contractorAmountProblems(cents));
@@ -221,6 +221,14 @@ export function AgreementFields({
   mode,
   accepted = false,
 }: Props) {
+  // Shown only once there is something to judge: telling somebody their empty
+  // field is too short is nagging, not helping. The submit path still refuses
+  // an empty one (`draftProblems`).
+  const descProblem =
+    value.serviceDescription.trim().length > 0
+      ? (descriptionProblems(value.serviceDescription)[0] ?? null)
+      : null;
+
   return (
     <>
       <View className="flex-row flex-wrap gap-3">
@@ -259,7 +267,7 @@ export function AgreementFields({
 
       <TextField
         label="What is the work?"
-        hint="Published on the public ledger, word for word — see the preview below."
+        hint={`Published on the public ledger, word for word — see the preview below. At least ${CONTRACTOR_SERVICE_DESCRIPTION_MIN} characters, because the payout needs the same detail the coding rule asks for.`}
         value={value.serviceDescription}
         onChangeText={(v) =>
           onChange({
@@ -270,6 +278,14 @@ export function AgreementFields({
         multiline
         numberOfLines={3}
       />
+      {/* Inline, next to the sentence being written — the whole point is that
+          nobody discovers this at the Pay button four steps later. */}
+      {descProblem ? (
+        <View className="-mt-1 mb-3 flex-row items-start gap-2 rounded-md bg-warn-bg px-3 py-2">
+          <Icon name="alert-circle" size={13} color={colors.warn} />
+          <Text className="flex-1 text-xs text-warn">{descProblem}</Text>
+        </View>
+      ) : null}
 
       <View className="flex-row flex-wrap gap-3">
         <View className="min-w-[180px] flex-1">

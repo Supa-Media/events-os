@@ -39,7 +39,8 @@ import {
   requireContractorRosterView,
   requireContractorRosterManage,
   requireContractorForget,
-  hasContractorRosterView,
+  hasContractorRosterManage,
+  hasContractorForget,
 } from "./lib/contractorPaymentsAccess";
 
 // ── Reads ───────────────────────────────────────────────────────────────────
@@ -120,7 +121,15 @@ export const list = query({
           : null,
       });
     }
-    return { canManage: await hasContractorRosterView(ctx, chapterId), contractors: rows };
+    // Two flags, honestly named and separately resolved. They share a body
+    // today, but a screen that gated "forget" on "can manage" would start
+    // offering a control the server refuses the moment the powers diverge —
+    // and forget is the irreversible one.
+    return {
+      canManage: await hasContractorRosterManage(ctx, chapterId),
+      canForget: await hasContractorForget(ctx, chapterId),
+      contractors: rows,
+    };
   },
 });
 

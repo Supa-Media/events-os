@@ -41,6 +41,37 @@
  * (`assertPublicDescription`), so a description this page warned about cannot
  * be forced through by posting directly.
  *
+ * ── THE RETURNING CONTRACTOR ────────────────────────────────────────────────
+ * Somebody we have paid before has a durable profile (`contractorProfiles`) and
+ * a tax document that may still be good, so `publicByToken` hands this page an
+ * `onFile` block and the AGREEMENT state shortens accordingly: we say what we
+ * already hold and ask them to confirm it, instead of making them photograph a
+ * W-9 they filled in four months ago.
+ *
+ * Three rules govern that shortcut, and all three are the point:
+ *
+ *  1. REUSE IS ASKED FOR, NEVER ASSUMED. Two separate confirmations — one for
+ *     the tax form, one for the bank account — neither pre-selected, each with a
+ *     real "no" that opens the full fields. A blank radio group is a state the
+ *     submit refuses; silence is not consent about where someone's money goes.
+ *  2. THE AGREEMENT IS SIGNED FRESH EVERY TIME. Nothing about reuse touches the
+ *     terms card, the disclosure, or the signature: acceptance is per payment
+ *     and never inherited. A flow where a returning contractor gets paid without
+ *     anyone re-reading the terms is the failure this whole file exists to
+ *     avoid, and "we already have your details" must never quietly become "you
+ *     already agreed".
+ *  3. WHAT PUBLISHES IS UNCHANGED. The disclosure panel and the live ledger
+ *     preview render identically in every state. Reuse is about what we don't
+ *     re-collect, never about what does or doesn't reach the public ledger.
+ *
+ * A lapsed form gets no reuse offer at all — `onFile.taxDocProblem` is shown as
+ * the explanation and the upload fields render open. "You could reuse this,
+ * except you can't" is a choice that isn't one.
+ *
+ * As always, the page is not the guard: `completeAgreement` re-resolves what is
+ * on file server-side, requires the reuse flags explicitly, and refuses an
+ * expired document by itself (`citeExistingTaxDocument`).
+ *
  * The client scripts deliberately avoid template literals so they can be
  * assembled inside one. Every interpolated value is HTML-escaped.
  */
@@ -50,6 +81,9 @@ import {
   CONTRACTOR_LEDGER_COUNTERPARTY,
   CONTRACTOR_PAYMENT_MAX_CENTS,
   CONTRACTOR_SERVICE_DESCRIPTION_MAX,
+  CONTRACTOR_SERVICE_DESCRIPTION_MIN,
+  CONTRACTOR_TAX_DOC_KIND_LABELS,
+  type ContractorTaxDocKind,
   publicTextProblems,
 } from "@events-os/shared";
 
@@ -96,6 +130,28 @@ export type ContractPublicView = {
   bankAccountLast4?: string | null;
   hasTaxDocument: boolean;
   taxDocumentKind?: string | null;
+  /**
+   * What we already hold for this PERSON, independent of this payment — the
+   * whole basis of the "welcome back" state. `null` (or absent) means we have
+   * nothing for them and the page renders the full form exactly as it always
+   * did.
+   *
+   * METADATA ONLY, and deliberately so: a form kind, the month we collected it,
+   * a display last-four. No storage id, no external-account reference, nothing
+   * off the document itself. Somebody who guessed a token learns only what the
+   * person on the other end of it already knows.
+   */
+  onFile?: {
+    taxDocKind?: string | null;
+    taxDocCollectedAt?: number | null;
+    /** False when the form has lapsed — a W-8 past its third succeeding year,
+     *  or a W-8 with no signing date at all. W-9s are always current. */
+    taxDocIsCurrent: boolean;
+    /** The human sentence for WHY it can't be reused, when it can't. */
+    taxDocProblem?: string | null;
+    bankAccountLast4?: string | null;
+    lastPaidAt?: number | null;
+  } | null;
   paidAt?: number | null;
 };
 
@@ -113,6 +169,19 @@ function fmtDay(ts: number): string {
   return new Date(ts).toLocaleDateString("en-US", {
     month: "short",
     day: "numeric",
+    year: "numeric",
+    timeZone: "America/New_York",
+  });
+}
+
+/** Month + year — how we refer to a document we are already holding ("March
+ *  2026"). Deliberately coarse: the exact day someone's W-9 reached us is not
+ *  information they need in order to answer "is it still accurate?", and a
+ *  precise timestamp on a page about a document reads as a file listing rather
+ *  than as a sentence. */
+function fmtMonth(ts: number): string {
+  return new Date(ts).toLocaleDateString("en-US", {
+    month: "long",
     year: "numeric",
     timeZone: "America/New_York",
   });
@@ -280,6 +349,16 @@ input[type=file].forminput{padding:9px 10px;font-size:13px;}
 .terms-note{white-space:pre-wrap;overflow-wrap:anywhere;}
 .agree{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:19px;}
 .agree input{margin:2px 0 0;flex:0 0 auto;width:18px;height:18px;accent-color:var(--accent);}
+/* The returning-contractor confirmations. A real <fieldset>/<legend> so the
+   question is announced with each option rather than sitting above them as
+   decoration — these two questions are the ones we most need answered on
+   purpose. The browser default border/padding is stripped; the semantics are
+   the whole reason it's a fieldset. */
+.fset{border:0;padding:0;margin:0;min-width:0;}
+.fset legend{padding:0;display:block;}
+/* What we already hold, stated as a sentence rather than as a file listing. */
+.onfile{background:var(--sunken);border-radius:var(--r-md);padding:11px 12px;font-size:14px;line-height:20px;overflow-wrap:anywhere;}
+.onfile svg{width:15px;height:15px;stroke:var(--success);flex:0 0 15px;margin-top:3px;}
 
 @media (max-width:640px){
   .two{grid-template-columns:1fr;}
@@ -408,8 +487,20 @@ function identityFields(view?: ContractPublicView): string {
  *    accepted but will not be paid automatically. Someone who learns that
  *    AFTER submitting feels lied to; someone who learns it here can plan.
  *
+ * THE W-8 SIGNING DATE is asked for here and nowhere else, and only for the W-8
+ * kinds. A W-8BEN or W-8BEN-E is valid from the day it is signed through the
+ * end of the THIRD succeeding calendar year (`w8ExpiresAt`); a W-9 has no
+ * expiry at all. Nothing parses the uploaded file, so the signing date is the
+ * only thing that can tell us when the form lapses — and inferring it from the
+ * upload date would silently over-grant validity to a form signed years before
+ * it reached us. `completeAgreement` REQUIRES it for a W-8, so asking here is
+ * what keeps that from being a 400 discovered after the upload finished.
+ *
  * The retention sentence is a promise the code actually keeps — see
- * `taxDocPurgeAfter` and the purge sweep in `contractorPayments.ts`.
+ * `taxDocPurgeAfter`, `extendedTaxDocPurgeAfter` and the purge sweep in
+ * `contractorPayments.ts`. It says "the LAST tax year it covers" because a
+ * reused document substantiates every payment that cites it, and the clock runs
+ * from the latest of them.
  */
 function taxDocFields(): string {
   return `<div class="col gap12">
@@ -426,7 +517,12 @@ function taxDocFields(): string {
     <label class="fl" for="f_taxfile">Upload your completed, signed form</label>
     <input id="f_taxfile" class="forminput" type="file" accept="application/pdf,image/*" aria-describedby="taxfile-h">
     <div class="chip hide" id="f_taxchip"><svg ${ICON_ATTRS}><use href="#i-check"/></svg><span></span></div>
-    <span class="xs faint" id="taxfile-h">A PDF or a clear photo, under 20MB. <b class="ink">Your W-9 is stored securely, is visible only to the finance team, and is destroyed four years after the tax year it covers.</b> Nothing on it is ever published.</span>
+    <span class="xs faint" id="taxfile-h">A PDF or a clear photo, under 20MB. <b class="ink">Your form is stored securely, is visible only to the finance team, and is destroyed four years after the last tax year it covers</b> — if a later payment uses the same form, that clock runs from the later one. Nothing on it is ever published.</span>
+  </div>
+  <div class="field hide" id="w8signed">
+    <label class="fl" for="f_taxsigned">The date you signed that form</label>
+    <input id="f_taxsigned" class="forminput" type="date" style="max-width:240px" aria-describedby="taxsigned-h">
+    <span class="xs faint" id="taxsigned-h">A W-8 doesn't last forever. It's good from the day you sign it <b class="ink">through the end of the third calendar year after that</b> — so one signed any time in 2026 lapses on 31 December 2029. We need the signing date to know when it runs out and when to ask you for a new one. (A W-9 never expires, so we only ask this about W-8s.)</span>
   </div>
 </div>`;
 }
@@ -453,6 +549,209 @@ function bankFields(): string {
   </div>
   <span class="xs faint"><b class="ink">Your account number is sent straight to our bank and is never stored here — we keep only the last four digits.</b> It is never published.</span>
 </div>`;
+}
+
+// ── The returning contractor ─────────────────────────────────────────────────
+
+/** The form's own name ("W-9"), from the shared label map so the page and the
+ *  app call it the same thing. Falls back to the generic noun for a kind we
+ *  don't recognise rather than printing a raw enum at a stranger. */
+function taxKindLabel(kind?: string | null): string {
+  if (!kind) return "tax form";
+  return (
+    CONTRACTOR_TAX_DOC_KIND_LABELS[kind as ContractorTaxDocKind] ?? "tax form"
+  );
+}
+
+/** Is there a tax form on file that this payment could actually reuse? */
+function canReuseTaxDoc(view: ContractPublicView): boolean {
+  const onFile = view.onFile;
+  return onFile != null && onFile.taxDocKind != null && onFile.taxDocIsCurrent;
+}
+
+/** Is there a bank account on file we can offer to pay again? The last-four is
+ *  the page's proxy for "the profile carries a usable external account" — the
+ *  query only fills it in when `externalAccountId` is actually set. */
+function canReuseBankDetails(view: ContractPublicView): boolean {
+  return view.onFile?.bankAccountLast4 != null;
+}
+
+/**
+ * One CONFIRMATION: a plain question, two answers, nothing pre-selected.
+ *
+ * NEITHER OPTION IS CHECKED ON LOAD, which is the entire design. A pre-ticked
+ * "yes, reuse it" would collect an attestation nobody made, and a page that
+ * treats "they didn't touch this" as agreement is worse than not asking — so
+ * "unanswered" is a real state here and the submit refuses it by name.
+ *
+ * The "no" answer is not a link, a toggle or a smaller word: it is the same
+ * size as the "yes", and choosing it reveals the full fields (`revealId`) so
+ * that changing your details is an ordinary thing to do rather than an escape
+ * from a happy path.
+ */
+function confirmChoice(opts: {
+  name: string;
+  legend: string;
+  yesTitle: string;
+  yesSub: string;
+  noTitle: string;
+  noSub: string;
+}): string {
+  return `<fieldset class="fset mt12">
+  <legend class="fl">${esc(opts.legend)}</legend>
+  <div class="col gap8 mt8">
+    <label class="pick"><input type="radio" name="${esc(opts.name)}" value="yes"><span><b>${esc(opts.yesTitle)}</b><em>${esc(opts.yesSub)}</em></span></label>
+    <label class="pick"><input type="radio" name="${esc(opts.name)}" value="no"><span><b>${esc(opts.noTitle)}</b><em>${esc(opts.noSub)}</em></span></label>
+  </div>
+</fieldset>`;
+}
+
+/**
+ * The greeting. Says what we already hold, in one sentence, and then says the
+ * thing that matters more: the terms below are still theirs to read and sign.
+ *
+ * That second half is not politeness. The whole risk of a shortened flow is
+ * that "we already have your details" slides into "you already agreed", so the
+ * page states the opposite in the same breath as the convenience, before they
+ * have scrolled far enough to assume otherwise.
+ */
+function welcomeBackCard(
+  view: ContractPublicView,
+  reuseTax: boolean,
+  reuseBank: boolean,
+): string {
+  const firstName =
+    view.payeeName.trim().split(/\s+/)[0] || view.payeeName || "there";
+  const have =
+    reuseTax && reuseBank
+      ? "your tax form and your bank details"
+      : reuseTax
+        ? "your tax form"
+        : "your bank details";
+  return `<section class="card">
+  <div class="row gap8 wrap"><svg ${ICON_ATTRS} width="18" height="18" style="stroke:var(--success);flex:0 0 18px"><use href="#i-check-circle"/></svg><span class="semi">Welcome back, ${esc(
+    firstName,
+  )}.</span></div>
+  <p class="small muted mt8">${esc(
+    view.chapterName,
+  )} has paid you before, so we already have ${esc(
+    have,
+  )} — you don't need to send them again. Just confirm they're still right, then read the terms and sign.</p>
+  <div class="callout info mt12"><b>You still sign this one.</b> Every payment is its own agreement. Nothing you accepted last time carries over to this one, so please read the terms below before you sign — they may not be the terms you saw before.</div>
+</section>`;
+}
+
+/**
+ * THE TAX-FORM SECTION, in whichever of its three shapes applies.
+ *
+ *  - Reusable form on file → say what it is and when we got it, and ask. The
+ *    upload fields still exist, hidden, and "no" reveals them.
+ *  - A form on file we CAN'T reuse → `taxDocProblem` as the explanation, no
+ *    choice offered, upload fields open. A W-8 lapses at the end of the third
+ *    year after signing, and reusing a lapsed one would mean paying a foreign
+ *    contractor against a document that establishes nothing.
+ *  - Nothing on file → today's section, unchanged.
+ *
+ * What we print about the document is its KIND and the MONTH it arrived, and
+ * nothing else. No file name, no size, no "we last used this on…" — none of it
+ * helps them answer "is it still accurate?", and every extra detail about a
+ * document containing a tax number is a detail printed on an unauthenticated
+ * page.
+ */
+function taxSection(view: ContractPublicView): string {
+  const onFile = view.onFile ?? null;
+  const kind = onFile?.taxDocKind ?? null;
+  const reuse = canReuseTaxDoc(view);
+  const lapsed = onFile != null && kind != null && !onFile.taxDocIsCurrent;
+  const collectedAt = onFile?.taxDocCollectedAt ?? null;
+
+  if (!reuse) {
+    const intro = lapsed
+      ? "We need a current one before we can pay you."
+      : view.hasTaxDocument
+        ? "We already have a form for this payment. Uploading another replaces it."
+        : "We're required to collect one before paying you.";
+    const lapsedNote = lapsed
+      ? `<div class="callout mt12"><b>The ${esc(
+          taxKindLabel(kind),
+        )} we have on file can't be used for this payment.</b> ${esc(
+          onFile?.taxDocProblem ??
+            "We can't tell whether it's still valid, so we can't rely on it.",
+        )} Please fill in a fresh one and upload it below.</div>`
+      : "";
+    return `<section class="card">
+      <span class="fl">Your tax form</span>
+      <p class="xs muted mt4">${intro}</p>
+      ${lapsedNote}
+      <div class="mt12">${taxDocFields()}</div>
+    </section>`;
+  }
+
+  const fact =
+    collectedAt != null
+      ? `a <b>${esc(taxKindLabel(kind))}</b> you gave us in <b>${esc(
+          fmtMonth(collectedAt),
+        )}</b>`
+      : `a <b>${esc(taxKindLabel(kind))}</b> from you`;
+
+  return `<section class="card">
+    <span class="fl">Your tax form</span>
+    <div class="onfile row gap8 mt12" style="align-items:flex-start"><svg ${ICON_ATTRS}><use href="#i-file"/></svg><span>We have ${fact} on file. You don't need to upload it again.</span></div>
+    ${confirmChoice({
+      name: "taxreuse",
+      legend: "Is that form still accurate?",
+      yesTitle: "Yes — it's still accurate.",
+      yesSub:
+        "Nothing has changed about my name, my tax number, how I'm set up, or my backup-withholding status since I signed it.",
+      noTitle: "No — something has changed.",
+      noSub: "I'll fill in a new form and upload it now.",
+    })}
+    <div class="hide mt12" id="taxfresh">${taxDocFields()}</div>
+  </section>`;
+}
+
+/**
+ * THE BANK SECTION. Same two shapes: confirm the account we already paid, or
+ * enter new details.
+ *
+ * "Yes, still that account" is asked as its own question rather than folded
+ * into the tax confirmation, because they are different facts with different
+ * consequences — a stale tax form is a reporting problem, and a stale account
+ * number is somebody's money arriving somewhere else. One tick covering both
+ * would be one tick nobody read.
+ */
+function bankSection(view: ContractPublicView): string {
+  const last4 = view.onFile?.bankAccountLast4 ?? null;
+  const lastPaidAt = view.onFile?.lastPaidAt ?? null;
+
+  if (last4 == null) {
+    return `<section class="card">
+      <span class="fl">Where the money goes</span>
+      <div class="mt12">${bankFields()}</div>
+      ${
+        view.bankAccountLast4
+          ? `<p class="xs muted mt8">We currently have an account ending <b class="ink">${esc(view.bankAccountLast4)}</b> on file. Entering details here replaces it.</p>`
+          : ""
+      }
+    </section>`;
+  }
+
+  const when = lastPaidAt != null ? ` on ${esc(fmtDay(lastPaidAt))}` : "";
+  return `<section class="card">
+    <span class="fl">Where the money goes</span>
+    <div class="onfile row gap8 mt12" style="align-items:flex-start"><svg ${ICON_ATTRS}><use href="#i-bank"/></svg><span>We last paid you${when} into an <b>account ending ${esc(
+      last4,
+    )}</b>.</span></div>
+    ${confirmChoice({
+      name: "bankreuse",
+      legend: "Should this payment go to the same account?",
+      yesTitle: "Yes — that's still my account.",
+      yesSub: `Send this payment to the account ending ${last4}.`,
+      noTitle: "No — use different details.",
+      noSub: "I'll enter the account this payment should go to.",
+    })}
+    <div class="hide mt12" id="bankfresh">${bankFields()}</div>
+  </section>`;
 }
 
 /** The signature. A typed name, recorded against the terms version that was on
@@ -493,7 +792,12 @@ export function renderContractForm(chapter: ContractChapterView): string {
     name: chapter.name,
     counterparty: CONTRACTOR_LEDGER_COUNTERPARTY,
     descMax: CONTRACTOR_SERVICE_DESCRIPTION_MAX,
+    descMin: CONTRACTOR_SERVICE_DESCRIPTION_MIN,
     maxCents: CONTRACTOR_PAYMENT_MAX_CENTS,
+    // A blank request has no token, so there is no person to have anything on
+    // file for: this path is always the full form.
+    reuseTax: false,
+    reuseBank: false,
   }).replace(/</g, "\\u003c");
 
   const descField = `<div class="field">
@@ -594,6 +898,13 @@ export function renderContractAgreement(
   chapterSlug: string,
   token: string,
 ): string {
+  // Whether each half of the "welcome back" state is on screen. The script
+  // needs to know, because an ANSWERED confirmation and an ABSENT one are
+  // different things: it must refuse to submit an unanswered one, and must not
+  // hunt for radios that were never rendered.
+  const reuseTax = canReuseTaxDoc(view);
+  const reuseBank = canReuseBankDetails(view);
+
   const init = JSON.stringify({
     mode: "agreement",
     slug: chapterSlug,
@@ -601,7 +912,10 @@ export function renderContractAgreement(
     name: view.chapterName,
     counterparty: CONTRACTOR_LEDGER_COUNTERPARTY,
     descMax: CONTRACTOR_SERVICE_DESCRIPTION_MAX,
+    descMin: CONTRACTOR_SERVICE_DESCRIPTION_MIN,
     maxCents: CONTRACTOR_PAYMENT_MAX_CENTS,
+    reuseTax,
+    reuseBank,
     // The frozen terms, for the ledger preview only — nothing here is ever
     // posted back (the mutation cannot accept them).
     terms: {
@@ -635,6 +949,9 @@ export function renderContractAgreement(
   <span class="xs" style="color:#3b5390">You can't edit this — it's the description ${esc(view.chapterName)} agreed to pay for. If it's wrong, don't sign: reply to whoever sent you this link and ask them to change it.</span>
 </div>`;
 
+  const welcome =
+    reuseTax || reuseBank ? welcomeBackCard(view, reuseTax, reuseBank) : "";
+
   return `<!doctype html>
 <html lang="en"><head>${head(`Your agreement ${view.reference} — ${view.chapterName}`)}</head>
 <body>
@@ -643,7 +960,7 @@ ${pubbar(view.chapterName)}
 <main class="wrap-main">
   <div class="hero">
     <span class="ic"><svg ${ICON_ATTRS}><use href="#i-pen"/></svg></span>
-    <h1>${sentBack ? "One more thing" : "Your agreement"}</h1>
+    <h1>${sentBack ? "One more thing" : welcome ? "Welcome back" : "Your agreement"}</h1>
     <p>Hi ${esc(firstName)} — ${esc(view.chapterName)} would like to pay you ${esc(
       money(view.agreedAmountCents),
     )}. Read the terms, add your details, and sign. Reference <b class="ink">#${esc(
@@ -653,6 +970,7 @@ ${pubbar(view.chapterName)}
   ${reviewCallout}${staleAcceptance}
 
   <div class="col gap16 mt16">
+    ${welcome}
     <section class="card">
       <span class="fl">The terms</span>
       <div class="summ mt12">
@@ -677,28 +995,17 @@ ${pubbar(view.chapterName)}
       <div class="mt12">${identityFields(view)}</div>
     </section>
 
-    <section class="card">
-      <span class="fl">Your tax form</span>
-      <p class="xs muted mt4">${
-        view.hasTaxDocument
-          ? "We already have a form on file for you. Uploading another replaces it."
-          : "We're required to collect one before paying you."
-      }</p>
-      <div class="mt12">${taxDocFields()}</div>
-    </section>
+    ${taxSection(view)}
 
-    <section class="card">
-      <span class="fl">Where the money goes</span>
-      <div class="mt12">${bankFields()}</div>
-      ${
-        view.bankAccountLast4
-          ? `<p class="xs muted mt8">We currently have an account ending <b class="ink">${esc(view.bankAccountLast4)}</b> on file. Entering details here replaces it.</p>`
-          : ""
-      }
-    </section>
+    ${bankSection(view)}
 
     <section class="card">
       <span class="fl">Accept and sign</span>
+      ${
+        welcome
+          ? `<p class="xs muted mt4">Confirming the details above is not the same as accepting these terms. This signature covers <b class="ink">this payment only</b>.</p>`
+          : ""
+      }
       <div class="mt12">${signatureFields(
         `I accept these terms, and I understand the description, amount, and date above will be published on ${esc(
           view.chapterName,
@@ -932,7 +1239,7 @@ ${pubbar(view.chapterName)}
       <p class="small mt8">${esc(view.chapterName)}'s public ledger will show this payment as <b class="ink">&ldquo;${esc(
         CONTRACTOR_LEDGER_COUNTERPARTY,
       )}&rdquo;</b> with the description, amount, date, and budget category above. <b class="ink">Your name, email, phone, tax form, and bank details are not published.</b></p>
-      <p class="xs muted mt8">Your tax form is visible only to the finance team and is destroyed four years after the tax year it covers.</p>
+      <p class="xs muted mt8">Your tax form is visible only to the finance team and is destroyed four years after the last tax year it covers — if a later payment is made against the same form, that clock runs from the later one.</p>
     </section>
 
     <section class="card">
@@ -1121,6 +1428,12 @@ function syncKind(){
   /* The W-8 branch means "not a US person", which approve() hard-blocks for
      withholding reasons. Say so here rather than at review. */
   $('w8warn').classList.toggle('hide',value==='w9');
+  /* And the signing date, which only a W-8 has any use for: it expires at the
+     end of the third calendar year after signing, a W-9 never expires, and
+     completeAgreement REQUIRES the date for the W-8 kinds. Asking for it the
+     moment they pick a W-8 is what keeps that requirement from arriving as a
+     400 after the file has already uploaded. */
+  $('w8signed').classList.toggle('hide',value==='w9');
   return value;
 }
 for(var ki=0;ki<kinds.length;ki++)kinds[ki].addEventListener('change',syncKind);
@@ -1135,6 +1448,37 @@ taxFile.addEventListener('change',function(){
   taxChip.querySelector('span').textContent=f.name;
   taxChip.classList.remove('hide');
 });
+
+/* ── the returning contractor's two confirmations ────────────────────────
+   Which option is selected, or '' when the person hasn't answered yet. That
+   empty string is a REAL state that submit() refuses by name — neither radio
+   is pre-checked, precisely so that "didn't answer" can never be read as
+   "yes". The server requires the same flags explicitly (completeAgreement's
+   reuseTaxDoc / reuseBankDetails), so this is the prompt, not the guard. */
+function picked(name){
+  var els=document.querySelectorAll('input[name='+name+']');
+  for(var i=0;i<els.length;i++){if(els[i].checked)return els[i].value;}
+  return '';
+}
+/* Saying NO is what opens the full fields. They ship with the page (hidden)
+   rather than being built on demand, so the ids the rest of this script reads
+   always exist and there is one form, not two. */
+function wireReuse(name,revealId){
+  var els=document.querySelectorAll('input[name='+name+']');
+  var reveal=$(revealId);
+  function sync(){
+    var value=picked(name);
+    for(var i=0;i<els.length;i++){
+      var card=els[i].closest('.pick');
+      if(card)card.classList.toggle('on',els[i].checked);
+    }
+    if(reveal)reveal.classList.toggle('hide',value!=='no');
+  }
+  for(var i=0;i<els.length;i++)els[i].addEventListener('change',sync);
+  sync();
+}
+if(C.reuseTax)wireReuse('taxreuse','taxfresh');
+if(C.reuseBank)wireReuse('bankreuse','bankfresh');
 
 /* ── api ── */
 function api(path,body){
@@ -1165,7 +1509,12 @@ function submit(){
   var descText='',cents=0,serviceMs=null;
   if(C.mode==='request'){
     descText=readDesc();
-    if(descText.length<3)return showErr('Say what the work was — this is what appears on the public ledger.');
+    /* The SAME minimum the server enforces (contractorDescriptionProblems,
+       which the payout's coding validator sets), injected as a number because
+       that function reads module constants and so can't be shipped by
+       toString(). Warning at a lower bar than the server keeps would mean a
+       400 after the W-9 was already uploaded. */
+    if(descText.trim().length<C.descMin)return showErr('Say what the work was in a bit more detail — at least '+C.descMin+' characters. "Sound engineering for the spring concert", not "sound". This is what appears on the public ledger.');
     var problems=[];
     try{problems=publicTextProblems(descText)||[];}catch(e){problems=[];}
     if(problems.length>0)return showErr(problems[0]+' The description is published publicly, so please reword it without personal details.');
@@ -1178,13 +1527,42 @@ function submit(){
     serviceMs=readServiceMs();
   }
 
-  var file=taxFile.files&&taxFile.files[0];
-  if(!file)return showErr('Please attach your completed tax form — we can\\'t pay you without it.');
+  /* ── the two confirmations. Unanswered stops the submit: we will not read
+     silence as "yes, that's all still mine". */
+  var reuseTax=false,reuseBank=false;
+  if(C.reuseTax){
+    var taxAnswer=picked('taxreuse');
+    if(!taxAnswer)return showErr('Tell us whether the tax form we already have is still accurate — we can\\'t assume it is.');
+    reuseTax=taxAnswer==='yes';
+  }
+  if(C.reuseBank){
+    var bankAnswer=picked('bankreuse');
+    if(!bankAnswer)return showErr('Tell us whether this payment should go to the account we already have.');
+    reuseBank=bankAnswer==='yes';
+  }
 
-  var routing=($('f_routing').value||'').replace(/[^0-9]/g,'');
-  var account=($('f_account').value||'').replace(/[^0-9]/g,'');
-  if(routing.length!==9)return showErr('A routing number is exactly 9 digits.');
-  if(account.length<4)return showErr('Please enter your full account number.');
+  var file=taxFile.files&&taxFile.files[0];
+  var signedMs=null;
+  if(!reuseTax){
+    if(!file)return showErr('Please attach your completed tax form — we can\\'t pay you without it.');
+    /* A W-8 lapses; a W-9 doesn't. completeAgreement requires the signing date
+       for the W-8 kinds, and an undated W-8 counts as EXPIRED (taxDocIsCurrent),
+       so collecting it here is also what lets this person reuse the form next
+       time instead of starting over. */
+    if(taxKind()!=='w9'){
+      signedMs=dateToMs($('f_taxsigned').value);
+      if(signedMs==null)return showErr('Tell us the date you signed your W-8 — that date is what decides when it runs out.');
+      if(signedMs>Date.now()+86400000)return showErr('That signing date is in the future. Please enter the date you actually signed the form.');
+    }
+  }
+
+  var routing='',account='';
+  if(!reuseBank){
+    routing=($('f_routing').value||'').replace(/[^0-9]/g,'');
+    account=($('f_account').value||'').replace(/[^0-9]/g,'');
+    if(routing.length!==9)return showErr('A routing number is exactly 9 digits.');
+    if(account.length<4)return showErr('Please enter your full account number.');
+  }
 
   if(!$('f_agree').checked)return showErr('Please tick the box to confirm you agree.');
   var signature=($('f_sign').value||'').trim();
@@ -1196,23 +1574,36 @@ function submit(){
   var was=label.textContent;
   label.textContent='Sending…';
 
-  uploadFile(file).then(function(storageId){
+  /* Reusing the form on file means there is no file and nothing to upload. */
+  var uploaded=reuseTax?Promise.resolve(null):uploadFile(file);
+  uploaded.then(function(storageId){
     var common={
       payeeName:name,
       payeeEmail:email,
       payeePhone:($('f_phone').value||'').trim()||undefined,
       payeeBusinessName:($('f_business').value||'').trim()||undefined,
-      taxDocStorageId:storageId,
-      taxDocKind:taxKind(),
-      taxDocFileName:file.name,
-      /* Raw digits, once, to a route that links them with our bank and never
-         writes them down. Nothing here ever comes back to the page. */
-      routingNumber:routing,
-      accountNumber:account,
-      accountHolderName:($('f_holder').value||'').trim()||undefined,
-      funding:$('f_funding').value||'checking',
       signature:signature
     };
+    if(reuseTax){
+      /* The attestation itself, sent as its own flag. The server re-resolves
+         which document that is — the page never names one. */
+      common.reuseTaxDoc=true;
+    }else{
+      common.taxDocStorageId=storageId;
+      common.taxDocKind=taxKind();
+      common.taxDocFileName=file.name;
+      if(signedMs!=null)common.taxDocSignedAt=signedMs;
+    }
+    if(reuseBank){
+      common.reuseBankDetails=true;
+    }else{
+      /* Raw digits, once, to a route that links them with our bank and never
+         writes them down. Nothing here ever comes back to the page. */
+      common.routingNumber=routing;
+      common.accountNumber=account;
+      common.accountHolderName=($('f_holder').value||'').trim()||undefined;
+      common.funding=$('f_funding').value||'checking';
+    }
     if(C.mode==='agreement'){
       common.token=C.token;
       return api('/api/contract/complete',common);
@@ -1221,7 +1612,14 @@ function submit(){
     common.serviceDescription=descText;
     common.serviceDate=serviceMs==null?undefined:serviceMs;
     common.requestedAmountCents=cents;
-    common.agreementNotes=($('f_notes').value||'').trim()||undefined;
+    var notes=($('f_notes').value||'').trim();
+    common.agreementNotes=notes||undefined;
+    /* The signing date goes in its own field, same as on the agreement path.
+       It briefly rode inside agreementNotes because the mutation had no
+       parameter for it; a date parked in a free-text note is a date nothing can
+       act on, and an undated W-8 reads as EXPIRED — so the contractor would
+       have been re-asked for a form they had just given us. */
+    if(signedMs!=null)common.taxDocSignedAt=signedMs;
     return api('/api/contract/request',common);
   }).then(function(res){
     /* Both paths land on the same status page, addressed by the token: the
