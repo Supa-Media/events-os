@@ -101,6 +101,8 @@ import {
   getAcademyCourse,
   describeFeeRate,
   feeCoverageCents,
+  formatCents,
+  REPAYMENT_NUDGE_COOLDOWN_MS,
   type CardType,
   type CardStatus,
   type CardSource,
@@ -162,6 +164,7 @@ import { normalizePhone, resolveTwilioCredentials, sendSms } from "./lib/twilio"
 import { logFinanceAudit } from "./lib/financeAuditLog";
 import { resolveFeeRate } from "./lib/feeSchedule";
 import { markPublicationsStale } from "./lib/publicLedgerStale";
+import { requireRepaymentsCollect } from "./lib/repaymentsAccess";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -5632,3 +5635,255 @@ function assertIntegerCents(amountCents: number, label = "Amount"): void {
     });
   }
 }
+
+// ── Chasing a debt: "you still owe this" reminders ───────────────────────────
+/**
+ * Founder, 2026-08-14: "there are a bunch of people with personal charges. I
+ * want to be able to send them to reimbursements, and then they see 'hey, you
+ * owe this amount'."
+ *
+ * Until now the ONLY email anyone got about a personal charge was the one sent
+ * the moment it was flagged. After that the debt sat on a collections desk
+ * nobody outside finance ever opens, and the only chasing mechanism was a
+ * treasurer remembering to mention it in person — which, for a volunteer org,
+ * means the awkward ones never get mentioned at all.
+ *
+ * Three properties this deliberately has:
+ *
+ *  · ONE EMAIL PER PERSON, not per charge. Somebody with four flagged charges
+ *    gets a single message listing all four and one total. Four separate
+ *    emails about $14 each is how a helpful reminder becomes harassment.
+ *  · IT NEVER CHASES MONEY THAT IS ALREADY MOVING. A charge whose bank debit
+ *    is `processing` is excluded (`isBillableRepayment`), so the person who
+ *    did the right thing three days ago is not asked again — the single most
+ *    corrosive thing a collections tool can do.
+ *  · IT REMEMBERS. `lastNudgedAt` is stamped per repayment and enforced as a
+ *    cooldown (`REPAYMENT_NUDGE_COOLDOWN_MS`), so pressing the button twice
+ *    sends one email.
+ */
+
+/** One person's outstanding debt, assembled for a reminder email. */
+const nudgeTargetValidator = v.object({
+  payerPersonId: v.id("people"),
+  name: v.string(),
+  email: v.string(),
+  totalCents: v.number(),
+  repaymentIds: v.array(v.id("personalRepayments")),
+  charges: v.array(
+    v.object({
+      merchantName: v.union(v.string(), v.null()),
+      amountCents: v.number(),
+      postedAt: v.union(v.number(), v.null()),
+    }),
+  ),
+});
+
+/**
+ * Who is due a reminder, grouped by person and already filtered by the
+ * cooldown. A person with SOME charges inside the cooldown and some outside is
+ * emailed about all of their outstanding ones — the email is "here is what you
+ * owe", and an email that listed three of somebody's four charges would be
+ * worse than either alternative.
+ *
+ * Skips anyone with no reachable email address rather than failing the batch:
+ * a roster row without one is a data gap for someone else to fix, not a reason
+ * the other eleven people don't get reminded.
+ */
+export const gatherRepaymentNudges = internalQuery({
+  args: { payerPersonId: v.optional(v.id("people")) },
+  returns: v.object({
+    targets: v.array(nudgeTargetValidator),
+    /** Owed-something people held back by the cooldown — reported so the UI
+     *  can say "3 reminded, 2 skipped (reminded recently)" instead of
+     *  silently doing less than the button implied. */
+    cooledDown: v.number(),
+    /** People with an outstanding debt and no email address on file. */
+    unreachable: v.number(),
+  }),
+  handler: async (ctx, { payerPersonId }) => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    await requireRepaymentsCollect(ctx, chapterId);
+
+    const rows = await ctx.db
+      .query("personalRepayments")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(CHAPTER_REPAYMENTS_LIMIT);
+
+    const cutoff = Date.now() - REPAYMENT_NUDGE_COOLDOWN_MS;
+    const byPerson = new Map<Id<"people">, Doc<"personalRepayments">[]>();
+    for (const row of rows) {
+      if (payerPersonId && row.payerPersonId !== payerPersonId) continue;
+      // Billable, not merely outstanding: never chase a debit that's clearing.
+      if (!isBillableRepayment(row)) continue;
+      const list = byPerson.get(row.payerPersonId) ?? [];
+      list.push(row);
+      byPerson.set(row.payerPersonId, list);
+    }
+
+    const targets: (typeof nudgeTargetValidator.type)[] = [];
+    let cooledDown = 0;
+    let unreachable = 0;
+    for (const [personId, list] of byPerson) {
+      // One recent reminder silences the whole person, not just the charge it
+      // covered — the email was "here is what you owe" and already named them.
+      const recentlyNudged = list.some(
+        (r) => (r.lastNudgedAt ?? 0) > cutoff,
+      );
+      if (recentlyNudged) {
+        cooledDown += 1;
+        continue;
+      }
+      const person = await ctx.db.get(personId);
+      const email = person?.pwEmail ?? person?.email;
+      if (!person || !email) {
+        unreachable += 1;
+        continue;
+      }
+      const charges: { merchantName: string | null; amountCents: number; postedAt: number | null }[] =
+        [];
+      for (const r of list) {
+        const txn = await ctx.db.get(r.transactionId);
+        charges.push({
+          merchantName: txn?.merchantName ?? null,
+          amountCents: r.amountCents,
+          postedAt: txn?.postedAt ?? null,
+        });
+      }
+      charges.sort((a, b) => (b.postedAt ?? 0) - (a.postedAt ?? 0));
+      targets.push({
+        payerPersonId: personId,
+        name: person.name,
+        email,
+        totalCents: list.reduce((sum, r) => sum + r.amountCents, 0),
+        repaymentIds: list.map((r) => r._id),
+        charges,
+      });
+    }
+    // Biggest debt first: if a batch is ever truncated or a manager reads the
+    // toast and stops, the money that matters most has already gone out.
+    targets.sort((a, b) => b.totalCents - a.totalCents);
+    return { targets, cooledDown, unreachable };
+  },
+});
+
+/** Stamp `lastNudgedAt` on everything one reminder covered. Separate from the
+ *  gather so the mark happens only for an email that actually SENT — a Resend
+ *  failure must not silence the next attempt for three days. */
+export const markRepaymentsNudged = internalMutation({
+  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  returns: v.null(),
+  handler: async (ctx, { repaymentIds }) => {
+    const now = Date.now();
+    for (const id of repaymentIds) {
+      const row = await ctx.db.get(id);
+      if (!row) continue;
+      await ctx.db.patch(id, { lastNudgedAt: now, updatedAt: now });
+    }
+    return null;
+  },
+});
+
+/**
+ * Send the reminders. Manager-gated (`requireRepaymentsCollect`, re-checked
+ * inside `gatherRepaymentNudges`).
+ *
+ * Returns counts rather than throwing on a partial failure: eleven emails out
+ * and one Resend error is a good outcome to report honestly, not a reason to
+ * fail the whole action. Each person's `lastNudgedAt` is stamped only after
+ * THEIR email is accepted, so a failure leaves them eligible tomorrow.
+ */
+export const nudgeOutstandingRepayments = action({
+  args: { payerPersonId: v.optional(v.id("people")) },
+  returns: v.object({
+    notified: v.number(),
+    cooledDown: v.number(),
+    unreachable: v.number(),
+    failed: v.number(),
+  }),
+  handler: async (
+    ctx,
+    { payerPersonId },
+  ): Promise<{
+    notified: number;
+    cooledDown: number;
+    unreachable: number;
+    failed: number;
+  }> => {
+    const { targets, cooledDown, unreachable } = await ctx.runQuery(
+      internal.cards.gatherRepaymentNudges,
+      payerPersonId ? { payerPersonId } : {},
+    );
+
+    const link = appUrl("/finances/repayments");
+    if (!link) {
+      // Degrade LOUDLY rather than send a "you owe $248" email with nowhere to
+      // pay it — the same rule `notifyPersonalChargeFlagged` follows.
+      console.error(
+        "[cards] nudgeOutstandingRepayments: APP_URL is unset — refusing to send reminders with no pay-back link",
+      );
+      throw new ConvexError({
+        code: "NOT_CONFIGURED",
+        message:
+          "Reminders aren't available yet — the app's public URL isn't configured.",
+      });
+    }
+
+    let notified = 0;
+    let failed = 0;
+    for (const target of targets) {
+      const dollars = formatCents(target.totalCents);
+      const lines = target.charges
+        .map((c) => {
+          const when = c.postedAt
+            ? new Date(c.postedAt).toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                timeZone: "America/New_York",
+              })
+            : null;
+          return `<div>${escapeHtml(c.merchantName ?? "Card charge")}${
+            when ? ` · ${escapeHtml(when)}` : ""
+          } — <strong>${escapeHtml(formatCents(c.amountCents))}</strong></div>`;
+        })
+        .join("");
+      try {
+        await sendEmail(ctx, {
+          to: target.email,
+          subject: `A reminder: you owe Public Worship ${dollars}`,
+          html: emailShell(`
+            ${emailHeading(`You owe Public Worship ${escapeHtml(dollars)}`)}
+            ${emailParagraph(
+              `Hi ${escapeHtml(target.name)} — ${
+                target.charges.length === 1
+                  ? "a charge on your card was"
+                  : `${target.charges.length} charges on your card were`
+              } flagged as personal, so ${
+                target.charges.length === 1 ? "it's" : "they're"
+              } yours to pay back rather than the ministry's to cover. No paperwork — open the app, pick what you're ready to settle, and pay by card or bank transfer.`,
+            )}
+            ${emailPanel(lines)}
+            ${emailButtonRow(link, "Pay it back →")}
+            ${emailParagraph(
+              "If you think one of these isn't actually a personal charge, reply and tell your Treasurer — they can un-flag it.",
+              { size: 12, margin: "16px 0 0" },
+            )}`),
+        });
+        await ctx.runMutation(internal.cards.markRepaymentsNudged, {
+          repaymentIds: target.repaymentIds,
+        });
+        notified += 1;
+      } catch (err) {
+        // Their `lastNudgedAt` stays untouched, so tomorrow's press reaches
+        // them. Logged, never thrown past here: one bad address must not stop
+        // the rest of the batch.
+        console.error(
+          "[cards] nudgeOutstandingRepayments: send failed",
+          target.payerPersonId,
+          err,
+        );
+        failed += 1;
+      }
+    }
+    return { notified, cooledDown, unreachable, failed };
+  },
+});

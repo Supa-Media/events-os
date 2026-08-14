@@ -1050,6 +1050,16 @@ export const personalRepayments = defineTable({
   stripePaymentIntentId: v.optional(v.string()),
   // The offsetting credit transaction posted once the repayment settles.
   creditTransactionId: v.optional(v.id("transactions")),
+  // When a manager last emailed this person about this debt
+  // (`cards.nudgeOutstandingRepayments`). Absent = never chased.
+  //
+  // Exists to make chasing SURVIVE a page refresh, in both directions: the
+  // desk can say "reminded 2 days ago" instead of leaving a manager guessing
+  // whether they already sent one, and the cooldown can refuse a second
+  // reminder inside `REPAYMENT_NUDGE_COOLDOWN_DAYS`. A collections tool whose
+  // button can be pressed repeatedly with no memory is a tool for accidentally
+  // emailing a volunteer four times about $12.
+  lastNudgedAt: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })

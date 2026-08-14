@@ -488,6 +488,12 @@
  * more, including the Financial Manager. Cash handed over in person is no
  * longer recordable as a repayment; the honest alternatives (pay through the
  * app, or un-flag a charge that was never personal) are taught in its place.
+ *
+ * The collections follow-up (2026-08-14) adds ONE more bullet to that same
+ * section — the reminder email a finance manager can now send, and the
+ * restraint built into it (one message per person, a three-day cooldown, and
+ * never chasing a bank transfer that is already clearing). Still content-only:
+ * no section added, moved, or removed, and no quiz length changed.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
