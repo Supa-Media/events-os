@@ -107,12 +107,14 @@ function RepaymentRow({
   row,
   isManager,
   onUnmark,
+  onRemind,
   busy,
   isLast,
 }: {
   row: Repayment;
   isManager: boolean;
   onUnmark: () => void;
+  onRemind: () => void;
   busy: boolean;
   isLast: boolean;
 }) {
@@ -153,18 +155,37 @@ function RepaymentRow({
                 : "Not paid yet"}
             {" · flagged "}
             {shortDate(row.flaggedAt)}
+            {row.lastNudgedAt ? ` · reminded ${shortDate(row.lastNudgedAt)}` : ""}
           </Text>
           <View className="flex-row gap-2">
-            {/* Un-flagging is the only write left here — see the file
-                header on why there is no "Mark repaid". */}
-            <Button
-              title="Not personal"
-              variant="secondary"
-              size="sm"
-              icon="rotate-ccw"
-              disabled={busy}
-              onPress={onUnmark}
-            />
+            <View className="flex-row flex-wrap items-center gap-2">
+              {/* Chasing ONE person, from the row you're looking at. The
+                  batch button at the top is for a sweep; this is for "I'm
+                  looking at Dana's $101 right now and I want to send her the
+                  link." Both go through the same cooldown, so using one after
+                  the other can't double-email anybody. Hidden once a bank
+                  transfer is clearing — they've already paid. */}
+              {row.status !== "processing" ? (
+                <Button
+                  title="Send pay link"
+                  variant="secondary"
+                  size="sm"
+                  icon="send"
+                  disabled={busy}
+                  onPress={onRemind}
+                />
+              ) : null}
+              {/* Un-flagging is the only write left here — see the file
+                  header on why there is no "Mark repaid". */}
+              <Button
+                title="Not personal"
+                variant="ghost"
+                size="sm"
+                icon="rotate-ccw"
+                disabled={busy}
+                onPress={onUnmark}
+              />
+            </View>
           </View>
         </View>
       ) : null}
@@ -216,6 +237,26 @@ function PersonalChargesBody() {
     if (result.unreachable > 0) parts.push(`${result.unreachable} with no email`);
     if (result.failed > 0) parts.push(`${result.failed} failed to send`);
     notifyResult(parts.join(" · "));
+  }
+
+  /** Email ONE person their own pay link. Same action, same cooldown, as the
+   *  batch button — `payerPersonId` just narrows who it reaches. */
+  async function handleRemind(row: Repayment) {
+    setBusyId(row.id);
+    const result = await run(() => nudge({ payerPersonId: row.payerPersonId }), {
+      errorTitle: "Couldn't send the link",
+    });
+    setBusyId(null);
+    if (!result) return;
+    notifyResult(
+      result.notified > 0
+        ? `Sent ${row.payerName} a link to pay.`
+        : result.cooledDown > 0
+          ? `${row.payerName} was reminded in the last few days — not sending another yet.`
+          : result.unreachable > 0
+            ? `${row.payerName} has no email address on file.`
+            : "Nothing to send.",
+    );
   }
 
   async function handleUnmark(row: Repayment) {
@@ -305,6 +346,7 @@ function PersonalChargesBody() {
                 isManager={isManager}
                 busy={busyId === r.id}
                 isLast={i === outstanding.length - 1}
+                onRemind={() => void handleRemind(r)}
                 onUnmark={() => void handleUnmark(r)}
               />
             ))}
@@ -322,6 +364,7 @@ function PersonalChargesBody() {
                   isManager={isManager}
                   busy={false}
                   isLast={i === repaid.length - 1}
+                  onRemind={() => {}}
                   onUnmark={() => {}}
                 />
               ))}

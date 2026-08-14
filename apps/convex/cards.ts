@@ -3298,10 +3298,45 @@ export const quoteRepayment = query({
      *  arithmetic) every time they compare. */
     card: railQuoteValidator,
     ach: railQuoteValidator,
+
+    // ── WIRE COMPATIBILITY, and why it's here ───────────────────────────────
+    // These three ARE `card`'s fields, repeated at the top level. They were
+    // the original shape of this query; splitting the quote into two rails
+    // moved them, and moving them broke every client that hadn't reloaded.
+    //
+    // A Convex query's return shape is a WIRE CONTRACT with clients this repo
+    // does not deploy in lockstep: the backend ships the moment main merges,
+    // while a browser tab holds its bundle until it reloads and a native app
+    // until its update lands. For the window between, an old client asked for
+    // `chargeCents`, got `undefined`, and rendered `formatCents(undefined)` —
+    // which is the string "$NaN", on the screen where somebody was about to
+    // pay money. That is exactly what the founder saw (2026-08-14: "it's
+    // saying your card is charged not a number").
+    //
+    // So: removals from a query's return are BREAKING, and this is what the
+    // fix looks like — put them back, additively, and let them age out. New
+    // code reads `card`/`ach`; nothing new should read these.
+    //
+    // @deprecated Read `card` instead. Kept so pre-2026-08-14 clients render
+    // a real number until they reload.
+    feeCents: v.number(),
+    /** @deprecated Read `card.chargeCents`. */
+    chargeCents: v.number(),
+    /** @deprecated Read `card.rateLabel`. */
+    feeRateLabel: v.union(v.string(), v.null()),
   }),
   handler: async (ctx, { repaymentIds }) => {
     const noRail = { feeCents: 0, chargeCents: 0, rateLabel: null };
-    const none = { count: 0, totalCents: 0, card: noRail, ach: noRail };
+    const none = {
+      count: 0,
+      totalCents: 0,
+      card: noRail,
+      ach: noRail,
+      // Deprecated mirrors of `card` — see the validator's own note.
+      feeCents: 0,
+      chargeCents: 0,
+      feeRateLabel: null,
+    };
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return none;
     const person = await viewerPerson(ctx, chapterId as Id<"chapters">);
@@ -3321,11 +3356,17 @@ export const quoteRepayment = query({
       totalCents += repayment.amountCents;
       count += 1;
     }
+    const card = await railQuote(ctx, totalCents, "card");
     return {
       count,
       totalCents,
-      card: await railQuote(ctx, totalCents, "card"),
+      card,
       ach: await railQuote(ctx, totalCents, "ach"),
+      // Deprecated mirrors of `card` — see the validator's own note. Derived
+      // from `card` rather than recomputed, so they cannot drift from it.
+      feeCents: card.feeCents,
+      chargeCents: card.chargeCents,
+      feeRateLabel: card.rateLabel,
     };
   },
 });
@@ -3400,6 +3441,10 @@ const chapterRepaymentValidator = v.object({
   hasExternalAccount: v.boolean(),
   // Set once settled — the offsetting credit `settleRepayment` posted.
   creditTransactionId: v.union(v.id("transactions"), v.null()),
+  // When this person was last emailed about this debt. Shown on the row so a
+  // manager can see they already chased it — the alternative is sending a
+  // second reminder because nothing on screen said the first one went.
+  lastNudgedAt: v.union(v.number(), v.null()),
 });
 
 /**
@@ -3467,6 +3512,7 @@ export const listPersonalRepayments = query({
           flaggedAt: r.createdAt,
           hasExternalAccount: !!r.payerExternalAccountId,
           creditTransactionId: r.creditTransactionId ?? null,
+          lastNudgedAt: r.lastNudgedAt ?? null,
         };
       }),
     );
@@ -5862,6 +5908,10 @@ export const nudgeOutstandingRepayments = action({
               } yours to pay back rather than the ministry's to cover. No paperwork — open the app, pick what you're ready to settle, and pay by card or bank transfer.`,
             )}
             ${emailPanel(lines)}
+            ${emailParagraph(
+              "You'll cover the payment processor's fee on top, so Public Worship gets the full amount back — the exact figure is shown before you confirm, and paying by bank transfer costs a good deal less than by card.",
+              { size: 12, margin: "16px 0 0" },
+            )}
             ${emailButtonRow(link, "Pay it back →")}
             ${emailParagraph(
               "If you think one of these isn't actually a personal charge, reply and tell your Treasurer — they can un-flag it.",

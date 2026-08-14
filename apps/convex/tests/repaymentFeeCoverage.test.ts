@@ -215,6 +215,47 @@ describe("repayment fee coverage", () => {
     expect(quote.totalCents).toBe(1_000);
   });
 
+  test("the quote still answers pre-split clients — no '$NaN' on a stale bundle", async () => {
+    // THE REGRESSION. Splitting this quote into `card`/`ach` rails removed
+    // three top-level fields, and a query's return shape is a WIRE CONTRACT
+    // with clients this repo does not deploy in lockstep: the backend ships on
+    // merge, a browser tab keeps its bundle until it reloads. For that window
+    // an old client read `chargeCents`, got `undefined`, and rendered
+    // `formatCents(undefined)` — the string "$NaN", on the screen where
+    // somebody was about to pay money (founder, 2026-08-14: "it's saying your
+    // card is charged not a number").
+    //
+    // They are back, additively, mirroring the card rail. This test is the
+    // thing that says removing them again is a breaking change.
+    const t = newT();
+    const s = await setupChapter(t);
+    const payer = await seedPayer(s);
+    const repaymentId = await seedRepayment(s, payer, 10_000);
+
+    const quote = await s.as.query(api.cards.quoteRepayment, {
+      repaymentIds: [repaymentId],
+    });
+
+    expect(typeof quote.chargeCents).toBe("number");
+    expect(Number.isFinite(quote.chargeCents)).toBe(true);
+    // …and they mirror the card rail exactly, so the two can never disagree.
+    expect(quote.chargeCents).toBe(quote.card.chargeCents);
+    expect(quote.feeCents).toBe(quote.card.feeCents);
+    expect(quote.feeRateLabel).toBe(quote.card.rateLabel);
+  });
+
+  test("even the empty quote carries the compatibility fields as real numbers", async () => {
+    // The empty shape is the one a stale client hits FIRST — nothing selected
+    // yet — so it must not be the one that renders "$NaN" either.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedPayer(s);
+    const quote = await s.as.query(api.cards.quoteRepayment, { repaymentIds: [] });
+    expect(quote.chargeCents).toBe(0);
+    expect(quote.feeCents).toBe(0);
+    expect(quote.feeRateLabel).toBeNull();
+  });
+
   test("an empty selection quotes zero rather than a bare 30¢ fee", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -226,6 +267,10 @@ describe("repayment fee coverage", () => {
       totalCents: 0,
       card: emptyRail,
       ach: emptyRail,
+      // Deprecated mirrors of `card`, kept for pre-split clients.
+      feeCents: 0,
+      chargeCents: 0,
+      feeRateLabel: null,
     });
   });
 
