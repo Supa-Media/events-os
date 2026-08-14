@@ -2129,6 +2129,16 @@ function ReconcileGrid() {
             onMarkRefund={() => setRefundPromptOpen(true)}
             onMarkPayout={() => setPayoutPromptOpen(true)}
             onNoDocumentation={() => setNoDocOpen(true)}
+            // NOT rank-gated here, deliberately. `book.canEdit` (what puts a
+            // row in this selection) answers WHICH BOOK, not which rank — this
+            // whole bar is rank-optimistic, and a finance viewer pressing "Set
+            // category" already gets a server refusal. The difference is that
+            // this one refuses PER ROW and names what it refused, so an
+            // under-privileged caller gets "40 aren't yours to code" with the
+            // server's own sentence rather than one opaque toast. Gating it on
+            // the nearest flag to hand (`viewerCanRename`) would be an inline
+            // proxy for a power that isn't rename's — the exact shortcut
+            // CLAUDE.md's access-function rule exists to stop.
             onExplain={() => setExplainOpen(true)}
           />
         ) : null}
