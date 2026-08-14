@@ -1197,25 +1197,53 @@ async function requireInCallerChapter<T extends "funds" | "budgetCategories" | "
  * tile, the recent-transactions digest, and anything reconciled against a bank
  * statement. Those must stay custody-scoped — the difference between them and
  * the budget view IS the receivable, and collapsing the two would hide it.
+ *
+ * ── IT ALSO CARRIES A ONE-TIME BUDGET'S OUT-OF-YEAR SPEND (2026-08-14) ───────
+ * Founder: the same budget was reporting three different "spent" figures
+ * depending on which screen you opened it from.
+ *
+ * The rule was never in dispute — `oneTimeCardBreakdown`'s own doc has said
+ * "genuinely LIFETIME, not just un-sliced from the dashboard's viewed month"
+ * since it was written, because an event/project budget is a total plan rather
+ * than a per-month allocation. What disagreed was the DATA: every caller fed
+ * it `loadPeriodTxns(…, now.year)`, so "lifetime" silently meant "this
+ * calendar year". A Genesis budget approved in November and spent against
+ * through January read $4,000 on the dashboard and the glance card, $11,500 on
+ * its own detail page, and — after the drop-down shipped — disagreed with the
+ * card it was expanding.
+ *
+ * So this read now also returns a one-time budget's charges from OUTSIDE the
+ * caller's year window, deduped against the year scan it will be unioned with.
+ * Recurring buckets are untouched: their window IS the cadence, and widening
+ * them would be wrong rather than more complete.
  */
-async function loadCrossBookTxnsForChapterBudgets(
+async function loadExtraBudgetTxns(
   ctx: QueryCtx,
   budgets: Doc<"budgets">[],
   chapterId: Id<"chapters">,
   sandboxMode: boolean,
+  yearTxnIds: Set<string>,
 ): Promise<Doc<"transactions">[]> {
   const out: Doc<"transactions">[] = [];
   for (const b of budgets) {
     if (b.chapterId !== chapterId) continue;
+    // A one-time budget's own numbers are LIFETIME (see this function's doc,
+    // and `oneTimeCardBreakdown`'s), so its `by_budget` read is kept whole. A
+    // recurring bucket's window is its cadence, and its actuals come from the
+    // custody scan — so only the cross-book rows are new information there.
+    const wantsLifetime = effectiveType(b) === "one_time";
     const linked = await ctx.db
       .query("transactions")
       .withIndex("by_budget", (q) => q.eq("budgetId", b._id))
       .take(ROLLUP_SCAN_LIMIT);
     for (const tr of linked) {
-      // Only rows another book PAID for — the chapter's own are already in
-      // the custody scan every caller unions this with, and double-counting
-      // them would inflate every budget on the page.
-      if (tr.chapterId === chapterId) continue;
+      // DEDUPE against the caller's year scan, not against custody. The old
+      // rule here — "skip anything this chapter owns" — was right while the
+      // only thing this read added was cross-book rows, and became wrong the
+      // moment it also had to add the chapter's OWN out-of-year charges: those
+      // are chapter-owned and genuinely missing from the year scan.
+      if (yearTxnIds.has(tr._id)) continue;
+      if (!wantsLifetime && tr.chapterId === chapterId) continue;
       if (!txnMatchesMode(tr, sandboxMode)) continue;
       out.push(tr);
     }
@@ -3385,7 +3413,7 @@ export const dashboardChapter = query({
 
     // BUDGET-ACTUAL input set = this chapter's own txns UNION the cross-book
     // rows another book paid for but charged to one of these budgets (see
-    // `loadCrossBookTxnsForChapterBudgets`). Every budget-card breakdown below
+    // `loadExtraBudgetTxns`). Every budget-card breakdown below
     // filters this by `budgetId`, so a Public Worship card bought for New York
     // lands on New York's card exactly like a New York card would.
     //
@@ -3396,13 +3424,15 @@ export const dashboardChapter = query({
     // difference between the two IS the receivable central owes the chapter,
     // and it's surfaced as such by `transfers.interScopeBalances`, not hidden
     // by quietly merging the two questions into one.
-    const crossBookTxns = await loadCrossBookTxnsForChapterBudgets(
+    const extraBudgetTxns = await loadExtraBudgetTxns(
       ctx,
       budgets,
       chapterId,
       sandboxMode,
+      new Set(yearTxns.map((tr) => tr._id)),
     );
-    const budgetTxns = crossBookTxns.length > 0 ? [...yearTxns, ...crossBookTxns] : yearTxns;
+    const budgetTxns =
+      extraBudgetTxns.length > 0 ? [...yearTxns, ...extraBudgetTxns] : yearTxns;
 
     // One-time (event / project) budget cards (per-instance / one-off).
     // Bug 1a: month mode only shows a card RELEVANT to the viewed month (own
@@ -5523,14 +5553,17 @@ export const budgetsGlance = query({
     // at a glance" for the whole team, so a cardholder checking room-left must
     // see the identical figure the treasurer's dashboard shows. Leaving it
     // custody-scoped would make the two disagree by exactly the cross-book
-    // charges (see `loadCrossBookTxnsForChapterBudgets`).
-    const crossBookTxns = await loadCrossBookTxnsForChapterBudgets(
+    // charges, and by a one-time budget's spend from other years (see
+    // `loadExtraBudgetTxns`).
+    const extraBudgetTxns = await loadExtraBudgetTxns(
       ctx,
       budgets,
       chapterId,
       sandboxMode,
+      new Set(yearTxns.map((tr) => tr._id)),
     );
-    const budgetTxns = crossBookTxns.length > 0 ? [...yearTxns, ...crossBookTxns] : yearTxns;
+    const budgetTxns =
+      extraBudgetTxns.length > 0 ? [...yearTxns, ...extraBudgetTxns] : yearTxns;
 
     const getEvent = nameCache(ctx, "events");
     const getProject = nameCache(ctx, "projects");
