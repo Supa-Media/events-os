@@ -93,6 +93,7 @@ import { removeUnexecutedBalanceSettlementsMigration } from "./0071_remove_unexe
 import { foldFeeCoverageIntoGifts } from "./0072_fold_fee_coverage_into_gifts";
 import { bookKnownRepaymentFeeCoverage } from "./0073_book_known_repayment_fee_coverage";
 import { bookRepaymentCoverageBySession } from "./0074_book_repayment_coverage_by_session";
+import { labelFeeCoverageRows } from "./0075_label_fee_coverage_rows";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -456,4 +457,11 @@ export const MIGRATIONS: Migration[] = [
   // amount two rows could share, and verifies the debts still sum to what was
   // recorded before booking anything. See 0074.
   bookRepaymentCoverageBySession,
+  // …and 0074's rows landed in Reconcile as "Unlabeled charge / Uncategorized
+  // / For: None", which is the shape two other modules already exist to
+  // prevent. Names them and files them under the same category as the fees
+  // they offset. Moves no money, so unlike its neighbours it can take every
+  // row carrying the marker rather than pinning one — and it only ever fills
+  // an absence, never overwrites a human's choice. See 0075.
+  labelFeeCoverageRows,
 ];

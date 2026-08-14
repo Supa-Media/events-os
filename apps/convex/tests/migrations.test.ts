@@ -354,6 +354,7 @@ const REGISTRY_NAMES = [
   "0072_fold_fee_coverage_into_gifts",
   "0073_book_known_repayment_fee_coverage",
   "0074_book_repayment_coverage_by_session",
+  "0075_label_fee_coverage_rows",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
