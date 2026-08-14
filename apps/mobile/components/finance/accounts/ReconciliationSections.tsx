@@ -7,17 +7,42 @@
  *    engine exists to keep honest.
  *  - `ReconciliationSection` — engine state (last run, pause/resume, run now)
  *    + the payouts Stripe has sent, each saying whether its bank deposit was
- *    found, and a flag affordance. Its copy was rewritten 2026-08-08: it still
- *    described the per-payout allocation #553 removed, and badged payouts from
- *    a `processState` that now only records allocation-era history.
+ *    found, and a "mark for review" affordance. Its copy was rewritten
+ *    2026-08-08: it still described the per-payout allocation #553 removed,
+ *    and badged payouts from a `processState` that now only records
+ *    allocation-era history. DECLUTTERED 2026-08-14 (founder: the card "reads
+ *    as cluttered"): the once-a-morning explainer is now one sentence with
+ *    the rest behind a "How this works" disclosure, and the last run's notes
+ *    (up to 6 lines) collapse behind a count toggle past 3 — same shape as
+ *    `TransactionHistoryCompact`.
  *
  * The org-wide "do these numbers agree?" verdict is NOT here — it lives in
  * `ReconciliationSummary.tsx`, immediately BELOW `BalancesSection`, because it
  * is a conclusion about that table and these are its evidence.
  *  - `TransferHistorySection` — every central↔chapter transfer pair (manual
- *    AND engine, origin-badged) for the Financial Manager to audit, with
- *    flag/resolve. The fix for a wrong entry is an offsetting transfer
- *    (docs/plans/transfers-ops-notes.md) — flags record the decision trail.
+ *    AND engine, origin-badged) for the Financial Manager to audit, with a
+ *    mark-for-review/resolve affordance. The fix for a wrong entry is an
+ *    offsetting transfer (docs/plans/transfers-ops-notes.md) — review marks
+ *    record the decision trail. COMPACTED 2026-08-14 (founder: "needs to be
+ *    more compact and maybe past 5 items ... scrollable so its not
+ *    cluttered"): the list shows at most 5 rows by default with an
+ *    expand-in-place "Show all" toggle (never a nested ScrollView — the page
+ *    is already inside one, see `Screen.tsx`), and each row shrank to one
+ *    line plus badges — its note, payout id, recorded-by and (for an open
+ *    review) note preview move behind a per-row chevron rather than sitting
+ *    as a permanent 2-4 line block. The fetch-more "Show more" button (25→100
+ *    rows) only appears once the list is expanded, so it never fights the
+ *    5-row display cap: expand first to see everything already fetched, THEN
+ *    fetch more if that's still not enough.
+ *
+ * VOCABULARY (2026-08-14, founder: "what does 'flag' do, it feels like a
+ * scary button"): the user-facing verb is "mark for review" / "needs review",
+ * rendered with `Button` `variant="muted"` (neutral, no red) instead of bare
+ * accent-red text. This is presentation only — the wire format is unchanged:
+ * `flagReconciliationEntry` / `resolveReconciliationFlag` /
+ * `ReconciliationFlagKind` still say "flag", and so do all internal
+ * identifiers in this file (`flagging`, `FlagModal`, …). Only strings a human
+ * reads changed.
  *
  * All three render inside the ED/FM-gated `AccountsBody` (`accounts.tsx`), so
  * their queries may assume the audit power; the server re-asserts it anyway
@@ -243,9 +268,10 @@ function FlagModal({
           </View>
           <View className="gap-3 px-5 py-4">
             <Text className="text-xs text-muted">
-              Flagging never changes the ledger — it puts this entry on the
-              audit list with your note. If the entry itself is wrong, the fix
-              is an offsetting transfer (see the transfers ops notes).
+              Marking this for review never changes the ledger — it puts this
+              entry on the audit list with your note. If the entry itself is
+              wrong, the fix is an offsetting transfer (see the transfers ops
+              notes).
             </Text>
             <TextField
               label="What needs review?"
@@ -257,7 +283,7 @@ function FlagModal({
             <View className="flex-row justify-end gap-2">
               <Button title="Cancel" variant="secondary" onPress={onCancel} />
               <Button
-                title={submitting ? "Flagging…" : "Flag for review"}
+                title={submitting ? "Marking…" : "Mark for review"}
                 disabled={submitting || note.trim().length === 0}
                 onPress={() => onConfirm(note)}
               />
@@ -270,6 +296,11 @@ function FlagModal({
 }
 
 // ── Morning reconciliation panel ─────────────────────────────────────────────
+
+/** Last-run notes at/below this count render inline — same threshold
+ *  `TransactionHistoryCompact` uses, so a short list never grows a toggle
+ *  just to reveal almost nothing. */
+const RUN_NOTES_INLINE_THRESHOLD = 3;
 
 const RUN_STATUS_TONE: Record<string, "success" | "warn" | "danger" | "neutral"> =
   {
@@ -323,6 +354,15 @@ export function ReconciliationSection() {
   // commits. Disabling is one tap; turning money movement OFF should never
   // have friction.
   const [confirmingRealMove, setConfirmingRealMove] = useState(false);
+  // DECLUTTER (2026-08-14, founder: the card "reads as cluttered"). The
+  // three-things explainer is several sentences of prose that used to sit
+  // permanently above the card; it's still the honest explanation of what
+  // the engine does (this repo doesn't delete domain-jargon explanations,
+  // see the module doc), it just doesn't need to be always-open.
+  const [howExpanded, setHowExpanded] = useState(false);
+  // Same idea for the last run's notes (up to 6 lines) — collapsed past the
+  // `TransactionHistoryCompact` inline threshold.
+  const [notesExpanded, setNotesExpanded] = useState(false);
 
   if (overview === undefined) {
     return (
@@ -340,25 +380,46 @@ export function ReconciliationSection() {
   return (
     <>
       <SectionHeader title="Morning reconciliation" />
-      {/* REWRITTEN 2026-08-08. This paragraph described per-payout allocation —
-          "moves each book's share of the deposit onto its own book (net of
-          fees)" — which #553 deleted three months earlier. It was telling
-          readers the engine did work it no longer attempts, on the page they
-          consult to find out what the engine did. */}
-      <Text className="mb-3 text-sm text-muted">
-        Once a morning the engine does three things. It finds each Stripe payout
-        and labels the bank deposit it arrived as, so that deposit isn&apos;t
-        counted as income on top of the revenue it was
-        already paying for. It settles cross-book card spend, where one
-        book&apos;s card paid for another book&apos;s costs. Then it compares
-        every chapter&apos;s book value to what&apos;s actually in its bank
-        account and moves the difference — payouts all land in central, so
-        central holds what the chapters earned until this runs.{" "}
-        {overview.realMovement
-          ? "Real cash movement is ON: it also executes those transfers between the Increase accounts, so the cash follows the books."
-          : "Ledger entries only while Real cash movement is off — no real money moves."}{" "}
-        Flag anything that looks off.
+      {/* REWRITTEN 2026-08-08 (removed the per-payout allocation the engine no
+          longer does), then DECLUTTERED 2026-08-14 (founder: the card "reads
+          as cluttered") — one sentence always visible, the full three-things
+          walkthrough behind a disclosure so the card doesn't open with four
+          sentences of prose every time. */}
+      <Text className="mb-1 text-sm text-muted">
+        Once a morning the engine matches Stripe payouts to bank deposits,
+        settles cross-book card spend, and moves each chapter&apos;s cash to
+        match its book.
       </Text>
+      <Pressable
+        onPress={() => setHowExpanded((e) => !e)}
+        accessibilityRole="button"
+        className="mb-3 flex-row items-center gap-1 self-start active:opacity-70 web:hover:opacity-90"
+      >
+        <Icon
+          name={howExpanded ? "chevron-up" : "chevron-down"}
+          size={14}
+          color={colors.muted}
+        />
+        <Text className="text-2xs font-semibold text-muted">
+          {howExpanded ? "Hide how this works" : "How this works"}
+        </Text>
+      </Pressable>
+      {howExpanded ? (
+        <Text className="mb-3 text-sm text-muted">
+          It finds each Stripe payout and labels the bank deposit it arrived
+          as, so that deposit isn&apos;t counted as income on top of the
+          revenue it was already paying for. It settles cross-book card
+          spend, where one book&apos;s card paid for another book&apos;s
+          costs. Then it compares every chapter&apos;s book value to
+          what&apos;s actually in its bank account and moves the difference —
+          payouts all land in central, so central holds what the chapters
+          earned until this runs.{" "}
+          {overview.realMovement
+            ? "Real cash movement is ON: it also executes those transfers between the Increase accounts, so the cash follows the books."
+            : "Ledger entries only while Real cash movement is off — no real money moves."}{" "}
+          Mark anything that looks off for review.
+        </Text>
+      ) : null}
       <View className="mb-1">
         <ToastView toast={toast} onDismiss={dismiss} />
       </View>
@@ -381,7 +442,7 @@ export function ReconciliationSection() {
               )}
               {overview.openFlagCount > 0 ? (
                 <Badge
-                  label={`${overview.openFlagCount} open flag${overview.openFlagCount === 1 ? "" : "s"}`}
+                  label={`${overview.openFlagCount} marked for review`}
                   tone="warn"
                   icon="flag"
                 />
@@ -486,23 +547,57 @@ export function ReconciliationSection() {
             </Text>
           )}
 
-          {lastRun ? (
-            <View className="gap-0.5 rounded-lg border border-border bg-sunken/40 px-3 py-2">
-              <Text className="text-2xs text-muted">
-                {lastRun.payoutsProcessed} payout(s) checked ·{" "}
-                {lastRun.settlementsBooked} settlement(s) ·{" "}
-                {formatCents(lastRun.allocatedCents)} moved
-              </Text>
-              {lastRun.error ? (
-                <Text className="text-2xs text-danger">{lastRun.error}</Text>
-              ) : null}
-              {lastRun.notes.slice(0, 6).map((note, i) => (
-                <Text key={i} className="text-2xs text-faint" numberOfLines={2}>
-                  {note}
-                </Text>
-              ))}
-            </View>
-          ) : null}
+          {lastRun
+            ? (() => {
+                const runNotes = lastRun.notes.slice(0, 6);
+                const notesCollapsible =
+                  runNotes.length > RUN_NOTES_INLINE_THRESHOLD;
+                const showNotes = !notesCollapsible || notesExpanded;
+                return (
+                  <View className="gap-0.5 rounded-lg border border-border bg-sunken/40 px-3 py-2">
+                    <Text className="text-2xs text-muted">
+                      {lastRun.payoutsProcessed} payout(s) checked ·{" "}
+                      {lastRun.settlementsBooked} settlement(s) ·{" "}
+                      {formatCents(lastRun.allocatedCents)} moved
+                    </Text>
+                    {lastRun.error ? (
+                      <Text className="text-2xs text-danger">{lastRun.error}</Text>
+                    ) : null}
+                    {runNotes.length > 0 ? (
+                      notesCollapsible ? (
+                        <Pressable
+                          onPress={() => setNotesExpanded((e) => !e)}
+                          accessibilityRole="button"
+                          className="mt-0.5 flex-row items-center gap-1 self-start active:opacity-70 web:hover:opacity-90"
+                        >
+                          <Icon
+                            name={notesExpanded ? "chevron-up" : "chevron-down"}
+                            size={12}
+                            color={colors.muted}
+                          />
+                          <Text className="text-2xs font-semibold text-muted">
+                            {notesExpanded
+                              ? "Hide notes"
+                              : `Notes (${runNotes.length})`}
+                          </Text>
+                        </Pressable>
+                      ) : null
+                    ) : null}
+                    {showNotes
+                      ? runNotes.map((note, i) => (
+                          <Text
+                            key={i}
+                            className="text-2xs text-faint"
+                            numberOfLines={2}
+                          >
+                            {note}
+                          </Text>
+                        ))
+                      : null}
+                  </View>
+                );
+              })()
+            : null}
 
           <View className="gap-2">
             <Text className="text-[11px] font-semibold uppercase tracking-wide text-faint">
@@ -514,11 +609,10 @@ export function ReconciliationSection() {
                 have to do anything?" Every row now says what it is, what state
                 it's in, and whether that state wants a human. */}
             <Text className="text-2xs text-muted">
-              Each time Stripe pays out, the cash lands as one deposit in
-              central&apos;s bank account. All the engine does with it is find
-              that deposit and label it, so it isn&apos;t counted as income on
-              top of the revenue it was paying for. Nothing
-              here needs a decision from you unless a row says so.
+              Each payout lands as one deposit in central&apos;s bank account;
+              the engine finds it and labels it so it isn&apos;t double-counted
+              as income. Nothing here needs a decision from you unless a row
+              says so.
             </Text>
             {overview.payouts.length === 0 ? (
               <Text className="text-2xs text-muted">
@@ -562,17 +656,15 @@ export function ReconciliationSection() {
                         <Badge label="You sent this one" tone="neutral" />
                       ) : null}
                       {po.flagged ? (
-                        <Badge label="Flagged" tone="warn" icon="flag" />
+                        <Badge label="Marked for review" tone="warn" icon="flag" />
                       ) : (
-                        <Pressable
+                        <Button
+                          title="Mark for review"
+                          variant="muted"
+                          size="sm"
+                          icon="flag"
                           onPress={() => setFlagging(po.stripePayoutId)}
-                          accessibilityRole="button"
-                          hitSlop={8}
-                        >
-                          <Text className="text-2xs font-semibold text-accent">
-                            Flag
-                          </Text>
-                        </Pressable>
+                        />
                       )}
                     </View>
                     {isExpanded ? (
@@ -645,7 +737,7 @@ export function ReconciliationSection() {
 
       {flagging ? (
         <FlagModal
-          title="Flag payout for review"
+          title="Mark payout for review"
           onConfirm={(note) => {
             void run(
               async () => {
@@ -656,7 +748,7 @@ export function ReconciliationSection() {
                 });
                 setFlagging(null);
               },
-              { errorTitle: "Couldn't flag the payout" },
+              { errorTitle: "Couldn't mark the payout for review" },
             );
           }}
           onCancel={() => setFlagging(null)}
@@ -695,6 +787,21 @@ const ORIGIN_BADGE: Record<
   },
 };
 
+/**
+ * Rows at/below this count render directly, no expand-in-place toggle — same
+ * shape as `TransactionHistoryCompact`'s inline threshold, just a bigger cap
+ * because this list is the audit trail itself rather than a context aside.
+ * This is a DISPLAY cap; it is deliberately independent of `limit` below,
+ * which is the FETCH cap (25 → 100 via "Show more"). Collapsed, a reader sees
+ * the newest 5; "Show all N" reveals every row already fetched; "Show more"
+ * (which only appears once everything fetched is already on screen) goes
+ * back to the server for the next batch. Expand-in-place rather than a
+ * nested scroller: the page is already inside one page-level ScrollView
+ * (`Screen.tsx`), and a vertical scroller inside a vertical scroller is a
+ * known RN gesture bug.
+ */
+const HISTORY_DISPLAY_CAP = 5;
+
 export function TransferHistorySection() {
   const [limit, setLimit] = useState(25);
   const history = useQuery(api.reconciliation.listTransferHistory, { limit });
@@ -702,6 +809,26 @@ export function TransferHistorySection() {
   const resolveFlag = useMutation(api.reconciliation.resolveReconciliationFlag);
   const { run, toast, dismiss } = useActionRunner();
   const [flagging, setFlagging] = useState<string | null>(null);
+  const [showAll, setShowAll] = useState(false);
+  // Per-row detail expand — a row's secondary facts (its note, Stripe payout
+  // id, who recorded it) live here instead of as a permanent 2-4 line block,
+  // so the default row is one line plus its badges. Only one row open at a
+  // time, same interaction as the payouts list above.
+  const [expandedRow, setExpandedRow] = useState<string | null>(null);
+
+  const collapsible = (history?.length ?? 0) > HISTORY_DISPLAY_CAP;
+  const visibleHistory = history
+    ? showAll
+      ? history
+      : history.slice(0, HISTORY_DISPLAY_CAP)
+    : [];
+  // The fetch-more button only makes sense once every row already fetched is
+  // on screen — otherwise tapping it would fetch rows the display cap then
+  // immediately hides, which reads as broken ("I tapped Show more and
+  // nothing happened"). When the list isn't collapsible in the first place,
+  // everything fetched is already visible, so it's reachable without a tap.
+  const canFetchMore =
+    (showAll || !collapsible) && history != null && history.length >= limit;
 
   return (
     <>
@@ -711,9 +838,9 @@ export function TransferHistorySection() {
       />
       <Text className="mb-3 text-sm text-muted">
         Every central↔chapter transfer — recorded by hand or booked by the
-        morning engine — newest first. This is the audit trail: flag anything
-        that needs a human decision; correct a wrong entry with an offsetting
-        transfer.
+        morning engine — newest first. This is the audit trail: mark anything
+        that needs a human decision for review; correct a wrong entry with an
+        offsetting transfer.
       </Text>
       <View className="mb-1">
         <ToastView toast={toast} onDismiss={dismiss} />
@@ -731,14 +858,25 @@ export function TransferHistorySection() {
       ) : (
         <Card>
           <View className="gap-2">
-            {history.map((row, i) => {
+            {visibleHistory.map((row, i) => {
               const badge = ORIGIN_BADGE[row.origin];
+              const isRowOpen = expandedRow === row.transferGroupId;
+              const hasDetails = Boolean(
+                row.note || row.stripePayoutId || row.recordedByName,
+              );
               return (
                 <View
                   key={row.transferGroupId}
                   className={`gap-1 py-2 ${i > 0 ? "border-t border-border-strong" : ""}`}
                 >
-                  <View className="flex-row items-center gap-2">
+                  <Pressable
+                    onPress={() =>
+                      hasDetails &&
+                      setExpandedRow(isRowOpen ? null : row.transferGroupId)
+                    }
+                    accessibilityRole={hasDetails ? "button" : undefined}
+                    className="flex-row items-center gap-2"
+                  >
                     <Text className="min-w-0 flex-1 text-xs font-semibold text-ink" numberOfLines={1}>
                       {shortDate(row.postedAt)} ·{" "}
                       {row.direction === "central_to_chapter"
@@ -751,19 +889,20 @@ export function TransferHistorySection() {
                     >
                       {formatCents(row.amountCents)}
                     </Text>
-                  </View>
+                    {hasDetails ? (
+                      <Icon
+                        name={isRowOpen ? "chevron-up" : "chevron-down"}
+                        size={14}
+                        color={colors.faint}
+                      />
+                    ) : null}
+                  </Pressable>
                   <View className="flex-row flex-wrap items-center gap-2">
                     <Badge label={badge.label} tone={badge.tone} />
                     {row.cashMoved === true ? (
                       <Badge label="Cash moved" tone="success" icon="check" />
                     ) : row.cashMoved === false ? (
                       <Badge label="Cash not moved" tone="neutral" />
-                    ) : null}
-                    {row.stripePayoutId ? (
-                      <Text className="text-2xs text-faint">{row.stripePayoutId}</Text>
-                    ) : null}
-                    {row.recordedByName ? (
-                      <Text className="text-2xs text-faint">by {row.recordedByName}</Text>
                     ) : null}
                     {row.flag ? (
                       row.flag.status === "open" ? (
@@ -775,42 +914,74 @@ export function TransferHistorySection() {
                                   flagId: row.flag!.flagId,
                                   resolutionNote: "Reviewed — no change needed.",
                                 }),
-                              { errorTitle: "Couldn't resolve the flag" },
+                              { errorTitle: "Couldn't resolve the review" },
                             )
                           }
                           accessibilityRole="button"
                           hitSlop={8}
                         >
-                          <Badge label="Flagged — tap to resolve" tone="warn" icon="flag" />
+                          <Badge
+                            label="Marked for review — tap to resolve"
+                            tone="warn"
+                            icon="flag"
+                          />
                         </Pressable>
                       ) : (
-                        <Badge label="Flag resolved" tone="neutral" icon="check" />
+                        <Badge label="Review resolved" tone="neutral" icon="check" />
                       )
                     ) : (
-                      <Pressable
+                      <Button
+                        title="Mark for review"
+                        variant="muted"
+                        size="sm"
+                        icon="flag"
                         onPress={() => setFlagging(row.transferGroupId)}
-                        accessibilityRole="button"
-                        hitSlop={8}
-                      >
-                        <Text className="text-2xs font-semibold text-accent">Flag</Text>
-                      </Pressable>
+                      />
                     )}
                   </View>
-                  {row.note ? (
-                    <Text className="text-2xs text-muted" numberOfLines={2}>
-                      {row.note}
-                    </Text>
-                  ) : null}
                   {row.flag?.status === "open" ? (
-                    <Text className="text-2xs text-warn" numberOfLines={2}>
+                    <Text className="text-2xs text-warn" numberOfLines={1}>
                       ⚑ {row.flag.note}
                     </Text>
+                  ) : null}
+                  {isRowOpen ? (
+                    <View className="mt-0.5 gap-0.5 border-t border-border pt-1">
+                      {row.note ? (
+                        <Text className="text-2xs text-muted">{row.note}</Text>
+                      ) : null}
+                      {row.stripePayoutId ? (
+                        <Text className="text-2xs text-faint">
+                          Payout {row.stripePayoutId}
+                        </Text>
+                      ) : null}
+                      {row.recordedByName ? (
+                        <Text className="text-2xs text-faint">
+                          Recorded by {row.recordedByName}
+                        </Text>
+                      ) : null}
+                    </View>
                   ) : null}
                 </View>
               );
             })}
           </View>
-          {history.length >= limit ? (
+          {collapsible ? (
+            <Pressable
+              onPress={() => setShowAll((s) => !s)}
+              accessibilityRole="button"
+              className="mt-2 flex-row items-center gap-1 self-start active:opacity-70 web:hover:opacity-90"
+            >
+              <Icon
+                name={showAll ? "chevron-up" : "chevron-down"}
+                size={14}
+                color={colors.muted}
+              />
+              <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+                {showAll ? "Show fewer" : `Show all ${history.length}`}
+              </Text>
+            </Pressable>
+          ) : null}
+          {canFetchMore ? (
             <View className="mt-3 items-center">
               <Button
                 title="Show more"
@@ -824,7 +995,7 @@ export function TransferHistorySection() {
 
       {flagging ? (
         <FlagModal
-          title="Flag transfer for review"
+          title="Mark transfer for review"
           onConfirm={(note) => {
             void run(
               async () => {
@@ -835,7 +1006,7 @@ export function TransferHistorySection() {
                 });
                 setFlagging(null);
               },
-              { errorTitle: "Couldn't flag the transfer" },
+              { errorTitle: "Couldn't mark the transfer for review" },
             );
           }}
           onCancel={() => setFlagging(null)}
