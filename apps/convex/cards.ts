@@ -5076,6 +5076,14 @@ export const applyRepaymentPaidFromStripe = internalMutation({
  * but would otherwise still reach this — a duplicate coverage row would credit
  * the org money nobody sent.
  */
+/** What the coverage row calls itself, everywhere it appears. */
+export const FEE_COVERAGE_LABEL = "Processing fee covered by payer";
+
+/** The category the processor's own fees are booked to (`processorFees.ts`) —
+ *  the coverage joins them there so a book's fee line and the money that
+ *  funded it are read together. */
+const FEE_CATEGORY_NAME = "Bank & Fees";
+
 export async function postRepaymentFeeCoverage(
   ctx: MutationCtx,
   args: {
@@ -5112,9 +5120,37 @@ export async function postRepaymentFeeCoverage(
     );
   }
 
+  // ── IT HAS TO SAY WHAT IT IS ──────────────────────────────────────────────
+  // A machine-posted row with no merchant, no category and no budget lands in
+  // Reconcile as "Unlabeled charge / Uncategorized / For: None" — the exact
+  // shape `lib/reimbursementTxnFields.ts` and `lib/increasePayoutMachine.ts`
+  // were both written to stop, and the founder found these two rows reading it
+  // ("will it always read unlabeled charge?"). A 49¢ row nobody can identify is
+  // worse than no row: it reads as a mystery on a page whose whole job is that
+  // nothing is a mystery.
+  //
+  // `merchantName` rather than `description`, deliberately — the two grids
+  // disagree about precedence (`displayMerchantName` prefers merchantName; the
+  // mobile list prefers description), so setting ONE of them is what makes the
+  // label identical everywhere instead of subtly different per screen.
+  //
+  // The CATEGORY is the same one the fee it offsets is booked to, so the cost
+  // and the money that covered it land together rather than the funding
+  // appearing as uncategorised income beside a categorised expense. Looked up
+  // by name on the row's own book and simply left unset if that book has no
+  // such category — a missing category must not cost the row.
+  const feeCategory = (
+    await ctx.db
+      .query("budgetCategories")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", first.chapterId))
+      .collect()
+  ).find((c) => c.name === FEE_CATEGORY_NAME);
+
   const now = Date.now();
   await ctx.db.insert("transactions", {
     chapterId: first.chapterId,
+    merchantName: FEE_COVERAGE_LABEL,
+    ...(feeCategory ? { categoryId: feeCategory._id } : {}),
     source: "repayment",
     // INFLOW, not `transfer`. The repayment credit beside it is a transfer —
     // it moves a receivable back into cash and nets the charge. This is not
