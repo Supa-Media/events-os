@@ -495,6 +495,12 @@
  * never chasing a bank transfer that is already clearing). Still content-only:
  * no section added, moved, or removed, and no quiz length changed.
  *
+ * The no-login pay link (2026-08-14) adds one more bullet to that same
+ * section: that a manager can hand out a URL which opens a checkout page with
+ * no account behind it — built for the person most likely to owe money and
+ * least likely to log in, someone who left the team — and that the page names
+ * nobody. Content-only again; that section's quiz is untouched and still at 5.
+ *
  * 2026-08-14 — bulk explanation, and Approve as one undoable tap. Both land in
  * `finance-reconcile-grid`: an "Explained" filter row, a new rule block on
  * explaining a backlog without lying about it, and the undo/confirm folded

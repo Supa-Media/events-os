@@ -42,7 +42,7 @@
  * `/finances/repayments`. This is the collection side of the same debt.
  */
 import { useMemo, useState } from "react";
-import { Alert, Platform, Text, View } from "react-native";
+import { Alert, Platform, Share, Text, View } from "react-native";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -67,6 +67,25 @@ import { useActionRunner } from "../../../lib/useActionToast";
  *  FAILURES only; the reminder batch's outcome is a success worth reporting
  *  precisely (see `handleNudge`), so it gets its own notice rather than a
  *  silent completion that leaves a manager guessing how many went out. */
+/** Clipboard without pulling in a native module: web has the async clipboard
+ *  API, and native falls back to the share sheet, which is what somebody on a
+ *  phone wants anyway (they're about to paste it into a message). */
+async function copyText(text: string): Promise<void> {
+  if (Platform.OS === "web") {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(text);
+      return;
+    }
+    if (typeof window !== "undefined") window.prompt("Payment link:", text);
+    return;
+  }
+  try {
+    await Share.share({ message: text });
+  } catch {
+    // Dismissed the share sheet — nothing to do.
+  }
+}
+
 function notifyResult(message: string) {
   if (Platform.OS === "web") window.alert(message);
   else Alert.alert("Reminders sent", message);
@@ -108,6 +127,7 @@ function RepaymentRow({
   isManager,
   onUnmark,
   onRemind,
+  onCopyLink,
   busy,
   isLast,
 }: {
@@ -115,6 +135,7 @@ function RepaymentRow({
   isManager: boolean;
   onUnmark: () => void;
   onRemind: () => void;
+  onCopyLink: () => void;
   busy: boolean;
   isLast: boolean;
 }) {
@@ -166,14 +187,27 @@ function RepaymentRow({
                   the other can't double-email anybody. Hidden once a bank
                   transfer is clearing — they've already paid. */}
               {row.status !== "processing" ? (
-                <Button
-                  title="Send pay link"
-                  variant="secondary"
-                  size="sm"
-                  icon="send"
-                  disabled={busy}
-                  onPress={onRemind}
-                />
+                <>
+                  {/* The link a manager pastes into a text. Works with no
+                      account, which is the whole point — see
+                      `app/pay/[token].tsx`. */}
+                  <Button
+                    title="Copy pay link"
+                    variant="secondary"
+                    size="sm"
+                    icon="link"
+                    disabled={busy}
+                    onPress={onCopyLink}
+                  />
+                  <Button
+                    title="Email it"
+                    variant="ghost"
+                    size="sm"
+                    icon="send"
+                    disabled={busy}
+                    onPress={onRemind}
+                  />
+                </>
               ) : null}
               {/* Un-flagging is the only write left here — see the file
                   header on why there is no "Mark repaid". */}
@@ -205,6 +239,10 @@ function PersonalChargesBody() {
   // Chasing is a rung above reading this screen (`lib/repaymentsAccess.ts`) —
   // a reminder is an outbound email with somebody's name and an amount on it.
   const nudge = useAction(api.cards.nudgeOutstandingRepayments);
+  // Mints on first use and returns the SAME url every time after — see
+  // `repaymentLinks.mintLink`. A mutation rather than a query because the
+  // first press is what creates the token.
+  const mintLink = useMutation(api.repaymentLinks.mintLink);
   const { run, toast, dismiss } = useActionRunner();
   const [nudging, setNudging] = useState(false);
 
@@ -257,6 +295,26 @@ function PersonalChargesBody() {
             ? `${row.payerName} has no email address on file.`
             : "Nothing to send.",
     );
+  }
+
+  /** Put this person's no-login pay link on the clipboard, so it can go into
+   *  a text message to somebody who left the team last spring and will never
+   *  open the app again. */
+  async function handleCopyLink(row: Repayment) {
+    setBusyId(row.id);
+    const result = await run(() => mintLink({ payerPersonId: row.payerPersonId }), {
+      errorTitle: "Couldn't create a payment link",
+    });
+    setBusyId(null);
+    if (!result) return;
+    if (!result.url) {
+      notifyResult(
+        "The app's public URL isn't configured yet, so there's no link to share.",
+      );
+      return;
+    }
+    await copyText(result.url);
+    notifyResult(`Payment link copied. Anyone with it can pay these charges.`);
   }
 
   async function handleUnmark(row: Repayment) {
@@ -347,6 +405,7 @@ function PersonalChargesBody() {
                 busy={busyId === r.id}
                 isLast={i === outstanding.length - 1}
                 onRemind={() => void handleRemind(r)}
+                onCopyLink={() => void handleCopyLink(r)}
                 onUnmark={() => void handleUnmark(r)}
               />
             ))}
@@ -365,6 +424,7 @@ function PersonalChargesBody() {
                   busy={false}
                   isLast={i === repaid.length - 1}
                   onRemind={() => {}}
+                  onCopyLink={() => {}}
                   onUnmark={() => {}}
                 />
               ))}

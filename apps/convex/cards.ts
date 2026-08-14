@@ -99,8 +99,6 @@ import {
   isSandboxObjectId,
   isCardEligible,
   getAcademyCourse,
-  describeFeeRate,
-  feeCoverageCents,
   formatCents,
   REPAYMENT_NUDGE_COOLDOWN_MS,
   type CardType,
@@ -162,7 +160,11 @@ import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
 import { normalizePhone, resolveTwilioCredentials, sendSms } from "./lib/twilio";
 import { logFinanceAudit } from "./lib/financeAuditLog";
-import { resolveFeeRate } from "./lib/feeSchedule";
+import {
+  repaymentFeeQuoteFor,
+  repaymentRailQuote,
+  stripePaymentMethodTypes,
+} from "./lib/repaymentFees";
 import { markPublicationsStale } from "./lib/publicLedgerStale";
 import { requireRepaymentsCollect } from "./lib/repaymentsAccess";
 
@@ -3265,7 +3267,8 @@ export const myPersonalRepayments = query({
  * multiselect: okay, I'm ready to pay these off."
  *
  * So the quote takes the SELECTION, not the whole debt, and recomputes as the
- * checkboxes change. Same `repaymentFeeQuote` the checkout itself uses, so the
+ * checkboxes change. Same `lib/repaymentFees` the checkout itself uses (and
+ * the no-login pay link — see `repaymentLinks.ts`), so the
  * number quoted here is the number billed — including the one-fee-per-batch
  * rule, which is exactly what makes "pay these three now, that one later" cost
  * more in total than paying all four at once. The client says so out loud.
@@ -3371,14 +3374,7 @@ export const quoteRepayment = query({
   },
 });
 
-async function railQuote(
-  ctx: QueryCtx,
-  totalCents: number,
-  method: RepaymentMethod,
-): Promise<{ feeCents: number; chargeCents: number; rateLabel: string | null }> {
-  const { feeCents, feeRateLabel } = await repaymentFeeQuote(ctx, totalCents, method);
-  return { feeCents, chargeCents: totalCents + feeCents, rateLabel: feeRateLabel };
-}
+const railQuote = repaymentRailQuote;
 
 /**
  * Can this repayment be put into a NEW checkout?
@@ -4017,7 +4013,11 @@ export const prepareRepaymentCheckout = internalMutation({
     }
     const payer = payerPersonId ? await ctx.db.get(payerPersonId) : null;
     const totalCents = lines.reduce((sum, l) => sum + l.amountCents, 0);
-    const { feeCents, feeRateLabel } = await repaymentFeeQuote(ctx, totalCents, method);
+    const { feeCents, rateLabel: feeRateLabel } = await repaymentFeeQuoteFor(
+      ctx,
+      totalCents,
+      method,
+    );
     // The chosen method is stamped on every row NOW, not at settlement: it is
     // what the payer picked, and a repayment whose stored `method` still said
     // "card" while a bank debit cleared against it would misdescribe the one
@@ -4038,67 +4038,6 @@ export const prepareRepaymentCheckout = internalMutation({
   },
 });
 
-/**
- * What covering Stripe's fee adds to a repayment of `intendedCents`, and the
- * rate that produced it — the ONE place that arithmetic happens, shared by the
- * checkout preparer above and the `quoteRepayment` read the payer's page shows
- * before they commit. Two implementations of this would agree right up until
- * someone edited the fee schedule.
- *
- * WHICH RAIL MATTERS A LOT. Card is 2.9% + 30¢; bank debit is 0.8% capped at
- * $5.00. On a $248 charge that is $7.49 against $1.98, and since 2026-08-14
- * the fee is the PAYER'S — a volunteer correcting their own mistake should not
- * be quietly routed onto the expensive rail because it was the only one built.
- *
- * Degrades to `{ feeCents: 0 }` when the rail doesn't resolve at all. That is
- * deliberate: a missing rate row must not block a member from paying the org
- * back, and eating the fee is exactly the behavior that shipped before fee
- * coverage existed. A quiet, recoverable loss, not a broken screen.
- */
-async function repaymentFeeQuote(
-  ctx: QueryCtx,
-  intendedCents: number,
-  method: RepaymentMethod,
-): Promise<{ feeCents: number; feeRateLabel: string | null }> {
-  if (intendedCents <= 0) return { feeCents: 0, feeRateLabel: null };
-  const feeMethod = feeMethodFor(method);
-  const rate = await resolveFeeRate(ctx, "stripe", feeMethod);
-  if (!rate) {
-    console.warn(
-      `[cards] repaymentFeeQuote: no stripe:${feeMethod} rail resolved — billing the ` +
-        "repayment at face value and absorbing the processing fee.",
-    );
-    return { feeCents: 0, feeRateLabel: null };
-  }
-  return {
-    feeCents: feeCoverageCents(intendedCents, rate),
-    feeRateLabel: describeFeeRate(rate),
-  };
-}
-
-/**
- * `personalRepayments.method` → the fee schedule's rail name. Two vocabularies
- * that mean the same thing and are NOT the same string: `"ach"` is what this
- * codebase has stored on repayments since the Increase rail, `"ach_debit"` is
- * what `FEE_METHODS` calls it (and what Stripe's own docs call the product).
- * Mapping in one function beats a `method === "ach" ? "ach_debit" : "card"`
- * at each of the four call sites that need it.
- */
-function feeMethodFor(method: RepaymentMethod): "card" | "ach_debit" {
-  return method === "ach" ? "ach_debit" : "card";
-}
-
-/**
- * Stripe Checkout's `payment_method_types` for a repayment method.
- *
- * Card sessions deliberately pass NOTHING (Stripe's default), matching
- * `createCheckout`/`createDonationCheckout` — pinning the list would silently
- * switch off wallets (Apple/Google Pay) that the account already accepts and
- * that cost the same as a card.
- */
-function stripePaymentMethodTypes(method: RepaymentMethod): string[] | null {
-  return method === "ach" ? ["us_bank_account"] : null;
-}
 
 /** Stamp the Checkout Session id onto every repayment it bundled — best
  *  effort per row (a repayment settled in the TOCTOU gap between

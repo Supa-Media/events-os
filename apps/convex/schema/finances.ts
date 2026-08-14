@@ -1080,6 +1080,59 @@ export const personalRepayments = defineTable({
   // thing the event carries is the session id.
   .index("by_stripe_session", ["stripeCheckoutSessionId"]);
 
+// ── Public pay-back links ────────────────────────────────────────────────────
+/**
+ * A secret link that lets somebody pay back their personal charges WITHOUT
+ * signing in.
+ *
+ * Founder, 2026-08-14: "these might be past team members even. So it should
+ * literally just be a rendered page where I could just copy a link, where they
+ * can see the charge they're being charged for and go to the Stripe checkout."
+ *
+ * The login wall was useless against exactly the person most likely to owe
+ * money and least likely to log in — someone who left the team six months ago.
+ * So this is the giving page's model applied to a debt: a token in a URL, a
+ * page anyone holding it can open, and Stripe Checkout at the end.
+ *
+ * ── WHAT THE PAGE DELIBERATELY DOESN'T SAY ─────────────────────────────────
+ * No name. Not the payer's, not the person who sent it. Founder: "we don't
+ * need to put, like, 'hey Michael, you have these charges'." The page says
+ * these are the personal charges on this account and asks for them back — so a
+ * link that ends up in the wrong hands discloses some amounts and dates, not
+ * who owes them. Merchant names are left off for the same reason; an amount
+ * and a date is enough for the payer to recognise their own charge.
+ *
+ * ONE LINK PER PERSON, not per charge, so a manager sends one thing and a
+ * charge flagged next week appears on the same link. `revokedAt` exists for
+ * the day a link goes somewhere it shouldn't; there is deliberately no
+ * auto-expiry (founder: "it's really not that deep") — a link that dies on its
+ * own mostly generates "this link is broken" messages to the person who sent
+ * it.
+ *
+ * The token is `crypto.randomUUID()`, matching `reimbursementRequests.token` —
+ * the codebase's existing standard for a secret that guards money.
+ */
+export const repaymentLinks = defineTable({
+  chapterId: v.id("chapters"),
+  /** Whose debt this link settles. The page never displays their name. */
+  payerPersonId: v.id("people"),
+  token: v.string(),
+  /** The manager who minted it — for the audit trail, never shown publicly. */
+  createdByPersonId: v.optional(v.id("people")),
+  createdAt: v.number(),
+  /** Set to kill a link that has gone astray. A revoked token renders the
+   *  "this link is no longer active" state rather than 404ing, so the person
+   *  holding it knows to ask for a new one rather than assuming they're done. */
+  revokedAt: v.optional(v.number()),
+})
+  // The public read: token → link. Unique in practice (a UUID), and the only
+  // way this table is ever queried from an unauthenticated context.
+  .index("by_token", ["token"])
+  // "Does this person already have a link?" — minting is idempotent per person
+  // so a manager pressing Copy twice hands out the SAME url, rather than
+  // quietly invalidating the one they texted five minutes ago.
+  .index("by_person", ["payerPersonId"]);
+
 // ── Payouts (ACH from the chapter's Increase account) ────────────────────────
 /** An ACH payout originating from the chapter's Increase account. Idempotency-
  *  keyed on `reimbursementId` so an approved reimbursement can never double-pay.
