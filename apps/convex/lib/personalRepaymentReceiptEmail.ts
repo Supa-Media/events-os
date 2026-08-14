@@ -120,6 +120,42 @@ export interface RepaymentReceipt {
   html: string;
 }
 
+/**
+ * Validate the Stripe receipt URL before it ever reaches an href — two
+ * independent layers, both required (SECURITY, defense in depth).
+ *
+ * `cards.ts#fetchStripeReceiptUrl` already gates on `url.startsWith("https://")`
+ * before this function ever sees the value, but that gate lives ONE call
+ * site away from where the URL is actually rendered, and this composer used
+ * to fully trust its caller: a reviewer proved that handing
+ * `buildRepaymentReceipt` a `javascript:alert(1)` `stripeReceiptUrl` renders
+ * it live, and that an `https://` URL carrying an embedded `"` breaks out of
+ * the `href="…"` attribute into a live `<script>` — `emailButtonRow`
+ * (`emailShell.ts`) interpolates its `href` argument RAW, documented as safe
+ * only because every other call site builds it from `appUrl`/`siteUrl`, never
+ * from a third party. Stripe's API is exactly the kind of caller that
+ * invariant doesn't cover.
+ *
+ * So this composer re-validates the scheme itself (never trusting the caller
+ * already did), and the call site below additionally escapes the survivor
+ * before interpolation (never trusting a validated URL can't still carry a
+ * `"`). Only an absolute `https://` URL survives; anything else — `http://`,
+ * `javascript:`, `data:`, a bare string — degrades to `null`, exactly like
+ * "Stripe never returned a receipt" already degrades elsewhere in this file.
+ *
+ * Deliberately scoped here rather than in `emailShell.ts`: `emailButton` /
+ * `emailButtonRow` are shared by many other emails whose call sites all
+ * legitimately pass a raw, developer-built href, so hardening them
+ * unilaterally would widen this change's blast radius well past this one
+ * composer. If the shared helper should ALSO validate schemes, that's a
+ * separate change.
+ */
+function safeStripeReceiptUrl(url: string | null): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  return trimmed.startsWith("https://") ? trimmed : null;
+}
+
 function formatLine(line: RepaymentReceiptLine): string {
   const what = escapeHtml(
     line.merchantName ?? line.description ?? "a charge on your card",
@@ -154,10 +190,15 @@ export function buildRepaymentReceipt(
       : "";
 
   // Purely additive — see `stripeReceiptUrl`'s doc. `null` covers the
-  // Increase rail AND a failed/empty Stripe fetch identically; the email
-  // above is already a complete receipt without it.
-  const stripeRow = input.stripeReceiptUrl
-    ? emailButtonRow(input.stripeReceiptUrl, "View your Stripe receipt →")
+  // Increase rail, a failed/empty Stripe fetch, AND a URL that failed the
+  // scheme check below identically; the email above is already a complete
+  // receipt without it. `escapeHtml` on the SURVIVING url (see
+  // `safeStripeReceiptUrl`'s doc): `emailButtonRow` interpolates its `href`
+  // raw, so a validated `https://` URL that still carries an embedded `"`
+  // must not reach it unescaped.
+  const safeReceiptUrl = safeStripeReceiptUrl(input.stripeReceiptUrl);
+  const stripeRow = safeReceiptUrl
+    ? emailButtonRow(escapeHtml(safeReceiptUrl), "View your Stripe receipt →")
     : "";
 
   // KNOWN REPO TRAP (see `cards.ts#notifyPersonalChargeFlagged`): a
