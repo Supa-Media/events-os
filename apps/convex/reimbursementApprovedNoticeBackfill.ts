@@ -83,7 +83,6 @@
 import { v } from "convex/values";
 import { internalAction, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
-import type { Id } from "./_generated/dataModel";
 import {
   approvedNoticeRowFor,
   claimantStatusLink,
@@ -212,7 +211,7 @@ export const backfillApprovedNotices = internalAction({
         // notice, so we must not write a second one.
         const claimed: boolean = await ctx.runMutation(
           internal.reimbursements.markApprovedNoticeSent,
-          { reimbursementId: row.reimbursementId as Id<"reimbursementRequests"> },
+          { reimbursementId: row.reimbursementId },
         );
         if (!claimed) continue;
         total.claimed += 1;

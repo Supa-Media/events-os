@@ -3173,8 +3173,9 @@ describe("approval notice to the claimant (sendReimbursementApprovedEmail)", () 
       const stamped = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
       expect(typeof stamped?.approvedNoticeSentAt).toBe("number");
       // The stamp is not an edit — `updatedAt` belongs to claimant/manager
-      // changes, not to us mailing somebody.
-      expect(stamped?.updatedAt).toBeLessThan(stamped!.approvedNoticeSentAt!+1);
+      // changes, not to us mailing somebody. `approve` set it; the notice
+      // must have left it exactly where approval put it.
+      expect(stamped?.updatedAt).toBe(stamped?.approvedAt);
 
       // Re-delivering the very same scheduled job sends nothing.
       resendCalls.length = 0;
