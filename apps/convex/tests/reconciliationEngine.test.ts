@@ -977,6 +977,16 @@ describe("settleChapterBalances — cash follows the book", () => {
     const note = out.notes.join(" ");
     expect(note).toContain("New York"); // setupChapter's default chapter name
     expect(note).toMatch(/real cash movement is off/);
+    // AND through the typed `unsettledGaps` channel — the one the accounts
+    // page renders unconditionally, unlike `notes` (capped, collapsible).
+    // This is what closes the finding that `notes` alone is not enough.
+    expect(out.unsettledGaps).toHaveLength(1);
+    expect(out.unsettledGaps[0]).toMatchObject({
+      scopeName: "New York",
+      bookBalanceCents: 50_000,
+      bankBalanceCents: 10_000,
+      gapCents: 40_000, // book above bank — the chapter is owed $400
+    });
   });
 
   test("resumes booking once real cash movement is turned on", async () => {
@@ -994,6 +1004,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     );
     expect(off.settlementsBooked).toBe(0);
     expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(0);
+    expect(off.unsettledGaps).toHaveLength(1);
 
     // On: the SAME day's re-run now books it — turning the toggle on does not
     // require waiting for tomorrow's date to pick the gap back up.
@@ -1004,6 +1015,8 @@ describe("settleChapterBalances — cash follows the book", () => {
     );
     expect(on.settlementsBooked).toBe(1);
     expect(on.movedCents).toBe(40_000);
+    // Booked now, so nothing is left standing unreported.
+    expect(on.unsettledGaps).toHaveLength(0);
     const legs = await legsFor(s, `balsettle-${s.chapterId}-${DAY}`);
     expect(legs).toHaveLength(2);
     expect(legs.every((l) => l.transferOrigin === "balance_settlement")).toBe(true);

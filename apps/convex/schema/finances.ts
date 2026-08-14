@@ -2678,6 +2678,24 @@ export const reconciliationRuns = defineTable({
   settlementsBooked: v.number(),
   allocatedCents: v.number(), // total |net| moved by this run's transfers
   notes: v.array(v.string()),
+  // Chapters `settleChapterBalances` found sitting below (or above) their book
+  // value that it did NOT book, because real cash movement is off — a
+  // STANDING CONDITION, not a run event, so it is its own typed field rather
+  // than another `notes` line (`notes` is capped, unordered, and collapsible
+  // in the UI; this must be neither). See `reconciliation.ts`'s
+  // `unsettledGapValidator`. Optional only because runs recorded before this
+  // field existed have none.
+  unsettledGaps: v.optional(
+    v.array(
+      v.object({
+        scope: v.id("chapters"),
+        scopeName: v.string(),
+        bookBalanceCents: v.number(),
+        bankBalanceCents: v.number(),
+        gapCents: v.number(),
+      }),
+    ),
+  ),
   error: v.optional(v.string()),
 }).index("by_startedAt", ["startedAt"]);
 

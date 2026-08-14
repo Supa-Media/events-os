@@ -203,6 +203,26 @@ function easternDateStr(ts: number): string {
 
 const financeScopeValidator = v.union(v.id("chapters"), v.literal("central"));
 
+/**
+ * One chapter sitting below (or above) its book value THAT `settleChapterBalances`
+ * measured but did not book, because real cash movement is off. This is a
+ * STANDING CONDITION, not a run event, so it gets its own typed field on the
+ * run summary rather than living only inside `notes` (an unordered, capped,
+ * collapsible log — see `ReconciliationSection`'s "Real cash movement" block,
+ * which is where the accounts page renders this). Central is never a member —
+ * the gate only ever withholds a chapter's settlement.
+ */
+const unsettledGapValidator = v.object({
+  scope: v.id("chapters"),
+  scopeName: v.string(),
+  bookBalanceCents: v.number(),
+  bankBalanceCents: v.number(),
+  // Signed: positive = the chapter's bank sits BELOW its book (owed money),
+  // negative = the chapter holds MORE than its book (surplus to return). Same
+  // sign convention as the internal `owed` this is copied from.
+  gapCents: v.number(),
+});
+
 /** One payout item (one Stripe balance transaction) as the ACTION hands it to
  *  the DB-apply mutation: signed cents + the tracing keys the mutation
  *  resolves against our own records. The action does the network; the
@@ -345,6 +365,10 @@ export const finishRun = internalMutation({
     settlementsBooked: v.number(),
     allocatedCents: v.number(),
     notes: v.array(v.string()),
+    // A STANDING CONDITION, not a run event — never truncated the way `notes`
+    // is (there is one entry per chapter, never per note-worthy happening), so
+    // it gets no `MAX_RUN_NOTES`-style cap. See `unsettledGapValidator`.
+    unsettledGaps: v.optional(v.array(unsettledGapValidator)),
     error: v.optional(v.string()),
   },
   returns: v.null(),
@@ -357,6 +381,7 @@ export const finishRun = internalMutation({
       settlementsBooked: args.settlementsBooked,
       allocatedCents: args.allocatedCents,
       notes: args.notes.slice(0, MAX_RUN_NOTES),
+      unsettledGaps: args.unsettledGaps ?? [],
       ...(args.error ? { error: args.error } : {}),
     });
     return null;
@@ -934,9 +959,14 @@ async function resolveRealMovementSinceMs(
  * `resolveRealMovementSinceMs` says movement is ON — the SAME resolution
  * `listUnexecutedEnginePairs` uses, so booking and execution can never
  * disagree about whether a settlement is real. With movement off, the gap is
- * still measured and still reported via `notes` (the run-summary channel the
- * accounts page renders) — nothing is silently dropped, it just isn't written
- * to the ledger until there's a mechanism that will act on it.
+ * still measured and reported through TWO channels: a `notes` line (part of
+ * the ordinary run log), and — because a standing "we owe you money and
+ * aren't sending it" condition must not depend on a reader expanding a
+ * capped, collapsible notes toggle to find it — a typed `unsettledGaps` entry
+ * (`unsettledGapValidator`) that the accounts page renders unconditionally,
+ * next to the "Real cash movement" toggle that is its cause. Nothing is
+ * silently dropped, and nothing is written to the ledger until there's a
+ * mechanism that will act on it.
  */
 export const settleChapterBalances = internalMutation({
   args: { dateStr: v.string() },
@@ -944,11 +974,16 @@ export const settleChapterBalances = internalMutation({
     settlementsBooked: v.number(),
     movedCents: v.number(),
     notes: v.array(v.string()),
+    unsettledGaps: v.array(unsettledGapValidator),
   }),
   handler: async (ctx, { dateStr }) => {
     const notes: string[] = [];
     let settlementsBooked = 0;
     let movedCents = 0;
+    // Every gap this run measured but could not book, because real cash
+    // movement is off — see `unsettledGapValidator`'s doc for why this is a
+    // separate typed field instead of another `notes` line.
+    const unsettledGaps: (typeof unsettledGapValidator.type)[] = [];
 
     // THE gate: booked only when this is non-null, i.e. real cash movement is
     // ON — same resolution `listUnexecutedEnginePairs` uses to decide what to
@@ -974,7 +1009,7 @@ export const settleChapterBalances = internalMutation({
     const centralBank = bankFor(CENTRAL);
     if (centralBank == null) {
       notes.push("Balance settlement skipped — no central bank balance yet.");
-      return { settlementsBooked, movedCents, notes };
+      return { settlementsBooked, movedCents, notes, unsettledGaps };
     }
     // Only cash central is actually free to send. Reduced as each chapter is
     // funded so two chapters can't both be promised the same dollar.
@@ -1005,6 +1040,13 @@ export const settleChapterBalances = internalMutation({
             `Not booked: real cash movement is off, so a settlement pair here would never execute. ` +
             `Turn on real cash movement (accounts page) to have the engine move it.`,
         );
+        unsettledGaps.push({
+          scope: chapter.scope as Id<"chapters">,
+          scopeName: chapter.scopeName,
+          bookBalanceCents: chapter.bookBalanceCents,
+          bankBalanceCents: chapter.bank,
+          gapCents: chapter.owed,
+        });
         continue;
       }
 
@@ -1061,7 +1103,7 @@ export const settleChapterBalances = internalMutation({
         }
       }
     }
-    return { settlementsBooked, movedCents, notes };
+    return { settlementsBooked, movedCents, notes, unsettledGaps };
   },
 });
 
@@ -2465,6 +2507,10 @@ async function runEngine(
   let transfersBooked = 0;
   let settlementsBooked = 0;
   let allocatedCents = 0;
+  // Standing conditions `settleChapterBalances` measured but couldn't book —
+  // see `unsettledGapValidator`'s doc. Carried separately from `notes` so the
+  // accounts page can render it unconditionally.
+  let unsettledGaps: (typeof unsettledGapValidator.type)[] = [];
 
   const finish = async (
     status: "ok" | "error" | "skipped",
@@ -2478,6 +2524,7 @@ async function runEngine(
       settlementsBooked,
       allocatedCents,
       notes,
+      unsettledGaps,
       ...(error ? { error } : {}),
     });
   };
@@ -2857,6 +2904,7 @@ async function runEngine(
         settlementsBooked: number;
         movedCents: number;
         notes: string[];
+        unsettledGaps: (typeof unsettledGapValidator.type)[];
       } = await ctx.runMutation(
         internal.reconciliation.settleChapterBalances,
         { dateStr: easternDateStr(Date.now()) },
@@ -2864,6 +2912,7 @@ async function runEngine(
       settlementsBooked += balSettle.settlementsBooked;
       allocatedCents += balSettle.movedCents;
       notes.push(...balSettle.notes);
+      unsettledGaps = balSettle.unsettledGaps;
       if (balSettle.settlementsBooked > 0) {
         notes.push(
           `Brought ${balSettle.settlementsBooked} chapter(s) to their book value.`,
@@ -3286,6 +3335,7 @@ export const reconciliationOverview = query({
         settlementsBooked: v.number(),
         allocatedCents: v.number(),
         notes: v.array(v.string()),
+        unsettledGaps: v.array(unsettledGapValidator),
         error: v.union(v.string(), v.null()),
       }),
       v.null(),
@@ -3372,6 +3422,7 @@ export const reconciliationOverview = query({
             settlementsBooked: lastRunDoc.settlementsBooked,
             allocatedCents: lastRunDoc.allocatedCents,
             notes: lastRunDoc.notes,
+            unsettledGaps: lastRunDoc.unsettledGaps ?? [],
             error: lastRunDoc.error ?? null,
           }
         : null,
