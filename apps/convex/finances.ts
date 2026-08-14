@@ -5712,6 +5712,11 @@ const glanceRecurringPeriod = v.object({
   key: v.string(),
   /** Short human label: "Jul", "Q3". */
   label: v.string(),
+  /** A month INSIDE this window — the month itself for a monthly bucket, the
+   *  quarter's first month for a quarterly one. It is what the client hands
+   *  back to `budgetGlance.expenses` to ask for this window's charges, so the
+   *  server owns the mapping rather than the client parsing `key`. */
+  month: v.number(),
   spentCents: v.number(),
   /** This window's own cap — the cadence cap, identical for every window. */
   capCents: v.number(),
@@ -5813,11 +5818,39 @@ function recurringPeriodRows(
   const monthly = b.cadence === "monthly";
   const quarterly = b.cadence === "quarterly";
   if (!monthly && !quarterly) return null;
-  // Pinned to one window — not a series. See the `periods` validator comment.
-  if (monthly ? b.month != null : b.quarter != null) return null;
 
   const count = monthly ? 12 : 4;
   const currentIndex = monthly ? throughMonth : quarterOfMonth(throughMonth);
+  // PINNED to one window (`b.month`/`b.quarter` set) — a cadence that names its
+  // own window governs exactly that one, and `txnCountsTowardBudget` ignores
+  // the context month entirely for it, so every bar in a twelve-bar strip
+  // would show the SAME total. One window is the truthful strip.
+  //
+  // It still has to be A strip rather than nothing: returning `null` here was
+  // why a bucket with no charge in the current window rendered no chart at all
+  // (founder, 2026-08-14 — "not seeing previous quarters if there is no charge
+  // this quarter"), which reads as a broken card rather than as a budget that
+  // covers one window.
+  const pinned = monthly ? b.month : b.quarter;
+  if (pinned != null) {
+    const spentCents = txns.reduce(
+      (sum, tr) => (txnCountsTowardBudget(tr, b) ? sum + tr.amountCents : sum),
+      0,
+    );
+    const pct = pctOf(spentCents, capCents);
+    return [
+      {
+        key: monthly ? `m${pinned}` : `q${pinned}`,
+        label: monthly ? MONTH_NAMES[pinned - 1].slice(0, 3) : `Q${pinned}`,
+        month: monthly ? pinned : (pinned - 1) * 3 + 1,
+        spentCents,
+        capCents,
+        pct,
+        status: statusFor(pct),
+        state: pinned >= currentIndex ? "current" : "past",
+      },
+    ];
+  }
   // The month to hand `txnCountsTowardBudget` so it resolves window `i` — its
   // own month for monthly, the quarter's first month for quarterly.
   const contextMonth = (i: number) => (monthly ? i : (i - 1) * 3 + 1);
@@ -5835,6 +5868,7 @@ function recurringPeriodRows(
     elapsed.push({
       key: monthly ? `m${i}` : `q${i}`,
       label: label(i),
+      month: contextMonth(i),
       spentCents,
       capCents,
       pct,
@@ -5854,6 +5888,7 @@ function recurringPeriodRows(
     projected.push({
       key: monthly ? `m${i}` : `q${i}`,
       label: label(i),
+      month: contextMonth(i),
       spentCents: avg,
       capCents,
       pct,
