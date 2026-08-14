@@ -42,8 +42,8 @@
  * `/finances/repayments`. This is the collection side of the same debt.
  */
 import { useMemo, useState } from "react";
-import { Text, View } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import { Alert, Platform, Text, View } from "react-native";
+import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type { FunctionReturnType } from "convex/server";
@@ -62,6 +62,15 @@ import {
 import { FinanceBoundary } from "../dashboard/parts";
 import { shortDate } from "../reimbursements/helpers";
 import { useActionRunner } from "../../../lib/useActionToast";
+
+/** Cross-platform "here's what happened" notice. `useActionRunner` surfaces
+ *  FAILURES only; the reminder batch's outcome is a success worth reporting
+ *  precisely (see `handleNudge`), so it gets its own notice rather than a
+ *  silent completion that leaves a manager guessing how many went out. */
+function notifyResult(message: string) {
+  if (Platform.OS === "web") window.alert(message);
+  else Alert.alert("Reminders sent", message);
+}
 
 type Repayment = FunctionReturnType<
   typeof api.cards.listPersonalRepayments
@@ -172,7 +181,11 @@ function PersonalChargesBody() {
   const isManager = seats.some((s) => s.role === "manager");
 
   const unflag = useMutation(api.cards.unflagPersonalCharge);
+  // Chasing is a rung above reading this screen (`lib/repaymentsAccess.ts`) —
+  // a reminder is an outbound email with somebody's name and an amount on it.
+  const nudge = useAction(api.cards.nudgeOutstandingRepayments);
   const { run, toast, dismiss } = useActionRunner();
+  const [nudging, setNudging] = useState(false);
 
   const [busyId, setBusyId] = useState<string | null>(null);
 
@@ -185,6 +198,25 @@ function PersonalChargesBody() {
       owedCents: out.reduce((sum, r) => sum + r.amountCents, 0),
     };
   }, [rows]);
+
+  /** Fire the reminder batch and report what actually happened — a toast that
+   *  said "sent" while three people were skipped would make the cooldown feel
+   *  like a bug. */
+  async function handleNudge() {
+    setNudging(true);
+    const result = await run(() => nudge({}), {
+      errorTitle: "Couldn't send reminders",
+    });
+    setNudging(false);
+    if (!result) return;
+    const parts = [`${result.notified} reminded`];
+    if (result.cooledDown > 0) {
+      parts.push(`${result.cooledDown} skipped (reminded recently)`);
+    }
+    if (result.unreachable > 0) parts.push(`${result.unreachable} with no email`);
+    if (result.failed > 0) parts.push(`${result.failed} failed to send`);
+    notifyResult(parts.join(" · "));
+  }
 
   async function handleUnmark(row: Repayment) {
     setBusyId(row.id);
@@ -214,9 +246,31 @@ function PersonalChargesBody() {
         <Text className="mb-4 text-sm text-muted">
           Charges on chapter cards that turned out to be personal — flagged by
           the cardholder or by a manager, and owed back to Public Worship. The
-          cardholder pays from their own card or bank on their Cards tab; you
-          confirm the money arrived here.
+          cardholder pays from their own card or bank on their repayments page;
+          a charge clears here on its own the moment that payment lands.
         </Text>
+
+        {/* Chasing, in one button. Emails everyone who owes — ONE message per
+            person listing all their charges, never one per charge — and skips
+            anybody already reminded in the last few days or whose bank
+            transfer is already clearing. See
+            `cards.nudgeOutstandingRepayments`. */}
+        {isManager && outstanding.length > 0 ? (
+          <View className="mb-4 flex-row flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-raised px-4 py-3">
+            <Text className="flex-1 text-xs text-muted">
+              Send everyone who owes a reminder with what they owe and a link
+              to pay it. One email per person, and nobody gets chased twice in
+              the same few days.
+            </Text>
+            <Button
+              title="Send reminders"
+              size="sm"
+              icon="send"
+              loading={nudging}
+              onPress={() => void handleNudge()}
+            />
+          </View>
+        ) : null}
 
         {/* The founder's second question, answered on the screen itself
             rather than only in the confirm modal. */}

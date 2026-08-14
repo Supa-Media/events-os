@@ -1689,6 +1689,21 @@ export function parseRelayReference(
 
 // ── Personal-charge repayment ────────────────────────────────────────────────
 export const REPAYMENT_METHODS = ["card", "ach"] as const;
+
+/**
+ * How long a reminder about an outstanding personal charge silences the next
+ * one (`cards.nudgeOutstandingRepayments`).
+ *
+ * The number is a JUDGEMENT about tone, not a technical limit. These are
+ * volunteers who put a $14 coffee run on the wrong card, not delinquent
+ * accounts; a reminder every three days reads as help, and a reminder every
+ * day reads as an accusation. Three days also means a manager who presses
+ * "Send reminders" twice in one sitting — the single likeliest misuse — sends
+ * one email, not two.
+ */
+export const REPAYMENT_NUDGE_COOLDOWN_DAYS = 3;
+export const REPAYMENT_NUDGE_COOLDOWN_MS =
+  REPAYMENT_NUDGE_COOLDOWN_DAYS * 24 * 60 * 60 * 1000;
 export type RepaymentMethod = (typeof REPAYMENT_METHODS)[number];
 
 /**
