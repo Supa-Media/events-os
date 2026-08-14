@@ -142,9 +142,11 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
           payeeName: draft.payeeName.trim(),
           payeeEmail: draft.payeeEmail.trim(),
           serviceDescription: draft.serviceDescription.trim(),
+          // An absent key means "unchanged" server-side, so emptying a field
+          // has to be said out loud or the save silently keeps the old value.
           ...(draft.serviceDate != null
             ? { serviceDate: draft.serviceDate }
-            : {}),
+            : { clearServiceDate: true }),
           agreedAmountCents: cents,
           agreementNotes: draft.agreementNotes.trim(),
           // An absent key means "unchanged", so saying "none" has to be said
@@ -152,7 +154,7 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
           ...(clearing ? { clearAttribution: true } : ids),
           ...(draft.categoryId
             ? { categoryId: draft.categoryId as Id<"budgetCategories"> }
-            : {}),
+            : { clearCategory: true }),
         }),
       { errorTitle: "Couldn't save the terms" },
     );
@@ -292,7 +294,7 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
           {payment.canApprove && needsReview(payment.status) ? (
             <ReviewPanel
               payment={payment}
-              forOptions={options?.forOptions as ForOptions | undefined}
+              forOptions={options?.forOptions}
             />
           ) : null}
 
@@ -346,7 +348,7 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
                   setDraft((d) => (d ? { ...d, ...p } : d));
                   setEditProblem(null);
                 }}
-                forOptions={options?.forOptions as ForOptions | undefined}
+                forOptions={options?.forOptions}
                 categories={categories}
                 mode="edit"
                 accepted={payment.acceptedAt != null}
@@ -541,6 +543,15 @@ function TermsCard({
         label="What it's for"
         value={forLabel ?? "Not coded yet — it can't be approved until it is"}
         tone={payment.isCoded ? "default" : "warn"}
+      />
+      {/* How to reach them — the staffer copying the link usually needs this
+          in the same breath (they're pasting it into a text or an email). */}
+      <DetailRow
+        label="Contact"
+        value={
+          [payment.payeeEmail, payment.payeePhone].filter(Boolean).join(" · ") ||
+          "None on file — you'll need to send the link yourself"
+        }
       />
       {payment.agreementNotes ? (
         <DetailRow

@@ -28,6 +28,7 @@ import {
   internalQuery,
   internalMutation,
 } from "./_generated/server";
+import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { Id } from "./_generated/dataModel";
@@ -74,6 +75,29 @@ function assertContractorDisbursementSoD(
         "The person releasing a payout must be different from the payee.",
     });
   }
+}
+
+/** Append to the shared approval trail. Mirrors
+ *  `contractorPayments.ts#recordApproval` — duplicated rather than exported
+ *  across the module boundary because that one is private to its file and the
+ *  two rails already share the table, not the function. */
+async function recordContractorApproval(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  contractorPaymentId: Id<"contractorPayments">,
+  action: "approve" | "reject" | "cancel" | "edit" | "pay",
+  actorPersonId: Id<"people">,
+  note?: string,
+): Promise<void> {
+  await ctx.db.insert("approvals", {
+    chapterId,
+    subjectType: "contractor_payment",
+    subjectId: String(contractorPaymentId),
+    action,
+    actorPersonId,
+    ...(note ? { note } : {}),
+    createdAt: Date.now(),
+  });
 }
 
 type BeginContractorPayoutResult =
@@ -437,12 +461,36 @@ export const markPaidManually = mutation({
       });
       payout = await ctx.db.get(payoutId);
     }
-    await ctx.db.patch(payout!._id, { status: "paid", updatedAt: now });
+    // Re-stamp `provider: "manual"` alongside the status. A payout minted for
+    // an ACH attempt that never got a transfer id (Increase unwired, or the
+    // create call failed) is still `provider:"increase"`; marking it paid by
+    // hand without correcting that leaves a row claiming Increase moved money
+    // it never touched — which is exactly the row a future reconciliation would
+    // try to match against a transfer that does not exist. The guard above
+    // already refuses any payout that HAS a transfer id, so nothing in flight
+    // is being relabelled here.
+    await ctx.db.patch(payout!._id, {
+      status: "paid",
+      provider: "manual",
+      updatedAt: now,
+    });
     const settled = (await ctx.db.get(payout!._id))!;
     // Routed through the SHARED settle function so a hand-marked payment posts
     // the identical ledger row, coding, and notice an ACH one does. Two paths
     // that both mean "paid" must not produce two different records.
     await settleContractorPaid(ctx, payment, settled);
+    // The disbursement belongs in the append-only trail, same as the approval
+    // did. Releasing money is the act the separation-of-duties rules exist to
+    // constrain, so "who paid this, and when" has to be answerable from the
+    // record rather than inferred from a payout row's timestamps.
+    await recordContractorApproval(
+      ctx,
+      chapterId,
+      contractorPaymentId,
+      "pay",
+      callerPersonId,
+      "Marked paid by hand.",
+    );
     return toPayoutSummary((await ctx.db.get(payout!._id))!);
   },
 });

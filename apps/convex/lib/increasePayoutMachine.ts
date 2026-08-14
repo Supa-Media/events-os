@@ -409,7 +409,7 @@ export async function postContractorSpend(
   const ported = deriveContractorTxnFields(row);
   const txnId = await ctx.db.insert("transactions", {
     chapterId,
-    source: "reimbursement",
+    source: "contractor_payment",
     flow: "outflow", // the expense itself — counts toward category/budget spend
     amountCents: payout.amountCents,
     currency: "usd",

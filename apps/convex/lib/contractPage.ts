@@ -85,6 +85,7 @@ export type ContractPublicView = {
   serviceDescription: string;
   serviceDate?: number | null;
   agreedAmountCents: number;
+  approvedCents?: number | null;
   agreementNotes?: string | null;
   agreementTermsVersion: number;
   acceptedAt?: number | null;
@@ -809,6 +810,20 @@ function timelineFor(view: ContractPublicView): TimelineStep[] {
  * with no form has no reason to ship JavaScript. Reopening the same link is
  * how someone checks on it, which is what the copy tells them to do.
  */
+/**
+ * The figure to show a contractor about money that has actually moved.
+ *
+ * `approvedCents` when a reviewer set one, else the agreed amount. Partial
+ * approval is legal — approve for less, never more — so quoting the agreed
+ * figure on a paid payment would tell somebody whose $1,200 was approved at
+ * $600 that $1,200 reached their bank. Used for the paid hero and the status
+ * page's amount row ONLY; the AGREEMENT page still shows the agreed terms,
+ * because that is what they are being asked to accept.
+ */
+function settledCents(view: { agreedAmountCents: number; approvedCents?: number | null }): number {
+  return view.approvedCents ?? view.agreedAmountCents;
+}
+
 export function renderContractStatus(
   view: ContractPublicView,
   chapterSlug: string,
@@ -855,7 +870,7 @@ export function renderContractStatus(
   const heroTint = paid || !stopped ? "var(--success)" : "var(--accent)";
 
   const heroSub = paid
-    ? `Thanks, ${esc(firstName)}. ${esc(money(view.agreedAmountCents))} was sent to your bank${
+    ? `Thanks, ${esc(firstName)}. ${esc(money(settledCents(view)))} was sent to your bank${
         view.bankAccountLast4 ? ` (account ending ${esc(view.bankAccountLast4)})` : ""
       }. Reference <b class="ink">#${esc(view.reference)}</b>.`
     : stopped
@@ -891,7 +906,11 @@ ${pubbar(view.chapterName)}
       <span class="fl">What we have</span>
       <div class="summ mt12">
         <div class="sr"><span class="k">The work</span><span class="v terms-note">${esc(view.serviceDescription)}</span></div>
-        <div class="sr"><span class="k">Amount</span><span class="v money">${esc(money(view.agreedAmountCents))}</span></div>
+        <div class="sr"><span class="k">Amount</span><span class="v money">${esc(money(settledCents(view)))}</span>${
+          view.approvedCents != null && view.approvedCents !== view.agreedAmountCents
+            ? `<span class="note">Approved for less than the agreed ${esc(money(view.agreedAmountCents))} — the note below says why.</span>`
+            : ""
+        }</div>
         <div class="sr"><span class="k">Date of work</span><span class="v">${
           view.serviceDate != null ? esc(fmtDay(view.serviceDate)) : "Not specified"
         }</span></div>

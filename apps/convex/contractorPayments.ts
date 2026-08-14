@@ -598,11 +598,23 @@ export const updateTerms = mutation({
     categoryId: v.optional(v.id("budgetCategories")),
     fundId: v.optional(v.id("funds")),
     // Explicitly clear the attribution rather than leaving it — an absent key
-    // means "unchanged", so there has to be a way to say "none".
+    // means "unchanged", so there has to be a way to say "none". The same
+    // applies to every other optional field a human can empty out: without a
+    // clear flag, a user who deletes the service date or the category watches
+    // the form accept the change and the record keep the old value, which is
+    // worse than refusing the edit.
     clearAttribution: v.optional(v.boolean()),
+    clearServiceDate: v.optional(v.boolean()),
+    clearCategory: v.optional(v.boolean()),
   },
   handler: async (ctx, args) => {
-    const { contractorPaymentId, clearAttribution, ...rest } = args;
+    const {
+      contractorPaymentId,
+      clearAttribution,
+      clearServiceDate,
+      clearCategory,
+      ...rest
+    } = args;
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
     await requireInChapter(ctx, chapterId, row, "Contractor payment");
@@ -629,7 +641,14 @@ export const updateTerms = mutation({
         termsChanged = true;
       }
     }
-    if (rest.serviceDate !== undefined) {
+    if (clearServiceDate) {
+      // Removing the date the work was done is as much a change to the agreed
+      // terms as moving it, so it voids an acceptance the same way.
+      if (row!.serviceDate !== undefined) {
+        patch.serviceDate = undefined;
+        termsChanged = true;
+      }
+    } else if (rest.serviceDate !== undefined) {
       const next = assertServiceDate(rest.serviceDate);
       if (next !== row!.serviceDate) {
         patch.serviceDate = next;
@@ -681,7 +700,11 @@ export const updateTerms = mutation({
       patch.projectId = rest.projectId;
       patch.budgetId = rest.budgetId;
     }
-    if (rest.categoryId !== undefined) {
+    if (clearCategory) {
+      // Coding, not an agreed term — the contractor never agreed to which
+      // category pays them, so this voids nothing.
+      patch.categoryId = undefined;
+    } else if (rest.categoryId !== undefined) {
       const doc = await ctx.db.get(rest.categoryId);
       await requireInChapter(ctx, chapterId, doc, "Category");
       patch.categoryId = rest.categoryId;
@@ -1230,14 +1253,26 @@ export const pendingReview = internalQuery({
   handler: async (ctx, { olderThanMs, limit }) => {
     const cutoff = Date.now() - olderThanMs;
     const rows: Doc<"contractorPayments">[] = [];
+    const want = Math.min(limit ?? 200, 500);
     for (const status of CONTRACTOR_PAYMENT_REVIEW_STATUSES) {
-      const batch = await ctx.db
+      // Walk the index rather than `.take(n)` and filter afterwards. A fixed
+      // window filled with rows that have ALREADY been nudged and escalated
+      // starves the newer submissions behind them — the sweep would appear to
+      // run every day while a growing tail of payments was never chased. The
+      // iteration stops as soon as `want` ACTIONABLE rows are found, so the
+      // cost is the same on the normal day when there are none.
+      for await (const row of ctx.db
         .query("contractorPayments")
-        .withIndex("by_status", (q) => q.eq("status", status))
-        .take(Math.min(limit ?? 200, 500));
-      for (const row of batch) {
-        if ((row.submittedAt ?? row.createdAt) <= cutoff) rows.push(row);
+        .withIndex("by_status", (q) => q.eq("status", status))) {
+        if ((row.submittedAt ?? row.createdAt) > cutoff) continue;
+        // Nothing left to send for this row — don't let it hold a slot.
+        if (row.reviewNudgeSentAt != null && row.reviewEscalatedAt != null) {
+          continue;
+        }
+        rows.push(row);
+        if (rows.length >= want) break;
       }
+      if (rows.length >= want) break;
     }
     return rows.map((r) => ({
       _id: r._id,
@@ -1370,6 +1405,12 @@ export const publicByToken = query({
       serviceDescription: row.serviceDescription,
       serviceDate: row.serviceDate,
       agreedAmountCents: row.agreedAmountCents,
+      // What was ACTUALLY approved, when it differs from what was agreed.
+      // Partial approval is legal (approve for less, never more), and without
+      // this the status page could only quote the agreed figure — telling a
+      // contractor whose $1,200 was approved at $600 that "$1,200.00 was sent
+      // to your bank". Null until somebody decides.
+      approvedCents: row.approvedCents,
       agreementNotes: row.agreementNotes,
       agreementTermsVersion: row.agreementTermsVersion,
       acceptedAt: row.acceptedAt,
@@ -1605,6 +1646,14 @@ export const completeAgreement = mutation({
       submittedAt: now,
       // A resubmission after a send-back clears the note it is answering.
       reviewNote: undefined,
+      // AND the nudge stamps. They mark "we have already chased the treasurer
+      // about this submission"; a resubmission is a NEW submission, waiting
+      // from now. Leaving them set meant the day-3 nudge and day-7 escalation
+      // fired at most once in a payment's life, so any payment that went round
+      // the send-back loop was never chased again — the exact payment most
+      // likely to need chasing.
+      reviewNudgeSentAt: undefined,
+      reviewEscalatedAt: undefined,
       updatedAt: now,
     });
 

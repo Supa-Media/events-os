@@ -51,6 +51,54 @@ export const payoutSummaryValidator = v.object({
   createdAt: v.number(),
 });
 
+/**
+ * The read shape for a REIMBURSEMENT-rail payout specifically — same as above
+ * but with `reimbursementId` non-null.
+ *
+ * Exists because `payoutSummaryValidator` had to widen that field to carry the
+ * contractor rail, and widening it silently broke the reimbursements screen,
+ * which keys a `Map<Id<"reimbursementRequests">, …>` on it
+ * (`app/(app)/finances/reimbursements/index.tsx`). A query that only ever
+ * returns reimbursement payouts should say so in its type rather than making
+ * every consumer re-narrow a field that cannot actually be null for them.
+ *
+ * Pair it with a `reimbursementId != null` filter at the query — the type is
+ * only honest if the query actually excludes the other rail.
+ */
+export const reimbursementPayoutSummaryValidator = v.object({
+  id: v.id("payouts"),
+  reimbursementId: v.id("reimbursementRequests"),
+  payeePersonId: v.union(v.id("people"), v.null()),
+  amountCents: v.number(),
+  provider: payoutProviderValidator,
+  status: payoutStatusValidator,
+  increaseTransferId: v.union(v.string(), v.null()),
+  createdAt: v.number(),
+});
+
+export interface ReimbursementPayoutSummary
+  extends Omit<PayoutSummary, "reimbursementId" | "contractorPaymentId"> {
+  reimbursementId: Id<"reimbursementRequests">;
+}
+
+/** Narrow a payout to the reimbursement rail, or `null` if it belongs to the
+ *  other one. The `null` return is what a caller filters on. */
+export function toReimbursementPayoutSummary(
+  p: Doc<"payouts">,
+): ReimbursementPayoutSummary | null {
+  if (!p.reimbursementId) return null;
+  return {
+    id: p._id,
+    reimbursementId: p.reimbursementId,
+    payeePersonId: p.payeePersonId ?? null,
+    amountCents: p.amountCents,
+    provider: p.provider,
+    status: p.status,
+    increaseTransferId: p.increaseTransferId ?? null,
+    createdAt: p.createdAt,
+  };
+}
+
 export const financeScopeValidator = v.union(
   v.id("chapters"),
   v.literal("central"),

@@ -473,6 +473,236 @@ describe("an acceptance only ever covers the terms that were accepted", () => {
   });
 });
 
+// ── 3b. What a contractor is told about money ───────────────────────────────
+describe("a partially-approved contractor is told the real number", () => {
+  test("publicByToken carries approvedCents once a reviewer sets one", async () => {
+    // The status page quotes this. Without it the page could only show the
+    // AGREED figure, telling someone whose $750 was approved at $500 that
+    // $750.00 reached their bank — a false statement about their own money,
+    // made by us, in writing.
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+    const token = await run(s.t, async (ctx) => (await ctx.db.get(id))!.token);
+
+    let view = await s.t.query(api.contractorPayments.publicByToken, { token });
+    expect(view?.approvedCents ?? null).toBeNull();
+
+    const approver = await seedApprover(s);
+    await approver.as.mutation(api.contractorPayments.approve, {
+      contractorPaymentId: id,
+      approvedCents: 50_000,
+    });
+    view = await s.t.query(api.contractorPayments.publicByToken, { token });
+    expect(view?.approvedCents).toBe(50_000);
+    expect(view?.agreedAmountCents).toBe(AGREEMENT.agreedAmountCents);
+  });
+});
+
+// ── 3c. Clearing a field actually clears it ─────────────────────────────────
+describe("emptying a field is not silently ignored", () => {
+  test("clearServiceDate removes the date and voids the acceptance", async () => {
+    const { s, budgetId } = await setup();
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      { ...AGREEMENT, budgetId, serviceDate: Date.UTC(2026, 4, 1, 12) },
+    );
+    await s.as.mutation(api.contractorPayments.send, { contractorPaymentId });
+    const token = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(contractorPaymentId))!.token,
+    );
+    const storageId = await storeBlob(s.t);
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token,
+      payeeName: AGREEMENT.payeeName,
+      payeeEmail: AGREEMENT.payeeEmail,
+      taxDocStorageId: storageId,
+      taxDocKind: "w9",
+      externalAccountId: "extacct_test",
+      bankAccountLast4: "6789",
+      signature: "Jane",
+    });
+
+    const result = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId,
+      clearServiceDate: true,
+    });
+    const after = await run(s.t, (ctx) => ctx.db.get(contractorPaymentId));
+    expect(after!.serviceDate).toBeUndefined();
+    // Removing the date the work was done IS a change to the agreed terms.
+    expect(result.acceptanceVoided).toBe(true);
+  });
+
+  test("clearCategory removes the category and voids nothing", async () => {
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+    const categoryId = await run(s.t, async (ctx) => {
+      const fundId = await ctx.db.insert("funds", {
+        chapterId: s.chapterId,
+        name: "General",
+        restriction: "unrestricted",
+        sortOrder: 0,
+        createdAt: Date.now(),
+      });
+      return await ctx.db.insert("budgetCategories", {
+        chapterId: s.chapterId,
+        fundId,
+        name: "Production",
+        kind: "lineItem",
+        isActive: true,
+        sortOrder: 0,
+        createdAt: Date.now(),
+      });
+    });
+    await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: id,
+      categoryId,
+    });
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(id)))!.categoryId,
+    ).toBe(categoryId);
+
+    const result = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: id,
+      clearCategory: true,
+    });
+    const after = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(after!.categoryId).toBeUndefined();
+    // Coding is not something the contractor agreed to.
+    expect(result.acceptanceVoided).toBe(false);
+  });
+});
+
+// ── 3d. The treasurer nudge keeps working after a send-back ─────────────────
+describe("the review sweep does not go permanently silent", () => {
+  test("a resubmission clears the nudge stamps", async () => {
+    // The stamps mean "we already chased somebody about THIS submission". A
+    // resubmission is a new wait; leaving them set meant any payment that went
+    // round the send-back loop was never chased again — the payment most
+    // likely to need it.
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+    await run(s.t, (ctx) =>
+      ctx.db.patch(id, {
+        reviewNudgeSentAt: Date.now(),
+        reviewEscalatedAt: Date.now(),
+      }),
+    );
+    const approver = await seedApprover(s);
+    await approver.as.mutation(api.contractorPayments.requestChanges, {
+      contractorPaymentId: id,
+      note: "Wrong tax year on the W-9.",
+    });
+
+    const token = await run(s.t, async (ctx) => (await ctx.db.get(id))!.token);
+    const storageId = await storeBlob(s.t);
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token,
+      payeeName: AGREEMENT.payeeName,
+      payeeEmail: AGREEMENT.payeeEmail,
+      taxDocStorageId: storageId,
+      taxDocKind: "w9",
+      externalAccountId: "extacct_test",
+      bankAccountLast4: "6789",
+      signature: "Jane",
+    });
+    const after = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(after!.reviewNudgeSentAt).toBeUndefined();
+    expect(after!.reviewEscalatedAt).toBeUndefined();
+  });
+});
+
+// ── 3e. The two rails stay out of each other's way ──────────────────────────
+describe("the rails do not pollute each other", () => {
+  test("listPayouts returns reimbursement payouts only", async () => {
+    // It backs the reimbursements screen, which keys a Map on
+    // `reimbursementId`. A contractor payout leaking in both breaks that type
+    // and competes for the query's 200-row cap, pushing real reimbursement
+    // payouts out of a view that claims to be complete.
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+    const approver = await seedApprover(s);
+    await approver.as.mutation(api.contractorPayments.approve, {
+      contractorPaymentId: id,
+    });
+    await approver.as.mutation(api.contractorPayouts.markPaidManually, {
+      contractorPaymentId: id,
+    });
+
+    // The contractor payout exists...
+    const all = await run(s.t, (ctx) =>
+      ctx.db
+        .query("payouts")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(all.length).toBeGreaterThan(0);
+
+    // ...and the reimbursement screen's query does not show it.
+    const listed = await s.as.query(api.increasePayouts.listPayouts, {});
+    expect(listed.every((p) => p.reimbursementId != null)).toBe(true);
+    expect(listed.some((p) => String(p.id) === String(all[0]._id))).toBe(false);
+  });
+
+  test("a hand-marked payment records the disbursement and reads as manual", async () => {
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+    const approver = await seedApprover(s);
+    await approver.as.mutation(api.contractorPayments.approve, {
+      contractorPaymentId: id,
+    });
+    await approver.as.mutation(api.contractorPayouts.markPaidManually, {
+      contractorPaymentId: id,
+    });
+
+    const payout = await run(s.t, (ctx) =>
+      ctx.db
+        .query("payouts")
+        .withIndex("by_contractor_payment", (q) =>
+          q.eq("contractorPaymentId", id),
+        )
+        .first(),
+    );
+    expect(payout!.provider).toBe("manual");
+
+    const trail = await run(s.t, (ctx) =>
+      ctx.db
+        .query("approvals")
+        .withIndex("by_subject", (q) =>
+          q.eq("subjectType", "contractor_payment").eq("subjectId", String(id)),
+        )
+        .collect(),
+    );
+    // Releasing money is the act SoD exists to constrain, so it has to be
+    // answerable from the record.
+    expect(trail.some((a) => a.action === "pay")).toBe(true);
+  });
+
+  test("the contractor ledger row names its own rail", async () => {
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+    const approver = await seedApprover(s);
+    await approver.as.mutation(api.contractorPayments.approve, {
+      contractorPaymentId: id,
+    });
+    await approver.as.mutation(api.contractorPayouts.markPaidManually, {
+      contractorPaymentId: id,
+    });
+    const txn = await run(s.t, (ctx) =>
+      ctx.db
+        .query("transactions")
+        .withIndex("by_contractor_payment", (q) =>
+          q.eq("contractorPaymentId", id),
+        )
+        .first(),
+    );
+    // Not "reimbursement" — that literal renders "Reimbursement payout" in the
+    // rail column, which is the confusion this feature's naming exists to
+    // avoid.
+    expect(txn!.source).toBe("contractor_payment");
+  });
+});
+
 // ── 4. Separation of duties ─────────────────────────────────────────────────
 describe("separation of duties", () => {
   test("the person who wrote the agreement cannot approve it", async () => {
