@@ -33,17 +33,22 @@
  *
  * A group with nothing explainable in it (all fees, all transfers) shows no
  * progress at all rather than "0 of 0", which reads as failure.
+ *
+ * And a month holding BOTH live rows and rows reconstructed from the org's
+ * imported 2024–25 records splits the two, headline on the live half — see
+ * `showsBacklogSplit` and the block that reads it below. A combined "3 of 453
+ * explained" is the figure that makes a finished month look abandoned.
  */
 import { View, Text } from "react-native";
 import { formatCents } from "@events-os/shared";
+import { showsBacklogSplit, type ExplainProgress } from "./gridView";
 
 export function ReconcileGroupHeader({
   label,
   count,
   totalCents,
   shownCount,
-  explainableCount,
-  explainedCount,
+  progress,
 }: {
   label: string;
   /** Over the whole match set — see the module doc. */
@@ -52,10 +57,25 @@ export function ReconcileGroupHeader({
   /** How many of `count` are on the loaded page. */
   shownCount: number;
   /** This group's own progress, server-computed over the whole match set. */
-  explainableCount: number;
-  explainedCount: number;
+  progress: ExplainProgress;
 }) {
   const partial = shownCount < count;
+  // ── THE LIVE/BACKLOG SPLIT, IN A BAND ────────────────────────────────────
+  // A month holding 450 rows reconstructed from the org's imported 2024-25
+  // records and 3 of its own would read "3 of 453 explained" — the figure that
+  // makes a finished month look abandoned, and the reason `monthCodingWorklist`
+  // grew a split in the first place. When both populations are present the
+  // headline describes the LIVE one and the backlog is named beside it in faint
+  // type. `showsBacklogSplit` is the shared rule the progress strip above the
+  // grid also applies, so the band and the strip cannot disagree about whether
+  // the split is in force.
+  const split = showsBacklogSplit(progress);
+  const explainableCount = split
+    ? progress.liveExplainableCount
+    : progress.explainableCount;
+  const explainedCount = split
+    ? progress.liveExplainedCount
+    : progress.explainedCount;
   // Nothing in this group can carry an explanation (a month of fees and
   // transfers) — say nothing rather than "0 of 0", which reads as a failure
   // to do work that was never owed.
@@ -94,8 +114,19 @@ export function ReconcileGroupHeader({
           style={{ fontVariant: ["tabular-nums"] }}
         >
           {done
-            ? "✓ all explained"
-            : `${explainedCount} of ${explainableCount} explained`}
+            ? `✓ all explained${split ? " (this month's own rows)" : ""}`
+            : `${explainedCount} of ${explainableCount}${split ? " of this month's rows" : ""} explained`}
+        </Text>
+      ) : null}
+      {/* The reconstructed backlog, named but never folded into the headline
+          above — imported 2024–25 records still owe a human purpose, they just
+          are not what "did I finish this month" is asking about. */}
+      {split ? (
+        <Text
+          className="text-2xs text-faint"
+          style={{ fontVariant: ["tabular-nums"] }}
+        >
+          {`+ ${progress.backlogExplainedCount} of ${progress.backlogExplainableCount} imported`}
         </Text>
       ) : null}
     </View>

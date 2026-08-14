@@ -116,6 +116,15 @@ import {
   type BookView,
 } from "../../../components/finance/reconcile/ViewMenu";
 import { GroupByControl } from "../../../components/finance/reconcile/GroupByControl";
+// The SAME four constants the publish console's "Explain them now" link and the
+// `/finances/explain` redirect build their URL from — "By month" is three axes
+// of this grid, and all three surfaces read one definition of them.
+import {
+  BY_MONTH_DIR,
+  BY_MONTH_FILTER,
+  BY_MONTH_GROUP,
+  BY_MONTH_SORT,
+} from "../../../components/finance/byMonthHref";
 import { ExplainedProgressStrip } from "../../../components/finance/reconcile/ExplainedProgressStrip";
 import {
   DEFAULT_SORT_DIR,
@@ -408,10 +417,32 @@ function ReconcileGrid() {
     parsedMonth != null && !Number.isNaN(parsedMonth) ? parsedMonth : undefined;
   const periodMode: "month" | "ytd" = params.period === "ytd" ? "ytd" : "month";
   const hasPeriodScope = periodYear != null;
-  // Fixed for the life of this deep-linked visit — there's no picker for it
-  // here (unlike the dashboards' own `MonthStepper`/`PeriodSwitch`); "Clear"
-  // drops back to the ordinary, unscoped Reconcile view.
+  // "Clear" drops back to the ordinary, unscoped Reconcile view.
   const clearPeriodScope = () => router.replace("/finances/reconcile" as never);
+  // ── STEP THE MONTH ────────────────────────────────────────────────────────
+  // The period scope used to be fixed for the life of a deep-linked visit, on
+  // the reasoning that this screen is not a dashboard and has no period picker.
+  // That was true right up until the Explain screen was retired into this grid:
+  // working a month is a LOOP — finish March, go to April — and the whole
+  // 2024-25 backfill is eighteen turns of it. Without a stepper, "next month"
+  // meant hand-editing a query string, and the workflow the Explain screen
+  // existed to serve would have been dropped rather than absorbed.
+  //
+  // Deliberately NOT a full period picker: it only appears on a MONTH-scoped
+  // view (a `ytd` or whole-year scope has no next month to step to), and it
+  // moves the one axis it can move honestly. Everything else about the scope —
+  // the books, the filters, the search — is left exactly where it was, so
+  // stepping is the same question asked about a different month.
+  const canStepMonth = hasPeriodScope && periodMonth != null && periodMode === "month";
+  const stepMonth = (delta: 1 | -1) => {
+    if (!canStepMonth) return;
+    const y = periodYear as number;
+    const m = periodMonth as number;
+    const next = m + delta;
+    const nextYear = next < 1 ? y - 1 : next > 12 ? y + 1 : y;
+    const nextMonth = next < 1 ? 12 : next > 12 ? 1 : next;
+    router.setParams({ year: String(nextYear), month: String(nextMonth) });
+  };
 
   // WP-2.1: central-seat holders can switch which BOOKS this grid reads.
   // `mySeats` resolves their real seats; a central seat unlocks the selector
@@ -731,8 +762,19 @@ function ReconcileGrid() {
       key: "month",
       label: "By month",
       detail:
-        "Work one month biggest-first, with a progress meter — the backfill view, and where a month gets published from.",
-      href: `/finances/explain${singleBookScopeQuery}`,
+        "Every line that will publish blank, biggest-first, banded by month with each month's own progress — the backfill view.",
+      // ABSORBED, not routed. This was `/finances/explain` — a separate screen
+      // that existed because the grid could not ask the publishing question
+      // (its `uncoded` facet grandfathers pre-policy history, so the ~450
+      // reconstructed 2024-25 rows were unreachable), could not sort by amount,
+      // could not group by month, and had no per-month meter. It can do all
+      // four now, so the view is three axes of THIS grid rather than a
+      // destination: `needs_explaining` (no policy date), biggest money first,
+      // one band per month carrying that month's own progress.
+      filters: [BY_MONTH_FILTER],
+      sort: BY_MONTH_SORT,
+      dir: BY_MONTH_DIR,
+      group: BY_MONTH_GROUP,
     },
     {
       key: "chase",
@@ -749,7 +791,40 @@ function ReconcileGrid() {
       href: `/finances/publish${singleBookScopeQuery}`,
     },
   ];
-  const currentView = activeView(views, filters);
+  const currentView = activeView(views, {
+    filters,
+    sort: sortKey,
+    dir: sortDir,
+    group: groupBy,
+  });
+  /**
+   * APPLY A WHOLE SAVED VIEW — filters, sort and grouping in one act.
+   *
+   * Every axis the view does NOT name is RESET to the grid's default rather
+   * than inherited. A saved view that kept whatever grouping the last one left
+   * behind would render differently depending on where the user came from,
+   * which is precisely what "saved view" is supposed to rule out.
+   */
+  function applyView(view: BookView) {
+    const nextSort = view.sort ?? DEFAULT_SORT_KEY;
+    const nextDir = view.dir ?? DEFAULT_SORT_DIR;
+    const nextGroup = view.group ?? null;
+    setSortKey(nextSort);
+    setSortDir(nextDir);
+    setGroupBy(nextGroup);
+    const isDefaultSort =
+      nextSort === DEFAULT_SORT_KEY && nextDir === DEFAULT_SORT_DIR;
+    // One `setParams`, not four — `applyFilters` writes `?filters=` itself, so
+    // the sort/group params are folded into a single navigation beside it.
+    setFilters([...(view.filters ?? [])]);
+    clearSelectionRef.current?.();
+    router.setParams({
+      filters: serializeReconcileFilters([...(view.filters ?? [])]) ?? "",
+      sort: isDefaultSort ? "" : nextSort,
+      dir: isDefaultSort ? "" : nextDir,
+      group: nextGroup ?? "",
+    });
+  }
 
   // The server has already applied the filter set AND the search, so the grid
   // renders exactly what it was sent. This used to be
@@ -876,6 +951,14 @@ function ReconcileGrid() {
     explainableCents: 0,
     explainedCount: 0,
     explainedCents: 0,
+    liveExplainableCount: 0,
+    liveExplainableCents: 0,
+    liveExplainedCount: 0,
+    liveExplainedCents: 0,
+    backlogExplainableCount: 0,
+    backlogExplainableCents: 0,
+    backlogExplainedCount: 0,
+    backlogExplainedCents: 0,
   };
   // Group headers, in render order, over the WHOLE match set — present only
   // while `groupBy` is set. Passed straight through to the grid, which slices
@@ -884,6 +967,14 @@ function ReconcileGrid() {
   // The server stood the State/roll-up filters down to run this search. Said
   // out loud below: a filter that silently stops applying is the whole defect.
   const searchIgnoredState = reconcile?.searchIgnoredState ?? false;
+  // THE SCAN HIT ITS CAP. Every figure on this screen — the facet counts, the
+  // group bands, the totals, the progress strip — then describes a PREFIX of
+  // the book rather than the whole of it, which is a different claim from the
+  // one they all otherwise make. Said out loud below rather than left in a
+  // server log; a silently-short list is the dead-number failure this screen
+  // keeps repairing, and the Explain screen it replaces has warned about
+  // exactly this since it shipped.
+  const truncated = reconcile?.truncated ?? false;
   // Whether the coding policy has started — gates the two coding filter
   // options, which can't return a row before it does. See the option build.
   const codingArmed = reconcile?.codingArmed ?? false;
@@ -1374,7 +1465,7 @@ function ReconcileGrid() {
               views={views}
               active={currentView}
               subtitle={searching ? `${matchedCount} found` : undefined}
-              onPickFilters={(next) => applyFilters([...next])}
+              onPickView={applyView}
               onNavigate={(href) => router.navigate(href as never)}
             />
             {chaseCount > 0 ? (
@@ -1424,11 +1515,47 @@ function ReconcileGrid() {
               actions) stays fully interactive either way. */}
           {hasPeriodScope ? (
             <View className="mb-3 flex-row items-center gap-2">
+              {/* ← / → step the month WITHOUT touching anything else about the
+                  view — carried over from the Explain screen, whose whole job
+                  was working one month and then the next. Only on a month
+                  scope: a year or ytd window has no next month. */}
+              {canStepMonth ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  title="← Prev month"
+                  onPress={() => stepMonth(-1)}
+                />
+              ) : null}
               <Pill
                 label={`Scoped to ${periodLabel(periodYear as number, periodMonth ?? 1, periodMode)} · Clear`}
                 selected
                 onPress={clearPeriodScope}
               />
+              {canStepMonth ? (
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  title="Next month →"
+                  onPress={() => stepMonth(1)}
+                />
+              ) : null}
+            </View>
+          ) : null}
+
+          {/* THE READ WAS CAPPED. Everything else on this screen claims to
+              describe the whole scope; when the scan hits its limit, it
+              describes a prefix instead. Saying so is the only honest option —
+              the alternative is a screen full of numbers that are all quietly
+              answering a smaller question than the one they name. */}
+          {truncated ? (
+            <View className="mb-3 flex-row items-center gap-2">
+              <Icon name="alert-triangle" size={14} color={colors.danger} />
+              <Text className="flex-1 text-xs text-danger">
+                This book is larger than one read returns — the rows and every
+                count on this page are a prefix of it, not the whole. Narrow to
+                a month or a period to see a book this size completely.
+              </Text>
             </View>
           ) : null}
 
@@ -1735,6 +1862,11 @@ function ReconcileGrid() {
               ownChapterId={ownChapterId}
               centralForItems={centralForItems}
               isManager={isManager}
+              // Bookkeeper+, server-answered — this grid's own floor is a
+              // finance VIEWER, and a viewer must not be handed a live rename
+              // box the server would refuse (the guarantee the Explain screen
+              // got from `monthCodingWorklist.canRename`).
+              canRename={reconcile?.viewerCanRename ?? false}
               viewerPersonId={reconcile?.viewerPersonId ?? null}
               // The panel seam. `onOpenRow` present ⇔ wide, which is what
               // makes a row's open affordances select instead of opening the

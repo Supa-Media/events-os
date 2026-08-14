@@ -28,6 +28,18 @@ const g = (
   explainableCents: 100 * (progress?.explainable ?? count),
   explainedCount: progress?.explained ?? 0,
   explainedCents: 100 * (progress?.explained ?? 0),
+  // ALL LIVE by default, no backlog — so the fixture exercises the ordinary
+  // single-population band rather than silently turning on the live/backlog
+  // split in every segment test that doesn't care about it. `live + backlog
+  // === total` holds, which is the invariant the server guarantees.
+  liveExplainableCount: progress?.explainable ?? count,
+  liveExplainableCents: 100 * (progress?.explainable ?? count),
+  liveExplainedCount: progress?.explained ?? 0,
+  liveExplainedCents: 100 * (progress?.explained ?? 0),
+  backlogExplainableCount: 0,
+  backlogExplainableCents: 0,
+  backlogExplainedCount: 0,
+  backlogExplainedCents: 0,
 });
 
 describe("URL param parsing", () => {

@@ -224,6 +224,7 @@ export function ReconcileList({
   ownChapterId = null,
   centralForItems,
   isManager = false,
+  canRename = false,
   viewerPersonId = null,
   onOpenRow,
   openRowId = null,
@@ -267,6 +268,15 @@ export function ReconcileList({
   // the "Mark personal" row action, which mirrors `cards.flagPersonalCharge`'s
   // own server-side manager-or-cardholder authz.
   isManager?: boolean;
+  // Whether the caller may RENAME a merchant at all (`listReconcile`'s
+  // `viewerCanRename` — the bookkeeper+ rank `finances.renameMerchant` itself
+  // enforces). Separate from the row's own `readOnly`, which answers a
+  // different question: whether this row's BOOK is writable. A finance VIEWER
+  // in their own chapter passes that test and still cannot rename anything, so
+  // without this they were shown a live text box every keystroke of which the
+  // server would refuse — the guarantee `monthCodingWorklist.canRename` gave
+  // the Explain screen, carried onto the grid that replaces it.
+  canRename?: boolean;
   // Founder feedback review: the caller's OWN roster person id
   // (`listReconcile`'s `viewerPersonId`) — widens "Mark personal" to a
   // cardholder's OWN row, mirroring the server's cardholder-or-manager gate.
@@ -391,6 +401,7 @@ export function ReconcileList({
       ownChapterId={ownChapterId}
       centralForItems={centralForItems}
       isManager={isManager}
+      canRename={canRename}
       viewerPersonId={viewerPersonId}
       widths={widths}
       showCardholder={showCardholder}
@@ -512,8 +523,11 @@ export function ReconcileList({
                     count={seg.group.count}
                     totalCents={seg.group.totalCents}
                     shownCount={seg.shownCount}
-                    explainableCount={seg.group.explainableCount}
-                    explainedCount={seg.group.explainedCount}
+                    // The whole tally, passed through rather than picked
+                    // apart: the band needs the live/backlog split as well as
+                    // the combined figure, and `GroupSummary` already IS an
+                    // `ExplainProgress`.
+                    progress={seg.group}
                   />
                   {rows
                     .slice(seg.startIndex, seg.startIndex + seg.shownCount)
@@ -548,6 +562,7 @@ function ReconcileRow({
   ownChapterId,
   centralForItems,
   isManager,
+  canRename,
   viewerPersonId,
   widths,
   showCardholder,
@@ -568,6 +583,7 @@ function ReconcileRow({
   ownChapterId: Id<"chapters"> | null;
   centralForItems?: PickerItem[];
   isManager: boolean;
+  canRename: boolean;
   viewerPersonId: Id<"people"> | null;
   widths: ColWidths;
   /** The side panel renders these three itself — see `hidesForPanel`. */
@@ -863,7 +879,11 @@ function ReconcileRow({
           belongs inside the wrapper; if a future cell wants out, the question
           is whether it can change data, not whether it's inconvenient. */}
       <Cell width={widths.merchant}>
-        <MerchantCell row={row} readOnly={readOnly} />
+        {/* TWO independent reasons the name goes flat, OR'd here rather than
+            inside the cell: this row's book isn't writable, or this caller
+            holds no rank to rename with anywhere. Both leave the history icon
+            live — reading what a row used to be called is a read. */}
+        <MerchantCell row={row} readOnly={readOnly || !canRename} />
       </Cell>
 
       {/* Everything from here on is the editable body. Wrapping it in one

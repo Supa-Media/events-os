@@ -27,14 +27,9 @@
 import { View, Text } from "react-native";
 import { InfoTooltip } from "../../ui";
 import { compactCents } from "../dashboard/compactCents";
-import { explainedStripMode } from "./gridView";
+import { explainedStripMode, showsBacklogSplit, type ExplainProgress } from "./gridView";
 
-export type ExplainedProgress = {
-  explainableCount: number;
-  explainableCents: number;
-  explainedCount: number;
-  explainedCents: number;
-};
+export type ExplainedProgress = ExplainProgress;
 
 export function ExplainedProgressStrip({
   progress,
@@ -49,15 +44,35 @@ export function ExplainedProgressStrip({
   const mode = explainedStripMode(progress, activeFilters);
   if (mode === "hidden") return null;
 
+  // ── THE LIVE/BACKLOG SPLIT (carried over from the Explain screen's own
+  // meter, founder-approved 2026-08-13) ─────────────────────────────────────
+  // A selection holding 450 rows reconstructed from the org's imported 2024-25
+  // records and 3 of this month's own reads as "3% explained" — the backlog
+  // swamping the figure that is supposed to answer "did I finish THIS month".
+  // So when both populations are present, the HEADLINE describes the live one
+  // and the reconstructed backlog gets its own muted line underneath, sized
+  // against its own denominator. When only one population exists the combined
+  // figure already IS that population, and the single line below is the honest
+  // answer on its own — see `showsBacklogSplit`.
+  const split = showsBacklogSplit(progress);
   const { explainableCount, explainableCents, explainedCount, explainedCents } =
-    progress;
+    split
+      ? {
+          explainableCount: progress.liveExplainableCount,
+          explainableCents: progress.liveExplainableCents,
+          explainedCount: progress.liveExplainedCount,
+          explainedCents: progress.liveExplainedCents,
+        }
+      : progress;
   const remaining = mode === "remaining";
-  // Guarded rather than assumed: `explainableCount > 0` here (mode would be
-  // "hidden" otherwise), so this is only ever a division by a positive number.
+  // Guarded rather than assumed: `explainableCount > 0` here — either the
+  // combined count (mode would be "hidden" otherwise) or, under `split`, the
+  // live count, which `showsBacklogSplit` has just asserted is positive.
   const fraction = Math.min(1, Math.max(0, explainedCount / explainableCount));
 
   return (
-    <View className="mb-3 flex-row flex-wrap items-center gap-x-2 gap-y-1">
+    <View className="mb-3 flex-col gap-y-0.5">
+    <View className="flex-row flex-wrap items-center gap-x-2 gap-y-1">
       {/* A thin meter, not a chart — the sentence beside it is the figure;
           this only makes "most of the way" legible at a glance. Omitted in
           `remaining` mode, where a bar pinned at empty would reintroduce the
@@ -72,8 +87,8 @@ export function ExplainedProgressStrip({
       )}
       <Text className="text-xs text-muted">
         {remaining
-          ? `${explainableCount} still to explain · ${compactCents(explainableCents)}`
-          : `${explainedCount} of ${explainableCount} explained · ${compactCents(explainedCents)} of ${compactCents(explainableCents)}`}
+          ? `${explainableCount}${split ? " of this month's rows" : ""} still to explain · ${compactCents(explainableCents)}`
+          : `${explainedCount} of ${explainableCount}${split ? " of this month's rows" : ""} explained · ${compactCents(explainedCents)} of ${compactCents(explainableCents)}`}
       </Text>
       <InfoTooltip
         text={
@@ -83,6 +98,18 @@ export function ExplainedProgressStrip({
         }
         size={12}
       />
+    </View>
+      {/* SECONDARY, muted — the reconstructed backlog, shown so it is never
+          mistaken for this month's own work but never allowed to borrow credit
+          from the meter above it. Its own denominator, for the same reason it
+          gets its own line. */}
+      {split ? (
+        <Text className="text-2xs text-faint">
+          {remaining
+            ? `+ ${progress.backlogExplainableCount} reconstructed rows from the org's imported 2024–25 records · ${compactCents(progress.backlogExplainableCents)}`
+            : `+ ${progress.backlogExplainedCount} of ${progress.backlogExplainableCount} reconstructed rows from the org's imported 2024–25 records · ${compactCents(progress.backlogExplainedCents)} of ${compactCents(progress.backlogExplainableCents)}`}
+        </Text>
+      ) : null}
     </View>
   );
 }
