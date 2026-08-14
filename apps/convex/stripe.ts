@@ -413,3 +413,117 @@ export async function verifyStripeSignature(
   }
   return false;
 }
+
+/**
+ * The NO-LOGIN pay-back checkout — the Stripe half of `repaymentLinks.ts`.
+ *
+ * Same session shape, same `repaymentIds` metadata, same fee-coverage metadata
+ * and therefore the same webhook settling it (`http.ts` →
+ * `cards.applyRepaymentPaidFromStripe`). The ONLY difference from
+ * `createRepaymentCheckout` is where authority comes from: a token in a URL
+ * rather than a signed-in session. Everything after that is deliberately one
+ * code path, because two ways to settle money is how the two drift.
+ *
+ * Line-item names carry an AMOUNT AND NOTHING ELSE. They show on Stripe's own
+ * page and on the receipt email, so a merchant or a person's name there would
+ * undo the anonymity the link page is built around (founder: "we don't need to
+ * put, like, 'hey Michael, you have these charges'").
+ */
+export const createPublicRepaymentCheckout = action({
+  args: {
+    token: v.string(),
+    repaymentIds: v.array(v.id("personalRepayments")),
+    method: v.optional(v.union(v.literal("card"), v.literal("ach"))),
+  },
+  handler: async (
+    ctx,
+    { token, repaymentIds, method },
+  ): Promise<RepaymentCheckoutResult> => {
+    const rail = method ?? "card";
+    const prepared = await ctx.runMutation(
+      internal.repaymentLinks.preparePublicCheckout,
+      { token, repaymentIds, method: rail },
+    );
+
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      throw new ConvexError({
+        code: "PAYMENTS_NOT_CONFIGURED",
+        message: "Card payment isn't available yet — payments are still being set up.",
+      });
+    }
+    // Back to the SAME link they came from, which re-reads its own state and
+    // shows the thank-you once nothing is left.
+    const returnUrl = appUrl(`/pay/${token}`);
+    if (!returnUrl) {
+      console.error(
+        "[stripe] createPublicRepaymentCheckout: APP_URL is unset — refusing to start a checkout with no return URL",
+      );
+      throw new ConvexError({
+        code: "PAYMENTS_NOT_CONFIGURED",
+        message: "Payment isn't available yet — payments are still being set up.",
+      });
+    }
+
+    const body = new URLSearchParams();
+    body.set("mode", "payment");
+    body.set("success_url", `${returnUrl}?paid=1`);
+    body.set("cancel_url", returnUrl);
+    body.set("metadata[repaymentIds]", prepared.repaymentIds.join(","));
+    if (prepared.feeCents > 0) {
+      body.set("metadata[repaymentFeeCents]", String(prepared.feeCents));
+    }
+    prepared.paymentMethodTypes?.forEach((type, i) => {
+      body.set(`payment_method_types[${i}]`, type);
+    });
+    prepared.lines.forEach((line, i) => {
+      body.set(`line_items[${i}][quantity]`, "1");
+      body.set(`line_items[${i}][price_data][currency]`, "usd");
+      body.set(`line_items[${i}][price_data][unit_amount]`, String(line.amountCents));
+      body.set(
+        `line_items[${i}][price_data][product_data][name]`,
+        `${prepared.chapterName} — personal charge`,
+      );
+    });
+    // ONE fee line for the whole batch — Stripe's fixed component is per
+    // PAYMENT, so per-line coverage over-collects it on every charge past the
+    // first (see `cards.prepareRepaymentCheckout`'s own note).
+    if (prepared.feeCents > 0) {
+      const i = prepared.lines.length;
+      body.set(`line_items[${i}][quantity]`, "1");
+      body.set(`line_items[${i}][price_data][currency]`, "usd");
+      body.set(`line_items[${i}][price_data][unit_amount]`, String(prepared.feeCents));
+      body.set(
+        `line_items[${i}][price_data][product_data][name]`,
+        prepared.feeRateLabel
+          ? `Processing fee (${prepared.feeRateLabel})`
+          : "Processing fee",
+      );
+    }
+
+    const response = await fetch(`${STRIPE_API}/checkout/sessions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    });
+    if (!response.ok) {
+      console.error(
+        "[stripe] public repayment checkout session failed:",
+        await response.text(),
+      );
+      throw new ConvexError({
+        code: "STRIPE_ERROR",
+        message: "Couldn't start checkout. Please try again.",
+      });
+    }
+    const session = (await response.json()) as { id: string; url: string };
+    await ctx.runMutation(internal.repaymentLinks.attachPublicSession, {
+      repaymentIds: prepared.repaymentIds,
+      sessionId: session.id,
+    });
+    return { kind: "stripe", url: session.url };
+  },
+});
