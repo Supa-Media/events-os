@@ -585,6 +585,26 @@ const reconcileCounts = v.object({
   ready_to_close: v.number(),
 });
 
+// THE EXPLAINING TALLY, on the wire — see `ExplainProgressTally` for what each
+// field means and why the live/backlog split rides along with the combined
+// figure. Spread into BOTH `listReconcile.explainedProgress` (the whole
+// selection) and every entry of its `groups` (one month band, one person), so
+// the two can never describe the same rows with different field sets.
+const explainProgressFields = {
+  explainableCount: v.number(),
+  explainableCents: v.number(),
+  explainedCount: v.number(),
+  explainedCents: v.number(),
+  liveExplainableCount: v.number(),
+  liveExplainableCents: v.number(),
+  liveExplainedCount: v.number(),
+  liveExplainedCents: v.number(),
+  backlogExplainableCount: v.number(),
+  backlogExplainableCents: v.number(),
+  backlogExplainedCount: v.number(),
+  backlogExplainedCents: v.number(),
+};
+
 // Per-fund SPEND for the dashboard period (period reads are naturally bounded;
 // all-time balance is deferred to the Increase sync in Phase 4).
 const fundPeriodSpend = v.object({
@@ -1554,6 +1574,107 @@ export function explanationPopulation(tr: Doc<"transactions">): boolean {
  *  the Explain worklist lists and the `needs_explaining` facet selects. */
 export function needsExplaining(tr: Doc<"transactions">): boolean {
   return explanationPopulation(tr) && tr.codingState !== "approved";
+}
+
+/**
+ * HOW FAR THROUGH THE EXPLAINING A SET OF ROWS IS — the whole tally, live and
+ * backlog kept apart, in ONE accumulator.
+ *
+ * ## Why the split rides along instead of being a second pass
+ *
+ * The combined figure alone is a number this area has already had to repair
+ * once. A month holding 450 rows reconstructed from the org's imported 2024–25
+ * records and 3 rows of its own live spend reads as "3% explained", and the
+ * founder trying to answer "did I finish THIS month" is looking at a meter
+ * that a backlog nobody is working today has swamped. `monthCodingWorklist`
+ * fixed that for the Explain screen by shipping `live*` and `backlog*`
+ * alongside `total*`; this is the same fix, for the grid that now has to carry
+ * the same meter — per selection AND per month band.
+ *
+ * `isReconstructedHistory` (`@events-os/shared`) is the split, the same
+ * function the worklist calls. `live* + backlog* === total*` always, by
+ * construction: every row in the population lands in exactly one bucket, which
+ * is what {@link tallyExplainProgress} does in a single branch.
+ *
+ * ## Why a function and not three copies of a nine-line loop
+ *
+ * Because there are now three callers — `listReconcile`'s whole-set
+ * `explainedProgress`, the same query's per-group tally, and the tests that
+ * pin them against each other — and a hand-copied tally is exactly how the
+ * `requiresCoding` mirrors drifted (see `explanationPopulation`'s doc).
+ * Costs nothing: every field it reads is already in memory, so it adds no
+ * database read to either caller.
+ */
+export type ExplainProgressTally = {
+  /** Rows that could carry an explanation at all — the denominator. */
+  explainableCount: number;
+  explainableCents: number;
+  /** Of those, the ones with an APPROVED coding. */
+  explainedCount: number;
+  explainedCents: number;
+  /** The same four figures over LIVE rows only — the population observed as
+   *  it happened, which is what "did I finish this month" is asking about. */
+  liveExplainableCount: number;
+  liveExplainableCents: number;
+  liveExplainedCount: number;
+  liveExplainedCents: number;
+  /** And over RECONSTRUCTED rows only (`isReconstructedHistory`). Never
+   *  auto-explained and never exempt — a backlog row still owes a human
+   *  purpose, it just isn't counted against the same meter. */
+  backlogExplainableCount: number;
+  backlogExplainableCents: number;
+  backlogExplainedCount: number;
+  backlogExplainedCents: number;
+};
+
+export function zeroExplainProgress(): ExplainProgressTally {
+  return {
+    explainableCount: 0,
+    explainableCents: 0,
+    explainedCount: 0,
+    explainedCents: 0,
+    liveExplainableCount: 0,
+    liveExplainableCents: 0,
+    liveExplainedCount: 0,
+    liveExplainedCents: 0,
+    backlogExplainableCount: 0,
+    backlogExplainableCents: 0,
+    backlogExplainedCount: 0,
+    backlogExplainedCents: 0,
+  };
+}
+
+/** Fold one row into a {@link ExplainProgressTally}. A row outside
+ *  `explanationPopulation` contributes nothing at all — not even to a
+ *  denominator, which is what keeps a month of processor fees reporting zero
+ *  EXPLAINABLE rather than zero explained. */
+export function tallyExplainProgress(
+  acc: ExplainProgressTally,
+  tr: Doc<"transactions">,
+): void {
+  if (!explanationPopulation(tr)) return;
+  const explained = tr.codingState === "approved";
+  acc.explainableCount += 1;
+  acc.explainableCents += tr.amountCents;
+  if (explained) {
+    acc.explainedCount += 1;
+    acc.explainedCents += tr.amountCents;
+  }
+  if (isReconstructedHistory(tr)) {
+    acc.backlogExplainableCount += 1;
+    acc.backlogExplainableCents += tr.amountCents;
+    if (explained) {
+      acc.backlogExplainedCount += 1;
+      acc.backlogExplainedCents += tr.amountCents;
+    }
+  } else {
+    acc.liveExplainableCount += 1;
+    acc.liveExplainableCents += tr.amountCents;
+    if (explained) {
+      acc.liveExplainedCount += 1;
+      acc.liveExplainedCents += tr.amountCents;
+    }
+  }
 }
 
 /**
@@ -8809,19 +8930,16 @@ export const listReconcile = query({
     // identical to the worklist's denominator, by calling the same function —
     // so a month filtered here and the same month on the Explain screen
     // cannot report different progress.
-    explainedProgress: v.object({
-      /** Matched rows that could carry an explanation at all — the
-       *  denominator. Excludes inflows, internal movements, excluded rows and
-       *  the auto-explained kinds, exactly as the worklist does. */
-      explainableCount: v.number(),
-      /** Their `amountCents` sum (unsigned, matching the worklist's
-       *  `totalCents` — this is "how much money is on the page", not a book
-       *  effect; `selectionTotals` above is the signed arithmetic). */
-      explainableCents: v.number(),
-      /** Of those, the ones with an APPROVED coding. */
-      explainedCount: v.number(),
-      explainedCents: v.number(),
-    }),
+    // The cents figures are unsigned `amountCents` sums, matching the
+    // worklist's `totalCents` — this is "how much money is on the page", not a
+    // book effect; `selectionTotals` above is the signed arithmetic.
+    //
+    // THE LIVE/BACKLOG SPLIT rides along (`live*` / `backlog*`, summing to the
+    // combined figure by construction). Without it a selection holding 450
+    // reconstructed 2024–25 rows and 3 live ones reads as "3% explained" — the
+    // dishonest number `monthCodingWorklist` already had to grow a split to
+    // stop reporting. See `ExplainProgressTally`.
+    explainedProgress: v.object(explainProgressFields),
     // GROUP HEADERS, in render order — present only when `groupBy` is set.
     // `rows` is ordered so each group's rows are contiguous and appear in this
     // same order, so the grid can render headers by walking the page once.
@@ -8848,15 +8966,13 @@ export const listReconcile = query({
            *  `selectionTotals.netCents` instead of being a second, subtly
            *  different summation. */
           totalCents: v.number(),
-          /** THIS GROUP'S OWN explaining progress, same four fields and same
-           *  two predicates as `explainedProgress` above but scoped to the
-           *  group — what lets a month band carry the meter the Explain
-           *  screen carries, instead of staying silent about it. Over the
-           *  whole match set like `count`, never the loaded page. */
-          explainableCount: v.number(),
-          explainableCents: v.number(),
-          explainedCount: v.number(),
-          explainedCents: v.number(),
+          /** THIS GROUP'S OWN explaining progress — the same fields, the same
+           *  accumulator (`tallyExplainProgress`) and the same predicates as
+           *  `explainedProgress` above, scoped to the group. What lets a month
+           *  band carry the meter the Explain screen carried, live and backlog
+           *  kept apart, instead of staying silent about it. Over the whole
+           *  match set like `count`, never the loaded page. */
+          ...explainProgressFields,
         }),
       ),
     ),
@@ -8864,6 +8980,19 @@ export const listReconcile = query({
     // dropped for this request. The grid shows this; a filter that silently
     // stops applying is the defect this whole change exists to remove.
     searchIgnoredState: v.boolean(),
+    // THE SCAN HIT ITS CAP and the rows below are a PREFIX of the scope, not
+    // the whole of it. Every figure in this response — the facet counts, the
+    // group totals, `matchedCount`, `explainedProgress` — is then computed over
+    // that prefix, which is a different claim from the one they normally make
+    // ("over the whole scope, never the page").
+    //
+    // Reported rather than logged. `loadPeriodTxns` already `console.warn`s on
+    // truncation, which tells a developer reading production logs and tells the
+    // treasurer nothing; `monthCodingWorklist` has surfaced the same fact to its
+    // own screen since it shipped, and retiring that screen into this grid means
+    // carrying the warning with it. A silently-short list is exactly the class
+    // of dead number this query keeps repairing.
+    truncated: v.boolean(),
     // Whether the transaction-coding policy has STARTED
     // (`codingRequiredSinceMs <= now`). The grid hides the "Needs coding" and
     // "Coding review" options until it has: before that date `requiresCoding`
@@ -8900,6 +9029,17 @@ export const listReconcile = query({
     // — but produces no `scope:"chapter"` seat, so the UI silently hid the flag
     // from them on every row but their own. One authority, no drift.
     viewerIsManager: v.boolean(),
+    // Whether the caller may RENAME a merchant (`finances.renameMerchant`,
+    // bookkeeper+). Resolved server-side from the same `getFinanceRole` rank
+    // the mutation itself enforces, for the reason `monthCodingWorklist`
+    // resolved its own `canRename`: this grid's floor is a finance VIEWER, and
+    // a viewer must not be shown an editable field every keystroke of which the
+    // server would refuse. The Merchant cell's existing `readOnly` answers a
+    // different question — whether the row's BOOK is writable at all — so a
+    // viewer in their own chapter passed it and got a live text box backed by
+    // nothing. Retiring the Explain screen moves those viewers onto this grid,
+    // so the guarantee has to move with them.
+    viewerCanRename: v.boolean(),
   }),
   handler: async (ctx, args) => {
     // The selection, as a SET. `filters` is the real input; the singular
@@ -8956,18 +9096,15 @@ export const listReconcile = query({
         matchedCount: 0,
         hasMore: false,
         selectionTotals: { inCents: 0, outCents: 0, netCents: 0, neutralCount: 0 },
-        explainedProgress: {
-          explainableCount: 0,
-          explainableCents: 0,
-          explainedCount: 0,
-          explainedCents: 0,
-        },
+        explainedProgress: zeroExplainProgress(),
         searchIgnoredState: false,
+        truncated: false,
         codingArmed: false,
         toClearCount: 0,
         chaseCount: 0,
         viewerPersonId: null,
         viewerIsManager: false,
+        viewerCanRename: false,
       };
     // Resolve the BOOKS this queue reads. One book in every scope except
     // `"all"`, which merges central + every active chapter (see the `scope`
@@ -9024,6 +9161,13 @@ export const listReconcile = query({
     // not book-by-book. Single-book scopes take the identical path they always
     // did (one iteration), so nothing about them changes.
     const perBook: Doc<"transactions">[][] = [];
+    // A book whose read came back FULL — the cap, not the end of the data.
+    // Measured on the raw `.take()` result before any filtering, because that
+    // is the only place the distinction still exists: once the excluded rows and
+    // the wrong-period rows are dropped, a truncated read and a complete one are
+    // indistinguishable. See the `truncated` field in the returns validator for
+    // why this is reported rather than only logged.
+    let truncated = false;
     for (const book of books) {
       if (args.year != null) {
         // Period-scoped (no-dead-numbers): the SAME year/month/ytd window a
@@ -9039,20 +9183,21 @@ export const listReconcile = query({
           sandboxMode,
           !ytd ? args.month : undefined,
         );
+        if (yearTxns.length >= ROLLUP_SCAN_LIMIT) truncated = true;
         perBook.push(
           yearTxns
             .filter((tr) => inDashRange(tr.postedAt, dp))
             .filter((tr) => tr.status !== "excluded"),
         );
       } else {
+        const raw = await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
+          .order("desc")
+          .take(ROLLUP_SCAN_LIMIT);
+        if (raw.length >= ROLLUP_SCAN_LIMIT) truncated = true;
         perBook.push(
-          (
-            await ctx.db
-              .query("transactions")
-              .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
-              .order("desc")
-              .take(ROLLUP_SCAN_LIMIT)
-          )
+          raw
             .filter((tr) => txnMatchesMode(tr, sandboxMode))
             // An intentionally-excluded charge is never part of the reconcile inbox.
             .filter((tr) => tr.status !== "excluded"),
@@ -9329,25 +9474,13 @@ export const listReconcile = query({
 
     // ── HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS ────────────────────
     // Over the WHOLE match set (never the page), and over the SAME population
-    // `monthCodingWorklist` counts — by calling its predicate, not by
+    // `monthCodingWorklist` counts — by calling its accumulator, not by
     // restating it. Costs one pass over rows already in memory and no reads at
     // all, which is why it can be unconditional rather than a flag the client
-    // has to remember to ask for.
-    const explainedProgress = {
-      explainableCount: 0,
-      explainableCents: 0,
-      explainedCount: 0,
-      explainedCents: 0,
-    };
-    for (const tr of selected) {
-      if (!explanationPopulation(tr)) continue;
-      explainedProgress.explainableCount += 1;
-      explainedProgress.explainableCents += tr.amountCents;
-      if (tr.codingState === "approved") {
-        explainedProgress.explainedCount += 1;
-        explainedProgress.explainedCents += tr.amountCents;
-      }
-    }
+    // has to remember to ask for. The live/backlog split comes free with it,
+    // for the reason `ExplainProgressTally` documents.
+    const explainedProgress = zeroExplainProgress();
+    for (const tr of selected) tallyExplainProgress(explainedProgress, tr);
 
     // ── SORT, ACROSS THE WHOLE MATCH SET ────────────────────────────────────
     // `selected` is every matching row in scope, not a page of them — the scan
@@ -9387,16 +9520,7 @@ export const listReconcile = query({
     // DISTINCT people and cards in the book, not by the row count, so grouping
     // adds no per-row read and stays inside the page cap's intent.
     let groups:
-      | {
-          key: string;
-          label: string;
-          count: number;
-          totalCents: number;
-          explainableCount: number;
-          explainableCents: number;
-          explainedCount: number;
-          explainedCents: number;
-        }[]
+      | ({ key: string; label: string; count: number; totalCents: number } & ExplainProgressTally)[]
       | undefined;
     if (args.groupBy != null) {
       const byKey = new Map<
@@ -9406,12 +9530,8 @@ export const listReconcile = query({
           label: string;
           count: number;
           totalCents: number;
-          explainableCount: number;
-          explainableCents: number;
-          explainedCount: number;
-          explainedCents: number;
           rows: Doc<"transactions">[];
-        }
+        } & ExplainProgressTally
       >();
       for (const tr of ordered) {
         let key: string;
@@ -9432,11 +9552,8 @@ export const listReconcile = query({
             label,
             count: 0,
             totalCents: 0,
-            explainableCount: 0,
-            explainableCents: 0,
-            explainedCount: 0,
-            explainedCents: 0,
             rows: [],
+            ...zeroExplainProgress(),
           };
           byKey.set(key, group);
         }
@@ -9445,25 +9562,22 @@ export const listReconcile = query({
         // group totals ADD UP to `selectionTotals.netCents` rather than being a
         // second summation that disagrees with the header above them.
         group.totalCents += signedBookCents(tr);
-        // THE GROUP'S OWN PROGRESS — the same two tests the whole-set
+        // THE GROUP'S OWN PROGRESS — the SAME accumulator the whole-set
         // `explainedProgress` block above runs, on the same rows, so a month
-        // band here and that month on the Explain screen cannot report
-        // different numbers. Free: this loop already visits every matched row
-        // and both predicates read fields already in memory.
+        // band here and the strip above it cannot report different numbers,
+        // and neither can disagree with the meter the Explain screen used to
+        // carry. Free: this loop already visits every matched row and every
+        // field the tally reads is in memory.
         //
         // It has to be computed HERE rather than by the client, because the
         // denominator is `explanationPopulation`, which reads `feeOrigin`,
         // `source`, `sourceCategory` and both refund pointers — none of which
         // `reconcileRow` ships. That is why the group header shipped silent
         // about progress in #704 rather than guessing from the loaded page.
-        if (explanationPopulation(tr)) {
-          group.explainableCount += 1;
-          group.explainableCents += tr.amountCents;
-          if (tr.codingState === "approved") {
-            group.explainedCount += 1;
-            group.explainedCents += tr.amountCents;
-          }
-        }
+        // The live/backlog split has the same problem twice over
+        // (`isReconstructedHistory` reads `source` and `importBatchId`), which
+        // is why it rides along here rather than being derived downstream.
+        tallyExplainProgress(group, tr);
         group.rows.push(tr);
       }
       const ordering = [...byKey.values()];
@@ -9491,16 +9605,11 @@ export const listReconcile = query({
         });
       }
       ordered = ordering.flatMap((g) => g.rows);
-      groups = ordering.map(({ key, label, count, totalCents, ...progress }) => ({
-        key,
-        label,
-        count,
-        explainableCount: progress.explainableCount,
-        explainableCents: progress.explainableCents,
-        explainedCount: progress.explainedCount,
-        explainedCents: progress.explainedCents,
-        totalCents,
-      }));
+      // `rows` dropped — it's the working accumulator's own scratch space and
+      // is not on the wire. Everything else (including the whole
+      // `ExplainProgressTally`) passes through, so adding a field to the tally
+      // never needs a matching line here.
+      groups = ordering.map(({ rows: _rows, ...group }) => group);
     }
 
     // PAGE the rows. `ordered` is the full match set across the scope — that's
@@ -9659,11 +9768,16 @@ export const listReconcile = query({
       explainedProgress,
       groups,
       searchIgnoredState,
+      truncated,
       codingArmed: codingSinceMs <= Date.now(),
       toClearCount,
       chaseCount,
       viewerPersonId: viewer?._id ?? null,
       viewerIsManager: access.isManager,
+      // The rank `renameMerchant` itself enforces, answered here rather than
+      // inferred from the fact that the grid loaded at all — see the field's
+      // doc in the returns validator.
+      viewerCanRename: financeRoleAtLeast(access.role, "bookkeeper"),
     };
   },
 });
