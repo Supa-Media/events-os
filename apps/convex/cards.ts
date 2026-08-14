@@ -171,6 +171,7 @@ import {
 } from "./lib/repaymentFees";
 import { markPublicationsStale } from "./lib/publicLedgerStale";
 import { requireRepaymentsCollect } from "./lib/repaymentsAccess";
+import { buildRepaymentReceipt } from "./lib/personalRepaymentReceiptEmail";
 
 const externalAccountFundingValidator = v.union(
   ...EXTERNAL_ACCOUNT_FUNDINGS.map((f) => v.literal(f)),
@@ -3591,6 +3592,295 @@ async function settleRepayment(
   return (await ctx.db.get(repayment._id))!;
 }
 
+// ── Payment receipt (the payer's proof-of-payment email) ─────────────────────
+//
+// Founder, 2026-08-14: "When people pay what they owe, we need to make sure
+// we send them an email saying, like, hey, thanks for paying this off. This
+// is your receipt … just in case they need a receipt for showing that they
+// did the payment." The copy itself — and the hard rule that it must never
+// read as a donation or a tax deduction — lives in
+// `lib/personalRepaymentReceiptEmail.ts`.
+//
+// ── THE SEAM: one email per PAYMENT, not per debt ────────────────────────────
+// A single Checkout can settle SEVERAL repayments at once (`repaymentIds` is
+// comma-joined in Stripe metadata). Scheduling from inside `settleRepayment`
+// itself — the per-row core — would therefore send N emails for one payment.
+// Instead each SETTLEMENT CALLER schedules exactly once, after it has
+// finished settling everything the current payment event covers:
+//  - `applyRepaymentPaidFromStripe` runs once per settling webhook
+//    (`checkout.session.completed` for a card, `async_payment_succeeded` for
+//    a bank debit) and covers BOTH Stripe rails from one seam — it schedules
+//    once with every repayment it just settled in THIS call.
+//  - `applyRepaymentPaid` (the Increase ACH direct-debit rail) always settles
+//    one repayment at a time, so its single schedule call already has
+//    exactly the shape the other rail's batch degenerates to.
+// A retried/redelivered webhook re-derives "what's still outstanding" before
+// scheduling, so a duplicate delivery that settled nothing new schedules
+// nothing — see `claimRepaymentReceipts` below for the second, row-level
+// guarantee that makes this exactly-once regardless.
+//
+// ── AT MOST ONE RECEIPT PER REPAYMENT, EVER ──────────────────────────────────
+// `claimRepaymentReceipts` stamps `receiptSentAt` on each row in ONE
+// transaction — the same "stamp before send, in a mutation, so the read and
+// the write can't interleave" idempotency `reimbursements.markApprovedNoticeSent`
+// uses. Because one email can cover SEVERAL repayments, the claim is
+// PER-ROW, not all-or-nothing across the batch: it returns only the ids that
+// were actually unclaimed, and the sender includes ONLY those in the email.
+// If it claims nothing — every id in the batch already has a receipt —
+// nothing is sent. That is what makes a webhook retry, or
+// `checkout.session.completed` racing `async_payment_succeeded` for the same
+// session, safe: `settleRepayment`'s own guard means a retry's "outstanding"
+// list is already empty by the time it would schedule, and even in the
+// pathological case where it schedules anyway, the claim finds nothing left
+// to stamp.
+
+const repaymentReceiptLineValidator = v.object({
+  merchantName: v.union(v.string(), v.null()),
+  description: v.union(v.string(), v.null()),
+  chargeDate: v.union(v.number(), v.null()),
+  amountCents: v.number(),
+});
+
+/**
+ * CLAIM the receipt for every listed repayment, returning only the ones this
+ * call actually claimed (previously un-sent, and genuinely settled — the
+ * second check is defensive; every real caller only ever passes ids it just
+ * settled itself). One transaction, so two schedules racing the same row —
+ * a webhook retry landing beside the original call — can never both claim
+ * it.
+ *
+ * Returns each claimed id's `payerPersonId` alongside it so the sender can
+ * GROUP by payer without a second round trip: a batch is normally one
+ * payer's own charges, but `prepareRepaymentCheckout` doesn't itself refuse a
+ * manager bundling charges from DIFFERENT payers into one Checkout, so this
+ * treats that as first-class rather than mailing one payer a receipt that
+ * quietly includes somebody else's charges.
+ */
+export const claimRepaymentReceipts = internalMutation({
+  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  returns: v.array(
+    v.object({
+      repaymentId: v.id("personalRepayments"),
+      payerPersonId: v.id("people"),
+    }),
+  ),
+  handler: async (ctx, { repaymentIds }) => {
+    const claimed: Array<{
+      repaymentId: Id<"personalRepayments">;
+      payerPersonId: Id<"people">;
+    }> = [];
+    for (const id of repaymentIds) {
+      const r = await ctx.db.get(id);
+      if (!r) continue;
+      if (!r.creditTransactionId || r.status !== "paid") continue;
+      if (r.receiptSentAt !== undefined) continue;
+      await ctx.db.patch(id, { receiptSentAt: Date.now() });
+      claimed.push({ repaymentId: id, payerPersonId: r.payerPersonId });
+    }
+    return claimed;
+  },
+});
+
+/**
+ * Everything `sendRepaymentReceiptEmail` needs for ONE payer's slice of a
+ * claimed batch — `null` only when every id resolves to nothing (a race with
+ * a deletion), which the sender treats as "nothing to mail".
+ *
+ * `paidAt` is the LATEST `updatedAt` across the rows rather than any single
+ * one: `settleRepayment` stamps each row with its own `Date.now()` inside the
+ * settlement loop, so a multi-line batch's rows can differ by a few
+ * milliseconds — irrelevant at the day-level granularity the receipt prints,
+ * but "latest" is the more honest answer to "when did this payment settle"
+ * than "whichever row happened first".
+ */
+export const getRepaymentReceiptPayload = internalQuery({
+  args: { repaymentIds: v.array(v.id("personalRepayments")) },
+  returns: v.union(
+    v.object({
+      payerEmail: v.union(v.string(), v.null()),
+      payerName: v.string(),
+      paidAt: v.number(),
+      totalCents: v.number(),
+      method: repaymentMethodValidator,
+      stripePaymentIntentId: v.union(v.string(), v.null()),
+      lines: v.array(repaymentReceiptLineValidator),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { repaymentIds }) => {
+    const rows = (
+      await Promise.all(repaymentIds.map((id) => ctx.db.get(id)))
+    ).filter((r): r is Doc<"personalRepayments"> => r !== null);
+    if (rows.length === 0) return null;
+
+    const payer = await ctx.db.get(rows[0].payerPersonId);
+    const lines = await Promise.all(
+      rows.map(async (r) => {
+        const txn = await ctx.db.get(r.transactionId);
+        return {
+          merchantName: txn?.merchantNameOverride ?? txn?.merchantName ?? null,
+          description: txn?.description ?? null,
+          chargeDate: txn?.postedAt ?? null,
+          amountCents: r.amountCents,
+        };
+      }),
+    );
+
+    return {
+      payerEmail: payer?.pwEmail ?? payer?.email ?? null,
+      payerName: payer?.name ?? "there",
+      paidAt: Math.max(...rows.map((r) => r.updatedAt)),
+      totalCents: rows.reduce((sum, r) => sum + r.amountCents, 0),
+      method: rows[0].method,
+      stripePaymentIntentId: rows[0].stripePaymentIntentId ?? null,
+      lines,
+    };
+  },
+});
+
+const STRIPE_RECEIPT_API = "https://api.stripe.com/v1";
+
+/**
+ * Stripe's own hosted receipt for a settled repayment charge — the LIVE
+ * expand call rule D calls for, mirroring `givingComms.ts#fetchAchFailureCode`'s
+ * pattern but reached through the PaymentIntent directly: a repayment row
+ * already persists `stripePaymentIntentId` (`settleRepayment`), so there's no
+ * reason to detour through the Checkout Session the way the giving-comms
+ * failure lookup does. `GET /payment_intents/{id}?expand[]=latest_charge` —
+ * the receipt lives on the CHARGE, one level below the PaymentIntent, so an
+ * unexpanded read never carries it.
+ *
+ * Best-effort by design, mirroring `fetchAchFailureCode`: `null` on ANY
+ * problem — no `STRIPE_SECRET_KEY` configured, a non-2xx response, a network
+ * throw, no charge yet, a charge with no `receipt_url`, or a `receipt_url`
+ * that isn't `https://`. Nothing here is allowed to be the reason the
+ * receipt email fails to send — see `lib/personalRepaymentReceiptEmail.ts`'s
+ * doc for why a missing Stripe receipt DEGRADES the email rather than
+ * blocking it.
+ */
+async function fetchStripeReceiptUrl(
+  paymentIntentId: string,
+): Promise<string | null> {
+  const secretKey = process.env.STRIPE_SECRET_KEY;
+  if (!secretKey) return null;
+  try {
+    const response = await fetch(
+      `${STRIPE_RECEIPT_API}/payment_intents/${encodeURIComponent(paymentIntentId)}` +
+        `?expand[]=latest_charge`,
+      { headers: { Authorization: `Bearer ${secretKey}` } },
+    );
+    if (!response.ok) return null;
+    const intent = (await response.json()) as {
+      latest_charge?: { receipt_url?: string | null } | string | null;
+    };
+    const charge = intent.latest_charge;
+    // Unexpanded (a bare `ch_…`/`py_…` string) or absent — nothing to read.
+    if (!charge || typeof charge === "string") return null;
+    const url = charge.receipt_url;
+    return typeof url === "string" && url.startsWith("https://") ? url : null;
+  } catch (err) {
+    console.error("[cards] fetchStripeReceiptUrl failed", paymentIntentId, err);
+    return null;
+  }
+}
+
+/**
+ * "You paid this off — here's your receipt", scheduled by whichever
+ * settlement caller just cleared one or more repayments in a single payment
+ * event. See this section's header for the seam and the exactly-once story.
+ *
+ * Claims first (`claimRepaymentReceipts`), then GROUPS the claimed ids by
+ * payer — normally one group, since a batch is normally one person's own
+ * charges — and mails each payer their OWN itemized receipt, never another
+ * payer's charges. `feeCoveredCents` is attributed to a group only when the
+ * WHOLE claimed batch is that one group: split across payers with no
+ * per-line record of who agreed to cover what, it would be a guess, so a
+ * genuinely multi-payer batch drops the fee note and logs loudly instead of
+ * mis-attributing it.
+ *
+ * Wrapped in a try/catch for the same reason `notifyPersonalChargeFlagged`
+ * is: it runs after the payment has already committed, and a missing
+ * `RESEND_API_KEY` (dev/CI) or a transient Resend failure must degrade
+ * silently rather than surface as a failed scheduled job.
+ */
+export const sendRepaymentReceiptEmail = internalAction({
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    feeCoveredCents: v.optional(v.number()),
+  },
+  handler: async (ctx, { repaymentIds, feeCoveredCents }) => {
+    try {
+      if (repaymentIds.length === 0) return null;
+      const claimed: Array<{
+        repaymentId: Id<"personalRepayments">;
+        payerPersonId: Id<"people">;
+      }> = await ctx.runMutation(internal.cards.claimRepaymentReceipts, {
+        repaymentIds,
+      });
+      if (claimed.length === 0) return null;
+
+      const groups = new Map<Id<"people">, Id<"personalRepayments">[]>();
+      for (const c of claimed) {
+        const list = groups.get(c.payerPersonId) ?? [];
+        list.push(c.repaymentId);
+        groups.set(c.payerPersonId, list);
+      }
+      if (groups.size > 1 && (feeCoveredCents ?? 0) > 0) {
+        console.error(
+          "[cards] sendRepaymentReceiptEmail: fee coverage on a batch spanning " +
+            "multiple payers — omitting the fee note rather than guessing an " +
+            "attribution",
+          repaymentIds,
+        );
+      }
+      const feeForSingleGroup = groups.size === 1 ? (feeCoveredCents ?? 0) : 0;
+
+      for (const ids of groups.values()) {
+        const payload = await ctx.runQuery(
+          internal.cards.getRepaymentReceiptPayload,
+          { repaymentIds: ids },
+        );
+        if (!payload || !payload.payerEmail) continue;
+
+        const stripeReceiptUrl = payload.stripePaymentIntentId
+          ? await fetchStripeReceiptUrl(payload.stripePaymentIntentId)
+          : null;
+
+        const link = appUrl("/finances/repayments");
+        // KNOWN REPO TRAP: a `link ? <a> : ""` pattern here would silently
+        // ship a CTA-less transactional email whenever APP_URL is unset.
+        // Degrade LOUDLY instead — see `notifyPersonalChargeFlagged`.
+        if (!link) {
+          console.error(
+            "[cards] sendRepaymentReceiptEmail: APP_URL is unset — sending WITHOUT a clickable repayments link",
+            ids,
+          );
+        }
+
+        const receipt = buildRepaymentReceipt({
+          payerName: payload.payerName,
+          paidAt: payload.paidAt,
+          lines: payload.lines,
+          totalCents: payload.totalCents,
+          method: payload.method,
+          feeCoveredCents: feeForSingleGroup > 0 ? feeForSingleGroup : null,
+          stripeReceiptUrl,
+          link,
+        });
+
+        await sendEmail(ctx, {
+          to: payload.payerEmail,
+          subject: receipt.subject,
+          html: receipt.html,
+        });
+      }
+    } catch (err) {
+      console.error("sendRepaymentReceiptEmail: failed", repaymentIds, err);
+    }
+    return null;
+  },
+});
+
 // ── THERE IS NO MANUAL "MARK REPAID" (founder, 2026-08-14) ───────────────────
 // "We should only mark repaid when you actually pay through the platform. No
 // manual mark as paid."
@@ -3897,9 +4187,19 @@ export const applyRepaymentPaid = internalMutation({
       );
       return toRepaymentSummary(repayment);
     }
-    return toRepaymentSummary(
-      await settleRepayment(ctx, repayment, { increaseRef: args.increaseRef }),
-    );
+    const settled = await settleRepayment(ctx, repayment, {
+      increaseRef: args.increaseRef,
+    });
+    // ONE repayment settles per call on this rail, so the batch this
+    // schedules IS the payment event — see this file's "Payment receipt"
+    // section for why the seam lives at each settlement CALLER rather than
+    // inside `settleRepayment` itself. No Stripe fee coverage exists on this
+    // rail (that option only ever appears in Stripe Checkout metadata).
+    await ctx.scheduler.runAfter(0, internal.cards.sendRepaymentReceiptEmail, {
+      repaymentIds: [settled._id],
+      feeCoveredCents: 0,
+    });
+    return toRepaymentSummary(settled);
   },
 });
 
@@ -4231,6 +4531,17 @@ export const applyRepaymentPaidFromStripe = internalMutation({
     }
     for (const repayment of outstanding) {
       await settleRepayment(ctx, repayment, { stripePaymentIntentId: paymentIntentId });
+    }
+    // ONE schedule per call, covering every repayment THIS call settled —
+    // see this file's "Payment receipt" section. A redelivered/duplicate
+    // webhook for the same session re-derives `outstanding` as empty (every
+    // row it lists is already `paid`), so a retry schedules nothing rather
+    // than a second receipt.
+    if (outstanding.length > 0) {
+      await ctx.scheduler.runAfter(0, internal.cards.sendRepaymentReceiptEmail, {
+        repaymentIds: outstanding.map((r) => r._id),
+        feeCoveredCents: feeCoverageCents ?? 0,
+      });
     }
     return null;
   },
