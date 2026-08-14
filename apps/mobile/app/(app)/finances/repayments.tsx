@@ -25,19 +25,31 @@
  *  2. SELECTION. Nothing is checked by default (paying money is never the
  *     accidental outcome of landing on a page). Select all / none for the
  *     common case; per-row checkboxes for the split case above.
- *  3. AN HONEST TOTAL. The card is charged the debt PLUS Stripe's cut, quoted
- *     live from `api.cards.quoteRepayment` as the selection changes, because
- *     the org has to net the debt whole (founder: "we have to get back
- *     whatever Stripe fees we lose from that transaction"). The fee is charged
- *     once per payment, so the page says out loud that paying in one batch
- *     costs less than paying in several — the one thing a payer can't work out
- *     for themselves from the numbers on screen.
+ *  3. AN HONEST TOTAL, ON BOTH RAILS. The payer is charged the debt PLUS
+ *     Stripe's cut, quoted live from `api.cards.quoteRepayment` as the
+ *     selection changes, because the org has to net the debt whole (founder:
+ *     "we have to get back whatever Stripe fees we lose from that
+ *     transaction"). Since the payer covers it, they get to choose how much it
+ *     costs: card is instant at 2.9% + 30¢, bank transfer is 0.8% capped at
+ *     $5.00 and takes about four business days. On a $248 charge that is $7.49
+ *     against $1.98, and quietly routing everyone onto the expensive rail
+ *     because it was the only one built would be the org saving its own
+ *     inconvenience with a volunteer's money.
+ *
+ *     The fee is charged once per PAYMENT, so the page also says out loud that
+ *     paying in one batch costs less than paying in several — the one thing a
+ *     payer can't work out for themselves from the numbers on screen.
  *
  * Nothing here settles anything. The flag only clears when Stripe's webhook
- * confirms payment (`cards.applyRepaymentPaidFromStripe`); an abandoned
- * checkout leaves every charge exactly as outstanding as it was. That is why
- * this page has no optimistic "initiated" state of its own — the balance it
- * shows is always the true one.
+ * confirms the money ARRIVED (`cards.applyRepaymentPaidFromStripe`); an
+ * abandoned checkout leaves every charge exactly as outstanding as it was.
+ * That is why this page has no optimistic "initiated" state of its own — the
+ * balance it shows is always the true one.
+ *
+ * A bank transfer makes that gap days long rather than instant, so those
+ * charges sit in `processing`: still owed, visibly in flight, and NOT
+ * selectable, because the one thing worse than a payer wondering whether it
+ * worked is a payer paying for it twice. See `REPAYMENT_STATUSES`.
  *
  * Settled charges stay visible under a collapsed "Paid back" section rather
  * than vanishing: a charge that disappears the moment it's paid reads as
@@ -81,12 +93,27 @@ export default function RepaymentsScreen() {
   const justReturned = params.repay === "success";
 
   const [selected, setSelected] = useState<Record<string, boolean>>({});
+  // Which rail. Card first because it is instant and most repayments are
+  // small; the panel below shows what each costs so the choice is informed
+  // rather than defaulted into.
+  const [rail, setRail] = useState<"card" | "ach">("card");
   const createRepaymentCheckout = useAction(api.stripe.createRepaymentCheckout);
   const { run, toast, dismiss } = useActionRunner();
   const [busy, setBusy] = useState(false);
 
+  // Owed AND payable. A `processing` charge is still owed — it counts in the
+  // balance and it is not gone from the page — but it is deliberately not in
+  // this list, because everything here is selectable and paying for a debit
+  // that is already clearing collects the same money twice.
   const outstanding = useMemo(
-    () => (repayments ?? []).filter((r) => r.status !== "paid"),
+    () =>
+      (repayments ?? []).filter(
+        (r) => r.status !== "paid" && r.status !== "processing",
+      ),
+    [repayments],
+  );
+  const clearing = useMemo(
+    () => (repayments ?? []).filter((r) => r.status === "processing"),
     [repayments],
   );
   const settled = useMemo(
@@ -135,6 +162,7 @@ export default function RepaymentsScreen() {
       () =>
         createRepaymentCheckout({
           repaymentIds: selectedIds as Id<"personalRepayments">[],
+          method: rail,
         }),
       { errorTitle: "Couldn't start checkout" },
     );
@@ -164,18 +192,56 @@ export default function RepaymentsScreen() {
             <View className="mb-4 flex-row items-start gap-2 rounded-lg border border-border bg-accent-soft p-3">
               <Icon name="clock" size={14} color={colors.accent} />
               <Text className="flex-1 text-xs text-ink">
-                Thanks — your payment is going through. Charges clear from this
-                list as soon as it settles, usually within a minute.
+                Thanks — your payment is going through. A card payment clears
+                from this list within a minute; a bank transfer moves to
+                &ldquo;Clearing&rdquo; and settles in about four business days.
               </Text>
             </View>
           ) : null}
 
+          {/* ── Bank transfers on their way ────────────────────────────────
+                Above the payable list, and deliberately not inside it: these
+                are already paid for as far as the payer is concerned, and the
+                only thing they need is reassurance plus the certainty that
+                they can't be charged again. No checkboxes, no total. */}
+          {clearing.length > 0 ? (
+            <View className="mb-4">
+              <SectionHeader title="Clearing" count={clearing.length} />
+              <Card padding="none">
+                {clearing.map((r, i) => (
+                  <View
+                    key={r.id}
+                    className={`flex-row items-center gap-3 px-4 py-3 ${i === 0 ? "" : "border-t border-border"}`}
+                  >
+                    <Icon name="clock" size={14} color={colors.accent} />
+                    <View className="min-w-0 flex-1">
+                      <Text className="text-sm text-ink" numberOfLines={1}>
+                        {r.merchantName ?? r.description ?? "Personal charge"}
+                      </Text>
+                      <Text className="text-xs text-muted" numberOfLines={1}>
+                        Bank transfer on its way — usually about 4 business days
+                      </Text>
+                    </View>
+                    <Text
+                      className="text-sm text-muted"
+                      style={{ fontVariant: ["tabular-nums"] }}
+                    >
+                      {formatCents(r.amountCents)}
+                    </Text>
+                  </View>
+                ))}
+              </Card>
+            </View>
+          ) : null}
+
           {outstanding.length === 0 ? (
-            <EmptyState
-              icon="check-circle"
-              title="Nothing outstanding"
-              message="No personal charges are flagged against your card right now."
-            />
+            clearing.length > 0 ? null : (
+              <EmptyState
+                icon="check-circle"
+                title="Nothing outstanding"
+                message="No personal charges are flagged against your card right now."
+              />
+            )
           ) : (
             <>
               {/* ── The balance + the selection controls ──────────────────── */}
@@ -223,6 +289,8 @@ export default function RepaymentsScreen() {
 
               {/* ── What this will cost, and the button ───────────────────── */}
               <PayPanel
+                rail={rail}
+                onRailChange={setRail}
                 selectedCount={selectedIds.length}
                 outstandingCount={outstanding.length}
                 quote={quote}
@@ -313,94 +381,187 @@ function RepaymentRow({
 }
 
 /**
- * The commit step: what the card gets charged, broken into the debt and the
- * processing fee, plus the one-batch nudge.
+ * The commit step: which rail, what each costs, and the total the payer is
+ * agreeing to.
  *
- * The nudge is not upsell — it's the only part of the arithmetic a payer
- * cannot see from the numbers in front of them. Stripe's fixed 30¢ is per
- * PAYMENT, so three separate checkouts cost 60¢ more than one, and the payer
- * is the one covering it. Shown only when it's actually true (a partial
- * selection of more than one remaining charge).
+ * Both rails are priced on screen at once rather than behind a toggle that
+ * re-quotes. The saving is the entire argument for the slower option, and an
+ * argument you have to click to see is one most people never see — on a $248
+ * charge it is $7.49 against $1.98, out of the pocket of a volunteer fixing
+ * their own mistake.
+ *
+ * The one-batch nudge is not upsell either — it is the only part of the
+ * arithmetic a payer cannot work out from the numbers in front of them.
+ * Stripe's fixed fee is per PAYMENT, so three checkouts cost more than one,
+ * and they are the one covering it. Shown only when it is actually true (a
+ * partial selection of more than one remaining charge).
  */
 function PayPanel({
   selectedCount,
   outstandingCount,
   quote,
+  rail,
+  onRailChange,
   busy,
   onPay,
 }: {
   selectedCount: number;
   outstandingCount: number;
   quote: FunctionReturnType<typeof api.cards.quoteRepayment> | undefined;
+  rail: "card" | "ach";
+  onRailChange: (next: "card" | "ach") => void;
   busy: boolean;
   onPay: () => void;
 }) {
   const partial = selectedCount > 0 && selectedCount < outstandingCount;
+  const chosen = quote ? (rail === "ach" ? quote.ach : quote.card) : null;
+  // What picking the bank saves, in the payer's own pocket. Only stated when
+  // it is a real number — at small amounts the two rails are pennies apart and
+  // "save $0.14, wait four days" is not a trade worth interrupting anyone for.
+  const achSavesCents = quote ? quote.card.feeCents - quote.ach.feeCents : 0;
   return (
     <Card className="mt-3">
       {selectedCount === 0 ? (
         <Text className="text-sm text-muted">
           Select the charges you&apos;re ready to pay back.
         </Text>
-      ) : quote === undefined ? (
+      ) : quote === undefined || chosen === null ? (
         <Text className="text-sm text-muted">Working out the total…</Text>
       ) : (
-        <View className="gap-1.5">
-          <QuoteRow
-            label={`${quote.count} charge${quote.count === 1 ? "" : "s"}`}
-            value={formatCents(quote.totalCents)}
-          />
-          {quote.feeCents > 0 ? (
-            <QuoteRow
-              label={
-                quote.feeRateLabel
-                  ? `Card processing fee (${quote.feeRateLabel})`
-                  : "Card processing fee"
-              }
-              value={formatCents(quote.feeCents)}
+        <View className="gap-3">
+          {/* ── How do you want to pay? ─────────────────────────────────── */}
+          <View className="flex-row flex-wrap gap-2">
+            <RailOption
+              selected={rail === "card"}
+              onPress={() => onRailChange("card")}
+              title="Card"
+              detail="Instant"
+              cost={formatCents(quote.card.chargeCents)}
             />
-          ) : null}
-          <View className="mt-1 flex-row items-baseline justify-between gap-2 border-t border-border pt-2">
-            <Text className="text-sm font-semibold text-ink">
-              Your card is charged
-            </Text>
-            <Text
-              className="text-lg font-semibold text-ink"
-              style={{ fontVariant: ["tabular-nums"] }}
-            >
-              {formatCents(quote.chargeCents)}
-            </Text>
+            <RailOption
+              selected={rail === "ach"}
+              onPress={() => onRailChange("ach")}
+              title="Bank transfer"
+              detail="About 4 business days"
+              cost={formatCents(quote.ach.chargeCents)}
+            />
           </View>
-          {quote.feeCents > 0 ? (
+          {rail === "card" && achSavesCents >= 100 ? (
             <Text className="text-xs text-muted">
-              The fee is added so Public Worship gets the full{" "}
-              {formatCents(quote.totalCents)} back rather than losing it to the
-              card processor.
+              Paying by bank instead would cost you{" "}
+              {formatCents(achSavesCents)} less — it just takes a few days to
+              clear.
             </Text>
           ) : null}
-          {partial ? (
-            <Text className="text-xs text-muted">
-              The processing fee is charged once per payment — settling the rest
-              in this same batch costs less than paying for them separately
-              later.
-            </Text>
-          ) : null}
+
+          <View className="gap-1.5">
+            <QuoteRow
+              label={`${quote.count} charge${quote.count === 1 ? "" : "s"}`}
+              value={formatCents(quote.totalCents)}
+            />
+            {chosen.feeCents > 0 ? (
+              <QuoteRow
+                label={
+                  chosen.rateLabel
+                    ? `Processing fee (${chosen.rateLabel})`
+                    : "Processing fee"
+                }
+                value={formatCents(chosen.feeCents)}
+              />
+            ) : null}
+            <View className="mt-1 flex-row items-baseline justify-between gap-2 border-t border-border pt-2">
+              <Text className="text-sm font-semibold text-ink">
+                You&apos;ll be charged
+              </Text>
+              <Text
+                className="text-lg font-semibold text-ink"
+                style={{ fontVariant: ["tabular-nums"] }}
+              >
+                {formatCents(chosen.chargeCents)}
+              </Text>
+            </View>
+            {chosen.feeCents > 0 ? (
+              <Text className="text-xs text-muted">
+                The fee is added so Public Worship gets the full{" "}
+                {formatCents(quote.totalCents)} back rather than losing it to
+                the payment processor.
+              </Text>
+            ) : null}
+            {partial ? (
+              <Text className="text-xs text-muted">
+                The processing fee is charged once per payment — settling the
+                rest in this same batch costs less than paying for them
+                separately later.
+              </Text>
+            ) : null}
+            {rail === "ach" ? (
+              <Text className="text-xs text-muted">
+                Bank transfers take about four business days. These charges
+                will show as clearing until the money lands, and stay off your
+                balance the moment it does.
+              </Text>
+            ) : null}
+          </View>
         </View>
       )}
       <View className="mt-3 flex-row justify-end">
         <Button
           title={
             selectedCount === 0
-              ? "Pay by card"
-              : `Pay ${selectedCount} by card`
+              ? "Pay"
+              : rail === "ach"
+                ? `Pay ${selectedCount} by bank`
+                : `Pay ${selectedCount} by card`
           }
-          icon="credit-card"
+          icon={rail === "ach" ? "home" : "credit-card"}
           loading={busy}
           disabled={selectedCount === 0 || quote === undefined}
           onPress={onPay}
         />
       </View>
     </Card>
+  );
+}
+
+/** One rail's card in the chooser: what it's called, how long it takes, and
+ *  what it will actually cost this selection. The price is on the option
+ *  itself, not in a footnote — it is the thing being chosen between. */
+function RailOption({
+  selected,
+  onPress,
+  title,
+  detail,
+  cost,
+}: {
+  selected: boolean;
+  onPress: () => void;
+  title: string;
+  detail: string;
+  cost: string;
+}) {
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="radio"
+      aria-checked={selected}
+      accessibilityState={{ selected }}
+      accessibilityLabel={`${title}, ${detail}, ${cost}`}
+      className={`min-w-[150px] flex-1 rounded-lg border px-3 py-2.5 active:opacity-70 ${
+        selected ? "border-accent bg-accent-soft" : "border-border bg-sunken"
+      }`}
+    >
+      <View className="flex-row items-center gap-1.5">
+        <CheckMark checked={selected} />
+        <Text className="text-sm font-semibold text-ink">{title}</Text>
+      </View>
+      <Text className="mt-0.5 text-2xs text-muted">{detail}</Text>
+      <Text
+        className="mt-1 text-sm font-semibold text-ink"
+        style={{ fontVariant: ["tabular-nums"] }}
+      >
+        {cost}
+      </Text>
+    </Pressable>
   );
 }
 

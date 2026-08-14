@@ -96,6 +96,7 @@ describe("repayment fee coverage", () => {
 
     const prepared = await s.as.mutation(internal.cards.prepareRepaymentCheckout, {
       repaymentIds: [repaymentId],
+      method: "card",
     });
 
     expect(prepared.totalCents).toBe(10_000);
@@ -119,6 +120,7 @@ describe("repayment fee coverage", () => {
 
     const prepared = await s.as.mutation(internal.cards.prepareRepaymentCheckout, {
       repaymentIds: ids,
+      method: "card",
     });
 
     expect(prepared.totalCents).toBe(10_000);
@@ -155,6 +157,7 @@ describe("repayment fee coverage", () => {
 
     const prepared = await s.as.mutation(internal.cards.prepareRepaymentCheckout, {
       repaymentIds: [repaymentId],
+      method: "card",
     });
     expect(prepared.chargeCents).toBe(
       grossUpCents(10_000, { percentBps: 200, fixedCents: 0 }),
@@ -174,12 +177,13 @@ describe("repayment fee coverage", () => {
     });
     const prepared = await s.as.mutation(internal.cards.prepareRepaymentCheckout, {
       repaymentIds: [a, b],
+      method: "card",
     });
 
     expect(quote.count).toBe(2);
     expect(quote.totalCents).toBe(prepared.totalCents);
-    expect(quote.feeCents).toBe(prepared.feeCents);
-    expect(quote.chargeCents).toBe(prepared.chargeCents);
+    expect(quote.card.feeCents).toBe(prepared.feeCents);
+    expect(quote.card.chargeCents).toBe(prepared.chargeCents);
   });
 
   test("the quote ignores ids that aren't the caller's own outstanding debt", async () => {
@@ -216,12 +220,12 @@ describe("repayment fee coverage", () => {
     const s = await setupChapter(t);
     await seedPayer(s);
     const quote = await s.as.query(api.cards.quoteRepayment, { repaymentIds: [] });
+    const emptyRail = { feeCents: 0, chargeCents: 0, rateLabel: null };
     expect(quote).toEqual({
       count: 0,
       totalCents: 0,
-      feeCents: 0,
-      chargeCents: 0,
-      feeRateLabel: null,
+      card: emptyRail,
+      ach: emptyRail,
     });
   });
 
@@ -233,6 +237,7 @@ describe("repayment fee coverage", () => {
     const b = await seedRepayment(s, payer, 5_000);
     const prepared = await s.as.mutation(internal.cards.prepareRepaymentCheckout, {
       repaymentIds: [a, b],
+      method: "card",
     });
 
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});

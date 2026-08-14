@@ -479,6 +479,16 @@
  *    one place" bullet now says Reimbursements is a top-level tab for
  *    everyone, approvers included, rather than filed under Cards.
  *
+ * The repayment-settlement follow-up (2026-08-14, same day, founder decisions
+ * on the shipped work) is content-only on `finance-reimbursements-and-flags`
+ * again — three bullets rewritten and two added, no section or quiz change:
+ * the payer now CHOOSES card or bank transfer and covers the corresponding
+ * fee, a bank transfer visibly sits in "Clearing" for its four business days,
+ * and — the rule with teeth — nobody can mark a charge repaid by hand any
+ * more, including the Financial Manager. Cash handed over in person is no
+ * longer recordable as a repayment; the honest alternatives (pay through the
+ * app, or un-flag a charge that was never personal) are taught in its place.
+ *
  * 2026-08-14 — bulk explanation, and Approve as one undoable tap. Both land in
  * `finance-reconcile-grid`: an "Explained" filter row, a new rule block on
  * explaining a backlog without lying about it, and the undo/confirm folded

@@ -236,11 +236,20 @@ type RepaymentCheckoutResult = { kind: "stripe"; url: string };
  * repayments it wants to pay, never an amount.
  */
 export const createRepaymentCheckout = action({
-  args: { repaymentIds: v.array(v.id("personalRepayments")) },
-  handler: async (ctx, { repaymentIds }): Promise<RepaymentCheckoutResult> => {
+  args: {
+    repaymentIds: v.array(v.id("personalRepayments")),
+    /** Which rail. Optional for backward compatibility with any caller that
+     *  predates the bank-debit option; card is what they meant. */
+    method: v.optional(v.union(v.literal("card"), v.literal("ach"))),
+  },
+  handler: async (
+    ctx,
+    { repaymentIds, method },
+  ): Promise<RepaymentCheckoutResult> => {
+    const rail = method ?? "card";
     const prepared = await ctx.runMutation(
       internal.cards.prepareRepaymentCheckout,
-      { repaymentIds },
+      { repaymentIds, method: rail },
     );
 
     const secretKey = process.env.STRIPE_SECRET_KEY;
@@ -271,6 +280,14 @@ export const createRepaymentCheckout = action({
     const body = new URLSearchParams();
     body.set("mode", "payment");
     if (prepared.payerEmail) body.set("customer_email", prepared.payerEmail);
+    // Card sessions send NOTHING here and take Stripe's default, so the
+    // wallets the account already accepts (Apple/Google Pay — same price as a
+    // card) stay available. A bank-debit session pins `us_bank_account`,
+    // which is what makes Stripe collect bank credentials instead of a card
+    // number. See `cards.stripePaymentMethodTypes`.
+    prepared.paymentMethodTypes?.forEach((type, i) => {
+      body.set(`payment_method_types[${i}]`, type);
+    });
     body.set("success_url", `${returnUrl}?repay=success`);
     body.set("cancel_url", returnUrl);
     // Bundled into ONE session — the webhook reads this back to know which
