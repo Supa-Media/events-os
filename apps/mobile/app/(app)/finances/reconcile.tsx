@@ -762,7 +762,26 @@ function ReconcileGrid() {
   // "Restricted" for every reconciler who cannot publish, which is precisely
   // the failure that locked the founder out for a night (2026-08-11/12).
   const canUseLedgerConsole = reconcile?.viewerCanUseLedgerConsole ?? false;
+  // A FILTERED BAND MUST NOT OFFER TO PUBLISH.
+  //
+  // A band's count and total describe the MATCH SET — the rows the current
+  // filters left standing. Publishing acts on the whole month. Group "Needs
+  // attention" by month and the band reads "March 2025 · 12 charges ·
+  // -$4,102" beside a button that would put ~300 rows and a completely
+  // different figure on publicworship.life.
+  //
+  // That is the dead-number defect this whole area exists to end, wired to
+  // the one irreversible, public act on the screen — the worst possible place
+  // for it. So the ACTIONS require an unfiltered grid; the STATUS badge does
+  // not, because "March is published" is true regardless of what you have
+  // narrowed to, and hiding it would make a filtered view quietly forget
+  // which months are already out.
+  //
+  // A search counts as a filter here even though the State group stands down
+  // for it (`searchIgnoredState`): the rows on screen are still a subset.
+  const gridIsNarrowed = filters.length > 0 || debouncedQuery.trim().length > 0;
   const showPublishInBands = groupBy === "month" && canUseLedgerConsole;
+  const allowBandPublishActions = showPublishInBands && !gridIsNarrowed;
   // The one book the console is about. `null` means "the caller's own desk",
   // which is what both `console_` and the preview mint default to.
   const consoleScope: SingleBookScope | null = centralScope
@@ -2189,37 +2208,51 @@ function ReconcileGrid() {
                         }
                       />
                       {/* LOOKING, not committing — a mint and an open, which is
-                          why it can happen right here. */}
-                      <Button
-                        title="Preview"
-                        variant="ghost"
-                        size="sm"
-                        icon="eye"
-                        loading={previewPage.loading}
-                        onPress={() =>
-                          void previewPage.open({
-                            scope: consoleScope,
-                            periodKey: group.key,
-                          })
-                        }
-                      />
+                          why it can happen right here. Still withheld on a
+                          narrowed grid: the preview renders the WHOLE month,
+                          so offering it beside a filtered count would invite
+                          the same "these 12 rows" misreading as Publish. */}
+                      {allowBandPublishActions ? (
+                        <Button
+                          title="Preview"
+                          variant="ghost"
+                          size="sm"
+                          icon="eye"
+                          loading={previewPage.loading}
+                          onPress={() =>
+                            void previewPage.open({
+                              scope: consoleScope,
+                              periodKey: group.key,
+                            })
+                          }
+                        />
+                      ) : null}
                       {/* COMMITTING — routed to the console, deliberately. The
                           two-approver handoff, the amendment reason and the
                           truncated-snapshot refusal are the act itself, not
                           paperwork in front of it. */}
-                      <Button
-                        title={pub.status === "published" ? "Amend" : "Publish"}
-                        variant="ghost"
-                        size="sm"
-                        icon="arrow-up-right"
-                        onPress={() =>
-                          router.navigate(
-                            `/finances/publish${
-                              consoleScope ? `?scope=${consoleScope}` : ""
-                            }${parsed ? `${consoleScope ? "&" : "?"}period=${group.key}` : ""}` as never,
-                          )
-                        }
-                      />
+                      {allowBandPublishActions ? (
+                        <Button
+                          title={pub.status === "published" ? "Amend" : "Publish"}
+                          variant="ghost"
+                          size="sm"
+                          icon="arrow-up-right"
+                          onPress={() =>
+                            router.navigate(
+                              `/finances/publish${
+                                consoleScope ? `?scope=${consoleScope}` : ""
+                              }${parsed ? `${consoleScope ? "&" : "?"}period=${group.key}` : ""}` as never,
+                            )
+                          }
+                        />
+                      ) : (
+                        // SAY WHY, rather than leaving a gap somebody reads as
+                        // "this month can't be published". The status is still
+                        // true; only the actions are withheld.
+                        <Text className="text-2xs text-faint">
+                          Clear filters to publish
+                        </Text>
+                      )}
                     </View>
                   );
                 }
