@@ -16,13 +16,67 @@ import {
   isNonDiscretionaryFee,
   type TransactionCodingStatus,
 } from "@events-os/shared";
-import type { Doc } from "../_generated/dataModel";
+import { v, type Infer } from "convex/values";
+import type { Doc, Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 
 // Mirrors the same local constant every other file in `apps/convex` defines
 // for itself (`cards.ts`, `finances.ts`, ...) rather than importing — one
 // number, not worth a cross-module dependency.
 const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * ONE CHARGE, AS A REMINDER PRINTS IT — the wire shape shared by the automated
+ * cardholder digest (`cards.getReceiptReminderDigests`) and the manager's
+ * on-demand coding chase (`finances.getCodingChaseTargets`).
+ *
+ * It lives HERE, beside the predicates that fill it in, because those two
+ * producers now sit in different modules and `finances.ts` may not import from
+ * `cards.ts` (the import edge runs the other way). A hand-copied validator
+ * across that boundary is the precise failure this module was created to end —
+ * see `isUncodedCharge`'s note about the fee carve-out that went missing for a
+ * release because it was mirrored by hand three times.
+ */
+export const reminderChargeValidator = v.object({
+  amountCents: v.number(),
+  merchantName: v.union(v.string(), v.null()),
+  escalated: v.boolean(),
+  // What this charge still owes, in the words the digest prints
+  // (`outstandingLabel` below) — the ONE string the email, the escalation
+  // stages and the manager's chase all read, so they can't drift on what
+  // "still owes something" means.
+  outstanding: v.string(),
+  // Whether the RECEIPT is (part of) what's missing. The day-7 card auto-lock
+  // acts on receipts and nothing else, so the "your card locks" warning has to
+  // know the difference between a charge missing its document and one merely
+  // missing its coding — otherwise the email threatens a lock that will never
+  // come, which is how a warning stops being believed.
+  missingReceipt: v.boolean(),
+  // Whether the CODING is (part of) what's missing — i.e. whether the 60-day
+  // accountable-plan clock is the thing running on this row.
+  needsCoding: v.boolean(),
+});
+export type ReminderCharge = Infer<typeof reminderChargeValidator>;
+
+/** One cardholder's currently-outstanding bundle, resolved for a chase — the
+ *  SAME per-charge shape the automated digest builds, plus `personId`/`phone`
+ *  so the sender can rate-limit and SMS. */
+export const chaseTargetValidator = v.object({
+  personId: v.id("people"),
+  email: v.union(v.string(), v.null()),
+  phone: v.union(v.string(), v.null()),
+  cardholderName: v.string(),
+  anyEscalated: v.boolean(),
+  charges: v.array(reminderChargeValidator),
+});
+export type ChaseTarget = {
+  personId: Id<"people">;
+  email: string | null;
+  phone: string | null;
+  cardholderName: string;
+  anyEscalated: boolean;
+  charges: ReminderCharge[];
+};
 
 /**
  * The reminder stage a charge's AGE alone implies as of `now` — day-1

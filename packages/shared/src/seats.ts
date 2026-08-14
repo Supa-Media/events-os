@@ -465,7 +465,7 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     duties: [
       "Record & reconcile chapter money",
       "Close the month",
-      "Chase receipts",
+      "Chase the coding",
     ],
     // F-6 P1: the treasurer sees their chapter's donors (chapter-lens read).
     // `finance.edit` at CHAPTER scope: the whole finance domain for THIS

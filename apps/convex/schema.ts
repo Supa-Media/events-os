@@ -343,8 +343,8 @@ const schema = defineSchema({
   reimbursementSubmitAttempts,
   // WP-C.3: rate limiter for the HOLDER-ONLY card-details reveal (add-to-wallet).
   cardDetailsRevealAttempts,
-  // Rate limiter for the FM-only manual Chase Receipts "Send reminder"/
-  // "Remind all" nudge — at most one per cardholder per 24h.
+  // Rate limiter for the manager-only coding chase ("Chase" / "Chase
+  // everyone" on the Reconcile grid) — at most one per cardholder per 24h.
   receiptNudgeAttempts,
   financeSettings,
   // Morning reconciliation engine: detected Stripe payouts + per-book
