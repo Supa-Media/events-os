@@ -532,6 +532,21 @@ export const send = mutation({
     await requireContractorPaymentsCompose(ctx, chapterId);
     assertTransition(row!.status, ["draft", "sent"], "send");
 
+    // The link is addressed by the CHAPTER SLUG, and `chapters.slug` is
+    // optional. Without one the URL degrades to `/contract/?token=…`, which the
+    // route 404s — so `send` would succeed, staff would copy a dead link into a
+    // text message, and the contractor would never be able to get paid, with
+    // nothing anywhere reporting a failure. Refuse loudly instead: this is the
+    // one moment someone can still fix it.
+    const chapter = await ctx.db.get(chapterId);
+    if (!chapter?.slug) {
+      throw new ConvexError({
+        code: "CHAPTER_SLUG_MISSING",
+        message:
+          "This chapter needs a public web address before you can send a contractor link. Set the chapter's slug in settings first.",
+      });
+    }
+
     const now = Date.now();
     await ctx.db.patch(contractorPaymentId, {
       status: "sent",
@@ -1832,7 +1847,11 @@ export const linkPublicBankAccount = action({
  */
 export function contractUrl(chapterSlug: string, token: string): string {
   const base = siteUrl();
-  if (!base) return "";
+  // Both halves are required. A missing slug would build `/contract/?token=…`,
+  // which the route 404s — `send` refuses that case up front, and this is the
+  // belt to its braces: every caller already treats `""` as "don't send", so a
+  // dead link never reaches an inbox.
+  if (!base || !chapterSlug) return "";
   return `${base}/contract/${encodeURIComponent(chapterSlug)}?token=${encodeURIComponent(token)}`;
 }
 

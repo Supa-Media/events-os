@@ -779,6 +779,45 @@ describe("the state machine refuses illegal moves", () => {
     expect(after!.reviewNote).toBeUndefined();
   });
 
+  test("sending refuses when the chapter has no public slug", async () => {
+    // `chapters.slug` is optional. Without one the contractor's URL builds as
+    // `/contract/?token=…`, which the route 404s — so `send` would succeed,
+    // staff would copy a dead link into a text message, and the contractor
+    // would never get paid with nothing reporting a failure anywhere.
+    const t = newT();
+    const s = await setupChapter(t); // deliberately NO setSlug
+    await disarmCodingPolicy(t);
+    const personId = await seedPerson(s, {
+      name: "Composer",
+      email: s.email,
+      userId: s.userId,
+    });
+    await grantManager(s, personId);
+    const budgetId = await run(t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 500_000,
+        type: "recurring",
+        cadence: "yearly",
+        year: 2026,
+        label: "Production",
+        createdAt: Date.now(),
+      }),
+    );
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      { ...AGREEMENT, budgetId },
+    );
+    await expect(
+      s.as.mutation(api.contractorPayments.send, { contractorPaymentId }),
+    ).rejects.toThrow(ConvexError);
+
+    // And it stays a draft, so nothing claims to have been sent.
+    const after = await run(t, (ctx) => ctx.db.get(contractorPaymentId));
+    expect(after!.status).toBe("draft");
+    expect(after!.sentAt).toBeUndefined();
+  });
+
   test("an unknown token is indistinguishable from a cancelled one", async () => {
     const { s } = await setup();
     expect(
