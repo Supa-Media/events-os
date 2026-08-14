@@ -578,9 +578,11 @@ const reconcileFilterValidator = v.union(
   v.literal("personal_unpaid"),
   v.literal("transfers"),
   v.literal("payouts"),
-  // The header roll-ups (`RECONCILE_HEADER_CHIPS`). Complements over the OPEN
-  // set, so `needs_attention + ready_to_close === toClearCount` by
-  // construction — see `flagsFor`.
+  // The roll-ups. Complements over the OPEN set, so
+  // `needs_attention + ready_to_close === toClearCount` by construction — see
+  // `flagsFor`. The grid's header chips that used to render them are gone (the
+  // State dropdown says the same thing); the counts still feed the Dashboard
+  // and both keys are still selectable filters.
   v.literal("needs_attention"),
   v.literal("ready_to_close"),
 );
