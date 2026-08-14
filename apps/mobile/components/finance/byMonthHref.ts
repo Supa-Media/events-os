@@ -16,9 +16,12 @@
  * different filters, half the org would be working a different list from the
  * other half and nothing on either screen would say so.
  *
- * The Book view menu's "By month" entry sets the same three axes as grid state
- * rather than by navigating — it is already on this screen — but reads from the
- * same three constants below, so all three surfaces are one definition.
+ * There is no longer a menu entry that sets these axes by hand: the grid's
+ * view menu was deleted (founder, 2026-08-13: "I don't even see the need for
+ * the dropdown into By month"), because Group by → Month plus the State
+ * dropdown IS "By month". The constants below stay, because the two LINKS
+ * above still have to name the same three axes, and a link has to spell them
+ * out in a URL.
  *
  * ── THE SCOPE TRANSLATION IS THE PART THAT'S EASY TO GET WRONG ───────────────
  * A single-book scope (`Id<"chapters"> | "central"`, what the publish console

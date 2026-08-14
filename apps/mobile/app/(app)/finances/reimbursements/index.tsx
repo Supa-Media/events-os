@@ -52,7 +52,7 @@
  * Built to `finances.html` (§ Reimbursements) and `docs/plans/finance.md`.
  */
 import { useMemo, useState } from "react";
-import { View, Text, Platform, Alert, Share } from "react-native";
+import { View, Text, Platform, Alert, Pressable, Share } from "react-native";
 import * as Linking from "expo-linking";
 import { useRouter } from "expo-router";
 import { webAppUrl } from "../../../../lib/appUrl";
@@ -67,8 +67,8 @@ import {
   Cell,
   EmptyState,
   HeaderCell,
+  Icon,
   Narrow,
-  Pill,
   Row,
   Screen,
   SectionHeader,
@@ -76,6 +76,7 @@ import {
   TableHeader,
   ToastView,
 } from "../../../../components/ui";
+import { colors } from "../../../../lib/theme";
 import { useActionRunner } from "../../../../lib/useActionToast";
 import { FinanceBoundary } from "../../../../components/finance/dashboard/parts";
 import { HowItWorks } from "../../../../components/finance/reimbursements/HowItWorks";
@@ -87,13 +88,15 @@ import {
 import { OwedBanner } from "../../../../components/finance/cards/OwedBanner";
 import { CardTile } from "../../../../components/finance/cards/CardTile";
 import {
-  FILTERS,
+  QUEUE_SECTIONS,
   isOpen,
   isOwedToMember,
   isTerminal,
+  queueSection,
   STATUS_BADGE,
   shortDate,
-  type FilterKey,
+  type QueueSectionKey,
+  type ReimbursementRow,
 } from "../../../../components/finance/reimbursements/helpers";
 
 type MyReimbursement = FunctionReturnType<
@@ -161,6 +164,74 @@ async function shareRequestLink() {
   }
 }
 
+/** Mirrors the `.take(200)` in `api.reimbursements.list`. Kept here (rather
+ *  than guessed at) so the "showing the most recent N" notice below can never
+ *  quote a number the backend doesn't actually use. */
+const QUEUE_READ_CAP = 200;
+
+/**
+ * One collapsible band of the approval queue. Header states the count and the
+ * dollars in the band, so a collapsed section still answers "is there anything
+ * in there" without being opened — the thing a plain disclosure triangle
+ * cannot do, and the reason History can safely start closed.
+ *
+ * An empty section renders its header and its own reassurance rather than
+ * disappearing: "Waiting on you — 0" is a genuinely useful thing to see, and a
+ * section that vanishes when empty teaches a reviewer to scan for a heading
+ * that may or may not be there. History and Sent-back, which have nothing
+ * reassuring to say when empty, render nothing at all.
+ */
+function QueueSection({
+  title,
+  rows,
+  defaultCollapsed,
+  emptyMessage,
+  children,
+}: {
+  title: string;
+  rows: ReimbursementRow[];
+  defaultCollapsed: boolean;
+  emptyMessage?: string;
+  children: React.ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useState(defaultCollapsed);
+  if (rows.length === 0 && !emptyMessage) return null;
+  const totalCents = rows.reduce((sum, r) => sum + r.totalCents, 0);
+  return (
+    <View className="mb-4">
+      <Pressable
+        onPress={() => setCollapsed((v) => !v)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: !collapsed }}
+        className="flex-row items-center gap-2 border-b border-border py-2 active:opacity-70"
+      >
+        <Icon
+          name={collapsed ? "chevron-right" : "chevron-down"}
+          size={16}
+          color={colors.muted}
+        />
+        <Text className="flex-1 text-sm font-semibold text-ink">
+          {title}
+          <Text className="text-muted"> · {rows.length}</Text>
+        </Text>
+        {rows.length > 0 ? (
+          <Text
+            className="text-xs text-muted"
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {formatCents(totalCents)}
+          </Text>
+        ) : null}
+      </Pressable>
+      {collapsed ? null : rows.length === 0 ? (
+        <Text className="py-3 text-xs text-muted">{emptyMessage}</Text>
+      ) : (
+        <View className="pt-3">{children}</View>
+      )}
+    </View>
+  );
+}
+
 /** A reimbursements table — shared between the "Public Worship owes you" and
  *  "History" sections below (identical shape, different status filter). */
 function ReimbursementTable({ rows }: { rows: MyReimbursement[] }) {
@@ -213,17 +284,15 @@ function MemberReimbursementsScreen() {
   const reimbursements = useQuery(api.reimbursements.myReimbursements, {});
   // Only for the section header's count/empty-state — `OwedBanner` re-reads
   // this same query itself (Convex dedupes the subscription; see its doc
-  // comment for why the pay-back flow lives there and not here).
+  // comment for why the banner is now a pointer at `/finances/repayments`
+  // rather than the pay-back flow itself).
   const myRepayments = useQuery(api.cards.myPersonalRepayments, {});
   const owedToMe = myRepayments?.filter((r) => r.status !== "paid");
-  // `OwedBanner` tracks its own "initiated this session" state that this raw
-  // filter can't see — after initiating the LAST repayment, `owedToMe` still
-  // shows a stale count/section while the banner itself renders nothing. This
-  // mirrors the banner's reported emptiness (via `onEmptyChange`) so the
-  // header + section hide together with it instead of drifting out of sync.
-  const [owedBannerEmpty, setOwedBannerEmpty] = useState(false);
-  const owedEmpty =
-    owedToMe === undefined ? undefined : owedToMe.length === 0 || owedBannerEmpty;
+  // The banner no longer keeps any local "initiated this session" state to
+  // drift from (settlement is a webhook, so the query IS the truth), which is
+  // why this is a plain read of the same rows rather than a reported-emptiness
+  // handshake between the two components.
+  const owedEmpty = owedToMe === undefined ? undefined : owedToMe.length === 0;
 
   // Sent back for a fix — surfaced ABOVE everything else as an editable card
   // (`ReviseForm`), because it's the only row on this screen where the member
@@ -327,13 +396,7 @@ function MemberReimbursementsScreen() {
             message="No personal charges are flagged against your card right now."
           />
         ) : null}
-        {/* Stays mounted whenever anything is (raw-)owed, independent of
-            `owedEmpty` — its own effect is what flips `owedEmpty` true/false
-            above as its "initiated this session" state changes, and re-syncs
-            itself the moment a NEW charge is flagged. */}
-        {owedToMe !== undefined && owedToMe.length > 0 ? (
-          <OwedBanner onEmptyChange={setOwedBannerEmpty} />
-        ) : null}
+        {owedToMe !== undefined && owedToMe.length > 0 ? <OwedBanner /> : null}
 
         {/* "Public Worship owes you" — open reimbursement requests. */}
         <SectionHeader
@@ -367,10 +430,12 @@ function MemberReimbursementsScreen() {
  *  caller holds a finance seat (see `ReimbursementsScreen` below). */
 function ManagerReimbursementsScreen() {
   const router = useRouter();
-  const [activeFilter, setActiveFilter] = useState<FilterKey>("all");
-
-  const filter = FILTERS.find((f) => f.key === activeFilter)!;
-  const rows = useQuery(api.reimbursements.list, { status: filter.status });
+  // One read of the WHOLE queue, grouped client-side into the four
+  // who-is-blocked sections (`QUEUE_SECTIONS`) — the filter pills that used to
+  // drive `list({status})` are gone, because a pill is a way to ask a question
+  // and the founder's complaint was that the screen never answered one. See
+  // `helpers.ts#queueSection`.
+  const rows = useQuery(api.reimbursements.list, {});
 
   // "Personal charges outstanding" (D4) — the same chapter-scope aggregate the
   // manager Cards view's "Personal to repay" tile uses. Reimbursements doesn't
@@ -416,6 +481,20 @@ function ManagerReimbursementsScreen() {
       count: open.length,
       totalCents: open.reduce((sum, r) => sum + r.totalCents, 0),
     };
+  }, [rows]);
+
+  // The four who-is-blocked buckets. One pass, so a status that somehow
+  // matches nothing still lands somewhere (`queueSection` defaults to
+  // "waiting" — see its doc).
+  const sections = useMemo(() => {
+    const bucket: Record<QueueSectionKey, ReimbursementRow[]> = {
+      waiting: [],
+      in_flight: [],
+      sent_back: [],
+      history: [],
+    };
+    for (const row of rows ?? []) bucket[queueSection(row.status)].push(row);
+    return bucket;
   }, [rows]);
 
   // Approve (full "Approve & pay" or a partial "Approve lines…" selection),
@@ -529,6 +608,17 @@ function ManagerReimbursementsScreen() {
             Increase account.
           </Text>
 
+          {/* A seat holder swipes a card too. Their OWN "you owe Public
+              Worship" belongs on the same tab as everything else about money
+              owed in either direction (founder, 2026-08-14: reimbursements is
+              where people with personal charges should be sent) — previously
+              it appeared only on the member view, so the one persona who could
+              flag a charge personal never saw their own. Renders nothing when
+              nothing is owed. */}
+          <View className="mb-4">
+            <OwedBanner />
+          </View>
+
           {/* "Personal charges outstanding" (D4) — same aggregate as the
               manager Cards view's "Personal to repay" tile, and now a real
               drill-in: the tile used to name a count with nowhere to go
@@ -557,46 +647,51 @@ function ManagerReimbursementsScreen() {
             />
           </View>
 
-          {/* Filter pills → list({status}). */}
-          <View className="mb-4 flex-row flex-wrap gap-2">
-            {FILTERS.map((f) => (
-              <Pill
-                key={f.key}
-                label={f.label}
-                selected={activeFilter === f.key}
-                onPress={() => setActiveFilter(f.key)}
-              />
-            ))}
-          </View>
-
-          {/* Queue. */}
+          {/* Queue, grouped by who is blocked and collapsible — the founder's
+              "things are already paid, things haven't been paid, doesn't
+              collapse anything". History and Sent-back start closed. */}
           {loading ? (
             <EmptyState title="Loading requests…" />
           ) : rows.length === 0 ? (
             <EmptyState
               icon="inbox"
-              title="No requests in this view"
-              message={
-                activeFilter === "all"
-                  ? "Submitted reimbursements appear here for a finance manager to approve — the ACH payout starts automatically once approved."
-                  : "Nothing matches this filter right now. Try another."
-              }
+              title="No reimbursement requests yet"
+              message="Submitted reimbursements appear here for a finance manager to approve — the ACH payout starts automatically once approved."
             />
           ) : (
             <View>
-              {rows.map((row) => (
-                <RequestCard
-                  key={row._id}
-                  row={row}
-                  payout={payoutByReimbursement.get(row._id)}
-                  onApprove={handleApprove}
-                  onPreApprove={handlePreApprove}
-                  onReject={handleReject}
-                  onRequestChanges={handleRequestChanges}
-                  onMarkPaid={handleMarkPaid}
-                  onRetryPayout={handleRetryPayout}
-                />
+              {QUEUE_SECTIONS.map((section) => (
+                <QueueSection
+                  key={section.key}
+                  title={section.title}
+                  rows={sections[section.key]}
+                  defaultCollapsed={section.collapsed}
+                  emptyMessage={section.emptyMessage}
+                >
+                  {sections[section.key].map((row) => (
+                    <RequestCard
+                      key={row._id}
+                      row={row}
+                      payout={payoutByReimbursement.get(row._id)}
+                      onApprove={handleApprove}
+                      onPreApprove={handlePreApprove}
+                      onReject={handleReject}
+                      onRequestChanges={handleRequestChanges}
+                      onMarkPaid={handleMarkPaid}
+                      onRetryPayout={handleRetryPayout}
+                    />
+                  ))}
+                </QueueSection>
               ))}
+              {/* `reimbursements.list` reads the newest 200 rows of the whole
+                  chapter. Say so rather than letting an older open request go
+                  quietly missing off the bottom of History. */}
+              {rows.length >= QUEUE_READ_CAP ? (
+                <Text className="mt-2 text-xs text-muted">
+                  Showing the most recent {QUEUE_READ_CAP} requests. Older ones
+                  aren&apos;t listed here yet.
+                </Text>
+              ) : null}
             </View>
           )}
 

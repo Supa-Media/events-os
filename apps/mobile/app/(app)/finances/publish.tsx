@@ -56,6 +56,7 @@ import {
   Button,
   Card,
   EmptyState,
+  Icon,
   Narrow,
   Screen,
   SectionHeader,
@@ -63,6 +64,8 @@ import {
   TextField,
   type BadgeTone,
 } from "../../../components/ui";
+import { colors } from "../../../lib/theme";
+import { formatDate } from "../../../lib/format";
 import { FinanceBoundary } from "../../../components/finance/dashboard/parts";
 import { useChapterContext } from "../../../lib/ChapterContext";
 import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
@@ -113,7 +116,7 @@ function Body() {
   // holder peeking at a chapter would work their own queue while believing
   // they were working that chapter's.
   //
-  // But `?scope=` is written by the reconcile grid's view menu, which speaks a
+  // But `?scope=` is written by the reconcile grid, which speaks a
   // WIDER vocabulary than `publicLedger`'s `scopeValidator`
   // (`v.id("chapters") | "central"`) accepts — its default for a dual-hat
   // caller is `"all"`, the merged queue, and there is no such thing as
@@ -503,6 +506,32 @@ function MonthDetail({
 
         {month.status === "published" && (
           <>
+            {/* THE BOOKS MOVED UNDER A PUBLISHED MONTH. A prompt, never an
+                automatic amendment: republishing puts a new statement in front
+                of the world and carries a human's sentence explaining it, so
+                the app asks and the publisher decides (founder, 2026-08-14:
+                "it should probably ask to republish the public ledgers and
+                statements if they're already published"). The reason and note
+                fields directly below are the ones to fill in — this call-out
+                deliberately has no button of its own rather than duplicating
+                them. Cleared automatically the next time the month
+                publishes. */}
+            {month.staleSince ? (
+              <View className="flex-row items-start gap-2 rounded-lg border border-border bg-warn-bg p-3">
+                <Icon name="alert-triangle" size={14} color={colors.warn} />
+                <View className="flex-1">
+                  <Text className="text-sm font-semibold text-ink">
+                    The books have changed since this was published
+                  </Text>
+                  <Text className="text-xs text-muted">
+                    {month.staleReason ?? "Something changed in this month."} —
+                    on {formatDate(month.staleSince)}. The public page still
+                    shows revision {month.liveRevision ?? 1}. Correct and
+                    republish below if the change should be public.
+                  </Text>
+                </View>
+              </View>
+            ) : null}
             <Text className="text-sm text-muted">
               Published. It can be corrected, but not taken down — the earlier
               version stays on the record either way.

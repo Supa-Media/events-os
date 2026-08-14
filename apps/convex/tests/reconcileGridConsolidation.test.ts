@@ -572,6 +572,126 @@ describe("grouping — contiguous rows, honest headers", () => {
 
 // ─────────────────────────────────────────────────────────────────────────────
 
+describe("a month band knows how big the WHOLE month is", () => {
+  // The band carries Publish, and publishing acts on the month rather than on
+  // the selection. #707 answered that by withholding the button from a
+  // filtered grid; the founder wants it back, so the band has to be able to
+  // state both figures instead. These are what it states with.
+
+  test("THE POINT: a filtered month band still reports the month's own count and total", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // June: one row that still needs explaining, two that don't.
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024 });
+    await txn(s, { amountCents: 2_000, postedAt: JUNE_2024, codingState: "approved" });
+    await txn(s, { amountCents: 4_000, postedAt: JUNE_2024, codingState: "approved" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      groupBy: "month",
+      filters: ["needs_explaining"],
+    });
+    const june = res.groups?.find((g) => g.key === "2024-06");
+    // The match set: one row, $10.
+    expect(june?.count).toBe(1);
+    expect(june?.totalCents).toBe(-1_000);
+    // The month: three rows, $70. Publish is about THESE.
+    expect(june?.unfilteredCount).toBe(3);
+    expect(june?.unfilteredTotalCents).toBe(-7_000);
+  });
+
+  test("an unfiltered band reports the same figure twice, so it prints one", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024 });
+    await txn(s, { amountCents: 2_000, postedAt: JUNE_2024 });
+
+    const res = await s.as.query(api.finances.listReconcile, { groupBy: "month" });
+    const june = res.groups?.find((g) => g.key === "2024-06");
+    expect(june?.unfilteredCount).toBe(june?.count);
+    expect(june?.unfilteredTotalCents).toBe(june?.totalCents);
+  });
+
+  test("a SEARCH narrows the band the same way a filter does", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024, merchantName: "Costco" });
+    await txn(s, { amountCents: 2_000, postedAt: JUNE_2024, merchantName: "Amazon" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      groupBy: "month",
+      search: "costco",
+    });
+    const june = res.groups?.find((g) => g.key === "2024-06");
+    expect(june?.count).toBe(1);
+    expect(june?.unfilteredCount).toBe(2);
+  });
+
+  test("the baseline is the default queue's population — a hidden transfer leg is in neither figure", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024 });
+    // An UNMARKED transfer leg: hidden from the default queue, so it is no
+    // more part of "the whole month" than it is part of the match set. If the
+    // baseline counted it, an unfiltered grid would read "1 of 2 charges" and
+    // the second row would be unreachable.
+    await txn(s, { amountCents: 9_000, postedAt: JUNE_2024, flow: "transfer" });
+
+    const res = await s.as.query(api.finances.listReconcile, { groupBy: "month" });
+    const june = res.groups?.find((g) => g.key === "2024-06");
+    expect(june?.count).toBe(1);
+    expect(june?.unfilteredCount).toBe(1);
+  });
+
+  test("picking Transfers can put MORE rows in the band than the baseline holds", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // ONE ordinary row — so June's baseline is 1 — plus two transfer legs
+    // hidden from the default queue. Picking Transfers deliberately un-hides
+    // the legs into the match set while excluding the ordinary row, so the
+    // match set is not a subset of the baseline: it is BIGGER than it.
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024 });
+    await txn(s, { amountCents: 9_000, postedAt: JUNE_2024, flow: "transfer" });
+    await txn(s, { amountCents: 5_000, postedAt: JUNE_2024, flow: "transfer" });
+
+    const res = await s.as.query(api.finances.listReconcile, {
+      groupBy: "month",
+      filters: ["transfers"],
+    });
+    const june = res.groups?.find((g) => g.key === "2024-06");
+    expect(june?.count).toBe(2);
+    // The baseline cannot describe them: they were never in the default
+    // queue's population. This is exactly why the BAND compares only when the
+    // baseline is a strict SUPERSET (`unfilteredCount > count`, see
+    // `ReconcileGroupHeader`) — a `!==` test would print "2 of 1 charges", a
+    // comparison against a population that does not contain what is on screen.
+    //
+    // The server states both figures honestly and lets the band decide. It
+    // must NOT paper over this by clamping the baseline up to `count`: that
+    // would claim the month holds rows the default queue would never show,
+    // and Publish — the button the baseline exists to make honest — acts on
+    // the default population, not on the un-hidden one.
+    expect(june?.unfilteredCount).toBe(1);
+  });
+
+  test("person bands carry no baseline — a person is not a publishable unit", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    await txn(s, { amountCents: 1_000, postedAt: JUNE_2024 });
+
+    const res = await s.as.query(api.finances.listReconcile, { groupBy: "person" });
+    expect(res.groups?.[0]?.unfilteredCount).toBeUndefined();
+    expect(res.groups?.[0]?.unfilteredTotalCents).toBeUndefined();
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+
 describe("each group carries its OWN progress", () => {
   // This is what lets a month band stand in for the Explain screen's meter.
   // It has to be computed server-side: the denominator is

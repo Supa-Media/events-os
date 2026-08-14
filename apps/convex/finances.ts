@@ -583,9 +583,11 @@ const reconcileFilterValidator = v.union(
   v.literal("personal_unpaid"),
   v.literal("transfers"),
   v.literal("payouts"),
-  // The header roll-ups (`RECONCILE_HEADER_CHIPS`). Complements over the OPEN
-  // set, so `needs_attention + ready_to_close === toClearCount` by
-  // construction — see `flagsFor`.
+  // The roll-ups. Complements over the OPEN set, so
+  // `needs_attention + ready_to_close === toClearCount` by construction — see
+  // `flagsFor`. The grid's header chips that used to render them are gone (the
+  // State dropdown says the same thing); the counts still feed the Dashboard
+  // and both keys are still selectable filters.
   v.literal("needs_attention"),
   v.literal("ready_to_close"),
 );
@@ -1926,7 +1928,7 @@ export function effectiveRefKind(b: Doc<"budgets">): BudgetRefKind | null {
  * flow-carries-direction + transfer-excluded invariants hold regardless of an
  * explicit link).
  */
-function txnCountsTowardBudget(
+export function txnCountsTowardBudget(
   tr: Doc<"transactions">,
   b: Doc<"budgets">,
   contextMonth?: number,
@@ -5448,6 +5450,18 @@ const glanceBudgetRow = v.object({
   dateLabel: v.union(v.string(), v.null()),
   type: typeValidator,
   cadence: cadenceValidator,
+  // The linked event/project, but ONLY when the ref still resolves — a deleted
+  // event leaves its budget's `scopeRefId` dangling (`events.remove` doesn't
+  // cascade), and the glance card's "Open event" link must never 404. Both
+  // fields are null together for a recurring bucket, an unlinked one-time
+  // budget, and a dead ref alike, which is what lets the client gate the link
+  // on `refKind != null` without a second `refLive` flag to remember.
+  //
+  // Founder, 2026-08-14: "for events, you can't even click to the event, go to
+  // the money page for a project. You can't even go to where the project
+  // details are." These two fields are the whole fix on the read side.
+  refKind: v.union(refKindValidator, v.null()),
+  scopeRefId: v.union(v.string(), v.null()),
   capCents: v.number(),
   spentCents: v.number(),
   remainingCents: v.number(),
@@ -5544,13 +5558,22 @@ export const budgetsGlance = query({
       // WP-wave4 (item 9) mirror: hide the "$0.00 / $0.00" stragglers.
       if (capCents === 0 && spentCents === 0) continue;
       const pct = pctOf(spentCents, capCents);
-      const { name, dateLabel, refDate } = await resolveBudgetRef(b, getEvent, getProject);
+      const { name, dateLabel, refDate, live } = await resolveBudgetRef(
+        b,
+        getEvent,
+        getProject,
+      );
+      // Gated on `live` — see `glanceBudgetRow.refKind`'s own comment for why
+      // a dangling ref must read as "no ref" rather than as a link.
+      const refKind = live ? effectiveRefKind(b) : null;
       const row = {
         id: b._id,
         name,
         dateLabel,
         type: effectiveType(b),
         cadence: b.cadence,
+        refKind,
+        scopeRefId: refKind ? b.scopeRefId ?? null : null,
         capCents,
         spentCents,
         remainingCents: capCents - spentCents,
@@ -9045,6 +9068,28 @@ export const listReconcile = query({
            *  `selectionTotals.netCents` instead of being a second, subtly
            *  different summation. */
           totalCents: v.number(),
+          /** ── WHAT THE WHOLE MONTH IS, beside what the filter left ────────
+           *
+           *  `count`/`totalCents` describe the MATCH SET. A month band also
+           *  carries Publish, and publishing acts on the whole month — so
+           *  "March · 12 charges · -$4,102" beside a button that puts ~300
+           *  rows and -$88,201 on a public page is the dead-number defect
+           *  wired to the one irreversible act on the screen.
+           *
+           *  #707 answered that by WITHHOLDING Publish whenever the grid was
+           *  narrowed. The founder wants the buttons there ("There should be
+           *  a button to view and a button to publish"), so the band is made
+           *  TRUTHFUL instead: it prints both figures — "12 of 318 charges ·
+           *  -$4,102 of -$88,201" — and Publish is then plainly about the
+           *  month rather than about the selection.
+           *
+           *  MONTH BANDS ONLY (absent for `groupBy:"person"` — a person is not
+           *  a publishable unit and has no unfiltered baseline to compare
+           *  against). Population is the default queue's, so an unfiltered
+           *  grid has these equal to `count`/`totalCents` and the band prints
+           *  one figure. */
+          unfilteredCount: v.optional(v.number()),
+          unfilteredTotalCents: v.optional(v.number()),
           /** THIS GROUP'S OWN explaining progress — the same fields, the same
            *  accumulator (`tallyExplainProgress`) and the same predicates as
            *  `explainedProgress` above, scoped to the group. What lets a month
@@ -9566,6 +9611,19 @@ export const listReconcile = query({
     // it. A book whose only receipt-owing rows are marked transfers would have
     // lost its only route to a chase page that still lists them.
     let chaseCount = 0;
+    // ── EVERY MONTH'S WHOLE SIZE, BEFORE ANY FILTER ──────────────────────────
+    // Keyed `YYYY-MM`, exactly like the month bands below. Accumulated in the
+    // scan loop rather than in the grouping loop, because that loop walks
+    // `ordered` — the MATCH SET — and so can only ever describe the filtered
+    // subset. A month band that offers Publish has to be able to say what the
+    // WHOLE month is, since publishing acts on the month and not on what the
+    // grid is currently narrowed to.
+    //
+    // Costs no extra read and no second scan: the key is arithmetic on
+    // `postedAt` and the total is `signedBookCents`, both pure functions of a
+    // document already in memory. Only accumulated when the caller asked for
+    // month bands, so nothing else pays for it.
+    const unfilteredByMonth = new Map<string, { count: number; totalCents: number }>();
     for (const tr of all) {
       const flags = flagsFor(tr);
       // `isChaseable`, the same function the `needs_chasing` facet and
@@ -9612,6 +9670,24 @@ export const listReconcile = query({
       }
       counts.all += 1;
       if (!flags.reconciled) toClearCount += 1;
+      // The month baseline is taken HERE — after the hidden-transfer-leg
+      // `continue` above and before any selection — so its population is the
+      // DEFAULT QUEUE's, which is exactly what an unfiltered grid shows for
+      // that month. That is what lets the band collapse "318 of 318 charges"
+      // back to a plain "318 charges" when nothing is narrowed, instead of
+      // quietly comparing two different populations to each other.
+      if (args.groupBy === "month") {
+        const p = easternParts(tr.postedAt);
+        const monthKey = `${p.year}-${String(p.month).padStart(2, "0")}`;
+        const month = unfilteredByMonth.get(monthKey);
+        const signed = signedBookCents(tr);
+        if (month) {
+          month.count += 1;
+          month.totalCents += signed;
+        } else {
+          unfilteredByMonth.set(monthKey, { count: 1, totalCents: signed });
+        }
+      }
       if (
         matchesReconcileFilters(flags, selectionFilters) &&
         (await matchesSearch(tr))
@@ -9685,6 +9761,9 @@ export const listReconcile = query({
           imageUrl: string | null;
           count: number;
           totalCents: number;
+          /** Month bands only — see the returns validator. */
+          unfilteredCount?: number;
+          unfilteredTotalCents?: number;
         } & ExplainProgressTally)[]
       | undefined;
     if (args.groupBy != null) {
@@ -9782,7 +9861,25 @@ export const listReconcile = query({
       // is not on the wire. Everything else (including the whole
       // `ExplainProgressTally`) passes through, so adding a field to the tally
       // never needs a matching line here.
-      groups = ordering.map(({ rows: _rows, ...group }) => group);
+      groups = ordering.map(({ rows: _rows, ...group }) => {
+        // THE MONTH'S WHOLE SIZE, attached to the band that carries Publish.
+        // Read off the map the scan loop filled, never recomputed here — this
+        // loop only ever saw the match set, which is the whole reason the
+        // baseline had to be taken up there.
+        //
+        // A month present in the match set but absent from the map cannot
+        // happen for a non-hidden row (both are filled from the same scan);
+        // if it ever did, falling back to the group's own figures makes the
+        // band read exactly as an unfiltered one rather than printing a
+        // comparison against zero.
+        if (args.groupBy !== "month") return group;
+        const whole = unfilteredByMonth.get(group.key);
+        return {
+          ...group,
+          unfilteredCount: whole?.count ?? group.count,
+          unfilteredTotalCents: whole?.totalCents ?? group.totalCents,
+        };
+      });
     }
 
     // PAGE the rows. `ordered` is the full match set across the scope — that's

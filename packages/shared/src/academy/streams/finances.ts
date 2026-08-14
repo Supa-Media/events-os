@@ -278,6 +278,44 @@
  * 2026-08-11/12), and teaching the separation as absolute with no stated
  * exception would have the lesson contradict a button the founder can see.
  *
+ * ── THE GRID DECLUTTER (2026-08-13 founder call) ──────────────────────────
+ * Content-only across three Finances sections; nothing added, moved or
+ * renamed. The Reconcile grid lost its VIEW MENU (a dropdown of seven saved
+ * views that was the page title) and its three HEADER CHIPS ("45 needs
+ * attention · 90 ready to close · 222 reconciled"), on the founder's
+ * reasoning that both restate what the grid's own controls already say:
+ * "I don't even see the need for the dropdown into By month." "You already
+ * have the State right here on the side... That's all you need, and you have
+ * the books as well." "What are these pills underneath... I don't even know
+ * what reconciled is." "This should just be, like, Transactions." Group by
+ * covers month and person, the State/Kind dropdowns cover the states, the
+ * books selector covers scope — so the menu was a third way to say it and the
+ * chips a fourth. The page-level "Chase receipts (N)" button went too: group
+ * by Person puts a Send reminder on each cardholder's own band.
+ *
+ * Two month-band changes came with it. Preview and Publish are no longer
+ * withheld from a filtered grid (#707); instead the band names BOTH figures —
+ * "12 of 318 charges · -$4,102 of -$88,201" — so Publish is plainly about the
+ * month. And a person band's Send reminder is now visible: it was rendered
+ * ~500px past the right edge of a laptop window, inside the grid's horizontal
+ * scroller.
+ *
+ * So `finance-reconcile-grid` retitled its header rule ("The pile that was
+ * never a backlog") and rewrote it around the page's four controls, keeping
+ * the needs-attention/ready-to-close split as vocabulary rather than as a
+ * pill, and keeping the bulk-bar teaching; gained one rule, "Group by is how
+ * you get everywhere else", which is where the retired month/chase/publish
+ * views now live; dropped the "third chip in the header" clause from its
+ * Reconciled filter row and the "Book's view menu" pointer from its coding
+ * rule; and SWAPPED its chips question (already at the 5-cap) for one on what
+ * Publish acts on when a month band is filtered. `finance-chasing-receipts`
+ * rewrote its worklist rule as the State + Group by pairing, folding in the
+ * 24h nudge limit and the one-book rule for Remind all, and rewrote its
+ * worklist question's answer and explanation to match. `finance-publishing-
+ * the-books` rewrote its "watch it happen" paragraph for Group by → Month and
+ * teaches the band's two figures. Titles, minutes and quiz lengths are
+ * unchanged everywhere; no section, course or slug moved.
+ *
  * BULK EXPLANATION + the undoable approve (2026-08-14). Two shipped changes,
  * both in the Book, both taught in `finance-reconcile-grid` and deliberately
  * NOWHERE ELSE:
@@ -495,7 +533,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Which budget does this come out of?** Not \"the chapter's money\" — a specific, named, approved budget. If you can't name one, you've already found your answer: this isn't green.",
-          "**Is there enough left in it?** Not what the budget started at — what's left after everything already charged to it. Open it and look; the app knows.",
+          "**Is there enough left in it?** Not what the budget started at — what's left after everything already charged to it. Open Finances → Budgets and look; the app knows, and you don't need a finance role to see it. Tap any budget to drop it open: the individual charges behind that number, who made each one, what's been coded where, and a link straight through to the event or project it belongs to. If the number surprises you, the answer to why is one tap away — don't guess, and don't ask around.",
           "**Which track is this on — green, yellow, or red?** The rest of this lesson.",
         ],
       },
@@ -1173,9 +1211,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
           "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
           "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Book (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Reconciled AND an unpaid personal expense at the same time.",
-          "**Pay it back by card or by bank:** once flagged, pay it back instantly by card (real-time, via Stripe Checkout) or by linking your bank account (ACH). Either way the flag only actually clears to \"repaid\" once the payment is CONFIRMED — closing the tab on a card payment without finishing it leaves the charge exactly as owed as before.",
+          "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection by card. The flag only clears to \"repaid\" once the payment is CONFIRMED — closing the tab without finishing it leaves the charge exactly as owed as before.",
+          "**You cover the card fee, and it's shown before you pay:** the checkout adds the card processor's cut on top (about 2.9% + 30¢), so Public Worship gets the full amount back instead of losing three cents on the dollar to fix your mistake. The exact figure is on screen before you commit. That fee is charged once per PAYMENT, not per charge — so settling four charges in one go costs less than paying for them one at a time across four evenings.",
           "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once it's marked repaid, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
-          "**Both directions live in one place:** the Reimbursements tab shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
+          "**Both directions live in one place:** Reimbursements is its own tab under Finances — for everyone, approvers included, not tucked behind Cards — and it shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
           "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",
         ],
       },
@@ -1361,7 +1400,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Needs coding", "Spend under the coding policy (posted Sept 1, 2026 or later) still waiting on its author — what it was for, and who was involved. It only appears once the policy starts; before then it could only ever return zero rows, and a filter that's always empty just teaches people to distrust the filters"],
           ["Coding review", "A submitted coding waiting on YOU to approve it or send it back with a note. Same policy-start rule as above"],
           ["To review", "Still sitting at Unreviewed — nobody has touched it yet. This is the number the dashboard's \"To review\" tile shows, and tapping that tile lands you right here"],
-          ["Reconciled", "Already cleared and closed — the third chip in the header, and where every other row is trying to get to"],
+          ["Reconciled", "Already cleared and closed — where every other row is trying to get to"],
           ["Personal (unpaid)", "Flagged personal, not yet repaid — the worklist for chasing down what people owe back"],
           ["Transfers", "Money you marked as moving between your own accounts"],
           ["Payouts", "Deposits you marked as a processor settling donations to you"],
@@ -1369,8 +1408,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
-        title: "The header's three numbers — and the pile that was never a backlog",
-        text: "The header used to show one number, \"127 to clear\", and it was two very different piles wearing one coat. It's now three chips, and each one is a filter you can tap.\n\n**Needs attention** — open, and something is genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** — open, and none of those: categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark reconciled. **Reconciled** — already cleared.\n\nThe first two are complements over the open rows, so they always add back up to what \"to clear\" used to say. That's what makes the split worth having: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done, and no filter could find it — the only way to those rows was scrolling 346 of them and eyeballing each one.\n\nSo start a session on Ready to close: tap the chip, select all, Mark reconciled. Then the headline that's left is work that's actually work.",
+        title: "The pile that was never a backlog",
+        text: "The page is called **Transactions**, and it has exactly four controls: Search, Kind, State, and Group by — plus the books selector if you hold a central seat. There is no view menu and there are no summary pills. Anything you want to look at is those four controls set a particular way, which is why they are the only things on the page: a saved view would just be them, set for you, under a different name.\n\nThat matters most for the two roll-ups the header used to advertise. **Needs attention** is open with something genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** is open with none of those — categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark reconciled.\n\nThey are complements over the open rows, so together they are the whole backlog. And the split is worth knowing about even without a pill announcing it: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done.\n\nSo start a session on the second pile: open **State**, pick the states that describe a row with nothing left owing, select all, Mark reconciled. Then what's left on the page is work that's actually work.\n\nMulti-select is what turns those into a minute's work, and the bulk bar does more than close rows: it sets Category and Budget across a selection, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
+      },
+      {
+        kind: "rule",
+        title: "Group by is how you get everywhere else",
+        text: "**Group by: None · Month · Person** sits directly above the grid, and it is the closest thing this page has to navigation. It doesn't filter anything — every row you had is still there — it bands them, and each band carries the actions that belong to that kind of band.\n\n**Month** gives you one band per month with that month's charge count, its total, how much of it is explained, and its publication state: Draft, In review, Published (with the revision that's live), or Amending — plus **Preview** and **Publish**. That is the whole of \"working a month\" and the whole of publishing one, without leaving the page.\n\n**Person** gives you one band per cardholder — their face, what they owe, and a **Send reminder** button. Put **State → Owes a receipt or coding** on top of it and that is the receipt chase: everyone who owes you something, one band each, nudge them from where you are.\n\nOne thing to read carefully: when you have filtered, a month band names BOTH figures — \"12 of 318 charges · -$4,102 of -$88,201\". The first number is what your filter left; the second is the month. Publish always means the second one.",
       },
       {
         kind: "rule",
@@ -1415,7 +1459,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Reconciled means coded, too",
-        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, your OWN charges at /code, and the review queue under the Book\'s view menu (\"Waiting on me\"). Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.\n\nApproving is publishing, so the app asks once — a single line naming what the tap does, then Approve & publish — and then gives you about ten seconds to take it back. **Undo is a real state change, not a hidden button** — and it is deliberately NOT the same act as Send back. Undo returns the coding to **awaiting review**: your queue, exactly where it sat a moment earlier, with nobody told. Send back means the AUTHOR has something to fix — it moves the row into their queue and emails them your note. Your own mis-tap should never land on somebody\'s phone as criticism of work nobody faulted.\n\nTwo limits on it, both enforced by the server rather than by the countdown on screen: you can only undo YOUR OWN approval, and only for a couple of minutes. To reopen somebody else\'s decision, or one that has stood a while and may already have been acted on, send it back with a note — the author is told, which is the point. Nothing is lost either way: Send back reopens an approved coding at any time, and the **Explained** filter is how you find it again. An approved coding is otherwise locked, which is why re-reading it is the only review left: it is worth a pass over a month\'s Explained rows before you publish it.',
+        text: 'From September 1, 2026, spend needs one more thing before it can close: a CODING — the IRS-grade record of what the charge was for, written by a human, approved by a different human. "Travel to NY to film Eden event", never "bus to NY". Travel asks where from and where to; a meal asks who was there — every name and their relationship to the org up to 15 people, a headcount and an identifiable group ("volunteers writing and producing the album") above that. Names never publish: the public ledger shows "5 volunteers, 3 community members, 2 contractors", not who they were.\n\nYou\'ll find the panel on any charge\'s detail view, your OWN charges at /code, and the review queue on Transactions itself (**State → Coding review**). Four seats may approve one: the Treasurer and the Chapter Director for THEIR OWN chapter, and the Financial Manager and Executive Director for any chapter and for central. Never your own, either way — approving and sending back are both decisions, and neither is one you get to make about your own testimony. (One stated exception: while the org runs a one-person finance team, the superuser may submit-and-approve in a single act — every such approval is permanently recorded as single-party, so it stays re-reviewable the day there are two people.) Approve a coding only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note that says exactly what would make it approvable ("receipt must show exact amount"). Nothing is AI-suggested, ever — the record is a human\'s own testimony, which is exactly what makes it worth publishing. (On a reimbursement payout the form starts from what the claimant already wrote on their request — their words, carried over and labeled, still edited and owned by whoever codes it.) Charges from before the policy date don\'t owe one; that history is a separate, deliberate cleanup.\n\nOne thing you can count on when a coding reaches you: it arrives documented. Nothing submits without a receipt attached or a receipt exception filed, so "coded but undocumented" is no longer a state you have to chase. Read them together — the purpose against the document — and remember that a PENDING exception was enough to submit but is not enough to reconcile; that one still needs somebody\'s decision.\n\nApproving is publishing, so the app asks once — a single line naming what the tap does, then Approve & publish — and then gives you about ten seconds to take it back. **Undo is a real state change, not a hidden button** — and it is deliberately NOT the same act as Send back. Undo returns the coding to **awaiting review**: your queue, exactly where it sat a moment earlier, with nobody told. Send back means the AUTHOR has something to fix — it moves the row into their queue and emails them your note. Your own mis-tap should never land on somebody\'s phone as criticism of work nobody faulted.\n\nTwo limits on it, both enforced by the server rather than by the countdown on screen: you can only undo YOUR OWN approval, and only for a couple of minutes. To reopen somebody else\'s decision, or one that has stood a while and may already have been acted on, send it back with a note — the author is told, which is the point. Nothing is lost either way: Send back reopens an approved coding at any time, and the **Explained** filter is how you find it again. An approved coding is otherwise locked, which is why re-reading it is the only review left: it is worth a pass over a month\'s Explained rows before you publish it.',
       },
       {
         kind: "try_status",
@@ -1470,16 +1514,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "Reconcile's header reads: Needs attention 51 · Ready to close 76 · Reconciled 219. What are those 76, and what do you do about them?",
+          "You're grouped by Month with a State filter on, and March's band reads \"12 of 318 charges · -$4,102 of -$88,201\". You press Publish on that band. What goes public?",
         options: [
-          "Rows still missing something — open each one and fix it",
-          "Open rows with nothing outstanding — categorised, budgeted, documented, just never closed. Tap the chip, select them all, Mark reconciled",
-          "Rows already cleared — nothing left to do with them",
-          "Rows the app will close by itself once the month ends",
+          "The 12 charges the filter left, totalling -$4,102",
+          "All 318 charges in March, totalling -$88,201 — publishing is about the month, never about your filter",
+          "Nothing — you can't publish while a filter is on",
+          "Whichever rows are currently loaded on the page",
         ],
         answerIndex: 1,
         explanation:
-          "Ready to close is the complement of Needs attention over the open rows, so the two always add back up to the single \"to clear\" number they replaced — and in a real book, 76 of those 127 were a keystroke, not a backlog. Multi-select is what turns them into a minute's work: the bulk bar also sets Category and Budget, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
+          "That is exactly why the band names both figures. Publishing acts on the whole month, so a band that could only say \"12 charges\" next to a Publish button was quietly describing something other than what the button did. The second number in each pair is the month; the first is just what you happen to be looking at. (Publish itself still hands you to the publish console — a second approver, an amendment reason on a re-publish, and a refusal if the month's snapshot came back incomplete.)",
       },
       {
         prompt:
@@ -1639,7 +1683,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "You chase the exceptions, not everyone",
-        text: "Most receipts show up before the reminders even matter. Chase Receipts is your actual worklist — a handful of stragglers each month, not the whole roster.\n\nIt is a VIEW OF THE BOOK, not a separate screen: pick it from the Book's own title dropdown (or the bell in the header) and the grid re-filters in place — same page, same header, same dropdown, now filtered to \"Owes a receipt or coding\" and grouped by Person, biggest first. Each band is one cardholder: their name, what they owe, and their Send reminder button. Nothing to navigate back from, and you can widen or narrow it like any other view.",
+        text: "Most receipts show up before the reminders even matter. Chase Receipts is your actual worklist — a handful of stragglers each month, not the whole roster.\n\nIt is not a screen at all — it is two controls on Transactions. Set **State → Owes a receipt or coding** and **Group by → Person**, and there it is: one band per cardholder, biggest first, each showing their face, what they owe, and a **Send reminder** button in the band itself. Nothing to navigate back from, and you widen or narrow it exactly like anything else on that page.\n\nThe reminder is rate-limited to one per cardholder per 24 hours, so a band you already nudged today reads \"Nudged today\" and is disabled rather than quietly doing nothing. **Remind all** in the page header does the whole list at once, and it only appears when you are looking at ONE book — reminders go to one book's cardholders at a time, so pick Central or a chapter first.",
       },
       {
         kind: "p",
@@ -1691,13 +1735,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What's the Treasurer's actual daily worklist for receipts?",
         options: [
           "Personally message every cardholder every day",
-          "Chase Receipts — the handful of stragglers each month, not the whole roster",
+          "Transactions, set to State \u2192 Owes a receipt or coding and grouped by Person \u2014 the handful of stragglers each month, not the whole roster",
           "A shared spreadsheet outside the app",
           "There isn't one; it's fully automatic",
         ],
         answerIndex: 1,
         explanation:
-          "The reminder timeline handles the routine cases; Chase Receipts is where you spend your actual attention.",
+          "The reminder timeline handles the routine cases; that one State + Group by pairing is where you spend your actual attention. It isn't a separate screen \u2014 there is no Chase Receipts page and no menu entry for it, just those two controls, with each cardholder's Send reminder sitting in their own band.",
       },
       {
         prompt:
@@ -1835,7 +1879,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "You watch it happen from the Book. Group by Month — or pick **Publish a month** from the Book's title dropdown, which is that same grouping — and every band tells you where that month stands: Draft, In review, Published (with the revision that's live), or Amending. **Preview** on the band opens the actual public page for that month, exactly as a stranger would see it, without publishing anything.\n\nThe **Publish** button on the band hands you to the publish console, and that hand-off is deliberate rather than a missing feature. Publishing is not a way of looking at a month; it is an irreversible act with a second person in it. The console is where the disclosures are read, where a re-publish states its amendment reason, and where the system refuses a month whose snapshot came back incomplete. None of that is paperwork in front of the button — it IS the button.",
+        text: "You watch it happen from Transactions. Set **Group by → Month** and every band tells you where that month stands: Draft, In review, Published (with the revision that's live), or Amending. **Preview** on the band opens the actual public page for that month, exactly as a stranger would see it, without publishing anything.\n\nBoth buttons are there whatever else you have set, because the band names its own subject: filter the grid and it reads \"12 of 318 charges · -$4,102 of -$88,201\" — what your filter left, and then the month. Publish always means the month. (It used to hide the buttons whenever you had filtered, on the reasoning that a band saying \"12 charges\" next to a Publish button was describing something other than what the button did. That was true, and naming both figures is the honest fix rather than taking the button away.)\n\nThe **Publish** button on the band hands you to the publish console, and that hand-off is deliberate rather than a missing feature. Publishing is not a way of looking at a month; it is an irreversible act with a second person in it. The console is where the disclosures are read, where a re-publish states its amendment reason, and where the system refuses a month whose snapshot came back incomplete. None of that is paperwork in front of the button — it IS the button.",
       },
       {
         kind: "rule",

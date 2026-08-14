@@ -48,9 +48,9 @@ const ACCOUNTS_TAB: Tab = { label: "Accounts", path: "/finances/accounts" };
 //   · Code            → `/code`, its own page outside the finance tabs
 //                       entirely (no seat required — it's the one surface a
 //                       cardholder with no finance grant can use).
-//   · By month        → a view in the Book's own menu.
-//   · Publish         → a view in the Book's own menu, and still the
-//                       Dashboard's publishability card.
+//   · By month        → Group by → Month on the Transactions grid.
+//   · Publish         → a month band's own Publish button there, and still
+//                       the Dashboard's publishability card.
 //   · Reimbursements  → a view in the Cards page's own menu.
 // Every route still exists and every deep link still resolves; nothing is
 // reachable ONLY from a chip that no longer exists.
@@ -58,9 +58,33 @@ const ACCOUNTS_TAB: Tab = { label: "Accounts", path: "/finances/accounts" };
 // There is deliberately no `children` concept left in this file. A tab is a
 // destination. If a future workstream wants a fifth thing under Cards, the
 // answer is a menu on the Cards page, not a second row here.
+//
+// ── EXCEPT REIMBURSEMENTS, WHICH CAME BACK (founder, 2026-08-14) ─────────────
+// "The reimbursement stuff is hidden within cards, which makes no sense. We
+// should just take that out, make it its own thing, make its own page."
+//
+// The consolidation above was right about ten destinations being too many and
+// wrong about this one. Reimbursements is not a view OF cards — it is the
+// other direction of money entirely (the org paying a person back, and a
+// person paying the org back), it has its own approval queue with its own
+// separation-of-duties rules, and the persona who lives in it is the finance
+// manager. Filing it under Cards meant the one chip a member ALREADY had
+// (`MEMBER_TABS` never lost it) was missing for exactly the person who
+// approves. The Cards page's lone "Reimbursements" button — added when the
+// flattening left the route unreachable at zero pending requests — is deleted
+// in the same change; this chip replaces it.
+//
+// Repayments (a member paying the org back for a personal charge) is
+// deliberately NOT a seventh chip: it's the member's own half of the same
+// surface, reached from Reimbursements and from the owe banner. See
+// `/finances/repayments`.
 type Tab = { label: string; path: string };
 
 const BUDGETS_TAB: Tab = { label: "Budgets", path: "/finances/budgets" };
+const REIMBURSEMENTS_TAB: Tab = {
+  label: "Reimbursements",
+  path: "/finances/reimbursements",
+};
 
 // "Book", not "Reconcile": the tab now holds every question you can ask of
 // the ledger — what needs attention, what's waiting on you, a month's
@@ -74,6 +98,7 @@ const SEAT_TABS: Tab[] = [
   { label: "Sales", path: "/finances/sales" },
   BUDGETS_TAB,
   { label: "Cards", path: "/finances/cards" },
+  REIMBURSEMENTS_TAB,
 ];
 
 // The member (no-seat) set. Their own charges live at `/code` now — off this
@@ -82,7 +107,7 @@ const SEAT_TABS: Tab[] = [
 // being gated behind a finance tab bar in the first place.
 const MEMBER_TABS: Tab[] = [
   { label: "My Card", path: "/finances/cards" },
-  { label: "Reimbursements", path: "/finances/reimbursements" },
+  REIMBURSEMENTS_TAB,
   BUDGETS_TAB,
 ];
 
@@ -110,11 +135,26 @@ const BOOK_SATELLITES = [
   "/finances/coding",
 ] as const;
 
+/** The two owe-direction screens that hang off Reimbursements: the member's
+ *  own "pay the org back" page and the manager's collections desk. Both are
+ *  reached FROM Reimbursements, so standing on one must keep that chip lit —
+ *  same rule, same reason, as `BOOK_SATELLITES` above. */
+const REIMBURSEMENT_SATELLITES = [
+  "/finances/repayments",
+  "/finances/personal-charges",
+] as const;
+
 function isTabActive(pathname: string, tab: Tab): boolean {
   if (tab.path === "/finances/reconcile") {
     return (
       isActive(pathname, tab.path) ||
       BOOK_SATELLITES.some((p) => isActive(pathname, p))
+    );
+  }
+  if (tab.path === "/finances/reimbursements") {
+    return (
+      isActive(pathname, tab.path) ||
+      REIMBURSEMENT_SATELLITES.some((p) => isActive(pathname, p))
     );
   }
   return isActive(pathname, tab.path);

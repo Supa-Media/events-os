@@ -21,6 +21,7 @@ import type * as blasts from "../blasts.js";
 import type * as blog from "../blog.js";
 import type * as budgetDecisionEmails from "../budgetDecisionEmails.js";
 import type * as budgetDetail from "../budgetDetail.js";
+import type * as budgetGlance from "../budgetGlance.js";
 import type * as budgetLines from "../budgetLines.js";
 import type * as campaignApprovalEmails from "../campaignApprovalEmails.js";
 import type * as campaignPolls from "../campaignPolls.js";
@@ -417,6 +418,7 @@ declare const fullApi: ApiFromModules<{
   blog: typeof blog;
   budgetDecisionEmails: typeof budgetDecisionEmails;
   budgetDetail: typeof budgetDetail;
+  budgetGlance: typeof budgetGlance;
   budgetLines: typeof budgetLines;
   campaignApprovalEmails: typeof campaignApprovalEmails;
   campaignPolls: typeof campaignPolls;

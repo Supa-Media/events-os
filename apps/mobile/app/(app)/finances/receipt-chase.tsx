@@ -10,8 +10,9 @@
  * a `reconciled` row was closed receipt-less on purpose, so it's absent from
  * both. See the query's doc comment for the exact rule.
  *
- * `scope`/`chapterId` route params (set by the Reconcile screen's
- * "Chase receipts" button — see `reconcile.tsx`'s `chaseHref`) are forwarded
+ * `scope`/`chapterId` route params (carried by an existing link — the
+ * Reconcile grid's own "Chase receipts" button is gone, replaced by grouping
+ * that grid by Person) are forwarded
  * straight to `receiptChase`, which resolves them exactly like
  * `listReconcile` does. This is what actually keeps the two screens honest:
  * without it, this page always read the caller's HOME chapter regardless of

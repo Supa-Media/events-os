@@ -129,8 +129,11 @@ export const RECONCILE_FILTER_GROUPS: readonly {
  * The groups that get a DROPDOWN. `rollup` deliberately doesn't: its two keys
  * are roll-ups OVER the State list, so sitting them in that same menu would put
  * a 51 next to a 7 and a 42 that are subsets of it — the "which number is the
- * real one" problem this area exists to end. They live in the header instead, as
- * the tappable chips that replaced the single "127 to clear".
+ * real one" problem this area exists to end. They have no control of their own
+ * on the grid either, since the header chips that used to carry them were the
+ * clutter the founder asked to be rid of (see below); they are reachable by
+ * URL (`?filters=needs_attention`) and are what the Dashboard's own tiles
+ * drill through on.
  *
  * They are still a real GROUP for set-semantics purposes, which is what makes
  * "needs attention" AND "Spend" narrow correctly rather than being ignored.
@@ -140,21 +143,25 @@ export const RECONCILE_DROPDOWN_GROUPS = RECONCILE_FILTER_GROUPS.filter(
 );
 
 /**
- * THE HEADER CHIPS, in the order they render.
+ * THE ROLL-UPS ARE PREDICATES, NOT A CHIP ROW.
  *
- * `toClearCount` was one number doing two jobs. In production it read 127,
- * of which 51 rows had something genuinely outstanding and 76 were
- * categorised, budgeted, documented and simply never closed — 60% of the
- * backlog headline was a keystroke, not a backlog, and no filter could find
- * them. Splitting it names both jobs and makes each one tappable, which is the
- * rule the rest of this area already follows: the number you announce has to be
- * a number you can get to.
+ * There used to be a `RECONCILE_HEADER_CHIPS` list here, rendered under the
+ * grid's title as "45 needs attention · 90 ready to close · 222 reconciled".
+ * Founder, using the deployed build: "What are these pills underneath — 45
+ * need attention, 90 ready to close, 222 reconciled? I don't even know what
+ * reconciled is." And: "You already have the State right here on the side, so
+ * I can see everything in every state. That's all you need."
+ *
+ * He is right, and the reason is the one this file already argues for the
+ * `rollup` group: three chips restating what the State dropdown directly
+ * above them already offers is a second way to say one thing, in a row of
+ * pills sitting under a bar of pills. So the CHIP ROW is gone.
+ *
+ * The KEYS and their predicates are not. `needs_attention` / `ready_to_close`
+ * are still selectable filters, still facet-counted by `listReconcile`, and
+ * the Dashboard still reads their counts — they simply no longer have a
+ * dedicated row of their own on the grid.
  */
-export const RECONCILE_HEADER_CHIPS = [
-  "needs_attention",
-  "ready_to_close",
-  "reconciled",
-] as const satisfies readonly ReconcileFilterKey[];
 
 /**
  * The states that make an OPEN row "need attention" — the definition

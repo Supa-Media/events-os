@@ -392,8 +392,20 @@ function BudgetRow({
         <Text className="px-3 pb-1.5 text-2xs text-danger">"{row.reviewNote}"</Text>
       ) : null}
 
-      {expanded && (hasCategories || openRef) ? (
+      {/* NO SILENT NO-OP CHEVRON. This used to read `expanded && (hasCategories
+          || openRef)`, so a budget with no spend and no linked event opened
+          into nothing at all: the chevron flipped, the row grew by zero
+          pixels, and the reader was left to conclude the app was broken. A
+          disclosure control that can do nothing must still SAY nothing rather
+          than do nothing — so the panel always renders, and an empty one says
+          why it's empty. */}
+      {expanded ? (
         <View className="gap-2 border-b border-border bg-sunken/60 px-3 py-2.5">
+          {!hasCategories && !openRef ? (
+            <Text className="text-2xs text-muted">
+              Nothing has been charged to this budget yet.
+            </Text>
+          ) : null}
           {openRef ? (
             <Pressable
               onPress={() => onOpenRef!(openRef.refKind, openRef.scopeRefId)}

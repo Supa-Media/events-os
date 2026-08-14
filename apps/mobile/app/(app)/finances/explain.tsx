@@ -23,7 +23,7 @@
  *
  * A redirect rather than a plain deletion, because the path is already out in
  * the world: the publish console links here from its unexplained-lines
- * disclosure, the Book's view menu listed it, and both `?period=` and `?scope=`
+ * disclosure, mail and bookmarks point at it, and both `?period=` and `?scope=`
  * deep links are shareable and get bookmarked. A 404 on any of those would be a
  * regression dressed as a cleanup.
  *
