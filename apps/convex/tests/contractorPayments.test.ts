@@ -274,6 +274,39 @@ describe("the public ledger never names the contractor", () => {
     ).rejects.toThrow(ConvexError);
   });
 
+  test("publicTextProblems still survives being serialised to the browser", () => {
+    // `lib/contractPage.ts` ships this function to the contractor's browser via
+    // `Function.prototype.toString()` rather than re-implementing it, so the
+    // page and the server cannot drift. That only works while the function
+    // closes over NOTHING — one reference to an imported constant, or a
+    // TypeScript downlevel helper like `__spreadArray`, and the emitted source
+    // carries a free identifier that is undefined in the browser.
+    //
+    // The page wraps its call sites in try/catch, so the failure is silent: the
+    // inline warning just stops appearing, and the first person to notice is a
+    // contractor who gets a 400 after uploading their W-9. This test is the
+    // thing that notices instead.
+    const src = publicTextProblems.toString();
+    const standalone = new Function(
+      `"use strict"; var f = ${src}; return f;`,
+    )() as (t: string) => string[];
+
+    expect(standalone("Sound engineering for the spring concert")).toEqual([]);
+    expect(standalone("mail me at a@b.com")).toHaveLength(1);
+    expect(standalone("SSN 123-45-6789")).toHaveLength(1);
+    expect(standalone("call 555-123-4567")).toHaveLength(1);
+    // And it agrees with the server's own copy on every one of them.
+    for (const sample of [
+      "Sound engineering",
+      "a@b.com",
+      "123-45-6789",
+      "call 555-123-4567",
+      "42 Elm Street",
+    ]) {
+      expect(standalone(sample)).toEqual(publicTextProblems(sample));
+    }
+  });
+
   test("publicTextProblems catches the shapes people actually paste", () => {
     expect(publicTextProblems("Sound engineering")).toEqual([]);
     expect(publicTextProblems("email me at a@b.com").length).toBe(1);
