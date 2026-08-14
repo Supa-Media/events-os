@@ -197,6 +197,108 @@ describe("the Budgets tab lists every budget worth listing", () => {
     expect(glance.recurring.find((r) => r.id === budgetId)).toBeDefined();
   });
 
+  test("a BLANK-template event keeps the name someone actually typed", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    // The chapter's synthesized "start from scratch" template. Titling a
+    // budget "Blank event" tells a reader strictly less than the name its
+    // creator typed — and titling THREE of them that is worse still (founder,
+    // 2026-08-14, looking at "Blank event Dec 2025" twice on one screen).
+    const eventTypeId = await run(s.t, (ctx) =>
+      ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Blank event",
+        slug: "blank-event",
+        isBlank: true,
+        version: 1,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const eventId = await run(s.t, (ctx) =>
+      ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Christmas Outreach",
+        eventDate: tsOn(thisYear, 12, 20),
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const budgetId = await seedBudget(s, {
+      amountCents: 50_000,
+      year: thisYear,
+      cadence: "per_instance",
+      type: "one_time",
+      scope: "event",
+      refKind: "event",
+      scopeRefId: eventId,
+    });
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const card = glance.oneTime.find((r) => r.id === budgetId);
+    expect(card?.name).toBe("Christmas Outreach");
+    // And no date is appended — a blank template lends no name, so there is
+    // no collision to disambiguate in the first place.
+    expect(card?.name).not.toContain("Blank event");
+  });
+
+  test("two blank-template events don't collapse into one another", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const thisYear = new Date().getFullYear();
+    const eventTypeId = await run(s.t, (ctx) =>
+      ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Blank event",
+        slug: "blank-event",
+        isBlank: true,
+        version: 1,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    const mk = async (name: string, month: number) => {
+      const eventId = await run(s.t, (ctx) =>
+        ctx.db.insert("events", {
+          chapterId: s.chapterId,
+          eventTypeId,
+          templateVersion: 1,
+          name,
+          eventDate: tsOn(thisYear, month, 12),
+          status: "planning",
+          createdBy: s.userId,
+          createdAt: Date.now(),
+          updatedAt: Date.now(),
+        }),
+      );
+      return await seedBudget(s, {
+        amountCents: 50_000,
+        year: thisYear,
+        cadence: "per_instance",
+        type: "one_time",
+        scope: "event",
+        refKind: "event",
+        scopeRefId: eventId,
+      });
+    };
+    const a = await mk("Christmas Outreach", 12);
+    const b = await mk("Volunteer Dinner", 6);
+
+    const glance = await s.as.query(api.finances.budgetsGlance, {});
+    const byId = new Map(glance.oneTime.map((r) => [r.id, r.name]));
+    // Two budgets on the SAME blank template: each keeps its own event name
+    // rather than becoming "Blank event Dec" and "Blank event Jun".
+    expect(byId.get(a)).toBe("Christmas Outreach");
+    expect(byId.get(b)).toBe("Volunteer Dinner");
+  });
+
   test("budgets on one template are told apart by year, and by month within a year", async () => {
     const t = newT();
     const s = await setupChapter(t);
