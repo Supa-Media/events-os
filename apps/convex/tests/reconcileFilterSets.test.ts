@@ -220,9 +220,12 @@ describe("facet counts — the number shown is a number you can get to", () => {
  * therefore volume the treasurer could only skip past. It's hidden by default
  * and reachable under Kind → Transfers.
  *
- * The line is `isMarkedTransfer`, NOT `flow === "transfer"`: a leg a human
- * MARKED still owes a receipt on purpose (`needsDocumentation`), so hiding it
- * would silently end a live chase.
+ * The line is `flow === "transfer"`, and it covers hand-MARKED legs too. That
+ * used to need a defence — a marked leg owed a receipt on purpose, so hiding it
+ * looked like silently ending a live chase, and the answer was that the chase
+ * ran on its own surface. Since 2026-08-14 a marked transfer owes nothing at
+ * all (founder: "all payouts and transfers should be bank record only"), so
+ * the two now agree by predicate rather than by wiring.
  */
 describe("internal transfer legs are hidden from the default queue", () => {
   test("a booked leg is out of the rows, the total, and the backlog headline", async () => {
@@ -269,14 +272,16 @@ describe("internal transfer legs are hidden from the default queue", () => {
   /**
    * THE ONE THAT STOPS THIS BEING RE-LITIGATED FROM THE ROW'S ABSENCE ALONE.
    *
-   * A leg a human MARKED via `markAsTransfer` owes a receipt on purpose — the
-   * founder rule that marking must never be a way to stop being chased. It is
-   * still hidden here, and that is not a contradiction: hiding is about where a
-   * row is LISTED, and the chase is a different surface (`receiptChase`, its own
-   * scan, its own predicate union, reached from the "Chase receipts" button).
-   * So the row is absent from this queue AND still owes everything it did.
+   * A leg a human MARKED via `markAsTransfer` is hidden here like any other.
+   * This test used to assert that it nevertheless still owed a receipt and was
+   * still reachable through the chase — the founder rule that marking must
+   * never be a way to stop being chased. That rule was reversed on 2026-08-14
+   * ("all payouts and transfers should be bank record only"), so the assertion
+   * is INVERTED rather than deleted: hidden here AND owing nothing anywhere is
+   * the whole of the new behaviour, and the row still has to be reachable
+   * through Kind → Transfers, which is now the only way to it.
    */
-  test("a MARKED transfer is hidden too — and still owes its documentation", async () => {
+  test("a MARKED transfer is hidden too — and owes nothing anywhere", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asManager(s);
@@ -290,18 +295,18 @@ describe("internal transfer legs are hidden from the default queue", () => {
     // way back to every hidden leg, hand-marked or app-booked.
     expect(res.counts.transfers).toBe(2);
 
-    // What the row OWES is untouched by where the queue lists it. Read straight
-    // off the predicates, so this can't drift with the view.
+    // Read straight off the predicates, so this can't drift with the view: the
+    // row is STILL a marked transfer (Un-mark is still offered, book value is
+    // still zero) and no longer owes a document.
     const doc = (await run(s.t, (ctx) => ctx.db.get(marked))) as Doc<"transactions">;
     expect(isMarkedTransfer(doc)).toBe(true);
-    expect(needsDocumentation(doc)).toBe(true);
+    expect(needsDocumentation(doc)).toBe(false);
 
-    // And it's still reachable by the surface that does the chasing: the
-    // "Chase receipts" button is gated on this number, not on a facet count.
-    expect(res.chaseCount).toBe(1);
+    // Nothing left for the chase to hold, so the entry point stays dark rather
+    // than opening onto an empty list.
+    expect(res.chaseCount).toBe(0);
     const chase = await s.as.query(api.finances.receiptChase, {});
-    expect(chase.count).toBe(1);
-    expect(chase.groups.flatMap((g) => g.transactions.map((c) => c.id))).toEqual([marked]);
+    expect(chase.count).toBe(0);
   });
 
   test("a payout deposit stays — outside money arriving earns one look", async () => {

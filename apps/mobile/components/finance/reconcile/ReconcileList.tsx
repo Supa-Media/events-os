@@ -171,8 +171,11 @@ import {
   MIN_PURPOSE_LENGTH,
   PAYOUT_PROCESSOR_LABELS,
   MAX_MERCHANT_NAME_LENGTH,
+  DOCUMENTATION_EXEMPTION_LABELS,
+  documentationExemptionLine,
   displayMerchantName,
   providerMerchantName,
+  type DocumentationExemption,
 } from "@events-os/shared";
 import { colors } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
@@ -2256,6 +2259,10 @@ export function ReceiptCell({
     state: "receipt" | "exception" | "undocumented";
     reasonLabel: string | null;
     pendingReason: string | null;
+    /** WHY this row owes no documentation at all, or null when it owes one.
+     *  Optional so a caller that hasn't been widened yet keeps today's
+     *  rendering rather than silently claiming every row is exempt. */
+    exemptReason?: DocumentationExemption | null;
   };
   /** Amount, for the exception modal's second-approver hint. */
   amountCents?: number;
@@ -2366,6 +2373,39 @@ export function ReceiptCell({
         <Icon name="edit-3" size={14} color={colors.muted} />
         <Text className="flex-1 text-sm text-muted" numberOfLines={1}>
           {documentation.reasonLabel ?? "No receipt"}
+        </Text>
+      </View>
+    );
+  }
+
+  // NOTHING IS OWED HERE — say what the row IS, not what it's missing.
+  //
+  // Founder, 2026-08-14: "For Stripe payouts it's saying no receipts still, but
+  // it should literally show that it's a payout — bank record only." The chase,
+  // the facets and the publishing gate had already stopped counting these rows
+  // (`finances.ts#owesDocumentation`); this cell hadn't been told, so it went
+  // on offering an Upload button and the words "No receipt" on a row nobody
+  // will ever be asked about. A screen that contradicts its own counts is worse
+  // than one that never had the carve-out.
+  //
+  // Below the receipt/exception branches on purpose: an exempt row somebody
+  // attached a settlement PDF to reads "Attached", because that is true and
+  // more useful than the exemption. Only when there is genuinely nothing
+  // attached does the row explain itself.
+  //
+  // The words are `@events-os/shared`'s, not this file's — the same
+  // "Bank record only" a human can attest by hand, with the full sentence on
+  // the accessibility label. No upload affordance, no "No receipt" pressable:
+  // an exception can't be filed against an obligation that doesn't exist.
+  if (documentation?.exemptReason != null) {
+    return (
+      <View
+        className="flex-1 flex-row items-center gap-1 px-2 py-1.5"
+        accessibilityLabel={documentationExemptionLine(documentation.exemptReason)}
+      >
+        <Icon name="file-text" size={14} color={colors.muted} />
+        <Text className="flex-1 text-sm text-muted" numberOfLines={1}>
+          {DOCUMENTATION_EXEMPTION_LABELS[documentation.exemptReason]}
         </Text>
       </View>
     );

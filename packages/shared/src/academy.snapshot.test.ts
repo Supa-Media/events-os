@@ -585,6 +585,21 @@
  * doctrine moved into the flagging question's explanation). Minutes stay 5 and
  * quizLength stays 5, so every table below is unchanged; no slugs, sections or
  * courses moved. See `streams/finances.ts`'s header comment for the reasoning.
+ *
+ * 2026-08-14 — the other half of that same founder report, content-only again.
+ * "All payouts and transfers should be bank record only. No need for
+ * documentation": marked internal transfers join marked payouts in owing
+ * nothing, so `finance-transfers-and-payouts`' "Marked still means documented"
+ * — split only hours earlier, and re-titled here — became "Both markings are
+ * bank record only", keeping the Marked-column sentence the note above gave
+ * it. Its fourth quiz
+ * question taught the retired rule as the correct answer and was SWAPPED
+ * (still four; the old answer is now a distractor), and the same lesson's
+ * payout rule gained a paragraph on a marked payout being named "Stripe
+ * payout" rather than after whoever the bank feed reports as the ACH
+ * originator. `finance-reconcile-grid`'s filter table lost its claim that the
+ * chase keeps marked transfers. No title, slug, minutes, quizLength, section
+ * or course order moved: every table below is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

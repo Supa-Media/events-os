@@ -1022,7 +1022,7 @@ describe("the chase, in the grid — `needs_chasing` is the UNION, not the recei
     expect(res.matchedCount).toBe(chase.count);
   });
 
-  test("a MARKED TRANSFER is hidden from the default queue and still reachable through the chase", async () => {
+  test("a MARKED TRANSFER is out of the chase entirely, and reachable only under Transfers", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asManager(s);
@@ -1036,15 +1036,26 @@ describe("the chase, in the grid — `needs_chasing` is the UNION, not the recei
     const plain = await s.as.query(api.finances.listReconcile, { limit: 500 });
     expect(plain.rows.map((r) => r.id)).not.toContain(leg);
 
-    // THE FOUNDER RULE: marking a row must never be a way to make it stop
-    // being chased. Selecting the chase has to un-hide the legs, or the
-    // by-person view would silently omit exactly the rows a TREASURER (rather
-    // than a cardholder) has to act on.
+    // THE INVERSION (founder, 2026-08-14: "all payouts and transfers should be
+    // bank record only"). This used to assert the opposite — selecting the
+    // chase un-hid the legs, because a marked transfer owed its statement and
+    // omitting it would have dropped exactly the rows a TREASURER rather than a
+    // cardholder had to act on. It owes nothing now, so the chase must neither
+    // list it nor advertise it: un-hiding for a filter the row then fails is
+    // how a facet count becomes a lie.
     const chasing = await s.as.query(api.finances.listReconcile, {
       filters: ["needs_chasing"],
       limit: 500,
     });
-    expect(chasing.rows.map((r) => r.id)).toContain(leg);
+    expect(chasing.rows.map((r) => r.id)).not.toContain(leg);
+    expect(chasing.counts.needs_chasing).toBe(0);
+
+    // Still reachable, and now by exactly one route.
+    const transfers = await s.as.query(api.finances.listReconcile, {
+      filters: ["transfers"],
+      limit: 500,
+    });
+    expect(transfers.rows.map((r) => r.id)).toContain(leg);
   });
 
   test("a charge whose receipt is on and whose coding is not is in the chase but not the receipt pill", async () => {
@@ -1086,10 +1097,12 @@ describe("the chase, in the grid — `needs_chasing` is the UNION, not the recei
     await asManager(s);
     const alice = await seedPerson(s, "Alice");
     await txn(s, { amountCents: 5_000, personId: alice });
-    // No cardholder — a marked transfer, chased with a statement rather than a
-    // person. Its band must be the `unattributed` sentinel so the UI knows
-    // there is nobody to remind.
-    await txn(s, { amountCents: 6_000, flow: "transfer", preMarkFlow: "outflow" });
+    // No cardholder — a plain spend charge on no card, chased with a statement
+    // rather than a person. Its band must be the `unattributed` sentinel so the
+    // UI knows there is nobody to remind. (This was a marked transfer until
+    // 2026-08-14; those owe nothing now and no longer reach the chase at all,
+    // so the sentinel needed a row that still does.)
+    await txn(s, { amountCents: 6_000, flow: "outflow" });
 
     const res = await s.as.query(api.finances.listReconcile, {
       filters: ["needs_chasing"],
