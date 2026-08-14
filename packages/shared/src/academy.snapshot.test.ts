@@ -501,6 +501,11 @@
  * least likely to log in, someone who left the team — and that the page names
  * nobody. Content-only again; that section's quiz is untouched and still at 5.
  *
+ * Budget titles from the event template (2026-08-14) touch one bullet on
+ * `finance-three-tracks` — "a specific, named, approved budget" now says what
+ * that name IS, since an event budget is titled after its template with a year
+ * or month appended only when something needs telling apart. Content-only.
+ *
  * 2026-08-14 — bulk explanation, and Approve as one undoable tap. Both land in
  * `finance-reconcile-grid`: an "Explained" filter row, a new rule block on
  * explaining a backlog without lying about it, and the undo/confirm folded

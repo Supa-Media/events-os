@@ -579,7 +579,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Which budget does this come out of?** Not \"the chapter's money\" — a specific, named, approved budget. If you can't name one, you've already found your answer: this isn't green.",
+          "**Which budget does this come out of?** Not \"the chapter's money\" — a specific, named, approved budget. Event budgets are named after the event template they came from (\"Genesis\"), with a year or a month added only when there's more than one to tell apart, so the name you say out loud is the name you'll find on the Budgets tab. If you can't name one, you've already found your answer: this isn't green.",
           "**Is there enough left in it?** Not what the budget started at — what's left after everything already charged to it. Open Finances → Budgets and look; the app knows, and you don't need a finance role to see it. Tap any budget to drop it open: the individual charges behind that number, who made each one, what's been coded where, and a link straight through to the event or project it belongs to. If the number surprises you, the answer to why is one tap away — don't guess, and don't ask around.",
           "**Which track is this on — green, yellow, or red?** The rest of this lesson.",
         ],

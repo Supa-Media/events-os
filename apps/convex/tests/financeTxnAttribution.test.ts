@@ -645,7 +645,7 @@ describe("Bug 1 — one-time budgets ignore the month selector (dashboardChapter
     const card = may.oneTimeBudgets.find((b) => b.id === budgetId);
     expect(card).toBeDefined();
     expect(card?.spentCents).toBe(25000);
-    expect(card?.name).toBe("May Concert");
+    expect(card?.name).toBe("Worship with Strangers");
 
     // YTD-through-July keeps every one-time card, unchanged.
     const ytdJuly = await s.as.query(api.finances.dashboardChapter, {
