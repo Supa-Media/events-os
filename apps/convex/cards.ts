@@ -5758,6 +5758,94 @@ const nudgeTargetValidator = v.object({
  * a roster row without one is a data gap for someone else to fix, not a reason
  * the other eleven people don't get reminded.
  */
+/**
+ * WHICH SETTLED REPAYMENTS ARE STILL MISSING THEIR FEE-COVERAGE ROW.
+ *
+ * Read-only, and it exists because the correction could not be written blind.
+ * Migration `0073` was pinned to "one settled Stripe repayment of $6.00" — the
+ * founder's own reading of the payment — and REFUSED on deploy, finding none.
+ * The refusal was the guard working (booking 49¢ against the wrong row invents
+ * money nobody sent), but it left the question open, and this deployment's data
+ * is not readable from a laptop: the Convex MCP resolves this project to a
+ * different deployment entirely, and every list query on repayments requires a
+ * signed-in finance identity that a deploy key does not have.
+ *
+ * So: an INTERNAL query, callable by the deploy key through
+ * `run-convex-function.yml`, that answers exactly the question a pinned
+ * migration has to be able to answer.
+ *
+ *   gh workflow run run-convex-function.yml -f function=cards:repaymentFeeCoverageAudit
+ *
+ * IT NAMES NOBODY. A payer's identity is not part of the question — the pin
+ * needs an amount, a rail, a settle time and a session — and this output goes
+ * into a CI log, which is a worse place to put a person's name than any screen
+ * in the app.
+ *
+ * KEPT after the correction rather than deleted with it. "Did any fee coverage
+ * go unbooked?" stops being a one-off the moment the answer can drift again —
+ * a rail added, a settle path that forgets the row — and the same reading that
+ * sizes a migration is the one that audits it afterwards.
+ */
+export const repaymentFeeCoverageAudit = internalQuery({
+  args: {},
+  returns: v.object({
+    settledViaStripe: v.number(),
+    missingCoverageRow: v.array(
+      v.object({
+        amountCents: v.number(),
+        method: v.string(),
+        settledAt: v.string(),
+        sessionId: v.string(),
+        chapterId: v.string(),
+      }),
+    ),
+    withCoverageRow: v.number(),
+  }),
+  handler: async (ctx) => {
+    const all = await ctx.db.query("personalRepayments").collect();
+    const settled = all.filter(
+      (r) =>
+        r.status === "paid" &&
+        r.creditTransactionId != null &&
+        r.stripeCheckoutSessionId != null,
+    );
+
+    const missing: {
+      amountCents: number;
+      method: string;
+      settledAt: string;
+      sessionId: string;
+      chapterId: string;
+    }[] = [];
+    let withRow = 0;
+    for (const r of settled) {
+      const sessionId = r.stripeCheckoutSessionId!;
+      const coverage = await ctx.db
+        .query("transactions")
+        .withIndex("by_external_id", (q) =>
+          q.eq("externalId", `stripe_repayment_fee_coverage:${sessionId}`),
+        )
+        .first();
+      if (coverage) {
+        withRow += 1;
+        continue;
+      }
+      missing.push({
+        amountCents: r.amountCents,
+        method: r.method,
+        settledAt: new Date(r.updatedAt).toISOString(),
+        sessionId,
+        chapterId: String(r.chapterId),
+      });
+    }
+    return {
+      settledViaStripe: settled.length,
+      missingCoverageRow: missing,
+      withCoverageRow: withRow,
+    };
+  },
+});
+
 export const gatherRepaymentNudges = internalQuery({
   args: { payerPersonId: v.optional(v.id("people")) },
   returns: v.object({
