@@ -1096,6 +1096,18 @@ export const personalRepayments = defineTable({
   // button can be pressed repeatedly with no memory is a tool for accidentally
   // emailing a volunteer four times about $12.
   lastNudgedAt: v.optional(v.number()),
+  // Stamped once this repayment's PAYMENT RECEIPT ("thanks for paying this
+  // off — here's your receipt") has been sent to the payer
+  // (`cards.ts#claimRepaymentReceipts`, `sendRepaymentReceiptEmail`). Claimed
+  // atomically per row, in the SAME transaction that reads it, so a payment
+  // that settles several repayments at once (one bundled Stripe Checkout)
+  // sends exactly ONE email covering all of them, and a redelivered webhook —
+  // or `checkout.session.completed` landing alongside
+  // `async_payment_succeeded` — can never produce a second receipt for the
+  // same repayment. Absent = never sent. There is no reversal flow for a
+  // repayment the way `payouts` has one for reimbursements, so this stamp is
+  // permanent: at most one receipt per repayment, ever.
+  receiptSentAt: v.optional(v.number()),
   createdAt: v.number(),
   updatedAt: v.number(),
 })
