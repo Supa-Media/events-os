@@ -866,7 +866,26 @@ function ReconcileRow({
   // An approved row can't be edited, so the only thing tapping it can usefully
   // do is finish the sentence the cell truncated at two lines.
   const [purposeExpanded, setPurposeExpanded] = useState(false);
-  const purposeEditable = row.explanation?.editable === true && !readOnly;
+  // ── WHO MAY TYPE IN THIS CELL ─────────────────────────────────────────────
+  // A row with an EDITABLE coding (not approved), or a row with NO coding at
+  // all — the blank ones, which are most of the backlog.
+  //
+  // Blank rows used to be sent to the sheet, on the reasoning that inventing a
+  // `general` coding for a restaurant charge writes substantiation nobody can
+  // complete from a one-line cell. Founder, on the deployed build: "when I
+  // click on an empty 'what was this for', it doesn't let me edit, it opens a
+  // side panel... there should be a little text box that allows me to just
+  // type out what it was for. But for things like coding you still have to do
+  // that as well." The refusal cost more than it bought: blank rows are the
+  // backlog, and routing every one of them through a modal is the friction
+  // that makes closing them blank win on effort.
+  //
+  // The substantiation argument is answered by the SHEET LINK below rather
+  // than by refusing the cursor — see `transactionCodings.setPurpose`, which
+  // creates the coding as `general` (a type that owns no §274(d) fields, so a
+  // sentence alone completes it) and still runs every other gate.
+  const purposeEditable =
+    !readOnly && (row.explanation == null || row.explanation.editable === true);
   /**
    * WHAT A TAP MEANS, decided by what the row can take.
    *
@@ -881,10 +900,14 @@ function ReconcileRow({
       setEditingPurpose(true);
       return;
     }
+    // Not editable and something written — an APPROVED coding. The only useful
+    // thing a tap can do is finish the sentence the cell truncated.
     if (row.explanation) {
       setPurposeExpanded((v) => !v);
       return;
     }
+    // Not editable and nothing written — a peeked read-only row. Its record is
+    // still worth opening; nothing here can be typed.
     openRecord();
   };
   /**
@@ -1319,6 +1342,35 @@ function ReconcileRow({
               placeholderTextColor={colors.faint}
               className="rounded border border-accent bg-raised px-1.5 py-1 text-sm text-ink"
             />
+            {/* THE WAY OUT, for the charges a line can't finish.
+                What is typed here becomes a GENERAL coding, which is complete
+                as typed because that type owns no §274(d) fields. A meal, a
+                trip or a stay owes more — who was there, the route, the place
+                — and none of that fits in a cell. So the cell says so and
+                hands the row to the sheet, rather than either refusing the
+                cursor (which is what it used to do) or letting somebody file a
+                "general" dinner and believe they were finished.
+
+                `onPressIn`, not `onPress`: this sits under a focused input, so
+                a plain press fires the input's `onBlur` -> `commitPurpose`
+                first and the row would save a half-typed sentence on its way
+                to the sheet. Firing on press-in wins that race, and closing
+                the editor first means the blur has nothing left to commit. */}
+            {row.explanation == null ? (
+              <Pressable
+                onPressIn={() => {
+                  setEditingPurpose(false);
+                  openRecord();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Open the full sheet for a meal, trip or stay"
+                className="mt-1 active:opacity-70"
+              >
+                <Text className="text-2xs text-muted">
+                  Meal, travel or lodging? Open the sheet →
+                </Text>
+              </Pressable>
+            ) : null}
           </View>
         ) : (
         <Pressable

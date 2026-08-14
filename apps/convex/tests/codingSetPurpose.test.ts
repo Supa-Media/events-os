@@ -244,15 +244,52 @@ describe("the narrow path is not a laxer path", () => {
     expect(coding?.businessPurpose).toBe(ORIGINAL);
   });
 
-  test("a row with NO coding is refused — there is no type to preserve", async () => {
+  test("a row with NO coding gets a GENERAL one — typing is the point", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await asManager(s);
     const transactionId = await seedTxn(s);
 
-    // Inventing `general` for a restaurant charge would write a coding that
-    // fails substantiation, from a control with nowhere to say who was there.
-    // Those rows keep their route into the full sheet.
+    // This used to be refused (`NO_CODING`), on the reasoning that inventing
+    // `general` for a restaurant charge writes substantiation nobody can
+    // complete from a one-line cell. Overruled by the founder: blank rows are
+    // most of the backlog, and routing every one of them through a modal is
+    // the friction that makes closing them blank win on effort.
+    //
+    // `general` owns no type-specific §274(d) fields, so a typed sentence is a
+    // COMPLETE coding of that type — nothing is left half-written. A charge
+    // that is really a meal still needs the sheet, and the cell says so.
+    await s.as.mutation(api.transactionCodings.setPurpose, {
+      transactionId,
+      businessPurpose: REVISED,
+    });
+
+    const coding = await codingFor(s, transactionId);
+    expect(coding?.expenseType).toBe("general");
+    expect(coding?.businessPurpose).toBe(REVISED);
+    expect(coding?.status).toBe("submitted");
+  });
+
+  test("creating still runs the documentation gate — a blank cell is not a way round it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    // No receipt and no exception: `submitCoding` refuses this whatever
+    // control it was typed into. The inline cell is a narrower path, never a
+    // laxer one.
+    const transactionId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 8_400,
+        postedAt: POST_POLICY,
+        merchantName: "SWEETGREEN",
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+
     await expect(
       s.as.mutation(api.transactionCodings.setPurpose, {
         transactionId,
