@@ -25,6 +25,37 @@ it into the reachable table).
 
 ---
 
+## Settled decisions (owner, 2026-08-14)
+
+These replace the defaults this document originally proposed. They are
+decisions, not open questions.
+
+1. **Every chapter, not just yours.** A backer sees all chapters — Central, New
+   York, and the prospect/proposed ones — each with its backer count. The
+   portal is not scoped to the city you back.
+2. **Name the people.** Names and positions ship: who runs the chapter, who
+   manages the money. The consent concern is noted and overruled; module 9 is
+   now a spec for doing it responsibly rather than an argument against it.
+3. **A backer editing their amount may not drop below $50/mo**
+   (`BACKER_UNIT_CENTS`). See module 1 — this is a real technical constraint,
+   because Stripe's portal has no concept of a minimum.
+4. **Access after pause/cancel: 60 days**, then giving-history-only.
+5. **Dunning is a weekly escalating sequence**, not a single email. See module 2.
+
+## A note on register
+
+On-screen copy states what the thing is. It does not defend itself. "Roles, not
+names — nobody has agreed to be listed" is an argument the reader never asked
+for and did not know they needed; it makes the product sound guilty. The
+reasoning belongs in this document, where the people building it can find it —
+the screen says "Who runs New York" and lists them.
+
+Applies throughout: no captions that explain a design constraint, no
+apologising for a missing number, no "we believe in transparency." Show the
+number; the transparency is the fact that it's there.
+
+---
+
 ## What a backer sees — modules, prioritised
 
 Cost key: **S** = a day or two inside one PR. **M** = a PR of its own.
@@ -68,6 +99,68 @@ Update your card, change the amount, or stop — right here, right now."
      link and read their card last-4 and invoice history, or cancel their
      giving. It is unreachable today only because nothing links to it. The
      moment we wire it up it must take a portal session instead of a raw email.
+
+#### The $50 floor problem — and the answer
+
+**Decision 3 cannot be enforced inside Stripe's billing portal.** Concretely:
+
+- **Stripe has no "minimum amount" setting.** The only lever
+  `billing_portal.configurations` offers is
+  `features.subscription_update.products` — an **allow-list of specific
+  Products and their Prices** the customer may switch to, plus
+  `default_allowed_updates` (`price` / `quantity` / `promotion_code`). There is
+  no floor, no range, no validation hook. You either enumerate the exact prices
+  or you allow whatever the subscription already permits.
+- **Our subscriptions aren't on enumerable prices.**
+  `startPledgeCheckout` builds an **inline ad-hoc price** —
+  `line_items[0][price_data][unit_amount] = prepared.amountCents`, with
+  `price_data[product_data][name] = "Monthly backer — <Chapter>"`
+  (`givingPledges.ts` ~L722–732). Every backer therefore sits on their own
+  one-off Price attached to their own one-off Product. An allow-list can't
+  name them, so `subscription_update` cannot be made to work over the existing
+  book without first migrating everyone onto real, reusable `Price` objects.
+- **And the floor we'd be defending is not the floor the code has.**
+  `PLEDGE_FLOOR_CENTS = 500` — **$5**, not $20 (`schema/givingPlatform.ts`
+  still says "int ≥ 2000 ($20 floor)"; that comment is stale and should be
+  fixed). So an unrestricted portal genuinely will accept $5, and
+  `syncPledgeSubscription` will dutifully patch `amountCents` down and drop the
+  chapter's `backerCount`. The owner's worry is precisely correct.
+
+**Recommendation — split the portal's job in two:**
+
+- **Stripe keeps card + cancel.** Create one `billing_portal.configuration`
+  with `features.payment_method_update.enabled = true`,
+  `features.subscription_cancel.enabled = true`, and
+  **`features.subscription_update.enabled = false`**. Pass its `bpc_…` id as
+  `configuration` on the `billing_portal/sessions` call the existing action
+  already makes — a one-line addition to that `URLSearchParams` body. Cancel
+  still flows home through `customer.subscription.deleted` →
+  `cancelPledgeSubscription`, untouched.
+- **We keep amount changes.** A small "change your amount" step in our own UI,
+  validated server-side, then `POST /v1/subscriptions/{id}` with
+  `items[0][id]` (the existing item) + `items[0][price_data]` — the *same*
+  ad-hoc price shape `startPledgeCheckout` already posts, so no migration and
+  no Price catalogue — plus an explicit `proration_behavior`. Written as a new
+  action in `givingPledges.ts` in the house style (REST over `fetch`, no SDK).
+  `customer.subscription.updated` then lands on `syncPledgeSubscription`, which
+  already patches `amountCents` and recomputes `backerCount` — so the write
+  path we'd be adding is the *only* new code, and the read path is free.
+- **The rule that action enforces:** if the pledge is currently at or above
+  `BACKER_UNIT_CENTS`, the new amount must also be ≥ `BACKER_UNIT_CENTS`.
+  Below that floor it may move freely down to `PLEDGE_FLOOR_CENTS` — because a
+  $30/mo monthly giver is a real, supported thing this codebase distinguishes
+  on purpose (`backerWelcomeEmail.ts` even changes the noun: "backer" above
+  the floor, "giving monthly" below it). Decision 3 is "a backer must stay a
+  backer", not "nobody may give less than $50".
+- **The alternative, rejected:** migrate every pledge onto a fixed ladder of
+  real Prices ($50/$75/$100/$150/$250) and let the portal do it. Cleaner
+  long-term, but it needs a Price catalogue per chapter, a migration of live
+  subscriptions, and it kills arbitrary amounts at signup — which the `/give`
+  form deliberately supports. Revisit only if we ever want tiers as a product.
+- **Backstop either way:** `syncPledgeSubscription` should notice a pledge
+  crossing below `BACKER_UNIT_CENTS` and flag it, because a Stripe dashboard
+  edit by staff can still do it. Detection is cheap; it's the only guard that
+  survives someone bypassing our UI.
 - **Honesty/PII risk:** `origin: "imported"` pledges (Givebutter recurrences
   whose card lives in Givebutter's Stripe) have no `stripeCustomerId`; the
   action already throws `NO_STRIPE_CUSTOMER`. The portal must render that as
@@ -115,16 +208,56 @@ we'll retry — your backing of Brooklyn hasn't stopped."
   | `incomplete` | "We never received a first payment." | Finish signing up (→ `/give/<slug>`) |
   | `origin: "imported"` | "This monthly gift is on our old platform." | Move it over → `/give/<slug>` |
 
-- **The email alongside it:** recommend a new `lib/backerPaymentFailedEmail.ts`
-  scheduled from `markPledgePastDue`, built exactly like
-  `lib/backerWelcomeEmail.ts` — pure (payload in, `{subject, html}` out),
-  painted with `emailShell`, and **transactional**: no unsubscribe footer, no
-  `emailSuppressions` consult, per the split `givingComms.ts` documents. It
-  should read like `givingComms.ts#onAchFailed`, whose doc already gets the
-  tone right: a declined payment is a typo or an expiry, never an accusation,
-  and a bare bank code (`R01`) must never reach a donor. One send per dunning
-  episode — key it on the pledge's transition into `past_due` so Stripe's
-  retry sequence can't produce four emails.
+#### The dunning sequence (decision 5)
+
+A weekly ladder that runs **alongside** Stripe Smart Retries, not against it.
+Stripe's default retry schedule fires roughly on days 3, 5 and 7 and then gives
+up, at which point the subscription's `cancel`-or-leave-unpaid behaviour
+applies. Ours is a *conversation* on a slower clock, so the two never collide:
+Stripe is trying the card, we are asking the person.
+
+| # | When | Subject register | What it says | CTA |
+|---|---|---|---|---|
+| 1 | Day 0 (on entering `past_due`) | Neutral, practical | "Your September payment didn't go through — probably an expired card. Your backing of New York is still on; we'll keep trying for a few days." | Update your card |
+| 2 | Day 7 | Warmer, personal | "Still no luck with the card. New York is 8 backers from Eden and you're one of them — two taps and you're back." | Update your card |
+| 3 | Day 14 | Direct, asks the real question | "Do you still want to back what New York is doing? Totally fine either way — just tell us, and we'll stop asking." | Update your card · **Stop my backing** |
+| 4 | Day 21 | Final, gracious, no guilt | "We're going to stop emailing about this. Your backing is paused. Thank you for the 14 months — the door's open whenever." | Start again |
+
+**Stop conditions — any one of them ends the sequence immediately:**
+- **Recovered.** `invoice.paid` → `recordPledgeInvoice` already flips
+  `past_due` → `active` and refreshes `currentPeriodEnd`. That transition is
+  the cancel signal; nothing further sends.
+- **Cancelled.** `customer.subscription.deleted` → `cancelPledgeSubscription`.
+- **Paused by staff.** `setPledgeStatus` → `paused`.
+- **They replied.** These are transactional sends from a real reply-to address;
+  a human answering means a human takes over. Not automatable — call it out in
+  the runbook rather than pretending a flag exists.
+
+**How to schedule it without inventing a scheduler.** Do **not** chain
+`ctx.scheduler.runAfter` calls three weeks deep — a pledge that recovers on day
+6 would still have live timers. Instead, `crons.ts` runs a daily sweep that
+reads pledges `by_scope_and_status` at `past_due`, computes days-since from the
+`pledgeEvents` row recording the `→ past_due` transition, and sends the rung
+that matches. Re-entering `past_due` after a recovery starts the ladder at #1
+again, because the `pledgeEvents` trail gives a fresh transition timestamp. The
+sweep is idempotent per (pledge, rung) — stamp the rung on send so a double run
+can't double-mail.
+
+**One warning worth stating plainly:** *never email about a charge that has
+already succeeded.* The daily sweep must re-read the pledge's **current**
+status at send time, not trust the row it selected — Stripe's retry can succeed
+between the sweep's read and its send, and "your payment failed" arriving after
+"your monthly gift came through" is the single worst email in this whole
+design.
+
+- **The emails themselves:** a new `lib/backerDunningEmails.ts`, pure (payload
+  in, `{subject, html}` out) and painted with `emailShell`, exactly like
+  `lib/backerWelcomeEmail.ts`. **Transactional** — no unsubscribe footer, no
+  `emailSuppressions` consult, per the split `givingComms.ts` documents. Tone
+  is set by `givingComms.ts#onAchFailed`, whose doc already gets it right: a
+  declined payment is a typo or an expiry, never an accusation, and a raw bank
+  code (`R01`) must never reach a donor. Rung 4 must not read as punishment —
+  it is the org being easy to leave, which is what makes it worth staying in.
 - **Where the portal link comes from:** add `backerPortalUrl()` beside
   `givePageUrl()` in `lib/siteUrl.ts` (same `siteUrl()` base, degrading to
   `null` when unset, as `appUrl` already does). Because a sign-in code is
@@ -157,8 +290,13 @@ and the one time a bank took $500 back, and why."
   table is documented as never reachable by a public query, and the portal is
   a semi-public surface.
 
-### 4. Your city's books, per chapter  · **M**
-**Pitch:** "Brooklyn, August: $4,120 in, $3,780 out. Here is every line."
+### 4. The books — every chapter  · **M**
+**Pitch:** "Brooklyn, August: $4,120 in, $3,780 out. Here is every line — and
+here's Central, and New York, and every city on the map."
+
+**Decision 1:** not scoped to the city you back. A chapter picker at the top,
+defaulting to the backer's own city, with Central and every other chapter — 
+including prospect/proposed ones — one tap away, each showing its backer count.
 
 - **Feeds:** `financePublications` + `financePublicationRevisions` +
   `financePublicationEntries` — already frozen, already approved for
