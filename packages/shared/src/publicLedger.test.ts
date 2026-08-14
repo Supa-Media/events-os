@@ -6,7 +6,8 @@ import {
   contactMailto,
   everyPositionIsVolunteer,
   formatAffiliationMix,
-  PAY_KIND_ICONS,
+  PAID_PAY_ICON,
+  VOLUNTEER_PAY_ICON,
   positionPayLabel,
   parsePeriodKey,
   periodKey,
@@ -21,7 +22,7 @@ import {
   hasLiveRevision,
 } from "./publicLedger";
 import { ATTENDEE_AFFILIATION_LABELS } from "./finance";
-import { SEAT_DEFS, SEAT_IDS, SEAT_ROOT } from "./seats";
+import { SEAT_DEFS, SEAT_IDS, SEAT_ROOT, type SeatId } from "./seats";
 
 /**
  * The public ledger's shared vocabulary.
@@ -152,13 +153,35 @@ describe("published columns", () => {
   });
 });
 
+/**
+ * Run `fn` with one position temporarily paid, then put the constant back.
+ *
+ * `COMPENSATION_DISCLOSURE` is a `readonly` authored constant on purpose —
+ * there is no setter and there must never be one, because the whole design is
+ * that a figure is a reviewed edit to this file. A test still has to be able
+ * to see what the paid path prints, so it writes through the type for the
+ * duration of one assertion and restores in a `finally`. The alternative — a
+ * fake disclosure object threaded through `compensationTable()` — would test a
+ * parallel table rather than the one that publishes.
+ */
+function withPaidPosition(seatId: SeatId, cents: number, fn: () => void): void {
+  const byPosition = COMPENSATION_DISCLOSURE.byPosition as Record<string, number>;
+  try {
+    byPosition[seatId] = cents;
+    fn();
+  } finally {
+    delete byPosition[seatId];
+  }
+}
+
 describe("compensation — the table, and the flag that must agree with it", () => {
   test("every position resolves to a pay value; today all of them are Volunteer", () => {
     const rows = compensationTable().flatMap((g) => g.rows);
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
-      expect(positionPayLabel(row.pay)).toBe("Volunteer");
-      expect(row.icon).toBe(PAY_KIND_ICONS.volunteer);
+      expect(row.payCents).toBe(0);
+      expect(positionPayLabel(row.payCents)).toBe("Volunteer");
+      expect(row.icon).toBe(VOLUNTEER_PAY_ICON);
     }
   });
 
@@ -170,20 +193,44 @@ describe("compensation — the table, and the flag that must agree with it", () 
     expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(everyPositionIsVolunteer());
   });
 
-  test("a stated figure needs no renderer change — it is a value of the same shape", () => {
+  test("a stated figure needs no renderer change — it is the same field, non-zero", () => {
     // Pinned as the future editor's one-line edit (see
-    // `COMPENSATION_DISCLOSURE`'s doc): an override on `byPosition` formats
+    // `COMPENSATION_DISCLOSURE`'s doc): a number on `byPosition` formats
     // itself, and `everyPositionIsVolunteer` immediately stops agreeing with a
     // still-true `allVolunteer` flag.
-    const paid = positionPayLabel({
-      kind: "paid",
-      amountCents: 4_800_000,
-      period: "year",
+    //
+    // The unit is ANNUAL cents and the label says so out loud — a bare
+    // "$48,000.00" in a column of salaries is the kind of number a reader
+    // silently assumes is monthly.
+    expect(positionPayLabel(4_800_000)).toBe("$48,000.00 per year");
+    expect(positionPayLabel(0)).toBe("Volunteer");
+  });
+
+  test("a paid position takes the paid icon — and drags the flag out of agreement", () => {
+    // The guard above is only worth anything if it actually fires. Pay one
+    // position and re-run it: the row formats itself, the icon changes with
+    // it, and `everyPositionIsVolunteer()` stops agreeing with the authored
+    // `allVolunteer: true` — which is exactly the failure a future editor
+    // needs to be stopped by when they add a salary and forget the flag.
+    withPaidPosition("music_director", 4_800_000, () => {
+      const row = compensationTable()
+        .flatMap((g) => g.rows)
+        .find((r) => r.seatId === "music_director");
+      expect(row?.payCents).toBe(4_800_000);
+      expect(positionPayLabel(row?.payCents ?? 0)).toBe("$48,000.00 per year");
+      expect(row?.icon).toBe(PAID_PAY_ICON);
+
+      expect(everyPositionIsVolunteer()).toBe(false);
+      // The flag is still what a human authored — so the agreement test above
+      // would now fail, loudly, in this exact situation.
+      expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(true);
+      expect(COMPENSATION_DISCLOSURE.allVolunteer).not.toBe(
+        everyPositionIsVolunteer(),
+      );
     });
-    expect(paid).toBe("$48,000.00 per year");
-    expect(positionPayLabel({ kind: "paid", amountCents: 6500, period: "hour" })).toBe(
-      "$65.00 per hour",
-    );
+
+    // …and the constant is back to the authored truth afterwards.
+    expect(everyPositionIsVolunteer()).toBe(true);
   });
 
   test("rows are positions from the seat chart — never holders, never a derived rollup", () => {

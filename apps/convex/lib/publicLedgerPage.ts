@@ -396,9 +396,9 @@ function statsHtml(s: StatementCore): string {
  *  - It never touches holders. Rows are seat DEFS; there is no path from here
  *    to a person's name, which is the same promise the rest of this page makes
  *    about givers and attendees, applied to ourselves.
- *  - It hardcodes no pay string. "Volunteer" is one VALUE of a position's pay,
- *    so stating a real figure for one position is a one-line data edit that
- *    never reaches this file.
+ *  - It hardcodes no pay string. "Volunteer" is what a position's pay of zero
+ *    prints as, so stating a real figure for one position is a one-line data
+ *    edit that never reaches this file.
  *
  * And it renders on EVERY published month, backdated ones included, because it
  * is read live from the shared constant rather than frozen into a publication:
@@ -416,11 +416,7 @@ function compensationHtml(): string {
         (r) => `<div class="payrow">
       <span class="payicon" aria-hidden="true">${esc(r.icon)}</span>
       <span class="payposition">${esc(r.title)}</span>
-      <span class="paypay${r.pay.kind === "paid" ? " paid" : ""}">${esc(positionPayLabel(r.pay))}${
-        r.pay.kind === "paid" && r.pay.note
-          ? `<span class="paynote">${esc(r.pay.note)}</span>`
-          : ""
-      }</span>
+      <span class="paypay${r.payCents > 0 ? " paid" : ""}">${esc(positionPayLabel(r.payCents))}</span>
     </div>`,
       )
       .join("")}

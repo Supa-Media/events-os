@@ -174,7 +174,6 @@ td.purpose{color:var(--muted);min-width:260px}
 /* A real figure reads at full strength; "Volunteer" is a statement, not a
    number, and sits back a shade so a paid row is the one the eye finds. */
 .paypay.paid{color:var(--ink);font-weight:700}
-.paynote{display:block;font-size:12px;font-weight:500;color:var(--faint);white-space:normal;max-width:22ch}
 .note.missing{border-left-color:var(--success);margin-top:14px}
 .misslist{margin:10px 0 0;padding-left:20px}
 .misslist li{margin-bottom:6px;max-width:72ch}

@@ -2429,6 +2429,31 @@ describe("who gets paid — every POSITION, never a person", () => {
 
   const NON_DERIVED = SEAT_IDS.filter((id) => SEAT_DEFS[id].derived !== true);
 
+  /**
+   * Render with one position temporarily paid, then put the constant back.
+   *
+   * `COMPENSATION_DISCLOSURE` is a `readonly` authored constant on purpose —
+   * a figure is a reviewed edit to `packages/shared/src/publicLedger.ts`, and
+   * there is no setter for it anywhere in the app. A test still has to see
+   * what the paid path publishes, so it writes through the type for the length
+   * of one page render and restores in a `finally`. Rendering the REAL page is
+   * the point: a hand-built fixture would prove the fixture formats, not the
+   * page.
+   */
+  async function withPaidPosition<T>(
+    seatId: string,
+    cents: number,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    const byPosition = COMPENSATION_DISCLOSURE.byPosition as Record<string, number>;
+    try {
+      byPosition[seatId] = cents;
+      return await fn();
+    } finally {
+      delete byPosition[seatId];
+    }
+  }
+
   /** A published month, fetched. */
   async function publishedBody(
     s: ChapterSetup,
@@ -2505,6 +2530,44 @@ describe("who gets paid — every POSITION, never a person", () => {
     expect(section).toContain(COMPENSATION_DISCLOSURE.headline);
     // …and so does the forward promise the table now demonstrates.
     expect(section).toContain("by position rather than by person");
+  });
+
+  test("a paid position prints an ANNUAL figure, styled as a figure, with no renderer change", async () => {
+    // The day one row turns paid, the reader is not shown a new section — they
+    // are shown a number in a row they have already read a dozen times. This
+    // pins that end to end by paying one position for the length of one page
+    // render (see `withPaidPosition`) and reading the HTML that comes back.
+    const s = await aPublishedMonth();
+
+    const section = await withPaidPosition("music_director", 4_800_000, async () =>
+      paySection(await publishedBody(s)),
+    );
+
+    // Annual, spelled out. The unit is a deliberate choice — the policy line
+    // promises pay "the way public offices publish theirs," and public offices
+    // publish a yearly salary. A bare "$48,000.00" in this column is a number
+    // a reader would be entitled to read as monthly.
+    expect(section).toContain(
+      '<span class="paypay paid">$48,000.00 per year</span>',
+    );
+    // The paid glyph, not the volunteer handshake, on that row only.
+    expect(section).toContain("💵");
+    expect(occurrences(section, "💵")).toBe(1);
+    expect(occurrences(section, "🤝")).toBe(NON_DERIVED.length - 1);
+    // Still one row per position — a figure is a value, not an extra row.
+    expect(occurrences(section, '<div class="payrow">')).toBe(NON_DERIVED.length);
+    expect(occurrences(section, '<span class="paypay">Volunteer</span>')).toBe(
+      NON_DERIVED.length - 1,
+    );
+
+    // And the flag/data guard in `packages/shared/src/publicLedger.test.ts`
+    // would be failing this whole time: the authored `allVolunteer` is still
+    // true while the table now disproves it two inches below.
+    expect(COMPENSATION_DISCLOSURE.allVolunteer).toBe(true);
+
+    // Back to the authored truth once the override is gone.
+    const after = paySection(await publishedBody(s));
+    expect(after).not.toMatch(/\$\d/);
   });
 
   test("NO holder's name can reach the page, however many people hold a position", async () => {

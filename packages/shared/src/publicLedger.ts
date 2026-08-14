@@ -420,75 +420,73 @@ export function publicGiftMethodLabel(method: string): string {
  * of which nobody would remember. Rendering it from this constant makes every
  * published month, backdated ones included, say the same true thing at once.
  *
+ * ── WHAT A POSITION'S PAY IS: ONE NUMBER, ANNUAL, IN CENTS ───────────────────
+ * A position's pay is integer cents PER YEAR, and `0` means volunteer. Not a
+ * union, not an amount-plus-period pair — one number, because that is what the
+ * page has to print and every extra degree of freedom is a way for two rows to
+ * disagree about what they mean.
+ *
+ * ANNUAL IS THE UNIT, AND IT IS A DELIBERATE CHOICE, NOT A DEFAULT. The policy
+ * sentence below commits to publishing pay "the way public offices publish
+ * theirs," and public offices publish an ANNUAL SALARY: it is the figure a
+ * reader can compare against a city payroll, a 990, or another nonprofit,
+ * without doing arithmetic that the page should have done for them. Storing an
+ * amount plus a period would let one row say "$65.00 per hour" beside another
+ * saying "$48,000.00 per year" and quietly leave the comparison to the reader
+ * — which is the thing this table exists to spare them.
+ *
+ * So there is no period field to set, and no unit to get wrong. The cost of
+ * that is real and worth stating plainly: an HOURLY or PER-ENGAGEMENT
+ * arrangement — a session player, a mix engineer, a part-time coordinator — is
+ * NOT expressible here, and must not be smuggled in by annualizing a guess at
+ * the hours. When one of those arrives it needs a real product decision about
+ * how the table presents it (a second column? a qualifier under the figure? a
+ * separate "paid per engagement" list?), made in the open, and NOT a silent
+ * change of what the number in this file means. A reader who learned to read
+ * this column as a yearly salary must never be handed an hourly rate in the
+ * same shape.
+ *
  * ── WHAT A FUTURE EDITOR CHANGES ─────────────────────────────────────────────
  * The day the Music Director starts drawing $48,000 a year:
- *   1. `byPosition.music_director = { kind: "paid", amountCents: 4_800_000,
- *      period: "year" }`
+ *   1. `byPosition.music_director = 4_800_000` (cents, per year)
  *   2. `allVolunteer: false` (the headline sentence stops rendering; the table
  *      and the policy stay).
  *   3. Rewrite `present` if it still needs to say something true.
  * Nothing in the renderer, the CSS, or a test fixture moves — which is the
- * point of modelling "Volunteer" as one possible VALUE of a position's pay
+ * point of modelling "Volunteer" as a VALUE a position's pay can take (zero)
  * rather than as a string in the HTML.
  */
 
-/** How often a stated figure recurs. `engagement` is the per-event/per-release
- *  fee shape (a session player, a mix engineer) — real for this org and not
- *  expressible as a salary, so it is here from the start rather than being
- *  forced into "month" the day it is first needed. */
-export const PAY_PERIODS = ["year", "month", "hour", "engagement"] as const;
-export type PayPeriod = (typeof PAY_PERIODS)[number];
-
-export const PAY_PERIOD_LABELS: Record<PayPeriod, string> = {
-  year: "per year",
-  month: "per month",
-  hour: "per hour",
-  engagement: "per engagement",
-};
-
 /**
- * What one POSITION is paid. A discriminated union rather than a nullable
- * amount, because "volunteer" is a real, stated answer — not a missing figure
- * — and the page must never print an empty cell where a reader would have to
- * guess whether we withheld it or nobody is paid.
- */
-export type PositionPay =
-  | { readonly kind: "volunteer" }
-  | {
-      readonly kind: "paid";
-      readonly amountCents: number;
-      readonly period: PayPeriod;
-      /** Optional qualifier printed under the figure ("part-time, 20 hrs/wk").
-       *  For the one thing a bare number would misrepresent — not for
-       *  softening it. */
-      readonly note?: string;
-    };
-
-/** The answer today, for every position. Named rather than repeated so the
- *  day one seat diverges, the diff shows exactly one seat diverging. */
-export const VOLUNTEER: PositionPay = { kind: "volunteer" };
-
-/**
- * The row icon, keyed by PAY KIND rather than by seat.
+ * The row icon. Exactly two, and chosen by whether there is a figure at all.
  *
  * A per-position icon table would be 26 emoji to invent, 26 more to argue
  * about, and one more to forget every time a seat is added — and it would
- * decorate the position, which is the half of the row that is already a
- * word. Keying it to the pay means the icon carries information: the day one
- * row turns paid, its glyph changes with it and the eye lands on the row that
- * changed. Emoji because the other public pages already use them as card
- * icons (`givePageSections.ts#PROGRAM_CARDS`, `landingPage.ts`).
+ * decorate the position, which is the half of the row that is already a word.
+ * Keying it to the pay means the icon carries information: the day one row
+ * turns paid, its glyph changes with it and the eye lands on the row that
+ * changed. Emoji because the other public pages already use them as card icons
+ * (`givePageSections.ts#PROGRAM_CARDS`, `landingPage.ts`).
  */
-export const PAY_KIND_ICONS: Record<PositionPay["kind"], string> = {
-  volunteer: "🤝",
-  paid: "💵",
-};
+export const VOLUNTEER_PAY_ICON = "🤝";
+export const PAID_PAY_ICON = "💵";
 
-/** "Volunteer" / "$48,000.00 per year". Cents show, matching the rest of the
- *  page — a figure that rounds is a figure a reader can't reconcile. */
-export function positionPayLabel(pay: PositionPay): string {
-  if (pay.kind === "volunteer") return "Volunteer";
-  return `${formatCents(pay.amountCents)} ${PAY_PERIOD_LABELS[pay.period]}`;
+/** Whether a stated figure exists at all. One predicate, so the label, the
+ *  icon and the `allVolunteer` cross-check can never disagree about where the
+ *  line between "volunteer" and "paid" falls. */
+function isPaidCents(cents: number): boolean {
+  return cents > 0;
+}
+
+/** "Volunteer" for `0`, otherwise the yearly figure: "$48,000.00 per year".
+ *  Cents show, matching the rest of the page — a figure that rounds is a
+ *  figure a reader can't reconcile. The period is spelled out even though it
+ *  is the only one there is, because a bare "$48,000.00" in a column of
+ *  salaries is exactly the kind of number a reader silently assumes is
+ *  monthly. */
+export function positionPayLabel(cents: number): string {
+  if (!isPaidCents(cents)) return "Volunteer";
+  return `${formatCents(cents)} per year`;
 }
 
 export interface CompensationDisclosure {
@@ -501,12 +499,13 @@ export interface CompensationDisclosure {
   readonly policy: string;
   /** The sentence above the table, stating what a row is (and isn't). */
   readonly tableIntro: string;
-  /** What a position is paid unless `byPosition` says otherwise. */
-  readonly defaultPay: PositionPay;
-  /** Per-position overrides. Empty today; one entry the day one position is
-   *  paid — never a full 26-row table anybody has to keep in sync with
-   *  `SEAT_DEFS`. */
-  readonly byPosition: Readonly<Partial<Record<SeatId, PositionPay>>>;
+  /** Annual pay, in integer cents, for a position `byPosition` says nothing
+   *  about. `0` — every position today — prints as "Volunteer". */
+  readonly defaultPayCents: number;
+  /** Per-position annual pay, in integer cents. Empty today; one entry the day
+   *  one position is paid — never a full 26-row table anybody has to keep in
+   *  sync with `SEAT_DEFS`. */
+  readonly byPosition: Readonly<Partial<Record<SeatId, number>>>;
 }
 
 export const COMPENSATION_DISCLOSURE: CompensationDisclosure = {
@@ -518,14 +517,17 @@ export const COMPENSATION_DISCLOSURE: CompensationDisclosure = {
     "When that changes, we'll publish what people are paid by position rather than by person — the way public offices publish theirs — and positions at the same level will be paid the same. It will appear in the table above, and like everything else here, it will show up in the lines.",
   tableIntro:
     "Every position at Public Worship, and what it is paid. These are positions, not people: one row covers everyone holding it, nobody is named, and a position held by three people is still one row.",
-  defaultPay: VOLUNTEER,
+  defaultPayCents: 0,
   byPosition: {},
 };
 
-/** What `seatId` is paid. The ONLY way the page resolves a position's pay, so
- *  a future override lands everywhere at once. */
-export function positionPay(seatId: SeatId): PositionPay {
-  return COMPENSATION_DISCLOSURE.byPosition[seatId] ?? COMPENSATION_DISCLOSURE.defaultPay;
+/** What `seatId` is paid a year, in cents. The ONLY way the page resolves a
+ *  position's pay, so a future override lands everywhere at once. */
+export function positionPay(seatId: SeatId): number {
+  return (
+    COMPENSATION_DISCLOSURE.byPosition[seatId] ??
+    COMPENSATION_DISCLOSURE.defaultPayCents
+  );
 }
 
 /** The `allVolunteer` claim, read off the DATA instead of the flag. The flag
@@ -534,9 +536,9 @@ export function positionPay(seatId: SeatId): PositionPay {
  *  survive a paid position being added underneath it. */
 export function everyPositionIsVolunteer(): boolean {
   return (
-    COMPENSATION_DISCLOSURE.defaultPay.kind === "volunteer" &&
+    !isPaidCents(COMPENSATION_DISCLOSURE.defaultPayCents) &&
     Object.values(COMPENSATION_DISCLOSURE.byPosition).every(
-      (pay) => pay.kind === "volunteer",
+      (cents) => !isPaidCents(cents),
     )
   );
 }
@@ -559,7 +561,10 @@ export interface CompensationRow {
   seatId: SeatId;
   /** The position's name. Never a holder's. */
   title: string;
-  pay: PositionPay;
+  /** Annual pay in cents; `0` is a volunteer position. Named for its unit
+   *  because a bare `pay: number` is a currency-and-period ambiguity waiting
+   *  at every call site. */
+  payCents: number;
   icon: string;
 }
 
@@ -586,12 +591,12 @@ export function compensationTable(): CompensationGroup[] {
     rows: seatChartOrder(chart)
       .filter((def) => def.derived !== true)
       .map((def) => {
-        const pay = positionPay(def.id);
+        const payCents = positionPay(def.id);
         return {
           seatId: def.id,
           title: def.title,
-          pay,
-          icon: PAY_KIND_ICONS[pay.kind],
+          payCents,
+          icon: isPaidCents(payCents) ? PAID_PAY_ICON : VOLUNTEER_PAY_ICON,
         };
       }),
   }));
