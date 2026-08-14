@@ -15,6 +15,7 @@
 import type { MutationCtx } from "../_generated/server";
 import type { Doc, Id } from "../_generated/dataModel";
 import { logFinanceAudit } from "./financeAuditLog";
+import { REFUND_STATE_LABELS } from "@events-os/shared";
 import type { FinanceScope } from "./finance";
 
 export type RefundPairRefusalCode =
@@ -157,8 +158,10 @@ export async function writeRefundPair(
       action,
       actorPersonId: opts.actorPersonId ?? null,
       field: "refund",
-      before: "none",
-      after: opts.auto ? "refunded (auto-paired via Increase card_payment_id)" : "refunded",
+      before: REFUND_STATE_LABELS.none,
+      after: REFUND_STATE_LABELS[opts.auto ? "refunded_auto" : "refunded"],
+      beforeKey: "none",
+      afterKey: opts.auto ? "refunded_auto" : "refunded",
       reason: trimmedNote,
       amountCents: leg.amountCents,
       system: opts.auto === true,

@@ -1532,7 +1532,10 @@ export const reattributionAudit = defineTable({
  *
  *  `before`/`after` are always human-readable (a category NAME, a formatted
  *  dollar amount, a status label) — never a raw id — so the trail still reads
- *  years later without joining back to a row that may no longer exist.
+ *  years later without joining back to a row that may no longer exist. Where a
+ *  side names a member of a CLOSED vocabulary (a status, a flow, a coding
+ *  state…), `beforeKey`/`afterKey` carry the KEY beside those words and the
+ *  reader renders today's label from it; see those fields' own comment.
  *  `actorPersonId` is optional (not every finance write comes from a caller
  *  with a roster row — a superuser acting on a chapter's finances with no
  *  `people` row is a real, supported path; mirrors `reattributionAudit`'s own
@@ -1586,10 +1589,40 @@ export const financeAuditLog = defineTable({
   // "note", "receipt", "isPersonal") — omitted for an action with no single
   // changed field (e.g. `manual_create`).
   field: v.optional(v.string()),
+  // WHAT THE SCREEN SAID AT THE TIME. Frozen at write time and never rewritten
+  // — see `beforeKey`/`afterKey` below for why that is a feature for free-text
+  // rows and was a bug for keyed ones.
   before: v.optional(v.string()),
   after: v.optional(v.string()),
+  // WHAT THE ROW ACTUALLY WAS. The stored state key on each side — e.g.
+  // `"reconciled"`, not `"Closed"` — for the rows whose sides name a member of
+  // a CLOSED vocabulary. Rendered back into words at READ time by
+  // `@events-os/shared`'s `financeAuditValueLabel`, so a label rename never
+  // splits the trail in half again (#717 renamed `reconciled`'s label from
+  // "Reconciled" to "Closed" and left history reading both ways about the
+  // identical state; founder: "Store the status key and render the label").
+  //
+  // ABSENT on a free-text row, and that is the design, not a gap: a
+  // `note_edit`'s sides are prose, a `recode`'s are a category NAME, a
+  // `budget_amount_change`'s are dollars. There is no vocabulary to render
+  // those from and the string IS the record. Which vocabulary a keyed row
+  // belongs to is DERIVED from `action` (+ `field`) by
+  // `financeAuditValueKind` rather than stored — a stored copy of a fact the
+  // row already carries is a second copy that can drift.
+  //
+  // `logFinanceAudit` ENFORCES the pairing: an action with a known vocabulary
+  // may not write a non-null `before`/`after` without the matching key. Also
+  // absent on rows written before 2026-08-14, which is what
+  // `financeAuditKeyBackfill.ts` sweeps for — additively, never touching the
+  // words already written.
+  beforeKey: v.optional(v.string()),
+  afterKey: v.optional(v.string()),
   // Required (non-blank, enforced by `setTransactionStatus`) for a
-  // `status_change` row whose `after` is "Excluded"; optional everywhere else.
+  // `status_change` row whose `afterKey` is `"excluded"` — the STORED status,
+  // never the label. Optional everywhere else. Stated in keys because a rule
+  // written against a display string stops firing the day the string is
+  // renamed, and this particular rule ("excluding a charge out of every total
+  // needs a reason") is the one the whole table exists to enforce.
   reason: v.optional(v.string()),
   // The transaction's amount (or, for a `budget_amount_change` row, the
   // budget's NEW amount) — a quick-scan number alongside the formatted
