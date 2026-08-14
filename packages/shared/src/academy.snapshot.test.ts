@@ -524,6 +524,13 @@
  * which sentences moved and, more importantly, which kept the word "reconcile"
  * because they mean real bank reconciliation.
  *
+ * 2026-08-14 — the grid's Columns control. `finance-reconcile-grid` is the only
+ * section touched, and only its prose: the page's control count went four → five
+ * and one paragraph now explains hiding columns (a rendering choice, not a
+ * filter; the checkbox, Merchant and Actions always stay; the narrowed view is
+ * in the link). No section, course, slug, minutes or quiz length moved, so every
+ * table below is unchanged.
+ *
  * 2026-08-14 — two CLOSE rules, both founder calls about what a row owes
  * before it can be closed, both content-only. `finance-reconcile-grid`'s
  * "Personal is a flag, not a status" now teaches that a personal charge

@@ -348,7 +348,7 @@ describe("the grid is told which rows may be edited", () => {
 
     const res = await s.as.query(api.finances.listReconcile, {});
     const rowFor = (id: Id<"transactions">) =>
-      res.rows.find((r) => r.id === id);
+      res.rows.find((r: { id: string }) => r.id === id);
     // The flag the cell reads to decide whether to offer a cursor. It must
     // track the CODING's status, not the row's — a locked sentence is locked
     // whatever else is true of the transaction.
