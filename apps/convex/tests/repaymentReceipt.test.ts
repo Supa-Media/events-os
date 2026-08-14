@@ -26,6 +26,7 @@ import { describe, expect, test, vi } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { buildRepaymentReceipt } from "../lib/personalRepaymentReceiptEmail";
 
 async function seedPayer(
   s: ChapterSetup,
@@ -442,6 +443,339 @@ describe("payment receipt — the repayments link (APP_URL)", () => {
         errorSpy.mock.calls.some((c) => String(c[0]).includes("APP_URL is unset")),
       ).toBe(true);
       errorSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+      restoreEnv(prev);
+    }
+  });
+});
+
+describe("payment receipt — a lost delivery is recorded, not silent", () => {
+  test("no email on file: recorded as a failure and logged, never silent", async () => {
+    vi.useFakeTimers();
+    const prev = snapshotEnv();
+    try {
+      process.env.RESEND_API_KEY = "test_key";
+      process.env.APP_URL = "https://app.publicworship.life";
+      mockStripeAndResend({ receiptUrl: null });
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const t = newT();
+      const s = await setupChapter(t);
+      // No `email` opt — `seedPayer` still needs SOME identity, so patch it
+      // away after seeding rather than at insert time.
+      const payer = await seedPayer(s, { email: "temp@example.com" });
+      await run(s.t, (ctx) => ctx.db.patch(payer, { pwEmail: undefined, email: undefined }));
+      const a = await seedRepayment(s, payer, 1_000);
+
+      await t.mutation(internal.cards.applyRepaymentPaid, {
+        repaymentId: a,
+        increaseRef: "ach_no_email",
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const row = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(typeof row?.receiptSentAt).toBe("number"); // claimed
+      expect(row?.receiptDeliveredAt).toBeUndefined();
+      expect(typeof row?.receiptDeliveryFailedAt).toBe("number");
+      expect(row?.lastReceiptError).toMatch(/no email/i);
+
+      // The no-email branch used to log NOTHING — now it must correlate
+      // back to the repayment.
+      expect(
+        errorSpy.mock.calls.some(
+          (c) =>
+            String(c[0]).includes("no email on file") &&
+            JSON.stringify(c).includes(a),
+        ),
+      ).toBe(true);
+      errorSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+      restoreEnv(prev);
+    }
+  });
+
+  test("Resend rejects the send: recorded as a failure, never marked delivered", async () => {
+    vi.useFakeTimers();
+    const prev = snapshotEnv();
+    try {
+      process.env.RESEND_API_KEY = "test_key";
+      process.env.APP_URL = "https://app.publicworship.life";
+      globalThis.fetch = (async (input: RequestInfo | URL) => {
+        if (String(input).includes("api.resend.com")) {
+          return new Response("rate limited", { status: 429 });
+        }
+        throw new Error(`unexpected fetch: ${String(input)}`);
+      }) as unknown as typeof fetch;
+      const errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+
+      const t = newT();
+      const s = await setupChapter(t);
+      const payer = await seedPayer(s, { email: "rejected@example.com" });
+      const a = await seedRepayment(s, payer, 2_200);
+
+      await t.mutation(internal.cards.applyRepaymentPaid, {
+        repaymentId: a,
+        increaseRef: "ach_rejected",
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const row = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(row?.receiptDeliveredAt).toBeUndefined();
+      expect(typeof row?.receiptDeliveryFailedAt).toBe("number");
+      expect(row?.lastReceiptError).toMatch(/resend/i);
+      expect(
+        errorSpy.mock.calls.some((c) =>
+          String(c[0]).includes("Resend did not accept the send"),
+        ),
+      ).toBe(true);
+      errorSpy.mockRestore();
+    } finally {
+      vi.useRealTimers();
+      restoreEnv(prev);
+    }
+  });
+
+  test("a confirmed successful send stamps receiptDeliveredAt (never a failure field)", async () => {
+    vi.useFakeTimers();
+    const prev = snapshotEnv();
+    try {
+      process.env.RESEND_API_KEY = "test_key";
+      process.env.APP_URL = "https://app.publicworship.life";
+      mockStripeAndResend({ receiptUrl: null });
+
+      const t = newT();
+      const s = await setupChapter(t);
+      const payer = await seedPayer(s, { email: "delivered@example.com" });
+      const a = await seedRepayment(s, payer, 500);
+
+      await t.mutation(internal.cards.applyRepaymentPaid, {
+        repaymentId: a,
+        increaseRef: "ach_delivered",
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const row = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(typeof row?.receiptDeliveredAt).toBe("number");
+      expect(row?.receiptDeliveryFailedAt).toBeUndefined();
+      expect(row?.lastReceiptError).toBeUndefined();
+    } finally {
+      vi.useRealTimers();
+      restoreEnv(prev);
+    }
+  });
+});
+
+describe("payment receipt — cross-payer batch is refused, not merged", () => {
+  test("getRepaymentReceiptPayload throws rather than silently attributing a mixed batch", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const payerA = await seedPayer(s, { email: "a@example.com", name: "Payer A" });
+    const payerB = await seedPayer(s, { email: "b@example.com", name: "Payer B" });
+    const a = await seedRepayment(s, payerA, 1_000);
+    const b = await seedRepayment(s, payerB, 2_000);
+
+    await expect(
+      t.query(internal.cards.getRepaymentReceiptPayload, { repaymentIds: [a, b] }),
+    ).rejects.toThrow(/more than one payer/i);
+  });
+});
+
+describe("payment receipt — stripe receipt URL is escaped and scheme-validated", () => {
+  const baseInput = {
+    payerName: "Pat Payer",
+    paidAt: Date.UTC(2026, 7, 1),
+    lines: [{ merchantName: "Coffee Shop", description: null, chargeDate: null, amountCents: 500 }],
+    totalCents: 500,
+    method: "card" as const,
+    feeCoveredCents: null,
+    link: "https://app.publicworship.life/finances/repayments",
+  };
+
+  test("an embedded quote + <script> in an https:// receipt URL cannot break out of the href", () => {
+    const hostile =
+      'https://evil.example.com/receipt"><script>alert(document.cookie)</script><a href="';
+    const receipt = buildRepaymentReceipt({ ...baseInput, stripeReceiptUrl: hostile });
+
+    // The quote must be escaped, so the payload can never close the
+    // attribute and open a live tag.
+    expect(receipt.html).not.toContain('"><script>');
+    expect(receipt.html).not.toContain("<script>alert(document.cookie)</script>");
+    // The escaped form is present instead — proof the URL was rendered, not
+    // silently dropped, just neutralized.
+    expect(receipt.html).toContain("&quot;&gt;&lt;script&gt;");
+  });
+
+  test("a javascript: scheme is dropped entirely — no button, no dangerous href", () => {
+    const receipt = buildRepaymentReceipt({
+      ...baseInput,
+      stripeReceiptUrl: "javascript:alert(1)",
+    });
+
+    expect(receipt.html.toLowerCase()).not.toContain("javascript:");
+    expect(receipt.html).not.toContain("View your Stripe receipt");
+  });
+
+  test("a plain http:// (non-https) receipt URL is also dropped", () => {
+    const receipt = buildRepaymentReceipt({
+      ...baseInput,
+      stripeReceiptUrl: "http://not-secure.example.com/receipt",
+    });
+
+    expect(receipt.html).not.toContain("http://not-secure.example.com");
+    expect(receipt.html).not.toContain("View your Stripe receipt");
+  });
+
+  test("a genuine https:// receipt URL still renders the button", () => {
+    const receipt = buildRepaymentReceipt({
+      ...baseInput,
+      stripeReceiptUrl: "https://pay.stripe.com/receipts/abc123",
+    });
+
+    expect(receipt.html).toContain("https://pay.stripe.com/receipts/abc123");
+    expect(receipt.html).toContain("View your Stripe receipt");
+  });
+});
+
+/**
+ * Settle a repayment for real (so `status`/`creditTransactionId` are
+ * genuine, not fabricated) and let its live receipt attempt run to
+ * completion, then hand back the row so a test can rewrite its
+ * delivery-outcome fields to simulate "stale and never confirmed" without
+ * inventing an invalid `creditTransactionId`.
+ */
+async function settleAndDrain(
+  s: ChapterSetup,
+  repaymentId: Id<"personalRepayments">,
+  increaseRef: string,
+) {
+  await s.t.mutation(internal.cards.applyRepaymentPaid, { repaymentId, increaseRef });
+  await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+}
+
+describe("payment receipt backfill — recovers a lost delivery", () => {
+  test("dry run reports the backlog but sends and claims nothing", async () => {
+    vi.useFakeTimers();
+    const prev = snapshotEnv();
+    try {
+      // Settle with NO Resend key configured — a realistic "delivery
+      // failed" row, no email actually sent.
+      const t = newT();
+      const s = await setupChapter(t);
+      const payer = await seedPayer(s, { email: "backlog@example.com" });
+      const a = await seedRepayment(s, payer, 1_500);
+      await settleAndDrain(s, a, "ach_backlog_1");
+
+      const stamped = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(typeof stamped?.receiptDeliveryFailedAt).toBe("number"); // no key → failed
+
+      // Age the claim past the in-flight grace window so the backlog picks
+      // it up.
+      await run(s.t, (ctx) =>
+        ctx.db.patch(a, { receiptSentAt: Date.now() - 20 * 60 * 1000 }),
+      );
+
+      const result = await t.action(
+        internal.repaymentReceiptBackfill.backfillRepaymentReceipts,
+        {},
+      );
+      expect(result.eligible).toBeGreaterThanOrEqual(1);
+      expect(result.claimed).toBe(0);
+
+      const row = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(row?.receiptDeliveredAt).toBeUndefined();
+      expect(row?.lastReceiptError).toBeDefined();
+    } finally {
+      vi.useRealTimers();
+      restoreEnv(prev);
+    }
+  });
+
+  test("execute re-sends a stale, never-confirmed receipt and clears the failure fields", async () => {
+    vi.useFakeTimers();
+    const prev = snapshotEnv();
+    try {
+      // Settle with NO Resend key first — the original attempt fails.
+      const t = newT();
+      const s = await setupChapter(t);
+      const payer = await seedPayer(s, { email: "recovered@example.com" });
+      const a = await seedRepayment(s, payer, 4_400, { merchantName: "Print Shop" });
+      await settleAndDrain(s, a, "ach_recovered_1");
+
+      const failed = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(typeof failed?.receiptDeliveryFailedAt).toBe("number");
+
+      // Age the claim past the grace window, THEN configure Resend for the
+      // retry — mirrors "the outage that caused the original failure is
+      // over by the time a maintainer runs the backfill".
+      await run(s.t, (ctx) =>
+        ctx.db.patch(a, { receiptSentAt: Date.now() - 20 * 60 * 1000 }),
+      );
+      process.env.RESEND_API_KEY = "test_key";
+      process.env.APP_URL = "https://app.publicworship.life";
+      const resendCalls = mockStripeAndResend({ receiptUrl: null });
+
+      const result = await t.action(
+        internal.repaymentReceiptBackfill.backfillRepaymentReceipts,
+        { execute: true },
+      );
+      expect(result.claimed).toBe(1);
+      expect(result.delivered).toBe(1);
+
+      const receipts = resendCalls.filter((c) => c.subject.startsWith("Receipt:"));
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0].to).toBe("recovered@example.com");
+      expect(receipts[0].html).toContain("Print Shop");
+
+      const row = await run(s.t, (ctx) => ctx.db.get(a));
+      expect(typeof row?.receiptDeliveredAt).toBe("number");
+      expect(row?.receiptDeliveryFailedAt).toBeUndefined();
+      expect(row?.lastReceiptError).toBeUndefined();
+
+      // A SECOND run must not re-send — the row now reads as delivered.
+      resendCalls.length = 0;
+      const second = await t.action(
+        internal.repaymentReceiptBackfill.backfillRepaymentReceipts,
+        { execute: true },
+      );
+      expect(second.eligible).toBe(0);
+      expect(resendCalls.length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+      restoreEnv(prev);
+    }
+  });
+
+  test("a freshly-claimed row still inside the in-flight grace window is left alone", async () => {
+    vi.useFakeTimers();
+    const prev = snapshotEnv();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const payer = await seedPayer(s, { email: "inflight@example.com" });
+      const a = await seedRepayment(s, payer, 900);
+      await settleAndDrain(s, a, "ach_inflight_1");
+
+      // Simulate "claimed, outcome not yet resolved" — a state the live
+      // code always resolves out of by the time its action returns, but
+      // the row can transiently look like this, and the backfill must not
+      // treat it as ready.
+      await run(s.t, (ctx) =>
+        ctx.db.patch(a, {
+          receiptSentAt: Date.now(), // just claimed
+          receiptDeliveredAt: undefined,
+          receiptDeliveryFailedAt: undefined,
+          lastReceiptError: undefined,
+        }),
+      );
+
+      const result = await t.action(
+        internal.repaymentReceiptBackfill.backfillRepaymentReceipts,
+        { execute: true },
+      );
+      expect(result.eligible).toBe(0);
+      expect(result.claimed).toBe(0);
     } finally {
       vi.useRealTimers();
       restoreEnv(prev);
