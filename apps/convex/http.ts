@@ -575,8 +575,17 @@ http.route({
       });
       if (!preview) return notFound();
       const { totalBooks, ...statement } = preview;
+      // The compensation grid renders live, so the preview shows the same
+      // positions, counts and pay a reader would see — the point of a preview
+      // is that nothing about the page is left to imagination.
+      const headcount = await ctx.runQuery(
+        api.publicLedger.publicPositionHeadcount,
+        {},
+      );
       return previewHtml(
-        renderLedgerPage(statement, [], [], totalBooks, { preview: true }),
+        renderLedgerPage(statement, [], [], totalBooks, headcount, {
+          preview: true,
+        }),
       );
     }
 
@@ -599,12 +608,13 @@ http.route({
           `public-worship-ledger-${key}.csv`,
         );
       }
-      const [{ months, years }, totalBooks] = await Promise.all([
+      const [{ months, years }, totalBooks, headcount] = await Promise.all([
         ledgerPeriods(ctx),
         ctx.runQuery(api.publicLedger.publicBookCount, {}),
+        ctx.runQuery(api.publicLedger.publicPositionHeadcount, {}),
       ]);
       return ledgerHtml(
-        renderLedgerYearPage(statement, months, years, totalBooks),
+        renderLedgerYearPage(statement, months, years, totalBooks, headcount),
       );
     }
 
@@ -625,11 +635,14 @@ http.route({
       return csv(ledgerCsv(statement.entries), `public-worship-ledger-${key}.csv`);
     }
 
-    const [{ months, years }, totalBooks] = await Promise.all([
+    const [{ months, years }, totalBooks, headcount] = await Promise.all([
       ledgerPeriods(ctx),
       ctx.runQuery(api.publicLedger.publicBookCount, {}),
+      ctx.runQuery(api.publicLedger.publicPositionHeadcount, {}),
     ]);
-    return ledgerHtml(renderLedgerPage(statement, months, years, totalBooks));
+    return ledgerHtml(
+      renderLedgerPage(statement, months, years, totalBooks, headcount),
+    );
   }),
 });
 

@@ -2,13 +2,13 @@ import { describe, expect, test } from "vitest";
 import {
   COMPENSATION_DISCLOSURE,
   COMPENSATION_GROUP_HEADINGS,
+  compensationGroupSummary,
   compensationTable,
   contactMailto,
   everyPositionIsVolunteer,
   formatAffiliationMix,
-  PAID_PAY_ICON,
-  VOLUNTEER_PAY_ICON,
   positionPayLabel,
+  type PositionHeadcount,
   parsePeriodKey,
   periodKey,
   periodLabel,
@@ -174,14 +174,17 @@ function withPaidPosition(seatId: SeatId, cents: number, fn: () => void): void {
   }
 }
 
-describe("compensation — the table, and the flag that must agree with it", () => {
+/** Nobody assigned anywhere — the shape a fresh install has, and the baseline
+ *  for every assertion that isn't about counting. */
+const NOBODY: PositionHeadcount = { byPosition: {}, chapterCount: 0 };
+
+describe("compensation — the grid, and the flag that must agree with it", () => {
   test("every position resolves to a pay value; today all of them are Volunteer", () => {
-    const rows = compensationTable().flatMap((g) => g.rows);
+    const rows = compensationTable(NOBODY).flatMap((g) => g.rows);
     expect(rows.length).toBeGreaterThan(0);
     for (const row of rows) {
       expect(row.payCents).toBe(0);
       expect(positionPayLabel(row.payCents)).toBe("Volunteer");
-      expect(row.icon).toBe(VOLUNTEER_PAY_ICON);
     }
   });
 
@@ -199,26 +202,29 @@ describe("compensation — the table, and the flag that must agree with it", () 
     // itself, and `everyPositionIsVolunteer` immediately stops agreeing with a
     // still-true `allVolunteer` flag.
     //
-    // The unit is ANNUAL cents and the label says so out loud — a bare
-    // "$48,000.00" in a column of salaries is the kind of number a reader
-    // silently assumes is monthly.
-    expect(positionPayLabel(4_800_000)).toBe("$48,000.00 per year");
+    // The unit is ANNUAL cents and the label says so — abbreviated, because it
+    // sits under an 80px tile, but never bare: "$48,000" alone in a grid of
+    // salaries is the kind of number a reader silently assumes is monthly.
+    expect(positionPayLabel(4_800_000)).toBe("$48,000/yr");
     expect(positionPayLabel(0)).toBe("Volunteer");
+    // Cents are dropped only when there are none to drop. A salary that isn't
+    // a whole number of dollars prints in full rather than being rounded into
+    // a figure a reader can't check.
+    expect(positionPayLabel(4_812_550)).toBe("$48,125.50/yr");
   });
 
-  test("a paid position takes the paid icon — and drags the flag out of agreement", () => {
+  test("a paid position prints its figure — and drags the flag out of agreement", () => {
     // The guard above is only worth anything if it actually fires. Pay one
-    // position and re-run it: the row formats itself, the icon changes with
-    // it, and `everyPositionIsVolunteer()` stops agreeing with the authored
+    // position and re-run it: the tile formats itself, and
+    // `everyPositionIsVolunteer()` stops agreeing with the authored
     // `allVolunteer: true` — which is exactly the failure a future editor
     // needs to be stopped by when they add a salary and forget the flag.
     withPaidPosition("music_director", 4_800_000, () => {
-      const row = compensationTable()
+      const row = compensationTable(NOBODY)
         .flatMap((g) => g.rows)
         .find((r) => r.seatId === "music_director");
       expect(row?.payCents).toBe(4_800_000);
-      expect(positionPayLabel(row?.payCents ?? 0)).toBe("$48,000.00 per year");
-      expect(row?.icon).toBe(PAID_PAY_ICON);
+      expect(positionPayLabel(row?.payCents ?? 0)).toBe("$48,000/yr");
 
       expect(everyPositionIsVolunteer()).toBe(false);
       // The flag is still what a human authored — so the agreement test above
@@ -234,7 +240,7 @@ describe("compensation — the table, and the flag that must agree with it", () 
   });
 
   test("rows are positions from the seat chart — never holders, never a derived rollup", () => {
-    const rows = compensationTable().flatMap((g) => g.rows);
+    const rows = compensationTable(NOBODY).flatMap((g) => g.rows);
     const ids = rows.map((r) => r.seatId);
     // Exactly the non-derived seats, each once.
     expect(new Set(ids).size).toBe(ids.length);
@@ -249,7 +255,7 @@ describe("compensation — the table, and the flag that must agree with it", () 
   });
 
   test("both charts are groups, and each row sits in its own chart's group", () => {
-    const groups = compensationTable();
+    const groups = compensationTable(NOBODY);
     expect(groups.map((g) => g.chart)).toEqual(["central", "chapter"]);
     for (const group of groups) {
       expect(group.rows.length).toBeGreaterThan(0);
@@ -261,7 +267,7 @@ describe("compensation — the table, and the flag that must agree with it", () 
   });
 
   test("leadership reads first — a position never appears above the one it reports to", () => {
-    for (const group of compensationTable()) {
+    for (const group of compensationTable(NOBODY)) {
       const order = group.rows.map((r) => r.seatId);
       expect(SEAT_DEFS[order[0]].parentId).toBe(SEAT_ROOT);
       for (const [i, id] of order.entries()) {
@@ -273,6 +279,99 @@ describe("compensation — the table, and the flag that must agree with it", () 
         expect(order.indexOf(parentId)).toBeGreaterThan(-1);
         expect(order.indexOf(parentId)).toBeLessThan(i);
       }
+    }
+  });
+});
+
+describe("compensation — the headcount badge", () => {
+  /** Three cities, a full central bench and a chapter one — the shape the
+   *  band headers are written for. */
+  const STAFFED: PositionHeadcount = {
+    byPosition: {
+      executive_director: 1,
+      event_organizers: 7,
+      // Summed across chapters already: one director in each of three cities.
+      chapter_director: 3,
+    },
+    chapterCount: 3,
+  };
+
+  test("a count lands on its own position, and a position with none reads zero", () => {
+    const rows = compensationTable(STAFFED).flatMap((g) => g.rows);
+    const count = (seatId: string) =>
+      rows.find((r) => r.seatId === seatId)?.peopleCount;
+
+    expect(count("executive_director")).toBe(1);
+    expect(count("event_organizers")).toBe(7);
+    expect(count("chapter_director")).toBe(3);
+    // A position nobody holds is a real answer, not a missing one — it keeps
+    // its tile and reads `0`. The pay line under it is what the position pays
+    // whether or not anybody is in it.
+    expect(count("music_director")).toBe(0);
+    expect(positionPayLabel(0)).toBe("Volunteer");
+  });
+
+  test("a missing key is zero, so an unstaffed org still publishes every position", () => {
+    const rows = compensationTable(NOBODY).flatMap((g) => g.rows);
+    expect(rows.every((r) => r.peopleCount === 0)).toBe(true);
+    expect(rows.length).toBe(
+      SEAT_IDS.filter((id) => SEAT_DEFS[id].derived !== true).length,
+    );
+  });
+
+  test("a band totals its own tiles, and only the chapter band counts cities", () => {
+    const [central, chapter] = compensationTable(STAFFED);
+
+    expect(central.positionCount).toBe(central.rows.length);
+    expect(central.peopleCount).toBe(1);
+    // The org-wide band has no cities to span — the question doesn't arise.
+    expect(central.chapterCount).toBeNull();
+
+    expect(chapter.peopleCount).toBe(10); // 3 directors + 7 organizers
+    expect(chapter.chapterCount).toBe(3);
+  });
+
+  test("the band header states the scale, and agrees with itself", () => {
+    const [central, chapter] = compensationTable(STAFFED);
+    expect(compensationGroupSummary(central)).toBe(
+      `${central.positionCount} positions · 1 person`,
+    );
+    expect(compensationGroupSummary(chapter)).toBe(
+      `${chapter.positionCount} positions · 10 people across 3 cities`,
+    );
+    expect(COMPENSATION_GROUP_HEADINGS.central).toBe("Org-wide");
+    expect(COMPENSATION_GROUP_HEADINGS.chapter).toBe("Chapter");
+  });
+
+  test("singulars stay singular, and a fleet of none drops the cities clause", () => {
+    // "1 positions · 1 people across 1 cities" in a disclosure about care is
+    // the kind of detail that costs more than it saves…
+    const [, oneCity] = compensationTable({
+      byPosition: { chapter_director: 1 },
+      chapterCount: 1,
+    });
+    expect(compensationGroupSummary(oneCity)).toContain("1 person across 1 city");
+
+    // …and a fresh install with no chapters says nothing about cities rather
+    // than "across 0 cities".
+    const [, noCities] = compensationTable(NOBODY);
+    expect(compensationGroupSummary(noCities)).not.toContain("across");
+    expect(compensationGroupSummary(noCities)).toContain("0 people");
+  });
+
+  test("a count is a number and nothing else — the type cannot carry a person", () => {
+    // The privacy containment, asserted at the boundary it is enforced on: a
+    // row exposes a title, a pay figure and an integer. Anything else on it
+    // would be a route from a holder record to a public page (see
+    // `apps/convex/lib/positionHeadcount.ts`).
+    for (const row of compensationTable(STAFFED).flatMap((g) => g.rows)) {
+      expect(Object.keys(row).sort()).toEqual([
+        "payCents",
+        "peopleCount",
+        "seatId",
+        "title",
+      ]);
+      expect(Number.isInteger(row.peopleCount)).toBe(true);
     }
   });
 });

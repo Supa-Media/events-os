@@ -252,13 +252,15 @@ export function PublishMonthBody({
               check for itself — there is no notion of payroll in the schema,
               so it is a stated fact with a human behind it. Showing it back
               here every month is what keeps "nobody is paid" from quietly
-              becoming false on a public page. */}
+              becoming false on a public page. The public page no longer prints
+              the claim as a sentence (the grid says it, tile by tile), so this
+              prompt is now the only place a human is asked to re-affirm it —
+              which makes it more load-bearing than it was, not less. */}
           {COMPENSATION_DISCLOSURE.allVolunteer ? (
             <Text className="mt-2 text-sm text-muted">
-              This month will publish “{COMPENSATION_DISCLOSURE.headline}”, and
-              a table listing every position with “Volunteer” under it — is that
-              still true? If anyone is now paid, their position&apos;s figure
-              goes in before you publish.
+              This month will publish every position with “Volunteer” under it —
+              is that still true? If anyone is now paid, their position&apos;s
+              figure goes in before you publish.
             </Text>
           ) : null}
           {preview.truncated || preview.overCap ? (

@@ -60,6 +60,7 @@ import {
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
 import { listActiveChapters } from "./lib/chapters";
+import { positionHeadcount } from "./lib/positionHeadcount";
 import { readSandbox } from "./financeSettings";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
 import {
@@ -1472,6 +1473,27 @@ export const publicBookCount = query({
   args: {},
   returns: v.number(),
   handler: async (ctx) => countActiveBooks(ctx),
+});
+
+/**
+ * People per position, for the "Who gets paid" grid's badges.
+ *
+ * COUNTS ONLY — the return validator is the enforcement, not just a type: a
+ * `v.record(v.string(), v.number())` plus a number cannot carry a holder's
+ * name, id or document even if the handler under it were changed carelessly.
+ * See `lib/positionHeadcount.ts` for why that containment matters and what it
+ * replaced.
+ *
+ * Public, unauthenticated, and correct that way: every number it returns is
+ * printed verbatim on a page anybody can read.
+ */
+export const publicPositionHeadcount = query({
+  args: {},
+  returns: v.object({
+    byPosition: v.record(v.string(), v.number()),
+    chapterCount: v.number(),
+  }),
+  handler: async (ctx) => positionHeadcount(ctx),
 });
 
 // ── Full-page preview: token → the same HTML publishing would produce ───────
