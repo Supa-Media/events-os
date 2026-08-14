@@ -637,6 +637,8 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       outCents: 300,
       netCents: 100,
       neutralCount: 0,
+      // t2 is the reconciled one — see `closedCount`.
+      closedCount: 1,
     });
     // Narrowing the filter narrows the total with it, which is the whole ask.
     expect(spend.selectionTotals).toEqual({
@@ -644,7 +646,55 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       outCents: 300,
       netCents: -300,
       neutralCount: 0,
+      closedCount: 1,
     });
+  });
+
+  test("closedCount describes the MATCH SET, and counts excluded rows as finished", async () => {
+    // The figure beside In / Out / Net — "142 of 318 closed". It replaced an
+    // explained-progress meter that named a month the grid wasn't showing
+    // (founder: "we're not even showing one month at a time").
+    //
+    // It must be summed over the match set rather than read off the
+    // `reconciled` facet count: that facet narrows with the active filters and
+    // ignores the search, so it answers "how many closed rows are in this
+    // book" while a number sitting in this bar is read as "how many of the
+    // rows in front of me are done".
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+
+    await insertTxn(s, { amountCents: 1000 });
+    await insertTxn(s, { amountCents: 1000, status: "reconciled" });
+    // An EXCLUDED charge is never part of the reconcile inbox, so it lands in
+    // neither half of the ratio. That is what keeps "1 of 2 closed" honest:
+    // both figures describe the same population, which is precisely what the
+    // `reconciled` facet count could not promise.
+    await insertTxn(s, { amountCents: 1000, status: "excluded" });
+
+    const all = await s.as.query(api.finances.listReconcile, { filter: "all" });
+    expect(all.matchedCount).toBe(2);
+    expect(all.selectionTotals.closedCount).toBe(1);
+  });
+
+  test("closedCount follows the selection and survives paging", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asManager(s);
+    for (let i = 0; i < 4; i++) {
+      await insertTxn(s, { amountCents: 1000, status: "reconciled" });
+    }
+    await insertTxn(s, { amountCents: 1000 });
+
+    const paged = await s.as.query(api.finances.listReconcile, {
+      filter: "all",
+      limit: 2,
+    });
+    // Four of five, not "however many of the two on this page" — the same
+    // whole-match-set rule the money totals follow.
+    expect(paged.rows).toHaveLength(2);
+    expect(paged.matchedCount).toBe(5);
+    expect(paged.selectionTotals.closedCount).toBe(4);
   });
 
   test("selection totals cover the WHOLE match set, not just the returned page", async () => {
@@ -695,6 +745,7 @@ describe("listReconcile (server-side filters + counts + projections)", () => {
       outCents: 0,
       netCents: 0,
       neutralCount: 1,
+      closedCount: 0,
     });
 
     // And the ordinary spend row is unaffected by its neighbour.

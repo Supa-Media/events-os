@@ -115,7 +115,6 @@ import { GroupByControl } from "../../../components/finance/reconcile/GroupByCon
 import { UNATTRIBUTED_GROUP_KEY } from "../../../components/finance/reconcile/gridView";
 import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
 import type { SingleBookScope } from "../../../components/finance/bookScope";
-import { ExplainedProgressStrip } from "../../../components/finance/reconcile/ExplainedProgressStrip";
 import {
   DEFAULT_SORT_DIR,
   DEFAULT_SORT_KEY,
@@ -1072,23 +1071,7 @@ function ReconcileGrid() {
     outCents: 0,
     netCents: 0,
     neutralCount: 0,
-  };
-  // HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS — server-computed over
-  // the whole match set (see `ExplainedProgressStrip` for what it may and may
-  // not say about a `needs_explaining` selection).
-  const explainedProgress = reconcile?.explainedProgress ?? {
-    explainableCount: 0,
-    explainableCents: 0,
-    explainedCount: 0,
-    explainedCents: 0,
-    liveExplainableCount: 0,
-    liveExplainableCents: 0,
-    liveExplainedCount: 0,
-    liveExplainedCents: 0,
-    backlogExplainableCount: 0,
-    backlogExplainableCents: 0,
-    backlogExplainedCount: 0,
-    backlogExplainedCents: 0,
+    closedCount: 0,
   };
   // Group headers, in render order, over the WHOLE match set — present only
   // while `groupBy` is set. Passed straight through to the grid, which slices
@@ -1757,35 +1740,22 @@ function ReconcileGrid() {
             </View>
           ) : null}
 
-          {/* Books selector — central-seat holders choose which books they're
-              clearing: all of them at once (the default at the Central desk),
-              central's own, or their chapter's. The chapter option is labelled
-              with the chapter's REAL NAME, not "My chapter": the header badge
-              names it ("New York — chapter finances"), the org chart names it,
-              and a generic "My chapter" here was the one place the split went
-              anonymous — precisely where a dual-hatted treasurer needs to know
-              whose money she's about to edit. */}
-          {hasCentralSeat ? (
-            <View className="mb-3 flex-row flex-wrap items-center gap-2">
-              {BOOK_SCOPES.map((s) => (
-                <Pill
-                  key={s}
-                  label={bookScopeLabel(s, viewedChapterName)}
-                  selected={scope === s}
-                  onPress={() => {
-                    setScope(s);
-                    clearSelection();
-                    // Keep the URL in sync with the selector (scope must be
-                    // unmistakable + deep-linkable/shareable/refresh-safe —
-                    // previously only the INITIAL `?scope=` was read; flipping
-                    // it left the URL stale, so a screenshot or refresh could
-                    // silently land back on a different book).
-                    router.setParams({ scope: s });
-                  }}
-                />
-              ))}
-            </View>
-          ) : null}
+          {/* THE BOOKS SELECTOR MOVED INTO THE FILTER ROW, as a dropdown
+              beside Kind and State — founder: "shouldn't we just be able to
+              click on Book and then have that filter... all books, Central
+              versus New York?"
+
+              It was a permanent row of pills above the grid, which is the
+              shape this header keeps growing and then losing: a chip rail, a
+              view menu, three roll-up chips, all deleted for saying what a
+              control already said. Book is a filter. It belongs where the
+              filters are.
+
+              Its options still name the chapter's REAL NAME rather than "My
+              chapter": the header badge names it, the org chart names it, and
+              a generic label here was the one place the split went anonymous
+              — precisely where a dual-hatted treasurer needs to know whose
+              money she is about to edit. See `bookScopeLabel`. */}
           {/* NO STANDING INSTRUCTIONS. A sentence used to sit here telling the
               reader to "code each charge, confirm the receipt, mark it
               reconciled" — a caption that is read once, on day one, and is
@@ -1848,6 +1818,39 @@ function ReconcileGrid() {
                 </Pressable>
               ) : null}
             </View>
+            {/* BOOK — single-select, and FIRST, because it is the widest
+                question on the row: which book's rows are we even looking at.
+                Kind and State narrow within that answer.
+
+                `value`/`onChange` rather than `values`/`onToggle`: scope is
+                genuinely exclusive (you are looking at one book or at all of
+                them), unlike the state filters, where a charge is routinely
+                unreviewed AND unbudgeted at once. See `FilterSelect`'s own
+                doc for why that distinction drives the control's behaviour.
+
+                Central-seat holders only — a chapter treasurer has exactly one
+                book, so a picker offering them one option is furniture. */}
+            {hasCentralSeat ? (
+              <FilterSelect
+                label="Book"
+                value={scope}
+                options={BOOK_SCOPES.map((s) => ({
+                  value: s,
+                  label: bookScopeLabel(s, viewedChapterName),
+                }))}
+                onChange={(v) => {
+                  setScope(v as BookScope);
+                  clearSelection();
+                  // Keep the URL in sync with the selector — scope must be
+                  // deep-linkable, shareable and refresh-safe. Previously only
+                  // the INITIAL `?scope=` was read, so flipping it left the URL
+                  // stale and a screenshot or refresh could silently land back
+                  // on a different book.
+                  router.setParams({ scope: v });
+                }}
+                minWidth={220}
+              />
+            ) : null}
             {filterOptionsByGroup.map(({ group, options }) => (
               <FilterSelect
                 key={group.id}
@@ -1938,24 +1941,54 @@ function ReconcileGrid() {
                   />
                 </View>
               ) : null}
-              {/* HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS — the last
-                  item in this bar rather than a second bar above it.
+              {/* HOW MANY OF THESE ROWS ARE DONE — the last item in this bar,
+                  and the only progress figure on the page.
 
-                  It used to be its own block, stacked between the filter row
-                  and this one. Two rows of small figures in a column, both
-                  describing the same match set, is exactly the clutter the
-                  founder was still seeing after the view menu and the chips
-                  came out — and they are one thought, not two: what this
-                  selection adds up to, and how much of it has been explained.
+                  What used to be here was the EXPLAINED meter: "2 of 22 of
+                  this month's rows explained". Founder, on the deployed grid:
+                  "that part is just unnecessary — we're not even showing one
+                  month at a time. If we wanted to see how many are explained,
+                  we'd click the month view." Both halves of that are right.
+                  The figure named a month while the grid was showing whatever
+                  the filters left, and per-month explaining progress already
+                  lives on the month bands, where the month is actually the
+                  subject.
 
-                  It renders nothing when there is nothing explainable in the
-                  selection (a transfers-only view), so this bar is never left
-                  with a trailing "0 of 0". */}
-              <ExplainedProgressStrip
-                progress={explainedProgress}
-                activeFilters={filters}
-                inline
-              />
+                  CLOSED, not explained, because closing is the goal — founder:
+                  "the goal would be to close every row." Coding and closing
+                  are independent (a row can be closed without a coding and
+                  coded without being closed), and this bar describes the
+                  book's state rather than the publishing backlog.
+
+                  Server-computed over the whole match set, like every other
+                  figure in this bar, so it keeps telling the truth while the
+                  grid pages 100 rows of 346. */}
+              <View className="flex-row items-center gap-1.5">
+                <View className="h-1 w-16 overflow-hidden rounded-full bg-sunken">
+                  <View
+                    className="h-1 rounded-full bg-accent"
+                    style={{
+                      width: `${Math.min(100, Math.max(0, (selectionTotals.closedCount / Math.max(1, matchedCount)) * 100))}%`,
+                    }}
+                  />
+                </View>
+                <Text
+                  className={`text-2xs ${
+                    selectionTotals.closedCount >= matchedCount
+                      ? "font-semibold text-success"
+                      : "text-muted"
+                  }`}
+                  style={{ fontVariant: ["tabular-nums"] }}
+                >
+                  {selectionTotals.closedCount >= matchedCount
+                    ? "✓ all closed"
+                    : `${selectionTotals.closedCount} of ${matchedCount} closed`}
+                </Text>
+                <InfoTooltip
+                  text="Across everything this view matches, not just the rows loaded on screen. A row counts as closed once a bookkeeper has marked it Closed — or Excluded, which is also a decision somebody made rather than work still outstanding. Closing is separate from coding: a row can be closed without an explanation, and explained without being closed."
+                  size={12}
+                />
+              </View>
             </View>
           ) : null}
 
