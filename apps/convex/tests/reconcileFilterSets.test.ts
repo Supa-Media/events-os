@@ -51,6 +51,9 @@ async function txn(
     preMarkFlow: "inflow" | "outflow";
     /** The tell `markAsPayout` writes. */
     payoutProcessor: "givebutter" | "stripe" | "other";
+    /** Flagged as an accidental personal charge. With no linked repayment it
+     *  reads `personal_unpaid` — the debt is outstanding until one says paid. */
+    isPersonal: boolean;
     transferGroupId: string;
   }> = {},
 ): Promise<Id<"transactions">> {
@@ -65,6 +68,7 @@ async function txn(
       receiptStorageId: fields.receiptStorageId,
       preMarkFlow: fields.preMarkFlow,
       payoutProcessor: fields.payoutProcessor,
+      isPersonal: fields.isPersonal,
       transferGroupId: fields.transferGroupId,
       createdAt: Date.now(),
     }),
@@ -142,30 +146,38 @@ describe("facet counts — the number shown is a number you can get to", () => {
     const s = await setupChapter(t);
     await asManager(s);
 
-    await txn(s, { flow: "outflow" }); // spend, no receipt
-    // A MARKED PROCESSOR PAYOUT: not spend, but it does owe a receipt
-    // (`needsDocumentation` covers spend, marked transfers, and marked payouts
-    // — a plain inflow owes nothing, which is why this fixture isn't one). A
-    // marked transfer would read just as well here and used to be the fixture,
-    // but transfer legs are no longer in the default queue, so it could no
-    // longer demonstrate a count NARROWING; a payout stays visible.
-    await txn(s, { flow: "inflow", payoutProcessor: "givebutter" });
+    await txn(s, { flow: "outflow" }); // spend
+    // AN UNPAID PERSONAL CHARGE: an outflow that `isSpend` excludes on
+    // `isPersonal`, so it is in the State group's `personal_unpaid` facet and
+    // NOT in Kind → Spend — which is the whole shape this test needs, a row
+    // one group can reach and the other can't.
+    //
+    // The fixture used to be a marked processor payout against
+    // `missing_receipt`, and before that a marked transfer. Both stopped
+    // working, for opposite reasons: transfer legs left the default queue, and
+    // then payouts stopped owing documentation altogether (founder,
+    // 2026-08-14) — so after those two changes every remaining row in
+    // `missing_receipt` is spend, and a Kind → Spend selection can no longer
+    // narrow it at all. A personal charge is the surviving row that one group
+    // can see and the other cannot.
+    await txn(s, { flow: "outflow", isPersonal: true });
 
-    // Unfiltered, both receiptless rows count.
+    // Unfiltered, the personal charge counts.
     const wide = await s.as.query(api.finances.listReconcile, { filters: [] });
-    expect(wide.counts.missing_receipt).toBe(2);
+    expect(wide.counts.personal_unpaid).toBe(1);
 
-    // With Kind=Spend active, the payout can never be surfaced by picking
-    // "Missing receipt" — so it must stop being counted under it. A global
-    // count here would promise 2 rows and deliver 1.
+    // With Kind=Spend active, that row can never be surfaced by picking
+    // "Personal (unpaid)" — so it must stop being counted under it. A global
+    // count here would promise a row and deliver none, which is the dead
+    // number multi-select would otherwise have reintroduced.
     const narrowed = await s.as.query(api.finances.listReconcile, {
       filters: ["spend"],
     });
-    expect(narrowed.counts.missing_receipt).toBe(1);
+    expect(narrowed.counts.personal_unpaid).toBe(0);
     const both = await s.as.query(api.finances.listReconcile, {
-      filters: ["spend", "missing_receipt"],
+      filters: ["spend", "personal_unpaid"],
     });
-    expect(both.rows).toHaveLength(narrowed.counts.missing_receipt);
+    expect(both.rows).toHaveLength(narrowed.counts.personal_unpaid);
   });
 
   test("a key's OWN group's selection doesn't change its siblings' counts", async () => {

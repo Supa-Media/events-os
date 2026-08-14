@@ -98,6 +98,8 @@ type TxnFixture = Partial<{
   historicalImportBatch: string;
   externalId: string;
   isPersonal: boolean;
+  /** The tell `finances.markAsPayout` writes — a settlement deposit. */
+  payoutProcessor: "givebutter" | "stripe" | "other";
 }>;
 
 /** Insert one transaction. A `receipt: true` row gets a real stored blob id,
@@ -123,6 +125,7 @@ async function insertTxn(s: ChapterSetup, f: TxnFixture = {}): Promise<Id<"trans
       historicalImportBatch: f.historicalImportBatch,
       externalId: f.externalId,
       isPersonal: f.isPersonal,
+      payoutProcessor: f.payoutProcessor,
       createdAt: Date.now(),
     }),
   );
@@ -264,6 +267,34 @@ describe("publishability.report — publishing predicates, not chase predicates"
 
     const r = await octoberOf(s);
     expect(r!.totals.inScope).toEqual({ count: 0, cents: 0 });
+    expect(r!.totals.blocked.count).toBe(0);
+  });
+
+  test("a marked PAYOUT never blocks a period on documentation", async () => {
+    // THE FOUNDER'S ACTUAL COMPLAINT, at the surface that produced it
+    // (2026-08-14): "it says nine rows not publishable yet, no documentation —
+    // but when you click on it, most of the rows are quite literally payouts."
+    // A payout is already-counted donation and ticket money arriving in a
+    // batch; nobody bought anything, so there is no receipt that could ever
+    // close that gap, and a not-publishable count made of them can never
+    // reach zero.
+    //
+    // This report reads `isUndocumented`, the SAME predicate the reconcile
+    // grid's chase reads through `needsDocumentation` — which is the point of
+    // asserting it here as well as there. A carve-out applied to one and not
+    // the other is exactly the dead number this whole module exists to avoid.
+    const s = await setupChapter(newT());
+    await pinPolicy(s);
+    await asChapterViewer(s);
+    await insertTxn(s, {
+      amountCents: 250_000,
+      flow: "inflow",
+      payoutProcessor: "givebutter",
+      status: "reconciled",
+    });
+
+    const r = await octoberOf(s);
+    expect(r!.totals.axes.documentation).toEqual({ count: 0, cents: 0 });
     expect(r!.totals.blocked.count).toBe(0);
   });
 });

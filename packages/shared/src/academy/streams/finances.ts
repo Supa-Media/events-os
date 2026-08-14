@@ -397,6 +397,44 @@
  * duty. The Reconcile SCREEN keeps its name too — this renamed a status, not a
  * page. The audit log stores the label, so rows written before today still read
  * "Reconciled"; that trail is append-only and is not being rewritten.
+ *
+ * TWO CLOSE RULES (founder, 2026-08-13/14). Both are about what a row OWES
+ * before it can be closed, both are content-only here, and neither moved a
+ * title, slug, minutes or quiz length.
+ *
+ *  - A PERSONAL CHARGE AWAITING REPAYMENT CANNOT BE CLOSED ("make sure to
+ *    have business logic so that no rows that are personal expenses that need
+ *    to be repaid can be closed"). `finance-reconcile-grid`'s "Personal is a
+ *    flag, not a status" rule said the opposite in one clause — "a charge that
+ *    is fully Closed can also be an unpaid personal expense at the same time"
+ *    — and that clause was TRUE IN ONE DIRECTION ONLY, which is the whole
+ *    subtlety. A row closed first and flagged personal afterwards really is
+ *    both, stays both, and is never rewritten (the representation decision
+ *    above `PERSONAL_EXPENSE_STATES` in `finance.ts` depends on it). What
+ *    cannot happen is the TRANSITION: closing a row while the money is still
+ *    owed. The rule now teaches both directions in those terms, plus the
+ *    refusal's two ways out and the per-row reporting in a bulk close. Its
+ *    quiz was checked question by question and none of the five hung on the
+ *    old clause, so nothing was swapped — the quiz is at the 5-cap and
+ *    swapping out a correct question to make room would have cost coverage.
+ *  - PAYOUTS AND PROCESSOR ROWS DON'T OWE DOCUMENTATION ("it says nine rows
+ *    not publishable yet, no documentation — but most of the rows are quite
+ *    literally payouts… Payouts shouldn't need documentation"). This REVERSES
+ *    the rule `finance-transfers-and-payouts` was written to carry, so its
+ *    "Marked still means documented" block now splits the two markings: a
+ *    marked TRANSFER still owes its bank statement (marking must never be a
+ *    way to stop being chased — unchanged), a marked PAYOUT owes nothing.
+ *    The block also states, plainly, what we actually hold in place of a
+ *    receipt: for Stripe a real settlement record of our own; for Givebutter
+ *    and hand-marked "other" payouts nothing but the processor's dashboard.
+ *    A lesson that claimed the exemption without naming that asymmetry would
+ *    be teaching the convenient half. The lesson's four quiz questions were
+ *    checked: the documentation one is transfer-only and stays true as
+ *    written, so again nothing was swapped. One scenario feedback line that
+ *    said excluding "drops all three out of the receipt chase" was corrected
+ *    — the payout is no longer in that chase to be dropped from. The
+ *    Reconcile filter table's "Owes a receipt or coding" row lost its
+ *    "…and processor payouts" clause for the same reason.
  */
 
 import type {
@@ -1431,7 +1469,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           ["Spend", "Every dollar that counts as actual spend — the exact rows behind the dashboard's \"Spent\" figure, so tapping it always lands here"],
           ["Needs budget", "Open, categorized, and still not linked to a budget. A row somebody already closed isn't queue work, so it doesn't count here. Processor and bank fees are deliberately absent — a fee is charged, not chosen, so there is no decision for a budget to control. That covers every processor fee we book: Stripe and Givebutter each book one monthly row, and Cash App's fees are marked per payment from a one-off backfill rather than rolled up. None of them will ever ask you for a budget — or for a coding or a receipt: a fee has no testimony to give and no receipt exists, so the processor's own itemized ledger is its record and the public page prints the fee's standing explanation for it. The exemption is by ORIGIN, not by category — a Givebutter paid tier or any other subscription you chose to buy is a decision, so it stays budgeted (and coded) even though it lands in Bank & Fees alongside them"],
           ["Needs documentation", "Still open, still owing a receipt or an acknowledged reason there isn't one"],
-          ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It also keeps the marked internal transfers and processor payouts that owe a statement rather than a person — the Book hides those from the default queue, and picking this brings them back. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
+          ["Owes a receipt or coding", "THE CHASE, and it is wider than the row above on purpose: everything anybody still owes you — a receipt, a coding, or an answer to a coding you sent back. A charge whose receipt is attached and whose coding isn't is somebody's homework and is invisible to \"Needs documentation\", so a chase built on that row alone would leave you emailing people about charges your screen never showed. It also keeps the marked internal transfers that owe a statement rather than a person — the Book hides those from the default queue, and picking this brings them back. Marked payouts are NOT in it: a payout owes no documentation at all. Group by Person and this is the chase list: one band per cardholder, biggest first, with a Send reminder on each"],
           ["Closed without documentation", "Somebody marked it Closed with neither a receipt nor an approved exception behind it. Nobody left to nudge, and a published ledger still can't tell that row from a documented one"],
           ["Needs explaining", "Every row that will publish with a BLANK where its explanation should be — the whole backlog, including the 2024-25 history the coding policy grandfathers out. This is the one that ignores the policy date on purpose: \"Needs coding\" answers what policy demands of whom, this answers what a stranger will see a gap next to when the month publishes. Fees, refunded pairs and personal charges are already excluded — they explain themselves"],
           ["Explained", "The other half of the row above — everything in the same population that HAS an approved explanation. It exists because approving one publishes it and takes the row out of \"Needs explaining\", which used to mean the sentence you had just written became unreachable. This is how you re-read what you published, spot-check twenty of them a week later, or hand somebody the month you finished"],
@@ -1472,7 +1510,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Personal is a flag, not a status",
-        text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — a charge that is fully Closed can also be an unpaid personal expense at the same time. Mark or un-mark it right from a row's actions (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.",
+        text: "Marking a charge personal doesn't change its Category/Budget/Receipt coding at all — it's a separate fact about the row, which is exactly why it isn't one of the four statuses. Mark or un-mark it right from a row's actions (confirm first — marking emails the person who owes it); un-marking only works before it's been repaid.\n\nWhat it does change is CLOSING. **A charge that is personal and not yet repaid cannot be closed.** Mark closed refuses it and says why: somebody still owes the chapter that money, and closing a row means the treasurer is finished with it. The refusal names the only two ways out, because there are only two — the money comes back through the app, or it was never personal and the flag comes off. In a bulk close it refuses one row at a time: the rows that could close do, and the ones that couldn't come back listed by name, still selected.\n\nThe other direction still works, and it matters. A row you had ALREADY closed and only later discovered was personal stays closed — it reads as closed AND awaiting repayment at the same time, and nothing rewrites it. The rule is about the act of closing, not about which pair of facts a row is allowed to hold.",
       },
       {
         kind: "rule",
@@ -1608,7 +1646,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Marked still means documented",
-        text: "Marking a row is not a way to make it go away. A marked transfer and a marked payout both still appear under Needs documentation until you attach something — a bank statement for the transfer, a settlement report for the payout. Every marking is logged with who did it and what changed, so a reclassification is always traceable, and any marking can be undone.",
+        text: "Marking a row is not a way to make it go away. A marked TRANSFER still appears under Needs documentation until you attach something — a bank statement. That's our own money moving between our own accounts, and the statement is what shows it moved.\n\n**A payout is the exception, and it owes nothing.** Nobody bought anything: a payout is donation and ticket money you already counted at the donor and order records, arriving in one batch. There is no receipt to chase, and asking for one just parks the row in a backlog that can never clear — which is what it was doing (\"nine rows not publishable, no documentation — and most of them are quite literally payouts\"). What substantiates a payout is the processor's settlement report. For STRIPE we already hold that ourselves: the payout id, the amount, the arrival date and each book's share, linked both ways to the bank row. For Givebutter and hand-marked \"other\" payouts we don't — there the record lives in the processor's own dashboard, so if you ever need to prove one out, that's where you go.\n\nEvery marking is logged with who did it and what changed, so a reclassification is always traceable, and any marking can be undone.",
       },
       {
         kind: "rule",
@@ -1637,7 +1675,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           {
             text: "Exclude all three so nothing double-counts",
             feedback:
-              "Excluding hides rather than explains, and it drops all three out of the receipt chase. The payout deposit needs its marking — that's what tells the books it's settled, already-counted donation revenue.",
+              "Excluding hides rather than explains, and it drops the transfer pair out of the receipt chase. The payout deposit isn't chased for a receipt either way — but it still needs its marking, because that's what tells the books it's settled, already-counted donation revenue rather than new income.",
           },
           {
             text: "Mark only the $5,000 withdrawal — the deposit side is obvious",

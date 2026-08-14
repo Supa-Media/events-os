@@ -3,6 +3,8 @@ import {
   autoExplainedKind,
   autoExplanationLine,
   personalExpenseState,
+  personalStateBlocksClose,
+  PERSONAL_EXPENSE_STATES,
   REPAYMENT_STATUSES,
   TRANSACTION_STATUSES,
   TRANSACTION_STATUS_LABELS,
@@ -97,6 +99,44 @@ describe("personalExpenseState", () => {
         expect(state !== "not_personal").toBe(isSpendExcludesOnPersonal);
       }
     }
+  });
+});
+
+/**
+ * `personalStateBlocksClose` — the POLICY on the state above. Founder,
+ * 2026-08-13: a row somebody still owes the chapter money for is not a
+ * finished piece of bookkeeping, so it can't be closed.
+ *
+ * Enforcement (and the bulk path's per-row refusal) is pinned in
+ * `apps/convex/tests/personalChargeClose.test.ts`. What is pinned HERE is the
+ * pure rule, one case per state, so which states block can be READ rather than
+ * reasoned out of the middle of a mutation.
+ */
+describe("personalStateBlocksClose", () => {
+  test("an unpaid personal charge blocks closing", () => {
+    expect(personalStateBlocksClose("personal_unpaid")).toBe(true);
+  });
+
+  test("a repaid personal charge closes — the FLAG was never what blocked", () => {
+    // The charge stays `isPersonal: true` for good; what blocked was the DEBT,
+    // and it's settled. A rule written against the flag instead of the state
+    // would strand every repaid charge permanently open — which is exactly why
+    // the guard reads `personalExpenseState` and not `isPersonal`.
+    expect(personalStateBlocksClose("personal_reimbursed")).toBe(false);
+  });
+
+  test("an ordinary charge is unaffected", () => {
+    expect(personalStateBlocksClose("not_personal")).toBe(false);
+  });
+
+  test("exactly one state blocks — a new state has to be classified, not defaulted", () => {
+    // Derived from the tuple rather than transcribed: a fourth
+    // PERSONAL_EXPENSE_STATE added tomorrow fails here until somebody decides
+    // whether it may close. That decision must not be made by falling through
+    // a `!==` comparison someone wrote at a call site.
+    expect(PERSONAL_EXPENSE_STATES.filter(personalStateBlocksClose)).toEqual([
+      "personal_unpaid",
+    ]);
   });
 });
 

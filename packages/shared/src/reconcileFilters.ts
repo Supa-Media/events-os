@@ -211,9 +211,11 @@ export const RECONCILE_FILTER_LABELS: Record<ReconcileFilterKey, string> = {
   //
   // And the second half cannot simply REPLACE the first: `chargeOutstanding` is
   // cardholder-shaped (outflow spend only), while `needsDocumentation` also
-  // covers MARKED internal transfers and MARKED processor payouts — rows with
-  // no cardholder at all, chased with a statement rather than a person, which
-  // are exactly what the chase list's "Unattributed" bundle holds.
+  // covers MARKED internal transfers — rows with no cardholder at all, chased
+  // with a statement rather than a person, which are exactly what the chase
+  // list's "Unattributed" bundle holds. (A MARKED PROCESSOR PAYOUT was in that
+  // second class until 2026-08-14 and owes nothing now — founder: "Payouts
+  // shouldn't need documentation." See `finances.ts#owesDocumentation`.)
   //
   // Server-side this is ONE expression shared with `finances.receiptChase` and
   // the grid's own `chaseCount`, never a fourth hand-copy — copying it is how

@@ -1,6 +1,7 @@
 import {
   bulkExplainFailureHeadline,
   summarizeBulkExplain,
+  CLOSE_WORDING,
   type BulkExplainRowOutcome,
 } from "./bulkExplainOutcome";
 
@@ -140,5 +141,64 @@ describe("bulkExplainFailureHeadline", () => {
     );
     expect(bulkExplainFailureHeadline("FORBIDDEN")).toBe("aren't yours to code");
     expect(bulkExplainFailureHeadline(null)).toBe("wouldn't take it");
+  });
+
+  test("the three ways a CLOSE is refused each have their own phrase", () => {
+    // Closing a selection loops over `finances.setTransactionStatus`, which
+    // refuses for three unrelated reasons that routinely coexist in one
+    // selection. Grouping them under one phrase would tell a treasurer to go
+    // find receipts for rows whose actual problem is an unpaid debt.
+    expect(bulkExplainFailureHeadline("REPAYMENT_OUTSTANDING")).toBe(
+      "still owe money back",
+    );
+    expect(bulkExplainFailureHeadline("RECEIPT_REQUIRED")).toBe(
+      "need a receipt first",
+    );
+    expect(bulkExplainFailureHeadline("CODING_REQUIRED")).toBe(
+      "need an approved coding first",
+    );
+  });
+});
+
+/**
+ * THE BULK CLOSE reads its result back through this same summarizer — the
+ * rows are assembled client-side from settled promises rather than read off a
+ * response, because there is no bulk-status mutation, but what has to be SAID
+ * about them is identical.
+ */
+describe("summarizeBulkExplain — the close wording", () => {
+  test("a mixed close names each pile, in the closing verb", () => {
+    const s = summarizeBulkExplain(
+      [
+        row("ok0", "submitted"),
+        row("ok1", "submitted"),
+        row("a", "failed", "REPAYMENT_OUTSTANDING", "This is a personal charge…"),
+        row("b", "failed", "REPAYMENT_OUTSTANDING", "This is a personal charge…"),
+        row("d", "failed", "RECEIPT_REQUIRED", "Attach a receipt before closing…"),
+      ],
+      labelFor,
+      CLOSE_WORDING,
+    );
+    expect(s.line).toBe(
+      "2 closed · 2 still owe money back · 1 need a receipt first",
+    );
+    // And the two refused personal charges come back BY NAME — the whole
+    // reason the close path stopped using `Promise.all`, which surfaced
+    // whichever refusal happened to reject first and silently dropped the rest.
+    const owed = s.groups.find((g) => g.code === "REPAYMENT_OUTSTANDING")!;
+    expect(owed.labels).toEqual([LABELS.a, LABELS.b]);
+  });
+
+  test("an empty close says so in its own words", () => {
+    expect(summarizeBulkExplain([], labelFor, CLOSE_WORDING).line).toBe(
+      "Nothing to close.",
+    );
+  });
+
+  test("the explain path is untouched by the new argument", () => {
+    // The wording defaults, so every existing caller keeps its sentence.
+    expect(summarizeBulkExplain([row("a", "submitted")], labelFor).line).toBe(
+      "1 explained",
+    );
   });
 });
