@@ -43,6 +43,13 @@ import {
   renderReimburseStatus,
   renderReimburseNotFound,
 } from "./lib/reimbursePage";
+import { registerContractApiRoutes } from "./lib/contractApiRoutes";
+import {
+  renderContractAgreement,
+  renderContractForm,
+  renderContractNotFound,
+  renderContractStatus,
+} from "./lib/contractPage";
 import {
   renderGiveMapPage,
   renderGiveTerritoryPage,
@@ -95,6 +102,9 @@ registerTicketApiRoutes(http);
 
 // JSON API for the public reimbursement page's client script (/api/reimburse/*).
 registerReimburseApiRoutes(http);
+
+// JSON API for the public contractor page's client script (/api/contract/*).
+registerContractApiRoutes(http);
 
 // JSON API for the public giving map's become-a-backer form (/api/give/*).
 registerGiveApiRoutes(http);
@@ -1591,6 +1601,57 @@ http.route({
         : html(renderReimburseNotFound(), 404);
     }
     return html(renderReimburseForm(chapter));
+  }),
+});
+
+// ── Public contractor page: /contract/<chapterSlug>[?token=] ────────────────
+// The accountless contractor surface, sibling of /reimburse/ above and served
+// the same way. Three states, chosen by the token and by the payment's own
+// status:
+//   no token          → the BLANK self-serve request form for the chapter.
+//   token + canEdit   → the PRE-FILLED agreement (terms read-only), which is
+//                       also where a sent-back payment lands.
+//   token + !canEdit  → the read-only status timeline.
+// `contractorCanEdit` is the single answer to "is this link still open?" — the
+// server enforces it in every public mutation and this route merely reflects
+// it, so a stale bookmark renders status rather than an editable form whose
+// submit would be refused. The client script POSTs to /api/contract/* above.
+
+http.route({
+  pathPrefix: "/contract/",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["contract", slug]
+    const rawSlug = segments[1];
+    if (!rawSlug) return html(renderContractNotFound(), 404);
+    let slug: string;
+    try {
+      slug = decodeURIComponent(rawSlug);
+    } catch {
+      return html(renderContractNotFound(), 404);
+    }
+
+    const chapter = await ctx.runQuery(
+      api.contractorPayments.chapterForContract,
+      { chapterSlug: slug },
+    );
+    if (!chapter) return html(renderContractNotFound(), 404);
+
+    const token = url.searchParams.get("token");
+    if (token) {
+      const view = await ctx.runQuery(api.contractorPayments.publicByToken, {
+        token,
+      });
+      if (!view) return html(renderContractNotFound(), 404);
+      return view.canEdit
+        ? html(renderContractAgreement(view, slug, token))
+        : html(renderContractStatus(view, slug));
+    }
+    // The chapter row's own `slug` is optional in the schema; the page needs a
+    // definite one to POST with, so the decoded path segment (which is what
+    // resolved the chapter in the first place) is what it gets.
+    return html(renderContractForm({ ...chapter, slug }));
   }),
 });
 
