@@ -297,9 +297,52 @@ describe("repayment rails — the days-long gap", () => {
     // prevent, and which these rows shipped with until the founder found two
     // of them. A 49¢ line nobody can identify is worse than no line.
     expect(coverage?.merchantName).toBe("Processing fee covered by payer");
+
+    // ── AND THE FEE SWEEP IS ASKED TO CATCH UP ─────────────────────────────
+    // Coverage is income now; the fee it offsets is booked by a sweep that
+    // runs once a day. Left to that cadence, book value reads HIGH by the
+    // coverage until the next morning — which is exactly what the founder saw
+    // ("lo and behold, there's $3.35 not accounted for") on a repayment that
+    // settled hours after the sweep. Scheduling it here closes the window to
+    // seconds instead of a day.
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(
+      scheduled.some((f) => f.name.includes("syncStripeFeesOps")),
+    ).toBe(true);
     // Together they equal what the payer was actually charged.
     expect((credit?.amountCents ?? 0) + (coverage?.amountCents ?? 0)).toBe(
       prepared.chargeCents,
+    );
+  });
+
+  test("a repayment with NO coverage does not trigger a Stripe sweep", async () => {
+    // The guard on cost. A face-value repayment creates no imbalance to close,
+    // and this must not become a Stripe round-trip on every payment the org
+    // takes.
+    const t = newT();
+    const s = await setupChapter(t);
+    const payer = await seedPayer(s);
+    const repaymentId = await seedRepayment(s, payer, 24_800);
+    await t.mutation(internal.cards.markRepaymentsProcessing, {
+      repaymentIds: [repaymentId],
+      sessionId: "cs_face_value",
+    });
+
+    await t.mutation(internal.cards.applyRepaymentPaidFromStripe, {
+      repaymentIds: [repaymentId],
+      sessionId: "cs_face_value",
+      paymentIntentId: "pi_face_value",
+      amountTotalCents: 24_800,
+      feeCoverageCents: 0,
+    });
+
+    const scheduled = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    expect(scheduled.some((f) => f.name.includes("syncStripeFeesOps"))).toBe(
+      false,
     );
   });
 

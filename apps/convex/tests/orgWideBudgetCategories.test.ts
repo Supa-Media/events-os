@@ -2,10 +2,10 @@
 import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import type { Id } from "../_generated/dataModel";
-import { runOrgWideBudgetCategories } from "../migrations/0076_org_wide_budget_categories";
+import { runOrgWideBudgetCategories } from "../migrations/0077_org_wide_budget_categories";
 
 /**
- * `0076_org_wide_budget_categories` — the collapse.
+ * `0077_org_wide_budget_categories` — the collapse.
  *
  * Every chapter used to carry its own copy of the same category names, so
  * "Supplies" was N rows meaning one thing. This migration keeps one row per
@@ -77,7 +77,7 @@ async function categories(s: ChapterSetup) {
   return await run(s.t, (ctx) => ctx.db.query("budgetCategories").collect());
 }
 
-describe("0076: collapsing same-named categories", () => {
+describe("0077: collapsing same-named categories", () => {
   test("keeps the OLDEST row per trimmed, case-insensitive name and deletes the rest", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -135,7 +135,7 @@ describe("0076: collapsing same-named categories", () => {
   });
 });
 
-describe("0076: every reference is repointed before the duplicate is deleted", () => {
+describe("0077: every reference is repointed before the duplicate is deleted", () => {
   test("transactions, budgets, budget lines, reimbursement lines, event items, engagements, contractor payments, undo snapshots, and the nesting link", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -211,7 +211,7 @@ describe("0076: every reference is repointed before the duplicate is deleted", (
     const requestId = await run(t, (ctx) =>
       ctx.db.insert("reimbursementRequests", {
         chapterId: boston,
-        token: "tok_0076",
+        token: "tok_0077",
         status: "submitted",
         payeeName: "Dana Rivers",
         payeeEmail: "dana@example.com",
@@ -292,7 +292,7 @@ describe("0076: every reference is repointed before the duplicate is deleted", (
     const contractorPaymentId = await run(t, (ctx) =>
       ctx.db.insert("contractorPayments", {
         chapterId: boston,
-        token: "tok_0076",
+        token: "tok_0077",
         status: "draft",
         origin: "staff_prefilled",
         payeeName: "Lighting Co",
@@ -393,7 +393,7 @@ describe("0076: every reference is repointed before the duplicate is deleted", (
   });
 });
 
-describe("0076: the keeper's merged attributes", () => {
+describe("0077: the keeper's merged attributes", () => {
   test("inherits an expenseType hint from a duplicate when it has none", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -437,7 +437,7 @@ describe("0076: the keeper's merged attributes", () => {
   });
 });
 
-describe("0076: the nesting stays acyclic", () => {
+describe("0077: the nesting stays acyclic", () => {
   test("breaks a cycle the collapse itself manufactured", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -513,7 +513,7 @@ describe("0076: the nesting stays acyclic", () => {
   });
 });
 
-describe("0076: idempotence", () => {
+describe("0077: idempotence", () => {
   test("a second run is a complete no-op", async () => {
     const t = newT();
     const s = await setupChapter(t);

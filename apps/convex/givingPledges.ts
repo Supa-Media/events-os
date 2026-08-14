@@ -592,25 +592,32 @@ export const startPledgeCheckout = action({
     }
     const session = (await response.json()) as { id: string; url: string };
 
-    // Wave 2 (F6, activity wall): record a PENDING wall entry — never shown
-    // until the webhook settles it (`markActivityVisible`). A pledge always
-    // backs a real chapter (never `"central"` — see `preparePledge`), so
-    // there's no scope guard needed here (unlike the one-time gift flow).
-    // `recordPendingActivity` itself skips silently if the giver left both
-    // name and message blank.
-    if (args.shareOnWall) {
-      await ctx.runMutation(internal.givingActivity.recordPendingActivity, {
-        refKey: String(prepared.pledgeId),
-        scope: args.chapterId,
-        kind: "backer",
-        amountCents: prepared.amountCents,
-        ...(args.publicName ? { displayName: args.publicName } : {}),
-        ...(args.message ? { message: args.message } : {}),
-        // The giver's explicit yes, carried through rather than inferred
-        // from the fact that we got this far.
-        consent: true,
-      });
-    }
+    // Wave 2 (F6, activity wall), recomposed by give-redesign-v3 (D6): record
+    // a PENDING wall entry — never shown until the webhook settles it
+    // (`markActivityVisible`), so an abandoned checkout never reaches the wall.
+    // A pledge always backs a real chapter (never `"central"` — see
+    // `preparePledge`), so `kind` is always `"backer"` here.
+    //
+    // UNCONDITIONAL NOW. `shareOnWall` used to gate whether the row existed at
+    // all, which meant a new backer who didn't want their name printed didn't
+    // count on a page whose hero is "back a city". It gates ATTRIBUTION only:
+    // the backing posts either way, and `getPublicWall` decides on every read
+    // whether it carries a name.
+    await ctx.runMutation(internal.givingActivity.recordPendingActivity, {
+      refKey: String(prepared.pledgeId),
+      scope: args.chapterId,
+      kind: "backer",
+      amountCents: prepared.amountCents,
+      ...(args.publicName ? { displayName: args.publicName } : {}),
+      ...(args.message ? { message: args.message } : {}),
+      // "May we name you?" — the backer's explicit answer, carried through
+      // rather than inferred. A `false` is a recorded no, not a silence.
+      consent: args.shareOnWall === true,
+      // "…on a page search engines can find?" — see the matching comment in
+      // `givingDonations.startGiveDonationCheckout`: the flag is a claim about
+      // what the consent copy told them, so it tracks that copy.
+      consentIndexable: args.shareOnWall === true,
+    });
 
     return { url: session.url };
   },

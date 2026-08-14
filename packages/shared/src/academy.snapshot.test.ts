@@ -687,6 +687,59 @@
  * the PR that lands this: `apps/convex/tests/academy.test.ts` pins
  * ACADEMY_SECTION_COUNT (109 → 111) and ACADEMY_REQUIRED_SECTION_COUNT
  * (108 → 110), and that file is outside this package.
+ * 2026-08-14 — the `/give` redesign v3 (`docs/plans/give-redesign-v3.md`) is the
+ * first change in a while that moves the tables below, and it INSERTS one
+ * section: `dev-public-gift-wall` ("The public gift wall: anonymous by default",
+ * 4 min, 4-quiz), appended to the `donor-stewardship` course directly after
+ * `dev-gifts-ledger-and-audit`. Total: 112 sections (main landed contractor payments alongside it, +2); everything from it onward
+ * shifts one `order`, derived from array position and so needing no hand-edit.
+ * It exists because D6 INVERTED the wall's rule rather than extending it: the
+ * wall used to show only gifts whose giver opted in AND typed a display name,
+ * and it now shows EVERY settled gift, anonymous by default, with consent
+ * gating the name/message ATTRIBUTION and never the row's existence — on a city
+ * page that also loses its `noindex` (D10), with central gifts on the wall too
+ * (D7). That is a privacy rule staff are asked about in their own words ("take
+ * my name off your website"), the wrong version of it is the intuitive one, and
+ * it has a real staff surface behind it (Giving → Wall; central `giving.manage`
+ * take down / restore), none of which the Academy taught anywhere — the wall's
+ * existence appeared in no stream at all. It sits after the gifts ledger so the
+ * private record is taught before its public echo, and it is required, not
+ * `optional`, for the same reason `finance-receipt-exceptions` is: the rule
+ * should be genuinely learned before someone answers a donor with it.
+ *
+ * The same redesign corrected four existing Development lessons and one
+ * Finances lesson, only one of which moves a table. `dev-giving-vocabulary`
+ * gained a rule ("In public it's a city, never a territory" — D1 makes CITY the
+ * public word and leaves `territory` to the desk and the schema) plus the
+ * matching quiz question: quizLength 4→5 (bumped below), title/minutes/placement
+ * unchanged. The other four are content-only. `dev-backer-floor-and-ladder`'s
+ * "Public, once the map ships" bullet was doubly false — that page had shipped,
+ * and the program cards are now MERGED INTO the ladder's rungs (20 → Worship
+ * With Strangers, 30 → Eden, 50 → Love Thy Neighbor), so the ladder IS the
+ * program list. `dev-prospect-cities-and-map` lost the claim that a campaign is
+ * shareable "with no donor's personal information ever exposed publicly", which
+ * D6 + D10 make flatly untrue and which staff would have repeated verbatim to a
+ * donor; its "Live now" tip now leads with backing a city, demotes the map to
+ * "where we're going", and corrects monthly presets that were ALREADY wrong
+ * ($20/$50/$100 → $50/$100/$200, per `BACKER_PRESETS_CENTS`; a $20 preset also
+ * contradicted the $50 floor the previous lesson teaches). `dev-city-launch-
+ * economics` swapped one quiz question for one — out, a soft "why should a
+ * backer see the split" whose answer turned on nothing; in, WHERE they read it
+ * — because D5 moves the money model off both give pages onto
+ * `/give/how-it-works`, with the books staying at `/finances`; quizLength stays
+ * 3. And `streams/finances.ts`'s `finance-tiers-and-skim` tip stopped saying the
+ * 15% is "the number donors are told on the giving page" for the same reason,
+ * with no quiz change.
+ *
+ * One thing this pass deliberately did NOT touch, recorded so the next reader
+ * doesn't re-litigate it: `finance-publishing-the-books`'s `try_ready` criterion
+ * "the 'everyone here is a volunteer' line is still true". D3 removes the
+ * nobody-draws-a-salary claim from the `/give` money model, but that criterion
+ * describes the `/finances` publish-console disclosure
+ * (`COMPENSATION_DISCLOSURE` in `packages/shared/src/publicLedger.ts`), which is
+ * a different page and is unchanged. If D3 is ever read literally enough to
+ * delete that constant too, this criterion and `finance-launch-grants-and-
+ * transfers`'s "Central's own salaries" distractor both need a follow-up.
  *
  * 2026-08-14 — budget categories went ORG-WIDE (owner: "the category should be
  * the same across all chapters — unwire the category scope to a specific
@@ -820,6 +873,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "dev-relationship-workflow",
   "dev-import-and-backfill",
   "dev-gifts-ledger-and-audit",
+  "dev-public-gift-wall",
   "dev-backer-floor-and-ladder",
   "dev-backer-lifecycle",
   "dev-givebutter-migration",
@@ -1635,7 +1689,7 @@ const EXPECTED_SECTIONS: {
     slug: "dev-giving-vocabulary",
     title: "Donors, backers, sponsors: the words we use",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },
@@ -1668,6 +1722,14 @@ const EXPECTED_SECTIONS: {
     title: "The gifts ledger: see it, fix it, trace it",
     minutes: 4,
     quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "dev-public-gift-wall",
+    title: "The public gift wall: anonymous by default",
+    minutes: 4,
+    quizLength: 4,
     optional: false,
     capstoneKind: null,
   },
@@ -1954,6 +2016,7 @@ const EXPECTED_COURSES: {
       "dev-relationship-workflow",
       "dev-import-and-backfill",
       "dev-gifts-ledger-and-audit",
+      "dev-public-gift-wall",
     ],
   },
   {

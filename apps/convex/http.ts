@@ -56,6 +56,10 @@ import {
   renderGiveNotFound,
 } from "./lib/givePage";
 import {
+  GIVE_HOW_IT_WORKS_SLUG,
+  renderGiveHowItWorksPage,
+} from "./lib/giveHowItWorksPage";
+import {
   renderProjectActionGone,
   renderProjectActionPage,
   renderProjectActionResult,
@@ -274,14 +278,28 @@ http.route({
     // A central (no-slug) one-time gift returns here with `?donated=1` — show a
     // thank-you banner (the territory page handles its own thank-you states).
     const thankYou = new URL(req.url).searchParams.get("donated") === "1";
-    const [territories, interestStats, feeRates] = await Promise.all([
-      ctx.runQuery(api.territories.getPublicMapData, {}),
-      ctx.runQuery(api.givingInterest.publicInterestStats, {}),
-      // Stamped into the page so the form can price "cover the fees" live as
-      // somebody types. The SAME query the checkout action reads, so the
-      // number quoted here and the number charged there cannot diverge.
-      ctx.runQuery(internal.feeSchedule.givePageRates, {}),
-    ]);
+    const [territories, interestStats, feeRates, wall, publishedMonths] =
+      await Promise.all([
+        ctx.runQuery(api.territories.getPublicMapData, {}),
+        ctx.runQuery(api.givingInterest.publicInterestStats, {}),
+        // Stamped into the page so the form can price "cover the fees" live as
+        // somebody types. The SAME query the checkout action reads, so the
+        // number quoted here and the number charged there cannot diverge.
+        ctx.runQuery(internal.feeSchedule.givePageRates, {}),
+        // v3 (docs/plans/give-redesign-v3.md §C1): the org-wide gift wall and
+        // its LIVE totals. The page renders without it if it fails, rather
+        // than 500ing the ask — proof is worth a lot, but not the checkout.
+        ctx
+          .runQuery(api.givingActivity.getPublicWall, {})
+          .catch(() => null),
+        // Only the COUNT of published months, for the money teaser's
+        // "N months published" fact. The statements themselves stay on
+        // /finances; this page just says how many there are.
+        ctx
+          .runQuery(api.publicLedger.publishedMonths, {})
+          .then((m) => m.length)
+          .catch(() => 0),
+      ]);
     return html(
       renderGiveMapPage(
         territories,
@@ -289,6 +307,9 @@ http.route({
         thankYou,
         siteUrl(),
         feeRates,
+        wall,
+        {},
+        publishedMonths,
       ),
     );
   }),
@@ -303,6 +324,14 @@ http.route({
     const slug = decodeURIComponent(segments[1] ?? "");
     const sub = segments[2];
     if (!slug) return html(renderGiveNotFound(), 404);
+
+    // v3 (spec §C4): a STATIC give page, dispatched off the same path segment
+    // that otherwise resolves as a territory slug. It has to be matched before
+    // the territory lookup or it 404s as an unknown territory — and the slug is
+    // in `RESERVED_TERRITORY_SLUGS` so no territory can ever shadow it.
+    if (slug === GIVE_HOW_IT_WORKS_SLUG && segments.length === 2) {
+      return html(renderGiveHowItWorksPage(siteUrl()));
+    }
 
     // Share-card image: GET /give/<slug>/og — the uploaded OG card, served from
     // Convex storage so social scrapers (iMessage/X/etc.) get a real PNG.
@@ -324,10 +353,14 @@ http.route({
     }
     if (segments.length > 2) return html(renderGiveNotFound(), 404);
 
-    const [data, interestStats, activity, feeRates] = await Promise.all([
+    const [data, interestStats, wall, feeRates] = await Promise.all([
       ctx.runQuery(api.territories.getPublicTerritory, { slug }),
       ctx.runQuery(api.givingInterest.publicInterestStats, {}),
-      ctx.runQuery(api.givingActivity.getTerritoryActivity, { slug }),
+      // v3: `getPublicWall` supersedes `getTerritoryActivity` — every gift
+      // given through the page, anonymous unless the giver signed it, rather
+      // than only the opt-in subset that left a city with real backers
+      // rendering "Be the first to back this city" (spec D6).
+      ctx.runQuery(api.givingActivity.getPublicWall, { slug }).catch(() => null),
       ctx.runQuery(internal.feeSchedule.givePageRates, {}),
     ]);
     if (!data) return html(renderGiveNotFound(), 404);
@@ -342,10 +375,10 @@ http.route({
       renderGiveTerritoryPage(
         data,
         interestStats,
-        activity,
         siteUrl(),
         pledgeParam,
         feeRates,
+        wall,
       ),
     );
   }),

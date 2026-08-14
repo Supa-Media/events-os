@@ -114,22 +114,65 @@ async function activePledgeMonthlyCents(
   return active.reduce((sum, p) => sum + p.amountCents, 0);
 }
 
-/** Cap on the territory page's "upcoming fundraisers" list (F3-data). */
-const MAX_UPCOMING_FUNDRAISERS = 5;
+/** Cap on the territory page's fundraiser list — open AND finished share this
+ *  budget (docs/plans/give-redesign-v3.md §C3 says "cap 8"). Open rungs are
+ *  filled first, so a chapter with a busy calendar simply pushes its history
+ *  off the bottom rather than losing its next ask. */
+const MAX_FUNDRAISERS = 8;
 
-/** Bounded look-ahead window over a chapter's future events when hunting for
- *  published fundraiser pages — generous over any realistic gap between "now"
- *  and the soonest 5 fundraisers (most chapters don't even have 50 events
- *  scheduled into the future at once). */
-const FUTURE_EVENT_SCAN_LIMIT = 50;
+/** Bounded window over a chapter's events in ONE time direction when hunting
+ *  for published fundraiser pages. Generous over any realistic gap between
+ *  "now" and the nearest 8 fundraisers in that direction — most chapters run
+ *  well under 50 events on either side of today, and every event that isn't a
+ *  published goal-carrying page is skipped, so the ceiling is what protects us
+ *  from a chapter that schedules a lot of non-fundraiser gatherings. */
+const EVENT_SCAN_LIMIT_PER_DIRECTION = 50;
+
+/** The public fundraiser shape (docs/plans/give-redesign-v3.md §C3). Shared by
+ *  `fundraisersForChapter` and `publicTerritoryValidator` so the helper can
+ *  never drift from what `getPublicTerritory` promises to return. */
+type PublicFundraiser = {
+  name: string;
+  slug: string;
+  goalCents: number;
+  raisedCents: number;
+  startDate: number;
+  state: "open" | "finished";
+  goalMet: boolean;
+};
 
 /**
- * A chapter's published, FUTURE fundraiser event pages (`eventPages.goalCents`
- * set and positive), soonest first, capped at `MAX_UPCOMING_FUNDRAISERS` — the
- * territory page's "here's how the team still delivers" section (F3). Reads
- * `events` via the bounded `by_chapter_date` index (ascending from now, so the
- * scan is naturally soonest-first and never touches past events), then joins
- * each candidate's `eventPages` row 1:1 via `by_event`. Training-sandbox
+ * A chapter's published fundraiser event pages (`eventPages.goalCents` set and
+ * positive) in BOTH time directions — the territory page's "here's how the team
+ * still delivers" section (F3-data), reshaped by
+ * docs/plans/give-redesign-v3.md §C3.
+ *
+ * WHY BOTH DIRECTIONS. This used to be `upcomingFundraisersForChapter`, and a
+ * fundraiser fell off the page the instant its date passed. That threw away the
+ * single most persuasive thing a young chapter owns: "we did the Pathway Ball,
+ * we did the block party." A prospect city with nothing on the calendar looked
+ * identical to one that had already run four events — the page could only ever
+ * show a promise, never a track record. So finished fundraisers stay, tagged
+ * `state: "finished"`, and the renderer decides how to frame them.
+ *
+ * WHY FINISHED ONES STAY GIVEABLE, INCLUDING MET GOALS (decision D9). Money
+ * given against a finished fundraiser lands in the same pot as money given
+ * against an open one — the goal is a rallying number, not a ledger boundary —
+ * so there is no accounting reason to close the door, and "you already hit your
+ * target, keep my money" is a thing givers actually want to do. `goalMet` is
+ * therefore DESCRIPTIVE, not a gate: it exists so the page can celebrate ("100%
+ * funded") rather than to suppress a give button. Nothing in this file, and
+ * nothing downstream of it, may read `goalMet`/`state` as permission.
+ *
+ * ORDERING + CAP. Open first (soonest first — the next thing a reader can show
+ * up to), then finished (most recent first — the freshest evidence), capped at
+ * `MAX_FUNDRAISERS` across both. The forward scan reads `by_chapter_date`
+ * ascending from `now` and the backward scan reads the same index descending
+ * from `now`, so each direction arrives pre-sorted off the index and neither
+ * needs a post-sort. The backward scan is skipped entirely when the open list
+ * already fills the cap.
+ *
+ * Each candidate joins its `eventPages` row 1:1 via `by_event`. Training-sandbox
  * events are skipped — they must never reach a public surface (mirrors
  * `ticketing.ts#listPublishedUpcoming`).
  *
@@ -140,54 +183,74 @@ const FUTURE_EVENT_SCAN_LIMIT = 50;
  * so the two pages never disagree on "how much is raised." PII-free: only
  * page-level display fields, no donor/attendee data.
  */
-async function upcomingFundraisersForChapter(
+async function fundraisersForChapter(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
-): Promise<
-  Array<{
-    name: string;
-    slug: string;
-    goalCents: number;
-    raisedCents: number;
-    startDate: number;
-  }>
-> {
+): Promise<PublicFundraiser[]> {
   const now = Date.now();
+
+  /** Event → its public fundraiser row, or `null` if it isn't one (no page, an
+   *  unpublished draft, no money goal, or a training sandbox event). */
+  const toFundraiser = async (
+    event: Doc<"events">,
+    state: "open" | "finished",
+  ): Promise<PublicFundraiser | null> => {
+    if (event.isTraining) return null;
+    const page = await ctx.db
+      .query("eventPages")
+      .withIndex("by_event", (q) => q.eq("eventId", event._id))
+      .unique();
+    if (!page || !page.published) return null;
+    if (!page.goalCents || page.goalCents <= 0) return null;
+    const raisedCents =
+      page.revenueCents +
+      (page.donationsCents ?? 0) +
+      (page.externalGiftsCents ?? 0);
+    return {
+      name: event.name,
+      slug: page.slug,
+      goalCents: page.goalCents,
+      raisedCents,
+      startDate: event.eventDate,
+      state,
+      // Descriptive only — see the D9 note above. Never a gate on giving.
+      goalMet: raisedCents >= page.goalCents,
+    };
+  };
+
+  const out: PublicFundraiser[] = [];
+
+  // Open: ascending from now, so the soonest ask leads.
   const futureEvents = await ctx.db
     .query("events")
     .withIndex("by_chapter_date", (q) =>
       q.eq("chapterId", chapterId).gte("eventDate", now),
     )
     .order("asc")
-    .take(FUTURE_EVENT_SCAN_LIMIT);
-
-  const out: Array<{
-    name: string;
-    slug: string;
-    goalCents: number;
-    raisedCents: number;
-    startDate: number;
-  }> = [];
+    .take(EVENT_SCAN_LIMIT_PER_DIRECTION);
   for (const event of futureEvents) {
-    if (out.length >= MAX_UPCOMING_FUNDRAISERS) break;
-    if (event.isTraining) continue;
-    const page = await ctx.db
-      .query("eventPages")
-      .withIndex("by_event", (q) => q.eq("eventId", event._id))
-      .unique();
-    if (!page || !page.published) continue;
-    if (!page.goalCents || page.goalCents <= 0) continue;
-    out.push({
-      name: event.name,
-      slug: page.slug,
-      goalCents: page.goalCents,
-      raisedCents:
-        page.revenueCents +
-        (page.donationsCents ?? 0) +
-        (page.externalGiftsCents ?? 0),
-      startDate: event.eventDate,
-    });
+    if (out.length >= MAX_FUNDRAISERS) break;
+    const row = await toFundraiser(event, "open");
+    if (row) out.push(row);
   }
+
+  // Finished: descending from now, so the most recent proof leads. Skipped
+  // outright when the open list already spent the whole budget.
+  if (out.length < MAX_FUNDRAISERS) {
+    const pastEvents = await ctx.db
+      .query("events")
+      .withIndex("by_chapter_date", (q) =>
+        q.eq("chapterId", chapterId).lt("eventDate", now),
+      )
+      .order("desc")
+      .take(EVENT_SCAN_LIMIT_PER_DIRECTION);
+    for (const event of pastEvents) {
+      if (out.length >= MAX_FUNDRAISERS) break;
+      const row = await toFundraiser(event, "finished");
+      if (row) out.push(row);
+    }
+  }
+
   return out;
 }
 
@@ -303,16 +366,69 @@ async function defaultTargetBackers(ctx: MutationCtx): Promise<number> {
 }
 
 /**
- * A slug is available iff it collides with NO other territory AND no other
- * chapter (a shadow chapter carries the territory's slug, and a launched
+ * URL segments under `/give/` that are STATIC PAGES OR SUB-ROUTES, never
+ * territory slugs.
+ *
+ * WHY THIS LIST HAS TO EXIST. `http.ts` dispatches the give surface purely by
+ * path segment: `pathPrefix: "/give/"` takes `segments[1]` and looks it up as a
+ * territory slug (`segments[2]` is a sub-route, e.g. the `og` card). A static
+ * give page and a territory therefore share ONE namespace, and the collision
+ * runs both ways:
+ *
+ *  - a static page whose segment isn't reserved 404s as "unknown territory" the
+ *    moment the slug lookup misses, and
+ *  - a territory created at that slug silently SHADOWS the static page — the
+ *    route resolves the territory first and the real page becomes unreachable,
+ *    with nothing anywhere reporting an error.
+ *
+ * The second failure is the dangerous one: it is a live, silent outage caused
+ * by an ordinary admin doing an ordinary thing in the territories desk. Cheaper
+ * to reserve the names up front than to debug a page that "just stopped
+ * existing."
+ *
+ * `og` is not hypothetical — `/give/<slug>/og` ships today, so a territory
+ * literally named "og" already confuses the two-segment and three-segment
+ * forms. `how-it-works` is the money-model page added by
+ * docs/plans/give-redesign-v3.md §C4. The rest (`map`, `finances`, `join`,
+ * `api`) are names the give surface already uses or is likely to claim next
+ * (`/finances` and `/api/give/*` exist; the map and the recruitment page are
+ * both live concepts in that plan), reserved now while it costs nothing.
+ *
+ * ADDING A STATIC `/give/<segment>` PAGE? Add its segment here in the same
+ * change, or it will 404.
+ */
+export const RESERVED_TERRITORY_SLUGS: readonly string[] = [
+  "api",
+  "finances",
+  "how-it-works",
+  "join",
+  "map",
+  "og",
+];
+
+/**
+ * A slug is available iff it is not RESERVED for a static give route (see
+ * `RESERVED_TERRITORY_SLUGS`) and it collides with NO other territory AND no
+ * other chapter (a shadow chapter carries the territory's slug, and a launched
  * chapter's slug — e.g. "new-york" — must never be re-taken). `territoryId` /
  * `chapterId` exclude the territory's own rows on an edit.
+ *
+ * The reserved check is deliberately here, at the same choke point as the
+ * uniqueness check, rather than at `saveTerritory`'s call sites: create and
+ * edit both flow through this function, and a reserved slug is simply a slug
+ * that is already spoken for — by a route instead of by a row.
  */
 async function assertSlugAvailable(
   ctx: MutationCtx,
   slug: string,
   self: { territoryId?: Id<"territories">; chapterId?: Id<"chapters"> },
 ): Promise<void> {
+  if (RESERVED_TERRITORY_SLUGS.includes(slug)) {
+    throw new ConvexError({
+      code: "SLUG_RESERVED",
+      message: `The slug "${slug}" is reserved for a page on the giving site. Pick another one.`,
+    });
+  }
   const territory = await ctx.db
     .query("territories")
     .withIndex("by_slug", (q) => q.eq("slug", slug))
@@ -735,16 +851,25 @@ const publicTerritoryValidator = v.union(
       v.null(),
     ),
     // F3-data: how the chapter still sustains its mission when it isn't fully
-    // backed — its upcoming fundraiser events (with money goals) and whether
-    // it has sponsorships. See `upcomingFundraisersForChapter` /
-    // `sponsorshipCountForChapter` above for exactly how each is computed.
-    upcomingFundraisers: v.array(
+    // backed — its fundraiser events (with money goals) and whether it has
+    // sponsorships. See `fundraisersForChapter` / `sponsorshipCountForChapter`
+    // above for exactly how each is computed.
+    //
+    // Both time directions, per docs/plans/give-redesign-v3.md §C3: `state`
+    // separates the next ask ("open") from the track record ("finished"), and
+    // `goalMet` is a descriptive badge, NOT a gate — a finished, fully-funded
+    // fundraiser is still giveable because it all lands in the same pot (D9).
+    // Renamed from `upcomingFundraisers` in that redesign; the old name
+    // promised something the field no longer does.
+    fundraisers: v.array(
       v.object({
         name: v.string(),
         slug: v.string(),
         goalCents: v.number(),
         raisedCents: v.number(),
         startDate: v.number(),
+        state: v.union(v.literal("open"), v.literal("finished")),
+        goalMet: v.boolean(),
       }),
     ),
     sponsorshipCount: v.number(),
@@ -826,8 +951,8 @@ export const getPublicTerritory = query({
       };
     }
 
-    const [upcomingFundraisers, sponsorshipCount] = await Promise.all([
-      upcomingFundraisersForChapter(ctx, territory.chapterId),
+    const [fundraisers, sponsorshipCount] = await Promise.all([
+      fundraisersForChapter(ctx, territory.chapterId),
       sponsorshipCountForChapter(ctx, territory.chapterId),
     ]);
 
@@ -843,7 +968,7 @@ export const getPublicTerritory = query({
       milestones,
       nextMilestone,
       launchFund,
-      upcomingFundraisers,
+      fundraisers,
       sponsorshipCount,
     };
   },

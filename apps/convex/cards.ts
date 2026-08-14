@@ -5046,6 +5046,36 @@ export const applyRepaymentPaidFromStripe = internalMutation({
         feeCoveredCents: feeCoverageCents ?? 0,
       });
     }
+
+    // ── BOOK THE OTHER HALF NOW, NOT TOMORROW MORNING ────────────────────────
+    // The coverage above is income the instant this webhook lands; the fee it
+    // offsets is booked by the Stripe sweep inside the morning engine, once a
+    // day at 09:30 UTC. Between the two, book value runs HIGH by the coverage
+    // — and that is not a theoretical window. A $101.74 repayment settled at
+    // 15:32, its coverage was booked, and the accounts page read $3.35 off for
+    // the rest of the day (founder: "lo and behold, there's $3.35 not accounted
+    // for"). Every fee-covered repayment would do it again.
+    //
+    // So the sweep is asked to run now. It is the SAME sweep, reading Stripe's
+    // own ledger — this schedules the ACTUAL, it does not derive one, and
+    // `processorFees.ts`'s rule that a fee is never inferred from our own
+    // arithmetic is untouched. Idempotent by construction (it re-reads the
+    // whole ledger and replaces each month wholesale), so an extra run costs a
+    // few pages of Stripe API and changes nothing else.
+    //
+    // ONLY WHEN THERE IS COVERAGE. A repayment billed at face value creates no
+    // imbalance to close, and this must not become a Stripe round-trip on
+    // every payment the org takes.
+    //
+    // Scheduled rather than awaited: a webhook's job is to answer 200, and if
+    // the sweep fails — or Stripe has not published the balance transaction
+    // yet — the morning engine still books it on its own schedule. This moves
+    // the moment, never the mechanism.
+    if ((feeCoverageCents ?? 0) > 0) {
+      await ctx.scheduler.runAfter(0, internal.processorFees.syncStripeFeesOps, {
+        execute: true,
+      });
+    }
     return null;
   },
 });
@@ -6636,6 +6666,38 @@ export const repaymentFeeCoverageAudit = internalQuery({
       }),
     ),
     withCoverageRow: v.number(),
+    /**
+     * THE OTHER HALF, and the reason this query grew.
+     *
+     * Coverage income is booked the instant a repayment settles; the fee it
+     * offsets is booked by the daily 09:30 UTC sweep inside the morning
+     * engine. Between the two, book value runs HIGH by the coverage — which is
+     * a real, visible wobble on the accounts page, and the founder hit it
+     * within the hour ("now, when I go to accounts, lo and behold, there's
+     * $3.35 not accounted for").
+     *
+     * So the audit reports both sides: every coverage row booked, and when the
+     * Stripe fee expense was last refreshed. A coverage row posted AFTER that
+     * refresh has no expense against it yet, and its amount is exactly the
+     * temporary gap.
+     */
+    coverageRows: v.array(
+      v.object({
+        amountCents: v.number(),
+        bookedAt: v.string(),
+        merchantName: v.union(v.string(), v.null()),
+        categorised: v.boolean(),
+      }),
+    ),
+    stripeFeeRows: v.array(
+      v.object({
+        month: v.string(),
+        amountCents: v.number(),
+        postedAt: v.string(),
+      }),
+    ),
+    /** Coverage booked with no fee sweep since — the size of the wobble. */
+    awaitingFeeSweepCents: v.number(),
   }),
   handler: async (ctx) => {
     const all = await ctx.db.query("personalRepayments").collect();
@@ -6674,10 +6736,59 @@ export const repaymentFeeCoverageAudit = internalQuery({
         chapterId: String(r.chapterId),
       });
     }
+    // ── THE PAIRING ───────────────────────────────────────────────────────
+    // Every coverage row, and every Stripe fee row it could be offset by. The
+    // fee rows are the monthly rollups `processorFees.ts` writes, found by the
+    // marker it stamps rather than by name or merchant.
+    const allTxns = await ctx.db.query("transactions").collect();
+    const coverage = allTxns.filter((t) => t.feeCoverageOrigin != null);
+    const feeRows = allTxns.filter((t) => t.feeOrigin === "stripe_processing");
+
+    // The most recent moment the Stripe fee expense was refreshed.
+    const lastFeeRefresh = feeRows.reduce(
+      (latest, t) => Math.max(latest, t.postedAt),
+      0,
+    );
+    // WHEN THE PAYMENT SETTLED, NOT WHEN THE ROW WAS WRITTEN. The first
+    // version of this compared the coverage row's `createdAt`, and got the
+    // wrong answer on the only data that existed: both rows were written by a
+    // migration at 16:59, after the 09:30 sweep, so it reported 384¢ awaiting
+    // — when the 49¢ payment had settled at 04:37 and its fee was already in
+    // that morning's rollup. What decides whether a fee has been swept is when
+    // STRIPE saw the charge, which is the repayment's settle time.
+    let awaitingFeeSweepCents = 0;
+    for (const row of coverage) {
+      const sessionId = (row.externalId ?? "").replace(
+        "stripe_repayment_fee_coverage:",
+        "",
+      );
+      const settledAt = all
+        .filter((r) => r.stripeCheckoutSessionId === sessionId)
+        .reduce((latest, r) => Math.max(latest, r.updatedAt), 0);
+      // No settle time to read ⇒ cannot claim it is covered. Counted, so this
+      // errs toward reporting a wobble that is not there rather than hiding
+      // one that is.
+      if (settledAt === 0 || settledAt > lastFeeRefresh) {
+        awaitingFeeSweepCents += row.amountCents;
+      }
+    }
+
     return {
       settledViaStripe: settled.length,
       missingCoverageRow: missing,
       withCoverageRow: withRow,
+      coverageRows: coverage.map((t) => ({
+        amountCents: t.amountCents,
+        bookedAt: new Date(t.createdAt).toISOString(),
+        merchantName: t.merchantName ?? null,
+        categorised: t.categoryId != null,
+      })),
+      stripeFeeRows: feeRows.map((t) => ({
+        month: new Date(t.postedAt).toISOString().slice(0, 7),
+        amountCents: t.amountCents,
+        postedAt: new Date(t.postedAt).toISOString(),
+      })),
+      awaitingFeeSweepCents,
     };
   },
 });

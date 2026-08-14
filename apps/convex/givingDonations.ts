@@ -249,28 +249,48 @@ export const startGiveDonationCheckout = action({
     }
     const session = (await response.json()) as { id: string; url: string };
 
-    // Wave 2 (F6, activity wall): record a PENDING wall entry — never shown
-    // until the webhook settles it (`markActivityVisible`). The wall is
-    // per-territory, so a "central" (no-slug, general-ministry) gift has no
-    // chapter to post to and is skipped. `recordPendingActivity` itself skips
-    // silently if the giver left both name and message blank.
-    if (args.shareOnWall && scope !== "central") {
-      await ctx.runMutation(internal.givingActivity.recordPendingActivity, {
-        refKey: `give:${session.id}`,
-        scope,
-        kind: "gift",
-        // The charge, not what they typed before covering — the wall echoes
-        // the gift, and the gift is the whole charge (`gifts.feeCoverageCents`).
-        // Posting the smaller figure would have the wall and the ledger
-        // disagree about the same donation.
-        amountCents: chargeCents,
-        ...(args.publicName ? { displayName: args.publicName } : {}),
-        ...(args.message ? { message: args.message } : {}),
-        // The giver's explicit yes, carried through rather than inferred
-        // from the fact that we got this far.
-        consent: true,
-      });
-    }
+    // Wave 2 (F6, activity wall), recomposed by give-redesign-v3 (D6/D7):
+    // record a PENDING wall entry — never shown until the webhook settles it
+    // (`markActivityVisible`), so an abandoned checkout never reaches the wall.
+    //
+    // UNCONDITIONAL NOW, and both of the conditions it lost were bugs the page
+    // was built on top of:
+    //  - `shareOnWall` gated EXISTENCE, so the public feed showed only
+    //    the givers who ticked a box. It now gates ATTRIBUTION only (D6) — the
+    //    row exists either way, and `getPublicWall` decides on every read
+    //    whether it carries a name.
+    //  - `scope !== "central"` dropped every gift to central operations,
+    //    because the wall was per-territory and `givingActivity.scope`
+    //    literally could not hold `"central"`. C2 widened the column; D7 says
+    //    those gifts belong on the wall, tagged `central`.
+    await ctx.runMutation(internal.givingActivity.recordPendingActivity, {
+      refKey: `give:${session.id}`,
+      scope,
+      // What this gift IS, in the wall's vocabulary: a gift to central
+      // operations reads "Central operations", a gift to a city reads as that
+      // city's. (`"fundraiser"` rows come from the event-page giving path, not
+      // from here — this checkout has no event.)
+      kind: scope === "central" ? "central" : "gift",
+      // The charge, not what they typed before covering — the wall echoes
+      // the gift, and the gift is the whole charge (`gifts.feeCoverageCents`).
+      // Posting the smaller figure would have the wall and the ledger
+      // disagree about the same donation.
+      amountCents: chargeCents,
+      ...(args.publicName ? { displayName: args.publicName } : {}),
+      ...(args.message ? { message: args.message } : {}),
+      // "May we name you?" — the giver's explicit answer, carried through
+      // rather than inferred from the fact that we got this far. A `false`
+      // here is a recorded no, not a silence: the gift still posts, anonymously.
+      consent: args.shareOnWall === true,
+      // "…on a page search engines can find?" — the same tick, recorded
+      // against the stronger promise. The give form's consent copy states
+      // plainly that the page is public AND findable by search (spec "Privacy
+      // posture"), which is what licenses an indexed page to print the name;
+      // consents captured under the OLD copy carry no such flag and stay
+      // anonymous for ever. IF THAT COPY IS EVER WEAKENED, this must go back
+      // to omitted — the flag is a claim about what the giver was told.
+      consentIndexable: args.shareOnWall === true,
+    });
 
     return { url: session.url };
   },

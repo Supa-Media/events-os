@@ -61,6 +61,7 @@ import {
   reimbursementRequests,
   reimbursementLineItems,
   contractorPayments,
+  contractorProfiles,
   contractorTaxDocuments,
   cards,
   cardRequests,
@@ -315,6 +316,10 @@ const schema = defineSchema({
   // that ends in an ACH. Sibling of reimbursements, not a flavour of one — a
   // reimbursement pays back a receipt, this pays for work.
   contractorPayments,
+  // What we remember about a contractor between payments so a returning one
+  // isn't asked to fill the whole form again. A satellite on `people`, never a
+  // second roster.
+  contractorProfiles,
   // The W-9 / W-8 behind a contractor payment. Its own table so a payment row
   // can be read freely without ever carrying a storage id for a PDF with an
   // SSN on it.
