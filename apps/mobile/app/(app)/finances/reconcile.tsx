@@ -1557,8 +1557,8 @@ function ReconcileGrid() {
           <View className="mb-1 flex-row items-center justify-between gap-2">
             {/* JUST THE NAME OF THE PAGE — founder: "This should just be, like,
                 Transactions." It used to be a dropdown of seven saved views;
-                see the long comment above `filterOptionsByGroup`'s neighbours
-                for why every one of them is now a control already on screen. */}
+                see "THERE IS NO VIEW MENU ANYMORE" above for what each one of
+                them is now, and why every one is a control already on screen. */}
             <View className="flex-row items-center gap-3">
               <Text className="font-display text-2xl text-ink">Transactions</Text>
               {searching ? (
