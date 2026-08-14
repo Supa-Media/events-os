@@ -231,6 +231,10 @@ export const backfillAuditKeys = internalAction({
       );
     }
 
-    return { ...total, isDone: page.isDone, continueCursor: page.continueCursor };
+    return {
+      ...total,
+      isDone: page.isDone,
+      continueCursor: page.continueCursor,
+    };
   },
 });

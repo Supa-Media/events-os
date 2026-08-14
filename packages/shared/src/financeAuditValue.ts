@@ -196,7 +196,9 @@ const RECEIPT_EXCEPTION_AUDIT_STATE_LABELS: Record<
 };
 
 /** The key for "an exception filed under this reason". */
-export function receiptExceptionFiledKey(reason: ReceiptExceptionReason): string {
+export function receiptExceptionFiledKey(
+  reason: ReceiptExceptionReason,
+): string {
   return `filed:${reason}`;
 }
 

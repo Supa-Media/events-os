@@ -31,7 +31,10 @@ import { TRANSACTION_STATUS_LABELS } from "@events-os/shared";
  *  3. the backfill is idempotent, dry by default, and additive.
  */
 
-async function seedSelfPerson(s: ChapterSetup, name = "Caller"): Promise<Id<"people">> {
+async function seedSelfPerson(
+  s: ChapterSetup,
+  name = "Caller",
+): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("people", {
       chapterId: s.chapterId,
@@ -62,7 +65,10 @@ async function grantRole(
 /** A chapter bookkeeper with one hand-entered charge — the whole cast every
  *  test here needs. Grants the role BEFORE the charge because
  *  `createManualTransaction` is itself bookkeeper-gated. */
-async function seedTxn(s: ChapterSetup, amountCents = 4200): Promise<Id<"transactions">> {
+async function seedTxn(
+  s: ChapterSetup,
+  amountCents = 4200,
+): Promise<Id<"transactions">> {
   await grantRole(s, await seedSelfPerson(s));
   await disarmCodingPolicy(s.t);
   return await s.as.mutation(api.finances.createManualTransaction, {
@@ -76,7 +82,10 @@ async function seedTxn(s: ChapterSetup, amountCents = 4200): Promise<Id<"transac
 /** Documentation without going through `attachReceipt`, so a test can close a
  *  row without triggering attach's own audit row (mirrors
  *  `financeAuditLog.test.ts`'s helper of the same name). */
-async function giveReceipt(s: ChapterSetup, txnId: Id<"transactions">): Promise<void> {
+async function giveReceipt(
+  s: ChapterSetup,
+  txnId: Id<"transactions">,
+): Promise<void> {
   const storageId = await storeBlob(s.t);
   await run(s.t, (ctx) => ctx.db.patch(txnId, { receiptStorageId: storageId }));
 }
@@ -119,7 +128,7 @@ describe("status_change rows carry the STORED status, not the word for it", () =
     expect(statusRow.afterKey).toBe("reconciled");
   });
 
-  test("a legacy row that still says \"Reconciled\" reads the same as a fresh one", async () => {
+  test('a legacy row that still says "Reconciled" reads the same as a fresh one', async () => {
     const t = newT();
     const s = await setupChapter(t);
     const txnId = await seedTxn(s);
@@ -157,7 +166,7 @@ describe("status_change rows carry the STORED status, not the word for it", () =
   });
 });
 
-describe("REGRESSION — \"excluding needs a reason\" fires on the KEY, not the label", () => {
+describe('REGRESSION — "excluding needs a reason" fires on the KEY, not the label', () => {
   test("excluding with no reason is refused, and refused by the stored status", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -171,7 +180,9 @@ describe("REGRESSION — \"excluding needs a reason\" fires on the KEY, not the 
     ).rejects.toThrow(ConvexError);
 
     // Nothing was written — not the status, not an audit row.
-    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.status).toBe("unreviewed");
+    expect((await run(s.t, (ctx) => ctx.db.get(txnId)))?.status).toBe(
+      "unreviewed",
+    );
     const rows = await run(s.t, (ctx) =>
       ctx.db
         .query("financeAuditLog")
@@ -339,7 +350,9 @@ describe("financeAuditKeyBackfill — dry by default, additive, idempotent", () 
     expect(result.isDone).toBe(true);
 
     const after = await auditRows(s);
-    expect(after.map((r) => r.beforeKey)).toEqual(before.map((r) => r.beforeKey));
+    expect(after.map((r) => r.beforeKey)).toEqual(
+      before.map((r) => r.beforeKey),
+    );
     expect(after.every((r) => r.afterKey === undefined)).toBe(true);
   });
 
@@ -376,7 +389,9 @@ describe("financeAuditKeyBackfill — dry by default, additive, idempotent", () 
 
     // …and the reader now words the legacy row today's way.
     const trail = await trailFor(s, txnId);
-    expect(trail.find((r) => r.action === "status_change")!.after).toBe("Closed");
+    expect(trail.find((r) => r.action === "status_change")!.after).toBe(
+      "Closed",
+    );
   });
 
   test("a second execute claims nothing — the sweep is idempotent", async () => {

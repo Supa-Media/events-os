@@ -66,7 +66,7 @@ const KEYS_BY_KIND: Record<FinanceAuditValueKind, readonly string[]> = {
 };
 
 describe("the rename that started this (#717)", () => {
-  test("a `reconciled` row written as \"Reconciled\" now reads \"Closed\"", () => {
+  test('a `reconciled` row written as "Reconciled" now reads "Closed"', () => {
     // Exactly the legacy shape: the key backfilled from the old word, the old
     // word still frozen on the row (append-only — nothing was rewritten).
     expect(
@@ -221,9 +221,9 @@ describe("financeAuditValueLabel — every key words itself", () => {
 
   test("an unkeyed legacy row keeps rendering its frozen string", () => {
     // What every row looks like before the backfill reaches it.
-    expect(financeAuditValueLabel("transaction_status", null, "Reconciled")).toBe(
-      "Reconciled",
-    );
+    expect(
+      financeAuditValueLabel("transaction_status", null, "Reconciled"),
+    ).toBe("Reconciled");
   });
 
   test("a key the vocabulary has since retired falls back rather than blanking", () => {
@@ -233,9 +233,9 @@ describe("financeAuditValueLabel — every key words itself", () => {
       financeAuditValueLabel("transaction_status", "archived", "Archived"),
     ).toBe("Archived");
     // And with nothing frozen either, the raw key beats a blank.
-    expect(
-      financeAuditValueLabel("transaction_status", "archived", null),
-    ).toBe("archived");
+    expect(financeAuditValueLabel("transaction_status", "archived", null)).toBe(
+      "archived",
+    );
   });
 
   test("a malformed receipt-exception key never invents a label", () => {
@@ -277,13 +277,17 @@ describe("the backfill's 1:1 claim — checked, not assumed", () => {
     for (const kind of FINANCE_AUDIT_VALUE_KINDS) {
       for (const key of KEYS_BY_KIND[kind]) {
         const label = financeAuditValueLabel(kind, key, null)!;
-        expect(financeAuditKeyFromLabel(kind, label), `${kind}/${key}`).toBe(key);
+        expect(financeAuditKeyFromLabel(kind, label), `${kind}/${key}`).toBe(
+          key,
+        );
       }
     }
   });
 
   test("a word no vocabulary has shown maps to nothing, rather than to a guess", () => {
-    expect(financeAuditKeyFromLabel("transaction_status", "Half-done")).toBeNull();
+    expect(
+      financeAuditKeyFromLabel("transaction_status", "Half-done"),
+    ).toBeNull();
     expect(financeAuditKeyFromLabel("receipt_state", null)).toBeNull();
   });
 
@@ -293,8 +297,8 @@ describe("the backfill's 1:1 claim — checked, not assumed", () => {
     expect(financeAuditKeyFromLabel("transaction_flow", "outflow")).toBe(
       "outflow",
     );
-    expect(financeAuditValueLabel("transaction_flow", "outflow", "outflow")).toBe(
-      "Money out",
-    );
+    expect(
+      financeAuditValueLabel("transaction_flow", "outflow", "outflow"),
+    ).toBe("Money out");
   });
 });
