@@ -505,6 +505,13 @@
  * doctrine two other questions in the same quiz already carry, and the blank
  * exclusion reason, stated verbatim in the `try_status` caption above the
  * quiz). No slugs, sections, courses or totals moved.
+ *
+ * 2026-08-14 — the grid's Columns control. `finance-reconcile-grid` is the only
+ * section touched, and only its prose: the page's control count went four → five
+ * and one paragraph now explains hiding columns (a rendering choice, not a
+ * filter; the checkbox, Merchant and Actions always stay; the narrowed view is
+ * in the link). No section, course, slug, minutes or quiz length moved, so every
+ * table below is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

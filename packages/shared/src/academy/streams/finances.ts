@@ -362,6 +362,18 @@
  *  - "you mark a charge Excluded and leave the reason blank" — stated verbatim
  *    in the `try_status` caption immediately above the quiz.
  * Minutes 4 → 5 for the added rule block.
+ *
+ * COLUMN SHOW/HIDE on the grid (2026-08-14, founder: "a way to enable and
+ * disable columns quickly… so I could just narrow in on that"). Content-only,
+ * one section: `finance-reconcile-grid`'s "The pile that was never a backlog"
+ * rule said the page "has exactly FOUR controls", which a fifth control makes
+ * false the day it ships — precisely the kind of clause that rots quietly. It
+ * now says five (Search, Kind, State, Group by, Columns) and carries one
+ * paragraph on what Columns does: it hides columns rather than filtering rows,
+ * the checkbox / Merchant / Actions always stay, nothing is deleted, and the
+ * narrowed view travels in the link like every other bit of this page's state.
+ * No new section, no quiz change, no minutes change — this is a clause in a
+ * rule the reader is already reading, not a new thing to learn.
  */
 
 import type {
@@ -1412,7 +1424,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The pile that was never a backlog",
-        text: "The page is called **Transactions**, and it has exactly four controls: Search, Kind, State, and Group by — plus the books selector if you hold a central seat. There is no view menu and there are no summary pills. Anything you want to look at is those four controls set a particular way, which is why they are the only things on the page: a saved view would just be them, set for you, under a different name.\n\nThat matters most for the two roll-ups the header used to advertise. **Needs attention** is open with something genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** is open with none of those — categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark reconciled.\n\nThey are complements over the open rows, so together they are the whole backlog. And the split is worth knowing about even without a pill announcing it: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done.\n\nSo start a session on the second pile: open **State**, pick the states that describe a row with nothing left owing, select all, Mark reconciled. Then what's left on the page is work that's actually work.\n\nMulti-select is what turns those into a minute's work, and the bulk bar does more than close rows: it sets Category and Budget across a selection, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
+        text: "The page is called **Transactions**, and it has exactly five controls: Search, Kind, State, Group by, and Columns — plus the books selector if you hold a central seat. There is no view menu and there are no summary pills. Anything you want to look at is those five controls set a particular way, which is why they are the only things on the page: a saved view would just be them, set for you, under a different name.\n\n**Columns** is the newest of them and the only one that changes nothing about which rows you are looking at — it puts columns away. Open it and tick off what you don't need right now: hide Cardholder and Category when you are only assigning budgets, hide Documentation and Status when you are only reading what things were for. The checkbox, Merchant and the row's actions always stay, because those are how you select rows, tell them apart, and open a charge's record. Nothing is deleted and nothing is filtered — put a column back and it is exactly where it was. And like everything else here, it travels: the narrowed view is in the link, so a screenshot of it can be reproduced.\n\nThat matters most for the two roll-ups the header used to advertise. **Needs attention** is open with something genuinely outstanding: still unreviewed, or missing a budget, or missing documentation, or personal and unpaid. **Ready to close** is open with none of those — categorised, budgeted, documented, and simply never closed. The only act left on those rows is pressing Mark reconciled.\n\nThey are complements over the open rows, so together they are the whole backlog. And the split is worth knowing about even without a pill announcing it: in a real chapter's book, 127 open rows were 51 that needed a decision and 76 that needed a keystroke. Sixty per cent of the frightening number was already done.\n\nSo start a session on the second pile: open **State**, pick the states that describe a row with nothing left owing, select all, Mark reconciled. Then what's left on the page is work that's actually work.\n\nMulti-select is what turns those into a minute's work, and the bulk bar does more than close rows: it sets Category and Budget across a selection, and it's where \"Mark as transfer\" lives, since that one needs two rows selected — both legs of the movement.",
       },
       {
         kind: "rule",

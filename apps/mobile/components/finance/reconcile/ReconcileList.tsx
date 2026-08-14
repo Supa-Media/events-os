@@ -15,6 +15,20 @@
  * shows ✓ or an inline upload; Amount is read-only (signed). The fund is
  * hidden — the backend defaults it to the General Fund on categorize.
  *
+ * ── WHICH OF THOSE COLUMNS ARE ON SCREEN ─────────────────────────────────────
+ * Two separate questions, kept apart here. CAPABILITY: a central-book row has
+ * no category, the Book column only earns its place in the merged all-books
+ * queue, and the side panel renders three of these columns itself (below).
+ * PREFERENCE: the reader's own `?cols=` set, ticked in the Columns control up
+ * in the page header — founder, 2026-08-14: "if I don't want to look at the
+ * cardholder and I don't want to look at the category, and I just want to
+ * focus on adding things to budgets, then I could just narrow in on that."
+ * Both fold into ONE `shown` record below, which the header row, every cell
+ * AND the table's own width read — so a hidden column narrows the grid rather
+ * than leaving a hole where it used to be. `gridView.ts` holds the
+ * parse/serialize rules and says why the checkbox, Merchant and Actions are
+ * not hideable at all.
+ *
  * ── THE SIDE PANEL (wide screens) ────────────────────────────────────────────
  * Opening a charge from this grid used to mean a modal — and the receipt
  * inside it meant a SECOND modal, which cannot be open at the same time. So
@@ -139,7 +153,9 @@ import {
 import { ReconcileGroupHeader } from "./ReconcileGroupHeader";
 import {
   groupSegments,
+  showsCategoryColumn,
   type GroupSummary,
+  type ReconcileColumnKey,
   type ReconcileGroupBy,
   type ReconcileSortDir,
   type ReconcileSortKey,
@@ -211,7 +227,15 @@ const DEFAULT_COLS = {
 } as const;
 type ColKey = keyof typeof DEFAULT_COLS;
 type ColWidths = Record<ColKey, number>;
+/** Which columns are actually rendering, once capability and the reader's own
+ *  preference have both had their say (see `shown` below). One record read by
+ *  the header, by every cell, AND by the width arithmetic, so a column can
+ *  never be drawn without being paid for or paid for without being drawn. */
+type ColShown = Record<ColKey, boolean>;
 const RECONCILE_COLUMNS_STORAGE_KEY = "reconcile-grid-columns";
+/** Hoisted so the default prop is a stable reference across renders — a fresh
+ *  `[]` in the signature would be a new array every time. */
+const EMPTY_HIDDEN: readonly ReconcileColumnKey[] = [];
 
 export function ReconcileList({
   rows,
@@ -236,6 +260,7 @@ export function ReconcileList({
   groups,
   groupBy = null,
   renderGroupAction,
+  hiddenColumns = EMPTY_HIDDEN,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
@@ -337,6 +362,12 @@ export function ReconcileList({
    *  A slot rather than a `onNudge` prop: the nudge is seat-gated, rate-limited
    *  and in-flight-aware, and none of that belongs in a grid renderer. */
   renderGroupAction?: (group: GroupSummary) => ReactNode;
+  // ── WHICH COLUMNS THE READER TURNED OFF ───────────────────────────────────
+  /** The host's `?cols=` set (`gridView#parseHiddenColumns`) — a PREFERENCE,
+   *  applied on top of the capability rules below and never against them. The
+   *  default is empty, which is this grid byte-for-byte as it rendered before
+   *  the control existed. */
+  hiddenColumns?: readonly ReconcileColumnKey[];
 }) {
   // "Select all" only ever means the rows this caller can actually act on —
   // an uneditable row (a foreign chapter's, in the merged queue) has no
@@ -354,13 +385,11 @@ export function ReconcileList({
   );
   // The Category column is chapter-only, so single-central scope normally drops
   // it — but a CROSS-BOOK row in that scope is absorbed by a chapter's budget
-  // and DOES take that chapter's category, so hiding the column there would put
-  // the one control that spend needs on a screen it isn't on. Data-driven: the
-  // column appears in central scope exactly when there's something in it.
-  const anyCrossBook = rows.some(
-    (r) => r.chargedTo != null && r.chargedTo.id !== r.book.id,
-  );
-  const showCategory = !centralScope || anyCrossBook;
+  // and DOES take that chapter's category. The rule itself lives in `gridView`
+  // (`showsCategoryColumn`) because the Columns menu has to ask the same
+  // question — whether to offer a tick box for a column at all — and two copies
+  // of it would eventually answer differently.
+  const showCategory = showsCategoryColumn(centralScope, rows);
   // ── WHAT THE PANEL COSTS THIS GRID, AND WHAT IT PAYS BACK ─────────────────
   // The columns already total ~1776px in a single-book scope and the grid
   // scrolls horizontally to fit them; handing 44% of the window to the panel
@@ -382,20 +411,52 @@ export function ReconcileList({
   // stays: the checkbox (bulk actions), Book, Merchant (the rename lives
   // here), Date, Amount, Category, For, Status, and the row Actions.
   const hidesForPanel = panelOpen;
-  const showCardholder = !hidesForPanel;
-  const showExplanation = !hidesForPanel;
-  const showReceipt = !hidesForPanel;
-  const tableWidth = (Object.values(widths) as number[]).reduce((sum, w) => sum + w, 0);
-  // Drop the width of any column this scope doesn't render so the grid doesn't
-  // leave dead space: Category when it isn't shown, the Book column outside
-  // the merged all-books queue, and the three the side panel supersedes.
-  const width =
-    tableWidth -
-    (showCategory ? 0 : widths.category) -
-    (showBook ? 0 : widths.book) -
-    (showCardholder ? 0 : widths.cardholder) -
-    (showExplanation ? 0 : widths.explanation) -
-    (showReceipt ? 0 : widths.receipt);
+  // ── CAPABILITY FIRST, PREFERENCE SECOND ───────────────────────────────────
+  // Two different questions, and they must not be allowed to become one. The
+  // clauses above answer CAN this scope render the column (a central row has
+  // no category; the panel is already rendering these three). `hiddenColumns`
+  // answers WANTS TO — the reader's own `?cols=` set, founder ask 2026-08-14:
+  // "if I don't want to look at the cardholder and I don't want to look at the
+  // category, and I just want to focus on adding things to budgets".
+  //
+  // They are AND-ed, in that order, so preference can only ever NARROW what
+  // capability allows: un-ticking always hides, ticking never conjures a
+  // Category column onto a scope that has none. A preference for a column that
+  // has stepped out is kept (it lives in the URL, not here), so closing the
+  // panel restores exactly the view that was set.
+  //
+  // `check` / `merchant` / `actions` are absent from `ReconcileColumnKey`
+  // entirely rather than defaulted to true here — selection, identity and the
+  // way into a row's record aren't preferences. See `gridView.ts`.
+  const hidden = (key: ReconcileColumnKey) => hiddenColumns.includes(key);
+  const shown: ColShown = {
+    check: true,
+    book: showBook && !hidden("book"),
+    merchant: true,
+    date: !hidden("date"),
+    amount: !hidden("amount"),
+    cardholder: !hidesForPanel && !hidden("cardholder"),
+    explanation: !hidesForPanel && !hidden("explanation"),
+    category: showCategory && !hidden("category"),
+    forCol: !hidden("forCol"),
+    receipt: !hidesForPanel && !hidden("receipt"),
+    status: !hidden("status"),
+    actions: true,
+  };
+  // The table is exactly as wide as the columns actually on screen — hiding one
+  // NARROWS the grid rather than leaving a gap where it used to be.
+  //
+  // This used to be a full-width sum with a `(showCategory ? 0 : widths.category)`
+  // subtraction per absent column. That reads fine at five and becomes a trap at
+  // twelve: every new hideable column is a term somebody has to remember to
+  // subtract, and forgetting one is invisible until a bookkeeper wonders why
+  // there's 168px of nothing at the end of the row. Summing `shown` instead
+  // makes the omission impossible — the same record decides whether a header
+  // renders, whether a cell renders, and whether its width is counted.
+  const width = (Object.keys(widths) as ColKey[]).reduce(
+    (sum, key) => sum + (shown[key] ? widths[key] : 0),
+    0,
+  );
 
   // One row, however it's being laid out — so the grouped and ungrouped
   // branches below can't drift into rendering different rows. `i` stays the
@@ -411,17 +472,13 @@ export function ReconcileList({
       onToggle={() => onToggle(row.id)}
       isLast={i === rows.length - 1}
       centralScope={centralScope}
-      showBook={showBook}
-      showCategory={showCategory}
       ownChapterId={ownChapterId}
       centralForItems={centralForItems}
       isManager={isManager}
       canRename={canRename}
       viewerPersonId={viewerPersonId}
       widths={widths}
-      showCardholder={showCardholder}
-      showExplanation={showExplanation}
-      showReceipt={showReceipt}
+      shown={shown}
       onOpenRow={onOpenRow}
       panelSelected={panelOpen && row.id === openRowId}
     />
@@ -484,7 +541,7 @@ export function ReconcileList({
                 }
               />
             </View>
-            {showBook ? (
+            {shown.book ? (
               <GridHeaderCell
                 label="Book"
                 width={widths.book}
@@ -499,57 +556,76 @@ export function ReconcileList({
             {/* THE TWO SORTABLE COLUMNS. Same `GridHeaderCell` as every other
                 header — extended, not forked — so a sorted Date column can
                 still be dragged wider, and the seven columns that don't sort
-                render exactly as they always have. */}
-            <GridHeaderCell
-              label="Date"
-              width={widths.date}
-              onResizeStart={startResize("date")}
-              onSort={onSort ? () => onSort("date") : undefined}
-              sortActive={sortKey === "date"}
-              sortDirection={sortDir}
-            />
-            <GridHeaderCell
-              label="Amount"
-              width={widths.amount}
-              onResizeStart={startResize("amount")}
-              onSort={onSort ? () => onSort("amount") : undefined}
-              sortActive={sortKey === "amount"}
-              sortDirection={sortDir}
-            />
-            {showCardholder ? (
+                render exactly as they always have.
+
+                Hiding one hides its caret, not the ORDER: the rows arrive
+                sorted from the server and this grid renders what it was sent.
+                A grid still sorted newest-first with the Date column put away
+                is a legitimate thing to want (the founder's "just the merchant
+                and the budget" view), and `?sort=` survives in the URL to say
+                so. */}
+            {shown.date ? (
+              <GridHeaderCell
+                label="Date"
+                width={widths.date}
+                onResizeStart={startResize("date")}
+                onSort={onSort ? () => onSort("date") : undefined}
+                sortActive={sortKey === "date"}
+                sortDirection={sortDir}
+              />
+            ) : null}
+            {shown.amount ? (
+              <GridHeaderCell
+                label="Amount"
+                width={widths.amount}
+                onResizeStart={startResize("amount")}
+                onSort={onSort ? () => onSort("amount") : undefined}
+                sortActive={sortKey === "amount"}
+                sortDirection={sortDir}
+              />
+            ) : null}
+            {shown.cardholder ? (
               <GridHeaderCell
                 label="Cardholder"
                 width={widths.cardholder}
                 onResizeStart={startResize("cardholder")}
               />
             ) : null}
-            {showExplanation ? (
+            {shown.explanation ? (
               <GridHeaderCell
                 label="What it was for"
                 width={widths.explanation}
                 onResizeStart={startResize("explanation")}
               />
             ) : null}
-            {showCategory ? (
+            {shown.category ? (
               <GridHeaderCell
                 label="Category"
                 width={widths.category}
                 onResizeStart={startResize("category")}
               />
             ) : null}
-            <GridHeaderCell label="For" width={widths.forCol} onResizeStart={startResize("forCol")} />
-            {showReceipt ? (
+            {shown.forCol ? (
+              <GridHeaderCell
+                label="For"
+                width={widths.forCol}
+                onResizeStart={startResize("forCol")}
+              />
+            ) : null}
+            {shown.receipt ? (
               <GridHeaderCell
                 label="Documentation"
                 width={widths.receipt}
                 onResizeStart={startResize("receipt")}
               />
             ) : null}
-            <GridHeaderCell
-              label="Status"
-              width={widths.status}
-              onResizeStart={startResize("status")}
-            />
+            {shown.status ? (
+              <GridHeaderCell
+                label="Status"
+                width={widths.status}
+                onResizeStart={startResize("status")}
+              />
+            ) : null}
             <View style={{ width: widths.actions }} />
           </View>
 
@@ -616,17 +692,13 @@ function ReconcileRow({
   onToggle,
   isLast,
   centralScope,
-  showBook,
-  showCategory,
   ownChapterId,
   centralForItems,
   isManager,
   canRename,
   viewerPersonId,
   widths,
-  showCardholder,
-  showExplanation,
-  showReceipt,
+  shown,
   onOpenRow,
   panelSelected,
 }: {
@@ -637,18 +709,17 @@ function ReconcileRow({
   onToggle: () => void;
   isLast: boolean;
   centralScope: boolean;
-  showBook: boolean;
-  showCategory: boolean;
   ownChapterId: Id<"chapters"> | null;
   centralForItems?: PickerItem[];
   isManager: boolean;
   canRename: boolean;
   viewerPersonId: Id<"people"> | null;
   widths: ColWidths;
-  /** The side panel renders these three itself — see `hidesForPanel`. */
-  showCardholder: boolean;
-  showExplanation: boolean;
-  showReceipt: boolean;
+  /** Which columns are on screen — capability AND the reader's `?cols=`
+   *  preference, already resolved once by the parent (see `shown` there). The
+   *  row renders exactly what the header rendered and what the table's width
+   *  was computed from, because all three read this one record. */
+  shown: ColShown;
   /** Wide screen: select this row for the panel instead of opening the modal. */
   onOpenRow?: (id: string) => void;
   /** This is the row the panel is showing. */
@@ -914,7 +985,7 @@ function ReconcileRow({
       </View>
 
       {/* Book — merged all-books queue only. */}
-      {showBook ? (
+      {shown.book ? (
         <Cell width={widths.book}>
           <View className="flex-1 px-2 py-1.5">
             <Badge
@@ -959,30 +1030,38 @@ function ReconcileRow({
 
       {/* Date (read-only) — and, on a wide screen, part of the row's way IN.
           `openable` is a no-op wrapper when there's no panel, so on narrow
-          these two cells render exactly the plain Text they always have. */}
-      <Cell width={widths.date}>
-        {openable(
-          <Text className="flex-1 px-2 py-1.5 text-sm text-muted" style={NUM}>
-            {shortDate(row.postedAt)}
-          </Text>,
-        )}
-      </Cell>
+          these two cells render exactly the plain Text they always have.
+
+          Both are hideable, and putting both away costs nothing that isn't
+          replaceable: the speech-bubble in Actions is on every row in every
+          frame and opens the same record. */}
+      {shown.date ? (
+        <Cell width={widths.date}>
+          {openable(
+            <Text className="flex-1 px-2 py-1.5 text-sm text-muted" style={NUM}>
+              {shortDate(row.postedAt)}
+            </Text>,
+          )}
+        </Cell>
+      ) : null}
 
       {/* Amount (read-only, signed) */}
-      <Cell width={widths.amount}>
-        {openable(
-          <Text
-            className="flex-1 px-2 py-1.5 text-right text-sm font-semibold text-ink"
-            style={NUM}
-          >
-            {signedMoney(row.amountCents, row.flow, row.preMarkFlow)}
-          </Text>,
-        )}
-      </Cell>
+      {shown.amount ? (
+        <Cell width={widths.amount}>
+          {openable(
+            <Text
+              className="flex-1 px-2 py-1.5 text-right text-sm font-semibold text-ink"
+              style={NUM}
+            >
+              {signedMoney(row.amountCents, row.flow, row.preMarkFlow)}
+            </Text>,
+          )}
+        </Cell>
+      ) : null}
 
       {/* Cardholder (read-only) — hidden while the panel is open, which says
           the same thing in words ("Marcus Webb · card ••4417"). */}
-      {showCardholder ? (
+      {shown.cardholder ? (
         <Cell width={widths.cardholder}>
           {row.cardholder ? (
             <View className="flex-1 flex-row items-center gap-2 px-2 py-1.5">
@@ -1022,7 +1101,7 @@ function ReconcileRow({
             written — show it (truncated to two lines; the modal has the rest)
             missing — this charge owes an account of itself and has none
             empty   — nothing written, nothing owed; stays quiet. */}
-      {showExplanation ? (
+      {shown.explanation ? (
       <Cell width={widths.explanation}>
         <Pressable
           onPress={openRecord}
@@ -1063,7 +1142,7 @@ function ReconcileRow({
           individual central row renders an inert dash in it (see
           `hideCategory`) so the grid stays aligned without offering a picker
           that can't commit. */}
-      {showCategory ? (
+      {shown.category ? (
         isTransferLeg ? (
           <Cell width={widths.category}>
             <Text className="flex-1 px-2 py-1.5 text-sm text-muted">
@@ -1107,32 +1186,34 @@ function ReconcileRow({
           receivable — `transfers.interScopeBalances` nets it into a settlement
           — and it used to be visible only on the central dashboard's balances
           panel, i.e. nowhere near the moment a treasurer creates it. */}
-      <Cell width={widths.forCol}>
-        <View className="flex-1 gap-0.5">
-          <ForPickerCell
-            value={row.budgetId}
-            transactionId={id}
-            baseItems={rowForItems}
-            placeholder={row.needsBudget ? "Needs budget" : "None"}
-            warn={row.needsBudget}
-            onChange={onForChange}
-          />
-          {isCrossBook ? (
-            <View className="flex-row items-center gap-1 px-2 pb-1">
-              <Icon name="corner-down-right" size={11} color={colors.warn} />
-              <Text className="text-2xs text-warn" numberOfLines={1}>
-                {row.book.name} paid · {row.chargedTo?.name} owes
-              </Text>
-            </View>
-          ) : null}
-        </View>
-      </Cell>
+      {shown.forCol ? (
+        <Cell width={widths.forCol}>
+          <View className="flex-1 gap-0.5">
+            <ForPickerCell
+              value={row.budgetId}
+              transactionId={id}
+              baseItems={rowForItems}
+              placeholder={row.needsBudget ? "Needs budget" : "None"}
+              warn={row.needsBudget}
+              onChange={onForChange}
+            />
+            {isCrossBook ? (
+              <View className="flex-row items-center gap-1 px-2 pb-1">
+                <Icon name="corner-down-right" size={11} color={colors.warn} />
+                <Text className="text-2xs text-warn" numberOfLines={1}>
+                  {row.book.name} paid · {row.chargedTo?.name} owes
+                </Text>
+              </View>
+            ) : null}
+          </View>
+        </Cell>
+      ) : null}
 
       {/* Receipt (✓ or inline upload, escalating with the reminder timeline).
           Hidden while the panel is open — `ReceiptPane` there shows the
           receipt itself, big, and mounts this very component for the upload
           case, so nothing here is out of reach. */}
-      {showReceipt ? (
+      {shown.receipt ? (
       <Cell width={widths.receipt}>
         <ReceiptCell
           hasReceipt={row.hasReceipt}
@@ -1164,19 +1245,21 @@ function ReconcileRow({
           itself throws `REASON_REQUIRED` without one (see
           `ExcludeReasonModal`'s own doc comment); every other transition
           commits immediately, unchanged. */}
-      <Cell width={widths.status}>
-        <SelectCell
-          value={row.status}
-          options={STATUS_OPTIONS}
-          onChange={(v) => {
-            if (v === "excluded") {
-              setExcludePromptOpen(true);
-              return;
-            }
-            guard(setStatus({ transactionId: id, status: v }));
-          }}
-        />
-      </Cell>
+      {shown.status ? (
+        <Cell width={widths.status}>
+          <SelectCell
+            value={row.status}
+            options={STATUS_OPTIONS}
+            onChange={(v) => {
+              if (v === "excluded") {
+                setExcludePromptOpen(true);
+                return;
+              }
+              guard(setStatus({ transactionId: id, status: v }));
+            }}
+          />
+        </Cell>
+      ) : null}
       {excludePromptOpen ? (
         <ExcludeReasonModal
           onCancel={() => setExcludePromptOpen(false)}
