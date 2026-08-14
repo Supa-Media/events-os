@@ -442,6 +442,20 @@
  * lesson's own tip still states, and one that changes the day it's automated)
  * and the past-due-pledge edge case (taught at length in the Development
  * stream's backer-model course, which is where the lifecycle lives).
+ *
+ * The Reconcile grid declutter (2026-08-13 founder call) is content-only
+ * across three Finances sections and moves nothing here. The grid's view menu
+ * and header chips were deleted — Group by, the State/Kind dropdowns and the
+ * books selector already say everything they said — so
+ * `finance-reconcile-grid` retitled and rewrote its header rule, gained a
+ * "Group by is how you get everywhere else" rule carrying the retired
+ * month/chase/publish views, and SWAPPED its chips question (it was at the
+ * 5-cap) for one on what Publish acts on from a filtered month band.
+ * `finance-chasing-receipts` rewrote its worklist rule and question around the
+ * State + Group by pairing, and `finance-publishing-the-books` rewrote its
+ * "watch it happen" paragraph for Group by → Month plus the band's two
+ * figures. Titles, minutes, quiz lengths, slugs and order are all unchanged,
+ * so nothing in the tables below moved.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
