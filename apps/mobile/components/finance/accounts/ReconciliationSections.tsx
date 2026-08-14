@@ -28,12 +28,16 @@
  *    cluttered"): the list shows at most 5 rows by default with an
  *    expand-in-place "Show all" toggle (never a nested ScrollView — the page
  *    is already inside one, see `Screen.tsx`), and each row shrank to one
- *    line plus badges — its note, payout id, recorded-by and (for an open
- *    review) note preview move behind a per-row chevron rather than sitting
- *    as a permanent 2-4 line block. The fetch-more "Show more" button (25→100
- *    rows) only appears once the list is expanded, so it never fights the
- *    5-row display cap: expand first to see everything already fetched, THEN
- *    fetch more if that's still not enough.
+ *    line plus badges — its note, Stripe payout id, and recorded-by now live
+ *    behind a per-row chevron rather than sitting as a permanent 2-4 line
+ *    block (an OPEN review's own note stays visible, truncated to one line,
+ *    since "tap to resolve" is a single tap with no confirmation — hiding the
+ *    reason behind another tap first would make that riskier, not tidier).
+ *    The fetch-more "Show more" button (25→100 rows) only becomes reachable
+ *    once every row already fetched is on screen (after expanding past 5, or
+ *    immediately when there were 5 or fewer to begin with), so it never
+ *    fights the display cap: see everything fetched first, THEN fetch more
+ *    if that's still not enough.
  *
  * VOCABULARY (2026-08-14, founder: "what does 'flag' do, it feels like a
  * scary button"): the user-facing verb is "mark for review" / "needs review",
