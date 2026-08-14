@@ -11,7 +11,9 @@ import {
   parseSortDir,
   parseSortKey,
   serializeHiddenColumns,
+  rowMarkings,
   showsCategoryColumn,
+  showsMarkedColumn,
   toggleHiddenColumn,
   type GroupSummary,
 } from "./gridView";
@@ -160,7 +162,12 @@ describe("column visibility — `?cols=` is the HIDDEN set", () => {
 });
 
 describe("offerableColumns — capability, before anyone's preference", () => {
-  const ordinary = { showBook: false, showCategory: true, panelOpen: false };
+  const ordinary = {
+    showBook: false,
+    showCategory: true,
+    showMarked: true,
+    panelOpen: false,
+  };
 
   test("a single-book chapter desk offers everything but Book", () => {
     expect(offerableColumns(ordinary)).toEqual([
@@ -172,7 +179,14 @@ describe("offerableColumns — capability, before anyone's preference", () => {
       "forCol",
       "receipt",
       "status",
+      "marked",
     ]);
+  });
+
+  test("a grid with nothing marked offers no tick box for the Marked column", () => {
+    expect(offerableColumns({ ...ordinary, showMarked: false })).not.toContain(
+      "marked",
+    );
   });
 
   test("the merged all-books queue offers Book too", () => {
@@ -191,7 +205,14 @@ describe("offerableColumns — capability, before anyone's preference", () => {
     expect(offered).not.toContain("explanation");
     expect(offered).not.toContain("receipt");
     // What the panel doesn't render is still the reader's to hide.
-    expect(offered).toEqual(["date", "amount", "category", "forCol", "status"]);
+    expect(offered).toEqual([
+      "date",
+      "amount",
+      "category",
+      "forCol",
+      "status",
+      "marked",
+    ]);
   });
 });
 
@@ -209,6 +230,89 @@ describe("showsCategoryColumn", () => {
     expect(showsCategoryColumn(true, [centralRow])).toBe(false);
     expect(showsCategoryColumn(true, [])).toBe(false);
     expect(showsCategoryColumn(true, [centralRow, crossBookRow])).toBe(true);
+  });
+});
+
+describe("rowMarkings — the STATE half of the old Actions column", () => {
+  const unmarked = {
+    isMarkedTransfer: false,
+    payoutProcessor: null,
+    isPersonal: false,
+    repaymentStatus: null,
+  };
+
+  test("ordinary spend is marked as nothing", () => {
+    expect(rowMarkings(unmarked)).toEqual([]);
+  });
+
+  test("a marked transfer, a payout, and the processor it names", () => {
+    expect(rowMarkings({ ...unmarked, isMarkedTransfer: true })).toEqual([
+      { kind: "transfer" },
+    ]);
+    expect(rowMarkings({ ...unmarked, payoutProcessor: "givebutter" })).toEqual([
+      { kind: "payout", processor: "givebutter" },
+    ]);
+  });
+
+  test("personal reads its REAL repayment state, never a session guess", () => {
+    expect(
+      rowMarkings({ ...unmarked, isPersonal: true, repaymentStatus: "pending" }),
+    ).toEqual([{ kind: "personal" }]);
+    expect(
+      rowMarkings({ ...unmarked, isPersonal: true, repaymentStatus: "paid" }),
+    ).toEqual([{ kind: "repaid" }]);
+    // Flagged with no repayment row yet is still owed, not settled.
+    expect(
+      rowMarkings({ ...unmarked, isPersonal: true, repaymentStatus: null }),
+    ).toEqual([{ kind: "personal" }]);
+  });
+
+  test("personal sits BESIDE a transfer or payout — it's a flag, not a status", () => {
+    expect(
+      rowMarkings({
+        ...unmarked,
+        isMarkedTransfer: true,
+        isPersonal: true,
+        repaymentStatus: "pending",
+      }),
+    ).toEqual([{ kind: "transfer" }, { kind: "personal" }]);
+  });
+
+  test("transfer wins over payout rather than printing a contradiction", () => {
+    expect(
+      rowMarkings({
+        ...unmarked,
+        isMarkedTransfer: true,
+        payoutProcessor: "stripe",
+      }),
+    ).toEqual([{ kind: "transfer" }]);
+  });
+});
+
+describe("showsMarkedColumn — a column that costs nothing when it's empty", () => {
+  const unmarked = {
+    isMarkedTransfer: false,
+    payoutProcessor: null,
+    isPersonal: false,
+    repaymentStatus: null,
+  };
+
+  test("a month of ordinary spend renders no Marked column at all", () => {
+    expect(showsMarkedColumn([])).toBe(false);
+    expect(showsMarkedColumn([unmarked, unmarked])).toBe(false);
+  });
+
+  test("one marked row anywhere on the page is enough to earn it", () => {
+    expect(
+      showsMarkedColumn([unmarked, { ...unmarked, payoutProcessor: "stripe" }]),
+    ).toBe(true);
+    // Including a REPAID one — "this was personal and has been paid back" is
+    // still a fact worth a column.
+    expect(
+      showsMarkedColumn([
+        { ...unmarked, isPersonal: true, repaymentStatus: "paid" },
+      ]),
+    ).toBe(true);
   });
 });
 
