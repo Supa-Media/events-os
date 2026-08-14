@@ -5,6 +5,7 @@ import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import { isSpend } from "../finances";
 import { signedBookCents } from "../lib/bookBalance";
+import { TRANSACTION_FLOW_LABELS } from "@events-os/shared";
 import type { Doc, Id } from "../_generated/dataModel";
 
 /**
@@ -526,6 +527,10 @@ describe("finances.markAsTransfer", () => {
       note: "sweep to savings",
     });
 
+    // The trail now stores the flow KEY and words it at read time — these rows
+    // used to write the raw enum into the display field, so a bookkeeper's
+    // History section literally read "outflow → transfer" (see
+    // `@events-os/shared`'s `financeAuditValue.ts`).
     for (const [id, before] of [
       [out, "outflow"],
       [inn, "inflow"],
@@ -534,8 +539,10 @@ describe("finances.markAsTransfer", () => {
       expect(entries).toHaveLength(1);
       expect(entries[0].action).toBe("transfer_mark");
       expect(entries[0].field).toBe("flow");
-      expect(entries[0].before).toBe(before);
-      expect(entries[0].after).toBe("transfer");
+      expect(entries[0].beforeKey).toBe(before);
+      expect(entries[0].afterKey).toBe("transfer");
+      expect(entries[0].before).toBe(TRANSACTION_FLOW_LABELS[before]);
+      expect(entries[0].after).toBe(TRANSACTION_FLOW_LABELS.transfer);
       expect(entries[0].reason).toBe("sweep to savings");
       expect(entries[0].actorUserId).toBeTruthy();
     }

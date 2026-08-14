@@ -285,6 +285,22 @@ export const BOOK_VALUE_ZERO_REASON_LABELS: Record<
 export const TRANSACTION_FLOWS = ["outflow", "inflow", "transfer"] as const;
 export type TransactionFlow = (typeof TRANSACTION_FLOWS)[number];
 
+/**
+ * A flow in words. New here because until now nothing rendered one — and the
+ * finance audit trail, which does show flow changes ("marked as an internal
+ * transfer"), had no label map to reach for and so wrote the raw enum into a
+ * display field. A bookkeeper reading the History section on a marked transfer
+ * has been seeing `outflow → transfer` since the day it shipped.
+ *
+ * Same contract as `TRANSACTION_STATUS_LABELS` above: the stored values never
+ * change, and this is the one English spelling of them.
+ */
+export const TRANSACTION_FLOW_LABELS: Record<TransactionFlow, string> = {
+  outflow: "Money out",
+  inflow: "Money in",
+  transfer: "Internal transfer",
+};
+
 export const TRANSACTION_STATUSES = [
   "unreviewed", // just synced/created, needs a human
   "categorized", // fund/category assigned

@@ -53,6 +53,7 @@ import {
   INBOUND_RECEIPT_STATUSES,
   CENTRAL,
   financeRoleAtLeast,
+  RECEIPT_STATE_LABELS,
 } from "@events-os/shared";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
 import {
@@ -1499,8 +1500,10 @@ export const linkReceipt = mutation({
         action: "receipt_attach",
         actorPersonId: access.personId,
         field: "receipt",
-        before: hadReceipt ? "Attached" : "None",
-        after: "Attached",
+        before: RECEIPT_STATE_LABELS[hadReceipt ? "attached" : "none"],
+        after: RECEIPT_STATE_LABELS.attached,
+        beforeKey: hadReceipt ? "attached" : "none",
+        afterKey: "attached",
         amountCents: txn.amountCents,
       });
     }
@@ -1537,8 +1540,10 @@ export const unlinkReceipt = mutation({
         action: "receipt_detach",
         actorPersonId: access.personId,
         field: "receipt",
-        before: "Attached",
-        after: "None",
+        before: RECEIPT_STATE_LABELS.attached,
+        after: RECEIPT_STATE_LABELS.none,
+        beforeKey: "attached",
+        afterKey: "none",
         amountCents: txn.amountCents,
       });
     }
@@ -1917,8 +1922,10 @@ export const confirmSuggestedReceipt = mutation({
         action: "receipt_attach",
         actorPersonId: access.actorPersonId,
         field: "receipt",
-        before: hadReceipt ? "Attached" : "None",
-        after: "Attached",
+        before: RECEIPT_STATE_LABELS[hadReceipt ? "attached" : "none"],
+        after: RECEIPT_STATE_LABELS.attached,
+        beforeKey: hadReceipt ? "attached" : "none",
+        afterKey: "attached",
         amountCents: txn.amountCents,
       });
     }

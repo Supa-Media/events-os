@@ -654,6 +654,19 @@
  * and subject: the chase absorbed coding when the policy landed, so this is the
  * UI catching up with what it already taught. No title, slug, minutes,
  * quizLength, section or course order moved — every table below is unchanged.
+ *
+ * 2026-08-14 — the finance audit trail now stores STATE KEYS and renders the
+ * label at read time, so #717's "Reconciled" → "Closed" rename no longer leaves
+ * history half in one word and half in the other. NOT TRAINING-WORTHY, decided
+ * explicitly: no lesson teaches what the History section's before/after column
+ * shows, and the one lesson that describes a change history at all
+ * (`finance-merchant-rename`, "that icon opens the name history") is about
+ * merchant names, which are free text under the new scheme exactly as they were
+ * under the old. The only Academy edit is a correction to
+ * `streams/finances.ts`'s own #717 changelog block, which asserted the audit log
+ * stores the label and that old rows would keep reading "Reconciled" — half of
+ * which this change makes false. No content, section, course, minutes or
+ * quizLength moved: every table below is unchanged.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";

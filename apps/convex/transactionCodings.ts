@@ -52,6 +52,8 @@ import {
   UNDO_APPROVAL_WINDOW_MS,
   TRANSACTION_CODING_STATUSES,
   TRANSACTION_CODING_STATUS_LABELS,
+  CODING_AUDIT_STATE_LABELS,
+  type CodingAuditState,
   attendeeAffiliationBreakdown,
   isNonDiscretionaryFee,
   type ExpenseType,
@@ -97,6 +99,19 @@ const CODING_SCAN_LIMIT = 5000;
 /** One page of the reviewer's queue. Deliberately small: this is a screen
  *  someone works down, not a report they scroll. */
 const CODING_PAGE_SIZE = 100;
+
+/**
+ * The audit trail's name for where a coding stood BEFORE this write —
+ * `"uncoded"` when there was no coding row at all, otherwise its stored
+ * status. Exists so the three `submit` paths (single, resubmit, bulk explain)
+ * cannot each spell "no coding yet" their own way; the words come from
+ * `CODING_AUDIT_STATE_LABELS` at read time, never from here.
+ */
+function codingAuditStateOf(
+  existing: { status: string } | null | undefined,
+): CodingAuditState {
+  return existing ? (existing.status as CodingAuditState) : "uncoded";
+}
 
 const expenseTypeValidator = v.union(
   ...EXPENSE_TYPES.map((t) => v.literal(t)),
@@ -654,12 +669,12 @@ export const submit = mutation({
       action: "coding_submit",
       actorPersonId,
       field: "coding",
-      before: existing
-        ? TRANSACTION_CODING_STATUS_LABELS[
-            existing.status as TransactionCodingStatus
-          ]
-        : "Uncoded",
-      after: resubmission ? "Resubmitted" : "Awaiting review",
+      before: CODING_AUDIT_STATE_LABELS[codingAuditStateOf(existing)],
+      after: CODING_AUDIT_STATE_LABELS[
+        resubmission ? "resubmitted" : "submitted"
+      ],
+      beforeKey: codingAuditStateOf(existing),
+      afterKey: resubmission ? "resubmitted" : "submitted",
       // The purpose IS the substance of the round — carrying it here is what
       // makes the audit trail a readable revision history.
       reason: args.businessPurpose.trim(),
@@ -785,12 +800,12 @@ export const setPurpose = mutation({
       action: "coding_submit",
       actorPersonId,
       field: "coding",
-      before: existing
-        ? TRANSACTION_CODING_STATUS_LABELS[
-            existing.status as TransactionCodingStatus
-          ]
-        : "Uncoded",
-      after: resubmission ? "Resubmitted" : "Awaiting review",
+      before: CODING_AUDIT_STATE_LABELS[codingAuditStateOf(existing)],
+      after: CODING_AUDIT_STATE_LABELS[
+        resubmission ? "resubmitted" : "submitted"
+      ],
+      beforeKey: codingAuditStateOf(existing),
+      afterKey: resubmission ? "resubmitted" : "submitted",
       reason: args.businessPurpose.trim(),
       amountCents: txn.amountCents,
     });
@@ -967,12 +982,12 @@ export const submitBulk = mutation({
           action: "coding_submit",
           actorPersonId,
           field: "coding",
-          before: existing
-            ? TRANSACTION_CODING_STATUS_LABELS[
-                existing.status as TransactionCodingStatus
-              ]
-            : "Uncoded",
-          after: resubmission ? "Resubmitted" : "Awaiting review",
+          before: CODING_AUDIT_STATE_LABELS[codingAuditStateOf(existing)],
+          after: CODING_AUDIT_STATE_LABELS[
+            resubmission ? "resubmitted" : "submitted"
+          ],
+          beforeKey: codingAuditStateOf(existing),
+          afterKey: resubmission ? "resubmitted" : "submitted",
           // THE MARKER LIVES HERE AND NOWHERE ELSE. The audit trail should say
           // this sentence was applied across a selection — that is exactly the
           // kind of provenance a later reviewer wants. The PUBLISHED purpose
@@ -1065,10 +1080,10 @@ export const approve = mutation({
       action: "coding_decide",
       actorPersonId,
       field: "coding",
-      before: TRANSACTION_CODING_STATUS_LABELS[
-        coding.status as TransactionCodingStatus
-      ],
-      after: "Approved",
+      before: CODING_AUDIT_STATE_LABELS[coding.status as TransactionCodingStatus],
+      after: CODING_AUDIT_STATE_LABELS.approved,
+      beforeKey: coding.status,
+      afterKey: "approved",
       amountCents: (await ctx.db.get(args.transactionId))?.amountCents ?? 0,
     });
     return null;
@@ -1154,10 +1169,12 @@ export const undoApproval = mutation({
       action: "coding_decide",
       actorPersonId,
       field: "coding",
-      before: "Approved",
-      // The state it RETURNS TO. Never "Changes requested" — nothing was sent
+      before: CODING_AUDIT_STATE_LABELS.approved,
+      // The state it RETURNS TO. Never `changes_requested` — nothing was sent
       // back, and nobody was asked to fix anything.
-      after: "Awaiting review",
+      after: CODING_AUDIT_STATE_LABELS.submitted,
+      beforeKey: "approved",
+      afterKey: "submitted",
       reason:
         "Approval undone by the approver within the undo window — the coding is awaiting review again, unchanged.",
       amountCents: txn.amountCents,
@@ -1239,10 +1256,10 @@ export const requestChanges = mutation({
       action: "coding_decide",
       actorPersonId,
       field: "coding",
-      before: TRANSACTION_CODING_STATUS_LABELS[
-        coding.status as TransactionCodingStatus
-      ],
-      after: "Changes requested",
+      before: CODING_AUDIT_STATE_LABELS[coding.status as TransactionCodingStatus],
+      after: CODING_AUDIT_STATE_LABELS.changes_requested,
+      beforeKey: coding.status,
+      afterKey: "changes_requested",
       reason: args.reviewNote.trim(),
       amountCents: txn.amountCents,
     });

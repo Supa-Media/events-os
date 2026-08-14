@@ -80,7 +80,13 @@ import {
   chapterAffordability as chapterAffordabilityCalc,
   effectiveBudgetApprovalStatus,
   TRANSACTION_STATUS_LABELS,
+  TRANSACTION_FLOW_LABELS,
   FINANCE_AUDIT_ACTIONS,
+  FINANCE_AUDIT_VALUE_KINDS,
+  RECEIPT_STATE_LABELS,
+  REFUND_STATE_LABELS,
+  financeAuditValueKind,
+  financeAuditValueLabel,
   EXPENSE_TYPES,
   publishedPurpose,
   type DocumentationExemption,
@@ -11575,8 +11581,20 @@ const financeAuditRow = v.object({
   action: financeAuditActionValidator,
   actorName: v.union(v.string(), v.null()),
   field: v.union(v.string(), v.null()),
+  // ALREADY RENDERED. For a keyed row these are today's words for the stored
+  // state, not the words frozen at write time — see the projection below.
   before: v.union(v.string(), v.null()),
   after: v.union(v.string(), v.null()),
+  // The stored state on each side, for a caller that needs to REASON about it
+  // rather than print it. Handed over precisely so nobody is ever tempted to
+  // string-match a label again: business logic reads the key, screens read the
+  // two fields above, and no client renders a key itself.
+  valueKind: v.union(
+    ...FINANCE_AUDIT_VALUE_KINDS.map((k) => v.literal(k)),
+    v.null(),
+  ),
+  beforeKey: v.union(v.string(), v.null()),
+  afterKey: v.union(v.string(), v.null()),
   reason: v.union(v.string(), v.null()),
   amountCents: v.union(v.number(), v.null()),
   createdAt: v.number(),
@@ -11631,13 +11649,25 @@ export const financeAuditTrail = query({
     const out: (typeof financeAuditRow.type)[] = [];
     for (const r of rows) {
       const actor = r.actorPersonId ? await getPerson(r.actorPersonId) : null;
+      // THE ONE RENDER POINT. Four surfaces read this trail (the transaction
+      // detail modal, the coding sheet's compact history, the sale detail
+      // modal, the merchant-rename history) and every one of them prints
+      // `before`/`after` verbatim. Wording the keys HERE rather than in each
+      // of them is what makes "a label can never be produced two ways" true
+      // rather than aspirational — a client never holds a key it could spell
+      // its own way. Free-text rows have no key and fall straight through to
+      // the words they were written with.
+      const valueKind = financeAuditValueKind(r.action, r.field);
       out.push({
         id: r._id,
         action: r.action,
         actorName: actor?.name ?? null,
         field: r.field ?? null,
-        before: r.before ?? null,
-        after: r.after ?? null,
+        before: financeAuditValueLabel(valueKind, r.beforeKey, r.before),
+        after: financeAuditValueLabel(valueKind, r.afterKey, r.after),
+        valueKind,
+        beforeKey: r.beforeKey ?? null,
+        afterKey: r.afterKey ?? null,
         reason: r.reason ?? null,
         amountCents: r.amountCents ?? null,
         createdAt: r.createdAt,
@@ -12222,6 +12252,10 @@ export const setTransactionStatus = mutation({
       field: "status",
       before: TRANSACTION_STATUS_LABELS[txn.status],
       after: TRANSACTION_STATUS_LABELS[args.status],
+      // The keys are what history is actually made of; the two labels above
+      // are only what today's screen calls them. See `financeAuditValue.ts`.
+      beforeKey: txn.status,
+      afterKey: args.status,
       reason,
       amountCents: txn.amountCents,
     });
@@ -12339,8 +12373,10 @@ export const attachReceipt = mutation({
       action: "receipt_attach",
       actorPersonId: uploader?._id ?? null,
       field: "receipt",
-      before: hadReceipt ? "Attached" : "None",
-      after: "Attached",
+      before: RECEIPT_STATE_LABELS[hadReceipt ? "attached" : "none"],
+      after: RECEIPT_STATE_LABELS.attached,
+      beforeKey: hadReceipt ? "attached" : "none",
+      afterKey: "attached",
       amountCents: txn.amountCents,
     });
     return null;
@@ -12559,8 +12595,10 @@ export const unmarkRefund = mutation({
       action: "refund_mark",
       actorPersonId,
       field: "refund",
-      before: "refunded",
-      after: "none",
+      before: REFUND_STATE_LABELS.refunded,
+      after: REFUND_STATE_LABELS.none,
+      beforeKey: "refunded",
+      afterKey: "none",
       amountCents: txn.amountCents,
     });
     return null;
@@ -12707,8 +12745,13 @@ export const markAsTransfer = mutation({
         action: "transfer_mark",
         actorPersonId: leg.actorPersonId,
         field: "flow",
-        before: leg.txn.flow,
-        after: "transfer",
+        // Was the raw enum in the display field — the trail has been showing
+        // bookkeepers the word "outflow" since it shipped. The key was already
+        // right; it just had nowhere to be rendered from until now.
+        before: TRANSACTION_FLOW_LABELS[leg.txn.flow],
+        after: TRANSACTION_FLOW_LABELS.transfer,
+        beforeKey: leg.txn.flow,
+        afterKey: "transfer",
         reason: trimmedNote,
         amountCents: leg.txn.amountCents,
       });
@@ -12781,8 +12824,10 @@ export const unmarkTransfer = mutation({
         action: "transfer_mark",
         actorPersonId,
         field: "flow",
-        before: "transfer",
-        after: restored,
+        before: TRANSACTION_FLOW_LABELS.transfer,
+        after: TRANSACTION_FLOW_LABELS[restored],
+        beforeKey: "transfer",
+        afterKey: restored,
         amountCents: leg.amountCents,
       });
     }
@@ -12862,6 +12907,8 @@ export const markAsPayout = mutation({
         field: "payoutProcessor",
         before: before ? PAYOUT_PROCESSOR_LABELS[before] : null,
         after: PAYOUT_PROCESSOR_LABELS[args.processor],
+        beforeKey: before ?? null,
+        afterKey: args.processor,
         amountCents: txn.amountCents,
       });
     }
@@ -12970,6 +13017,8 @@ export const unmarkPayout = mutation({
       field: "payoutProcessor",
       before: PAYOUT_PROCESSOR_LABELS[before],
       after: null,
+      beforeKey: before,
+      afterKey: null,
       amountCents: txn.amountCents,
     });
     return null;
@@ -13112,8 +13161,14 @@ export const correctTransaction = mutation({
           action: "receipt_exception_withdraw",
           actorPersonId,
           field: "receiptException",
-          before: "Approved",
-          after: "Withdrawn — amount corrected, re-file at the true amount",
+          before: financeAuditValueLabel("receipt_exception", "approved", null),
+          after: financeAuditValueLabel(
+            "receipt_exception",
+            "withdrawn_amount_corrected",
+            null,
+          ),
+          beforeKey: "approved",
+          afterKey: "withdrawn_amount_corrected",
           reason,
           amountCents: patch.amountCents as number,
         });

@@ -101,6 +101,8 @@ import {
   getAcademyCourse,
   formatCents,
   REPAYMENT_NUDGE_COOLDOWN_MS,
+  PAYER_ATTRIBUTION_LABELS,
+  PERSONAL_FLAG_LABELS,
   type CardType,
   type CardStatus,
   type CardSource,
@@ -2777,8 +2779,10 @@ export const flagPersonalCharge = mutation({
         action: "personal_flag",
         actorPersonId: access.personId ?? null,
         field: "personId",
-        before: "Unattributed",
-        after: "Billed to the named payer",
+        before: PAYER_ATTRIBUTION_LABELS.unattributed,
+        after: PAYER_ATTRIBUTION_LABELS.billed_to_payer,
+        beforeKey: "unattributed",
+        afterKey: "billed_to_payer",
         amountCents: transaction.amountCents,
       });
     }
@@ -2802,8 +2806,10 @@ export const flagPersonalCharge = mutation({
         action: "personal_flag",
         actorPersonId: access.personId ?? null,
         field: "isPersonal",
-        before: "Not personal",
-        after: "Personal",
+        before: PERSONAL_FLAG_LABELS.not_personal,
+        after: PERSONAL_FLAG_LABELS.personal,
+        beforeKey: "not_personal",
+        afterKey: "personal",
         amountCents: transaction.amountCents,
       });
     }
@@ -2923,8 +2929,10 @@ export const unflagPersonalCharge = mutation({
       action: "personal_flag",
       actorPersonId: access.personId ?? null,
       field: "isPersonal",
-      before: "Personal",
-      after: "Not personal",
+      before: PERSONAL_FLAG_LABELS.personal,
+      after: PERSONAL_FLAG_LABELS.not_personal,
+      beforeKey: "personal",
+      afterKey: "not_personal",
       amountCents: transaction.amountCents,
     });
     return null;
