@@ -103,6 +103,7 @@ import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { emailButtonRow, emailHeading, emailParagraph } from "./lib/emailShell";
 import { escapeHtml } from "./lib/html";
+import { buildApprovedNotice } from "./lib/reimbursementApprovedEmail";
 import { appUrl, siteUrl } from "./lib/siteUrl";
 import {
   gatherForPickerCandidates,
@@ -405,6 +406,63 @@ function assertTransition(
  *  screens already use. */
 export function referenceFor(id: Id<"reimbursementRequests">): string {
   return `RB-${String(id).slice(-6).toUpperCase()}`;
+}
+
+/**
+ * Where to send a CLAIMANT to look at their own request — the one CTA-link
+ * split every claimant-facing reimbursement email uses:
+ *   - in-app member (`identityVerified`) → their own Reimbursements tab
+ *     (`appUrl`, authenticated; null when APP_URL is unset).
+ *   - accountless public-form claimant → the server-rendered, no-login status
+ *     page at `/reimburse/<chapterSlug>?token=<token>` (`http.ts`'s
+ *     `/reimburse/` route + `getPublicReimbursement`), via `siteUrl()` like
+ *     every other guest-facing link in this codebase.
+ * `null` when neither can be built (no APP_URL, or a chapter with no slug —
+ * which shouldn't happen for a chapter that can take public submissions); the
+ * callers degrade to a sentence rather than a dead button.
+ *
+ * Extracted because four separate emails (staleness nag, purchase follow-up,
+ * send-back, and the approval notice) were each carrying their own copy of the
+ * same conditional, and `reimbursementApprovedNoticeBackfill` needed a fifth.
+ */
+export function claimantStatusLink(row: {
+  identityVerified: boolean;
+  chapterSlug: string | null;
+  token: string;
+}): string | null {
+  if (row.identityVerified) return appUrl("/finances/reimbursements");
+  if (!row.chapterSlug) return null;
+  return `${siteUrl()}/reimburse/${encodeURIComponent(row.chapterSlug)}?token=${encodeURIComponent(row.token)}`;
+}
+
+/** The claimant-facing fields the approval notice needs, projected off a
+ *  request row + its chapter's slug. Shared by the LIVE payload query below
+ *  and `reimbursementApprovedNoticeBackfill`'s paginated sweep, so the two
+ *  senders read the same row the same way. Returns `null` for a request that
+ *  was never approved — there is no notice to write about it. */
+export function approvedNoticeRowFor(
+  req: Doc<"reimbursementRequests">,
+  chapterSlug: string | null,
+) {
+  if (req.approvedAt === undefined) return null;
+  return {
+    reimbursementId: req._id,
+    payeeEmail: req.payeeEmail ?? null,
+    payeeName: req.payeeName,
+    reference: referenceFor(req._id),
+    // `approvedCents` is written by `approve` alongside `approvedAt`; the
+    // fallback only covers a legacy row approved before partial approval
+    // existed, where the whole submitted total was what got approved.
+    approvedCents: req.approvedCents ?? req.totalCents,
+    totalCents: req.totalCents,
+    approvedAt: req.approvedAt,
+    status: req.status,
+    paidAt: req.paidAt ?? null,
+    bankAccountLast4: req.bankAccountLast4 ?? null,
+    identityVerified: req.identityVerified === true,
+    token: req.token,
+    chapterSlug,
+  };
 }
 
 /** A ms timestamp as a long human date for email copy (e.g. "July 25, 2026"),
@@ -2399,6 +2457,25 @@ export const approve = mutation({
       updatedAt: now,
     });
     await recordApproval(ctx, chapterId, req._id, "approve", callerPersonId);
+    // Tell the CLAIMANT their money was approved. Until this shipped, approval
+    // was the one decision in this whole state machine that reached the person
+    // waiting on it through no channel at all: submitting emails the approvers,
+    // a send-back emails the claimant, the staleness cron emails the claimant —
+    // and the good news, the one they actually want, was silent (founder,
+    // 2026-08-14: "we need to make sure people know that their money is coming
+    // once it's approved").
+    //
+    // Scheduled rather than sent inline for the same reason every other notice
+    // in this file is: a mutation must not do network I/O, and a Resend hiccup
+    // must never fail an approval that has already committed. The send-side
+    // half of that guarantee is `sendReimbursementApprovedEmail`'s own
+    // try/catch. Deliberately NOT scheduled from `preApprove` (pre-approval is
+    // permission to SPEND, not money owed), `reject`, or `cancel`.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.reimbursements.sendReimbursementApprovedEmail,
+      { reimbursementId: req._id },
+    );
     return { approvedCents };
   },
 });
@@ -2721,11 +2798,7 @@ export const sendReimbursementReminders = internalAction({
             : r.missingReceipts
               ? "We're still waiting on a receipt for one or more line items."
               : "It's still waiting on a manager to review it.";
-        const link = r.identityVerified
-          ? appUrl("/finances/reimbursements")
-          : r.chapterSlug
-            ? `${siteUrl()}/reimburse/${encodeURIComponent(r.chapterSlug)}?token=${encodeURIComponent(r.token)}`
-            : null;
+        const link = claimantStatusLink(r);
         await sendEmail(ctx, {
           to: r.payeeEmail,
           subject: `Your reimbursement ${r.reference} is still pending`,
@@ -2750,11 +2823,7 @@ export const sendReimbursementReminders = internalAction({
         );
         if (!r.payeeEmail) continue;
         const dollars = `$${(r.totalCents / 100).toFixed(2)}`;
-        const link = r.identityVerified
-          ? appUrl("/finances/reimbursements")
-          : r.chapterSlug
-            ? `${siteUrl()}/reimburse/${encodeURIComponent(r.chapterSlug)}?token=${encodeURIComponent(r.token)}`
-            : null;
+        const link = claimantStatusLink(r);
         await sendEmail(ctx, {
           to: r.payeeEmail,
           subject: `Your reimbursement ${r.reference} — time to submit your receipts`,
@@ -2956,11 +3025,7 @@ export const sendReimbursementChangesRequestedEmail = internalAction({
       );
       if (!payload?.payeeEmail) return null;
       const dollars = `$${(payload.totalCents / 100).toFixed(2)}`;
-      const link = payload.identityVerified
-        ? appUrl("/finances/reimbursements")
-        : payload.chapterSlug
-          ? `${siteUrl()}/reimburse/${encodeURIComponent(payload.chapterSlug)}?token=${encodeURIComponent(payload.token)}`
-          : null;
+      const link = claimantStatusLink(payload);
       await sendEmail(ctx, {
         to: payload.payeeEmail,
         subject: `Your reimbursement ${payload.reference} needs a small fix`,
@@ -2980,6 +3045,126 @@ export const sendReimbursementChangesRequestedEmail = internalAction({
     } catch (err) {
       console.error(
         "sendReimbursementChangesRequestedEmail: failed",
+        reimbursementId,
+        err,
+      );
+    }
+    return null;
+  },
+});
+
+// ── INTERNAL: approval notice to the claimant ────────────────────────────────
+
+/**
+ * Everything `sendReimbursementApprovedEmail` needs, or `null` when the request
+ * no longer exists / was never approved (a scheduled job racing a deletion —
+ * it should degrade, not throw).
+ *
+ * The recipient is the CLAIMANT and only the claimant, at the address THEY put
+ * on the request (`payeeEmail`) — the founder was explicit that this notice
+ * goes to "the emails they put in for the reimbursement requests", and that is
+ * also the only address an accountless claimant has ever given us.
+ * `createReimbursement` requires and format-validates it on both submit
+ * surfaces, so a request written by this app always carries one; the schema
+ * keeps it optional only for legacy rows, which is why the senders still guard.
+ */
+export const getReimbursementApprovedEmailPayload = internalQuery({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    const req = await ctx.db.get(reimbursementId);
+    if (!req) return null;
+    const chapter = await ctx.db.get(req.chapterId);
+    return approvedNoticeRowFor(req, chapter?.slug ?? null);
+  },
+});
+
+/**
+ * CLAIM this request's one approval notice, returning whether the claim was
+ * ours. `true` is returned at most ONCE in the lifetime of a row.
+ *
+ * This is the entire idempotency mechanism, and it is a mutation (a Convex
+ * transaction) precisely so the read-then-write can't interleave: two senders
+ * racing the same row — the live `approve` schedule and an operator running the
+ * catch-up backfill in the same minute — both call this first, exactly one gets
+ * `true`, and only that one sends. A re-run of the backfill gets `false` for
+ * every row it already touched, which is what makes a second execute run a
+ * no-op rather than a second mailing.
+ *
+ * Stamped BEFORE the send, deliberately: the same at-most-once ordering
+ * `markPurchaseFollowUpSent` / `cards.advanceReceiptReminders` already use. A
+ * crash between the stamp and the send costs one email; the other ordering
+ * risks telling somebody twice that their money was approved, which reads as
+ * "it was approved twice" and starts a conversation with a treasurer.
+ *
+ * Refuses a request that was never approved (`approvedAt` unset), so nothing
+ * can stamp a row this notice doesn't apply to. Deliberately does NOT touch
+ * `updatedAt` — sending a notice isn't a claimant/manager edit.
+ */
+export const markApprovedNoticeSent = internalMutation({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  returns: v.boolean(),
+  handler: async (ctx, { reimbursementId }) => {
+    const req = await ctx.db.get(reimbursementId);
+    if (!req) return false;
+    if (req.approvedAt === undefined) return false;
+    if (req.approvedNoticeSentAt !== undefined) return false;
+    await ctx.db.patch(reimbursementId, { approvedNoticeSentAt: Date.now() });
+    return true;
+  },
+});
+
+/**
+ * "Your reimbursement was approved" — best-effort Resend to the claimant,
+ * scheduled by `approve`. The copy (and the hard rule that it must not claim
+ * money has moved) lives in `lib/reimbursementApprovedEmail.ts`.
+ *
+ * Claims the send first (`markApprovedNoticeSent`) and returns without mailing
+ * when the claim isn't ours, so a re-delivered scheduled job and the catch-up
+ * backfill can't both write to the same claimant.
+ *
+ * Wrapped in a try/catch for the same reason its two siblings are: it runs
+ * after the approval has already committed, and a missing RESEND_API_KEY
+ * (dev/CI) or a transient Resend failure must degrade silently rather than
+ * surface as a failed scheduled job.
+ */
+export const sendReimbursementApprovedEmail = internalAction({
+  args: { reimbursementId: v.id("reimbursementRequests") },
+  handler: async (ctx, { reimbursementId }) => {
+    try {
+      const payload = await ctx.runQuery(
+        internal.reimbursements.getReimbursementApprovedEmailPayload,
+        { reimbursementId },
+      );
+      if (!payload) return null;
+      // Claim even when there's no address to mail: a contact-less legacy row
+      // must not sit in the backfill's backlog forever waiting on an email
+      // that can never be written.
+      const claimed: boolean = await ctx.runMutation(
+        internal.reimbursements.markApprovedNoticeSent,
+        { reimbursementId },
+      );
+      if (!claimed || !payload.payeeEmail) return null;
+
+      const notice = buildApprovedNotice({
+        kind: "live",
+        payeeName: payload.payeeName,
+        reference: payload.reference,
+        approvedCents: payload.approvedCents,
+        totalCents: payload.totalCents,
+        approvedAt: payload.approvedAt,
+        status: payload.status,
+        paidAt: payload.paidAt,
+        bankAccountLast4: payload.bankAccountLast4,
+        link: claimantStatusLink(payload),
+      });
+      await sendEmail(ctx, {
+        to: payload.payeeEmail,
+        subject: notice.subject,
+        html: notice.html,
+      });
+    } catch (err) {
+      console.error(
+        "sendReimbursementApprovedEmail: failed",
         reimbursementId,
         err,
       );

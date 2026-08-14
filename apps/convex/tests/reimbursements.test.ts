@@ -2917,3 +2917,290 @@ describe("submission notice to finance approvers (sendReimbursementSubmittedEmai
     }
   });
 });
+
+describe("approval notice to the claimant (sendReimbursementApprovedEmail)", () => {
+  /** Mock BOTH `POST /external_accounts` (Increase, needed by every submit)
+   *  AND `POST https://api.resend.com/emails`, recording the full body of
+   *  every Resend send so the copy itself can be asserted. Mirrors the
+   *  submission-notice block's `mockIncreaseAndResend` above. */
+  function mockIncreaseAndResend(): Array<{
+    to: string;
+    subject: string;
+    html: string;
+  }> {
+    const resendCalls: Array<{ to: string; subject: string; html: string }> = [];
+    let seq = 0;
+    globalThis.fetch = (async (
+      input: RequestInfo | URL,
+      init?: RequestInit,
+    ) => {
+      const path = String(input);
+      if (path.includes("/external_accounts")) {
+        seq += 1;
+        return new Response(JSON.stringify({ id: `extacct_approved_${seq}` }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (path.includes("api.resend.com/emails")) {
+        const body = init?.body ? JSON.parse(String(init.body)) : {};
+        resendCalls.push({
+          to: body.to,
+          subject: body.subject,
+          html: body.html ?? "",
+        });
+        return new Response(JSON.stringify({ id: "email_1" }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(`unexpected fetch: ${path}`);
+    }) as unknown as typeof fetch;
+    return resendCalls;
+  }
+
+  const PREV_RESEND_KEY = process.env.RESEND_API_KEY;
+  afterEach(() => {
+    if (PREV_RESEND_KEY === undefined) delete process.env.RESEND_API_KEY;
+    else process.env.RESEND_API_KEY = PREV_RESEND_KEY;
+  });
+
+  /** Every pending `_scheduled_functions` row whose name contains `fragment`
+   *  — asserts WHAT got scheduled without firing it (the `receipts.test.ts`
+   *  helper, restated locally). */
+  async function scheduledNames(
+    s: ChapterSetup,
+    fragment: string,
+  ): Promise<string[]> {
+    const rows = await run(s.t, (ctx) =>
+      ctx.db.system.query("_scheduled_functions").collect(),
+    );
+    return rows.map((r) => r.name).filter((n) => n.includes(fragment));
+  }
+
+  const APPROVED_FRAGMENT = "sendReimbursementApprovedEmail";
+
+  /** A submitted request whose claimant is NOT the caller, plus a separate
+   *  manager identity able to approve it. */
+  async function submittedWithManager(
+    s: ChapterSetup,
+    extra: { payeeEmail?: string; lines?: ValidLine[] } = {},
+  ): Promise<{
+    reimbursementId: Id<"reimbursementRequests">;
+    manager: Awaited<ReturnType<typeof addMember>>;
+  }> {
+    await setSlug(s, "nyc");
+    const { token } = await submitTwoLine(s, "nyc", {
+      payeeEmail: extra.payeeEmail ?? "vera@example.com",
+      lines: extra.lines,
+    });
+    const manager = await addMember(s, {
+      email: "manny@publicworship.life",
+      name: "Manny Manager",
+    });
+    await grantRole(s, manager.personId, "manager");
+    const reimbursementId = await run(s.t, async (ctx) => {
+      const req = await ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .unique();
+      return req!._id;
+    });
+    return { reimbursementId, manager };
+  }
+
+  test("approving emails the claimant at the address ON THE REQUEST, not their roster/account email", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      // A roster person the claimant matches on PHONE, carrying a DIFFERENT
+      // email — so `personId` links to a row whose `people.email` is not the
+      // address typed on the request. The founder was explicit: the notice
+      // goes to "the emails they put in for the reimbursement requests".
+      await seedPerson(s, {
+        name: "Vera Volunteer",
+        email: "vera-roster@example.com",
+        phone: "+15550001111",
+      });
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await setSlug(s, "nyc");
+      const { token, reference } = await submitTwoLine(s, "nyc", {
+        payeeEmail: "vera-typed@example.com",
+        payeePhone: "+15550001111",
+      });
+      const manager = await addMember(s, {
+        email: "manny@publicworship.life",
+        name: "Manny Manager",
+      });
+      await grantRole(s, manager.personId, "manager");
+      const reimbursementId = await run(s.t, async (ctx) => {
+        const req = await ctx.db
+          .query("reimbursementRequests")
+          .withIndex("by_token", (q) => q.eq("token", token))
+          .unique();
+        // The phone match linked the roster row, so this is genuinely a case
+        // where an account email exists and is NOT what we mail.
+        expect(req?.personId).toBeTruthy();
+        return req!._id;
+      });
+      resendCalls.length = 0; // drop the submission notice to the manager
+
+      await manager.as.mutation(api.reimbursements.approve, {
+        reimbursementId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const approvals = resendCalls.filter((c) =>
+        c.subject.startsWith("Approved:"),
+      );
+      expect(approvals.length).toBe(1);
+      expect(approvals[0].to).toBe("vera-typed@example.com");
+      expect(approvals[0].subject).toContain(reference);
+      expect(approvals[0].subject).toContain("$20.00");
+      // …and it must not promise the money has already moved.
+      expect(approvals[0].html).toContain("Approved isn't paid yet");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("a PARTIAL approval names what was approved AND what was submitted", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+      const { reimbursementId, manager } = await submittedWithManager(s);
+      const firstLineId = await run(s.t, async (ctx) => {
+        const lines = await ctx.db
+          .query("reimbursementLineItems")
+          .withIndex("by_reimbursement", (q) =>
+            q.eq("reimbursementId", reimbursementId),
+          )
+          .collect();
+        return lines.sort((a, b) => a.order - b.order)[0]._id;
+      });
+      resendCalls.length = 0;
+
+      await manager.as.mutation(api.reimbursements.approve, {
+        reimbursementId,
+        approvedLineIds: [firstLineId], // only the $12 line of $20
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const approvals = resendCalls.filter((c) =>
+        c.subject.startsWith("Approved:"),
+      );
+      expect(approvals.length).toBe(1);
+      expect(approvals[0].subject).toContain("$12.00");
+      expect(approvals[0].html).toContain("$12.00 of the $20.00 you submitted");
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("NO approval notice is scheduled by a send-back, a rejection, a cancel, or a pre-approval", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const { reimbursementId, manager } = await submittedWithManager(s);
+
+    await manager.as.mutation(api.reimbursements.requestChanges, {
+      reimbursementId,
+      note: "receipt must show the exact amount",
+    });
+    expect(await scheduledNames(s, APPROVED_FRAGMENT)).toEqual([]);
+
+    await manager.as.mutation(api.reimbursements.cancel, { reimbursementId });
+    expect(await scheduledNames(s, APPROVED_FRAGMENT)).toEqual([]);
+
+    // A second request, rejected outright.
+    const rejected = await submittedWithManager(s, {
+      payeeEmail: "other@example.com",
+    });
+    await manager.as.mutation(api.reimbursements.reject, {
+      reimbursementId: rejected.reimbursementId,
+      reason: "Out of policy",
+    });
+    expect(await scheduledNames(s, APPROVED_FRAGMENT)).toEqual([]);
+
+    // And a PRE-approval — permission to spend, not money owed.
+    await setSlug(s, "nyc");
+    const { token } = await submitTwoLine(s, "nyc", {
+      payeeEmail: "planner@example.com",
+      requestPreApproval: true,
+    });
+    const preId = await run(s.t, async (ctx) => {
+      const req = await ctx.db
+        .query("reimbursementRequests")
+        .withIndex("by_token", (q) => q.eq("token", token))
+        .unique();
+      return req!._id;
+    });
+    await manager.as.mutation(api.reimbursements.preApprove, {
+      reimbursementId: preId,
+    });
+    expect(await scheduledNames(s, APPROVED_FRAGMENT)).toEqual([]);
+
+    // Sanity: the same helper DOES see it once a real approval happens.
+    await manager.as.mutation(api.reimbursements.approve, {
+      reimbursementId: preId,
+    });
+    expect((await scheduledNames(s, APPROVED_FRAGMENT)).length).toBe(1);
+  });
+
+  test("the send is claimed exactly once — re-running the action mails nobody twice", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+      const { reimbursementId, manager } = await submittedWithManager(s);
+      resendCalls.length = 0;
+
+      await manager.as.mutation(api.reimbursements.approve, {
+        reimbursementId,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(
+        resendCalls.filter((c) => c.subject.startsWith("Approved:")).length,
+      ).toBe(1);
+
+      const stamped = await run(s.t, (ctx) => ctx.db.get(reimbursementId));
+      expect(typeof stamped?.approvedNoticeSentAt).toBe("number");
+      // The stamp is not an edit — `updatedAt` belongs to claimant/manager
+      // changes, not to us mailing somebody.
+      expect(stamped?.updatedAt).toBeLessThan(stamped!.approvedNoticeSentAt!+1);
+
+      // Re-delivering the very same scheduled job sends nothing.
+      resendCalls.length = 0;
+      await t.action(internal.reimbursements.sendReimbursementApprovedEmail, {
+        reimbursementId,
+      });
+      expect(resendCalls.length).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("degrades without RESEND_API_KEY — approve still succeeds and draining doesn't throw", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      const { reimbursementId, manager } = await submittedWithManager(s);
+      delete process.env.RESEND_API_KEY;
+
+      await expect(
+        manager.as.mutation(api.reimbursements.approve, { reimbursementId }),
+      ).resolves.toBeDefined();
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+});
