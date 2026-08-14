@@ -86,6 +86,9 @@ export function GridHeaderCell({
   label,
   width,
   onResizeStart,
+  onSort,
+  sortActive = false,
+  sortDirection = "desc",
 }: {
   label: string;
   width: number;
@@ -97,15 +100,74 @@ export function GridHeaderCell({
    *  `mousemove`/`mouseup` are tracked on `window` by the hook itself so the
    *  drag keeps working once the cursor leaves this handle's few pixels. */
   onResizeStart?: (clientX: number) => void;
+  /**
+   * ── SORTING, ON THE SAME HEADER THAT ALREADY RESIZES ────────────────────
+   * Press to sort by this column. Omit and this header is EXACTLY what it
+   * was — a plain label, same padding, same colour, no press target and no
+   * caret — which is what lets one header row mix sortable and static
+   * columns without them looking like two different components.
+   *
+   * Deliberately added here rather than forked into a second header cell:
+   * `DataGrid`'s `SortableHeaderCell` already sorts but cannot resize, and a
+   * grid whose Date column could be dragged wider only while unsorted would
+   * be two half-headers instead of one. The label is the press target and
+   * the resize handle stays outside it, so dragging a column's edge never
+   * fires a sort.
+   */
+  onSort?: () => void;
+  /** Whether THIS column is the current sort key. */
+  sortActive?: boolean;
+  sortDirection?: "asc" | "desc";
 }) {
+  const labelText = (
+    <Text
+      // `flex-1` for a plain header (unchanged — it's what pushes the resize
+      // handle to the column's right edge). A SORTABLE one shrinks instead, so
+      // the caret sits against the label rather than being flung to the far
+      // side of the cell with the label's whitespace between them.
+      className={`${onSort ? "shrink" : "flex-1"} text-2xs font-bold uppercase tracking-wider ${
+        onSort && sortActive ? "text-ink" : "text-muted"
+      }`}
+      numberOfLines={1}
+    >
+      {label}
+    </Text>
+  );
   return (
     <View style={{ width }} className="flex-row items-center px-2 py-2.5">
-      <Text
-        className="flex-1 text-2xs font-bold uppercase tracking-wider text-muted"
-        numberOfLines={1}
-      >
-        {label}
-      </Text>
+      {onSort ? (
+        <Pressable
+          onPress={onSort}
+          accessibilityRole="button"
+          accessibilityLabel={
+            sortActive
+              ? `Sort by ${label}, currently ${
+                  sortDirection === "asc" ? "ascending" : "descending"
+                }`
+              : `Sort by ${label}`
+          }
+          className="flex-1 flex-row items-center gap-1 self-stretch active:opacity-70 web:hover:opacity-90"
+        >
+          {labelText}
+          {/* The caret says WHICH way, and only on the active column — an
+              arrow on every sortable header would claim three sorts are on
+              at once. The inactive affordance is the faint chevron, the same
+              signal `SortableHeaderCell` uses. */}
+          <Icon
+            name={
+              sortActive
+                ? sortDirection === "desc"
+                  ? "arrow-down"
+                  : "arrow-up"
+                : "chevron-down"
+            }
+            size={11}
+            color={sortActive ? colors.accent : colors.faint}
+          />
+        </Pressable>
+      ) : (
+        labelText
+      )}
       {onResizeStart && Platform.OS === "web" ? (
         // Web-only resize handle; RN has no draggable-edge primitive, and a
         // raw DOM node like this one isn't a valid native host component —

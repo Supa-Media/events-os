@@ -115,6 +115,19 @@ import {
   activeView,
   type BookView,
 } from "../../../components/finance/reconcile/ViewMenu";
+import { GroupByControl } from "../../../components/finance/reconcile/GroupByControl";
+import { ExplainedProgressStrip } from "../../../components/finance/reconcile/ExplainedProgressStrip";
+import {
+  DEFAULT_SORT_DIR,
+  DEFAULT_SORT_KEY,
+  nextSortState,
+  parseGroupBy,
+  parseSortDir,
+  parseSortKey,
+  type ReconcileGroupBy,
+  type ReconcileSortDir,
+  type ReconcileSortKey,
+} from "../../../components/finance/reconcile/gridView";
 import { BulkNoDocumentationModal } from "../../../components/finance/modals/BulkNoDocumentationModal";
 import type { ReceiptExceptionReason } from "@events-os/shared";
 import type { ActionToast } from "../../../lib/useActionToast";
@@ -264,6 +277,15 @@ function ReconcileGrid() {
     year?: string;
     month?: string;
     period?: string;
+    // The grid's own view state — which column it's sorted by, which way, and
+    // what it's grouped into. URL-backed for the same reason `filters` and
+    // `scope` are: a sorted or grouped view is a real answer to a real
+    // question ("the biggest charges in June, by person"), and it has to
+    // survive a refresh and be shareable as a link. Unknown values fall back
+    // to the defaults — see `gridView.ts`.
+    sort?: string;
+    dir?: string;
+    group?: string;
   }>();
   const router = useRouter();
   // The filter SELECTION — a set, not a bucket. `?filters=a,b` is the current
@@ -317,6 +339,41 @@ function ReconcileGrid() {
   // `clearSelection` is defined further down (it needs `setSelected`); a ref
   // keeps these handlers above it without a forward-reference.
   const clearSelectionRef = useRef<(() => void) | null>(null);
+
+  // ── SORT AND GROUPING — URL-backed, exactly like `?filters=` above ─────────
+  // The server sorts and groups the WHOLE match set before paging (see
+  // `listReconcile`'s `sort`/`groupBy` docs), so these are query ARGUMENTS,
+  // never a client-side pass over the loaded page: "biggest first" has to mean
+  // biggest in the book, not biggest among the hundred rows that happened to
+  // load.
+  const [sortKey, setSortKey] = useState<ReconcileSortKey>(() =>
+    parseSortKey(params.sort),
+  );
+  const [sortDir, setSortDir] = useState<ReconcileSortDir>(() =>
+    parseSortDir(params.dir),
+  );
+  const [groupBy, setGroupBy] = useState<ReconcileGroupBy | null>(() =>
+    parseGroupBy(params.group),
+  );
+  /** A header press: flip the active column, or switch to the other one. */
+  function applySort(column: ReconcileSortKey) {
+    const next = nextSortState({ sort: sortKey, dir: sortDir }, column);
+    setSortKey(next.sort);
+    setSortDir(next.dir);
+    // Back at the default order? Clear the params rather than leaving
+    // `?sort=date&dir=desc` in the bar — the same reason `applyFilters`
+    // clears rather than writing an empty `filters=`.
+    const isDefault =
+      next.sort === DEFAULT_SORT_KEY && next.dir === DEFAULT_SORT_DIR;
+    router.setParams({
+      sort: isDefault ? "" : next.sort,
+      dir: isDefault ? "" : next.dir,
+    });
+  }
+  function applyGroupBy(next: ReconcileGroupBy | null) {
+    setGroupBy(next);
+    router.setParams({ group: next ?? "" });
+  }
   const [query, setQuery] = useState("");
   // What the SERVER searches. See `listReconcile`'s `search` arg: the query
   // runs over the whole book and stands the State filter down for that request,
@@ -479,6 +536,13 @@ function ReconcileGrid() {
     filters,
     search: debouncedQuery.trim() || undefined,
     limit: pageSize,
+    // Always sent, and identical to the server's own defaults when nobody has
+    // touched a header — so an unsorted grid asks for exactly the order it
+    // always asked for. `groupBy` is spread conditionally: absent means
+    // ungrouped, and an explicit `undefined` is not the same wire shape.
+    sort: sortKey,
+    dir: sortDir,
+    ...(groupBy ? { groupBy } : {}),
     ...periodArgs,
   };
   const reconcile = useQuery(
@@ -491,11 +555,13 @@ function ReconcileGrid() {
           ? { ...listArgs, chapterId: targetChapterId }
           : listArgs,
   );
-  // A new selection, a new search or a new book starts at page one — otherwise
-  // narrowing to 3 rows would keep asking the server for 400.
+  // A new selection, a new search, a new book — or a new ORDER — starts at
+  // page one. Otherwise narrowing to 3 rows would keep asking the server for
+  // 400, and re-sorting a book somebody had paged three times deep would
+  // re-enrich 400 rows to show them the top of a different list.
   useEffect(() => {
     setPageSize(PAGE_STEP);
-  }, [filters, debouncedQuery, scope, targetChapterId]);
+  }, [filters, debouncedQuery, scope, targetChapterId, sortKey, sortDir, groupBy]);
   // R1b: "Mark personal" (cards.flagPersonalCharge's manager path) is a
   // manager-only action — a bookkeeper has full Reconcile access but not this.
   // `ReconcileList` ALSO widens the same button to a cardholder's OWN row
@@ -802,6 +868,19 @@ function ReconcileGrid() {
     netCents: 0,
     neutralCount: 0,
   };
+  // HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS — server-computed over
+  // the whole match set (see `ExplainedProgressStrip` for what it may and may
+  // not say about a `needs_explaining` selection).
+  const explainedProgress = reconcile?.explainedProgress ?? {
+    explainableCount: 0,
+    explainableCents: 0,
+    explainedCount: 0,
+    explainedCents: 0,
+  };
+  // Group headers, in render order, over the WHOLE match set — present only
+  // while `groupBy` is set. Passed straight through to the grid, which slices
+  // the page by walking these counts rather than re-deriving anyone's month.
+  const groups = reconcile?.groups;
   // The server stood the State/roll-up filters down to run this search. Said
   // out loud below: a filter that silently stops applying is the whole defect.
   const searchIgnoredState = reconcile?.searchIgnoredState ?? false;
@@ -1468,6 +1547,15 @@ function ReconcileGrid() {
             </View>
           ) : null}
 
+          {/* HOW FAR THROUGH THE EXPLAINING THIS SELECTION IS — one line,
+              above the money totals it belongs beside. What the Explain
+              screen could only say about one book-month, said about whatever
+              the grid is currently showing. */}
+          <ExplainedProgressStrip
+            progress={explainedProgress}
+            activeFilters={filters}
+          />
+
           {/* WHAT THIS SELECTION ADDS UP TO (founder ask 2026-08-12: "I want
               to see the total figure on the reconcile," not only on the
               dashboard). Server-computed over the WHOLE match set — the same
@@ -1528,6 +1616,14 @@ function ReconcileGrid() {
               ) : null}
             </View>
           ) : null}
+
+          {/* GROUP BY — last thing before the grid, because it restructures
+              the grid and nothing above it. Kept out of the filter row on
+              purpose: that row is already search + two dropdowns + a tooltip,
+              and it is the row that wraps first on a laptop. */}
+          <View className="mb-3 flex-row items-center">
+            <GroupByControl value={groupBy} onChange={applyGroupBy} />
+          </View>
         </Narrow>
 
         {/* Bulk action bar (multi-select). `selectedInView` is already
@@ -1647,6 +1743,12 @@ function ReconcileGrid() {
               onOpenRow={isWide ? (id) => setOpenId(id) : undefined}
               openRowId={openId}
               panelOpen={showPanel}
+              // The ACTIVE order, so the right header carries the caret — the
+              // grid renders what the server sent and never re-sorts locally.
+              sortKey={sortKey}
+              sortDir={sortDir}
+              onSort={applySort}
+              groups={groups}
             />
             {/* PAGING. The server ships `limit` rows and reports how many
                 matched across the whole scope, so this footer states both —

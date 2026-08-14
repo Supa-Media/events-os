@@ -136,6 +136,13 @@ import {
   shortDate,
   type TxnRow,
 } from "./helpers";
+import { ReconcileGroupHeader } from "./ReconcileGroupHeader";
+import {
+  groupSegments,
+  type GroupSummary,
+  type ReconcileSortDir,
+  type ReconcileSortKey,
+} from "./gridView";
 import { buildRankedForPickerItems, type RankForPickerResult } from "./forPicker";
 
 const NUM = { fontVariant: ["tabular-nums" as const] };
@@ -221,6 +228,10 @@ export function ReconcileList({
   onOpenRow,
   openRowId = null,
   panelOpen = false,
+  sortKey = "date",
+  sortDir = "desc",
+  onSort,
+  groups,
 }: {
   rows: TxnRow[];
   categoryItems: PickerItem[];
@@ -282,6 +293,25 @@ export function ReconcileList({
   /** The panel is actually on screen (wide AND a row selected). Hides the
    *  columns the panel itself renders in full — see `hidesForPanel`. */
   panelOpen?: boolean;
+  // ── SORT ──────────────────────────────────────────────────────────────────
+  // The ACTIVE sort, as the server applied it — this grid renders the order it
+  // was sent and never re-sorts locally. It couldn't honestly: the server sorts
+  // the WHOLE match set before paging, so a client re-sort of the loaded 100
+  // would silently mean "biggest of the rows that happened to load".
+  /** Which column carries the caret. */
+  sortKey?: ReconcileSortKey;
+  sortDir?: ReconcileSortDir;
+  /** Present ⇔ the Date/Amount headers are pressable. Absent leaves every
+   *  header exactly the plain label it has always been. */
+  onSort?: (key: ReconcileSortKey) => void;
+  // ── GROUPING ──────────────────────────────────────────────────────────────
+  /** `listReconcile`'s `groups`, in render order — present only when the host
+   *  asked for `groupBy`. Each group's rows are contiguous in `rows` and in
+   *  this same order, so the grid slices the page by walking these counts
+   *  (`groupSegments`) rather than re-deriving anyone's month or cardholder.
+   *  ABSENT → one flat list, byte-for-byte the grid this file already
+   *  rendered. */
+  groups?: readonly GroupSummary[];
 }) {
   // "Select all" only ever means the rows this caller can actually act on —
   // an uneditable row (a foreign chapter's, in the merged queue) has no
@@ -342,6 +372,46 @@ export function ReconcileList({
     (showExplanation ? 0 : widths.explanation) -
     (showReceipt ? 0 : widths.receipt);
 
+  // One row, however it's being laid out — so the grouped and ungrouped
+  // branches below can't drift into rendering different rows. `i` stays the
+  // index into the WHOLE page, so `isLast` still means the last row on screen
+  // rather than the last row of some group.
+  const renderRow = (row: TxnRow, i: number) => (
+    <ReconcileRow
+      key={row.id}
+      row={row}
+      categoryItems={categoryItems}
+      forItems={forItems}
+      selected={selected.has(row.id)}
+      onToggle={() => onToggle(row.id)}
+      isLast={i === rows.length - 1}
+      centralScope={centralScope}
+      showBook={showBook}
+      showCategory={showCategory}
+      ownChapterId={ownChapterId}
+      centralForItems={centralForItems}
+      isManager={isManager}
+      viewerPersonId={viewerPersonId}
+      widths={widths}
+      showCardholder={showCardholder}
+      showExplanation={showExplanation}
+      showReceipt={showReceipt}
+      onOpenRow={onOpenRow}
+      panelSelected={panelOpen && row.id === openRowId}
+    />
+  );
+
+  // The page sliced into groups, or `null` for "render it flat". A `groups`
+  // array that somehow describes none of the loaded rows also falls back to
+  // flat rather than rendering an empty grid — the rows are the data, the
+  // headers are decoration over them.
+  const computedSegments =
+    groups != null && groups.length > 0 ? groupSegments(rows.length, groups) : null;
+  const segments =
+    computedSegments != null && computedSegments.length > 0 ? computedSegments : null;
+  const groupedRowCount =
+    segments?.reduce((n, s) => n + s.shownCount, 0) ?? rows.length;
+
   return (
     <View className="overflow-hidden rounded-lg border border-border bg-raised shadow-card">
       <ScrollView horizontal showsHorizontalScrollIndicator={false}>
@@ -372,11 +442,25 @@ export function ReconcileList({
               width={widths.merchant}
               onResizeStart={startResize("merchant")}
             />
-            <GridHeaderCell label="Date" width={widths.date} onResizeStart={startResize("date")} />
+            {/* THE TWO SORTABLE COLUMNS. Same `GridHeaderCell` as every other
+                header — extended, not forked — so a sorted Date column can
+                still be dragged wider, and the seven columns that don't sort
+                render exactly as they always have. */}
+            <GridHeaderCell
+              label="Date"
+              width={widths.date}
+              onResizeStart={startResize("date")}
+              onSort={onSort ? () => onSort("date") : undefined}
+              sortActive={sortKey === "date"}
+              sortDirection={sortDir}
+            />
             <GridHeaderCell
               label="Amount"
               width={widths.amount}
               onResizeStart={startResize("amount")}
+              onSort={onSort ? () => onSort("amount") : undefined}
+              sortActive={sortKey === "amount"}
+              sortDirection={sortDir}
             />
             {showCardholder ? (
               <GridHeaderCell
@@ -415,31 +499,34 @@ export function ReconcileList({
             <View style={{ width: widths.actions }} />
           </View>
 
-          {/* Body */}
-          {rows.map((row, i) => (
-            <ReconcileRow
-              key={row.id}
-              row={row}
-              categoryItems={categoryItems}
-              forItems={forItems}
-              selected={selected.has(row.id)}
-              onToggle={() => onToggle(row.id)}
-              isLast={i === rows.length - 1}
-              centralScope={centralScope}
-              showBook={showBook}
-              showCategory={showCategory}
-              ownChapterId={ownChapterId}
-              centralForItems={centralForItems}
-              isManager={isManager}
-              viewerPersonId={viewerPersonId}
-              widths={widths}
-              showCardholder={showCardholder}
-              showExplanation={showExplanation}
-              showReceipt={showReceipt}
-              onOpenRow={onOpenRow}
-              panelSelected={panelOpen && row.id === openRowId}
-            />
-          ))}
+          {/* Body — one flat list, or the same list with a band before each
+              group. `segments` is null in the ungrouped case, which is the
+              safety property: with no `groups` prop nothing below this line
+              behaves differently from before grouping existed. */}
+          {segments == null
+            ? rows.map(renderRow)
+            : segments.map((seg) => (
+                <View key={seg.group.key}>
+                  <ReconcileGroupHeader
+                    label={seg.group.label}
+                    count={seg.group.count}
+                    totalCents={seg.group.totalCents}
+                    shownCount={seg.shownCount}
+                  />
+                  {rows
+                    .slice(seg.startIndex, seg.startIndex + seg.shownCount)
+                    .map((row, j) => renderRow(row, seg.startIndex + j))}
+                </View>
+              ))}
+          {/* NO ROW IS EVER SILENTLY DROPPED. `groups` covers the whole match
+              set, so the segments above always account for the entire page —
+              but if they ever didn't, the rows are the data and the headers
+              are decoration over them, so the remainder still renders. */}
+          {segments != null && groupedRowCount < rows.length
+            ? rows
+                .slice(groupedRowCount)
+                .map((row, j) => renderRow(row, groupedRowCount + j))
+            : null}
         </View>
       </ScrollView>
     </View>
