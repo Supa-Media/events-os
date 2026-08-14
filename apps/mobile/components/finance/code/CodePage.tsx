@@ -37,12 +37,16 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   ActivityIndicator,
+  KeyboardAvoidingView,
+  Platform,
+  Pressable,
   Text,
   useWindowDimensions,
   View,
 } from "react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useConvexAuth, useMutation, useQuery } from "convex/react";
+import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { DEFAULT_CODING_REQUIRED_SINCE_MS } from "@events-os/shared";
@@ -73,7 +77,31 @@ import {
   type MyTxnRow,
 } from "../myTransactions/chargeTodo";
 
+/**
+ * THE BRAND, AND — WHEN SOMEBODY IS SIGNED IN — WHO THEY ARE.
+ *
+ * Founder: this page showed "no name, chapter, sign out". That is a real
+ * problem HERE in a way it isn't inside the app: `/code` is a link people are
+ * SENT, it deliberately carries no `AppShell`, and a household or a shared
+ * laptop can easily leave the wrong account signed in. Someone who opens the
+ * link and sees a stranger's charges has no way to tell that is what happened,
+ * and no way out of it.
+ *
+ * The EMAIL is the identity that answers "am I in the right account" — a name
+ * can be shared, and two volunteers called Sam are not hypothetical. The name
+ * leads because it is what a person recognises; the email is what settles it.
+ *
+ * `profiles.me` is deliberately the source: it needs no finance seat, which is
+ * the whole constraint this page exists under (see the module doc). It returns
+ * `null` for a signed-out caller, and this renders the bare mark then — the
+ * signed-out and access-denied frames below have their own copy and must not
+ * grow a "signed in as nobody" line.
+ */
 function BrandMark() {
+  const me = useQuery(api.profiles.me, {});
+  const { signOut } = useAuthActions();
+  const name = me?.profile?.name ?? null;
+  const email = me?.email ?? null;
   return (
     <View className="mb-6 flex-row items-center gap-2.5">
       <View className="h-9 w-9 items-center justify-center rounded-md bg-accent">
@@ -83,6 +111,32 @@ function BrandMark() {
         <Text className="font-display text-xl text-ink">Chapter</Text>
         <Text className="font-display text-xl text-accent">OS</Text>
       </View>
+      {email ? (
+        <>
+          {/* Pushes the identity to the far end, so the mark stays put and the
+              "is this me?" answer lands in one predictable place. */}
+          <View className="flex-1" />
+          <View className="items-end">
+            <Text className="text-xs text-ink" numberOfLines={1}>
+              {name ?? email}
+            </Text>
+            {name ? (
+              <Text className="text-2xs text-muted" numberOfLines={1}>
+                {email}
+              </Text>
+            ) : null}
+          </View>
+          <Pressable
+            onPress={() => void signOut()}
+            accessibilityRole="button"
+            accessibilityLabel="Sign out"
+            hitSlop={8}
+            className="rounded p-1 active:opacity-70"
+          >
+            <Text className="text-xs text-muted">Sign out</Text>
+          </Pressable>
+        </>
+      ) : null}
     </View>
   );
 }

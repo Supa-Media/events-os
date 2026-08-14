@@ -400,10 +400,23 @@ export async function buildSnapshot(
     // the payout deposits `signedBookCents` already zeroes. A PARTLY matched
     // deposit keeps its unclaimed remainder, which is the honest reading:
     // that much really did arrive and nobody has said what it was.
-    const signed = coveredSignedBookCents(
-      tr,
-      giftCoverage.get(tr._id as string) ?? 0,
-    );
+    const coveredCents = giftCoverage.get(tr._id as string) ?? 0;
+    const signed = coveredSignedBookCents(tr, coveredCents);
+    // WHAT THIS ROW IS, in its own words. Without it the row fell through to
+    // the page's `direction === "internal"` fallback and told every reader
+    // "Money moved between our own accounts — nothing earned or spent" about
+    // a donation (founder, 2026-08-14: "It's not internal transfer, it's a
+    // gift. But it was received by ACH"). The zero is right; the sentence
+    // explaining the zero was the opposite of the truth.
+    //
+    // A PARTLY matched deposit says exactly how much of it is giving, because
+    // the rest still counts and still owes an answer.
+    const giftLine =
+      coveredCents <= 0
+        ? undefined
+        : signed === 0
+          ? autoExplanationLine("gift_credit")
+          : `${formatCents(coveredCents)} of this deposit is giving, counted once in the giving roll below. The rest is not yet accounted for.`;
     // Direction from the book-value sign where there is one; otherwise the row
     // moves cash without changing value, which is exactly `internal`.
     const direction: EntryDraft["direction"] =
@@ -484,14 +497,25 @@ export async function buildSnapshot(
       direction,
       countsInTotals,
       bookLabel,
-      counterparty: displayMerchantName(tr),
+      // A GIVER IS NEVER NAMED HERE. Gifts publish as an anonymous roll, and
+      // the page says so in as many words: "No names, no amounts tied to a
+      // person, no way to work backwards to one." A wire's bank descriptor IS
+      // the sender's name, so publishing this row's merchant printed a named
+      // giver and their $7,000 two inches above that promise — breaking it on
+      // the same screen that made it, and doing so precisely BECAUSE somebody
+      // had done the right thing and recorded the deposit as giving.
+      //
+      // The row still publishes: the bank really received the money and a
+      // reader following it should see it arrive. It just arrives unattributed,
+      // which is the rule everywhere else giving appears.
+      counterparty: coveredCents > 0 ? undefined : displayMerchantName(tr),
       // `publicPurpose ?? businessPurpose` — the approver's redaction wins
       // where one was written, and the author's own words publish otherwise.
       // Never both, and never a rewrite of the author's text; see
       // `schema/finances.ts#transactionCodings.publicPurpose`.
       purpose: approved
         ? (approved.publicPurpose ?? approved.businessPurpose)
-        : autoLine,
+        : (giftLine ?? autoLine),
       categoryLabel,
       fundLabel: await labels.fund(tr.fundId),
       budgetLabel,

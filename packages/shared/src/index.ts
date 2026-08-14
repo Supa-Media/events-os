@@ -2209,6 +2209,9 @@ export * from "./academyPaths";
 // ── Finance (funds, budgets, transactions, reimbursements, cards, roles) ──────
 export * from "./finance";
 
+// ── Finance audit trail: state KEYS + the one renderer that words them ───────
+export * from "./financeAuditValue";
+
 // ── Org-chart seat taxonomy (template constants + capability vocabulary) ─────
 export * from "./seats";
 

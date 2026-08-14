@@ -684,12 +684,17 @@ function ReconcileGrid() {
   // report. One authority, no drift.
   const isManager = reconcile?.viewerIsManager ?? false;
 
-  // ── THE RECEIPT CHASE, IN THE GRID ─────────────────────────────────────────
+  // ── THE CODING CHASE, IN THE GRID ──────────────────────────────────────────
   // Founder, on the deployed build: "Chase receipts — I actually do like the
   // way it looks because it does it by person, and this is actually very
   // helpful. So maybe keep that. But why can't I see the header?" So the
-  // presentation moves onto the person bands and the whole of the nudge
-  // machinery moves with it. All five pieces, none of them softened:
+  // presentation moved onto the person bands and the whole of the chase
+  // machinery moved with it. Then (2026-08-14) the chase itself changed shape:
+  // *"Instead of receipt chase, I want a coding chase, because coding includes
+  // receipts"* — one button that asks a cardholder for everything they owe, and
+  // one that respects what the manager is looking at while it asks.
+  //
+  // Six pieces, none of them softened:
   //
   //  1. MANAGER-ONLY, not any finance seat. `receipt-chase.tsx` derived this
   //     from `financeRoles.mySeats` (`role === "manager"`); the grid uses
@@ -699,47 +704,74 @@ function ReconcileGrid() {
   //     CENTRAL-scope manager (an ED / Financial Manager holds no chapter
   //     seat and is manager-everywhere server-side).
   //  2. THE 24h RATE LIMIT, rendered. `getManualNudgeStatus` answers who has
-  //     already been nudged today; their button reads "Nudged today" and is
-  //     disabled rather than silently no-op'ing.
-  //  3. "REMIND ALL", the page-level action.
-  //  4. SCOPE, threaded. The nudge takes the same `scope`/`chapterId` pair the
-  //     grid is currently reading, so a central desk nudges the book on
+  //     already been chased today; their button reads "Chased today" and is
+  //     disabled rather than silently no-op'ing. Per PERSON, not per scope —
+  //     see `cards.ts`'s chase section for why.
+  //  3. "CHASE EVERYONE", the page-level action — the SAME call with the person
+  //     left off, so it can never act on a different population than the bands.
+  //  4. SCOPE, threaded. The chase takes the same `scope`/`chapterId` pair the
+  //     grid is currently reading, so a central desk chases the book on
   //     screen and never falls back to the caller's own chapter.
-  //  5. The per-row `outstanding` label, which now rides on `reconcileRow`.
+  //  5. THE VIEW, threaded — new. `filters`, `search` and the period window go
+  //     with it, so a chase fired from a narrowed grid asks about the rows that
+  //     grid is showing. Same values as `listArgs`, from the same state.
+  //  6. THE SELECTION, threaded — and it WINS. Ticked rows are the narrowest
+  //     thing on screen and the founder's actual reason for wanting any of
+  //     this: *"they'd know there's no way this person can code these two
+  //     transactions, but they can code these three."*
   //
-  // Hiding the buttons is a UX nicety, never the gate: `sendReceiptNudge` and
+  // Hiding the buttons is a UX nicety, never the gate: `sendCodingChase` and
   // `getManualNudgeStatus` re-assert manager rank AND the same scope branch
-  // server-side.
+  // server-side, and the chase query re-derives eligibility per row rather than
+  // mailing whatever id list it was handed (`finances.getCodingChaseTargets`).
   //
-  // The nudge args mirror the grid's own book resolution exactly — one
-  // derivation of "which book is on screen", so the list, the count and the
-  // email cannot point at three different places.
+  // The chase args mirror the grid's own book + view resolution exactly — one
+  // derivation of "what is on screen", so the list, the count and the email
+  // cannot point at three different places.
   //
-  // ONE BOOK AT A TIME, AND SAID OUT LOUD. `cards.getManualNudgeTargets` reads
-  // a SINGLE book (`scope: Id<"chapters"> | "central"`) — it has no "all"
-  // branch, and giving it one is a change to a manager-gated WRITE path, not a
-  // rendering decision. So in the merged all-books queue the buttons are
-  // withheld and the reason is printed, rather than nudging a narrower set than
-  // the bands on screen describe.
+  // ONE BOOK AT A TIME, AND SAID OUT LOUD. `requireCodingChase` resolves a
+  // SINGLE book — it has no "all" branch, and giving it one is a change to a
+  // manager-gated WRITE path, not a rendering decision. So in the merged
+  // all-books queue the buttons are withheld and the reason is printed, rather
+  // than chasing a narrower set than the bands on screen describe.
   //
   // That is deliberately NOT what the screen it replaces did: `receipt-chase.tsx`
   // silently degraded `?scope=all` to the caller's own chapter for BOTH the list
   // and the nudge, so a dual-hat FM looking at "everyone who owes a receipt"
   // was in fact looking at, and reminding, one book. Withholding a button beats
   // firing a narrower one than the page implies.
-  const nudgeArgs = useMemo(
-    () =>
-      centralScope
+  const chaseArgs = useMemo(
+    () => ({
+      ...(centralScope
         ? { scope: "central" as const }
         : targetChapterId
           ? { chapterId: targetChapterId }
-          : {},
-    [centralScope, targetChapterId],
+          : {}),
+      // THE VIEW — identical to what `listArgs` sends `listReconcile`, because
+      // the chase has to be about the rows that query returned. Reading them
+      // from the same state (rather than off the response) is what keeps them
+      // identical while a query is in flight.
+      filters,
+      search: debouncedQuery.trim() || undefined,
+      ...(hasPeriodScope
+        ? { year: periodYear as number, month: periodMonth, period: periodMode }
+        : {}),
+    }),
+    [
+      centralScope,
+      targetChapterId,
+      filters,
+      debouncedQuery,
+      hasPeriodScope,
+      periodYear,
+      periodMonth,
+      periodMode,
+    ],
   );
-  /** Can this view nudge at all? Manager rank AND a single book — see
-   *  `nudgeArgs`. */
+  /** Can this view chase at all? Manager rank AND a single book — see
+   *  `chaseArgs`. */
   const canNudgeHere = isManager && !allBooksScope;
-  // Only while actually grouped by person — a month band has nobody to nudge,
+  // Only while actually grouped by person — a month band has nobody to chase,
   // and probing the rate limit for a view that shows no buttons is a query per
   // keystroke for nothing.
   const chasingByPerson = groupBy === "person";
@@ -761,43 +793,14 @@ function ReconcileGrid() {
     () => new Set((nudgeStatus ?? []).map((n) => n.personId)),
     [nudgeStatus],
   );
-  const sendReceiptNudge = useAction(api.cards.sendReceiptNudge);
+  const sendCodingChase = useAction(api.cards.sendCodingChase);
   // "all" for the page-level button, else the cardholder's own personId —
-  // decides which button shows its spinner while a nudge is in flight.
+  // decides which button shows its spinner while a chase is in flight.
   const [sendingKey, setSendingKey] = useState<string | null>(null);
-  // A NEUTRAL summary of the last nudge's outcome, separate from `toast`, which
+  // A NEUTRAL summary of the last chase's outcome, separate from `toast`, which
   // `useActionRunner` reserves for genuine failures — "no email on file" is not
   // an error and must not render red.
   const [nudgeNotice, setNudgeNotice] = useState<string | null>(null);
-
-  async function sendNudge(personId: Id<"people"> | undefined, key: string) {
-    setSendingKey(key);
-    setNudgeNotice(null);
-    const res = await run(
-      () =>
-        sendReceiptNudge(
-          personId ? { ...nudgeArgs, personId } : { ...nudgeArgs },
-        ),
-      { errorTitle: "Couldn't send reminder" },
-    );
-    setSendingKey(null);
-    if (!res) return; // a real error already surfaced through `toast`.
-    if (res.results.length === 0) {
-      setNudgeNotice("Nobody currently owes a receipt.");
-      return;
-    }
-    setNudgeNotice(
-      res.results
-        .map((r) =>
-          r.outcome === "already_nudged"
-            ? `${r.cardholderName} was already nudged today`
-            : r.outcome === "no_email"
-              ? `${r.cardholderName} has no email on file — nothing sent`
-              : `Nudged ${r.cardholderName}`,
-        )
-        .join(" · "),
-    );
-  }
 
   // ── PUBLISHING, SEEN FROM THE MONTH IT IS ABOUT ────────────────────────────
   // Founder: "I should be able to see the publish stuff in By month, because
@@ -920,8 +923,8 @@ function ReconcileGrid() {
     ? (publicationByPeriod.get(publishingPeriod) ?? null)
     : null;
 
-  /** How many person bands there is actually somebody to nudge on — gates the
-   *  page-level "Remind all", which would otherwise offer to remind nobody. */
+  /** How many person bands there is actually somebody to chase on — gates the
+   *  page-level "Chase everyone", which would otherwise offer to chase nobody. */
   const nudgeableGroupCount = chasingByPerson
     ? (reconcile?.groups ?? []).filter((g) => g.key !== UNATTRIBUTED_GROUP_KEY)
         .length
@@ -1360,6 +1363,85 @@ function ReconcileGrid() {
   const selectionHasCentral = selectedRows.some((r) => r.book.id === CENTRAL);
   const selectionHasChapter = selectedRows.some((r) => r.book.id !== CENTRAL);
   const selectionSpansBooks = selectionHasCentral && selectionHasChapter;
+
+  // ── THE CHASE, ACTUALLY FIRED ──────────────────────────────────────────────
+  // Declared HERE, below the selection, because the selection is the narrowest
+  // input it takes — see the chase block above for everything else it sends.
+  //
+  // WHAT GOES ON THE WIRE, and the precedence it encodes:
+  //
+  //   selectedIds  →  the ticked rows, when there are any. The server treats a
+  //                   non-empty list as THE scope and ignores filters/search
+  //                   for that request.
+  //   filters/search/period  →  the view, otherwise.
+  //   personId     →  which band, orthogonal to both.
+  //
+  // `selectedInView` (not the raw `selected` set) is the same list the bulk bar
+  // acts on: ticked, still on screen, and writable. A stale id from a scope the
+  // caller has since left must not silently widen a chase, and this is where
+  // that is guaranteed on the client — the server guarantees it again by only
+  // ever intersecting these ids with rows it loaded itself.
+  const chaseSelectedIds = selectedInView as Id<"transactions">[];
+  const chasingSelection = chaseSelectedIds.length > 0;
+  /** How many ticked rows belong to each cardholder — so a band can say what
+   *  its own button is about ("Chase 3 selected") instead of leaving the
+   *  manager to trust that the narrowing took. Keyed by the SAME group key the
+   *  bands use, which is the row's `cardholder.personId`. */
+  const selectedCountByPerson = useMemo(() => {
+    const counts = new Map<string, number>();
+    if (!chasingSelection) return counts;
+    for (const row of selectedRows) {
+      const key = row.cardholder?.personId;
+      if (!key) continue;
+      counts.set(key, (counts.get(key) ?? 0) + 1);
+    }
+    return counts;
+  }, [chasingSelection, selectedRows]);
+
+  async function sendChase(personId: Id<"people"> | undefined, key: string) {
+    setSendingKey(key);
+    setNudgeNotice(null);
+    const res = await run(
+      () =>
+        sendCodingChase({
+          ...chaseArgs,
+          ...(personId ? { personId } : {}),
+          // Omitted entirely when nothing is ticked — an empty array and an
+          // absent one mean the same thing to the server, but sending the field
+          // only when it carries a decision keeps the wire honest about which
+          // of the two scopings was in play.
+          ...(chasingSelection ? { selectedIds: chaseSelectedIds } : {}),
+        }),
+      { errorTitle: "Couldn't send the chase" },
+    );
+    setSendingKey(null);
+    if (!res) return; // a real error already surfaced through `toast`.
+    if (res.results.length === 0) {
+      // NOT "nobody owes anything" — the chase is scoped now, so the honest
+      // sentence names the scope. An empty result on a narrowed grid means this
+      // view holds nothing chaseable, which is a different fact from the book
+      // being clear.
+      setNudgeNotice(
+        chasingSelection
+          ? "Nothing in the selected rows is waiting on a cardholder."
+          : "Nothing in this view is waiting on a cardholder.",
+      );
+      return;
+    }
+    setNudgeNotice(
+      res.results
+        .map((r) =>
+          r.outcome === "already_nudged"
+            ? `${r.cardholderName} was already chased today`
+            : r.outcome === "no_email"
+              ? `${r.cardholderName} has no email on file — nothing sent`
+              : `Chased ${r.cardholderName} (${r.chargeCount} ${
+                  r.chargeCount === 1 ? "charge" : "charges"
+                })`,
+        )
+        .join(" · "),
+    );
+  }
   // Category never applies to a central row; "For" needs the matching list.
   const bulkHideCategory = centralScope || selectionHasCentral;
   const bulkForItems = selectionHasCentral ? centralForItems : forItems;
@@ -1745,34 +1827,46 @@ function ReconcileGrid() {
                 </Text>
               ) : null}
             </View>
-            {/* REMIND ALL — the page-level nudge, manager-only, and only while
-                the grid is actually banded by person. It reminds whoever the
-                CURRENT filters found, in the CURRENT book. */}
+            {/* CHASE EVERYONE — the page-level chase, manager-only, and only
+                while the grid is actually banded by person.
+
+                It is the per-band button with the person left off: same action,
+                same view args, same selection. That is what keeps the two
+                coherent — "everyone" can only ever mean "every band the SAME
+                narrowing left", so a manager who ticks rows and presses this
+                chases exactly those rows across whoever owns them, and one who
+                has ticked nothing chases the filtered view. The title says
+                which, because the difference is the whole point of the
+                narrowing. */}
             {canNudgeHere && chasingByPerson && nudgeableGroupCount > 0 ? (
               <Button
-                title="Remind all"
+                title={
+                  chasingSelection
+                    ? `Chase ${chaseSelectedIds.length} selected`
+                    : "Chase everyone"
+                }
                 variant="secondary"
                 size="sm"
                 icon="send"
                 loading={sendingKey === "all"}
-                onPress={() => void sendNudge(undefined, "all")}
+                onPress={() => void sendChase(undefined, "all")}
               />
             ) : null}
           </View>
 
-          {/* The nudge's own outcome line. Deliberately NOT the error toast:
+          {/* The chase's own outcome line. Deliberately NOT the error toast:
               "has no email on file" is information, not a failure, and
               rendering it red would teach people to distrust the button. */}
           {/* WHY THERE IS NO BUTTON. A manager looking at the by-person chase in
-              the merged queue would otherwise just find the reminders missing,
-              with nothing on screen saying that picking a book brings them
+              the merged queue would otherwise just find the chase missing,
+              with nothing on screen saying that picking a book brings it
               back. The books selector is directly below. */}
           {isManager && chasingByPerson && allBooksScope ? (
             <View className="mb-3 flex-row items-center gap-2">
               <Icon name="info" size={14} color={colors.muted} />
               <Text className="flex-1 text-xs text-muted">
-                Reminders go to one book&apos;s cardholders at a time — pick
-                Central or a chapter below to send them.
+                A chase goes to one book&apos;s cardholders at a time — pick
+                Central or a chapter below to send it.
               </Text>
             </View>
           ) : null}
@@ -2465,19 +2559,34 @@ function ReconcileGrid() {
                 if (group.key === UNATTRIBUTED_GROUP_KEY) return null;
                 const personId = group.key as Id<"people">;
                 // The 24h server-side rate limit, RENDERED rather than
-                // discovered by pressing: a second nudge inside the window is
+                // discovered by pressing: a second chase inside the window is
                 // refused server-side, and a button that looks live and does
                 // nothing is worse than one that says why.
                 const already = nudgedToday.has(personId);
+                // WHAT THIS BUTTON IS ABOUT, said on the button. With rows
+                // ticked the chase is exactly those rows, so a band whose
+                // cardholder owns none of them has nothing to send and says so
+                // by standing down — pressing it would resolve to zero targets
+                // and print a notice, which is a worse way to learn the same
+                // fact. With nothing ticked it is the filtered view, and the
+                // plain "Chase" is honest about acting on the whole band.
+                const selectedHere = selectedCountByPerson.get(group.key) ?? 0;
+                if (chasingSelection && selectedHere === 0) return null;
                 return (
                   <Button
-                    title={already ? "Nudged today" : "Send reminder"}
+                    title={
+                      already
+                        ? "Chased today"
+                        : chasingSelection
+                          ? `Chase ${selectedHere} selected`
+                          : "Chase"
+                    }
                     variant="secondary"
                     size="sm"
                     icon={already ? undefined : "send"}
                     disabled={already}
                     loading={sendingKey === personId}
-                    onPress={() => void sendNudge(personId, personId)}
+                    onPress={() => void sendChase(personId, personId)}
                   />
                 );
               }}

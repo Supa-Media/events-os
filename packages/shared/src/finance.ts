@@ -285,6 +285,22 @@ export const BOOK_VALUE_ZERO_REASON_LABELS: Record<
 export const TRANSACTION_FLOWS = ["outflow", "inflow", "transfer"] as const;
 export type TransactionFlow = (typeof TRANSACTION_FLOWS)[number];
 
+/**
+ * A flow in words. New here because until now nothing rendered one — and the
+ * finance audit trail, which does show flow changes ("marked as an internal
+ * transfer"), had no label map to reach for and so wrote the raw enum into a
+ * display field. A bookkeeper reading the History section on a marked transfer
+ * has been seeing `outflow → transfer` since the day it shipped.
+ *
+ * Same contract as `TRANSACTION_STATUS_LABELS` above: the stored values never
+ * change, and this is the one English spelling of them.
+ */
+export const TRANSACTION_FLOW_LABELS: Record<TransactionFlow, string> = {
+  outflow: "Money out",
+  inflow: "Money in",
+  transfer: "Internal transfer",
+};
+
 export const TRANSACTION_STATUSES = [
   "unreviewed", // just synced/created, needs a human
   "categorized", // fund/category assigned
@@ -2029,7 +2045,15 @@ export type AutoExplainedKind =
   | "refunded_charge"
   | "refund_credit"
   | "repayment_credit"
-  | "interest";
+  | "interest"
+  // A bank credit a confirmed gift claims (`gifts.transactionId`). NOT
+  // returned by `autoExplainedKind` — that function is pure on the
+  // transaction, and this fact lives in another table — so the caller that
+  // has already resolved coverage (`lib/giftCoverage.ts`) passes the kind to
+  // `autoExplanationLine` itself. It belongs in this union anyway: the
+  // sentence is the same KIND of thing as the others, and keeping it here is
+  // what stops a second, divergent copy being written at the call site.
+  | "gift_credit";
 
 /** Increase's `source.category` values the classification keys on — POSITIVE
  *  markers stored verbatim at ingestion, never description-text inferences
@@ -2131,6 +2155,9 @@ export function autoExplanationLine(
   }
   if (kind === "interest") {
     return "Interest paid by the bank on the account balance. Not a gift and not a sale.";
+  }
+  if (kind === "gift_credit") {
+    return "A gift arriving in the bank — counted once, in the giving roll below. The deposit itself adds nothing on top, which is why it reads as zero here.";
   }
   return personalState === "personal_reimbursed"
     ? "Accidental personal charge — paid back."

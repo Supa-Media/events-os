@@ -34,11 +34,20 @@
  * "$303.86 and nobody knows who" failure the anchor exists to prevent). A
  * `system:true` call whose `action` isn't in `SYSTEM_AUDIT_ACTIONS` throws
  * rather than silently going anonymous.
+ *
+ * The second thing enforced here is the same shape of promise: an action whose
+ * `before`/`after` name a CLOSED vocabulary (a status, a flow, a coding state
+ * — `financeAuditValueKind` is the list) must send the state KEY alongside the
+ * words, or the call throws. A writer that forgot would silently go back to
+ * freezing today's label into history, and the next rename would split the
+ * trail in half exactly as #717 did. See `@events-os/shared`'s
+ * `financeAuditValue.ts` for the whole design and for why free-text actions
+ * deliberately have no key at all.
  */
 import type { MutationCtx } from "../_generated/server";
 import { requireUserId } from "./context";
 import type { Id } from "../_generated/dataModel";
-import type { FinanceAuditAction } from "@events-os/shared";
+import { financeAuditValueKind, type FinanceAuditAction } from "@events-os/shared";
 import type { FinanceScope } from "./finance";
 
 /**
@@ -68,9 +77,17 @@ export interface FinanceAuditEntry {
   /** The changed field's name (e.g. "status", "category", "budget"). Omit for
    *  an action with no single changed field (e.g. `manual_create`). */
   field?: string;
-  /** Human-readable — a name/label/formatted amount, NEVER a raw id. */
+  /** Human-readable — a name/label/formatted amount, NEVER a raw id. What the
+   *  screen said at the time; frozen, and never rewritten. */
   before?: string | null;
   after?: string | null;
+  /** The STORED state key behind `before`/`after` — `"reconciled"`, not
+   *  `"Closed"` — for an action whose sides name a closed vocabulary. Required
+   *  alongside a non-null word on those actions (enforced below); omitted
+   *  entirely on a free-text action. See `schema/finances.ts`'s field comment
+   *  and `@events-os/shared`'s `financeAuditValue.ts` for which is which. */
+  beforeKey?: string | null;
+  afterKey?: string | null;
   /** Required by the caller (`setTransactionStatus`) for an `excluded`
    *  status_change; optional everywhere else. */
   reason?: string | null;
@@ -99,6 +116,29 @@ export async function logFinanceAudit(
         `loosening the actorUserId anchor).`,
     );
   }
+  // KEYED ACTIONS MUST CARRY THEIR KEYS, enforced here for the same reason
+  // `system: true` is enforced above rather than merely documented: a writer
+  // that forgets is indistinguishable, at the read surface, from a row that
+  // legitimately has no key — it just quietly goes back to freezing a label,
+  // and nobody notices until the next rename splits the trail again. Checked
+  // per SIDE, because a null side is a real value here (`unmarkPayout` writes
+  // `after: null`, meaning "no processor any more").
+  const kind = financeAuditValueKind(entry.action, entry.field);
+  if (kind) {
+    for (const side of ["before", "after"] as const) {
+      const word = entry[side];
+      const key = side === "before" ? entry.beforeKey : entry.afterKey;
+      if (word != null && key == null) {
+        throw new Error(
+          `logFinanceAudit: "${entry.action}" writes ${kind} values, so a ` +
+            `non-null \`${side}\` needs \`${side}Key\` — the STORED key ` +
+            `("reconciled"), not the label ("Closed"). Without it this row ` +
+            `freezes today's wording forever, which is the bug ` +
+            `financeAuditValue.ts exists to close.`,
+        );
+      }
+    }
+  }
   const actorUserId = entry.system
     ? undefined
     : ((await requireUserId(ctx)) as Id<"users">);
@@ -112,6 +152,8 @@ export async function logFinanceAudit(
     ...(entry.field !== undefined ? { field: entry.field } : {}),
     ...(entry.before != null ? { before: entry.before } : {}),
     ...(entry.after != null ? { after: entry.after } : {}),
+    ...(entry.beforeKey != null ? { beforeKey: entry.beforeKey } : {}),
+    ...(entry.afterKey != null ? { afterKey: entry.afterKey } : {}),
     ...(entry.reason ? { reason: entry.reason } : {}),
     ...(entry.amountCents !== undefined ? { amountCents: entry.amountCents } : {}),
     createdAt: Date.now(),

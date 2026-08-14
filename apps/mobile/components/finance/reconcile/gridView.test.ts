@@ -380,3 +380,55 @@ describe("groupSegments", () => {
   });
 });
 
+
+describe("rowMarkings — a credit the giving layer already counted", () => {
+  const base = {
+    isMarkedTransfer: false,
+    payoutProcessor: null,
+    isPersonal: false,
+    repaymentStatus: null,
+  };
+
+  it("badges a fully matched credit as settled", () => {
+    expect(
+      rowMarkings({ ...base, amountCents: 700_000, giftCoveredCents: 700_000 }),
+    ).toEqual([{ kind: "gift", coveredCents: 700_000, fullyCovered: true }]);
+  });
+
+  it("a PARTLY matched credit does not claim to be settled", () => {
+    // One gift of a split is matched and the other is not; the row still owes
+    // an answer for the rest, and the badge has to be able to say so.
+    expect(
+      rowMarkings({ ...base, amountCents: 700_000, giftCoveredCents: 200_000 }),
+    ).toEqual([{ kind: "gift", coveredCents: 200_000, fullyCovered: false }]);
+  });
+
+  it("an unmatched credit carries no marking at all", () => {
+    expect(
+      rowMarkings({ ...base, amountCents: 700_000, giftCoveredCents: 0 }),
+    ).toEqual([]);
+  });
+
+  it("sits BESIDE a personal flag rather than replacing it", () => {
+    expect(
+      rowMarkings({
+        ...base,
+        isPersonal: true,
+        amountCents: 5_000,
+        giftCoveredCents: 5_000,
+      }),
+    ).toEqual([
+      { kind: "gift", coveredCents: 5_000, fullyCovered: true },
+      { kind: "personal" },
+    ]);
+  });
+
+  it("gives the Marked column a reason to exist", () => {
+    expect(
+      showsMarkedColumn([{ ...base, amountCents: 5_000, giftCoveredCents: 5_000 }]),
+    ).toBe(true);
+    expect(
+      showsMarkedColumn([{ ...base, amountCents: 5_000, giftCoveredCents: 0 }]),
+    ).toBe(false);
+  });
+});

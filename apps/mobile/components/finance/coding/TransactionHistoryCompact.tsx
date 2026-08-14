@@ -97,6 +97,12 @@ export function TransactionHistoryCompact({
                 {FINANCE_AUDIT_ACTION_LABELS[r.action]}
                 {r.field ? ` — ${r.field}` : ""}
               </Text>
+              {/* `before`/`after` arrive ALREADY WORDED. `financeAuditTrail`
+                  renders every keyed row through the one shared renderer
+                  server-side (`financeAuditValueLabel`), so a status renamed
+                  tomorrow reads the new word here without this file changing
+                  — and the `beforeKey`/`afterKey` it also hands over are for
+                  REASONING about state, never for printing. */}
               {r.before != null || r.after != null ? (
                 <Text className="text-xs text-muted" numberOfLines={2}>
                   {r.before ?? "—"} → {r.after ?? "—"}

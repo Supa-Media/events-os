@@ -120,20 +120,18 @@ function isActive(pathname: string, path: string): boolean {
   return pathname === path || pathname.startsWith(`${path}/`);
 }
 
-/** The Book's menu leads to screens that are still their own routes (the chase
- *  list, the publish console, the review queue). Standing on one of those must
- *  keep the Book chip lit, or the bar would say you had left finance's main tab
- *  by using its own menu.
+/** The Book's menu leads to screens that are still their own routes (the
+ *  publish console, the review queue). Standing on one of those must keep the
+ *  Book chip lit, or the bar would say you had left finance's main tab by using
+ *  its own menu.
  *
- *  `/finances/explain` is deliberately absent: it is no longer a screen but a
- *  redirect INTO `/finances/reconcile` (the grid absorbed it — see that file),
- *  so nobody is ever standing on it long enough for the chip to matter, and
- *  listing it would claim a satellite that no longer exists. */
-const BOOK_SATELLITES = [
-  "/finances/receipt-chase",
-  "/finances/publish",
-  "/finances/coding",
-] as const;
+ *  `/finances/explain` and `/finances/receipt-chase` are both deliberately
+ *  absent: neither is a screen any more, only a redirect INTO
+ *  `/finances/reconcile` (the grid absorbed the month-at-a-time explain flow,
+ *  and then the chase — see those two files), so nobody is ever standing on
+ *  either long enough for the chip to matter, and listing one would claim a
+ *  satellite that no longer exists. */
+const BOOK_SATELLITES = ["/finances/publish", "/finances/coding"] as const;
 
 /** The two owe-direction screens that hang off Reimbursements: the member's
  *  own "pay the org back" page and the manager's collections desk. Both are

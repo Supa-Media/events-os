@@ -69,7 +69,15 @@
  * existing coding or anything already typed.
  */
 import { useEffect, useRef, useState } from "react";
-import { Modal, Pressable, ScrollView, Text, View } from "react-native";
+import {
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  View,
+} from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import {
   ATTENDEE_AFFILIATION_LABELS,
@@ -1143,6 +1151,26 @@ export function FinishChargeSheet({
 
   return (
     <Modal visible transparent animationType="fade" onRequestClose={requestClose}>
+      {/* ── THE KEYBOARD USED TO SIT ON TOP OF THIS SHEET ────────────────────
+          The card is vertically CENTRED in the scrim and its body is capped at
+          520px, so on a phone the business-purpose field and the Done button
+          are both in the lower half — exactly where the keyboard lands. Typing
+          a purpose meant typing blind and then hunting for a button you could
+          not see. Founder, on `/code`: it needs a keyboard-avoiding view.
+
+          `padding` on iOS, `height` on Android: the two platforms disagree
+          about what a resized window means, and this is the pairing the RN
+          docs prescribe. On web the keyboard does not overlay the viewport at
+          all, so the component is a no-op there rather than something to
+          branch around.
+
+          Fixed HERE rather than on `/code`, because this sheet is the one form
+          both `/code` and the Reconcile grid mount (see the module doc) — the
+          phone frame is the same in both, and so was the bug. */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === "ios" ? "padding" : "height"}
+        className="flex-1"
+      >
       <Pressable
         onPress={requestClose}
         className="flex-1 items-center justify-center bg-ink/30 p-6"
@@ -1205,6 +1233,7 @@ export function FinishChargeSheet({
           </View>
         </Pressable>
       </Pressable>
+      </KeyboardAvoidingView>
     </Modal>
   );
 }
