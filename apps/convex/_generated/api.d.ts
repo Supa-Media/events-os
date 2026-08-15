@@ -16,6 +16,7 @@ import type * as aiEngine from "../aiEngine.js";
 import type * as audiences from "../audiences.js";
 import type * as auth from "../auth.js";
 import type * as backerMilestones from "../backerMilestones.js";
+import type * as backerCatchUpBackfill from "../backerCatchUpBackfill.js";
 import type * as backerPortal from "../backerPortal.js";
 import type * as backfillWorshipRegistrations from "../backfillWorshipRegistrations.js";
 import type * as blasts from "../blasts.js";
@@ -463,6 +464,7 @@ declare const fullApi: ApiFromModules<{
   audiences: typeof audiences;
   auth: typeof auth;
   backerMilestones: typeof backerMilestones;
+  backerCatchUpBackfill: typeof backerCatchUpBackfill;
   backerPortal: typeof backerPortal;
   backfillWorshipRegistrations: typeof backfillWorshipRegistrations;
   blasts: typeof blasts;

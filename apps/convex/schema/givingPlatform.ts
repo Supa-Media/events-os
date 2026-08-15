@@ -979,6 +979,27 @@ export const pledges = defineTable({
    * announced", and no backfill will change that.
    */
   announcedAt: v.optional(v.number()),
+  /**
+   * The instant this pledge's holder was sent the ONE-SHOT CATCH-UP thank-you
+   * (`backerCatchUpBackfill.ts`) — the email they never got because they became
+   * a backer before there was one.
+   *
+   * ── WHY THIS IS NOT `announcedAt` ─────────────────────────────────────────
+   * It would be the obvious field to reuse and it would be a bug. `announcedAt`
+   * is the axis the daily and weekly digests range over
+   * (`givingNotificationDigests.collectWindowBackers`), so stamping it `now` on
+   * two hundred existing backers would tell the development team the org had
+   * signed two hundred new backers this week. Every one of those people signed
+   * up months ago.
+   *
+   * Keeping them apart also keeps `announcedAt`'s meaning honest: absent still
+   * means "never announced as new", which is exactly what a backer from 2024
+   * is. The catch-up is a different event and gets a different stamp.
+   *
+   * Set once, by the sweep, and never read by anything but the sweep's own
+   * claim — so a second run mails nobody twice.
+   */
+  catchUpSentAt: v.optional(v.number()),
   createdAt: v.number(),
 })
   .index("by_donor", ["donorId"])

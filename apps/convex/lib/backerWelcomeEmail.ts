@@ -50,7 +50,39 @@ import { escapeHtml } from "./html";
 
 const esc = escapeHtml;
 
+/** "March 2026" — how far back a catch-up email dates somebody's backing. A
+ *  MONTH, not a day: the exact date of a subscription's first charge is a
+ *  precision nobody asked for, and being wrong about it by a day in an
+ *  apology email is worse than being general. */
+const SINCE_FMT = new Intl.DateTimeFormat("en-US", {
+  timeZone: "America/New_York",
+  month: "long",
+  year: "numeric",
+});
+
+/**
+ * Which of the two moments this email is for.
+ *
+ *  - `welcome`  — they just signed up. The live path.
+ *  - `catch_up` — they signed up BEFORE this email existed and were never
+ *    thanked. A one-shot sweep (`backerCatchUpBackfill.ts`) sends it once.
+ *
+ * They share a body and differ in the opening, because the difference matters:
+ * telling somebody who has given every month for a year that they "just became
+ * a backer" and that their "first month has been received" reads as a system
+ * that doesn't know them, which is worse than the silence it was meant to fix.
+ * The catch-up says out loud that we're late — the same register
+ * `lib/reimbursementApprovedEmail.ts`'s `catch_up` notice uses, and for the
+ * same reason.
+ */
+export type BackerWelcomeKind = "welcome" | "catch_up";
+
 export type BackerWelcomePayload = {
+  /** Defaults to `welcome`, so every existing call site is unchanged. */
+  kind?: BackerWelcomeKind;
+  /** When their backing actually started — printed by the CATCH-UP opening,
+   *  which has no "today" to point at. Ignored by the welcome. */
+  backingSince?: number;
   /** The backer's name as they gave it. Escaped at render — it comes off the
    *  public backing form. */
   name: string;
@@ -109,20 +141,38 @@ export function renderBackerWelcomeEmail(payload: BackerWelcomePayload): {
   const first = greetingName(payload.name);
   const amount = formatCents(payload.monthlyCents);
   const city = payload.chapterName ?? "Public Worship";
-  const subject = payload.isBacker
-    ? `You're a backer of ${city} 🎉`
-    : `You're giving monthly to ${city} 🎉`;
+  const noun = payload.isBacker ? "backer" : "monthly giver";
+  const catchUp = payload.kind === "catch_up";
+  const since = payload.backingSince
+    ? SINCE_FMT.format(new Date(payload.backingSince))
+    : null;
+
+  const subject = catchUp
+    ? `Thank you for backing ${city}`
+    : payload.isBacker
+      ? `You're a backer of ${city} 🎉`
+      : `You're giving monthly to ${city} 🎉`;
 
   const inner = [
     emailHeading(`Thank you, ${esc(first)}.`, { size: 28, margin: "0 0 12px" }),
-    emailParagraph(
-      (payload.isBacker
-        ? `You just became a <b>backer of ${esc(city)}</b> — and that word means something specific around here. `
-        : `You just started <b>giving monthly to ${esc(city)}</b>, and that means something specific around here. `) +
-        `Monthly givers are the reason Public Worship exists. Not a nice-to-have, not a supplement to something else that ` +
-        `funds us: the monthly giving of people like you <b>is</b> the funding. It's what lets us plan past this month.`,
-      { margin: "0 0 16px" },
-    ),
+    catchUp
+      ? emailParagraph(
+          `You've been ${payload.isBacker ? "backing" : "giving monthly to"} <b>${esc(city)}</b>` +
+            (since ? ` since ${esc(since)}` : "") +
+            `, and we never sent you a proper thank-you for it. That's on us, and this is it — late, and meant.` +
+            `<br><br>` +
+            `${payload.isBacker ? "Backers" : "Monthly givers"} are the reason Public Worship exists. Not a nice-to-have, not a supplement to something else that ` +
+            `funds us: the monthly giving of people like you <b>is</b> the funding. It's what lets us plan past this month.`,
+          { margin: "0 0 16px" },
+        )
+      : emailParagraph(
+          (payload.isBacker
+            ? `You just became a <b>backer of ${esc(city)}</b> — and that word means something specific around here. `
+            : `You just started <b>giving monthly to ${esc(city)}</b>, and that means something specific around here. `) +
+            `Monthly givers are the reason Public Worship exists. Not a nice-to-have, not a supplement to something else that ` +
+            `funds us: the monthly giving of people like you <b>is</b> the funding. It's what lets us plan past this month.`,
+          { margin: "0 0 16px" },
+        ),
     emailPanel(
       [
         emailSubheading(payload.isBacker ? "Your backing" : "Your monthly giving", {
@@ -130,9 +180,17 @@ export function renderBackerWelcomeEmail(payload: BackerWelcomePayload): {
           margin: "0 0 8px",
         }),
         emailParagraph(
-          `<b>${esc(amount)} a month</b>, to ${esc(city)}, starting today. ` +
-            `Your first month has been received — you'll get a short receipt each month from here on, ` +
-            `and nothing else to do.`,
+          catchUp
+            ? // NO "starting today", and no claim about a first month — this
+              // person's money has been arriving for a while, and saying
+              // otherwise is the exact tell that the email was generated
+              // rather than meant.
+              `<b>${esc(amount)} a month</b>, to ${esc(city)}` +
+                (since ? `, since ${esc(since)}` : "") +
+                `. Nothing about it changes because of this email.`
+            : `<b>${esc(amount)} a month</b>, to ${esc(city)}, starting today. ` +
+              `Your first month has been received — you'll get a short receipt each month from here on, ` +
+              `and nothing else to do.`,
           { margin: "0" },
         ),
       ].join(""),
@@ -146,14 +204,21 @@ export function renderBackerWelcomeEmail(payload: BackerWelcomePayload): {
     emailList([
       "<b>Worship in the room, every month</b> — the nights themselves, and the people and gear it takes to put one on.",
       "<b>A team on the ground in a city</b>, rather than an event that visits one and leaves.",
-      "<b>The next city</b> — a place on the map opens when enough backers stand behind it, so you've just moved a real number on a real page.",
+      catchUp
+        ? "<b>The next city</b> — a place on the map opens when enough backers stand behind it, and you have been one of the people holding that number up."
+        : "<b>The next city</b> — a place on the map opens when enough backers stand behind it, so you've just moved a real number on a real page.",
     ]),
     emailParagraph(
-      "We'll keep you in the loop — where the nights are happening, what your city is up to, what the giving is unlocking, and the honest version when something's hard. You're in the room now, not on a mailing list.",
+      catchUp
+        ? "We'll keep you in the loop from here — where the nights are happening, what your city is up to, what the giving is unlocking, and the honest version when something's hard. You're in the room, not on a mailing list."
+        : "We'll keep you in the loop — where the nights are happening, what your city is up to, what the giving is unlocking, and the honest version when something's hard. You're in the room now, not on a mailing list.",
       { margin: "0 0 20px" },
     ),
     payload.portalUrl
-      ? emailButton(payload.portalUrl, "See your giving")
+      ? emailButton(
+          payload.portalUrl,
+          catchUp ? "See everything you've given" : "See your giving",
+        )
       : "",
     payload.givePageUrl
       ? emailParagraph(
