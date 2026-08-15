@@ -1025,6 +1025,43 @@ async function cancelCheckoutSession(
  * nothing. The reverse risk — a crash between recording and sending — costs
  * one email and never money, which is the correct side to fail on.
  */
+/**
+ * The subscription an invoice belongs to, across BOTH shapes Stripe sends.
+ *
+ * ── WHY TWO SHAPES ─────────────────────────────────────────────────────────
+ * The Invoice object used to carry a top-level `subscription`. Newer Stripe API
+ * versions moved it under `parent.subscription_details.subscription`, and a
+ * webhook endpoint renders every payload at ITS OWN pinned API version — which
+ * is set when the endpoint is created and is not the version this code was
+ * written against. So the field a given deployment receives depends on when
+ * somebody last touched the endpoint in the dashboard, which is not a thing any
+ * of us will remember to check.
+ *
+ * Reading both is not defensive clutter: on the old shape the new path is
+ * absent and vice versa, so whichever one arrives, exactly one of these
+ * resolves and the other is `undefined`. There is no version to guess and
+ * nothing to keep in sync.
+ *
+ * The cost of getting this wrong is the reason it is written out at length. The
+ * guard around it used to be `if (inv.subscription)`, and when that field is
+ * absent the branch did nothing, logged nothing, and returned 200 — so Stripe
+ * recorded a successful delivery, the money left the backer's card, and the
+ * giving ledger never heard about it. Every backer's giving was invisible and
+ * the system reported no error at any point.
+ */
+function invoiceSubscriptionId(inv: {
+  subscription?: string | null;
+  parent?: {
+    subscription_details?: { subscription?: string | null } | null;
+  } | null;
+}): string | undefined {
+  return (
+    inv.subscription ??
+    inv.parent?.subscription_details?.subscription ??
+    undefined
+  );
+}
+
 async function isFirstDelivery(
   ctx: ActionCtx,
   event: { id: string; type: string },
@@ -1074,6 +1111,14 @@ http.route({
           payment_status?: string;
           // invoice.paid / invoice.payment_failed:
           amount_paid?: number;
+          // WHEN the invoice was paid (unix SECONDS) — the gift's real date.
+          status_transitions?: { paid_at?: number | null } | null;
+          // The newer Invoice shape's home for the subscription link. See
+          // `invoiceSubscriptionId`, which reads this OR the legacy top-level
+          // `subscription` above.
+          parent?: {
+            subscription_details?: { subscription?: string | null } | null;
+          } | null;
           // customer.subscription.updated / .deleted, AND charge.dispute.*
           // (where it is the dispute status — `warning_*` means an
           // authorization inquiry that moves no money; see
@@ -1206,19 +1251,43 @@ http.route({
       // the invoice id) + bump the donor rollups. No-op if the subscription
       // isn't a pledge's. Amount is read from the invoice, never a client value.
       const inv = event.data.object;
-      if (inv.subscription) {
+      const subscriptionId = invoiceSubscriptionId(inv);
+      if (subscriptionId) {
         await ctx.runMutation(internal.givingPledges.recordPledgeInvoice, {
-          subscriptionId: inv.subscription,
+          subscriptionId,
           invoiceId: inv.id,
           amountPaidCents: inv.amount_paid ?? 0,
+          // WHEN THE MONEY ACTUALLY MOVED, not when we heard about it. Stripe
+          // stamps `status_transitions.paid_at` (unix SECONDS); a redelivered
+          // or delayed webhook would otherwise date a gift to the moment of
+          // delivery and quietly move it into the wrong month's ledger.
+          ...(inv.status_transitions?.paid_at
+            ? { receivedAt: inv.status_transitions.paid_at * 1000 }
+            : {}),
         });
+      } else {
+        // LOUD. An `invoice.paid` we cannot tie to a subscription is money that
+        // will never reach the giving ledger, and the old code returned quietly
+        // here — the failure mode that hid every backer's giving. Nothing is
+        // lost permanently (`backerInvoiceRecovery` re-reads Stripe and records
+        // what is missing), but it must be visible without an audit.
+        console.error(
+          `[stripe] invoice.paid ${inv.id} carried no resolvable subscription — ` +
+            "no gift recorded. Run backerInvoiceRecovery:recoverBackerInvoices.",
+        );
       }
     } else if (event.type === "invoice.payment_failed") {
       const inv = event.data.object;
-      if (inv.subscription) {
+      const subscriptionId = invoiceSubscriptionId(inv);
+      if (subscriptionId) {
         await ctx.runMutation(internal.givingPledges.markPledgePastDue, {
-          subscriptionId: inv.subscription,
+          subscriptionId,
         });
+      } else {
+        console.error(
+          `[stripe] invoice.payment_failed ${inv.id} carried no resolvable ` +
+            "subscription — the pledge was NOT moved to past_due.",
+        );
       }
     } else if (event.type === "customer.subscription.updated") {
       // Sync status / period / amount. `data.object` is the subscription, so its

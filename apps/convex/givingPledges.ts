@@ -889,6 +889,24 @@ export const recordPledgeInvoice = internalMutation({
     // subscription's `metadata.pledgeId` and re-records this invoice. The
     // recovery's own re-call passes `false` so it can never loop.
     attemptRecovery: v.optional(v.boolean()),
+    /** When the money actually moved (Stripe's `status_transitions.paid_at`).
+     *  Defaults to now for the live path, where they are the same instant.
+     *  The RECOVERY sweep passes the invoice's real date, because a gift
+     *  recovered in August for a payment taken in May belongs in May's ledger
+     *  — dating it today would misstate two months of giving. */
+    receivedAt: v.optional(v.number()),
+    /**
+     * Record the money and send NOTHING — no welcome, no receipt, and no desk
+     * notification.
+     *
+     * For `backerInvoiceRecovery`, which records invoices that Stripe took
+     * months ago. The money is real and belongs in the ledger; the emails are
+     * not, because "your monthly gift came through" about a payment from May is
+     * a system talking to itself. Same discipline as `recordGiftForDonor`'s
+     * `notify` flag, and it demotes rather than silences: the gifts are in the
+     * ledger and in every report that reads it.
+     */
+    suppressEmails: v.optional(v.boolean()),
   },
   returns: v.boolean(),
   handler: async (ctx, args) => {
@@ -930,11 +948,14 @@ export const recordPledgeInvoice = internalMutation({
       const giftId = await recordGiftForDonor(ctx, {
         donorId: pledge.donorId,
         amountCents: args.amountPaidCents,
-        receivedAt: Date.now(),
+        receivedAt: args.receivedAt ?? Date.now(),
         method: "stripe",
         pledgeId: pledge._id,
         stripeInvoiceId: args.invoiceId,
         note: "Monthly backer gift",
+        // A RECOVERED cycle does not ring the desk's bell: these are months-old
+        // payments being written to the ledger late, not gifts arriving now.
+        ...(args.suppressEmails ? { notify: false } : {}),
       });
       // ── THE FIRST CYCLE GETS A WELCOME; EVERY CYCLE AFTER IT GETS A RECEIPT ──
       //
@@ -953,7 +974,12 @@ export const recordPledgeInvoice = internalMutation({
         .query("gifts")
         .withIndex("by_pledge", (q) => q.eq("pledgeId", pledge._id))
         .take(2);
-      if (priorCycles.length <= 1) {
+      if (args.suppressEmails) {
+        // Recovery: the money is banked, nobody is emailed. Deliberately does
+        // NOT claim the backer announcement either — leaving `announcedAt`
+        // unset keeps the door open for a real welcome if this person's pledge
+        // is somehow still un-announced, and the catch-up sweep owns that.
+      } else if (priorCycles.length <= 1) {
         // The claim settles the race with `activatePledgeFromCheckout`, which
         // means the same thing and can arrive either side of this. Whether this
         // call wins it or finds it already won, the outcome for this cycle is
