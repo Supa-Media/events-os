@@ -127,3 +127,39 @@ Academy need updating?"**
 When unsure whether a change is "training-worthy," it probably is — err on
 the side of updating. The integrity asserts catch structural drift; they
 cannot catch a lesson that now teaches the wrong thing.
+
+## The Governance Docs Must Track the Product Too
+
+`docs/governance/` holds the org's Bylaws, Operating Manual, and Employee
+Handbook — checked in next to the code precisely so the claims they make can
+be TESTED. Same standing rule as the Academy, same reason: **every PR that
+changes user-facing behavior, vocabulary, money rules, roles/seats, approval
+flows, or org process must ask "does the governance library need updating?"**
+
+- Changed a seat, its title, its parent, or its powers (`seats.ts`,
+  `powers.ts`)? → the Operating Manual's seat charts and powers table are the
+  documented copy of those files. Update them in the same PR.
+- Changed a money constant (skim, backer unit, operating floor, tier
+  thresholds, receipt grace, purpose minimum, finance timezone)? → the manual
+  quotes them and `governance.test.ts` pins them.
+- Changed a lifecycle (reimbursements, contractor payments)? → the manual's
+  anchored lifecycle blocks must name exactly the real statuses.
+- Changed who approves what, or added a separation-of-duties rule? → manual §5,
+  and check the Bylaws' delegation articles still cover it.
+- Changed what gets published publicly, when, or how corrections work? →
+  Bylaws Article XI is a *promise*. Keep it true or amend it.
+- Anything touching pay, hours, leave, conduct, safety, or minors at events? →
+  Employee Handbook, and flag it for counsel if it's a legal representation
+  rather than a practice.
+
+`packages/shared/src/governance.test.ts` fails loudly on structural drift; the
+HTML comment anchors in the docs (`<!-- seat-chart:central -->`,
+`<!-- money-constants -->`, `<!-- lifecycle:reimbursement -->`, …) mark the
+machine-checked regions and must not be removed. It cannot catch a paragraph
+that now describes a flow the product no longer has — that judgment is yours.
+
+**Everything in there is a DRAFT until the founder says otherwise.** Do not
+flip a `status:` header to ADOPTED, and do not describe these as the org's
+operative documents — the 2021 bylaws still are. New governance docs go in the
+same directory with the same header block, and get added to `ALL_DOCS` in the
+test.
