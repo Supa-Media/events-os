@@ -829,6 +829,94 @@ async function enableRealMovement(s: ChapterSetup): Promise<void> {
 describe("settleChapterBalances — cash follows the book", () => {
   const DAY = "2026-08-08";
 
+  test("a skipped chapter does not eat the pool the next one needs", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const s2 = await setupChapter(t, { chapterName: "Chicago" });
+    await asCentralEd(s);
+    await enableRealMovement(s);
+    // Central holds $1,000 of chapter cash (no central book of its own), and
+    // TWO chapters are each owed $500. The first already has a settlement in
+    // flight, so it must be skipped — and skipping must RELEASE its share, or
+    // the second chapter is starved by money that was never sent.
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, s.chapterId, 0);
+    await seedDonorWithGift(s, s2.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, s2.chapterId, 0);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "transfer",
+        flow: "transfer",
+        amountCents: 50_000,
+        postedAt: Date.now(),
+        status: "reconciled",
+        transferOrigin: "balance_settlement",
+        transferGroupId: `balsettle-${s.chapterId}-2026-08-08-1`,
+        transferDirection: "central_to_chapter",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+
+    // Chicago still gets its full $500 — the skipped chapter reserved nothing.
+    expect(out.settlementsBooked).toBe(1);
+    expect(out.movedCents).toBe(50_000);
+  });
+
+  test("a pre-fix settlement is never executed as real cash", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await enableRealMovement(s);
+    // Production's shape: booked 2026-08-17, after real movement was enabled,
+    // so the pre-enable filter does not catch it — but priced under the old
+    // raw-bank bound, i.e. possibly fronted.
+    const stale = Date.UTC(2026, 7, 17, 9, 30);
+    // Real movement enabled BEFORE the stale pair was booked — production's
+    // exact sequence (04:34, then 09:30). Without this the pre-enable filter
+    // excludes the pair on its own and the assertion below proves nothing
+    // about the floor.
+    await run(s.t, async (ctx) => {
+      const settings = await ctx.db.query("financeSettings").first();
+      if (settings) {
+        await ctx.db.patch(settings._id, {
+          autoTransferRealMovementSinceMs: Date.UTC(2026, 7, 17, 4, 34),
+        });
+      }
+    });
+    await run(s.t, async (ctx) => {
+      for (const scope of [CENTRAL, s.chapterId]) {
+        await ctx.db.insert("transactions", {
+          chapterId: scope,
+          source: "transfer",
+          flow: "transfer",
+          amountCents: 265_667,
+          postedAt: stale,
+          status: "reconciled",
+          transferOrigin: "balance_settlement",
+          transferGroupId: `balsettle-${s.chapterId}-2026-08-17`,
+          transferDirection: "central_to_chapter",
+          createdAt: stale,
+        });
+      }
+    });
+
+    const pairs = await t.query(
+      internal.reconciliation.listUnexecutedEnginePairs,
+      {},
+    );
+
+    expect(pairs.map((p) => p.transferGroupId)).not.toContain(
+      `balsettle-${s.chapterId}-2026-08-17`,
+    );
+  });
+
   test("central does NOT front a chapter whose money is still clearing", async () => {
     const t = newT();
     const s = await setupChapter(t);
