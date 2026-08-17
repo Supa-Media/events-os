@@ -9,12 +9,15 @@ import { SiteMapEditor, type SiteMapScope } from "./SiteMapEditor";
  * layout rendered beneath the supplies grid on both the event screen and the
  * template editor (any module with `hasSiteMap` gets one).
  *
- * Collapsed by default: the editor is a heavy canvas with its own queries, so
- * it only mounts once expanded. The standalone `/event/[id]/site-map` route
- * stays the full-page deep link to the same editor.
+ * Expanded by default so the venue layout is visible without an extra click;
+ * the editor still only mounts its canvas + queries once this subsection is
+ * on screen (there's no separate route change), so this only costs the query
+ * cost this section's own render already implies. The standalone
+ * `/event/[id]/site-map` route stays the full-page deep link to the same
+ * editor.
  */
 export function SiteMapSubsection({ scope }: { scope: SiteMapScope }) {
-  const [expanded, setExpanded] = useState(false);
+  const [expanded, setExpanded] = useState(true);
 
   return (
     <View className="mt-6">

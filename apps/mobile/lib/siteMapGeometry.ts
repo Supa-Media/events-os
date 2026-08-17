@@ -34,8 +34,12 @@ export const DEFAULT_MARKER_COLOR = "red";
  */
 export const CIRCLE_SIZE = 36;
 
-/** Half a marker pin's badge (px) — used to center a pin on its point. */
-export const MARKER_HALF = 8;
+/** Default marker PIN diameter (px) — unset markers render at this size. */
+export const DEFAULT_MARKER_SIZE = 16;
+/** Marker resize bounds (px), enforced only where the user drags — mirrors
+ *  shapes' w/h, which the backend also stores unclamped. */
+export const MIN_MARKER_SIZE = 10;
+export const MAX_MARKER_SIZE = 64;
 
 // ── Geometry input types ─────────────────────────────────────────────────────
 
@@ -59,12 +63,13 @@ export type ShapeGeometry = {
   label?: string | null;
 };
 
-/** Minimal marker geometry (normalized 0..1 point + optional label/color). */
+/** Minimal marker geometry (normalized 0..1 point + optional label/color/size). */
 export type MarkerGeometry = {
   x: number;
   y: number;
   label?: string | null;
   color?: string | null;
+  size?: number | null;
 };
 
 /** Overlay placement kinds — supplies & volunteers. */
@@ -91,6 +96,17 @@ export function clamp01(n: number): number {
 /** True only when every supplied value is a finite number (guards NaN CSS). */
 export function allFinite(...ns: (number | null | undefined)[]): boolean {
   return ns.every((n) => typeof n === "number" && Number.isFinite(n));
+}
+
+/** Clamp a marker diameter into range; non-finite falls back to the default. */
+export function clampMarkerSize(n: number): number {
+  if (!Number.isFinite(n)) return DEFAULT_MARKER_SIZE;
+  return Math.max(MIN_MARKER_SIZE, Math.min(MAX_MARKER_SIZE, n));
+}
+
+/** Half a marker's rendered diameter — for centering it on its point. */
+export function markerHalf(marker: Pick<MarkerGeometry, "size">): number {
+  return clampMarkerSize(marker.size ?? DEFAULT_MARKER_SIZE) / 2;
 }
 
 // ── Percentage / pixel positioning ───────────────────────────────────────────
