@@ -761,6 +761,7 @@ describe("in-flight gifts — the gap that explains itself", () => {
     s: ChapterSetup,
     amountCents: number,
     status: "processing" | "pending" | "paid" = "processing",
+    charge?: { chargeTotalCents: number; sessionId: string },
   ): Promise<void> {
     await run(s.t, async (ctx) => {
       const payerPersonId = await ctx.db.insert("people", {
@@ -799,6 +800,12 @@ describe("in-flight gifts — the gap that explains itself", () => {
         amountCents,
         method: "ach",
         status,
+        ...(charge
+          ? {
+              chargeTotalCents: charge.chargeTotalCents,
+              stripeCheckoutSessionId: charge.sessionId,
+            }
+          : {}),
         payerPersonId,
         createdAt: Date.now(),
         updatedAt: Date.now(),
@@ -835,6 +842,84 @@ describe("in-flight gifts — the gap that explains itself", () => {
     expect(summary.inFlightRepaymentCount).toBe(1);
     expect(summary.inFlightRepaymentCents).toBe(300);
     expect(summary.inFlightGiftCount).toBe(0);
+  });
+
+  test("the payer's covered fee is netted too — no 2c sliver left over", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        // Stripe holds the NET of the $3.02 charge…
+        stripePendingCents: 300,
+        updatedAt: Date.now(),
+      }),
+    );
+    // …and the fee sweep has already booked its 2c cut as an expense, because
+    // it reads pending balance transactions. The coverage credit that offsets
+    // it only posts at settlement, so the 2c is a real book-side hole today.
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "stripe_fc",
+        flow: "outflow",
+        amountCents: 2,
+        postedAt: Date.now(),
+        status: "reconciled",
+        feeOrigin: "stripe_processing",
+        createdAt: Date.now(),
+      }),
+    );
+    await seedProcessingRepayment(s, 300, "processing", {
+      chargeTotalCents: 302,
+      sessionId: "cs_live_one",
+    });
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    // Before the charge basis this read 302 raw / 300 explained / 2 left over.
+    expect(summary.rawDifferenceCents).toBe(302);
+    expect(summary.inFlightExplainedCents).toBe(302);
+    expect(summary.differenceCents).toBe(0);
+    expect(summary.verdict).toBe("balanced");
+    // The DEBT is what the reader is told about; the fee is plumbing.
+    expect(summary.inFlightRepaymentCents).toBe(300);
+  });
+
+  test("one checkout settling several repayments counts its charge once", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        stripePendingCents: 600,
+        updatedAt: Date.now(),
+      }),
+    );
+    // Two $3.00 debts, ONE session, ONE 2c coverage line: amount_total 602 on
+    // both rows. Summing per row would net 1204 and explain away twice the
+    // money that exists.
+    await seedProcessingRepayment(s, 300, "processing", {
+      chargeTotalCents: 602,
+      sessionId: "cs_live_shared",
+    });
+    await seedProcessingRepayment(s, 300, "processing", {
+      chargeTotalCents: 602,
+      sessionId: "cs_live_shared",
+    });
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.inFlightRepaymentCount).toBe(2);
+    expect(summary.inFlightRepaymentCents).toBe(600);
+    // 602 once, not 1204 — and the clamp would have hidden the difference, so
+    // this asserts the raw side too.
+    expect(summary.rawDifferenceCents).toBe(600);
+    expect(summary.inFlightExplainedCents).toBe(600);
   });
 
   test("a STRANDED processing repayment stops explaining the gap", async () => {

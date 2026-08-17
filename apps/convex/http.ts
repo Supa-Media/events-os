@@ -1199,6 +1199,7 @@ http.route({
               "personalRepayments"
             >[],
             sessionId,
+            chargeTotalCents: obj.amount_total ?? undefined,
           });
         }
         await ctx.runMutation(internal.givingPending.recordPendingGift, {

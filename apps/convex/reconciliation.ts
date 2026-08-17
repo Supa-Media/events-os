@@ -4050,11 +4050,35 @@ export const reconciliationSummary = query({
         .query("personalRepayments")
         .withIndex("by_status", (q) => q.eq("status", "processing"))
         .take(ROLLUP_SCAN_LIMIT);
+      // THE CHARGE BASIS, ONCE PER SESSION. What Stripe holds while a debit
+      // clears is the whole charge — the debt plus any fee the payer covered —
+      // not the debt alone. Netting only the debt left the coverage behind as a
+      // phantom gap, because the fee sweep books Stripe's cut as an expense
+      // from the moment the (still pending) balance transaction appears, while
+      // the offsetting coverage credit waits for settlement: a $3.02 ACH
+      // repayment reported "$0.02 unaccounted for" (2026-08-17). The gift side
+      // hit this first — see `chargeTotalCents` above, and the sliver 0072
+      // closed on the settled side.
+      //
+      // Counted per `stripeCheckoutSessionId` because one checkout can settle
+      // several repayments under ONE coverage line — every row of that session
+      // carries the same `chargeTotalCents`, so summing per row would multiply
+      // it. Rows with no session (or written before the field) fall back to
+      // their own `amountCents`: the pre-fix behaviour, still exactly right for
+      // a repayment nobody covered a fee on.
+      const chargedSessions = new Set<string>();
       for (const row of repaymentRows) {
         if (row.updatedAt < repaymentCutoff) continue;
         inFlightRepaymentCount += 1;
         inFlightRepaymentCents += row.amountCents;
-        inFlightChargeCents += row.amountCents;
+        const sessionId = row.stripeCheckoutSessionId;
+        if (sessionId != null && row.chargeTotalCents != null) {
+          if (chargedSessions.has(sessionId)) continue;
+          chargedSessions.add(sessionId);
+          inFlightChargeCents += row.chargeTotalCents;
+        } else {
+          inFlightChargeCents += row.amountCents;
+        }
       }
     }
 

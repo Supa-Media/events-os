@@ -4886,9 +4886,15 @@ export const markRepaymentsProcessing = internalMutation({
   args: {
     repaymentIds: v.array(v.id("personalRepayments")),
     sessionId: v.string(),
+    /** Stripe's `amount_total` for the session — the debt plus any fee the
+     *  payer covered. Stored so the reconciliation panel can net out what
+     *  Stripe is really holding while the debit clears, rather than just the
+     *  debt (see `personalRepayments.chargeTotalCents`). Optional so an older
+     *  caller that doesn't send it still marks the row processing. */
+    chargeTotalCents: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { repaymentIds, sessionId }) => {
+  handler: async (ctx, { repaymentIds, sessionId, chargeTotalCents }) => {
     for (const id of repaymentIds) {
       const repayment = await ctx.db.get(id);
       if (!repayment) continue;
@@ -4896,6 +4902,7 @@ export const markRepaymentsProcessing = internalMutation({
       await ctx.db.patch(id, {
         status: "processing",
         stripeCheckoutSessionId: sessionId,
+        ...(chargeTotalCents != null ? { chargeTotalCents } : {}),
         updatedAt: Date.now(),
       });
     }

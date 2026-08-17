@@ -1467,6 +1467,26 @@ export const personalRepayments = defineTable({
   transactionId: v.id("transactions"),
   payerPersonId: v.id("people"),
   amountCents: v.number(),
+  // What the PAYER was actually charged for the session this repayment was
+  // paid in — the debt above plus any processing fee they chose to cover.
+  // Stripe's `amount_total`, stamped by `cards.markRepaymentsProcessing` when
+  // a bank debit starts clearing; absent on rows that never went through a
+  // Stripe checkout, and on rows written before this field existed.
+  //
+  // SESSION-WIDE, not per-row: one checkout can settle several repayments and
+  // carries ONE coverage line, so every row of that session holds the same
+  // total. A reader summing this across rows would multiply the session;
+  // `reconciliation.ts` therefore counts it once per `stripeCheckoutSessionId`.
+  //
+  // Exists for the same reason `pendingGifts.chargeTotalCents` does. The cash
+  // side counts what Stripe is holding, which is the CHARGE net of Stripe's
+  // cut — while the fee sweep books that cut as an expense from the moment the
+  // (still pending) balance transaction appears, and the offsetting coverage
+  // credit only posts at settlement. Netting only the debt left exactly the
+  // fee behind as a phantom gap: a $3.02 ACH repayment reported "$0.02
+  // unaccounted for" (2026-08-17). The gift side hit this first and fixed it
+  // the same way — see that field's own note about the sliver.
+  chargeTotalCents: v.optional(v.number()),
   method: v.union(...REPAYMENT_METHODS.map((m) => v.literal(m))),
   status: v.union(...REPAYMENT_STATUSES.map((s) => v.literal(s))),
   increaseRef: v.optional(v.string()),
