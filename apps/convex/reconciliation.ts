@@ -944,6 +944,17 @@ async function resolveRealMovementSinceMs(
  * a few cents of rounding — a ledger row costs a reader's attention, and $5 of
  * drift is not worth one.
  *
+ * ── SAFE TO RUN MORE THAN ONCE A DAY ────────────────────────────────────────
+ * Every dollar this org earns lands in central (Stripe pays one bank account),
+ * so a chapter's money is only reachable after a settlement — and Increase
+ * account-to-account transfers are instant. Waiting for tomorrow's cron to hand
+ * a chapter money that cleared at noon is a delay this engine imposes, not one
+ * the rails require. So re-running is a supported operation, and what makes it
+ * safe is per-chapter state rather than the calendar: a chapter with a
+ * settlement still in flight, or one settled more recently than the balances
+ * being read, is skipped this run and picked up the next. See the guards at the
+ * booking site.
+ *
  * ── ONLY BOOKED WHEN REAL CASH MOVEMENT IS ON ───────────────────────────────
  * A `balance_settlement` pair contributes ZERO to book value by construction
  * (`bookBalance.ts#signedBookCents`) — the whole point of the origin is to be
@@ -1006,14 +1017,74 @@ export const settleChapterBalances = internalMutation({
       return row?.balanceCents ?? null;
     };
 
+    /** When the synced balance above was last true. The settlement guards read
+     *  it to avoid computing a gap from figures that predate a transfer this
+     *  engine already made. */
+    const bankAsOfFor = (scope: FinanceScope): number | null => {
+      const row = accountRows.find(
+        (a) =>
+          a.chapterId === scope &&
+          (a.sandbox ?? a.increaseAccountId?.startsWith("sandbox_") ?? false) === false,
+      );
+      return row?.balanceAsOf ?? null;
+    };
+
     const centralBank = bankFor(CENTRAL);
     if (centralBank == null) {
       notes.push("Balance settlement skipped — no central bank balance yet.");
       return { settlementsBooked, movedCents, notes, unsettledGaps };
     }
-    // Only cash central is actually free to send. Reduced as each chapter is
-    // funded so two chapters can't both be promised the same dollar.
-    let centralAvailable = centralBank;
+    // ── CENTRAL NEVER FRONTS ────────────────────────────────────────────
+    // Central's account holds EVERY chapter's cash — Stripe pays out to one
+    // bank account — so its balance is not a spending limit, it is a mixture:
+    // central's own money plus whatever has arrived on the chapters' behalf.
+    // Bounding settlements by the raw balance let the engine pay a chapter out
+    // of central's OWN reserves for revenue that had not cleared yet.
+    //
+    // The owner's case, and the reason this changed (2026-08-17): central holds
+    // $5,000 of its own; Chicago raises $1,000 that is still clearing at
+    // Stripe. Chicago's book says $1,000, its bank says $0, so the gap reads
+    // $1,000 — and central had the cash to send it. But that money does not
+    // exist yet. Sending it advances central's reserves against revenue that
+    // might still refund or fail, and "central has it" is not the same question
+    // as "it is theirs to receive". Fronting is a decision someone makes on
+    // purpose, by hand — never a side effect of a cron.
+    //
+    // The distributable pool is therefore the EXCESS of central's bank over
+    // central's own book: everything above what central is itself entitled to
+    // hold is, by definition, cash that arrived for somebody else. In the case
+    // above that is $5,000 − $5,000 = $0, so Chicago waits; the moment its
+    // $1,000 lands the bank reads $6,000 against the same book and exactly
+    // $1,000 becomes distributable. Money still at Stripe, Givebutter or Relay
+    // is not in `centralBank` at all, so it cannot leak in.
+    //
+    // BOTH ENDS CLAMPED. Flooring only the subtraction is not enough: a
+    // NEGATIVE central book (reachable — `computeBookBalances` can put central
+    // under water) would make `bank - book` EXCEED the bank, handing out more
+    // than the account holds. Clamping the book at zero first keeps the pool
+    // inside `[0, centralBank]` for every input.
+    const centralBook = Math.max(
+      0,
+      balances.find((b) => b.scope === CENTRAL)?.bookBalanceCents ?? 0,
+    );
+    const distributableCents = Math.max(0, centralBank - centralBook);
+    // NOT an early return. A chapter holding MORE than its book pays central
+    // back, which consumes none of this pool — refusing to run at all would
+    // strand a surplus exactly when central is short, i.e. when recovering it
+    // matters most. And with real movement off this function still owes the
+    // accounts page its `unsettledGaps` entries, which an early return here
+    // would silently drop. So the shortage only gates the SENDING direction,
+    // where it is checked per chapter below.
+    if (distributableCents < MIN_SETTLEMENT_CENTS) {
+      notes.push(
+        `Nothing to send out — central holds ${formatCents(centralBank)} against its own book of ` +
+          `${formatCents(centralBook)}, so no cash above central's own has arrived. Chapters owed ` +
+          `money are waiting on funds to clear. (A chapter holding a surplus can still return it.)`,
+      );
+    }
+    // Reduced as each chapter is funded so two chapters can't both be promised
+    // the same dollar.
+    let centralAvailable = distributableCents;
 
     // Largest shortfall first: if central can't cover everyone, the chapter
     // furthest from its book gets made whole before a chapter that's nearly
@@ -1050,6 +1121,89 @@ export const settleChapterBalances = internalMutation({
         continue;
       }
 
+      // ── ONE OUTSTANDING SETTLEMENT PER CHAPTER, NOT ONE PER DAY ─────────
+      // This used to key the group id on the Eastern date, which made a re-run
+      // safe by making it impossible: a chapter settled at 09:30 could not be
+      // settled again until tomorrow, however much of its money cleared at
+      // noon. Wrong constraint for this org — every dollar lands in central
+      // (Stripe pays one bank account) and Increase account-to-account moves
+      // are instant, so a chapter's money should reach it the hour it clears.
+      //
+      // What makes a re-run safe is refusing to act on a gap that has already
+      // been answered — checked BEFORE any of the pool is reserved, so a
+      // chapter that is skipped here never takes a share the chapters after it
+      // could have used.
+      const priorSettlements = (
+        await ctx.db
+          .query("transactions")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", chapter.scope))
+          // NEWEST FIRST. Ascending order reads the OLDEST rows, so past the
+          // scan cap a busy chapter's recent settlements fall outside the
+          // window and both guards below fail OPEN — which is a double-send of
+          // real money. The old date-keyed group id used to backstop that via
+          // `ALREADY_RECORDED`; a unique id removes that net, so the ordering
+          // here is load-bearing rather than incidental.
+          .order("desc")
+          .take(ROLLUP_SCAN_LIMIT)
+      ).filter(
+        (t) =>
+          t.transferOrigin === "balance_settlement" &&
+          t.status !== "excluded" &&
+          (t.transferGroupId ?? "").startsWith("balsettle-"),
+      );
+      const inFlight = priorSettlements.find((t) => t.externalId == null);
+      if (inFlight) {
+        // A pair that never executes must not wedge the chapter forever. Legs
+        // stay unstamped for reasons that are not "it is about to land":
+        // an Increase transfer sitting in `pending_approval`, a cached-error
+        // idempotency wedge, or real movement simply being switched off again.
+        // Past the in-flight window that is a standing condition a human needs
+        // to see, not a reason to keep skipping silently — so it is reported as
+        // an unsettled gap (the channel the accounts page renders
+        // unconditionally) and the chapter is still held, because booking a
+        // second pair against an unresolved first one is the double-promise
+        // this guard exists to prevent.
+        const stale = Date.now() - inFlight.createdAt > MAX_PENDING_AGE_MS;
+        notes.push(
+          stale
+            ? `${chapter.scopeName}: a settlement booked ${new Date(inFlight.createdAt).toISOString().slice(0, 10)} still has not moved — nothing booked this run; someone needs to look at it.`
+            : `${chapter.scopeName}: a settlement is already on its way — nothing booked this run.`,
+        );
+        if (stale) {
+          unsettledGaps.push({
+            scope: chapter.scope as Id<"chapters">,
+            scopeName: chapter.scopeName,
+            bookBalanceCents: chapter.bookBalanceCents,
+            bankBalanceCents: chapter.bank,
+            gapCents: chapter.owed,
+          });
+        }
+        continue;
+      }
+      // `increaseAccounts` balances are SYNCED, not live, so a settlement that
+      // executed since the last sync is not reflected in `chapter.bank` yet and
+      // the gap still looks open. Sending against that would double-fund.
+      // Anchored on `balanceAsOf` rather than a fixed cooldown: the question is
+      // whether the figures have caught up, and that field answers exactly it.
+      const bankAsOf = bankAsOfFor(chapter.scope as FinanceScope);
+      if (bankAsOf == null) {
+        // Absent (the field is optional and unset until the first sync), so
+        // freshness cannot be established at all. Skipped rather than guessed —
+        // but said plainly, because `?? 0` here would make every prior
+        // settlement look newer than the balances and skip the chapter forever
+        // under a note implying it resolves itself.
+        if (priorSettlements.length > 0) {
+          notes.push(
+            `${chapter.scopeName}: no bank-balance timestamp, so a past settlement can't be ruled out — nothing booked this run.`,
+          );
+          continue;
+        }
+      } else if (priorSettlements.some((t) => t.createdAt > bankAsOf)) {
+        notes.push(
+          `${chapter.scopeName}: settled since these balances were read — waiting for the bank figures to catch up.`,
+        );
+        continue;
+      }
       // A chapter holding MORE than its book returns the excess — the same
       // true-up in reverse, and central is where the surplus belongs.
       const direction: TransferDirection =
@@ -1076,9 +1230,7 @@ export const settleChapterBalances = internalMutation({
         chapter.scope as Id<"chapters">,
         direction,
       );
-      // One settlement per chapter per Eastern day, deterministic so a re-run
-      // (a manual "Run now" after the cron) books nothing twice.
-      const transferGroupId = `balsettle-${chapter.scope}-${dateStr}`;
+      const transferGroupId = `balsettle-${chapter.scope}-${dateStr}-${Date.now()}`;
       try {
         await recordTransferPair(ctx, {
           sourceScope,
@@ -1213,6 +1365,19 @@ export const runAutoSettlement = internalMutation({
 const REAL_MOVES_PER_RUN = 25;
 
 /**
+ * Balance settlements booked BEFORE this instant are never executed as real
+ * transfers — they were sized against central's raw bank balance, i.e. under
+ * the fronting rule that `settleChapterBalances` no longer allows. Set to the
+ * ship time of that change; the pairs it excludes are inert ledger rows the
+ * next run supersedes with a correctly-priced pair.
+ *
+ * NOT a moving window and not a policy knob: a fixed historical boundary
+ * between two pricing rules. Delete it only when no unexecuted pre-2026-08-17
+ * `balsettle-` pair remains in production.
+ */
+const BALSETTLE_EXECUTION_SINCE_MS = Date.UTC(2026, 7, 18, 0, 0, 0);
+
+/**
  * Engine-booked pairs (`transferOrigin` set) whose cash hasn't moved yet
  * (legs carry no `externalId`) AND that are SAFE to execute:
  *
@@ -1314,6 +1479,43 @@ export const listUnexecutedEnginePairs = internalQuery({
         );
         const deposit = txnId ? await ctx.db.get(txnId) : null;
         if (!depositAtIncrease(deposit)) continue;
+      } else if (groupId.startsWith("balsettle-")) {
+        // ── NEVER EXECUTE A PAIR PRICED UNDER THE OLD BOUND ───────────────
+        // Until this branch existed, `settleChapterBalances` sized every
+        // settlement against central's RAW bank balance — which mixes central's
+        // own money with cash held for the chapters, so those pairs may
+        // advance central's reserves against revenue that had not cleared.
+        // That is the fronting the owner ruled out (2026-08-17: "by default
+        // central doesn't front... if we do want central to front some things
+        // then that'll be manual"), and the amounts were computed before the
+        // rule existed.
+        //
+        // `enabledSinceMs` does not cover this: real movement was switched on
+        // at 04:34 UTC and production's unexecuted $2,656.67 pair was booked at
+        // 09:30 the SAME morning, so it passes that filter and would have been
+        // wired on the first run after deploy.
+        //
+        // A hard floor rather than a cleanup migration, deliberately: a
+        // migration has to be run by a human AFTER the deploy, and the cron
+        // fires on its own schedule in between. The constant closes that window
+        // with no ordering to get right — a pre-fix pair is simply never
+        // executable, and the next run books a correctly-priced replacement.
+        if (leg.createdAt < BALSETTLE_EXECUTION_SINCE_MS) continue;
+        // A BALANCE SETTLEMENT IS THE ONE PAIR THAT ONLY EXISTS TO MOVE CASH.
+        // It contributes zero to book value by construction; executing it is
+        // the entire point. This branch was missing, so every settlement fell
+        // through to the catch-all below and was skipped as an unknown shape —
+        // booked, labelled "Cash not moved", and re-booked the next morning
+        // against a gap it never closed. Reported 2026-08-17, the morning after
+        // real movement was switched on: $2,656.67 booked, $0.00 moved.
+        //
+        // No deposit check like the payout shapes above, because there is no
+        // deposit behind it: `settleChapterBalances` already bounds every
+        // settlement by `centralAvailable` — central's REAL Increase balance,
+        // decremented per chapter — so money still clearing at Stripe was never
+        // promised in the first place. The re-check that matters here is that
+        // central still holds it NOW, and `executeEnginePair` gets that from
+        // Increase itself when the transfer is attempted.
       } else if (!groupId.startsWith("autosettle-")) {
         continue; // unknown engine-pair shape — never move cash on a guess
       }

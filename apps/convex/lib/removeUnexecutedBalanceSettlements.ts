@@ -328,6 +328,20 @@ async function validateGroup(
     // THE precondition that can never be relaxed. An externalId is the stamp
     // a real Increase transfer leaves — deleting this row would make the
     // ledger disagree with the bank about money that actually moved.
+    //
+    // NO LONGER SUFFICIENT ON ITS OWN (2026-08-17). This module was written
+    // when a `balsettle-` pair could never execute — `listUnexecutedEnginePairs`
+    // did not recognise the prefix, so "no externalId" and "no cash will ever
+    // move for this row" were the same statement. That branch exists now, so an
+    // unstamped leg may simply be a transfer Increase has ACCEPTED and not yet
+    // settled (`pending_approval`), and deleting it would drop the ledger's
+    // only record of money already on its way.
+    //
+    // Anything run against a pair booked on or after
+    // `reconciliation.ts#BALSETTLE_EXECUTION_SINCE_MS` must therefore confirm
+    // with Increase that no transfer exists for it before deleting. The
+    // historical backlog this module was built for all predates that floor and
+    // is never executable, so its own runs stay safe.
     if (leg.externalId != null) {
       problems.push(
         `leg ${leg._id} in group ${transferGroupId} carries externalId ` +
