@@ -4886,9 +4886,32 @@ export const markRepaymentsProcessing = internalMutation({
   args: {
     repaymentIds: v.array(v.id("personalRepayments")),
     sessionId: v.string(),
+    /** Stripe's `amount_total` for the session — the debts it settles plus any
+     *  fee the payer covered. Used to DERIVE the coverage stored on each row
+     *  (see `personalRepayments.feeCoverageCents`); the panel needs it to net
+     *  out everything Stripe is holding while the debit clears, not just the
+     *  debt. Optional so a caller that doesn't send it still marks the row
+     *  processing. */
+    chargeTotalCents: v.optional(v.number()),
   },
   returns: v.null(),
-  handler: async (ctx, { repaymentIds, sessionId }) => {
+  handler: async (ctx, { repaymentIds, sessionId, chargeTotalCents }) => {
+    // The coverage is the session's total less every debt it settles — summed
+    // over ALL the ids in the session, including any already `paid`, because
+    // that is what the checkout's `amount_total` was built from. Clamped at 0:
+    // a total that doesn't exceed the debts means nobody covered anything, and
+    // a negative would be a Stripe/our-arithmetic disagreement that must not
+    // become a credit.
+    let feeCoverageCents: number | undefined;
+    if (Number.isInteger(chargeTotalCents) && (chargeTotalCents ?? 0) > 0) {
+      let debtCents = 0;
+      for (const id of repaymentIds) {
+        const row = await ctx.db.get(id);
+        if (row) debtCents += row.amountCents;
+      }
+      const derived = (chargeTotalCents as number) - debtCents;
+      feeCoverageCents = derived > 0 ? derived : undefined;
+    }
     for (const id of repaymentIds) {
       const repayment = await ctx.db.get(id);
       if (!repayment) continue;
@@ -4896,6 +4919,11 @@ export const markRepaymentsProcessing = internalMutation({
       await ctx.db.patch(id, {
         status: "processing",
         stripeCheckoutSessionId: sessionId,
+        // Written UNCONDITIONALLY, set or cleared. `stripeCheckoutSessionId`
+        // above is overwritten every time, so a conditional write here could
+        // leave session A's coverage sitting beside session B's id — the shape
+        // a failed-then-retried ACH produces.
+        feeCoverageCents,
         updatedAt: Date.now(),
       });
     }

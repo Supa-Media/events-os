@@ -1467,6 +1467,32 @@ export const personalRepayments = defineTable({
   transactionId: v.id("transactions"),
   payerPersonId: v.id("people"),
   amountCents: v.number(),
+  // The processing fee the PAYER chose to cover on the checkout this repayment
+  // was paid in — Stripe's `amount_total` for the session minus the debts it
+  // settles. Stamped by `cards.markRepaymentsProcessing` when a bank debit
+  // starts clearing; absent when nobody covered a fee, and on rows written
+  // before this field existed.
+  //
+  // SESSION-WIDE: one checkout can settle several repayments under ONE
+  // coverage line, so every row of that session holds the same figure and a
+  // reader must add it ONCE per `stripeCheckoutSessionId`.
+  //
+  // The COVERAGE rather than the session's gross total, deliberately. Storing
+  // the gross made the amount session-wide while the filtering that decides
+  // whether to count a row is per row, so any partial count — a sibling
+  // deleted by `unflagPersonalCharge`, or one row stamped and one not — added
+  // a whole session's charge for a fraction of its rows and over-explained the
+  // gap. With the coverage, each counted row contributes its own debt and the
+  // fee is added once: a partial session under-counts, which leaves a visible
+  // gap instead of hiding one.
+  //
+  // Exists because the two halves of that fee reach the books at different
+  // times: `processorFees.ts` books Stripe's cut from the still-PENDING
+  // balance transaction, while the credit that offsets it waits for
+  // settlement. Netting only the debt left the fee behind — a $3.02 repayment
+  // reported "$0.02 unaccounted for" (2026-08-17). Same sliver the gift side
+  // closed with `pendingGifts.chargeTotalCents`.
+  feeCoverageCents: v.optional(v.number()),
   method: v.union(...REPAYMENT_METHODS.map((m) => v.literal(m))),
   status: v.union(...REPAYMENT_STATUSES.map((s) => v.literal(s))),
   increaseRef: v.optional(v.string()),
