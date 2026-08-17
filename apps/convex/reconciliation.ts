@@ -1145,12 +1145,41 @@ export const settleChapterBalances = internalMutation({
           // here is load-bearing rather than incidental.
           .order("desc")
           .take(ROLLUP_SCAN_LIMIT)
-      ).filter(
-        (t) =>
-          t.transferOrigin === "balance_settlement" &&
-          t.status !== "excluded" &&
-          (t.transferGroupId ?? "").startsWith("balsettle-"),
-      );
+      )
+        .filter(
+          (t) =>
+            t.transferOrigin === "balance_settlement" &&
+            t.status !== "excluded" &&
+            (t.transferGroupId ?? "").startsWith("balsettle-"),
+        )
+        // ONLY PAIRS THAT COULD ACTUALLY EXECUTE COUNT AS PRIOR SETTLEMENTS.
+        // Filtered here rather than at the in-flight check alone, because the
+        // same list feeds two further guards (the missing-`balanceAsOf` skip
+        // and the settled-since-balances skip) and an inert pair wedges the
+        // chapter through those exactly as well: a stale balance sync leaves
+        // the 09:30 pair permanently "newer than the balances", so New York is
+        // never settled and the note blames the sync.
+        //
+        // Mirrors BOTH of the executor's clocks, not just the floor.
+        // `listUnexecutedEnginePairs` also skips `createdAt < enabledSinceMs`,
+        // and `setRealMovementEnabled` re-stamps that timestamp on every ON
+        // while never clearing it on OFF — so pairs booked during an OFF spell
+        // become permanently unexecutable the moment movement is switched back
+        // on. Ignoring only the floor would leave the identical wedge reachable
+        // through the other clock.
+        .filter(
+          (t) =>
+            t.createdAt >=
+            Math.max(BALSETTLE_EXECUTION_SINCE_MS, realMovementSinceMs ?? 0),
+        );
+      // A pair booked before the execution floor can NEVER move cash
+      // (`listUnexecutedEnginePairs` refuses it), so it is inert ledger noise
+      // rather than a promise — and treating it as in-flight wedges the chapter
+      // permanently: the floor stops it executing while this guard stops a
+      // replacement being booked. Seen immediately in production (2026-08-17):
+      // the pre-fix $2,656.67 pair held New York with "a settlement is already
+      // on its way", which was never going to be true. Only an EXECUTABLE pair
+      // can double-promise, so only an executable pair blocks.
       const inFlight = priorSettlements.find((t) => t.externalId == null);
       if (inFlight) {
         // A pair that never executes must not wedge the chapter forever. Legs
@@ -1371,11 +1400,23 @@ const REAL_MOVES_PER_RUN = 25;
  * ship time of that change; the pairs it excludes are inert ledger rows the
  * next run supersedes with a correctly-priced pair.
  *
+ * Set just AFTER the no-fronting deploy actually finished (#772 merged
+ * 16:41:50Z, its Convex deploy completed 16:44:02Z) — not merely near it. A
+ * floor inside that window would let a pair booked by the OLD pricing pass as
+ * new and be wired for real, which is the one thing this constant exists to
+ * stop. Verified no `balsettle-` pair was booked in it.
+ *
+ * Set to the deploy moment of the no-fronting bound, NOT to a round date: a
+ * floor even slightly in the future would also refuse the correctly-priced
+ * pairs booked between the deploy and that date, which is the same wedge from
+ * the other side. Production's stale pair was booked 09:30; this sits after it
+ * and before anything the new pricing produces.
+ *
  * NOT a moving window and not a policy knob: a fixed historical boundary
  * between two pricing rules. Delete it only when no unexecuted pre-2026-08-17
  * `balsettle-` pair remains in production.
  */
-const BALSETTLE_EXECUTION_SINCE_MS = Date.UTC(2026, 7, 18, 0, 0, 0);
+const BALSETTLE_EXECUTION_SINCE_MS = Date.UTC(2026, 7, 17, 16, 45, 0);
 
 /**
  * Engine-booked pairs (`transferOrigin` set) whose cash hasn't moved yet
