@@ -3872,6 +3872,14 @@ export const reconciliationSummary = query({
      *  own receipt email for it was in the donor's inbox). */
     inFlightGiftCount: v.number(),
     inFlightGiftCents: v.number(),
+    /** The other half of "authorised but unsettled": personal-charge
+     *  repayments whose debit is still clearing. Returned separately from the
+     *  gift figures rather than folded into them, because the panel says
+     *  different true things about each — a gift "books itself as a gift when
+     *  it settles", a repayment posts an offsetting credit — and a reader who
+     *  is told the wrong one has been misinformed, not merely under-informed. */
+    inFlightRepaymentCount: v.number(),
+    inFlightRepaymentCents: v.number(),
     /** Stripe's own `bank_account` pending slice — the processor's statement
      *  of ACH money in transit, beside OUR statement above. Null until the
      *  first snapshot since the field shipped. The panel prints both when it
@@ -3979,6 +3987,8 @@ export const reconciliationSummary = query({
     // the sliver migration 0072 closed on the settled side too. Falls back to
     // `amountCents` for rows written before `chargeTotalCents` existed.
     let inFlightChargeCents = 0;
+    let inFlightRepaymentCount = 0;
+    let inFlightRepaymentCents = 0;
     const inFlightRows: {
       donorName: string;
       amountCents: number;
@@ -4002,6 +4012,50 @@ export const reconciliationSummary = query({
         });
       }
       inFlightRows.sort((a, b) => b.amountCents - a.amountCents);
+
+      // ── AND IN-FLIGHT PERSONAL-CHARGE REPAYMENTS ────────────────────────
+      // Exactly the same situation as a pending gift, and it was missing here.
+      // A repayment paid by ACH sits `status:"processing"` until Stripe
+      // confirms settlement; the money is already in Stripe's balance (so the
+      // LOCATED side counts it) while `cards.ts` posts the offsetting credit
+      // only on `paid` (so book value does not). The original personal charge
+      // has already taken its amount off the books — `signedBookCents` counts a
+      // personal charge as a real outflow, "the money really left; its
+      // repayment credit brings it back" — so the panel read the difference as
+      // a discrepancy.
+      //
+      // Observed 2026-08-17: one $3.00 MTA repayment, ACH initiated 08-15,
+      // net $3.00 sitting `pending` in Stripe's balance with the payment intent
+      // still `processing`, produced a flat "$3.00 unaccounted for". Nothing
+      // was wrong; the panel simply had no vocabulary for money in transit that
+      // wasn't a gift.
+      //
+      // `processing` ONLY — never `pending`. A `pending` repayment is one
+      // nobody has paid yet: no money has left the payer, nothing is in
+      // Stripe's balance, and counting it would invent cash to explain a gap
+      // with. `processing` means a real debit is in flight.
+      // AGE-BOUNDED, like the gift half. `pendingGifts` is bounded twice — a
+      // `MAX_PENDING_AGE_MS` window on the read AND a daily sweep that fails
+      // stranded rows — and this had neither. `markRepaymentsProcessing` is the
+      // only writer, and only Stripe's `async_payment_succeeded`/`failed`
+      // webhooks move a row off `processing`; Stripe gives up retrying after
+      // ~3 days. So a lost failure webhook would strand a row at `processing`
+      // FOREVER, and because the netting is `min(inFlightCents, max(raw, 0))`
+      // the panel would go on permanently explaining away up to that amount of
+      // a genuinely cash-high gap — the one failure mode this whole surface
+      // exists to prevent. An unsettled debit older than the window is not
+      // money in transit any more; it is a question.
+      const repaymentCutoff = Date.now() - MAX_PENDING_AGE_MS;
+      const repaymentRows = await ctx.db
+        .query("personalRepayments")
+        .withIndex("by_status", (q) => q.eq("status", "processing"))
+        .take(ROLLUP_SCAN_LIMIT);
+      for (const row of repaymentRows) {
+        if (row.updatedAt < repaymentCutoff) continue;
+        inFlightRepaymentCount += 1;
+        inFlightRepaymentCents += row.amountCents;
+        inFlightChargeCents += row.amountCents;
+      }
     }
 
     const gap = reconcileOrgMoney({
@@ -4153,6 +4207,8 @@ export const reconciliationSummary = query({
       unrecordedInflowCount,
       unrecordedInflowCents,
       inFlightGiftCount,
+      inFlightRepaymentCount,
+      inFlightRepaymentCents,
       inFlightGiftCents,
       stripePendingBankAccountCents:
         settings?.stripePendingBankAccountCents ?? null,

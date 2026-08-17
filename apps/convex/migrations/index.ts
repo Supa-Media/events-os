@@ -96,6 +96,7 @@ import { bookRepaymentCoverageBySession } from "./0074_book_repayment_coverage_b
 import { labelFeeCoverageRows } from "./0075_label_fee_coverage_rows";
 import { backfillWallFromGifts } from "./0076_backfill_wall_from_gifts";
 import { orgWideBudgetCategories } from "./0077_org_wide_budget_categories";
+import { stampInterestSourceCategory } from "./0078_stamp_interest_source_category";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -494,4 +495,9 @@ export const MIGRATIONS: Migration[] = [
   // restricted, chapter-owned money; a category is a word. Idempotent by
   // construction (its output is a fixed point), so no flag. See 0077.
   orgWideBudgetCategories,
+  // 0078: the interest half of 0066 — historical Increase INTEREST rows never
+  // got `sourceCategory`, so `autoExplainedKind` couldn't recognize them and
+  // the reconciliation panel offered bank interest as "giving recorded as
+  // nothing". See the file.
+  stampInterestSourceCategory,
 ];

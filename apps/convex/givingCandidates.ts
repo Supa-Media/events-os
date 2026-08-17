@@ -59,7 +59,7 @@ import type { QueryCtx } from "./_generated/server";
 // `lib/peopleAggregate.ts`'s module doc.
 import { mutation as triggerMutation } from "./lib/peopleAggregate";
 import { Doc, Id } from "./_generated/dataModel";
-import { financeRoleAtLeast, formatCents } from "@events-os/shared";
+import { autoExplainedKind, financeRoleAtLeast, formatCents } from "@events-os/shared";
 import {
   requireGivingManage,
   resolveGivingAccess,
@@ -127,6 +127,19 @@ export function isCandidateShaped(txn: Doc<"transactions">): boolean {
   if (txn.cardId !== undefined) return false;
   if (TRANSFER_LEG_SOURCES.has(txn.source)) return false;
   if (looksLikeProviderPayout(txn)) return false;
+  // A credit the app has ALREADY explained is not an unbooked gift. Bank
+  // cashback and account interest are the cases that reached production: two
+  // cashback payments and one interest payment ($1.76 across the three) sat on
+  // this desk as "possible gifts" and in the gap panel's leads, when the org
+  // never received a donation — Increase paid its own account. `feeCoverage`
+  // and refund credits are the same mistake in a different suit.
+  //
+  // Read through `autoExplainedKind` rather than re-listing the shapes here:
+  // it is the one place that knows what "this row needs no human" means, it
+  // keys off POSITIVE provider markers (`sourceCategory`, `feeCoverageOrigin`,
+  // `refundsTransactionId`) rather than text, and a kind added there should
+  // never have to be remembered here too.
+  if (autoExplainedKind(txn) != null) return false;
   return true;
 }
 
@@ -301,7 +314,10 @@ export const confirmExternalGift = triggerMutation({
       throw new ConvexError({
         code: "NOT_A_CANDIDATE",
         message:
-          "This transaction no longer qualifies as a possible gift (it's a card refund, a transfer, or a provider payout).",
+          "This transaction no longer qualifies as a possible gift — it's a " +
+          "card refund, a transfer, a provider payout, or a credit the app " +
+          "already explains on its own (bank cashback, account interest, or a " +
+          "processing fee a payer covered).",
       });
     }
     const alreadyLinked = await ctx.db

@@ -878,9 +878,25 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
               books itself at settlement through the same webhook fan-out, so
               the remainder is money in a known place on a known schedule —
               which is why it counts toward the netting and prints muted. */}
+          {summary.inFlightRepaymentCount > 0 ? (
+            <Text className="text-2xs text-muted">
+              • {formatCents(summary.inFlightRepaymentCents)} of personal-charge
+              repayment{summary.inFlightRepaymentCount === 1 ? "" : "s"} still
+              clearing — the card charge already came off the books, and the
+              matching credit posts when the debit settles. Counted in the
+              Stripe pile above; nothing for you to do.
+            </Text>
+          ) : null}
+          {/* Compared against BOTH halves of our in-flight record. Against the
+              gift half alone, a repayment in transit made this fire and tell
+              the reader the money was "most likely authorised before in-flight
+              tracking shipped (Aug 10)" and "books itself as a gift when it
+              settles" — neither true of a repayment, and with the gifts bullet
+              skipped and `balanced` suppressing the rest it was the ONLY
+              bullet shown. */}
           {summary.stripePendingBankAccountCents != null &&
           summary.stripePendingBankAccountCents >
-            summary.inFlightGiftCents ? (
+            summary.inFlightGiftCents + summary.inFlightRepaymentCents ? (
             <Text className="text-2xs text-muted">
               • Stripe reports{" "}
               {formatCents(summary.stripePendingBankAccountCents)} of bank
@@ -925,19 +941,28 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
               leads with the strongest possible phrasing: when the lead's total
               EQUALS the gap, the mystery is solved and the panel should say
               so instead of presenting a number and a hint side by side. */}
+          {/* NOT a lead on the difference, and it used to claim to be. A
+              candidate-shaped inflow ALREADY counts toward book value as a
+              plain credit; confirming it moves those same cents from the
+              ledger side to the giving side (`computeBookBalances` collects
+              `giftCoverageCentsByTxn` precisely so a confirmed gift's bank row
+              stops counting twice). Book value therefore changes by EXACTLY
+              ZERO, and the old copy — "this number moves the moment you do",
+              plus "That is this entire difference" whenever the totals
+              coincided — sent a reader to confirm donations in pursuit of a
+              gap that would not have budged. Kept, because unbooked giving is
+              worth knowing about for the DONOR record; reworded, because it
+              cannot be the answer here. */}
           {summary.unrecordedInflowCount > 0 ? (
             <Text className="text-2xs text-muted">
-              • {summary.unrecordedInflowCount} recent bank credit
+              • Separately: {summary.unrecordedInflowCount} recent bank credit
               {summary.unrecordedInflowCount === 1 ? "" : "s"} worth{" "}
-              {formatCents(summary.unrecordedInflowCents)} that look
-              {summary.unrecordedInflowCount === 1 ? "s" : ""} like giving but
-              {summary.unrecordedInflowCount === 1 ? " is" : " are"} recorded
-              as nothing — an ACH or Zelle that landed without a gift entry.
-              {summary.unrecordedInflowCents === summary.differenceCents
-                ? " That is this entire difference."
-                : ""}{" "}
-              Confirm or dismiss them under Giving → possible gifts, and this
-              number moves the moment you do.
+              {formatCents(summary.unrecordedInflowCents)} look
+              {summary.unrecordedInflowCount === 1 ? "s" : ""} like giving with
+              no gift entry — an ACH or Zelle that landed straight in the
+              account. Worth confirming under Giving → possible gifts so the
+              donor gets credit, though it won't change the number above:
+              the money is already counted, just not as a gift.
             </Text>
           ) : null}
           {summary.inKindRevenueCents > 0 ? (

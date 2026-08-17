@@ -1597,6 +1597,10 @@ export const personalRepayments = defineTable({
 })
   .index("by_chapter", ["chapterId"])
   .index("by_person", ["payerPersonId"])
+  // Every repayment whose debit is in flight, for the reconciliation panel's
+  // in-flight term (`reconciliation.ts`) — the same "money has left the payer
+  // and not yet reached the books" class `pendingGifts.by_submitted` serves.
+  .index("by_status", ["status"])
   .index("by_transaction", ["transactionId"])
   // Match an ingested Increase account entry (its `ach_transfer_intention.
   // transfer_id`) back to the repayment whose ACH debit it settles, so
