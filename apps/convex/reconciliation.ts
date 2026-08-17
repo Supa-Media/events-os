@@ -4050,34 +4050,35 @@ export const reconciliationSummary = query({
         .query("personalRepayments")
         .withIndex("by_status", (q) => q.eq("status", "processing"))
         .take(ROLLUP_SCAN_LIMIT);
-      // THE CHARGE BASIS, ONCE PER SESSION. What Stripe holds while a debit
-      // clears is the whole charge — the debt plus any fee the payer covered —
-      // not the debt alone. Netting only the debt left the coverage behind as a
-      // phantom gap, because the fee sweep books Stripe's cut as an expense
-      // from the moment the (still pending) balance transaction appears, while
-      // the offsetting coverage credit waits for settlement: a $3.02 ACH
-      // repayment reported "$0.02 unaccounted for" (2026-08-17). The gift side
-      // hit this first — see `chargeTotalCents` above, and the sliver 0072
-      // closed on the settled side.
+      // THE DEBT PER ROW, THE COVERAGE ONCE PER SESSION. What Stripe holds
+      // while a debit clears is the whole charge — the debt plus any fee the
+      // payer covered — and netting only the debt left the fee behind as a
+      // phantom gap: the fee sweep books Stripe's cut from the still-PENDING
+      // balance transaction, while the credit that offsets it waits for
+      // settlement, so a $3.02 repayment read "$0.02 unaccounted for"
+      // (2026-08-17). The gift side hit this first; see `chargeTotalCents`.
       //
-      // Counted per `stripeCheckoutSessionId` because one checkout can settle
-      // several repayments under ONE coverage line — every row of that session
-      // carries the same `chargeTotalCents`, so summing per row would multiply
-      // it. Rows with no session (or written before the field) fall back to
-      // their own `amountCents`: the pre-fix behaviour, still exactly right for
-      // a repayment nobody covered a fee on.
-      const chargedSessions = new Set<string>();
+      // Split this way — never a session-wide gross — because the filtering
+      // above is PER ROW. A gross would be added whole whenever any one of its
+      // rows survived the filter, so a session whose sibling was deleted (or
+      // left unstamped) would explain away money that is not there. Each row
+      // now contributes only its own debt, and the coverage lands once; a
+      // partially-counted session under-counts, which leaves a visible gap
+      // rather than hiding one.
+      const coveredSessions = new Set<string>();
       for (const row of repaymentRows) {
         if (row.updatedAt < repaymentCutoff) continue;
         inFlightRepaymentCount += 1;
         inFlightRepaymentCents += row.amountCents;
+        inFlightChargeCents += row.amountCents;
         const sessionId = row.stripeCheckoutSessionId;
-        if (sessionId != null && row.chargeTotalCents != null) {
-          if (chargedSessions.has(sessionId)) continue;
-          chargedSessions.add(sessionId);
-          inFlightChargeCents += row.chargeTotalCents;
-        } else {
-          inFlightChargeCents += row.amountCents;
+        if (
+          sessionId != null &&
+          row.feeCoverageCents != null &&
+          !coveredSessions.has(sessionId)
+        ) {
+          coveredSessions.add(sessionId);
+          inFlightChargeCents += row.feeCoverageCents;
         }
       }
     }

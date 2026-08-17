@@ -1199,7 +1199,12 @@ http.route({
               "personalRepayments"
             >[],
             sessionId,
-            chargeTotalCents: obj.amount_total ?? undefined,
+            // Guarded like the gift half of this same webhook: a 0 or
+            // malformed total must not be taken as a real charge basis.
+            chargeTotalCents:
+              Number.isInteger(obj.amount_total) && (obj.amount_total ?? 0) > 0
+                ? (obj.amount_total as number)
+                : undefined,
           });
         }
         await ctx.runMutation(internal.givingPending.recordPendingGift, {

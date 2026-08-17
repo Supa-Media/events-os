@@ -761,7 +761,7 @@ describe("in-flight gifts — the gap that explains itself", () => {
     s: ChapterSetup,
     amountCents: number,
     status: "processing" | "pending" | "paid" = "processing",
-    charge?: { chargeTotalCents: number; sessionId: string },
+    charge?: { feeCoverageCents: number; sessionId: string },
   ): Promise<void> {
     await run(s.t, async (ctx) => {
       const payerPersonId = await ctx.db.insert("people", {
@@ -802,7 +802,7 @@ describe("in-flight gifts — the gap that explains itself", () => {
         status,
         ...(charge
           ? {
-              chargeTotalCents: charge.chargeTotalCents,
+              feeCoverageCents: charge.feeCoverageCents,
               stripeCheckoutSessionId: charge.sessionId,
             }
           : {}),
@@ -874,7 +874,7 @@ describe("in-flight gifts — the gap that explains itself", () => {
       }),
     );
     await seedProcessingRepayment(s, 300, "processing", {
-      chargeTotalCents: 302,
+      feeCoverageCents: 2,
       sessionId: "cs_live_one",
     });
 
@@ -897,29 +897,59 @@ describe("in-flight gifts — the gap that explains itself", () => {
       ctx.db.insert("financeSettings", {
         sandboxMode: false,
         stripeAvailableCents: 0,
-        stripePendingCents: 600,
+        // DELIBERATELY larger than the money in flight. `inFlightExplainedCents`
+        // is `min(inFlightCents, max(raw, 0))`, so with raw at 602 the clamp
+        // returns 602 whether the coverage was added once or twice and the
+        // test proves nothing — an earlier version of it passed with the dedup
+        // deleted. Headroom is what makes the assertion able to fail.
+        stripePendingCents: 1300,
         updatedAt: Date.now(),
       }),
     );
-    // Two $3.00 debts, ONE session, ONE 2c coverage line: amount_total 602 on
-    // both rows. Summing per row would net 1204 and explain away twice the
-    // money that exists.
+    // Two $3.00 debts, ONE session, ONE 2c coverage line: every row of the
+    // session carries the same coverage. Adding it per row would net 604.
     await seedProcessingRepayment(s, 300, "processing", {
-      chargeTotalCents: 602,
+      feeCoverageCents: 2,
       sessionId: "cs_live_shared",
     });
     await seedProcessingRepayment(s, 300, "processing", {
-      chargeTotalCents: 602,
+      feeCoverageCents: 2,
       sessionId: "cs_live_shared",
     });
 
     const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
     expect(summary.inFlightRepaymentCount).toBe(2);
     expect(summary.inFlightRepaymentCents).toBe(600);
-    // 602 once, not 1204 — and the clamp would have hidden the difference, so
-    // this asserts the raw side too.
-    expect(summary.rawDifferenceCents).toBe(600);
-    expect(summary.inFlightExplainedCents).toBe(600);
+    expect(summary.rawDifferenceCents).toBe(1300);
+    // 600 of debt + 2 of coverage ONCE. Adding it twice reads 604 here.
+    expect(summary.inFlightExplainedCents).toBe(602);
+    expect(summary.differenceCents).toBe(698);
+  });
+
+  test("a session with one row counted contributes only that row's debt", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        stripePendingCents: 1300,
+        updatedAt: Date.now(),
+      }),
+    );
+    // The shape `unflagPersonalCharge` leaves behind — it deletes a still
+    // `processing` repayment, so one row of a two-row session survives. A
+    // session-wide GROSS would have contributed the whole 602 for $3.00 that
+    // is actually in flight; the debt-plus-coverage split contributes 302.
+    await seedProcessingRepayment(s, 300, "processing", {
+      feeCoverageCents: 2,
+      sessionId: "cs_live_partial",
+    });
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.inFlightExplainedCents).toBe(302);
   });
 
   test("a STRANDED processing repayment stops explaining the gap", async () => {
