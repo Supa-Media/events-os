@@ -314,7 +314,10 @@ export const confirmExternalGift = triggerMutation({
       throw new ConvexError({
         code: "NOT_A_CANDIDATE",
         message:
-          "This transaction no longer qualifies as a possible gift (it's a card refund, a transfer, or a provider payout).",
+          "This transaction no longer qualifies as a possible gift — it's a " +
+          "card refund, a transfer, a provider payout, or a credit the app " +
+          "already explains on its own (bank cashback, account interest, or a " +
+          "processing fee a payer covered).",
       });
     }
     const alreadyLinked = await ctx.db

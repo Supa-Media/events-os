@@ -40,7 +40,11 @@ const INTEREST_DESCRIPTION_PREFIX = "Interest payment";
 export type StampInterestSourceCategoryResult = {
   scanned: number;
   stamped: number;
-  /** The scan cap bit — rows past it were not examined; re-run to continue. */
+  /** The scan cap bit — rows past it were NOT examined, and a re-run will not
+   *  reach them: stamping doesn't change `externalId`, so the same first
+   *  `SCAN_LIMIT` rows come back every time. A hard backstop against a runaway
+   *  read, not a page cursor. If this ever reads true, page on `externalId`.
+   *  (0066 called it "re-run to continue"; that was never true of this shape.) */
   truncated: boolean;
 };
 

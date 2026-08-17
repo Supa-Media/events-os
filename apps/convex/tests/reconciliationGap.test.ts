@@ -829,6 +829,43 @@ describe("in-flight gifts — the gap that explains itself", () => {
     expect(summary.inFlightExplainedCents).toBe(300);
     expect(summary.differenceCents).toBe(0);
     expect(summary.verdict).toBe("balanced");
+    // Returned to the client, so the panel can name it as a REPAYMENT. Folded
+    // into the gift figures it would have been described as a gift that
+    // "books itself as a gift when it settles", which a repayment does not.
+    expect(summary.inFlightRepaymentCount).toBe(1);
+    expect(summary.inFlightRepaymentCents).toBe(300);
+    expect(summary.inFlightGiftCount).toBe(0);
+  });
+
+  test("a STRANDED processing repayment stops explaining the gap", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        stripePendingCents: 300,
+        updatedAt: Date.now(),
+      }),
+    );
+    await seedProcessingRepayment(s, 300);
+    // Stripe stops retrying a failed ACH after ~3 days. If that failure webhook
+    // is lost the row sits at `processing` forever while Stripe drops the money
+    // from pending — and an unbounded term would go on netting it out, hiding a
+    // real cash-high gap permanently. Age it past the window.
+    await run(s.t, async (ctx) => {
+      const row = await ctx.db.query("personalRepayments").first();
+      await ctx.db.patch(row!._id, {
+        updatedAt: Date.now() - 60 * 24 * 60 * 60 * 1000,
+      });
+    });
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.inFlightExplainedCents).toBe(0);
+    expect(summary.differenceCents).toBe(300);
+    expect(summary.inFlightRepaymentCount).toBe(0);
   });
 
   test("a repayment nobody has paid yet explains NOTHING", async () => {
