@@ -357,6 +357,7 @@ const REGISTRY_NAMES = [
   "0075_label_fee_coverage_rows",
   "0076_backfill_wall_from_gifts",
   "0077_org_wide_budget_categories",
+  "0078_stamp_interest_source_category",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

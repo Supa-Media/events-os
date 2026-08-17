@@ -747,6 +747,113 @@ describe("in-flight gifts — the gap that explains itself", () => {
     ]);
   });
 
+  /**
+   * The 2026-08-17 report: a flat "$3.00 unaccounted for" with nothing wrong.
+   * A personal-charge repayment paid by ACH sits `processing` until Stripe
+   * confirms settlement — the money is already in Stripe's pending balance, so
+   * the located side counts it, while the offsetting credit only posts on
+   * `paid`. The original personal charge has already taken its amount off the
+   * books (`signedBookCents` counts a personal charge as a real outflow), so
+   * the panel read the difference as a discrepancy. Same class as an in-flight
+   * gift; it just wasn't a gift.
+   */
+  async function seedProcessingRepayment(
+    s: ChapterSetup,
+    amountCents: number,
+    status: "processing" | "pending" | "paid" = "processing",
+  ): Promise<void> {
+    await run(s.t, async (ctx) => {
+      const payerPersonId = await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Payer",
+        createdAt: Date.now(),
+      });
+      // The money that funded the card in the first place. Without it the
+      // fixture would model only the CHARGE's book effect and not its cash
+      // effect, and the two cancel: a personal charge takes `amountCents` off
+      // book value AND out of the bank, so on its own it moves the difference
+      // by nothing. Seeding both halves is what makes the leftover gap
+      // attributable to the in-flight repayment alone.
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "increase_ach",
+        flow: "inflow",
+        amountCents,
+        postedAt: Date.now(),
+        status: "reconciled",
+        createdAt: Date.now(),
+      });
+      const transactionId = await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "increase_card",
+        flow: "outflow",
+        amountCents,
+        postedAt: Date.now(),
+        status: "categorized",
+        isPersonal: true,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("personalRepayments", {
+        chapterId: s.chapterId,
+        transactionId,
+        amountCents,
+        method: "ach",
+        status,
+        payerPersonId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+    });
+  }
+
+  test("an ACH repayment still clearing is named, not alarmed about", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        // Stripe is holding the repayment while the debit clears.
+        stripePendingCents: 300,
+        updatedAt: Date.now(),
+      }),
+    );
+    await seedProcessingRepayment(s, 300);
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    // Cash exceeds books by the repayment (the personal charge already came
+    // off the books; its credit has not landed) — and the verdict nets it out.
+    expect(summary.rawDifferenceCents).toBe(300);
+    expect(summary.inFlightExplainedCents).toBe(300);
+    expect(summary.differenceCents).toBe(0);
+    expect(summary.verdict).toBe("balanced");
+  });
+
+  test("a repayment nobody has paid yet explains NOTHING", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await seedAccount(s, { chapterId: CENTRAL, balanceCents: 0 });
+    await run(s.t, (ctx) =>
+      ctx.db.insert("financeSettings", {
+        sandboxMode: false,
+        stripeAvailableCents: 0,
+        stripePendingCents: 300,
+        updatedAt: Date.now(),
+      }),
+    );
+    // `pending` = the payer has not paid. No debit is in flight and no money
+    // is at Stripe on its account; counting it would invent cash to explain a
+    // gap with, which is how a reconciliation stops being one.
+    await seedProcessingRepayment(s, 300, "pending");
+
+    const summary = await s.as.query(api.reconciliation.reconciliationSummary, {});
+    expect(summary.inFlightExplainedCents).toBe(0);
+    expect(summary.differenceCents).toBe(300);
+  });
+
   test("no pendingGifts row, but Stripe's own slice says ACH is in transit — still zero", async () => {
     // THE PRODUCTION SHAPE THAT ACTUALLY BIT (2026-08-11). Charisma's gift was
     // authorised in the window between the "on its way" email shipping

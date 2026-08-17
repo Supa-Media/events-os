@@ -4002,6 +4002,35 @@ export const reconciliationSummary = query({
         });
       }
       inFlightRows.sort((a, b) => b.amountCents - a.amountCents);
+
+      // ── AND IN-FLIGHT PERSONAL-CHARGE REPAYMENTS ────────────────────────
+      // Exactly the same situation as a pending gift, and it was missing here.
+      // A repayment paid by ACH sits `status:"processing"` until Stripe
+      // confirms settlement; the money is already in Stripe's balance (so the
+      // LOCATED side counts it) while `cards.ts` posts the offsetting credit
+      // only on `paid` (so book value does not). The original personal charge
+      // has already taken its amount off the books — `signedBookCents` counts a
+      // personal charge as a real outflow, "the money really left; its
+      // repayment credit brings it back" — so the panel read the difference as
+      // a discrepancy.
+      //
+      // Observed 2026-08-17: one $3.00 MTA repayment, ACH initiated 08-15,
+      // net $3.00 sitting `pending` in Stripe's balance with the payment intent
+      // still `processing`, produced a flat "$3.00 unaccounted for". Nothing
+      // was wrong; the panel simply had no vocabulary for money in transit that
+      // wasn't a gift.
+      //
+      // `processing` ONLY — never `pending`. A `pending` repayment is one
+      // nobody has paid yet: no money has left the payer, nothing is in
+      // Stripe's balance, and counting it would invent cash to explain a gap
+      // with. `processing` means a real debit is in flight.
+      const repaymentRows = await ctx.db
+        .query("personalRepayments")
+        .withIndex("by_status", (q) => q.eq("status", "processing"))
+        .take(ROLLUP_SCAN_LIMIT);
+      for (const row of repaymentRows) {
+        inFlightChargeCents += row.amountCents;
+      }
     }
 
     const gap = reconcileOrgMoney({

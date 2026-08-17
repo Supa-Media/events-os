@@ -925,19 +925,28 @@ function ReconciliationWorking({ summary }: { summary: Summary }) {
               leads with the strongest possible phrasing: when the lead's total
               EQUALS the gap, the mystery is solved and the panel should say
               so instead of presenting a number and a hint side by side. */}
+          {/* NOT a lead on the difference, and it used to claim to be. A
+              candidate-shaped inflow ALREADY counts toward book value as a
+              plain credit; confirming it moves those same cents from the
+              ledger side to the giving side (`computeBookBalances` collects
+              `giftCoverageCentsByTxn` precisely so a confirmed gift's bank row
+              stops counting twice). Book value therefore changes by EXACTLY
+              ZERO, and the old copy — "this number moves the moment you do",
+              plus "That is this entire difference" whenever the totals
+              coincided — sent a reader to confirm donations in pursuit of a
+              gap that would not have budged. Kept, because unbooked giving is
+              worth knowing about for the DONOR record; reworded, because it
+              cannot be the answer here. */}
           {summary.unrecordedInflowCount > 0 ? (
             <Text className="text-2xs text-muted">
-              • {summary.unrecordedInflowCount} recent bank credit
+              • Separately: {summary.unrecordedInflowCount} recent bank credit
               {summary.unrecordedInflowCount === 1 ? "" : "s"} worth{" "}
-              {formatCents(summary.unrecordedInflowCents)} that look
-              {summary.unrecordedInflowCount === 1 ? "s" : ""} like giving but
-              {summary.unrecordedInflowCount === 1 ? " is" : " are"} recorded
-              as nothing — an ACH or Zelle that landed without a gift entry.
-              {summary.unrecordedInflowCents === summary.differenceCents
-                ? " That is this entire difference."
-                : ""}{" "}
-              Confirm or dismiss them under Giving → possible gifts, and this
-              number moves the moment you do.
+              {formatCents(summary.unrecordedInflowCents)} look
+              {summary.unrecordedInflowCount === 1 ? "s" : ""} like giving with
+              no gift entry — an ACH or Zelle that landed straight in the
+              account. Worth confirming under Giving → possible gifts so the
+              donor gets credit, though it won't change the number above:
+              the money is already counted, just not as a gift.
             </Text>
           ) : null}
           {summary.inKindRevenueCents > 0 ? (
