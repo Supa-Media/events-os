@@ -170,6 +170,17 @@ async function seedDetectedPayout(
   });
 }
 
+/** Balance settlements now carry a unique suffix so a chapter can be settled
+ *  more than once a day (see `settleChapterBalances`), so the tests match on
+ *  the stable prefix rather than an exact id. */
+function settlementLegsFor(s: ChapterSetup, prefix: string) {
+  return run(s.t, async (ctx) =>
+    (await ctx.db.query("transactions").take(500)).filter((t) =>
+      (t.transferGroupId ?? "").startsWith(prefix),
+    ),
+  );
+}
+
 function legsFor(s: ChapterSetup, transferGroupId: string) {
   return run(s.t, (ctx) =>
     ctx.db
@@ -818,6 +829,54 @@ async function enableRealMovement(s: ChapterSetup): Promise<void> {
 describe("settleChapterBalances — cash follows the book", () => {
   const DAY = "2026-08-08";
 
+  test("central does NOT front a chapter whose money is still clearing", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await enableRealMovement(s);
+    // The owner's case (2026-08-17). Central holds $5,000 of ITS OWN money —
+    // seeded as central revenue so its book equals its bank. Chicago has just
+    // raised $1,000 that is still clearing at Stripe: its book says $1,000,
+    // its bank says $0.
+    await seedDonorWithGift(s, CENTRAL, { amountCents: 500_000 });
+    await seedBankBalance(s, CENTRAL, 500_000);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 100_000 });
+    await seedBankBalance(s, s.chapterId, 0);
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+
+    // Central COULD send $1,000 — it is sitting in the account. It must not:
+    // that is central's own money, and the chapter's has not arrived.
+    expect(out.settlementsBooked).toBe(0);
+    expect(out.movedCents).toBe(0);
+    expect(await settlementLegsFor(s, `balsettle-${s.chapterId}-`)).toHaveLength(0);
+  });
+
+  test("…and settles the moment that money actually lands", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await enableRealMovement(s);
+    // Same books as above, except the $1,000 has now cleared into central's
+    // account: bank $6,000 against central's own book of $5,000, so exactly
+    // $1,000 is distributable and it belongs to the chapter.
+    await seedDonorWithGift(s, CENTRAL, { amountCents: 500_000 });
+    await seedBankBalance(s, CENTRAL, 600_000);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 100_000 });
+    await seedBankBalance(s, s.chapterId, 0);
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+
+    expect(out.settlementsBooked).toBe(1);
+    expect(out.movedCents).toBe(100_000);
+  });
+
   test("moves a chapter the gap between its book and its bank", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -835,7 +894,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     expect(out.settlementsBooked).toBe(1);
     expect(out.movedCents).toBe(40_000);
 
-    const legs = await legsFor(s, `balsettle-${s.chapterId}-${DAY}`);
+    const legs = await settlementLegsFor(s, `balsettle-${s.chapterId}-`);
     expect(legs).toHaveLength(2);
     expect(legs.every((l) => l.transferOrigin === "balance_settlement")).toBe(true);
     expect(legs.every((l) => l.amountCents === 40_000)).toBe(true);
@@ -875,7 +934,7 @@ describe("settleChapterBalances — cash follows the book", () => {
       { dateStr: DAY },
     );
     expect(out.settlementsBooked).toBe(1);
-    const legs = await legsFor(s, `balsettle-${s.chapterId}-${DAY}`);
+    const legs = await settlementLegsFor(s, `balsettle-${s.chapterId}-`);
     expect(legs.every((l) => l.transferDirection === "chapter_to_central")).toBe(true);
     expect(legs[0].amountCents).toBe(20_000);
   });
@@ -919,7 +978,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     await t.mutation(internal.reconciliation.settleChapterBalances, {
       dateStr: DAY,
     });
-    expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(2);
+    expect(await settlementLegsFor(s, `balsettle-${s.chapterId}-`)).toHaveLength(2);
 
     // With no card spend anywhere, the auto settlement must find nothing to do.
     const auto = await t.mutation(internal.reconciliation.runAutoSettlement, {
@@ -945,7 +1004,7 @@ describe("settleChapterBalances — cash follows the book", () => {
       { dateStr: DAY },
     );
     expect(second.settlementsBooked).toBe(0);
-    expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(2);
+    expect(await settlementLegsFor(s, `balsettle-${s.chapterId}-`)).toHaveLength(2);
   });
 
   test("books NOTHING while real cash movement is off, and says why through notes", async () => {
@@ -971,7 +1030,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     expect(out.movedCents).toBe(0);
     // No ledger rows at all — this is the "actual things on the ledger"
     // complaint closing: NOTHING is written when nothing will ever execute.
-    expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(0);
+    expect(await settlementLegsFor(s, `balsettle-${s.chapterId}-`)).toHaveLength(0);
     // The finding is not lost — it travels through the run-summary `notes`
     // channel the accounts page already renders.
     const note = out.notes.join(" ");
@@ -1003,7 +1062,7 @@ describe("settleChapterBalances — cash follows the book", () => {
       { dateStr: DAY },
     );
     expect(off.settlementsBooked).toBe(0);
-    expect(await legsFor(s, `balsettle-${s.chapterId}-${DAY}`)).toHaveLength(0);
+    expect(await settlementLegsFor(s, `balsettle-${s.chapterId}-`)).toHaveLength(0);
     expect(off.unsettledGaps).toHaveLength(1);
 
     // On: the SAME day's re-run now books it — turning the toggle on does not
@@ -1017,7 +1076,7 @@ describe("settleChapterBalances — cash follows the book", () => {
     expect(on.movedCents).toBe(40_000);
     // Booked now, so nothing is left standing unreported.
     expect(on.unsettledGaps).toHaveLength(0);
-    const legs = await legsFor(s, `balsettle-${s.chapterId}-${DAY}`);
+    const legs = await settlementLegsFor(s, `balsettle-${s.chapterId}-`);
     expect(legs).toHaveLength(2);
     expect(legs.every((l) => l.transferOrigin === "balance_settlement")).toBe(true);
   });
