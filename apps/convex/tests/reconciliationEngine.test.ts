@@ -869,6 +869,50 @@ describe("settleChapterBalances — cash follows the book", () => {
     expect(out.movedCents).toBe(50_000);
   });
 
+  test("an inert pre-floor settlement does not block a replacement", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asCentralEd(s);
+    await enableRealMovement(s);
+    // Production, 2026-08-17: the pre-fix pair can never execute (the floor
+    // refuses it) but was still read as "already on its way", so no
+    // replacement was booked — floor blocks execution, guard blocks booking,
+    // chapter stuck. Every other fixture here uses `Date.now()`, which is
+    // always post-floor, so nothing pinned this.
+    const preFloor = Date.UTC(2026, 7, 17, 9, 30);
+    await run(s.t, async (ctx) => {
+      const settings = await ctx.db.query("financeSettings").first();
+      if (settings) {
+        await ctx.db.patch(settings._id, {
+          autoTransferRealMovementSinceMs: Date.UTC(2026, 7, 17, 4, 34),
+        });
+      }
+      await ctx.db.insert("transactions", {
+        chapterId: s.chapterId,
+        source: "transfer",
+        flow: "transfer",
+        amountCents: 265_667,
+        postedAt: preFloor,
+        status: "reconciled",
+        transferOrigin: "balance_settlement",
+        transferGroupId: `balsettle-${s.chapterId}-2026-08-17`,
+        transferDirection: "central_to_chapter",
+        createdAt: preFloor,
+      });
+    });
+    await seedBankBalance(s, CENTRAL, 100_000);
+    await seedDonorWithGift(s, s.chapterId, { amountCents: 50_000 });
+    await seedBankBalance(s, s.chapterId, 0);
+
+    const out = await t.mutation(
+      internal.reconciliation.settleChapterBalances,
+      { dateStr: DAY },
+    );
+
+    expect(out.settlementsBooked).toBe(1);
+    expect(out.movedCents).toBe(50_000);
+  });
+
   test("a pre-fix settlement is never executed as real cash", async () => {
     const t = newT();
     const s = await setupChapter(t);
