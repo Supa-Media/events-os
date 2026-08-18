@@ -84,6 +84,52 @@ Academy rule below applies; and separation-of-duties matters — if a power
 approves something, the approver must not be the submitter (see
 `campaigns.ts`'s state-machine doc).
 
+## Native dependencies and OTA updates
+
+`runtimeVersion` is `{ policy: "appVersion" }` and `version` has been `"1.0.0"`
+since the repo was scaffolded, so **every binary and every OTA bundle share the
+runtime version `"1.0.0"`** — EAS Update treats them as interchangeable even
+when EAS's own native fingerprints differ. That is deliberate: one JS bundle
+serving clients on several binaries is what lets an update reach everyone
+without forcing a reinstall.
+
+The price is that **a JS bundle can land on a binary that lacks a native module
+it imports**, which does not fail gracefully: the bundle fails to load,
+expo-updates runs its recovery tasks, exhausts them, and aborts the process.
+The crash report names `ErrorRecovery.crash()` and nothing about the module
+responsible. TestFlight 1.0.0 (8) died this way on 2026-08-15, 0.4s after
+launch, because `react-native-webview` was added five hours after that day's
+binary was built and imported statically by three components.
+
+So:
+
+- **`core` is a claim about BINARIES IN THE FIELD, not about `package.json`.**
+  It means "every binary we still serve already contains this". A newly added
+  native dependency is never `core`, however obviously safe it looks.
+- **A new native dependency starts `gated`** in `apps/mobile/native-deps.json`,
+  behind a loader in `lib/` that `require()`s it in a try/catch and returns
+  `null` when absent (`lib/nativeWebView.ts`, `lib/cameraScanning.ts`). Every
+  consumer must render a real fallback for the `null` case — not a blank, and
+  for anything load-bearing not merely a notice: the Markdown editor falls back
+  to a plain `TextInput`, because "you cannot write the document" is not an
+  acceptable degradation.
+- **It graduates to `core` only once a binary containing it is the oldest one
+  still being served** — i.e. after a native build has shipped and the older
+  ones are gone.
+- **Never write a gated dependency's name in a static import, a type-only
+  import, or even a comment.** `scripts/check-native-imports.js` scans text, so
+  all three trip it. Use an inline `typeof import(…)` query for types.
+- CI runs that script via the framework's reusable workflow. Note it **skips
+  silently** when the file is missing (a `::notice::`, not a failure) — which is
+  how this gate no-op'd here for months. Do not delete it.
+- Gating covers *additive* native modules. It does not cover a change to an
+  existing module's API, an Expo SDK bump, or a native **view** crash (which
+  corrupts the Fabric view registry and takes unrelated rendering down with it).
+  Those need every client on a new binary, and `runtimeVersion` is the only
+  thing that can enforce that — switch to `{ policy: "fingerprint" }` for such a
+  release, accepting that old binaries stop receiving updates, which is the
+  point.
+
 ## Supa Framework
 
 This repo is the first consumer of **Supa-Media/supa-framework** (`@supa-media/*`

@@ -24,10 +24,10 @@
     "react-native-gesture-handler",
     "react-native-reanimated",
     "react-native-worklets",
-    "react-native-webview",
     "react-native-css-interop"
   ],
   "gated": [
-    "expo-camera"
+    "expo-camera",
+    "react-native-webview"
   ]
 }
