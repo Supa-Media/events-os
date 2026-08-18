@@ -1471,7 +1471,13 @@ export const cardRequests = defineTable({
  *  offsetting credit transaction is posted (`creditTransactionId`). No
  *  reimbursement paperwork — this is the cardholder paying the org back. */
 export const personalRepayments = defineTable({
-  chapterId: v.id("chapters"),
+  // The scope of the CHARGE being repaid, which is the book that fronted the
+  // money — central when the card drew on central's own account. Was
+  // `v.id("chapters")` under the assumption that "central issues no cards";
+  // `increaseCardSync.ts` ended that, and the old `as Id<"chapters">` cast at
+  // the one insert site hid the mismatch from tsc while it would have thrown
+  // at runtime inside the org-wide `autoConvertOverdueReceipts` sweep.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   // The flagged personal charge being repaid.
   transactionId: v.id("transactions"),
   payerPersonId: v.id("people"),

@@ -547,6 +547,24 @@ export async function requireCentralFinanceRoleOrEdSeat(
 export type FinanceScope = Id<"chapters"> | "central";
 
 /**
+ * Can a person of `chapterId` see/act on a row scoped to `scope`?
+ *
+ * Their own chapter, plus CENTRAL. Central is the org level ABOVE every
+ * chapter rather than a sibling of them, so a central row attributed to a
+ * chapter person is still theirs — excluding it is what made a charge on a
+ * central-account card invisible to the person who actually spent it
+ * (`increaseCardSync.ts`). This is NOT a relaxation of cross-chapter
+ * isolation: another CHAPTER's rows stay hidden, which is the leak the
+ * defense-in-depth filters at these call sites exist to prevent.
+ */
+export function scopeVisibleToChapter(
+  scope: FinanceScope,
+  chapterId: Id<"chapters">,
+): boolean {
+  return scope === chapterId || scope === "central";
+}
+
+/**
  * Bridge a `finance_manager` SPECIALIZED role to a real `financeRoles` `manager`
  * grant — so holding the title confers finance-write capability. Upserts the one
  * grant per (scope, person): a chapter scope → `scope:"chapter"` keyed on the

@@ -53,6 +53,7 @@ import {
   increaseGet,
 } from "./lib/increaseApi";
 import { normalizeEmail } from "./lib/access";
+import { isCardEligible } from "@events-os/shared";
 import type { FinanceScope } from "./lib/finance";
 
 /** Increase card statuses → ours. `disabled` is what `cards.ts` pushes when we
@@ -164,7 +165,26 @@ export async function resolveCardholder(
           .collect(),
       ),
     );
-    const ids = [...new Set(perChapter.flat().map((p) => p._id))];
+    // Only people who could actually HOLD a card. `isPlaceholder` rows are
+    // Template Crew stand-ins and `isContactOnly` rows are donors/guests
+    // auto-created from a gift or RSVP — both are real `people` rows a bare
+    // name lookup would otherwise return (390 contact rows and 34 placeholders
+    // in production today). `isCardEligible` is the same gate `issueCard`
+    // enforces, so this can only ever resolve to someone the OS would have
+    // been willing to issue this card to.
+    const ids = [
+      ...new Set(
+        perChapter
+          .flat()
+          .filter(
+            (p) =>
+              p.isPlaceholder !== true &&
+              p.isContactOnly !== true &&
+              isCardEligible(p.pwEmail),
+          )
+          .map((p) => p._id),
+      ),
+    ];
     if (ids.length === 1) return { kind: "name", personId: ids[0] };
     if (ids.length > 1) {
       return {
@@ -255,7 +275,16 @@ export const upsertIncreaseCard = internalMutation({
       // auto-lock, a holder's `frozenByHolder` freeze — and letting a
       // dashboard toggle clear them would route around the OS's own rules.
       // Unlocking stays an OS action.
-      if (status !== existing.status && status !== "active") {
+      // `canceled` is TERMINAL. `cancelCard` pushes `disabled` to Increase
+      // best-effort (it logs and moves on if the vendor call fails), so a
+      // canceled card can legitimately sit at `disabled` upstream — and
+      // mapping that back would resurrect it as `locked`, which a manager can
+      // then unlock. A cancellation must never be undone by a webhook.
+      if (
+        status !== existing.status &&
+        status !== "active" &&
+        existing.status !== "canceled"
+      ) {
         patch.status = status;
       }
       if (Object.keys(patch).length > 0 && !dryRun) {

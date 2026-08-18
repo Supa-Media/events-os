@@ -53,6 +53,10 @@ import { internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { increaseEnvForMode, increaseGet } from "../lib/increaseApi";
 
+/** Per-scope cap on the orphan scan. Well above any plausible backlog (one
+ *  orphan exists in production today) and far below Convex's read cap. */
+const SCAN_LIMIT = 4096;
+
 /** One unlinked charge, as the planner sees it. */
 interface OrphanCharge {
   transactionId: Id<"transactions">;
@@ -92,12 +96,19 @@ export const listOrphanCardCharges = internalQuery({
       ...chapters.map((c) => c._id),
       "central" as const,
     ];
+    // BOUNDED, per the file-local convention (`ROLLUP_SCAN_LIMIT` /
+    // `CARD_TXN_LIMIT` elsewhere): an unbounded `.collect()` over every scope
+    // would grow into Convex's per-execution read cap and throw before the
+    // plan was even built. Newest-first, because an unlinked charge is by
+    // definition recent — the condition this repairs only arises after a card
+    // is made in the dashboard.
     const perScope = await Promise.all(
       scopes.map((scope) =>
         ctx.db
           .query("transactions")
           .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
-          .collect(),
+          .order("desc")
+          .take(SCAN_LIMIT),
       ),
     );
     return perScope
@@ -238,11 +249,20 @@ export const linkOrphanIncreaseCardCharges = internalAction({
     }
 
     // ── The guard: refuse rather than half-apply ─────────────────────────────
-    if (!isDryRun && expectLinks !== undefined && plan.length !== expectLinks) {
-      throw new Error(
-        `Refusing to run: expected ${expectLinks} link(s), planned ${plan.length}. ` +
-          `Re-run the dry run, review the plan, and pass the number it reports.`,
-      );
+    if (!isDryRun) {
+      if (expectLinks === undefined) {
+        throw new Error(
+          `Refusing to run: pass \`expectLinks\` with the count the dry run reported ` +
+            `(it plans ${plan.length} link(s) right now). Committing without it would ` +
+            `apply a plan no human has reviewed.`,
+        );
+      }
+      if (plan.length !== expectLinks) {
+        throw new Error(
+          `Refusing to run: expected ${expectLinks} link(s), planned ${plan.length}. ` +
+            `Re-run the dry run, review the plan, and pass the number it reports.`,
+        );
+      }
     }
 
     if (isDryRun) {

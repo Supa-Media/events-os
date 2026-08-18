@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
-import { internal } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { extractIncreaseCard } from "../increaseCardSync";
 import type { Id } from "../_generated/dataModel";
 
@@ -28,7 +28,12 @@ import type { Id } from "../_generated/dataModel";
  *  - adopting the row `cards.ts#issueCard` is mid-way through writing, rather
  *    than racing it to a duplicate,
  *  - the 0078 back-link attaching an already-ingested orphan charge, and
- *    refusing across a scope boundary.
+ *    refusing across a scope boundary,
+ *  - and the boundaries a CENTRAL-scoped card reaches once it exists: the
+ *    holder actually seeing the charge, a manager being able to reach the
+ *    card, and the personal-repayment conversion surviving a central charge.
+ *    Every one of these was broken by the scope widening and invisible to
+ *    tsc — the repayment insert was hidden behind an `as Id<"chapters">`.
  */
 
 // ── fixtures ─────────────────────────────────────────────────────────────────
@@ -98,6 +103,23 @@ async function seedPerson(
     }
     return personId;
   });
+}
+
+/** Mirrors `tests/cards.test.ts#grantRole`. */
+async function grantRole(
+  s: ChapterSetup,
+  personId: Id<"people">,
+  role: "viewer" | "bookkeeper" | "manager",
+): Promise<void> {
+  await run(s.t, (ctx) =>
+    ctx.db.insert("financeRoles", {
+      chapterId: s.chapterId,
+      personId,
+      role,
+      scope: "chapter",
+      createdAt: Date.now(),
+    }),
+  );
 }
 
 function upsert(
@@ -204,12 +226,62 @@ describe("resolving the cardholder", () => {
   test("an exact name match stands in when the card has no wallet email", async () => {
     const s = await setupChapter(newT());
     await seedAccount(s, ACCOUNT, s.chapterId);
-    const personId = await seedPerson(s, "Kansi Udochukwu");
+    // Card-eligible (a `@publicworship.life` address on file), but whoever
+    // made the card in the dashboard left the digital wallet blank.
+    const personId = await seedPerson(
+      s,
+      "Kansi Udochukwu",
+      "kansi@publicworship.life",
+    );
 
     expect(await upsert(s, { walletEmail: undefined })).toMatchObject({
       result: "created",
     });
     expect((await allCards(s))[0].cardholderPersonId).toBe(personId);
+  });
+
+  test("a name match on someone who could not hold a card is refused", async () => {
+    const s = await setupChapter(newT());
+    await seedAccount(s, ACCOUNT, s.chapterId);
+    // No `@publicworship.life` address — `issueCard` would refuse this person,
+    // so a name match must not hand them a card either.
+    await seedPerson(s, "Kansi Udochukwu");
+
+    expect((await upsert(s, { walletEmail: undefined })).result).toBe(
+      "unattributed",
+    );
+    expect(await allCards(s)).toHaveLength(0);
+  });
+
+  test("a placeholder or contact-only row never absorbs a card", async () => {
+    const s = await setupChapter(newT());
+    await seedAccount(s, ACCOUNT, s.chapterId);
+    const real = await seedPerson(
+      s,
+      "Kansi Udochukwu",
+      "kansi@publicworship.life",
+    );
+    // A Template Crew stand-in and a donor contact row sharing the name would
+    // otherwise read as ambiguity and block a legitimate sync.
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Kansi Udochukwu",
+        isPlaceholder: true,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Kansi Udochukwu",
+        isContactOnly: true,
+        createdAt: Date.now(),
+      });
+    });
+
+    expect((await upsert(s, { walletEmail: undefined })).result).toBe(
+      "created",
+    );
+    expect((await allCards(s))[0].cardholderPersonId).toBe(real);
   });
 
   test("an email on two people syncs NOTHING rather than picking one", async () => {
@@ -543,5 +615,132 @@ describe("back-linking charges that ingested before the card was known", () => {
       {},
     );
     expect(orphans.map((o) => o.transactionId)).toEqual([orphanId]);
+  });
+});
+
+// ── what the scope widening reaches ──────────────────────────────────────────
+
+describe("a central-scoped card at the surfaces that assume a chapter", () => {
+  /** Kansi's real shape: a New York person holding a card drawn on central. */
+  async function centralCardHolder(s: ChapterSetup) {
+    await seedAccount(s, CENTRAL_ACCOUNT, "central");
+    const personId = await seedPerson(
+      s,
+      "Kansi Udochukwu",
+      "kansi@publicworship.life",
+    );
+    // The holder is the signed-in caller — this is their own-charge surface.
+    await run(s.t, (ctx) => ctx.db.patch(personId, { userId: s.userId }));
+    await grantRole(s, personId, "manager");
+    await upsert(s, { accountId: CENTRAL_ACCOUNT });
+    const card = (await allCards(s))[0];
+    return { personId, card };
+  }
+
+  test("the holder sees the charge in their own transactions", async () => {
+    const s = await setupChapter(newT());
+    const { personId, card } = await centralCardHolder(s);
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: "central",
+        source: "increase_card",
+        flow: "outflow",
+        amountCents: 1427,
+        currency: "usd",
+        postedAt: Date.now(),
+        merchantName: "AMAZON RETA* 5A0C91NA2",
+        externalId: "transaction_b9yec0mm7qhvdsp8he7x",
+        cardId: card._id,
+        personId,
+        cardLast4: "6005",
+        pending: false,
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+    const rows = await s.as.query(api.finances.personTransactions, {});
+    expect(rows.map((r) => r.amountCents)).toContain(1427);
+  });
+
+  test("another chapter's rows are still hidden — this is not a blanket relaxation", async () => {
+    const s = await setupChapter(newT());
+    const { personId } = await centralCardHolder(s);
+    const otherChapterId = await run(s.t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Philly",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: otherChapterId,
+        source: "increase_card",
+        flow: "outflow",
+        amountCents: 9999,
+        currency: "usd",
+        postedAt: Date.now(),
+        externalId: "transaction_other_chapter",
+        personId,
+        pending: false,
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+    const rows = await s.as.query(api.finances.personTransactions, {});
+    expect(rows.map((r) => r.amountCents)).not.toContain(9999);
+  });
+
+  test("the holder's chapter manager can reach the card", async () => {
+    const s = await setupChapter(newT());
+    const { card } = await centralCardHolder(s);
+    // `requireOwnedCard` is the choke point every manager mutation shares;
+    // reaching it at all is what was broken.
+    const found = await run(s.t, async (ctx) => {
+      const c = await ctx.db.get(card._id);
+      const holder = await ctx.db.get(c!.cardholderPersonId);
+      return c!.chapterId === "central" && holder!.chapterId === s.chapterId;
+    });
+    expect(found).toBe(true);
+
+    const listed = await s.as.query(api.cards.listCards, {});
+    expect(listed.map((c) => c.id)).toContain(card._id);
+  });
+
+  test("a central charge converts to a personal repayment without throwing", async () => {
+    const s = await setupChapter(newT());
+    const { personId, card } = await centralCardHolder(s);
+    const txnId = await run(s.t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: "central",
+        source: "increase_card",
+        flow: "outflow",
+        amountCents: 1427,
+        currency: "usd",
+        postedAt: Date.now(),
+        externalId: "transaction_personal_central",
+        cardId: card._id,
+        personId,
+        pending: false,
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+
+    // This is the insert that carried `txn.chapterId as Id<"chapters">` — a
+    // cast that typechecked and would have thrown here at runtime.
+    await s.as.mutation(api.cards.flagPersonalCharge, { transactionId: txnId });
+
+    const repayment = await run(s.t, (ctx) =>
+      ctx.db
+        .query("personalRepayments")
+        .withIndex("by_transaction", (q) => q.eq("transactionId", txnId))
+        .first(),
+    );
+    expect(repayment).toMatchObject({
+      chapterId: "central",
+      payerPersonId: personId,
+      amountCents: 1427,
+    });
   });
 });

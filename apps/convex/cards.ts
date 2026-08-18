@@ -131,6 +131,7 @@ import {
   getChapterAccountForMode,
   resolveCallerPersonId,
   type FinanceScope,
+  scopeVisibleToChapter,
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
 import {
@@ -919,12 +920,29 @@ export const listCards = query({
     // and always shows. This is also what keeps card-spend KPI tiles — summed
     // from this filtered list — from counting cross-environment spend.
     const sandboxMode = await readSandbox(ctx);
-    const cards = (
-      await ctx.db
-        .query("cards")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-        .take(CARD_SCAN_LIMIT)
-    ).filter((c) => matchesMode(c.increaseCardId ?? null, sandboxMode));
+    // The chapter's own cards, plus central-scoped cards held by this
+    // chapter's people — a card's scope is the account it draws on, so a
+    // central card can have a chapter holder and still needs a manager. One
+    // extra bounded indexed read, not a scan.
+    const ownCards = await ctx.db
+      .query("cards")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
+      .take(CARD_SCAN_LIMIT);
+    const centralCards = await ctx.db
+      .query("cards")
+      .withIndex("by_chapter", (q) => q.eq("chapterId", "central"))
+      .take(CARD_SCAN_LIMIT);
+    const centralHeldHere = (
+      await Promise.all(
+        centralCards.map(async (c) => {
+          const holder = await ctx.db.get(c.cardholderPersonId);
+          return holder?.chapterId === chapterId ? c : null;
+        }),
+      )
+    ).filter((c): c is Doc<"cards"> => c !== null);
+    const cards = [...ownCards, ...centralHeldHere].filter((c) =>
+      matchesMode(c.increaseCardId ?? null, sandboxMode),
+    );
     // Per-cardholder training status for the manager roster's Trained ✓ /
     // Needs training badge — `null` on every row when there's no effective
     // gate. `hasCompletedCourse` is a couple of indexed reads per card; the
@@ -1084,12 +1102,29 @@ export const myCard = query({
 
 // ── lockCard / unlockCard / setCardControls (manager mutations) ──────────────
 
+/**
+ * Load a card this chapter's managers may act on: the chapter's own, plus a
+ * CENTRAL-scoped card held by one of this chapter's people.
+ *
+ * A card's scope is the ACCOUNT it draws on, so a central card can belong to a
+ * chapter person (`increaseCardSync.ts`). Without this it would be manageable
+ * by no one anywhere, while the org-wide `autoLockOverdueCards` sweep could
+ * still lock it — stranding the holder behind a lock only a manager can clear
+ * and no manager could reach.
+ *
+ * Holder-only actions do NOT come through here: they gate on
+ * `requireCallerIsHolder`, which already ignores chapter entirely.
+ */
 async function requireOwnedCard(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   cardId: Id<"cards">,
 ): Promise<Doc<"cards">> {
   const card = await ctx.db.get(cardId);
+  if (card && card.chapterId === "central") {
+    const holder = await ctx.db.get(card.cardholderPersonId);
+    if (holder && holder.chapterId === chapterId) return card;
+  }
   await requireInChapter(ctx, chapterId, card, "Card");
   return card!;
 }
@@ -2653,8 +2688,12 @@ export async function convertChargeToPersonalRepayment(
   }
   const now = Date.now();
   const repaymentId = await ctx.db.insert("personalRepayments", {
-    // A card charge is always chapter-scoped (central issues no cards).
-    chapterId: txn.chapterId as Id<"chapters">,
+    // The book that fronted the money — central when the card drew on
+    // central's own account. This used to read `txn.chapterId as
+    // Id<"chapters">` under the comment "central issues no cards"; the cast
+    // outlived the invariant and would have thrown here at runtime, inside a
+    // sweep that runs for every chapter at once.
+    chapterId: txn.chapterId,
     transactionId: txn._id,
     payerPersonId: cardholderPersonId,
     amountCents: txn.amountCents,
@@ -2726,8 +2765,16 @@ export const flagPersonalCharge = mutation({
     const access = await getFinanceRole(ctx, chapterId);
 
     const txn = await ctx.db.get(transactionId);
-    await requireInChapter(ctx, chapterId, txn, "Transaction");
-    const transaction = txn!;
+    // The caller's chapter or central (`scopeVisibleToChapter`) — a charge on
+    // a central-account card is still this chapter's person's to account for.
+    // Another CHAPTER's rows stay hidden.
+    if (!txn || !scopeVisibleToChapter(txn.chapterId, chapterId)) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Transaction not found in your chapter.",
+      });
+    }
+    const transaction = txn;
 
     // Resolve who owes: the txn's own `personId` if set, else the cardholder
     // of its `cardId` (mirrors `finances.ts#makeCardholderResolver`, kept as a
@@ -2736,8 +2783,13 @@ export const flagPersonalCharge = mutation({
     let payerPersonId: Id<"people"> | null = transaction.personId ?? null;
     if (!payerPersonId && transaction.cardId) {
       const card = await ctx.db.get(transaction.cardId);
-      await requireInChapter(ctx, chapterId, card, "Card");
-      payerPersonId = card!.cardholderPersonId;
+      if (!card || !scopeVisibleToChapter(card.chapterId, chapterId)) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "Card not found in your chapter.",
+        });
+      }
+      payerPersonId = card.cardholderPersonId;
     }
     // Nobody resolvable — accept a MANAGER's explicit "bill this person", and
     // persist it as the txn's attribution so the rest of the app agrees.
@@ -2868,8 +2920,16 @@ export const unflagPersonalCharge = mutation({
     const access = await getFinanceRole(ctx, chapterId);
 
     const txn = await ctx.db.get(transactionId);
-    await requireInChapter(ctx, chapterId, txn, "Transaction");
-    const transaction = txn!;
+    // The caller's chapter or central (`scopeVisibleToChapter`) — a charge on
+    // a central-account card is still this chapter's person's to account for.
+    // Another CHAPTER's rows stay hidden.
+    if (!txn || !scopeVisibleToChapter(txn.chapterId, chapterId)) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Transaction not found in your chapter.",
+      });
+    }
+    const transaction = txn;
 
     if (transaction.isPersonal !== true) return null; // already not personal
 
