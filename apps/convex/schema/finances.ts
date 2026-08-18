@@ -1403,7 +1403,16 @@ export const contractorTaxDocuments = defineTable({
  *  Only two controls: a monthly safety cap + a validity window. Auto-locks if a
  *  receipt is >7 days late (`receiptGraceEndsAt`); unlocks on upload. */
 export const cards = defineTable({
-  chapterId: v.id("chapters"),
+  // WHOSE ACCOUNT PAYS, not whose budget the spend belongs to — the two are
+  // deliberately decoupled ("your card determines whose account paid;
+  // reconcile determines whose budget it was", `reconciliation.ts`), and the
+  // morning engine settles the difference as cross-book card spend. So this
+  // mirrors the card's Increase account (`increaseAccounts.chapterId`, the
+  // same union) and NOT the cardholder's chapter: central holds its own
+  // account, so a card drawn on it is `"central"` even when its holder is a
+  // chapter person. Kept identical to the account's scope so
+  // `increaseLedger`'s card-attribution equality check still holds.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   cardholderPersonId: v.id("people"),
   increaseCardId: v.optional(v.string()),
   increaseCardholderId: v.optional(v.string()),
@@ -1462,7 +1471,13 @@ export const cardRequests = defineTable({
  *  offsetting credit transaction is posted (`creditTransactionId`). No
  *  reimbursement paperwork — this is the cardholder paying the org back. */
 export const personalRepayments = defineTable({
-  chapterId: v.id("chapters"),
+  // The scope of the CHARGE being repaid, which is the book that fronted the
+  // money — central when the card drew on central's own account. Was
+  // `v.id("chapters")` under the assumption that "central issues no cards";
+  // `increaseCardSync.ts` ended that, and the old `as Id<"chapters">` cast at
+  // the one insert site hid the mismatch from tsc while it would have thrown
+  // at runtime inside the org-wide `autoConvertOverdueReceipts` sweep.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   // The flagged personal charge being repaid.
   transactionId: v.id("transactions"),
   payerPersonId: v.id("people"),
@@ -1896,7 +1911,9 @@ export const financeStripeCustomers = defineTable({
  *  allow-list rules). Kept for audit + to reconcile against the eventual
  *  posted transaction. */
 export const cardAuthorizations = defineTable({
-  chapterId: v.id("chapters"),
+  // The deciding card's scope (`cards.chapterId`) — a union because a card
+  // drawn on central's own Increase account is scoped `"central"`.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   cardId: v.id("cards"),
   increaseAuthId: v.string(),
   amountCents: v.number(),

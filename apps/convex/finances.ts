@@ -142,6 +142,7 @@ import {
   getFinanceRole,
   defaultFundId,
   type FinanceScope,
+  scopeVisibleToChapter,
 } from "./lib/finance";
 import { requireSuperuser, isSuperuser } from "./lib/superuser";
 import {
@@ -6009,9 +6010,13 @@ export const personTransactions = query({
       .query("transactions")
       .withIndex("by_person", (q) => q.eq("personId", personId!))
       .take(ROLLUP_SCAN_LIMIT);
-    // Defense-in-depth: never leak a row linked from another chapter.
+    // Defense-in-depth: never leak a row linked from another CHAPTER. Central
+    // is not another chapter — it is the org level above them, and a charge on
+    // a central-account card is genuinely this person's own spend
+    // (`increaseCardSync.ts`). Filtering it out is what left the cardholder
+    // seeing nothing of a charge correctly attributed to them.
     return rows
-      .filter((tr) => tr.chapterId === chapterId)
+      .filter((tr) => scopeVisibleToChapter(tr.chapterId, chapterId))
       .map((tr) => toMemberTxnSummary(tr, viewerPersonId));
   },
 });
@@ -13473,7 +13478,11 @@ export const submitOwnCharge = mutation({
     const access = await getFinanceRole(ctx, chapterId);
 
     const txn = (await ctx.db.get(args.transactionId)) as Doc<"transactions"> | null;
-    if (!txn || txn.chapterId !== chapterId) {
+    // Caller's chapter or central — see `scopeVisibleToChapter`. Widening the
+    // LOOKUP is safe here because authorization is the `isCardholder` check
+    // below, not this; and the categories a submitter can pick are org-wide,
+    // so a central row cannot be coded into some chapter's private list.
+    if (!txn || !scopeVisibleToChapter(txn.chapterId, chapterId)) {
       throw new ConvexError({
         code: "NOT_FOUND",
         message: "Transaction not found in your chapter.",
@@ -13486,7 +13495,7 @@ export const submitOwnCharge = mutation({
       });
     }
     const card = await ctx.db.get(txn.cardId);
-    if (!card || card.chapterId !== chapterId) {
+    if (!card || !scopeVisibleToChapter(card.chapterId, chapterId)) {
       throw new ConvexError({
         code: "NOT_FOUND",
         message: "Card not found in your chapter.",
