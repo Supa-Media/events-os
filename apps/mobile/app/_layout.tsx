@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import Constants from "expo-constants";
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
+import { Text, View } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
@@ -56,30 +57,65 @@ export default function RootLayout() {
   }, []);
   const showApp = fontsLoaded || fontError != null || graceOver;
 
+  // extra.convexUrl is the env URL with loopback rewritten to the machine's
+  // LAN IP at dev-server start (see app.config.js) — Chrome blocks
+  // cross-origin loopback and devices can't reach it.
+  const convexUrl =
+    Constants.expoConfig?.extra?.convexUrl ??
+    process.env.EXPO_PUBLIC_CONVEX_URL;
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider>
         <SafeAreaProvider>
-          {/* extra.convexUrl is the env URL with loopback rewritten to the
-              machine's LAN IP at dev-server start (see app.config.js) —
-              Chrome blocks cross-origin loopback and devices can't reach it. */}
-          <SupaConvexProvider
-            url={
-              Constants.expoConfig?.extra?.convexUrl ??
-              process.env.EXPO_PUBLIC_CONVEX_URL
-            }
-          >
-            <NotificationProvider>
-              <StatusBar style="dark" />
-              {/* Catches render errors in any screen so a thrown exception shows
-                  a recovery UI instead of a blank tree. Kept below the Convex/
-                  auth + notification providers so its recovery Screen still has
-                  context, but above the route Slot so it wraps every screen. */}
-              <ErrorBoundary>{showApp ? <Slot /> : null}</ErrorBoundary>
-            </NotificationProvider>
-          </SupaConvexProvider>
+          {/* OUTER boundary — it exists specifically to catch a throw from the
+              providers below it, which the inner one cannot: a boundary only
+              catches its own subtree. `SupaConvexProvider` constructs a
+              ConvexReactClient during render, and that throws outright on a
+              missing address. Unhandled at startup, expo-updates treats it as
+              a failed bundle, exhausts its recovery tasks and ABORTS the
+              process — TestFlight build 8 died 0.4s after launch that way,
+              leaving only a native SIGABRT stack. A caught error shows a
+              recovery screen instead. Placed inside SafeAreaProvider so the
+              recovery UI still has insets; it needs no Convex/auth context. */}
+          <ErrorBoundary>
+            {convexUrl ? (
+              <SupaConvexProvider url={convexUrl}>
+                <NotificationProvider>
+                  <StatusBar style="dark" />
+                  {/* Inner boundary: render errors in any SCREEN. Kept below
+                      the providers so its recovery UI still has their
+                      context, and above the Slot so it wraps every route. */}
+                  <ErrorBoundary>{showApp ? <Slot /> : null}</ErrorBoundary>
+                </NotificationProvider>
+              </SupaConvexProvider>
+            ) : (
+              /* Never reachable from a correctly built binary — app.config.js
+                 refuses to build one without EXPO_PUBLIC_CONVEX_URL. It's here
+                 so that if one ever escapes anyway, it says what is wrong
+                 instead of aborting on launch with a stack that names none of
+                 this. */
+              <MissingBackendNotice />
+            )}
+          </ErrorBoundary>
         </SafeAreaProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>
+  );
+}
+
+/** Shown only when the app was built without a Convex URL. Deliberately plain:
+ *  no Convex, no auth, no data — the point is that it can always render. */
+function MissingBackendNotice() {
+  return (
+    <View style={{ flex: 1, alignItems: "center", justifyContent: "center", padding: 24 }}>
+      <Text style={{ fontSize: 17, fontWeight: "600", marginBottom: 8, textAlign: "center" }}>
+        This build can't reach its server
+      </Text>
+      <Text style={{ fontSize: 14, opacity: 0.7, textAlign: "center" }}>
+        It was built without a backend URL, so there's nothing to sign in to.
+        Please report this build — a new one is needed.
+      </Text>
+    </View>
   );
 }

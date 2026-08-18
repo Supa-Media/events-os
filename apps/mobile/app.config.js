@@ -27,8 +27,42 @@ function resolveConvexUrl() {
   return url;
 }
 
+/**
+ * Refuse to produce a build that cannot reach its backend.
+ *
+ * `extra.convexUrl` below is baked at CONFIG-RESOLUTION time from
+ * `EXPO_PUBLIC_CONVEX_URL` — on EAS infra for a native build, in the runner
+ * for `eas update`. When that variable is absent the value bakes as
+ * `undefined`, `SupaConvexProvider` constructs `new ConvexReactClient(
+ * undefined)`, and Convex throws "No address provided to ConvexReactClient"
+ * during the first render. That throw is ABOVE the app's ErrorBoundary, so
+ * nothing catches it: expo-updates' ErrorRecovery exhausts its fallbacks and
+ * deliberately aborts the process. The binary launches and dies ~0.4s later,
+ * with a native SIGABRT stack that names none of this.
+ *
+ * That shipped as TestFlight build 8 (1.0.0), which crashed on launch for
+ * every tester. `deploy-mobile-update.yml` already guards the OTA path and
+ * says so in its header; native builds are run by hand, with nothing checking
+ * them. This is that check, at the one point both paths pass through.
+ *
+ * Dev is exempt: `pnpm dev` starts without a backend on purpose.
+ */
+function assertConvexUrl() {
+  const appEnv = process.env.APP_ENV;
+  if (appEnv !== "staging" && appEnv !== "production") return;
+  if (process.env.EXPO_PUBLIC_CONVEX_URL) return;
+  throw new Error(
+    `EXPO_PUBLIC_CONVEX_URL is not set, and APP_ENV="${appEnv}".\n` +
+      "Refusing to build: the app would launch and immediately crash, because " +
+      "the Convex client cannot be constructed without an address.\n" +
+      "Set it for this build profile (e.g. `eas env:create --name " +
+      "EXPO_PUBLIC_CONVEX_URL --value https://<deployment>.convex.cloud`) or " +
+      "export it in the shell running `eas build`.",
+  );
+}
+
 /** @type {import('expo/config').ExpoConfig} */
-module.exports = ({ config }) => ({
+module.exports = ({ config }) => (assertConvexUrl(), {
   ...config,
   name: "Chapter OS",
   slug: "events-os",
