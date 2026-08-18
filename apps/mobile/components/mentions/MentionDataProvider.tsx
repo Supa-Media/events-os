@@ -6,9 +6,9 @@
  *
  * Cells read it via `useMentionData()`, which returns `null` when no
  * provider is mounted — the signal for a grid cell to fall back to the
- * plain (non-mention) inline editor. This is deliberate: surfaces like the
- * template editor render the same grids but should NOT offer mentions, and
- * they simply don't mount the provider.
+ * plain (non-mention) inline editor. Any screen that renders a mentionable
+ * grid must mount this provider around it; today that's the event workspace
+ * and the template editor.
  */
 import { createContext, useContext, useMemo, type ReactNode } from "react";
 import { useQuery } from "convex/react";

@@ -812,8 +812,8 @@ function HowToCell({ value, editable, onChange, mode, eventItemId, colKey }: How
 export const GridCell = memo(function GridCell(ctx: CellContext) {
   const { column, item, module, mode, roles, eventDate, editable, onChange, templateId, onAddOption, onEditOptions } = ctx;
   const value = cellValue(column, item, module, mode);
-  // Non-null only under a MentionDataProvider (event screens mount one;
-  // template editors don't) — the gate for mention-aware text cells below.
+  // Non-null only under a MentionDataProvider — the gate for mention-aware
+  // text cells below.
   const mentionData = useMentionData();
 
   // Template Expectations owner = a placeholder crew member (templatePeople),
@@ -878,9 +878,8 @@ export const GridCell = memo(function GridCell(ctx: CellContext) {
         : inline.placeholder;
     const weight =
       typeof inline.weight === "function" ? inline.weight(column) : inline.weight;
-    // Free-text cells become @mention-aware when mention data is available
-    // (event screens); templates and other provider-less surfaces keep the
-    // plain editor below.
+    // Free-text cells become @mention-aware when mention data is available;
+    // provider-less surfaces keep the plain editor below.
     if (inline.mentionable && mentionData) {
       return (
         <MentionInlineText
