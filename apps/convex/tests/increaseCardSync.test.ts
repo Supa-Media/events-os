@@ -548,7 +548,7 @@ describe("back-linking charges that ingested before the card was known", () => {
     const txnId = await seedOrphanCharge(s, "central");
 
     const res = await s.t.mutation(
-      internal.migrations["0078_link_orphan_increase_card_charges"]
+      internal.migrations["0079_link_orphan_increase_card_charges"]
         .applyCardLink,
       { transactionId: txnId, increaseCardId: "card_glov69v9jshltwbywyw8" },
     );
@@ -567,7 +567,7 @@ describe("back-linking charges that ingested before the card was known", () => {
     const txnId = await seedOrphanCharge(s, "central"); // … charge is central
 
     const res = await s.t.mutation(
-      internal.migrations["0078_link_orphan_increase_card_charges"]
+      internal.migrations["0079_link_orphan_increase_card_charges"]
         .applyCardLink,
       { transactionId: txnId, increaseCardId: "card_glov69v9jshltwbywyw8" },
     );
@@ -588,7 +588,7 @@ describe("back-linking charges that ingested before the card was known", () => {
       increaseCardId: "card_glov69v9jshltwbywyw8",
     };
     const ref =
-      internal.migrations["0078_link_orphan_increase_card_charges"]
+      internal.migrations["0079_link_orphan_increase_card_charges"]
         .applyCardLink;
     expect((await s.t.mutation(ref, args)).linked).toBe(true);
     const second = await s.t.mutation(ref, args);
@@ -604,13 +604,13 @@ describe("back-linking charges that ingested before the card was known", () => {
     const orphanId = await seedOrphanCharge(s, "central");
     const linkedId = await seedOrphanCharge(s, "central");
     await s.t.mutation(
-      internal.migrations["0078_link_orphan_increase_card_charges"]
+      internal.migrations["0079_link_orphan_increase_card_charges"]
         .applyCardLink,
       { transactionId: linkedId, increaseCardId: "card_glov69v9jshltwbywyw8" },
     );
 
     const orphans = await s.t.query(
-      internal.migrations["0078_link_orphan_increase_card_charges"]
+      internal.migrations["0079_link_orphan_increase_card_charges"]
         .listOrphanCardCharges,
       {},
     );

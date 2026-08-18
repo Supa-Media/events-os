@@ -1,6 +1,6 @@
 /**
  * Back-link card charges that ingested BEFORE their card was known
- * (migration slot 0078 — see `migrations/index.ts`'s module doc for the
+ * (migration slot 0079 — see `migrations/index.ts`'s module doc for the
  * numbering scheme).
  *
  * `increaseLedger.ts` attributes a charge by looking its `increaseCardId` up in
@@ -24,12 +24,12 @@
  *
  * DRY-RUN FIRST, ALWAYS. `dryRun: true` is the default and writes nothing:
  *
- *   npx convex run migrations/0078_link_orphan_increase_card_charges:linkOrphanIncreaseCardCharges '{}' --prod
+ *   npx convex run migrations/0079_link_orphan_increase_card_charges:linkOrphanIncreaseCardCharges '{}' --prod
  *
  * Read the plan it prints, then commit by re-running with the count you just
  * saw, which it will refuse to proceed without matching:
  *
- *   npx convex run migrations/0078_link_orphan_increase_card_charges:linkOrphanIncreaseCardCharges \
+ *   npx convex run migrations/0079_link_orphan_increase_card_charges:linkOrphanIncreaseCardCharges \
  *     '{"dryRun": false, "expectLinks": 1}' --prod
  *
  * `expectLinks` is the money-path guard: the plan is built in full and checked
@@ -200,7 +200,7 @@ export const linkOrphanIncreaseCardCharges = internalAction({
 
     const orphans: OrphanCharge[] = await ctx.runQuery(
       internal.migrations[
-        "0078_link_orphan_increase_card_charges"
+        "0079_link_orphan_increase_card_charges"
       ].listOrphanCardCharges,
       {},
     );
@@ -229,7 +229,7 @@ export const linkOrphanIncreaseCardCharges = internalAction({
         } catch (err) {
           increaseCardId = null;
           console.error(
-            `[0078] failed to fetch card_payment ${o.cardPaymentId}`,
+            `[0079] failed to fetch card_payment ${o.cardPaymentId}`,
             err,
           );
         }
@@ -281,7 +281,7 @@ export const linkOrphanIncreaseCardCharges = internalAction({
       const { linked: ok, reason }: { linked: boolean; reason?: string } =
         await ctx.runMutation(
           internal.migrations[
-            "0078_link_orphan_increase_card_charges"
+            "0079_link_orphan_increase_card_charges"
           ].applyCardLink,
           { transactionId: p.transactionId, increaseCardId: p.increaseCardId },
         );
@@ -290,7 +290,7 @@ export const linkOrphanIncreaseCardCharges = internalAction({
     }
 
     console.log(
-      `[0078] linked ${linked}/${plan.length} orphan card charges`,
+      `[0079] linked ${linked}/${plan.length} orphan card charges`,
       skipped.length ? { skipped } : {},
     );
     return {
