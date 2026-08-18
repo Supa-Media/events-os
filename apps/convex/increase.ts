@@ -82,6 +82,19 @@ export const handleIncreaseWebhook = internalAction({
       return null;
     }
 
+    // A card created (or changed) in the INCREASE DASHBOARD rather than through
+    // `cards.ts#issueCard` — without this it never gets a `cards` row, and every
+    // charge on it ingests belonging to nobody. See `increaseCardSync.ts` for
+    // how the cardholder is identified and when it declines to guess. Cards the
+    // OS itself mints fire this too; the upsert is idempotent and adopts the
+    // row `issueCard` is mid-way through writing.
+    if (category === "card.created" || category === "card.updated") {
+      await ctx.runAction(internal.increaseCardSync.syncIncreaseCard, {
+        increaseCardId: associatedObjectId,
+      });
+      return null;
+    }
+
     if (!category.startsWith("ach_transfer.")) return null;
 
     const { key, base } = increaseEnvForObjectId(associatedObjectId);

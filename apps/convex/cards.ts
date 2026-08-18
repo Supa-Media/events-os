@@ -1933,7 +1933,11 @@ export const decideCardAuthorization = internalMutation({
       );
       // Chapter merchant allow-list — checked only once the card itself would
       // approve, so a lock/validity/cap decline keeps its more specific reason.
-      if (decision.approved) {
+      // The allow-list is a CHAPTER policy (`cardMerchantPolicy` is keyed on a
+      // real chapter), so a card drawn on central's own account has none — and
+      // a missing policy already reads as "enforcement off", which is the same
+      // answer skipping the read gives.
+      if (decision.approved && card.chapterId !== "central") {
         const policy = await readMerchantPolicy(ctx, card.chapterId);
         decision = decideAgainstMerchantPolicy(
           policy,

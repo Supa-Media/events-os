@@ -91,6 +91,7 @@ import type * as identity from "../identity.js";
 import type * as increase from "../increase.js";
 import type * as increaseAccounts from "../increaseAccounts.js";
 import type * as increaseCardArt from "../increaseCardArt.js";
+import type * as increaseCardSync from "../increaseCardSync.js";
 import type * as increaseExternalAccounts from "../increaseExternalAccounts.js";
 import type * as increaseLedger from "../increaseLedger.js";
 import type * as increasePayouts from "../increasePayouts.js";
@@ -338,6 +339,7 @@ import type * as migrations_0074_book_repayment_coverage_by_session from "../mig
 import type * as migrations_0075_label_fee_coverage_rows from "../migrations/0075_label_fee_coverage_rows.js";
 import type * as migrations_0076_backfill_wall_from_gifts from "../migrations/0076_backfill_wall_from_gifts.js";
 import type * as migrations_0077_org_wide_budget_categories from "../migrations/0077_org_wide_budget_categories.js";
+import type * as migrations_0078_link_orphan_increase_card_charges from "../migrations/0078_link_orphan_increase_card_charges.js";
 import type * as migrations_index from "../migrations/index.js";
 import type * as modules from "../modules.js";
 import type * as moneyViews from "../moneyViews.js";
@@ -540,6 +542,7 @@ declare const fullApi: ApiFromModules<{
   increase: typeof increase;
   increaseAccounts: typeof increaseAccounts;
   increaseCardArt: typeof increaseCardArt;
+  increaseCardSync: typeof increaseCardSync;
   increaseExternalAccounts: typeof increaseExternalAccounts;
   increaseLedger: typeof increaseLedger;
   increasePayouts: typeof increasePayouts;
@@ -787,6 +790,7 @@ declare const fullApi: ApiFromModules<{
   "migrations/0075_label_fee_coverage_rows": typeof migrations_0075_label_fee_coverage_rows;
   "migrations/0076_backfill_wall_from_gifts": typeof migrations_0076_backfill_wall_from_gifts;
   "migrations/0077_org_wide_budget_categories": typeof migrations_0077_org_wide_budget_categories;
+  "migrations/0078_link_orphan_increase_card_charges": typeof migrations_0078_link_orphan_increase_card_charges;
   "migrations/index": typeof migrations_index;
   modules: typeof modules;
   moneyViews: typeof moneyViews;
