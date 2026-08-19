@@ -59,6 +59,7 @@ import {
   DEFAULT_OLLAMA_BASE_URL,
   OPENROUTER_BASE_URL,
   type AiEngineProvider,
+  deriveMailchimpServerPrefix,
 } from "@events-os/shared";
 
 /** Validator for the AI provider union (the tuple-derived `EVENT_STATUSES`
@@ -186,6 +187,20 @@ export const getIntegrationsStatus = query({
       last4: v.union(v.string(), v.null()),
       updatedAt: v.union(v.number(), v.null()),
     }),
+    // Mailchimp (bulk email moved there 2026-08-19). The KEY is the secret —
+    // configured + last4 only. The AUDIENCE ID is not secret (it's in
+    // Mailchimp's own URLs) and a superuser has to be able to read it back to
+    // confirm they pointed at the right list, so it's returned in full.
+    // `legacyEmailDeskEnabled` reflects the nav-visibility flag for the parked
+    // in-app desk; absent in storage reads as `true`.
+    mailchimp: v.object({
+      configured: v.boolean(),
+      last4: v.union(v.string(), v.null()),
+      audienceId: v.union(v.string(), v.null()),
+      webhookConfigured: v.boolean(),
+      legacyEmailDeskEnabled: v.boolean(),
+      updatedAt: v.union(v.number(), v.null()),
+    }),
     aiEngine: v.object({
       // The active provider + the GLOBAL default model (both non-secret, shown
       // in the UI). The Ollama API KEY is the secret and is NEVER surfaced —
@@ -243,6 +258,15 @@ export const getIntegrationsStatus = query({
       resendInbound: {
         configured: !!resendSecret,
         last4: resendSecret ? last4(resendSecret) : null,
+        updatedAt: settings?.updatedAt ?? null,
+      },
+      mailchimp: {
+        configured:
+          !!settings?.mailchimpApiKey && !!settings?.mailchimpAudienceId,
+        last4: settings?.mailchimpApiKey ? last4(settings.mailchimpApiKey) : null,
+        audienceId: settings?.mailchimpAudienceId ?? null,
+        webhookConfigured: !!settings?.mailchimpWebhookSecret,
+        legacyEmailDeskEnabled: settings?.legacyEmailDeskEnabled !== false,
         updatedAt: settings?.updatedAt ?? null,
       },
       aiEngine: {
@@ -871,5 +895,166 @@ export const readAiEngineConfig = internalQuery({
       model,
       ocrModel,
     };
+  },
+});
+
+// ── Mailchimp ───────────────────────────────────────────────────────────────
+// Bulk email moved to Mailchimp on 2026-08-19 (docs/plans/email-desk-parked.md).
+// The API key follows the same write-only discipline as every other secret on
+// this screen; the audience id does not, because it is not a secret and a
+// superuser has to be able to confirm which list they pointed at.
+
+/**
+ * Set or clear the Mailchimp credentials. SUPERUSER-ONLY.
+ *
+ * Each field is INDEPENDENTLY settable (the `setEmailCampaignSettings`
+ * pattern, not the Twilio all-or-nothing trio): `undefined` leaves a field
+ * unchanged, `null` clears it, a non-null string sets it trimmed. At least one
+ * field must be provided.
+ *
+ * The key is validated for a datacenter suffix at WRITE time
+ * (`deriveMailchimpServerPrefix`) rather than at sync time — a typo'd key
+ * should fail in front of the person who just pasted it, not silently at 3am
+ * in a cron.
+ */
+export const setMailchimpSettings = mutation({
+  args: {
+    apiKey: v.optional(v.union(v.string(), v.null())),
+    audienceId: v.optional(v.union(v.string(), v.null())),
+    webhookSecret: v.optional(v.union(v.string(), v.null())),
+  },
+  returns: v.null(),
+  handler: async (ctx, { apiKey, audienceId, webhookSecret }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+    const existing = await getSettings(ctx);
+
+    if (
+      apiKey === undefined &&
+      audienceId === undefined &&
+      webhookSecret === undefined
+    ) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message: "Provide an API key, audience id, or webhook secret to update.",
+      });
+    }
+
+    /** `undefined` → unchanged, `null` → cleared, string → trimmed + required
+     *  non-empty (an empty string is a mistake, not an instruction to clear —
+     *  clearing is what `null` is for). */
+    const resolve = (
+      next: string | null | undefined,
+      current: string | undefined,
+      label: string,
+    ): string | undefined => {
+      if (next === undefined) return current;
+      if (next === null) return undefined;
+      const trimmed = next.trim();
+      if (!trimmed) {
+        throw new ConvexError({
+          code: "INVALID_ARGUMENT",
+          message: `${label} can't be empty.`,
+        });
+      }
+      return trimmed;
+    };
+
+    const key = resolve(apiKey, existing?.mailchimpApiKey, "API key");
+    if (key && !deriveMailchimpServerPrefix(key)) {
+      throw new ConvexError({
+        code: "INVALID_ARGUMENT",
+        message:
+          "That doesn't look like a Mailchimp API key — it should end in a datacenter suffix like `-us21`.",
+      });
+    }
+
+    const fields = {
+      mailchimpApiKey: key,
+      mailchimpAudienceId: resolve(
+        audienceId,
+        existing?.mailchimpAudienceId,
+        "Audience id",
+      ),
+      mailchimpWebhookSecret: resolve(
+        webhookSecret,
+        existing?.mailchimpWebhookSecret,
+        "Webhook secret",
+      ),
+      updatedBy,
+      updatedAt: Date.now(),
+    };
+    if (existing) await ctx.db.patch(existing._id, fields);
+    else await ctx.db.insert("integrationSettings", fields);
+    return null;
+  },
+});
+
+/**
+ * Show or hide the parked in-app Emails desk in NAV. SUPERUSER-ONLY.
+ *
+ * Nav visibility only — see `schema/integrationSettings.ts`'s field doc. Every
+ * campaigns route stays reachable by direct URL and every in-screen guard is
+ * unchanged, so this can never strand a send that is already in flight.
+ */
+export const setLegacyEmailDeskEnabled = mutation({
+  args: { enabled: v.boolean() },
+  returns: v.null(),
+  handler: async (ctx, { enabled }) => {
+    await requireSuperuser(ctx);
+    const updatedBy = (await requireUserId(ctx)) as Id<"users">;
+    const existing = await getSettings(ctx);
+    const fields = {
+      legacyEmailDeskEnabled: enabled,
+      updatedBy,
+      updatedAt: Date.now(),
+    };
+    if (existing) await ctx.db.patch(existing._id, fields);
+    else await ctx.db.insert("integrationSettings", fields);
+    return null;
+  },
+});
+
+/**
+ * Action-facing read of the raw Mailchimp settings. The ONLY path the API key
+ * ever leaves this table through — reachable solely from `mailchimpSync.ts`'s
+ * actions (actions have no `ctx.db`). NEVER exposed as a public function.
+ *
+ * Deliberately no env-var fallback: see the schema field's doc.
+ */
+export const readMailchimpSettings = internalQuery({
+  args: {},
+  returns: v.union(
+    v.object({
+      apiKey: v.union(v.string(), v.null()),
+      audienceId: v.union(v.string(), v.null()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    if (!settings) return null;
+    return {
+      apiKey: settings.mailchimpApiKey ?? null,
+      audienceId: settings.mailchimpAudienceId ?? null,
+    };
+  },
+});
+
+/**
+ * The `/mailchimp/webhook` shared secret. Reachable solely from `http.ts`'s
+ * route (an httpAction, which like an action has no `ctx.db`).
+ *
+ * Mailchimp does not sign its webhooks — no Svix header, no HMAC — so unlike
+ * `readResendWebhookSecret` this value is not a signing key but a bearer
+ * secret carried in the callback URL's query string. It must still never leave
+ * the table any other way.
+ */
+export const readMailchimpWebhookSecret = internalQuery({
+  args: {},
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx) => {
+    const settings = await getSettings(ctx);
+    return settings?.mailchimpWebhookSecret ?? null;
   },
 });

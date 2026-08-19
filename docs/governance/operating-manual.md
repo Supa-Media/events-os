@@ -363,13 +363,29 @@ involved, and the software enforces it where it can.
 | Chapter budget | Treasurer | Chapter Director |
 | Central / annual budget | Financial Manager | Executive Director; annual budget adopted by the Board |
 | Monthly ledger publication | Treasurer (chapter) / Financial Manager (central) | Chapter Director / Executive Director |
-| Mass email campaign | Any `email.campaigns.edit` holder | A **different** `email.campaigns.approve` holder |
+| Mass email campaign | Any `email.campaigns.edit` holder | A **different** `email.campaigns.approve` holder (enforced by practice, not by the tool — see below) |
 | Executive Director compensation | — | Board, under Bylaws § 12.6 |
 | Related-party transaction | — | Disinterested directors only, Bylaws § 12.4 |
 
 The campaign rule is worth stating plainly: the Executive Director can compose a
 campaign, but somebody else — the Marketing Director or the Financial Manager —
 must approve the send. Nobody sends to the whole list alone.
+
+**Where mass email is sent from, and what that costs (2026-08-19).** Bulk email
+now goes out through **Mailchimp** rather than the in-app Emails desk, which is
+parked (see `docs/plans/email-desk-parked.md`). The powers above are unchanged
+and still name who may compose and who may approve — but Mailchimp cannot
+enforce two-party approval, so on this one row the rule is now a **discipline
+the org holds itself to** rather than a gate the software closes. That is a
+real weakening and is recorded here deliberately rather than quietly dropped.
+The `email.campaigns.approve` holders remain the people who must read a send
+before it goes; what changed is that nothing stops someone who skips them.
+
+Two things the software still does enforce, across both systems: a person who
+has opted out of marketing, or whose address is on the suppression list, is
+never pushed to Mailchimp at all; and an unsubscribe made in Mailchimp is
+written back into that same suppression list, so it silences event blasts and
+every other send too.
 
 ---
 

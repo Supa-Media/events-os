@@ -205,6 +205,9 @@ describe("setSeatCampaignPower — campaigns access enforcement effect", () => {
       canDesign: true,
       canCompose: true,
       canApprove: true,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
 
     // A DIFFERENT user (the ED) strips marketing_director to none.
@@ -232,6 +235,9 @@ describe("setSeatCampaignPower — campaigns access enforcement effect", () => {
       canDesign: false,
       canCompose: false,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
   });
 
@@ -273,6 +279,9 @@ describe("setSeatCampaignPower — campaigns access enforcement effect", () => {
       canDesign: true,
       canCompose: true,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
   });
 });
@@ -328,6 +337,9 @@ describe("campaigns.design — the desk's bottom rung", () => {
       canDesign: true,
       canCompose: false,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
   });
 
@@ -342,6 +354,9 @@ describe("campaigns.design — the desk's bottom rung", () => {
       canDesign: true,
       canCompose: false,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
   });
 
@@ -360,6 +375,9 @@ describe("campaigns.design — the desk's bottom rung", () => {
       canDesign: true,
       canCompose: false,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
 
     // The SAME seat, promoted to compose by a separate ED identity (no
@@ -392,6 +410,9 @@ describe("campaigns.design — the desk's bottom rung", () => {
       canDesign: true,
       canCompose: true,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
   });
 
@@ -807,6 +828,9 @@ describe("campaigns.design — the desk's bottom rung", () => {
       canDesign: false,
       canCompose: false,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
     await expect(
       s.as.query(api.emailThemes.listThemes, { scope: "central" }),
@@ -887,6 +911,9 @@ describe("campaigns.design — the desk's bottom rung", () => {
       canDesign: false,
       canCompose: false,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
   });
 

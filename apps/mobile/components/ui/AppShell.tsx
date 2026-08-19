@@ -60,6 +60,10 @@ const NAV: NavEntry[] = [
   // guards on each campaigns/campaign route are the real enforcement, this
   // is nav visibility only. The route and the API keep the older "campaign"
   // name — see `docs/guides/email-terminology.md`.
+  //
+  // PARKED (2026-08-19): bulk email goes out through Mailchimp now, so this
+  // entry is additionally gated on `deskEnabled` below and is hidden by
+  // default. See `docs/plans/email-desk-parked.md`.
   { label: "Emails", icon: "mail", path: "/campaigns", group: "A" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy", group: "R" },
@@ -121,7 +125,13 @@ function useNav(): NavEntry[] {
       case "/giving":
         return giving?.canView === true;
       case "/campaigns":
-        return campaigns?.canView === true;
+        // `deskEnabled` is the parked-desk flag: bulk email moved to Mailchimp
+        // (2026-08-19), so the Emails desk is hidden from nav unless a
+        // superuser turns it back on at Profile → Integrations. Nav only —
+        // the routes and their in-screen guards are unchanged, so an
+        // in-flight send can still be finished by direct URL. See
+        // `audiences.myCampaignsAccess`.
+        return campaigns?.canView === true && campaigns?.deskEnabled === true;
       case "/team":
         // Work: everyone except volunteer — but keep the teamView nuance so a
         // caller with no roster row isn't shown an empty Work tab.

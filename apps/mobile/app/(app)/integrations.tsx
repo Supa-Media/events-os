@@ -49,6 +49,7 @@ export default function IntegrationsScreen() {
   const campaigns = status?.campaigns;
   const resendInbound = status?.resendInbound;
   const aiEngine = status?.aiEngine;
+  const mailchimp = status?.mailchimp;
 
   async function handleSave() {
     const trimmed = apiKey.trim();
@@ -186,6 +187,7 @@ export default function IntegrationsScreen() {
         resendInbound={resendInbound}
         loading={status === undefined}
       />
+      <MailchimpCard mailchimp={mailchimp} loading={status === undefined} />
     </Screen>
   );
 }
@@ -1364,6 +1366,313 @@ function ResendInboundCard({
             disabled={saving || clearing}
           />
         ) : null}
+      </View>
+    </Card>
+  );
+}
+
+/**
+ * Mailchimp card — super-admins only. Bulk email moved to Mailchimp on
+ * 2026-08-19 (`docs/plans/email-desk-parked.md`), so this is where the org
+ * points events-os at its audience and watches the list stay in sync.
+ *
+ * Three things live here, in the order someone setting it up needs them:
+ *  1. The API KEY + AUDIENCE ID. The key follows the same write-only
+ *     discipline as every other secret on this screen — saved once, only ever
+ *     shown as a last4. The audience id is NOT secret (it's in Mailchimp's own
+ *     URLs) and is shown in full, because "did I point at the right list?" is
+ *     a question a person has to be able to answer by looking.
+ *  2. "Test connection" — names the audience the credentials actually reach,
+ *     WITHOUT pushing anybody. Confirming the list should never cost a send.
+ *  3. The sync itself: what the last runs did, and a "Sync now" button for
+ *     "I just added someone and want them on the list today" (the nightly
+ *     cron covers everything else).
+ *
+ * The webhook secret is the pull-back half — see `http.ts`'s
+ * `/mailchimp/webhook`, which is what makes an unsubscribe in Mailchimp also
+ * silence event blasts here.
+ */
+function MailchimpCard({
+  mailchimp,
+  loading,
+}: {
+  mailchimp:
+    | {
+        configured: boolean;
+        last4: string | null;
+        audienceId: string | null;
+        webhookConfigured: boolean;
+        legacyEmailDeskEnabled: boolean;
+        updatedAt: number | null;
+      }
+    | undefined;
+  loading: boolean;
+}) {
+  const setSettings = useMutation(api.integrationSettings.setMailchimpSettings);
+  const setDeskEnabled = useMutation(
+    api.integrationSettings.setLegacyEmailDeskEnabled,
+  );
+  const testConnection = useAction(api.mailchimpSync.testMailchimpConnection);
+  const requestSync = useMutation(api.mailchimpSync.requestMailchimpSync);
+  const syncStatus = useQuery(api.mailchimpSync.mailchimpStatus, {});
+
+  const [apiKey, setApiKey] = useState("");
+  const [audienceId, setAudienceId] = useState("");
+  const [webhookSecret, setWebhookSecret] = useState("");
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [syncing, setSyncing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  async function handleSave() {
+    setError(null);
+    setNotice(null);
+    setSaving(true);
+    try {
+      await setSettings({
+        // Only send the fields the person actually filled in — `undefined`
+        // leaves a stored value untouched, so saving a new audience id does
+        // not require re-pasting the key.
+        ...(apiKey.trim() ? { apiKey: apiKey.trim() } : {}),
+        ...(audienceId.trim() ? { audienceId: audienceId.trim() } : {}),
+        ...(webhookSecret.trim() ? { webhookSecret: webhookSecret.trim() } : {}),
+      });
+      setApiKey("");
+      setWebhookSecret("");
+      setNotice("Mailchimp settings saved.");
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't save the Mailchimp settings."));
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleTest() {
+    setError(null);
+    setNotice(null);
+    setTesting(true);
+    try {
+      const result = await testConnection({});
+      if (result.ok) {
+        setNotice(
+          `Connected to "${result.audienceName}" — ${result.memberCount ?? 0} members in Mailchimp.`,
+        );
+      } else {
+        setError(result.error ?? "Couldn't reach Mailchimp.");
+      }
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't reach Mailchimp."));
+    } finally {
+      setTesting(false);
+    }
+  }
+
+  async function handleSync() {
+    setError(null);
+    setNotice(null);
+    setSyncing(true);
+    try {
+      await requestSync({});
+      setNotice("Sync started — the run history below updates when it finishes.");
+    } catch (e) {
+      setError(errorMessage(e, "Couldn't start the sync."));
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  const lastRun = syncStatus?.runs?.[0];
+  const nothingToSave =
+    !apiKey.trim() && !audienceId.trim() && !webhookSecret.trim();
+
+  return (
+    <Card padding="lg" className="mt-4">
+      <View className="mb-3 flex-row items-center gap-2">
+        <View className="h-7 w-7 items-center justify-center rounded-md bg-mint">
+          <Icon name="send" size={14} color="#1F5A41" />
+        </View>
+        <View className="flex-1">
+          <Text className="text-sm font-semibold text-ink">Mailchimp</Text>
+          <Text className="text-xs text-muted">
+            Where bulk email goes out. The roster syncs onto the audience
+            nightly; an unsubscribe there is honoured everywhere here.
+          </Text>
+        </View>
+      </View>
+
+      {loading ? (
+        <Text className="mb-3 text-xs text-muted">Loading status…</Text>
+      ) : mailchimp?.configured ? (
+        <View className="mb-3 gap-1">
+          <View className="flex-row items-center gap-1.5">
+            <Icon name="check-circle" size={14} color={colors.success} />
+            <Text className="text-sm text-ink">
+              Configured — key •••• {mailchimp.last4} · audience{" "}
+              {mailchimp.audienceId}
+              {mailchimp.updatedAt
+                ? ` · updated ${formatDate(mailchimp.updatedAt)}`
+                : ""}
+            </Text>
+          </View>
+          <View className="flex-row items-center gap-1.5">
+            <Icon
+              name={mailchimp.webhookConfigured ? "check-circle" : "alert-circle"}
+              size={14}
+              color={mailchimp.webhookConfigured ? colors.success : colors.muted}
+            />
+            <Text className="text-sm text-muted">
+              {mailchimp.webhookConfigured
+                ? "Webhook secret set — unsubscribes flow back into the suppression list."
+                : "No webhook secret — unsubscribes in Mailchimp will NOT reach this app."}
+            </Text>
+          </View>
+        </View>
+      ) : (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="alert-circle" size={14} color={colors.muted} />
+          <Text className="text-sm text-muted">Not configured.</Text>
+        </View>
+      )}
+
+      <TextField
+        label="API key"
+        value={apiKey}
+        onChangeText={(t) => {
+          setApiKey(t);
+          if (error) setError(null);
+        }}
+        placeholder={
+          mailchimp?.configured ? "Paste a new key to replace it" : "…-us21"
+        }
+        secureTextEntry
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!saving}
+        hint="Stored server-side and never displayed again. The datacenter (us21) is read from the key itself."
+      />
+
+      <TextField
+        label="Audience ID"
+        value={audienceId}
+        onChangeText={(t) => {
+          setAudienceId(t);
+          if (error) setError(null);
+        }}
+        placeholder={mailchimp?.audienceId ?? "e.g. a1b2c3d4e5"}
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!saving}
+        hint="Mailchimp → Audience → Settings → Audience name and defaults."
+      />
+
+      <TextField
+        label="Webhook secret"
+        value={webhookSecret}
+        onChangeText={(t) => {
+          setWebhookSecret(t);
+          if (error) setError(null);
+        }}
+        placeholder={
+          mailchimp?.webhookConfigured
+            ? "Paste a new secret to replace it"
+            : "Any long random string"
+        }
+        secureTextEntry
+        autoCapitalize="none"
+        autoCorrect={false}
+        editable={!saving}
+        hint="Add it to the Mailchimp webhook URL as ?secret=… — Mailchimp doesn't sign its webhooks, so the URL is the credential."
+      />
+
+      {error ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="alert-circle" size={14} color={colors.danger} />
+          <Text className="flex-1 text-sm text-danger">{error}</Text>
+        </View>
+      ) : null}
+
+      {notice ? (
+        <View className="mb-3 flex-row items-center gap-1.5">
+          <Icon name="check-circle" size={14} color={colors.success} />
+          <Text className="flex-1 text-sm text-success">{notice}</Text>
+        </View>
+      ) : null}
+
+      <View className="flex-row flex-wrap gap-2">
+        <Button
+          title="Save"
+          icon="check"
+          onPress={() => void handleSave()}
+          loading={saving}
+          disabled={nothingToSave || saving}
+        />
+        <Button
+          title="Test connection"
+          icon="link"
+          variant="secondary"
+          onPress={() => void handleTest()}
+          loading={testing}
+          disabled={!mailchimp?.configured || saving || testing}
+        />
+        <Button
+          title="Sync now"
+          icon="refresh-cw"
+          variant="secondary"
+          onPress={() => void handleSync()}
+          loading={syncing}
+          disabled={!mailchimp?.configured || saving || syncing}
+        />
+      </View>
+
+      {syncStatus ? (
+        <View className="mt-4 border-t border-hairline pt-3">
+          <Text className="text-xs font-semibold text-ink">
+            {syncStatus.subscribedCount} on the list
+          </Text>
+          {lastRun ? (
+            <Text className="mt-1 text-xs text-muted">
+              Last run {formatDate(lastRun.startedAt)} — {lastRun.status}:{" "}
+              {lastRun.pushed} subscribed, {lastRun.unsubscribed} unsubscribed,{" "}
+              {lastRun.failed} rejected
+              {lastRun.error ? ` · ${lastRun.error}` : ""}
+            </Text>
+          ) : (
+            <Text className="mt-1 text-xs text-muted">
+              Hasn&apos;t run yet. The nightly sync runs at 04:00 UTC.
+            </Text>
+          )}
+        </View>
+      ) : null}
+
+      <View className="mt-4 border-t border-hairline pt-3">
+        <Text className="text-xs font-semibold text-ink">
+          The old in-app Emails desk
+        </Text>
+        <Text className="mt-1 text-xs text-muted">
+          {mailchimp?.legacyEmailDeskEnabled
+            ? "Visible in the sidebar. It still sends — turn it off so nobody starts a campaign there by accident."
+            : "Hidden from the sidebar. Existing emails stay readable at /campaigns and an in-flight send can still be finished."}
+        </Text>
+        <View className="mt-2 flex-row">
+          <Button
+            title={
+              mailchimp?.legacyEmailDeskEnabled
+                ? "Hide the Emails desk"
+                : "Show the Emails desk"
+            }
+            icon={mailchimp?.legacyEmailDeskEnabled ? "eye-off" : "eye"}
+            variant="secondary"
+            onPress={() => {
+              void setDeskEnabled({
+                enabled: !mailchimp?.legacyEmailDeskEnabled,
+              }).catch((e) =>
+                setError(errorMessage(e, "Couldn't change the desk setting.")),
+              );
+            }}
+            disabled={loading}
+          />
+        </View>
       </View>
     </Card>
   );

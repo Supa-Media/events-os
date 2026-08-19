@@ -28,6 +28,7 @@ import type { ActionCtx } from "./_generated/server";
 import { api, internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
 import { auth } from "./auth";
+import { MAILCHIMP_SUPPRESSION_EVENTS } from "@events-os/shared";
 import {
   renderIcs,
   renderLandingPage,
@@ -2162,6 +2163,99 @@ http.route({
     // Unknown event types (delivery, open/click tracking if ever enabled…)
     // are a silent no-op — this route only cares about deliverability
     // signals and inbound replies.
+    return new Response("ok", { status: 200 });
+  }),
+});
+
+/**
+ * Mailchimp webhook — the PULL-BACK half of the audience sync
+ * (`schema/mailchimp.ts` explains both halves). An unsubscribe, a cleaned
+ * address, or an abuse complaint IN MAILCHIMP writes into the deployment-wide
+ * `emailSuppressions` ledger, so someone who unsubscribes from the newsletter
+ * also stops receiving event blasts — `blasts.ts` already reads that ledger.
+ * Without this the two systems disagree and the app is the one in the wrong.
+ *
+ * ── Authentication is a URL secret, not a signature ─────────────────────────
+ * Mailchimp does not sign its webhooks: no Svix headers, no HMAC, nothing to
+ * verify a body against (unlike `/resend/webhook` above, which does). Their
+ * documented protection is an unguessable callback URL, so the shared secret
+ * travels as a `?secret=` query parameter and is compared here in CONSTANT
+ * TIME — a plain `!==` on a secret leaks its prefix to anyone who can time
+ * the endpoint.
+ *
+ * That is genuinely weaker than a signature, and worth stating plainly. It is
+ * bounded by what an attacker who guessed the secret could actually do: mark
+ * addresses as unsubscribed. That is a denial of mail, never a disclosure —
+ * the route reads nothing back out — and it is reversible by hand through
+ * `emailSuppressions.unsuppressEmail`.
+ *
+ * Mailchimp sends a GET to the same URL when you save the webhook in their UI
+ * and refuses to save it unless that GET returns 200, which is why the route
+ * is registered for both methods.
+ */
+function timingSafeEqual(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+/** Mailchimp's validation ping — it saves the webhook only if a GET 200s. */
+http.route({
+  path: "/mailchimp/webhook",
+  method: "GET",
+  handler: httpAction(async () => new Response("ok", { status: 200 })),
+});
+
+http.route({
+  path: "/mailchimp/webhook",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const secret = await ctx.runQuery(
+      internal.integrationSettings.readMailchimpWebhookSecret,
+      {},
+    );
+    if (!secret) {
+      console.error("[mailchimp] webhook received but no webhook secret is set");
+      return new Response("Not configured", { status: 401 });
+    }
+    const provided = new URL(req.url).searchParams.get("secret") ?? "";
+    if (!timingSafeEqual(provided, secret)) {
+      return new Response("Invalid secret", { status: 401 });
+    }
+
+    // Mailchimp posts `application/x-www-form-urlencoded`, NOT JSON — the one
+    // provider here that does. `type=unsubscribe&data[email]=someone@example.com`.
+    const form = new URLSearchParams(await req.text());
+    const type = form.get("type") ?? "";
+    const email = form.get("data[email]") ?? "";
+    const reason = MAILCHIMP_SUPPRESSION_EVENTS[type];
+
+    // `subscribe`/`profile`/`upemail` and anything unrecognized are a
+    // deliberate no-op — see `MAILCHIMP_SUPPRESSION_EVENTS`' doc for why a
+    // re-subscribe in Mailchimp must NOT un-suppress an address here.
+    if (!reason || !email) return new Response("ok", { status: 200 });
+
+    // Mailchimp has no per-event id to dedupe on, so idempotency is keyed on
+    // the (type, address) pair. A redelivery of the same unsubscribe is then a
+    // no-op; `recordSuppression` is itself idempotent (it returns early when a
+    // row already exists), so this is belt-and-braces rather than the only
+    // guard.
+    const { isNew } = await ctx.runMutation(internal.webhooks.recordWebhookEvent, {
+      provider: "mailchimp",
+      eventId: `${type}:${email.trim().toLowerCase()}`,
+    });
+    if (!isNew) return new Response("ok", { status: 200 });
+
+    await ctx.runMutation(internal.emailSuppressions.recordSuppression, {
+      email,
+      reason,
+      note: `Mailchimp ${type}`,
+    });
+    await ctx.runMutation(internal.mailchimpSync.markMirrorUnsubscribed, {
+      email,
+    });
+    console.log(`[mailchimp] ${type} → suppressed 1 address`);
     return new Response("ok", { status: 200 });
   }),
 });

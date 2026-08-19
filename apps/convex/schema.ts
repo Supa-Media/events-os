@@ -146,6 +146,7 @@ import {
 import { academyProgress, courseCompletions } from "./schema/academy";
 import { schemaMigrations } from "./schema/migrations";
 import { integrationSettings } from "./schema/integrationSettings";
+import { mailchimpMembers, mailchimpSyncRuns } from "./schema/mailchimp";
 import { googleChatChannels } from "./schema/googleChatChannels";
 import { smsOptOuts } from "./schema/smsOptOuts";
 import { smsUsageEvents } from "./schema/smsUsage";
@@ -584,6 +585,13 @@ const schema = defineSchema({
   // Givebutter API key). See schema/integrationSettings.ts +
   // integrationSettings.ts.
   integrationSettings,
+
+  // Mailchimp audience sync — the local mirror of what we have told Mailchimp,
+  // plus the per-run log. Bulk email lives in Mailchimp now (see
+  // docs/plans/email-desk-parked.md); this app keeps its list honest. See
+  // schema/mailchimp.ts + mailchimpSync.ts.
+  mailchimpMembers,
+  mailchimpSyncRuns,
 
   // Google Chat channels — deployment-wide named-space list (name + write-only
   // webhook URL) behind the Comms Schedule's in-app "Send" button. See

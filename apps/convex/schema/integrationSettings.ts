@@ -100,6 +100,43 @@ export const integrationSettings = defineTable({
   // env/hardcoded on OpenRouter — see `receiptInbox.ts#resolveOcrModel`).
   // Never a secret, just a model id.
   aiOcrModel: v.optional(v.string()),
+  // ── Mailchimp (bulk email moved here 2026-08-19) ─────────────────────────
+  // The org's Mailchimp API key + the audience (list) id the roster syncs
+  // onto, set/cleared together by `setMailchimpSettings`. The KEY is the
+  // secret and gets the same write-only discipline as the Givebutter key —
+  // it never leaves this table except through `readMailchimpSettings`
+  // (reachable solely from `mailchimpSync.ts`'s actions). The AUDIENCE ID is
+  // not a secret: it appears in Mailchimp's own URLs and a superuser needs to
+  // read it back to confirm they pointed at the right list, so
+  // `getIntegrationsStatus` returns it in full.
+  //
+  // The datacenter prefix (`us21`) is DERIVED from the key's own suffix
+  // (`@events-os/shared`'s `deriveMailchimpServerPrefix`), never stored — a
+  // second copy is just something that can disagree with the key.
+  //
+  // Unlike Givebutter/Resend there is deliberately NO env-var fallback: this
+  // integration was configured in-app from day one, and two sources of truth
+  // for "which audience" is how a deployment mails the wrong list.
+  mailchimpApiKey: v.optional(v.string()),
+  mailchimpAudienceId: v.optional(v.string()),
+  // Shared secret for the `/mailchimp/webhook` route. Mailchimp does NOT sign
+  // its webhooks (no Svix header, no HMAC) — the documented protection is an
+  // unguessable URL, so the secret travels as a query parameter and is
+  // compared in constant time at the route. Same write-only discipline as
+  // every other secret here; `getIntegrationsStatus` projects only its last4.
+  mailchimpWebhookSecret: v.optional(v.string()),
+  // ── The parked in-app email desk ─────────────────────────────────────────
+  // `false` hides the Emails desk from NAV (see `audiences.myCampaignsAccess`
+  // + `AppShell`'s NAV filter) so nobody starts a new campaign in a tool the
+  // org no longer sends from. It is deliberately a nav-visibility flag and
+  // NOT an access gate: every campaigns route stays reachable by direct URL
+  // and every in-screen guard is unchanged, so a send already in flight can
+  // still be finished and the history stays readable.
+  //
+  // Absent = `true` (the pre-existing behavior — a deployment that never sets
+  // this keeps its desk visible).
+  legacyEmailDeskEnabled: v.optional(v.boolean()),
+
   updatedAt: v.number(),
   updatedBy: v.id("users"),
 });

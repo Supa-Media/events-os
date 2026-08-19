@@ -334,4 +334,21 @@ crons.cron(
   {},
 );
 
+
+// Nightly 04:00 UTC: push the roster onto the Mailchimp audience and
+// unsubscribe anyone who has become ineligible. Bulk email lives in Mailchimp
+// now (docs/plans/email-desk-parked.md); this is what keeps its list honest.
+// Deliberately NIGHTLY rather than an interval: a mailing list is not
+// real-time data, and every run is a write against a third party's rate
+// limits. The manual "Sync now" button (mailchimpSync.requestMailchimpSync)
+// covers "I just added someone and want them on the list today" — the
+// givebutter "Sync now" precedent. An unconfigured deployment logs a quiet
+// no-op rather than an error.
+crons.cron(
+  "mailchimp audience sync",
+  "0 4 * * *",
+  internal.mailchimpSync.syncMailchimpAudience,
+  {},
+);
+
 export default crons;

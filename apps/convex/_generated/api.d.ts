@@ -265,6 +265,7 @@ import type * as lib_transactionCodingAccess from "../lib/transactionCodingAcces
 import type * as lib_transferPair from "../lib/transferPair.js";
 import type * as lib_twilio from "../lib/twilio.js";
 import type * as lib_unsubscribePage from "../lib/unsubscribePage.js";
+import type * as mailchimpSync from "../mailchimpSync.js";
 import type * as maintenance from "../maintenance.js";
 import type * as migrations from "../migrations.js";
 import type * as migrations_0000_seed_ledger from "../migrations/0000_seed_ledger.js";
@@ -716,6 +717,7 @@ declare const fullApi: ApiFromModules<{
   "lib/transferPair": typeof lib_transferPair;
   "lib/twilio": typeof lib_twilio;
   "lib/unsubscribePage": typeof lib_unsubscribePage;
+  mailchimpSync: typeof mailchimpSync;
   maintenance: typeof maintenance;
   migrations: typeof migrations;
   "migrations/0000_seed_ledger": typeof migrations_0000_seed_ledger;
