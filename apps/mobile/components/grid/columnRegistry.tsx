@@ -50,7 +50,7 @@ export interface InlineTextConfig {
   multiline?: boolean;
   numeric?: boolean;
   /** Free-text types offer the `@`-mention picker + rendered mention links
-   *  (when a MentionDataProvider is mounted — event screens, not templates). */
+   *  (when a MentionDataProvider is mounted around the screen). */
   mentionable?: boolean;
   /** Placeholder; a function lets the `title` column override it by key. */
   placeholder?: string | ((column: GridColumn) => string);

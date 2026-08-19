@@ -13,6 +13,7 @@ import {
 import { ToastView } from "../../../components/ui/Toast";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { EditableGrid } from "../../../components/grid/EditableGrid";
+import { MentionDataProvider } from "../../../components/mentions/MentionDataProvider";
 import { SiteMapSubsection } from "../../../components/event/SiteMapSubsection";
 import { NameEditor } from "../../../components/template/NameEditor";
 import { DescriptionEditor } from "../../../components/template/DescriptionEditor";
@@ -75,6 +76,7 @@ export default function TemplateEditorScreen() {
   const gridModules = active.filter((m) => m.surface === "grid");
 
   return (
+    <MentionDataProvider>
     <Screen maxWidth={FULL_WIDTH}>
       <Narrow>
         <ToastView toast={toast} onDismiss={dismiss} />
@@ -142,5 +144,6 @@ export default function TemplateEditorScreen() {
         ))
       )}
     </Screen>
+    </MentionDataProvider>
   );
 }

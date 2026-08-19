@@ -563,8 +563,7 @@ export default function EventDetailScreen() {
     //
     // MentionDataProvider: fetched once here, it makes every free-text grid
     // cell on this screen (Tasks details, Comms/Run of Show/Supplies/Permits/
-    // Debrief notes, Crew expectations…) @mention-aware. Template editors
-    // deliberately don't mount it, so their identical grids stay plain.
+    // Debrief notes, Crew expectations…) @mention-aware.
     <MentionDataProvider>
     <SandboxScope value={event.isTraining === true ? String(eventId) : null}>
       <Stack.Screen options={{ headerShown: false }} />
