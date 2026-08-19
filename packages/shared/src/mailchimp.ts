@@ -108,7 +108,10 @@ export interface MailchimpMemberPayload {
    *  became ineligible gets flipped to `unsubscribed` on an existing row.
    *  `update_existing: true` on the request is what makes it apply. */
   status: MailchimpMemberStatus;
-  merge_fields: Record<string, string>;
+  /** OPTIONAL on purpose — omitted by `buildMailchimpUnsubscribe`, which must
+   *  not blank a leaver's name in Mailchimp. Always present for a member we
+   *  are actively keeping on the list (see `buildMailchimpMember`). */
+  merge_fields?: Record<string, string>;
 }
 
 /**
@@ -178,6 +181,29 @@ export function buildMailchimpMember(
       BACKER: person.backer,
       ROLE: person.role,
     },
+  };
+}
+
+/**
+ * The payload that UNSUBSCRIBES an address, carrying no merge fields at all.
+ *
+ * This is not `buildMailchimpMember(…, "unsubscribed")` and must not become
+ * it. That function always writes every merge field — correctly, because for
+ * someone still on the list an omitted field would leave Mailchimp's stale
+ * value in place. For a LEAVER we have the opposite problem: we usually know
+ * nothing about them but the address (they are a row in our mirror, not a
+ * person we just resolved), so writing every field would blank their name and
+ * chapter in Mailchimp. Omitting `merge_fields` entirely leaves whatever
+ * Mailchimp holds untouched — which is what we want, since the person may
+ * later re-subscribe through a Mailchimp signup form and should not come back
+ * nameless.
+ */
+export function buildMailchimpUnsubscribe(
+  email: string,
+): { email_address: string; status: "unsubscribed" } {
+  return {
+    email_address: normalizeMailchimpEmail(email),
+    status: "unsubscribed",
   };
 }
 

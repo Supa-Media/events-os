@@ -4,6 +4,7 @@ import {
   MAILCHIMP_CUSTOM_MERGE_FIELDS,
   MAILCHIMP_SUPPRESSION_EVENTS,
   buildMailchimpMember,
+  buildMailchimpUnsubscribe,
   chunk,
   deriveMailchimpServerPrefix,
   mailchimpApiBase,
@@ -139,6 +140,30 @@ describe("buildMailchimpMember", () => {
       "ROLE",
     ]);
     expect(member.merge_fields.CHAPTER).toBe("");
+  });
+});
+
+describe("buildMailchimpUnsubscribe", () => {
+  test("carries NO merge fields — unsubscribing must not blank a leaver's name", () => {
+    // The bug this pins: building a leaver's payload with
+    // `buildMailchimpMember` would write FNAME/LNAME/CHAPTER as empty strings,
+    // wiping in Mailchimp the name of someone who might later re-subscribe
+    // through a Mailchimp signup form. Omitting the key entirely leaves
+    // whatever Mailchimp holds untouched.
+    const payload = buildMailchimpUnsubscribe("Gone@Example.com");
+    expect(payload).toEqual({
+      email_address: "gone@example.com",
+      status: "unsubscribed",
+    });
+    expect(payload).not.toHaveProperty("merge_fields");
+  });
+
+  test("the subscribed path still writes every field — the opposite rule", () => {
+    const kept = buildMailchimpMember(
+      { email: "x@example.com", backer: "none", role: "contact" },
+      "subscribed",
+    );
+    expect(kept.merge_fields).toBeDefined();
   });
 });
 

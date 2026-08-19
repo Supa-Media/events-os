@@ -57,6 +57,7 @@ import {
   MAILCHIMP_BATCH_SIZE,
   MAILCHIMP_CUSTOM_MERGE_FIELDS,
   buildMailchimpMember,
+  buildMailchimpUnsubscribe,
   chunk,
   deriveMailchimpServerPrefix,
   normalizeMailchimpEmail,
@@ -575,15 +576,12 @@ export const syncMailchimpAudience = internalAction({
           payload: v2.payload,
           personId: v2.personId,
         })),
+        // NOT `buildMailchimpMember(…, "unsubscribed")` — see
+        // `buildMailchimpUnsubscribe`'s doc. All we have for a leaver is the
+        // address, so writing merge fields would blank their name and chapter
+        // in Mailchimp on the way out.
         ...leavers.map((email) => ({
-          payload: buildMailchimpMember(
-            {
-              email,
-              backer: "none" as MailchimpBackerValue,
-              role: "contact" as MailchimpRoleValue,
-            },
-            "unsubscribed",
-          ),
+          payload: buildMailchimpUnsubscribe(email),
           unsubscribeReason: "No longer eligible in events-os",
         })),
       ];
