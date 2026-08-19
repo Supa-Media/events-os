@@ -2295,3 +2295,6 @@ export * from "./publicLedger";
 
 // ── Powers: the standardized permission vocabulary (grammar + implication) ───
 export * from "./powers";
+
+// ── Mailchimp audience sync: payload shape + segmentation vocabulary ─────────
+export * from "./mailchimp";

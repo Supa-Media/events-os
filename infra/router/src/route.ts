@@ -97,6 +97,16 @@ export const CONVEX_PREFIXES = [
   // their money is. The drift guard in `drift.test.ts` caught this one before
   // it shipped, which is the whole reason that test exists.
   "/contract/",
+  // Mailchimp's webhook (`apps/convex/http.ts`'s `/mailchimp/webhook`, GET +
+  // POST). Bulk email lives in Mailchimp now, and this is the route that
+  // carries an unsubscribe BACK into `emailSuppressions` so it silences event
+  // blasts too. Missing it is silent in the worst way: Mailchimp posts, the
+  // Worker answers from static assets, Mailchimp sees a 2xx and never retries
+  // — so unsubscribes would be dropped on the floor and we would keep mailing
+  // people who asked us to stop, with nothing anywhere reporting a failure.
+  // The GET matters too: Mailchimp refuses to SAVE a webhook whose URL doesn't
+  // 200 on a GET, so without this the integration cannot even be configured.
+  "/mailchimp/",
 ] as const;
 
 function isConvexPath(pathname: string): boolean {

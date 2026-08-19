@@ -172,6 +172,24 @@
  * title, minutes, and quiz length (3/3), so nothing else moved. No slugs,
  * sections, or courses moved; total stays 98 sections.
  *
+ * Email desk parked / Mailchimp adopted (founder decision, 2026-08-19 — see
+ * `docs/plans/email-desk-parked.md`): bulk email now goes out through
+ * Mailchimp and the in-app Emails desk is hidden from nav, so
+ * `dev-relationship-workflow` gained TWO leading rules before the existing
+ * email run — "Bulk email goes out through Mailchimp" (what moved, and that
+ * the roster syncs onto the Mailchimp audience while unsubscribes flow back
+ * into the shared suppression ledger) and "The approval habit survives the
+ * tool change" (two-party sign-off is now a discipline, not a gate, because
+ * Mailchimp enforces nothing) — plus one quiz question on the pull-back
+ * silencing event blasts too. That question REPLACES the "how do I get every
+ * future email onto a new accent colour" one, which taught the parked desk's
+ * template-restyling mechanics and is the least useful thing in this quiz now
+ * that nobody composes there — quiz length stays 5, minutes 4→6 (bumped
+ * below). The lessons AFTER them still describe the parked desk accurately
+ * and were left alone deliberately: it is reachable by direct URL and an
+ * in-flight send still has to be finishable. Its title and placement are
+ * unchanged. No slugs, sections, or courses moved; total stays 98 sections.
+ *
  * Finance audit trail (`financeAuditLog`, founder ask: more audit trails on
  * reconcile edits): `finance-reconcile-grid`'s `try_status` caption now says
  * excluding a charge requires a reason, and the section gained one quiz
@@ -1719,7 +1737,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-relationship-workflow",
     title: "Owners, notes, and the top-donor list",
-    minutes: 4,
+    minutes: 6,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

@@ -138,6 +138,9 @@ describe("myCampaignsAccess", () => {
       canDesign: true,
       canCompose: true,
       canApprove: true,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
   });
 
@@ -149,6 +152,9 @@ describe("myCampaignsAccess", () => {
       canDesign: false,
       canCompose: false,
       canApprove: false,
+      // The parked-desk NAV flag, unset in these fixtures — absent reads as
+      // `true` (see `schema/integrationSettings.ts#legacyEmailDeskEnabled`).
+      deskEnabled: true,
     });
   });
 });

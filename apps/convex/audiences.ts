@@ -133,12 +133,27 @@ export const myCampaignsAccess = query({
     canDesign: v.boolean(),
     canCompose: v.boolean(),
     canApprove: v.boolean(),
+    deskEnabled: v.boolean(),
   }),
   handler: async (ctx) => ({
     canView: await hasCampaignsAccess(ctx),
     canDesign: await hasCampaignDesign(ctx),
     canCompose: await hasCampaignCompose(ctx),
     canApprove: await hasCampaignApprovalPower(ctx),
+    // NAV VISIBILITY ONLY, and deliberately separate from `canView` — see
+    // `schema/integrationSettings.ts#legacyEmailDeskEnabled`. Bulk email moved
+    // to Mailchimp (2026-08-19) and the desk is parked, so `AppShell`'s NAV
+    // filter requires `canView && deskEnabled` and nobody stumbles into
+    // composing a send in a tool the org no longer sends from.
+    //
+    // It is NOT folded into `canView` on purpose: every campaigns route stays
+    // reachable by direct URL with its in-screen guards unchanged, so a send
+    // already in flight can still be finished and the history stays readable.
+    // Absent in storage reads as `true` — a deployment that never sets it
+    // keeps the pre-existing behavior.
+    deskEnabled:
+      (await ctx.db.query("integrationSettings").first())
+        ?.legacyEmailDeskEnabled !== false,
   }),
 });
 

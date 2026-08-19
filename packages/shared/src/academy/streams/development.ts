@@ -284,7 +284,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "dev-relationship-workflow",
     title: "Owners, notes, and the top-donor list",
     subtitle: "Every donor gets a name attached — and a personal thank-you",
-    minutes: 4,
+    minutes: 6,
     blocks: [
       {
         kind: "p",
@@ -331,6 +331,16 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
               "Sponsorships are for organizations (church/business/foundation), not individual donors — this is a donor-relationship move, not a pipeline one.",
           },
         ],
+      },
+      {
+        kind: "rule",
+        title: "Bulk email goes out through Mailchimp",
+        text: "**Read this before the lessons that follow.** Public Worship's newsletters and announcements are SENT FROM MAILCHIMP, not from this app. The in-app Emails desk still exists and everything below still describes it accurately — but it is parked, hidden from the sidebar, and nobody should start a new send there. We moved because of what surrounds the tool rather than the tool itself: design pasted in from Canva keeps its formatting, opens and clicks are actually tracked, and there is a whole ecosystem of templates and signup forms we were never going to build. What THIS app does now is keep Mailchimp's list honest — every night it pushes the roster onto the Mailchimp audience, tagged with chapter, backer standing, and role so you can segment over there. Two things follow, and they matter: an unsubscribe in Mailchimp flows straight back here and silences EVERY other email too, including event blasts; and a person who is marked marketing-opted-out here, or whose address is on the suppression list, never reaches Mailchimp in the first place. The consent rules you learn below are still the real rules — they are just enforced on the way OUT the door now.",
+      },
+      {
+        kind: "rule",
+        title: "The approval habit survives the tool change",
+        text: "Mailchimp will happily let one person write a mass email and press send. This app would not — it required a SECOND person's sign-off, a reviewer chosen by name who could never be the writer, even when the writer was the Executive Director. That rule was never really about the software; it was about what it costs the org when something goes to a few hundred people with the wrong number, the wrong tone, or the wrong name in it. **It still applies.** Before anything goes out of Mailchimp, a second Compose/Approve holder reads it — the same separation of duties that governs reimbursements, budgets, and card spend. The difference is that nothing enforces it for you any more, which makes it a discipline rather than a gate. If you find yourself about to send something nobody else has read, that is the moment the rule exists for.",
       },
       {
         kind: "rule",
@@ -400,16 +410,16 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "The org rebrands: the accent colour changes. What's the right way to get every FUTURE email onto the new colour?",
+          "Someone clicks unsubscribe in a Mailchimp newsletter. What happens to the event blast going out next week?",
         options: [
-          "Edit each block's colour in every past email that might get reused",
-          "Update the colour in your saved templates — any email you start from them afterward carries it automatically",
-          "Ask a developer to change it in the code",
-          "You can't — colour lives on each block, so there's no single place to fix it",
+          "Nothing — Mailchimp and the app keep separate lists",
+          "They're dropped from it too — a Mailchimp unsubscribe writes to the app's suppression list, which every send here reads",
+          "They're dropped only if an admin manually copies the unsubscribe over",
+          "The blast is blocked entirely until someone reviews the unsubscribe",
         ],
         answerIndex: 1,
         explanation:
-          "Colour lives per-element now, not on a locked theme, so nothing in the tool itself stops a single email from drifting off-brand if it's built from scratch. The lever is TEMPLATES: fix the look once in the templates people start from — the built-in newsletter, or one you saved — and duplicating one afterward carries the new colour with it. Old sent emails, and anything built from a blank page instead of a template, still need their own fix.",
+          "The pull-back is the whole point of the integration: an unsubscribe in Mailchimp lands in the same deployment-wide suppression ledger that event blasts, campaigns, and every other send already consult. One 'stop' means stop everywhere — if it didn't, the app would be the one ignoring a person who asked to be left alone.",
       },
       {
         prompt: "The Executive Director writes a mass email. Who can approve it before it sends?",

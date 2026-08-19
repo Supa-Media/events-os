@@ -2253,6 +2253,9 @@ export const webhookEvents = defineTable({
     v.literal("increase"),
     v.literal("twilio"),
     v.literal("resend"),
+    // Mailchimp has no per-event id of its own, so `/mailchimp/webhook` keys
+    // idempotency on `"<type>:<address>"` instead — see that route's doc.
+    v.literal("mailchimp"),
   ),
   // The provider's unique event id (idempotent handling key).
   eventId: v.string(),
