@@ -42,6 +42,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   CARD_RAIL_MAX_CENTS,
+  MAX_SPONSORSHIP_EVENTS,
   SPONSOR_PORTAL_STATE_LABELS,
   SPONSOR_RAIL_LABELS,
   cardRailBlockedReason,
@@ -60,6 +61,7 @@ import {
   TextField,
 } from "../ui";
 import type { BadgeTone } from "../ui";
+import { useGivingScope } from "../../lib/useGivingScope";
 
 const STATE_TONE: Record<SponsorPortalState, BadgeTone> = {
   unissued: "neutral",
@@ -110,6 +112,7 @@ export function PartnerPortalSection({
   const [contactEmail, setContactEmail] = useState("");
   const [rails, setRails] = useState<SponsorPaymentRail[]>(["ach"]);
   const [credits, setCredits] = useState<CreditDraft[]>([]);
+  const [eventIds, setEventIds] = useState<Id<"events">[]>([]);
   const [seeded, setSeeded] = useState(false);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -127,6 +130,7 @@ export function PartnerPortalSection({
     setContactTitle(data.contact.title ?? "");
     setContactEmail(data.contact.email ?? "");
     setRails(data.proposal.rails);
+    setEventIds(data.events.map((e) => e._id));
     setCredits(
       data.proposal.inKindCredits.map((c) => ({
         label: c.label,
@@ -159,9 +163,15 @@ export function PartnerPortalSection({
       summary.trim() !== (p.summary ?? "") ||
       benefits.trim() !== p.benefits.join("\n") ||
       commitments.trim() !== p.commitments.join("\n") ||
-      terms.trim() !== (p.terms ?? "")
+      terms.trim() !== (p.terms ?? "") ||
+      // Which events this covers is a SIGNED term (see `saveProposal`'s
+      // SIGNED_FIELDS): "Ignite is standing behind Love Thy Neighbor and the
+      // Sept 18 gathering" is the substance of the deal, not metadata about it.
+      // Order-insensitive, because reordering a checkbox list is not a change
+      // to what anybody agreed to.
+      !sameIds(eventIds, data.events.map((e) => e._id))
     );
-  }, [data, title, amountCents, summary, benefits, commitments, terms]);
+  }, [data, title, amountCents, summary, benefits, commitments, terms, eventIds]);
 
   if (data === undefined) return null;
 
@@ -201,6 +211,9 @@ export function PartnerPortalSection({
           ? { commitments: commitments.split("\n") }
           : {}),
         ...(terms.trim() !== (p.terms ?? "") ? { terms } : {}),
+        ...(sameIds(eventIds, data!.events.map((e) => e._id))
+          ? {}
+          : { eventIds }),
         // The unsigned fields are always sent: none of them can bump the
         // version, and always sending them is what makes "clear this box and
         // save" work.
@@ -448,6 +461,17 @@ export function PartnerPortalSection({
         </View>
       ) : null}
 
+      {/* ── What it covers ──────────────────────────────────────────────── */}
+      {canManage ? (
+        <View className="mt-3">
+          <CoveragePicker
+            selected={eventIds}
+            onChange={setEventIds}
+            attached={data.events}
+          />
+        </View>
+      ) : null}
+
       {/* ── Who signs ───────────────────────────────────────────────────── */}
       {canManage ? (
         <View className="mt-3">
@@ -593,6 +617,130 @@ export function PartnerPortalSection({
       ) : null}
     </View>
   );
+}
+
+/**
+ * WHICH EVENTS THIS PARTNERSHIP COVERS.
+ *
+ * A partnership is routinely more than one date — the Ignite agreement stands
+ * behind Love Thy Neighbor on Sept 26 AND the hosted Worship with Strangers on
+ * Sept 18 — and until now nothing in the app could say so. `eventIds` has been
+ * on the schema since sponsorships shipped, but the detail screen only ever
+ * passed the stored value straight back, so every agreement carried an empty
+ * list and the partner's page had nothing to show.
+ *
+ * ── WHY ALREADY-ATTACHED EVENTS RENDER FIRST, ALWAYS ────────────────────────
+ * The list is drawn from `events.list` at scope "all" and then split: the
+ * events this agreement already covers, then everything else. Without that
+ * split, an agreement covering a date that has since passed would find that
+ * date missing from the picker — and the first save that touched anything else
+ * would silently drop it from what the partner was promised.
+ *
+ * ── AND WHY THE CHAPTER LENS IS NAMED OUT LOUD ──────────────────────────────
+ * `events.list` is scoped to the caller's active chapter, while agreements are
+ * central. A central director browsing from the wrong lens sees the wrong
+ * city's calendar — the same limitation the packages screen carries — so the
+ * empty state says which chapter it is looking at rather than claiming there
+ * are no events.
+ */
+function CoveragePicker({
+  selected,
+  onChange,
+  attached,
+}: {
+  selected: Id<"events">[];
+  onChange: (next: Id<"events">[]) => void;
+  attached: { _id: Id<"events">; name: string; eventDate: number }[];
+}) {
+  const chapterId = useGivingScope();
+  const events = useQuery(api.events.list, { scope: "all", chapterId });
+
+  // Already-attached first (so a past date can never fall off the list), then
+  // everything else soonest-first.
+  const rows = useMemo(() => {
+    const chosen = new Set<string>(selected);
+    const byId = new Map<string, { _id: Id<"events">; name: string; eventDate: number }>();
+    for (const e of attached) byId.set(e._id, e);
+    for (const e of events ?? []) {
+      byId.set(e._id, { _id: e._id, name: e.name, eventDate: e.eventDate });
+    }
+    const all = [...byId.values()];
+    return [
+      ...all.filter((e) => chosen.has(e._id)).sort((a, b) => a.eventDate - b.eventDate),
+      ...all.filter((e) => !chosen.has(e._id)).sort((a, b) => a.eventDate - b.eventDate),
+    ];
+  }, [events, attached, selected]);
+
+  const atCap = selected.length >= MAX_SPONSORSHIP_EVENTS;
+
+  function toggle(id: Id<"events">) {
+    onChange(
+      selected.includes(id)
+        ? selected.filter((e) => e !== id)
+        : [...selected, id],
+    );
+  }
+
+  return (
+    <Card>
+      <Text className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+        What this partnership covers
+      </Text>
+      <Text className="mb-3 text-xs text-muted">
+        Every gathering this one agreement stands behind. A partnership can
+        carry several — the partner sees each one by name and date on their
+        page.
+      </Text>
+
+      {events === undefined ? (
+        <Text className="py-2 text-sm text-muted">Loading events…</Text>
+      ) : rows.length === 0 ? (
+        <Text className="py-2 text-sm text-muted">
+          No events on this chapter&apos;s calendar yet. Switch chapters if this
+          partnership covers another city&apos;s gatherings.
+        </Text>
+      ) : (
+        <View>
+          {rows.map((e) => {
+            const on = selected.includes(e._id);
+            return (
+              <CheckboxRow
+                key={e._id}
+                checked={on}
+                disabled={!on && atCap}
+                onPress={() => toggle(e._id)}
+                label={`${e.name} · ${new Date(e.eventDate).toLocaleDateString(
+                  "en-US",
+                  { month: "short", day: "numeric", year: "numeric" },
+                )}`}
+              />
+            );
+          })}
+        </View>
+      )}
+
+      {selected.length === 0 ? (
+        <Text className="mt-1 text-xs text-muted">
+          Nothing selected — the partner&apos;s page will show no dates. That is
+          right for a season or full-year agreement, and wrong for a spot at a
+          specific gathering.
+        </Text>
+      ) : (
+        <Text className="mt-1 text-xs text-muted">
+          {selected.length} of {MAX_SPONSORSHIP_EVENTS} — changing this asks the
+          partner to sign again, because it changes what they agreed to.
+        </Text>
+      )}
+    </Card>
+  );
+}
+
+/** Two id lists carrying the same set — order-insensitive, because reordering
+ *  a checkbox list is not a change to what anybody agreed to. */
+function sameIds(a: readonly string[], b: readonly string[]): boolean {
+  if (a.length !== b.length) return false;
+  const set = new Set(a);
+  return b.every((id) => set.has(id));
 }
 
 function updateCredit(

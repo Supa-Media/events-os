@@ -53,6 +53,7 @@ import { ConvexError, v } from "convex/values";
 import {
   CARD_RAIL_MAX_CENTS,
   MAX_IN_KIND_CREDITS,
+  MAX_SPONSORSHIP_EVENTS,
   SPONSOR_AMOUNT_MAX_CENTS,
   SPONSOR_CONTACT_NAME_MAX,
   SPONSOR_CREDIT_LABEL_MAX,
@@ -211,9 +212,22 @@ export const portalAdmin = query({
     const money = await sponsorshipMoney(ctx, sponsorship, proposal);
     const donor = await ctx.db.get(sponsorship.donorId);
 
+    // The events this partnership covers, resolved server-side so the composer
+    // can render the current selection by NAME rather than holding a list of
+    // ids it would have to look up itself. Dangling ids (an event deleted after
+    // it was attached) are dropped here rather than rendered as a blank row.
+    const events = (
+      await Promise.all(
+        (sponsorship.eventIds ?? []).map((id) => ctx.db.get(id)),
+      )
+    )
+      .filter((e): e is Doc<"events"> => e !== null)
+      .map((e) => ({ _id: e._id, name: e.name, eventDate: e.eventDate }));
+
     const token = portalLinkIsLive(sponsorship) ? sponsorship.portalToken! : null;
     return {
       proposal,
+      events,
       packageName: pkg?.name ?? null,
       packagePriceCents: pkg?.pricing.amountCents ?? null,
       donorName: donor?.name ?? null,
@@ -295,6 +309,17 @@ export const saveProposal = mutation({
     benefits: v.optional(v.array(v.string())),
     commitments: v.optional(v.array(v.string())),
     terms: v.optional(v.string()),
+    /**
+     * WHICH EVENTS THIS PARTNERSHIP COVERS. The Ignite deal is the case: one
+     * agreement standing behind Love Thy Neighbor on Sept 26 AND the hosted
+     * Worship with Strangers on Sept 18. A partnership is routinely more than
+     * one date, and the partner is entitled to see exactly which ones.
+     *
+     * Bounded by `MAX_SPONSORSHIP_EVENTS` and every id is checked to exist —
+     * this list renders on a page a partner reads, and a dangling id there is
+     * an event that silently disappears from what they were promised.
+     */
+    eventIds: v.optional(v.array(v.id("events"))),
     contactName: v.optional(v.string()),
     contactTitle: v.optional(v.string()),
     contactEmail: v.optional(v.string()),
@@ -353,6 +378,25 @@ export const saveProposal = mutation({
     }
     if (args.contactEmail !== undefined) {
       patch.contactEmail = cap(args.contactEmail, SPONSOR_CONTACT_NAME_MAX)?.toLowerCase();
+    }
+
+    if (args.eventIds !== undefined) {
+      const eventIds = Array.from(new Set(args.eventIds));
+      if (eventIds.length > MAX_SPONSORSHIP_EVENTS) {
+        throw new ConvexError({
+          code: "TOO_MANY_EVENTS",
+          message: `A partnership may cover at most ${MAX_SPONSORSHIP_EVENTS} events.`,
+        });
+      }
+      for (const eventId of eventIds) {
+        if (!(await ctx.db.get(eventId))) {
+          throw new ConvexError({
+            code: "NOT_FOUND",
+            message: "One of those events doesn't exist any more.",
+          });
+        }
+      }
+      patch.eventIds = eventIds;
     }
 
     // The amount that will be in force AFTER this patch — what the rail check
@@ -421,6 +465,11 @@ export const saveProposal = mutation({
       "amountCents",
       "benefits",
       "commitments",
+      // WHICH EVENTS is a signed term, not metadata. "Ignite is standing
+      // behind Love Thy Neighbor and the Sept 18 gathering" is the substance
+      // of what they agreed to; quietly dropping one afterwards would leave a
+      // signature against a promise the page no longer makes.
+      "eventIds",
     ] as const;
     const signedTermChanged = SIGNED_FIELDS.some((field) => {
       if (!(field in patch)) return false;

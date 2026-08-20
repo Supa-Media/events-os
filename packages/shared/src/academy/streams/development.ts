@@ -1461,7 +1461,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "dev-partner-portal",
     title: "The partner portal: one page they read, sign, and pay",
-    subtitle: "A custom proposal, a digital signature, and why it's bank transfer",
+    subtitle: "A custom proposal, the gatherings it covers, and a digital signature",
     minutes: 5,
     blocks: [
       {
@@ -1486,6 +1486,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**In-kind credit reduces what they owe; it isn't money that arrived.** A production proposal valued at our own budget lines — never their rate card — is listed line by line on their page and counts against the spot like cash. Recording it as an in-kind GIFT in the ledger is a separate, deliberate act; doing both counts the same donation twice.",
+          "**One agreement can cover several gatherings.** Tick every event this partnership stands behind — Ignite stands behind Love Thy Neighbor on the 26th AND the hosted Worship with Strangers on the 18th — and the partner sees each one by name and date near the top of their page. Changing which events are covered is a change to what they agreed to, so it clears the signature like any other term. A season or full-year agreement covers no single date, and that is fine.",
           "**The link is stable.** Pressing \"Copy link\" twice gives you the same URL, so the one you emailed keeps working. Revoking kills it; the next one you create is a fresh address.",
           "**A bank transfer takes about four business days.** Until it clears, the portal shows it as clearing and the balance is unchanged — no gift is recorded for money that hasn't moved, and the partner can't accidentally pay twice.",
           "**Nothing internal reaches their page.** Due-diligence notes, the pipeline stage, the owner, and every other agreement are invisible on the portal by construction.",

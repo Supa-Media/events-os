@@ -479,6 +479,14 @@ carries its **own proposal** — its own title, its own body, its own benefit an
 commitment lines, its own terms — and falls back to the tier wherever it has
 nothing of its own.
 
+**An agreement covers the gatherings it names.** A partnership is routinely
+more than one date — one agreement may stand behind a flagship event and a
+second gathering in the same season — and every covered event is named, with its
+date, on the partner's own page. A season or full-year agreement covers no
+single date, which is a real state rather than a missing one. Changing which
+events an agreement covers changes what the partner agreed to, and is treated as
+a term accordingly (below).
+
 **The partner reads and signs their own agreement.** Each agreement can issue a
 secret link to a page the partner opens with no account: the proposal, the
 terms, a typed-name signature, and a way to pay. The link opens exactly that one
@@ -503,7 +511,8 @@ organization records the typed name, the role, the email, the moment, the
 originating IP address, and **which version of the terms was on the page**.
 
 **Editing a signed term un-signs the agreement.** Changing the amount, the
-terms, the benefits, the commitments, the summary, or the title moves the
+terms, the benefits, the commitments, the summary, the covered events, or the
+title moves the
 agreement to a new version and clears the signature; the partner is asked to
 sign again, and what they originally signed stays visible to the desk. Editing
 the contact block, the payment rails, or an in-kind credit does not — reducing

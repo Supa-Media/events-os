@@ -247,6 +247,13 @@ ul{margin:0;padding:0;list-style:none;}
 .rail .fee{font-size:12.5px;font-weight:600;color:var(--success);margin-top:5px;}
 .agree{display:flex;gap:11px;align-items:flex-start;font-size:13.5px;line-height:20px;color:var(--muted);}
 .agree input{margin-top:2px;accent-color:var(--accent);height:17px;width:17px;flex:0 0 17px;}
+/* Coverage rows — a date the partner is standing behind, not a table row. */
+.covers{display:flex;flex-direction:column;gap:12px;}
+.cover{display:flex;gap:12px;align-items:flex-start;}
+.cover .ic{height:34px;width:34px;border-radius:var(--r-md);background:var(--accent-soft);display:flex;align-items:center;justify-content:center;flex:0 0 34px;}
+.cover .ic svg{width:16px;height:16px;stroke:var(--accent);}
+.cover .cn{display:block;font-weight:600;font-size:15px;line-height:21px;overflow-wrap:anywhere;}
+.cover .cd{display:block;font-size:13px;line-height:19px;color:var(--muted);margin-top:1px;}
 .paylist{border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;}
 .paylist .pr{display:flex;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border);}
 .paylist .pr:last-child{border-bottom:none;}
@@ -395,16 +402,40 @@ function listSection(title: string, items: string[], ours: boolean): string {
 </section>`;
 }
 
+/**
+ * WHAT THIS PARTNERSHIP COVERS — the events, by name and date.
+ *
+ * ── WHY THIS SITS DIRECTLY UNDER THE MONEY ──────────────────────────────────
+ * A partnership is routinely more than one date. The Ignite agreement stands
+ * behind Love Thy Neighbor on Sept 26 AND the hosted Worship with Strangers on
+ * Sept 18, and "which days am I actually standing behind?" is the second
+ * question a partner asks after "how much?" — not a footnote after the terms.
+ * So it renders as a titled card immediately below the figure, with each date
+ * spelled out, rather than as a thin "attached to" list near the bottom.
+ *
+ * Renders nothing when no event is attached, which is correct rather than a
+ * gap: a season or annual agreement genuinely covers no single date, and an
+ * empty "covers:" heading would read as something missing.
+ */
 function eventsSection(v: SponsorPortalView): string {
   if (!v.events.length) return "";
+  const plural = v.events.length === 1 ? "gathering" : "gatherings";
   return `<section class="sec">
-  <div class="sec-h">Attached to</div>
-  <div class="paylist">${v.events
-    .map(
-      (e) =>
-        `<div class="pr"><div class="row gap8"><svg ${ICON} width="15" height="15" style="stroke:var(--muted)"><use href="#i-calendar"/></svg><span class="semi">${esc(e.name)}</span></div><div class="small muted">${fmtDay(e.eventDate)}</div></div>`,
-    )
-    .join("")}</div>
+  <div class="sec-h">What this partnership covers</div>
+  <div class="card">
+    <p class="small muted" style="margin-bottom:14px">${v.events.length} ${plural}, carried by this one agreement.</p>
+    <div class="covers">${v.events
+      .map(
+        (e) => `<div class="cover">
+        <span class="ic"><svg ${ICON}><use href="#i-calendar"/></svg></span>
+        <span>
+          <span class="cn">${esc(e.name)}</span>
+          <span class="cd">${fmtDay(e.eventDate)}</span>
+        </span>
+      </div>`,
+      )
+      .join("")}</div>
+  </div>
 </section>`;
 }
 
@@ -563,10 +594,10 @@ ${pubbar()}
   </div>
   <div class="mt16">${moneyCard(v)}</div>
 
+  ${eventsSection(v)}
   ${v.summary ? `<section class="sec"><div class="card prose">${proseHtml(v.summary)}</div></section>` : ""}
   ${listSection("What you receive", v.benefits, false)}
   ${listSection("What we deliver", v.commitments, true)}
-  ${eventsSection(v)}
   ${inKindSection(v)}
   ${termsSection(v)}
   ${signSection(v)}

@@ -25,7 +25,7 @@ const BASE: SponsorPortalView = {
   commitments: ["A hosted gathering on your anniversary weekend"],
   terms: "The run of show is settled together, in writing, in advance.",
   termsVersion: 1,
-  events: [{ name: "Love Thy Neighbor", eventDate: Date.UTC(2026, 8, 26) }],
+  events: [{ name: "Love Thy Neighbor", eventDate: Date.UTC(2026, 8, 26, 12) }],
   contactName: "Tolu Adeyemi",
   amountCents: 350_000,
   inKindCredits: [{ label: "Full production suite", amountCents: 250_000 }],
@@ -147,6 +147,40 @@ describe("renderSponsorPortal", () => {
   test("the token reaches the script JSON-encoded, never pasted raw", () => {
     const html = renderSponsorPortal(BASE, 'tok"); alert(1); //');
     expect(html).toContain('var TOKEN="tok\\"); alert(1); //"');
+  });
+
+  test("names every gathering the partnership covers, high up the page", () => {
+    const html = renderSponsorPortal(
+      {
+        ...BASE,
+        events: [
+          { name: "Worship with Strangers", eventDate: Date.UTC(2026, 8, 18, 12) },
+          { name: "Love Thy Neighbor", eventDate: Date.UTC(2026, 8, 26, 12) },
+        ],
+      },
+      "tok_123",
+    );
+    expect(html).toContain("What this partnership covers");
+    expect(html).toContain("2 gatherings");
+    expect(html).toContain("Worship with Strangers");
+    expect(html).toContain("Sep 18, 2026");
+    expect(html).toContain("Love Thy Neighbor");
+    expect(html).toContain("Sep 26, 2026");
+    // ABOVE the proposal body: "which days am I standing behind?" is the
+    // second question a partner asks after "how much?", not a footnote.
+    expect(html.indexOf("What this partnership covers")).toBeLessThan(
+      html.indexOf("What you receive"),
+    );
+  });
+
+  test("says one gathering in the singular", () => {
+    const html = renderSponsorPortal(BASE, "tok_123");
+    expect(html).toContain("1 gathering,");
+  });
+
+  test("shows no coverage heading when a season agreement covers no single date", () => {
+    const html = renderSponsorPortal({ ...BASE, events: [] }, "tok_123");
+    expect(html).not.toContain("What this partnership covers");
   });
 
   test("the not-found page says the same thing for a guess and a revocation", () => {

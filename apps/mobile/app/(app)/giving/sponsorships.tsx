@@ -52,6 +52,10 @@ type SponsorshipRow = {
   sponsorship: Doc<"sponsorships">;
   donor: Doc<"donors"> | null;
   package: Doc<"sponsorPackages"> | null;
+  /** The gatherings this one agreement covers — a partnership is routinely
+   *  more than one date, and "who is standing behind Love Thy Neighbor?" is a
+   *  question asked of the whole pipeline, not of one agreement at a time. */
+  events: { _id: Id<"events">; name: string; eventDate: number }[];
 };
 
 export default function SponsorshipsScreen() {
@@ -213,7 +217,7 @@ function StageSection({
         />
       ) : (
         <View className="gap-2">
-          {rows.map(({ sponsorship, donor, package: pkg }) => (
+          {rows.map(({ sponsorship, donor, package: pkg, events }) => (
             <Pressable key={sponsorship._id} onPress={() => onOpen(sponsorship._id)}>
               <Card padding="md">
                 <View className="flex-row items-center justify-between">
@@ -229,6 +233,19 @@ function StageSection({
                           ).toLocaleDateString()}`
                         : ""}
                     </Text>
+                    {/* What it covers, named rather than counted: "2 events"
+                        answers a question nobody asked, while "Love Thy
+                        Neighbor · Worship with Strangers" answers the one the
+                        desk actually has. */}
+                    {events.length > 0 ? (
+                      <Text className="mt-0.5 text-xs text-faint" numberOfLines={1}>
+                        {events
+                          .slice()
+                          .sort((a, b) => a.eventDate - b.eventDate)
+                          .map((e) => e.name)
+                          .join(" · ")}
+                      </Text>
+                    ) : null}
                   </View>
                   <Badge
                     label={STAGE_LABEL[sponsorship.status] ?? sponsorship.status}

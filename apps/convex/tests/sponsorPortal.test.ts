@@ -92,6 +92,37 @@ async function seedAgreement(
   })) as Id<"sponsorships">;
 }
 
+/** An event on the setup's chapter, named so a test can tell two apart. */
+async function seedEvent(
+  s: ChapterSetup,
+  name: string,
+  daysOut: number,
+): Promise<Id<"events">> {
+  return run(s.t, async (ctx) => {
+    const now = Date.now();
+    const eventTypeId = await ctx.db.insert("eventTypes", {
+      chapterId: s.chapterId,
+      name,
+      slug: name.toLowerCase().replace(/[^a-z0-9]+/g, "-"),
+      version: 1,
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return ctx.db.insert("events", {
+      chapterId: s.chapterId,
+      eventTypeId,
+      templateVersion: 1,
+      name,
+      eventDate: now + daysOut * 24 * 60 * 60 * 1000,
+      status: "planning",
+      createdBy: s.userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
 /** Sign the agreement the way the public page would. */
 async function sign(s: ChapterSetup, token: string) {
   return await s.t.mutation(api.sponsorPortal.signAgreement, {
@@ -565,6 +596,114 @@ describe("recordPortalPaymentPaid", () => {
     expect(view!.balance.balanceCents).toBe(250_000);
     expect(view!.state).toBe("awaiting_payment");
     expect(view!.payments).toHaveLength(1);
+  });
+});
+
+// ── What the partnership covers ──────────────────────────────────────────────
+
+describe("covered events", () => {
+  test("one agreement carries several gatherings, and the partner sees each", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    // The Ignite deal exactly: one agreement standing behind Love Thy Neighbor
+    // on the 26th AND the hosted Worship with Strangers on the 18th.
+    const wws = await seedEvent(s, "Worship with Strangers", 29);
+    const ltn = await seedEvent(s, "Love Thy Neighbor", 37);
+
+    await s.as.mutation(api.sponsorPortal.saveProposal, {
+      sponsorshipId,
+      eventIds: [ltn, wws],
+    });
+    const { token } = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+
+    const view = await s.t.query(api.sponsorPortal.publicByToken, { token });
+    expect(view!.events.map((e) => e.name).sort()).toEqual([
+      "Love Thy Neighbor",
+      "Worship with Strangers",
+    ]);
+
+    // …and the desk sees the same two, on the composer and on the pipeline row.
+    const admin = await s.as.query(api.sponsorPortal.portalAdmin, { sponsorshipId });
+    expect(admin.events).toHaveLength(2);
+    const pipeline = await s.as.query(api.sponsorships.listSponsorships, {});
+    expect(
+      pipeline.find((r) => r.sponsorship._id === sponsorshipId)!.events,
+    ).toHaveLength(2);
+  });
+
+  test("changing which events are covered re-opens the signature", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const ltn = await seedEvent(s, "Love Thy Neighbor", 37);
+    const wws = await seedEvent(s, "Worship with Strangers", 29);
+    await s.as.mutation(api.sponsorPortal.saveProposal, {
+      sponsorshipId,
+      eventIds: [ltn],
+    });
+    const { token } = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+    await sign(s, token);
+
+    // Adding the second gathering changes the substance of what they signed.
+    const result = await s.as.mutation(api.sponsorPortal.saveProposal, {
+      sponsorshipId,
+      eventIds: [ltn, wws],
+    });
+    expect(result.signatureCleared).toBe(true);
+
+    const view = await s.t.query(api.sponsorPortal.publicByToken, { token });
+    expect(view!.signed).toBeNull();
+    expect(view!.state).toBe("awaiting_signature");
+  });
+
+  test("re-sending the same events in a different order is not a change", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const ltn = await seedEvent(s, "Love Thy Neighbor", 37);
+    const wws = await seedEvent(s, "Worship with Strangers", 29);
+    await s.as.mutation(api.sponsorPortal.saveProposal, {
+      sponsorshipId,
+      eventIds: [ltn, wws],
+    });
+    const { token } = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+    await sign(s, token);
+
+    const result = await s.as.mutation(api.sponsorPortal.saveProposal, {
+      sponsorshipId,
+      eventIds: [ltn, wws],
+    });
+    expect(result.signatureCleared).toBe(false);
+  });
+
+  test("refuses an event that doesn't exist rather than promising a blank date", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const ghost = await seedEvent(s, "Deleted Gathering", 10);
+    await run(s.t, (ctx) => ctx.db.delete(ghost));
+
+    await expect(
+      s.as.mutation(api.sponsorPortal.saveProposal, {
+        sponsorshipId,
+        eventIds: [ghost],
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("de-duplicates a list that names the same gathering twice", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const ltn = await seedEvent(s, "Love Thy Neighbor", 37);
+    await s.as.mutation(api.sponsorPortal.saveProposal, {
+      sponsorshipId,
+      eventIds: [ltn, ltn],
+    });
+    const row = await run(s.t, (ctx) => ctx.db.get(sponsorshipId));
+    expect(row!.eventIds).toEqual([ltn]);
   });
 });
 

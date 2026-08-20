@@ -140,6 +140,20 @@ export interface SponsorInKindCredit {
  *  proposal is a handful of lines, not a general ledger. */
 export const MAX_IN_KIND_CREDITS = 20;
 
+/**
+ * How many events one partnership may cover.
+ *
+ * A partnership is routinely more than one date — the Ignite agreement stands
+ * behind Love Thy Neighbor on Sept 26 AND the hosted Worship with Strangers on
+ * Sept 18 — so this is a season's worth of events, not the whole calendar.
+ *
+ * Lives here rather than in `apps/convex/sponsorships.ts` (its original, private
+ * home) because BOTH the pipeline's `upsertSponsorship` and the portal's
+ * `saveProposal` write this list now, and a bound enforced at one writer and
+ * not the other is a bound that isn't one.
+ */
+export const MAX_SPONSORSHIP_EVENTS = 20;
+
 /** The shape every surface renders an agreement's money from. */
 export interface SponsorBalance {
   /** What the partner agreed to carry, in total. */
