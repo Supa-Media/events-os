@@ -96,10 +96,22 @@ export default function SponsorshipsScreen() {
       </Screen>
     );
   }
-  return <SponsorshipsBody canManage={access.canManage} />;
+  return (
+    <SponsorshipsBody
+      canManage={access.canManage}
+      canCompose={access.canComposePartnerships}
+    />
+  );
 }
 
-function SponsorshipsBody({ canManage }: { canManage: boolean }) {
+function SponsorshipsBody({
+  canManage,
+  canCompose,
+}: {
+  canManage: boolean;
+  // The partnership team can create/run agreements without giving-wide manage.
+  canCompose: boolean;
+}) {
   const router = useRouter();
   const rows = useQuery(api.sponsorships.listSponsorships, {});
   const [showNew, setShowNew] = useState(false);
@@ -141,7 +153,7 @@ function SponsorshipsBody({ canManage }: { canManage: boolean }) {
           ) : null}
         </View>
 
-        {canManage ? (
+        {canCompose ? (
           <View className="mt-3">
             <Button
               title={showNew ? "Cancel" : "New sponsorship"}

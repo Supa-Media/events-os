@@ -67,6 +67,55 @@ async function devDirectorSetup(): Promise<ChapterSetup> {
   return s;
 }
 
+/** A caller seated as a Partnership Associate at central — the partnership
+ *  team. Holds `giving.partners.edit` (compose) but NOT `giving.edit`. */
+async function associateSetup(): Promise<ChapterSetup> {
+  const t = newT();
+  await run(t, (ctx) => runSeedSeatDefs(ctx));
+  const s = await setupChapter(t);
+  await seatCaller(s, "partnership_associate", "central");
+  return s;
+}
+
+/** Seed a donor + package + agreement by DIRECT insert, bypassing the
+ *  director-gated mutations — so a test can hand a fully-formed agreement to a
+ *  caller who is NOT allowed to create one (an associate, a viewer) and check
+ *  what they can do with it. */
+async function seedAgreementRaw(s: ChapterSetup): Promise<Id<"sponsorships">> {
+  return run(s.t, async (ctx) => {
+    const now = Date.now();
+    const donorId = await ctx.db.insert("donors", {
+      scope: "central",
+      kind: "church",
+      name: "Ignite",
+      status: "prospect",
+      lifetimeCents: 0,
+      giftCount: 0,
+      createdAt: now,
+    });
+    const packageId = await ctx.db.insert("sponsorPackages", {
+      name: "LTN Production Partner",
+      tierRank: 1,
+      audience: "church",
+      pricing: { kind: "one_time", amountCents: AMOUNT },
+      scope: { kind: "season" },
+      benefits: ["Named production credit"],
+      commitments: ["Full photo report"],
+      active: true,
+      createdAt: now,
+      updatedAt: now,
+      updatedBy: s.userId,
+    });
+    return ctx.db.insert("sponsorships", {
+      donorId,
+      packageId,
+      status: "prospect",
+      createdAt: now,
+      updatedAt: now,
+    });
+  });
+}
+
 /** A church donor + a $3,500 tier + an agreement between them. */
 async function seedAgreement(
   s: ChapterSetup,
@@ -951,5 +1000,79 @@ describe("noteView", () => {
     await expect(
       s.t.mutation(api.sponsorPortal.noteView, { token: "nope" }),
     ).resolves.toBeNull();
+  });
+});
+
+// ── The partnership team's reach ─────────────────────────────────────────────
+
+describe("partnership associate access", () => {
+  test("can compose and issue links, but cannot record a gift or edit tiers", async () => {
+    const s = await associateSetup();
+    const sponsorshipId = await seedAgreementRaw(s);
+
+    // The composer opens for them — portalAdmin says so.
+    const admin = await s.as.query(api.sponsorPortal.portalAdmin, { sponsorshipId });
+    expect(admin.canCompose).toBe(true);
+    expect(admin.canSend).toBe(true);
+
+    // They fill terms…
+    await s.as.mutation(api.sponsorPortal.saveProposal, {
+      sponsorshipId,
+      terms: "The run of show is settled together, in writing, in advance.",
+      amountCents: 350_000,
+    });
+    // …and issue the link.
+    const link = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+    expect(link.token).toBeTruthy();
+    // …and advance the pipeline.
+    await s.as.mutation(api.sponsorships.setSponsorshipStatus, {
+      sponsorshipId,
+      status: "pitched",
+    });
+
+    // But recording a partner's payment is the director's — `giving.edit`,
+    // which the associate lacks.
+    await expect(
+      s.as.mutation(api.sponsorships.recordSponsorshipGift, {
+        sponsorshipId,
+        amountCents: 100_000,
+        method: "check",
+      }),
+    ).rejects.toThrow();
+    // …and defining package tiers is the director's too.
+    await expect(
+      s.as.mutation(api.sponsorships.savePackage, {
+        name: "New tier",
+        tierRank: 9,
+        audience: "church",
+        pricing: { kind: "one_time", amountCents: 10_000 },
+        scope: { kind: "season" },
+        benefits: ["x"],
+        commitments: ["y"],
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("a plain giving viewer (no partners power) sees the composer read-only", async () => {
+    const t = newT();
+    await run(t, (ctx) => runSeedSeatDefs(ctx));
+    const s = await setupChapter(t);
+    // Expansion Director holds central `giving.view` only — no partners power.
+    await seatCaller(s, "expansion_director", "central");
+    const sponsorshipId = await seedAgreementRaw(s);
+
+    const admin = await s.as.query(api.sponsorPortal.portalAdmin, { sponsorshipId });
+    expect(admin.canCompose).toBe(false);
+    expect(admin.canSend).toBe(false);
+
+    // …and the write path refuses them.
+    await expect(
+      s.as.mutation(api.sponsorPortal.saveProposal, {
+        sponsorshipId,
+        terms: "x",
+      }),
+    ).rejects.toThrow();
   });
 });

@@ -33,14 +33,14 @@
  * separation of duties this domain has, and it is enforced by the absence of a
  * mutation rather than by a check, which is the strongest way to enforce it.
  */
+import { ConvexError } from "convex/values";
 import { Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import {
   GivingAccess,
-  canManageGivingScope,
   canViewGivingScope,
-  requireGivingManage,
   requireGivingView,
+  resolveGivingAccess,
 } from "./givingAccess";
 
 /**
@@ -59,8 +59,10 @@ export function hasPartnershipView(access: GivingAccess): boolean {
 
 /** May the caller WRITE a proposal — its amount, terms, benefits, credits? */
 export function hasPartnershipCompose(access: GivingAccess): boolean {
-  // → `giving.partners.compose` when the split lands.
-  return canManageGivingScope(access, PARTNER_SCOPE);
+  // `giving.partners.edit` at central — the partnership team's own power, plus
+  // any central `giving.edit` holder (the Development Director / ED) via the
+  // wildcard rule. Superuser short-circuits inside `resolveGivingAccess`.
+  return access.isSuperuser || access.centralPartners;
 }
 
 /**
@@ -72,8 +74,10 @@ export function hasPartnershipCompose(access: GivingAccess): boolean {
  * this file is that narrowing it costs one line here.
  */
 export function hasPartnershipSend(access: GivingAccess): boolean {
-  // → `giving.partners.send` when the split lands.
-  return canManageGivingScope(access, PARTNER_SCOPE);
+  // Same power as compose today — issuing the link and drafting the terms are
+  // one job for the partnership team. A SEPARATE predicate so the day sending
+  // wants a narrower seat, only this line changes and no call site moves.
+  return access.isSuperuser || access.centralPartners;
 }
 
 /** Assert READ of the partnership desk, else throw the giving gate's refusal. */
@@ -87,12 +91,28 @@ export async function requirePartnershipView(
 export async function requirePartnershipCompose(
   ctx: QueryCtx,
 ): Promise<GivingAccess> {
-  return await requireGivingManage(ctx, PARTNER_SCOPE);
+  const access = await resolveGivingAccess(ctx);
+  if (!hasPartnershipCompose(access)) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message:
+        "You need the partnership-composer power to draft an agreement. Ask a development director.",
+    });
+  }
+  return access;
 }
 
 /** Assert authority to ISSUE / REVOKE a portal link, else throw. */
 export async function requirePartnershipSend(
   ctx: QueryCtx,
 ): Promise<GivingAccess> {
-  return await requireGivingManage(ctx, PARTNER_SCOPE);
+  const access = await resolveGivingAccess(ctx);
+  if (!hasPartnershipSend(access)) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message:
+        "You need the partnership-composer power to send an agreement link. Ask a development director.",
+    });
+  }
+  return access;
 }

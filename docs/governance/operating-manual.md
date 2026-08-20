@@ -78,8 +78,8 @@ update these tables, `governance.test.ts` fails.
 | Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export` |
 | Financial Manager | Executive Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
-| Partnership Associate | Development Director | many | `giving.view` |
-| Fundraising Associate | Development Director | many | `giving.view` |
+| Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
+| Fundraising Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
 | Music Director | Executive Director | 1 | — |
 | A&R | Music Director | many | — |
 | Artists | Music Director | many | — |
@@ -157,6 +157,7 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `finance.ledger.publish` | Publish a closed month to the public ledger |
 | `giving.view` | Read the donor CRM at the holder's scope |
 | `giving.edit` | Record, edit, import, and configure giving |
+| `giving.partners.edit` | Compose a sponsor's partnership agreement and issue its portal link |
 | `email.assets.edit` | Own the shared design system — themes, templates, image library |
 | `email.campaigns.edit` | Compose a campaign and send it for approval |
 | `email.campaigns.approve` | Approve a campaign for sending |
@@ -486,6 +487,16 @@ date, on the partner's own page. A season or full-year agreement covers no
 single date, which is a real state rather than a missing one. Changing which
 events an agreement covers changes what the partner agreed to, and is treated as
 a term accordingly (below).
+
+**The partnership team composes the agreement.** Drafting an agreement — its
+terms, proposal, covered events, in-kind credits, and documents — and issuing
+the portal link is the `giving.partners.edit` power, carried by the Partnership
+and Fundraising Associates and, through the whole-domain grant, by the
+Development Director. It is deliberately narrower than managing the donor CRM:
+the partnership team runs an agreement end to end from the Sponsors tab without
+the power to record a gift, edit a donor, or import — those stay `giving.edit`.
+Recording a partner's payment against the agreement remains a `giving.edit`
+action.
 
 **The partner reads and signs their own agreement.** Each agreement can issue a
 secret link to a page the partner opens with no account: the proposal, the

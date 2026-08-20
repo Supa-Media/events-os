@@ -98,10 +98,8 @@ type CreditDraft = { label: string; amount: string; note: string };
 
 export function PartnerPortalSection({
   sponsorshipId,
-  canManage,
 }: {
   sponsorshipId: Id<"sponsorships">;
-  canManage: boolean;
 }) {
   const data = useQuery(api.sponsorPortal.portalAdmin, { sponsorshipId });
   const saveProposal = useMutation(api.sponsorPortal.saveProposal);
@@ -184,6 +182,14 @@ export function PartnerPortalSection({
   }, [data, title, amountCents, summary, benefits, commitments, terms, eventIds]);
 
   if (data === undefined) return null;
+
+  // AUTHORITY COMES FROM THE AGREEMENT, NOT THE GIVING-WIDE MANAGE FLAG. The
+  // partnership team (a Partnership/Fundraising Associate) holds
+  // `giving.partners.edit` — they compose and issue links WITHOUT the donor-CRM
+  // manage power — so these are resolved server-side in `portalAdmin` and the
+  // controls gate on them, not on whether the caller can record a gift.
+  const canCompose = data.canCompose;
+  const canSend = data.canSend;
 
   const cardBlocked = cardRailBlockedReason(amountCents ?? data.proposal.amountCents);
 
@@ -322,7 +328,7 @@ export function PartnerPortalSection({
       </Card>
 
       {/* ── The link ────────────────────────────────────────────────────── */}
-      {canManage ? (
+      {canSend ? (
         <View className="mt-3">
           <Card>
             {data.portal ? (
@@ -401,7 +407,7 @@ export function PartnerPortalSection({
       ) : null}
 
       {/* ── The proposal ────────────────────────────────────────────────── */}
-      {canManage ? (
+      {canCompose ? (
         <View className="mt-3">
           <Card>
             {willClearSignature ? (
@@ -472,7 +478,7 @@ export function PartnerPortalSection({
       ) : null}
 
       {/* ── What it covers ──────────────────────────────────────────────── */}
-      {canManage ? (
+      {canCompose ? (
         <View className="mt-3">
           <CoveragePicker
             selected={eventIds}
@@ -483,7 +489,7 @@ export function PartnerPortalSection({
       ) : null}
 
       {/* ── Who signs ───────────────────────────────────────────────────── */}
-      {canManage ? (
+      {canCompose ? (
         <View className="mt-3">
           <Card>
             <Text className="mb-2 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -513,7 +519,7 @@ export function PartnerPortalSection({
       ) : null}
 
       {/* ── How they pay ────────────────────────────────────────────────── */}
-      {canManage ? (
+      {canCompose ? (
         <View className="mt-3">
           <Card>
             <Text className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -556,7 +562,7 @@ export function PartnerPortalSection({
       ) : null}
 
       {/* ── In-kind credits ─────────────────────────────────────────────── */}
-      {canManage ? (
+      {canCompose ? (
         <View className="mt-3">
           <Card>
             <Text className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
@@ -615,13 +621,13 @@ export function PartnerPortalSection({
       ) : null}
 
       {/* ── Documents ───────────────────────────────────────────────────── */}
-      {canManage ? (
+      {canCompose ? (
         <View className="mt-3">
           <DocumentsCard sponsorshipId={sponsorshipId} documents={data.documents} />
         </View>
       ) : null}
 
-      {canManage ? (
+      {canCompose ? (
         <View className="mt-3">
           {error ? (
             <Text className="mb-2 text-sm text-danger">{error}</Text>

@@ -263,11 +263,16 @@ describe("legacy migration", () => {
   test("every power in the new vocabulary is reachable from some legacy string", () => {
     // Guards against a rename landing in POWERS but not in the migration
     // table, which would silently strip that power from every existing org.
-    // `finance.cards.*` is the deliberate exception: a NEW area with no
-    // pre-standardization equivalent, granted to nobody yet.
+    // `finance.cards.*` and `giving.partners.edit` are the deliberate
+    // exceptions: NEW areas with no pre-standardization equivalent
+    // (`giving.partners.edit` shipped with the partner portal, 2026-08-20).
     const reachable = new Set(Object.values(LEGACY_POWER_MIGRATION));
     const unreachable = POWERS.filter((p) => !reachable.has(p));
-    expect(unreachable).toEqual(["finance.cards.view", "finance.cards.edit"]);
+    expect(unreachable).toEqual([
+      "finance.cards.view",
+      "finance.cards.edit",
+      "giving.partners.edit",
+    ]);
   });
 
   test("migration is the identity on already-standardized arrays", () => {

@@ -231,8 +231,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "development_director",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    // F-6 P1: associates read the development desk (write is the director's).
-    capabilities: ["giving.view"],
+    // F-6 P1: associates read the development desk. Partner portal (2026-08-20):
+    // + `giving.partners.edit` so the partnership team drafts an agreement's
+    // terms and issues its link — WITHOUT the rest of the giving desk (they
+    // still never record a gift or import a donor, which stay `giving.edit`).
+    capabilities: ["giving.view", "giving.partners.edit"],
   },
   fundraising_associate: {
     id: "fundraising_associate",
@@ -241,8 +244,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "development_director",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    // F-6 P1: associates read the development desk (write is the director's).
-    capabilities: ["giving.view"],
+    // F-6 P1: associates read the development desk. Partner portal (2026-08-20):
+    // + `giving.partners.edit`, same as the Partnership Associate above.
+    capabilities: ["giving.view", "giving.partners.edit"],
   },
   music_director: {
     id: "music_director",

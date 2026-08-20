@@ -98,6 +98,10 @@ export default function SponsorshipDetailScreen() {
   const { sponsorship, donor, package: pkg, events, gifts, giftsTotalCents, ownerPerson } =
     data;
   const canManage = access.canManage;
+  // The partnership team advances the pipeline stage without giving-wide manage
+  // (`setSponsorshipStatus` is gated on the compose power). Owner/due-diligence
+  // stewardship and recording gifts stay on `canManage`.
+  const canCompose = access.canComposePartnerships;
 
   return (
     <Screen>
@@ -125,7 +129,7 @@ export default function SponsorshipDetailScreen() {
           <Stat label="Linked gifts" value={formatCents(giftsTotalCents)} />
         </View>
 
-        {canManage ? (
+        {canCompose ? (
           <View className="mb-4">
             <SectionHeader title="Pipeline stage" />
             <Card>
@@ -156,10 +160,9 @@ export default function SponsorshipDetailScreen() {
           </View>
         )}
 
-        <PartnerPortalSection
-          sponsorshipId={sponsorshipId}
-          canManage={canManage}
-        />
+        {/* The portal composer resolves its own authority (the partnership
+            team can compose without giving.manage) — see PartnerPortalSection. */}
+        <PartnerPortalSection sponsorshipId={sponsorshipId} />
 
         {canManage ? (
           <RelationshipForm

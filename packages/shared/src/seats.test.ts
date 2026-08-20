@@ -243,8 +243,11 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // extraction to (ED, FM, Development Director, Expansion Director,
     // Marketing Director, Chapter Director).
     development_director: ["giving.edit", "data.export"],
-    partnership_associate: ["giving.view"],
-    fundraising_associate: ["giving.view"],
+    // Partner portal (2026-08-20): the partnership team gained
+    // `giving.partners.edit` — compose an agreement and issue its link, without
+    // the rest of the giving desk. See seats.ts.
+    partnership_associate: ["giving.view", "giving.partners.edit"],
+    fundraising_associate: ["giving.view", "giving.partners.edit"],
     music_director: [],
     a_and_r: [],
     artists: [],

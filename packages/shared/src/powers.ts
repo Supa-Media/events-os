@@ -193,6 +193,7 @@ export const POWERS = [
   // ── giving ────────────────────────────────────────────────────────────────
   "giving.view",
   "giving.edit",
+  "giving.partners.edit",
   // ── email ─────────────────────────────────────────────────────────────────
   "email.assets.edit",
   "email.campaigns.edit",
@@ -300,6 +301,32 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
     action: "edit",
     label: "Manage donors & gifts",
     description: "Add and edit donors, record and remove gifts, import CSVs.",
+  },
+  /**
+   * Compose partnership agreements — their terms, proposal, covered events,
+   * in-kind credits, documents — and issue the portal link a sponsor signs and
+   * pays on. Its OWN area, deliberately: the partnership team (a Partnership or
+   * Fundraising Associate) drafts and runs an agreement WITHOUT the rest of the
+   * giving desk — they never record a gift, edit a donor, or import a CSV,
+   * which stay `giving.edit`. The Development Director carries it for free: a
+   * central `giving.edit` holder grants it by the wildcard rule (managing the
+   * desk includes composing its partnerships), so the chart stays honest
+   * without a hand-maintained edge. Same posture as `campaigns.compose` — a
+   * seat-grantable rung that a whole-domain manager already implies.
+   *
+   * `scope: "central"` because partnerships are a central-lens surface; the
+   * field keeps a chapter seat's expanded set from printing a power it can't
+   * use at the gate (see the `scope` doc on `PowerDef`).
+   */
+  "giving.partners.edit": {
+    id: "giving.partners.edit",
+    domain: "giving",
+    area: "partners",
+    action: "edit",
+    label: "Compose partnerships",
+    description:
+      "Draft a sponsor's agreement — terms, events, credits, documents — and issue their portal link.",
+    scope: "central",
   },
 
   // ── email ─────────────────────────────────────────────────────────────────

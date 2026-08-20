@@ -39,6 +39,10 @@ export interface GivingAccess {
   centralManage: boolean;
   /** Central-scope nav.giving (surface the desk at the central lens). */
   centralNav: boolean;
+  /** Central-scope `giving.partners.edit` — compose partnership agreements.
+   *  Held by the partnership team AND (via the wildcard rule) by any central
+   *  `giving.edit` holder. See `lib/sponsorAccess.ts`. */
+  centralPartners: boolean;
   /** Chapters where the caller holds a chapter-scope `giving.view` seat. */
   viewChapters: Set<string>;
   /** Chapters where the caller holds a chapter-scope `giving.manage` seat. */
@@ -57,6 +61,7 @@ export async function resolveGivingAccess(ctx: QueryCtx): Promise<GivingAccess> 
     centralView: false,
     centralManage: false,
     centralNav: false,
+    centralPartners: false,
     viewChapters: new Set<string>(),
     manageChapters: new Set<string>(),
     anyNav: false,
@@ -67,6 +72,7 @@ export async function resolveGivingAccess(ctx: QueryCtx): Promise<GivingAccess> 
     access.centralView = true;
     access.centralManage = true;
     access.centralNav = true;
+    access.centralPartners = true;
     access.anyNav = true;
     return access;
   }
@@ -89,6 +95,7 @@ export async function resolveGivingAccess(ctx: QueryCtx): Promise<GivingAccess> 
         if (scopeCaps.view) access.centralView = true;
         if (scopeCaps.manage) access.centralManage = true;
         if (scopeCaps.nav) access.centralNav = true;
+        if (scopeCaps.partners) access.centralPartners = true;
       } else {
         if (scopeCaps.view) access.viewChapters.add(scopeKey);
         if (scopeCaps.manage) access.manageChapters.add(scopeKey);

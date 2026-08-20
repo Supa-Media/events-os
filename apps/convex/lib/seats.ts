@@ -328,6 +328,10 @@ export interface SeatDerivedGivingScopeCapabilities {
   manage: boolean;
   /** True iff some seat at this scope carries `nav.giving` (surface the desk). */
   nav: boolean;
+  /** True iff some seat here can COMPOSE partnership agreements
+   *  (`giving.partners.edit`) — the partnership team's draft-and-issue power,
+   *  which a central `giving.edit` holder also gets via the wildcard rule. */
+  partners: boolean;
 }
 
 /** Per-scope seat-derived giving capabilities, keyed by `scopeKey` (the literal
@@ -369,13 +373,22 @@ export async function getSeatDerivedGivingCapabilities(
     const scopeKey = String(assignment.scope);
     const entry =
       result[scopeKey] ??
-      (result[scopeKey] = { view: false, manage: false, nav: false });
+      (result[scopeKey] = {
+        view: false,
+        manage: false,
+        nav: false,
+        partners: false,
+      });
 
     // `giving.edit` implies `giving.view` via the ladder rule, so `expandPowers`
     // has already added it — no manual "manage implies read" step here.
     const powers = expandPowers(def.capabilities);
     if (powers.has("giving.edit")) entry.manage = true;
     if (powers.has("giving.view")) entry.view = true;
+    // A central `giving.edit` holder gets this via the wildcard rule (managing
+    // the desk includes composing its partnerships); an associate carries it
+    // explicitly. Either way it lands in the expanded set.
+    if (powers.has("giving.partners.edit")) entry.partners = true;
     // NAV IS DERIVED, never granted: the desk's tab shows iff the holder can do
     // something there. Replaces the deleted `nav.giving` capability, which every
     // seat holding a giving power already carried anyway.

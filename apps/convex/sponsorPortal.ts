@@ -87,6 +87,8 @@ import { requireUserId } from "./lib/context";
 import { resolveFeeRate } from "./lib/feeSchedule";
 import { recordGiftForDonor } from "./lib/givingDonors";
 import {
+  hasPartnershipCompose,
+  hasPartnershipSend,
   requirePartnershipCompose,
   requirePartnershipSend,
   requirePartnershipView,
@@ -208,7 +210,7 @@ async function agreementForToken(
 export const portalAdmin = query({
   args: { sponsorshipId: v.id("sponsorships") },
   handler: async (ctx, { sponsorshipId }) => {
-    await requirePartnershipView(ctx);
+    const access = await requirePartnershipView(ctx);
     const loaded = await loadAgreement(ctx, sponsorshipId);
     if (!loaded) {
       throw new ConvexError({
@@ -252,6 +254,12 @@ export const portalAdmin = query({
       }));
 
     return {
+      // What THIS caller may do — the partnership team composes and issues
+      // links without the rest of the giving desk; a plain viewer sees it
+      // read-only. The screen gates its controls on these, not on a
+      // giving-wide manage flag.
+      canCompose: hasPartnershipCompose(access),
+      canSend: hasPartnershipSend(access),
       proposal,
       documents,
       events,

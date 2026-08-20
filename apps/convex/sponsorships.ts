@@ -28,6 +28,7 @@ import { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import { requireUserId } from "./lib/context";
 import { requireGivingView, requireGivingManage } from "./lib/givingAccess";
+import { requirePartnershipCompose } from "./lib/sponsorAccess";
 import {
   assertPositiveGiftCents,
   recordGiftForDonor,
@@ -340,7 +341,10 @@ export const upsertSponsorship = mutation({
   },
   returns: v.id("sponsorships"),
   handler: async (ctx, args) => {
-    await requireGivingManage(ctx, "central");
+    // Partnership-pipeline action (create/edit an agreement) — the partnership
+    // team runs this from the Sponsors tab. `giving.partners.edit`, which a
+    // central `giving.edit` holder also carries via the wildcard rule.
+    await requirePartnershipCompose(ctx);
 
     const donor = await ctx.db.get(args.donorId);
     if (!donor) {
@@ -434,7 +438,9 @@ export const setSponsorshipStatus = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { sponsorshipId, status }) => {
-    await requireGivingManage(ctx, "central");
+    // Moving an agreement along the pipeline is partnership work, not
+    // donor-CRM editing — the partnership team owns it.
+    await requirePartnershipCompose(ctx);
     const sponsorship = await ctx.db.get(sponsorshipId);
     if (!sponsorship) {
       throw new ConvexError({
