@@ -62,6 +62,7 @@ import {
   SPONSOR_TERMS_MAX,
   SPONSOR_TITLE_MAX,
   type SponsorPaymentRail,
+  describeFeeRate,
   inKindTotalCents,
   railAllowedAtAmount,
   sponsorAmountProblems,
@@ -846,7 +847,10 @@ export const preparePayment = internalMutation({
       title: proposal.title,
       intendedCents,
       feeCents,
-      feeRateLabel: rate ? describeRate(rate) : null,
+      // `0.8%, capped at $5.00` — the SHARED formatter the repayment rails
+      // already print, so a partner and a volunteer read the identical
+      // sentence about the identical rail on Stripe's own page.
+      feeRateLabel: rate ? describeFeeRate(rate) : null,
       // A card session sends NOTHING and takes Stripe's default, so the wallets
       // the account already accepts (Apple/Google Pay — same price as a card)
       // stay available. A bank session pins `us_bank_account`, which is what
@@ -858,21 +862,6 @@ export const preparePayment = internalMutation({
     };
   },
 });
-
-/** `0.8%, capped at $5.00` — the sentence the checkout line item wears so the
- *  partner reads WHY on Stripe's own page rather than seeing a surcharge. */
-function describeRate(rate: {
-  percentBps: number;
-  fixedCents: number;
-  capCents?: number;
-}): string {
-  const pct = `${(rate.percentBps / 100).toFixed(rate.percentBps % 100 === 0 ? 0 : 1)}%`;
-  const base =
-    rate.fixedCents > 0 ? `${pct} + $${(rate.fixedCents / 100).toFixed(2)}` : pct;
-  return rate.capCents != null
-    ? `${base}, capped at $${(rate.capCents / 100).toFixed(2)}`
-    : base;
-}
 
 /**
  * A portal payment cleared. Books ONE `gifts` row through the same
