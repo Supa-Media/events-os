@@ -1,0 +1,414 @@
+---
+import BaseLayout from "../layouts/BaseLayout.astro";
+import Container from "../components/ui/Container.astro";
+import SectionHeading from "../components/ui/SectionHeading.astro";
+import Button from "../components/ui/Button.astro";
+import { asset } from "../lib/asset";
+
+// Vendor-facing rider for the Love Thy Neighbor block party. The PDFs live in
+// /public/production; regenerate them alongside any spec change here so the
+// page and the form never disagree about the minimum spec or the schedule.
+const formPdf = asset("/production/LTN-2026-Production-Proposal-FORM.pdf");
+const samplePdf = asset("/production/LTN-2026-Production-Proposal-SAMPLE.pdf");
+const contactEmail = "events@publicworship.life";
+
+const facts = [
+  { big: "500", label: "people expected — free & open to the neighborhood" },
+  { big: "The Bandshell", label: "Central Park — a real stage, so you're not building one" },
+  { big: "3–6 PM", label: "three worship sets with a full band — set up by 1 PM sharp" },
+  { big: "0 outlets", label: "no shore power — you bring the power" },
+  { big: "No trucks", label: "usually no permit to drive into the park — everything is dollied in" },
+];
+
+const minimumSpec = [
+  {
+    title: "Full band backline",
+    detail:
+      "Drums, keys, guitar amp, and bass amp — a complete kit with hardware, throne, and rug; an 88-key stage piano with stand, pedal, and power; shared by all three worship sets.",
+  },
+  {
+    title: "MD-to-band in-ear system",
+    detail:
+      "Personal in-ear mixing for the band, with a dedicated Musical Director talkback channel into the band's ears.",
+  },
+  {
+    title: "Monitors for vocalists",
+    detail: "Floor wedges covering every downstage vocal position, on their own mixes.",
+  },
+  {
+    title: "A sound system that covers the park",
+    detail:
+      "Full-range music and intelligible speech across the whole permitted footprint, for 500 people in front of the Bandshell. You size it; tell us how.",
+  },
+  {
+    title: "Power distribution that can power all equipment",
+    detail:
+      "There is no shore power in the park. Generators, distro, fuel for the full day — and a plan for what happens if one fails.",
+  },
+  {
+    title: "Skilled mixing engineer operator(s)",
+    detail:
+      "Named in your proposal, with a live link to a resume, reel, or portfolio for each. “An engineer will be assigned” isn't something we can evaluate.",
+  },
+  {
+    title: "Stagehands — resume/portfolio linked",
+    detail:
+      "A named crew responsible for moving and setting up all production equipment, on site and off site. Same rule: every name comes with a link.",
+  },
+  {
+    title: "Truck, dollies, and a carry crew",
+    detail:
+      "There's usually no permit to bring a vehicle into the park. Everything is dollied in from the nearest legal stop and dollied back out — truck rental, dollies, and the people to do it are part of the package.",
+  },
+  {
+    title: "Set up by 1 PM. Struck at 6 PM.",
+    detail:
+      "The event runs 3–6 PM, and setup must be complete — built, patched, line-checked — by 1 PM, two hours before start. Plan your call time accordingly: you should be wheeling in by 11 AM at the latest. Strike begins the moment the event ends.",
+  },
+];
+
+const proposalSections = [
+  {
+    title: "Gear list",
+    detail:
+      "Everything you'd bring — PA, console, monitors, mics, backline, power — with makes, models, and quantities.",
+  },
+  { title: "Patch / input list", detail: "Your proposed channel list for the band configuration above." },
+  {
+    title: "Stage plot & site diagram",
+    detail: "PA position, backline, vocal positions, FOH, generator siting, and the cable runs between them.",
+  },
+  {
+    title: "Logistics plan",
+    detail: "Truck, dollies, carry crew, route, build sequence, timings — and how you strike at the end.",
+  },
+  { title: "Crew, with links", detail: "Every engineer and stagehand, named, with a resume or portfolio link each." },
+  {
+    title: "Power plan",
+    detail:
+      "Generator make and model, rated watts, your calculated peak draw, fuel plan, and your failure fallback.",
+  },
+  {
+    title: "Itemized pricing",
+    detail: "Line items, not one grouped number — with options priced separately so we can take them or leave them.",
+  },
+  {
+    title: "Video & lighting — optional",
+    detail:
+      "Not part of the minimum spec. If you do video capture, livestream, or stage lighting, propose either as its own priced option — we'd genuinely like to see it.",
+  },
+];
+
+const schedule = [
+  {
+    time: "11:00 AM",
+    detail:
+      "Latest start for wheeling in from the vehicle stop. Your call time is your call — earlier is smart, and most teams will want it.",
+  },
+  {
+    time: "1:00 PM",
+    detail:
+      "Setup complete — built, patched, line-checked, two hours before start. Sound check with the worship leaders happens after this, not instead of it.",
+  },
+  {
+    time: "3:00 PM",
+    detail: "Program starts — welcome and opening prayer, then three worship sets with spoken segments between.",
+  },
+  {
+    time: "6:00 PM",
+    detail:
+      "Program ends. Strike begins immediately. Playback stays up through food service; PA and power come down last.",
+  },
+  {
+    time: "~7:30 PM",
+    detail: "Target: site clear, truck loaded, every piece of tape lifted. The park stays how we found it.",
+  },
+];
+
+const goodToKnow = [
+  {
+    lead: "We hold the permits.",
+    detail:
+      "Public Worship files and pays for the park permit and the amplified sound permit. You operate inside their conditions — and if a parks or police officer asks for the level to come down, it comes down immediately. We handle the conversation; you handle the fader.",
+  },
+  {
+    lead: "It's a public park, all ages.",
+    detail:
+      "Families, strollers, kids running. Every cable crossing a path gets matted or ramped, generators are barriered from the public, and nothing tall goes up unballasted.",
+  },
+  {
+    lead: "Rain or shine.",
+    detail:
+      "Only our Event Lead can call the event. The Bandshell covers the stage; your FOH, racks, and generators still need their own real weather protection — and you can always call a safety stop for lightning without penalty.",
+  },
+  {
+    lead: "Quiet power.",
+    detail:
+      "Inverter-type generators only, sited away from the performance and the crowd. A roaring generator is a permit problem and an ambience problem.",
+  },
+  {
+    lead: "The spoken moments matter most.",
+    detail:
+      "The most important ten minutes of the day is one person with one microphone. If that doesn't reach the back of the crowd, nothing else matters.",
+  },
+  {
+    lead: "We'll take care of your crew.",
+    detail:
+      "Water all day, a hot meal from the food vendor, and shade. Tell us about any dietary needs ahead of the day.",
+  },
+  {
+    lead: "Insurance.",
+    detail:
+      "A certificate of insurance naming Public Worship and the city parks department, before load-in. Details are on the form.",
+  },
+];
+
+const sponsorRecognition = [
+  "Named from stage by the host at the close",
+  "Logo on event signage on site",
+  "Named in the event announcement & lineup posts",
+  "Named in the post-event recap & thank-yous",
+  "Credited on published audio & video from the day",
+  "Seat at the pre-event production walkthrough",
+  "First refusal on next year's Love Thy Neighbor",
+];
+---
+
+<BaseLayout
+  title="Production Rider — Love Thy Neighbor 2026"
+  description="Public Worship is seeking one production partner for Love Thy Neighbor 2026 at the Bandshell in Central Park — the minimum spec, the downloadable proposal form, and the production sponsorship track."
+>
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Production" align="left" as="h1">
+        Love Thy Neighbor 2026<br />Production Rider
+      </SectionHeading>
+      <p class="mt-6 max-w-prose text-base sm:text-lg text-ink/80 leading-relaxed">
+        We're looking for a production partner for our biggest event of the
+        year — a free outdoor worship block party at
+        <strong class="font-semibold">the Bandshell in Central Park</strong>, for
+        <strong class="font-semibold">500 people</strong>. Here's what it
+        takes, and how to make us a proposal.
+      </p>
+    </Container>
+  </section>
+
+  <section class="pb-12">
+    <Container size="default">
+      <div class="grid gap-3.5 sm:grid-cols-2 lg:grid-cols-5">
+        {
+          facts.map((f) => (
+            <div class="rounded-2xl bg-white border border-red-100 p-5 shadow-soft">
+              <span class="block font-display text-xl font-bold text-red-500 leading-tight">{f.big}</span>
+              <span class="mt-1 block text-sm text-ink/60">{f.label}</span>
+            </div>
+          ))
+        }
+      </div>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-14 bg-cream-soft">
+    <Container size="default">
+      <SectionHeading eyebrow="Two ways to work with us" eyebrowSize="sm" align="left">
+        Bid it, or sponsor it
+      </SectionHeading>
+      <p class="mt-4 max-w-prose text-ink/80">
+        Both routes use the same rider and the same proposal form. The only
+        difference is how it's paid for.
+      </p>
+      <div class="mt-6 grid gap-4 md:grid-cols-2">
+        <div class="rounded-2xl bg-pink-soft p-6 sm:p-7 shadow-soft">
+          <h3 class="font-display text-lg text-ink">Production bid</h3>
+          <p class="mt-2 text-[15px] leading-relaxed text-ink/75">
+            Quote the full package against the minimum specification below. Our
+            production budget for this event is
+            <strong class="font-semibold">$3,500 all-in</strong> — including
+            crew, transport, fuel, and taxes. We state it openly so you can
+            quote scope instead of guessing at a number.
+          </p>
+        </div>
+        <div class="rounded-2xl bg-peach p-6 sm:p-7 shadow-soft">
+          <h3 class="font-display text-lg text-ink">Production sponsorship</h3>
+          <p class="mt-2 text-[15px] leading-relaxed text-ink/75">
+            Provide the <strong class="font-semibold">entire package</strong> in
+            kind instead of being paid, and be recognized as the event's
+            <strong class="font-semibold">Production Sponsor</strong> — named
+            from stage, on signage, in our announcements, and on everything we
+            publish from the day. One company handles all of production; we
+            don't split it.
+          </p>
+        </div>
+      </div>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-14">
+    <Container size="default">
+      <SectionHeading eyebrow="The floor, not a wish list" eyebrowSize="sm" align="left">
+        Minimum specification
+      </SectionHeading>
+      <p class="mt-4 max-w-prose text-ink/80">
+        This is the whole minimum spec, in plain language. A proposal that
+        misses one of these isn't a cheaper proposal — it's a different event.
+        If you need to take an exception, say so in your proposal rather than
+        leaving us to find it at sound check.
+      </p>
+      <ol class="mt-7 space-y-3">
+        {
+          minimumSpec.map((item, i) => (
+            <li class="relative rounded-2xl bg-white border border-red-100 p-5 pl-16 shadow-soft">
+              <span
+                aria-hidden="true"
+                class="absolute left-5 top-5 flex h-7 w-7 items-center justify-center rounded-[9px] bg-red-500 text-sm font-bold text-white"
+              >
+                {i + 1}
+              </span>
+              <span class="block font-semibold text-ink">{item.title}</span>
+              <span class="mt-0.5 block text-[15px] leading-relaxed text-ink/70">{item.detail}</span>
+            </li>
+          ))
+        }
+      </ol>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-14 bg-cream-soft">
+    <Container size="default">
+      <SectionHeading eyebrow="We set the floor — you design the show" eyebrowSize="sm" align="left">
+        The proposal is yours
+      </SectionHeading>
+      <p class="mt-4 max-w-prose text-ink/80">
+        We deliberately don't tell you what boxes to bring or how to patch
+        them. The band is drums, keys, bass, guitar, and up to four vocalists,
+        plus a host microphone; the Bandshell gives you a real stage to work
+        from. Show us how <em>you</em> would do it. Your proposal should
+        include:
+      </p>
+      <div class="mt-6 grid gap-3.5 sm:grid-cols-2 lg:grid-cols-4">
+        {
+          proposalSections.map((p) => (
+            <div class="rounded-2xl bg-white border border-red-100 p-5 shadow-soft">
+              <h3 class="font-body text-base font-bold text-ink">{p.title}</h3>
+              <p class="mt-1.5 text-sm leading-relaxed text-ink/70">{p.detail}</p>
+            </div>
+          ))
+        }
+      </div>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-14">
+    <Container size="default">
+      <SectionHeading eyebrow="Everything above, as a form" eyebrowSize="sm" align="left">
+        Download the proposal form
+      </SectionHeading>
+      <p class="mt-4 max-w-prose text-ink/80">
+        The blank form walks through all twelve sections — minimum spec first,
+        then your free-form sections. The worked sample shows a complete,
+        well-answered proposal from a fictional vendor, so you can see the
+        level of detail we're hoping for.
+      </p>
+      <div class="mt-6 flex flex-wrap gap-3.5">
+        <Button href={formPdf} external>Download the proposal form (PDF)</Button>
+        <Button href={samplePdf} variant="outline" external>See a filled-out sample (PDF)</Button>
+      </div>
+      <blockquote
+        class="mt-7 max-w-prose rounded-r-xl border-l-4 border-red-200 bg-cream-soft py-3 pl-5 pr-4 italic text-ink/80"
+      >
+        We would rather receive a fifth page of logistics detail than a tidy
+        blank. Attach pages wherever the form runs out of room.
+      </blockquote>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-14 bg-cream-soft">
+    <Container size="default">
+      <SectionHeading eyebrow="The shape of the day" eyebrowSize="sm" align="left">
+        Event day at a glance
+      </SectionHeading>
+      <div class="mt-6 overflow-hidden rounded-2xl bg-white border border-red-100 shadow-soft">
+        <ul class="divide-y divide-red-100">
+          {
+            schedule.map((row) => (
+              <li class="flex gap-5 px-5 py-4 sm:px-6">
+                <span class="w-20 shrink-0 font-bold text-red-500 tabular-nums">{row.time}</span>
+                <span class="text-[15px] leading-relaxed text-ink/80">{row.detail}</span>
+              </li>
+            ))
+          }
+        </ul>
+      </div>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-14">
+    <Container size="default">
+      <SectionHeading eyebrow="So there are no surprises" eyebrowSize="sm" align="left">
+        Good to know before you quote
+      </SectionHeading>
+      <ul class="mt-6 max-w-prose space-y-4">
+        {
+          goodToKnow.map((item) => (
+            <li class="relative pl-6 text-[15.5px] leading-relaxed text-ink/75">
+              <span aria-hidden="true" class="absolute left-0 top-2 h-2 w-2 rounded-full bg-red-200" />
+              <strong class="font-semibold text-ink">{item.lead}</strong> {item.detail}
+            </li>
+          ))
+        }
+      </ul>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-14 bg-pink-softer">
+    <Container size="default">
+      <SectionHeading eyebrow="Instead of a fee" eyebrowSize="sm" align="left">
+        Production sponsorship
+      </SectionHeading>
+      <p class="mt-4 max-w-prose text-ink/80">
+        <strong class="font-semibold">One company handles all of production.</strong>
+        Either you provide the entire package in kind — the same rider, the
+        same standard — and are recognized as the event's Production Sponsor,
+        or it's a cash bid. We don't split production across sponsors. The
+        full sponsor receives:
+      </p>
+      <ul class="mt-6 max-w-prose overflow-hidden rounded-2xl bg-white border border-red-100 shadow-soft divide-y divide-red-100">
+        {
+          sponsorRecognition.map((item) => (
+            <li class="flex items-center gap-3 px-5 py-3 text-[15px] text-ink/85">
+              <span aria-hidden="true" class="text-red-500 font-bold">✓</span>
+              {item}
+            </li>
+          ))
+        }
+      </ul>
+      <p class="mt-5 max-w-prose text-[15px] text-ink/70">
+        There's one Production Sponsor per event. Tick the sponsorship box in
+        Section 11 of the form and we'll take it from there.
+      </p>
+    </Container>
+  </section>
+
+  <section class="py-12 sm:py-16">
+    <Container size="default">
+      <SectionHeading eyebrow="Ready when you are" eyebrowSize="sm" align="left">
+        How to submit
+      </SectionHeading>
+      <p class="mt-4 max-w-prose text-ink/80">
+        Complete the form — typed or by hand — and send it to
+        <a
+          href={`mailto:${contactEmail}`}
+          class="text-red-500 underline decoration-red-200 underline-offset-2 hover:decoration-red-500"
+        >{contactEmail}</a>. We read every proposal, and we're happy to walk
+        the site with you before you finalize your numbers.
+      </p>
+      <p class="mt-4 max-w-prose text-[15.5px] leading-relaxed text-ink/70">
+        We're not optimizing for the lowest number. We're optimizing for a
+        partner who reads the spec, understands why the park has no outlets
+        and no truck access, and shows up with a system that's still working
+        when one person with one microphone says the most important thing of
+        the day.
+      </p>
+    </Container>
+  </section>
+</BaseLayout>
