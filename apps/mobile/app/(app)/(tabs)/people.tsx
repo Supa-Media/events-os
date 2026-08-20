@@ -52,6 +52,7 @@ import { DutyRows } from "../../../components/work/DutyRows";
 import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
 import { CourseBadgeChips } from "../../../components/academy/CourseBadgeChips";
 import { DuplicatesSheet } from "../../../components/people/DuplicatesSheet";
+import { addPersonAndGetOpenId } from "../../../components/people/addPerson.logic";
 import {
   PersonaRail,
   ServicesDropdown,
@@ -421,7 +422,16 @@ export default function PeopleScreen() {
     openPersonOnPage ?? (openPersonFallback ? { ...openPersonFallback, imageUrl: null, persona: null } : null);
 
   async function handleAddRow() {
-    await create({ name: "New person" });
+    const result = await addPersonAndGetOpenId(create);
+    // Check the success arm (`id !== undefined`) rather than the error arm:
+    // `error` is typed `unknown` on the failure branch, so it isn't a
+    // discriminable literal across the union and doesn't narrow `result.id`
+    // back to `string` for `setOpenId`. Narrowing on `id` does.
+    if (result.id !== undefined) {
+      setOpenId(result.id);
+      return;
+    }
+    alertError(result.error);
   }
 
   return (
