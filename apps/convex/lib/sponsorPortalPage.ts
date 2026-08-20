@@ -105,6 +105,7 @@ export type SponsorPortalView = {
     settled: boolean;
   };
   pendingCents: number;
+  payableCents: number;
   state: SponsorPortalState;
   rails: { rail: SponsorPaymentRail; feeCents: number; chargeCents: number }[];
   signed: { name: string; title: string | null; at: number } | null;
@@ -566,6 +567,22 @@ function signSection(v: SponsorPortalView): string {
  */
 function paySection(v: SponsorPortalView): string {
   if (!v.signed) return "";
+  // Everything owed is already in flight — offer no second payment, just say
+  // it's clearing. This is the page half of `preparePayment`'s guard: the
+  // balance is still full during an ACH window, and a pay form here is how a
+  // partner pays twice.
+  if (!v.balance.settled && v.payableCents <= 0 && v.pendingCents > 0) {
+    return `<section class="sec">
+  <div class="sec-h">Payment</div>
+  <div class="card"><div class="stamp">
+    <span class="ic"><svg ${ICON}><use href="#i-clock"/></svg></span>
+    <div>
+      <div class="semi">${money(v.pendingCents)} is on its way.</div>
+      <div class="small muted mt4">Your bank transfer is still clearing — about four business days. There's nothing to pay right now, and no need to send it again. We'll email you the moment it lands.</div>
+    </div>
+  </div></div>
+</section>`;
+  }
   if (v.balance.settled) {
     return `<section class="sec">
   <div class="card"><div class="stamp">
@@ -615,8 +632,8 @@ function paySection(v: SponsorPortalView): string {
     ${note}
     <div class="field">
       <label class="fl" for="py-amount">Amount</label>
-      <input class="forminput" id="py-amount" inputmode="decimal" value="${(v.balance.balanceCents / 100).toFixed(2)}">
-      <span class="xs muted">${money(v.balance.balanceCents)} remaining. Pay it all, or send part of it now.</span>
+      <input class="forminput" id="py-amount" inputmode="decimal" value="${(v.payableCents / 100).toFixed(2)}">
+      <span class="xs muted">${money(v.payableCents)} to pay${v.pendingCents > 0 ? ` (a further ${money(v.pendingCents)} is already clearing)` : ""}. Pay it all, or send part of it now.</span>
     </div>
     <div class="rails" style="margin-bottom:14px">${rails}</div>
     <label class="agree" style="margin-bottom:16px"><input type="checkbox" id="py-fee" checked><span>Add the processing fee on top so the full amount reaches the mission.</span></label>

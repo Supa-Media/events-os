@@ -40,6 +40,7 @@ const BASE: SponsorPortalView = {
     settled: false,
   },
   pendingCents: 0,
+  payableCents: 100_000,
   state: "awaiting_signature",
   rails: [{ rail: "ach", feeCents: 500, chargeCents: 100_500 }],
   signed: null,
@@ -116,6 +117,23 @@ describe("renderSponsorPortal", () => {
     );
     expect(html).toContain("$1,005.00 is on its way");
     expect(html).toContain("no need to send it again");
+  });
+
+  test("shows a clearing card, not a pay form, while a debit covers the balance", () => {
+    const html = renderSponsorPortal(
+      {
+        ...BASE,
+        state: "payment_clearing",
+        payableCents: 0,
+        pendingCents: 100_500,
+        signed: { name: "Tolu Adeyemi", title: null, at: Date.now() },
+      },
+      "tok_123",
+    );
+    expect(html).toContain("is on its way");
+    expect(html).toContain("no need to send it again");
+    // No pay button while everything owed is in flight.
+    expect(html).not.toContain('id="py-btn"');
   });
 
   test("thanks a settled partner instead of asking for money", () => {

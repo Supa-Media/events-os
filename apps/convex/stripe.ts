@@ -10,7 +10,7 @@
  * Env: STRIPE_SECRET_KEY (sk_test_... to start), STRIPE_WEBHOOK_SECRET.
  * Free carts skip Stripe entirely and fulfill immediately.
  */
-import { action } from "./_generated/server";
+import { action, internalAction } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
 import { rsvpPageUrl, appUrl, sponsorPortalUrl } from "./lib/siteUrl";
@@ -545,7 +545,12 @@ export const createPublicRepaymentCheckout = action({
  * offer, so the card branch below only ever runs for a small spot where a
  * manager deliberately turned it on.
  */
-export const createSponsorPortalCheckout = action({
+/**
+ * INTERNAL — called only by the `/api/partner/pay` http route (via runAction),
+ * which supplies the trusted last-hop `clientIp` for `preparePayment`'s per-IP
+ * rate limit. Not public, so a direct caller cannot forge the IP to bypass it.
+ */
+export const createSponsorPortalCheckout = internalAction({
   args: {
     token: v.string(),
     method: v.union(v.literal("ach"), v.literal("card")),

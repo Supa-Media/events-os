@@ -1910,10 +1910,22 @@ http.route({
     // it, AND it is shared, on every request; an internal doc or a revoked link
     // both resolve to null here, indistinguishable from a wrong id.
     if (segments[2] === "doc" && segments[3]) {
-      const resolved = await ctx.runQuery(
-        api.sponsorPortal.resolveSharedDocument,
-        { token, documentId: segments[3] as Id<"sponsorshipDocuments"> },
-      );
+      // A malformed id fails the query's `v.id(...)` validation and THROWS; the
+      // catch turns that into the same 404 a wrong-but-well-formed id gets, so
+      // a garbage id and a revoked link stay indistinguishable rather than 500.
+      let resolved: {
+        storageId: Id<"_storage">;
+        fileName: string | null;
+        contentType: string | null;
+      } | null = null;
+      try {
+        resolved = await ctx.runQuery(api.sponsorPortal.resolveSharedDocument, {
+          token,
+          documentId: segments[3] as Id<"sponsorshipDocuments">,
+        });
+      } catch {
+        return new Response("Not found", { status: 404 });
+      }
       if (!resolved) return new Response("Not found", { status: 404 });
       const blob = await ctx.storage.get(resolved.storageId);
       if (!blob) return new Response("Not found", { status: 404 });

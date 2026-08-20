@@ -146,6 +146,15 @@ export interface SponsorshipMoney {
    *  `balance.paidCents` and must never be, but which the partner should see
    *  so they don't pay the same balance twice while it clears. */
   pendingCents: number;
+  /**
+   * What the partner may pay RIGHT NOW: the balance minus what is already in
+   * flight. This is the figure every pay path must use, never `balanceCents`
+   * — during an ACH debit's ~4-day clearing window the balance is still full
+   * (a pending debit books no gift), so offering the full balance again is how
+   * a partner pays a $3,500 spot twice. Zero while a debit covers the whole
+   * balance; the remainder when only part is in flight.
+   */
+  payableNowCents: number;
   state: SponsorPortalState;
 }
 
@@ -171,18 +180,17 @@ export async function sponsorshipMoney(
     .order("desc")
     .take(SPONSORSHIP_GIFT_SCAN_LIMIT);
 
-  // In-flight bank debits for THIS agreement. The index is by session, not by
-  // sponsorship (pending rows are a queue, keyed by the thing Stripe redelivers
-  // on), and the table is small and swept at 21 days — so this is a bounded
-  // scan rather than a missing index. If sponsorship volume ever makes that
-  // untrue, add `by_sponsorship` there; today a filter is honest and cheap.
+  // In-flight bank debits for THIS agreement, read through the dedicated
+  // `by_sponsorship` index rather than a scan-and-filter of the shared
+  // pending table — so a busy giving window can never push this agreement's
+  // own clearing debit outside the read and undercount what is in flight
+  // (which the double-pay guard in `sponsorPortal.preparePayment` depends on).
   const pending = await ctx.db
     .query("pendingGifts")
-    .withIndex("by_submitted")
-    .order("desc")
+    .withIndex("by_sponsorship", (q) => q.eq("sponsorshipId", sponsorshipId))
     .take(SPONSORSHIP_GIFT_SCAN_LIMIT);
   const pendingCents = pending
-    .filter((p) => p.sponsorshipId === sponsorshipId && p.status === "in_flight")
+    .filter((p) => p.status === "in_flight")
     .reduce((sum, p) => sum + p.amountCents, 0);
 
   const balance = sponsorBalance({
@@ -195,6 +203,7 @@ export async function sponsorshipMoney(
     balance,
     gifts,
     pendingCents,
+    payableNowCents: Math.max(0, balance.balanceCents - pendingCents),
     state: sponsorPortalState({
       hasLiveLink: portalLinkIsLive(sponsorship),
       termsVersion: proposal.termsVersion,

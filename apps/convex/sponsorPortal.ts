@@ -691,7 +691,7 @@ export const publicByToken = query({
             "stripe",
             rail === "ach" ? "ach_debit" : "card",
           );
-          const quote = sponsorFeeQuote(money.balance.balanceCents, rate);
+          const quote = sponsorFeeQuote(money.payableNowCents, rate);
           return { rail, feeCents: quote.feeCents, chargeCents: quote.chargeCents };
         }),
     );
@@ -730,6 +730,9 @@ export const publicByToken = query({
       inKindCredits: proposal.inKindCredits,
       balance: money.balance,
       pendingCents: money.pendingCents,
+      // What the partner may pay right now — the balance less what is already
+      // clearing. The page's pay panel keys on this, never on the raw balance.
+      payableCents: money.payableNowCents,
       state: money.state,
       rails,
       signed: signatureIsCurrent(sponsorship)
@@ -791,7 +794,14 @@ export const noteView = mutation({
  * signature history — one agreement, one current signature, and the audit of
  * what it replaced belongs in a ledger we do not have yet.
  */
-export const signAgreement = mutation({
+/**
+ * INTERNAL — called only by the `/api/partner/sign` http route, which supplies
+ * the trusted last-hop `clientIp`. Deliberately not a public mutation: the IP
+ * feeds the per-IP rate limit and is stored as `signedIp` evidence, and a
+ * public entry point would let a direct caller forge it (rotating it to defeat
+ * the rate limit, or stamping a signature with an address it never came from).
+ */
+export const signAgreement = internalMutation({
   args: {
     token: v.string(),
     name: v.string(),
@@ -923,16 +933,27 @@ export const preparePayment = internalMutation({
         message: "This partnership is fully covered — there's nothing left to pay.",
       });
     }
+    // NOTHING OWED IS PAYABLE WHILE IT IS ALREADY IN FLIGHT. A bank debit books
+    // no gift until it clears (~4 days), so the balance stays full the whole
+    // time; without this guard the partner is offered the same amount again and
+    // pays it twice. The payable figure is the balance minus what is clearing.
+    if (money.payableNowCents <= 0) {
+      throw new ConvexError({
+        code: "PAYMENT_CLEARING",
+        message:
+          "Your bank transfer is still clearing — there's nothing to pay right now. We'll email you the moment it lands.",
+      });
+    }
 
-    // The client may ask for LESS (an instalment). It may never ask for more,
-    // and it never supplies the ceiling.
+    // The client may ask for LESS (an instalment). It may never ask for more
+    // than what is payable now, and it never supplies the ceiling.
     const requested =
       args.amountCents != null && Number.isFinite(args.amountCents)
         ? Math.round(args.amountCents)
-        : money.balance.balanceCents;
+        : money.payableNowCents;
     const intendedCents = Math.min(
       Math.max(requested, 1),
-      money.balance.balanceCents,
+      money.payableNowCents,
     );
 
     const rate = await resolveFeeRate(

@@ -174,7 +174,7 @@ async function seedEvent(
 
 /** Sign the agreement the way the public page would. */
 async function sign(s: ChapterSetup, token: string) {
-  return await s.t.mutation(api.sponsorPortal.signAgreement, {
+  return await s.t.mutation(internal.sponsorPortal.signAgreement, {
     token,
     name: "Tolu Adeyemi",
     title: "Executive Pastor",
@@ -329,7 +329,7 @@ describe("signAgreement", () => {
     });
 
     await expect(
-      s.t.mutation(api.sponsorPortal.signAgreement, { token, name: "T" }),
+      s.t.mutation(internal.sponsorPortal.signAgreement, { token, name: "T" }),
     ).rejects.toThrow();
 
     await s.as.mutation(api.sponsorPortal.revokePortalLink, { sponsorshipId });
@@ -547,6 +547,71 @@ describe("preparePayment", () => {
     await expect(
       s.t.mutation(internal.sponsorPortal.preparePayment, { token, rail: "ach" }),
     ).rejects.toThrow();
+  });
+
+  test("refuses a second payment while a bank debit for the whole balance is clearing", async () => {
+    const { s, sponsorshipId, token } = await signedAgreement();
+    // A pending debit for the whole balance is in flight (books no gift yet).
+    await run(s.t, async (ctx) => {
+      const donorId = (await ctx.db.get(sponsorshipId))!.donorId;
+      const donor = await ctx.db.get(donorId);
+      await ctx.db.insert("pendingGifts", {
+        sessionId: "cs_clearing",
+        status: "in_flight",
+        scope: donor!.scope,
+        amountCents: AMOUNT,
+        chargeTotalCents: AMOUNT,
+        currency: "usd",
+        submittedAt: Date.now(),
+        donorName: donor!.name,
+        donorId,
+        sponsorshipId,
+        createdAt: Date.now(),
+      });
+    });
+
+    // The balance is still full (no gift booked), but nothing is payable now.
+    const view = await s.t.query(api.sponsorPortal.publicByToken, { token });
+    expect(view!.balance.balanceCents).toBe(AMOUNT);
+    expect(view!.pendingCents).toBe(AMOUNT);
+    expect(view!.payableCents).toBe(0);
+    expect(view!.state).toBe("payment_clearing");
+
+    // …and a second checkout is refused rather than double-charging.
+    await expect(
+      s.t.mutation(internal.sponsorPortal.preparePayment, { token, rail: "ach" }),
+    ).rejects.toThrow();
+  });
+
+  test("allows paying only the remainder when a partial debit is clearing", async () => {
+    const { s, sponsorshipId, token } = await signedAgreement();
+    await run(s.t, async (ctx) => {
+      const donorId = (await ctx.db.get(sponsorshipId))!.donorId;
+      const donor = await ctx.db.get(donorId);
+      await ctx.db.insert("pendingGifts", {
+        sessionId: "cs_partial",
+        status: "in_flight",
+        scope: donor!.scope,
+        amountCents: 100_000, // $1,000 of $3,500 in flight
+        chargeTotalCents: 100_000,
+        currency: "usd",
+        submittedAt: Date.now(),
+        donorName: donor!.name,
+        donorId,
+        sponsorshipId,
+        createdAt: Date.now(),
+      });
+    });
+    const view = await s.t.query(api.sponsorPortal.publicByToken, { token });
+    expect(view!.payableCents).toBe(250_000);
+
+    // Asking for the whole balance clamps to what is payable now.
+    const prepared = await s.t.mutation(internal.sponsorPortal.preparePayment, {
+      token,
+      rail: "ach",
+      amountCents: AMOUNT,
+    });
+    expect(prepared.intendedCents).toBe(250_000);
   });
 });
 

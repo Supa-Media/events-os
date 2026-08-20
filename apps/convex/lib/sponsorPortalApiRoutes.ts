@@ -29,7 +29,7 @@
 import type { HttpRouter } from "convex/server";
 import { httpAction } from "../_generated/server";
 import type { ActionCtx } from "../_generated/server";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -106,7 +106,7 @@ export function registerSponsorPortalApiRoutes(http: HttpRouter): void {
     path: "/api/partner/sign",
     method: "POST",
     handler: jsonPost(async (ctx, body, req) => {
-      return await ctx.runMutation(api.sponsorPortal.signAgreement, {
+      return await ctx.runMutation(internal.sponsorPortal.signAgreement, {
         token: String(body.token ?? ""),
         name: String(body.name ?? ""),
         title: optStr(body.title),
@@ -127,7 +127,7 @@ export function registerSponsorPortalApiRoutes(http: HttpRouter): void {
     method: "POST",
     handler: jsonPost(async (ctx, body, req) => {
       const rawAmount = Number(body.amountCents);
-      return await ctx.runAction(api.stripe.createSponsorPortalCheckout, {
+      return await ctx.runAction(internal.stripe.createSponsorPortalCheckout, {
         token: String(body.token ?? ""),
         // Anything but the two known rails is refused by the action's own
         // validator; defaulting to the cheap one here means a malformed value
