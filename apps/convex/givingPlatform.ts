@@ -479,10 +479,17 @@ export const myGivingAccess = query({
     // "All chapters / Central / each chapter" scope dropdown; a chapter-only
     // holder gets `false` and never sees either.
     isCentral: v.boolean(),
+    // Whether the caller may COMPOSE partnership agreements (the Sponsors tab's
+    // create / stage / terms controls). The partnership team holds this via
+    // `giving.partners.edit` WITHOUT giving-wide manage — so it is its own flag,
+    // not `canManage`. Central-only, so it doesn't move with the chapter lens.
+    canComposePartnerships: v.boolean(),
   }),
   handler: async (ctx, { chapterId }) => {
     const access = await resolveGivingAccess(ctx);
     const isCentral = access.isSuperuser || access.centralView;
+    const canComposePartnerships =
+      access.isSuperuser || access.centralPartners;
 
     // The app's chapter lens wins when the caller may actually view it.
     if (chapterId !== undefined) {
@@ -498,6 +505,7 @@ export const myGivingAccess = query({
           scope: chapterId,
           chapterName: chapter?.name ?? null,
           isCentral,
+          canComposePartnerships,
         };
       }
       // Not viewable (e.g. a foreign chapter under a chapter-only seat) —
@@ -512,6 +520,7 @@ export const myGivingAccess = query({
         scope: "central" as const,
         chapterName: null,
         isCentral: true,
+        canComposePartnerships,
       };
     }
     // Otherwise a chapter lens — the first chapter the caller can view.
@@ -525,6 +534,7 @@ export const myGivingAccess = query({
         scope: ownChapterId,
         chapterName: chapter?.name ?? null,
         isCentral: false,
+        canComposePartnerships,
       };
     }
     return {
@@ -533,6 +543,7 @@ export const myGivingAccess = query({
       scope: null,
       chapterName: null,
       isCentral: false,
+      canComposePartnerships,
     };
   },
 });

@@ -1,5 +1,6 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
+import { SPONSOR_PAYMENT_RAILS } from "@events-os/shared";
 
 /**
  * Sponsorships & partnerships (F-6, Phase 4) — the development team's
@@ -104,11 +105,192 @@ export const sponsorships = defineTable({
   eventIds: v.optional(v.array(v.id("events"))), // bounded, see MAX_SPONSORSHIP_EVENTS
   ownerPersonId: v.optional(v.id("people")),
   dueDiligenceNotes: v.optional(v.string()),
+  /** The agreement's terms, verbatim — what the partner signs. Rendered
+   *  READ-ONLY on the portal and frozen to them exactly as a contractor
+   *  payment's terms are; editing it bumps `termsVersion` (below). */
   terms: v.optional(v.string()),
   nextTouchpointAt: v.optional(v.number()),
+
+  // ── The agreement's OWN proposal (partner portal, 2026-08-20) ─────────────
+  // Every field here is OPTIONAL and falls back to the package tier, which is
+  // the whole design: a tier is a price list, an agreement is a negotiation.
+  // Absent means "the tier's copy is still true for this partner"; present
+  // means somebody deliberately wrote this partner's version. Nothing is
+  // copied down at create time, so a tier edit still reaches every agreement
+  // that never diverged — and cannot silently rewrite one that did.
+  //
+  // See `@events-os/shared#sponsorPortal` for the caps and the prose grammar.
+
+  /** This deal's own name ("Production Partner — Love Thy Neighbor"). Falls
+   *  back to the package name. */
+  title: v.optional(v.string()),
+  /**
+   * WHAT THE PARTNER ACTUALLY AGREED TO CARRY, when it differs from the tier's
+   * list price — a negotiated figure, a multi-spot bundle, a partial year.
+   * Falls back to `sponsorPackages.pricing.amountCents`.
+   *
+   * THE PORTAL'S BALANCE IS COMPUTED FROM THIS, never from a client value, so
+   * it is the one number a manager must get right. Bounded by
+   * `SPONSOR_AMOUNT_MAX_CENTS`; integer cents like every other money field.
+   */
+  amountCents: v.optional(v.number()),
+  /**
+   * The free-form body of the proposal — the founder's "put the details in,
+   * like, a summarize form, maybe like a free form type of thing".
+   *
+   * Plain text with the smallest possible grammar (`## heading`, `- bullet`,
+   * blank-line paragraphs — see `parseSponsorProse`). NOT HTML and NOT
+   * markdown: every renderer escapes it, so the worst a pasted `<script>` can
+   * do is appear as characters on the page.
+   */
+  summary: v.optional(v.string()),
+  /** This partner's benefit lines, overriding the tier's `benefits`. */
+  benefits: v.optional(v.array(v.string())), // bounded, MAX_PACKAGE_LIST_ITEMS
+  /** What WE commit to deliver to this partner, overriding the tier's. */
+  commitments: v.optional(v.array(v.string())), // same bound
+
+  /** Who at the partner org holds this — the human the portal link goes to and
+   *  the name the signature panel greets. Never published anywhere. */
+  contactName: v.optional(v.string()),
+  contactTitle: v.optional(v.string()),
+  contactEmail: v.optional(v.string()),
+
+  /**
+   * Reviewed non-cash value counting against `amountCents` — a production
+   * proposal valued at our own budget lines, donated equipment, comped venue.
+   * Each line carries its own label because the proposal promises the partner
+   * that "every line of the review is shown to you".
+   *
+   * REDUCES WHAT IS OWED; IS NOT MONEY THAT ARRIVED. Nothing here writes a
+   * `gifts` row — booking donated work as revenue is a separate, deliberate
+   * act (`recordSponsorshipGift` with `method: "in_kind"`), and doing both
+   * would count the same donation twice. Bounded by `MAX_IN_KIND_CREDITS`.
+   */
+  inKindCredits: v.optional(
+    v.array(
+      v.object({
+        label: v.string(),
+        amountCents: v.number(), // int >= 0
+        note: v.optional(v.string()),
+      }),
+    ),
+  ),
+
+  /**
+   * Which payment rails this agreement's portal offers. Absent means
+   * `DEFAULT_SPONSOR_RAILS` — bank transfer ALONE.
+   *
+   * Founder, 2026-08-20: "we should only allow bank ACH as a method of payment
+   * because it's just like a big payment, and we don't want more than a five
+   * dollar charge on it." Stripe's ACH fee is 0.8% capped at $5; a card takes
+   * ~$101.80 of a $3,500 spot. Stored per agreement and enforced server-side
+   * in `sponsorPortal.startPayment` — a portal that merely *defaulted* to bank
+   * while leaving a card button on the page would lose that money to the first
+   * partner who found the button convenient.
+   */
+  paymentRails: v.optional(
+    v.array(v.union(...SPONSOR_PAYMENT_RAILS.map((r) => v.literal(r)))),
+  ),
+
+  /**
+   * Bumped every time a term the partner signs against is edited (terms,
+   * amount, benefits, commitments, summary, title). Bumping CLEARS the
+   * signature — see `sponsorPortal.ts#bumpTermsVersion`.
+   *
+   * Absent on rows written before the portal existed; readers treat that as 1.
+   * Without this pair we would be holding a signature against terms nobody
+   * agreed to, which is exactly the trap `contractorPayments.updateTerms`
+   * documents.
+   */
+  termsVersion: v.optional(v.number()),
+
+  // ── The portal link ──────────────────────────────────────────────────────
+  /**
+   * The secret in the URL — the ONLY authority the partner has, and it
+   * authorizes exactly two things: reading THIS agreement and paying it. It
+   * cannot list packages, cannot read the donor CRM, cannot see other
+   * agreements, and cannot change a single term. Minted idempotently (a
+   * manager pressing "Copy link" twice must not invalidate the link they
+   * emailed five minutes ago) and killed by `portalRevokedAt`.
+   */
+  portalToken: v.optional(v.string()),
+  portalIssuedAt: v.optional(v.number()),
+  portalRevokedAt: v.optional(v.number()),
+  /** Read receipts for the desk — "have they even opened it?" is the first
+   *  question asked about every proposal ever sent. */
+  portalFirstViewedAt: v.optional(v.number()),
+  portalLastViewedAt: v.optional(v.number()),
+
+  // ── The signature ────────────────────────────────────────────────────────
+  // The typed name, WHO typed it, and the version of the terms on the page at
+  // the time — the three facts that make an acceptance evidence rather than a
+  // boolean. Cleared together by a terms bump, which is the point of keeping
+  // the version alongside.
+  signedAt: v.optional(v.number()),
+  signedName: v.optional(v.string()),
+  signedTitle: v.optional(v.string()),
+  signedEmail: v.optional(v.string()),
+  signedIp: v.optional(v.string()),
+  signedTermsVersion: v.optional(v.number()),
+
   createdAt: v.number(),
   updatedAt: v.number(),
 })
   .index("by_status", ["status"])
   .index("by_donor", ["donorId"])
-  .index("by_package", ["packageId"]);
+  .index("by_package", ["packageId"])
+  // The portal's ONLY lookup: a token in a URL → the agreement it opens.
+  .index("by_portalToken", ["portalToken"]);
+
+/**
+ * A FREE-FORM DOCUMENT attached to a partnership agreement (partner portal,
+ * 2026-08-20).
+ *
+ * Founder: "we should be able to attach freeform PDFs here for any doc we want
+ * associated with the partnership agreement — for example if someone is
+ * covering production themselves, we would upload the agreed-upon production
+ * proposal."
+ *
+ * The production-proposal case is the one that shaped this: a partner carrying
+ * part of the spot in kind submits a proposal, we value it against our own
+ * budget lines (the `inKindCredits` on the agreement), and THIS is where the
+ * document behind that number lives — the evidence a credit line points at.
+ *
+ * ── VISIBILITY IS THE LOAD-BEARING FIELD ────────────────────────────────────
+ * `internal` — the desk only. `shared` — rendered on the partner's own portal
+ * page, downloadable through their token.
+ *
+ * A document defaults to `internal` at every write path, and `shared` is only
+ * ever set by an explicit act. The failure this orders against is a private
+ * draft, or our own notes, appearing on a page a partner reads — the same leak
+ * the whole portal is built to prevent (`dueDiligenceNotes` never crosses).
+ * Defaulting the other way would make the safe state the one you have to
+ * remember, which is how the accident happens.
+ *
+ * ── NOT A SIGNED TERM ───────────────────────────────────────────────────────
+ * Attaching a document does NOT bump `sponsorships.termsVersion` or clear a
+ * signature — deliberately. The countersigned proposal is uploaded AFTER the
+ * partner signs; making the upload un-sign the agreement would be absurd, and a
+ * document is supporting material for the terms, not the terms themselves.
+ *
+ * The blob lives in `_storage`; deleting a row deletes the blob with it
+ * (`removeDocument`), so a detached file leaves nothing stranded.
+ */
+export const sponsorshipDocuments = defineTable({
+  sponsorshipId: v.id("sponsorships"),
+  storageId: v.id("_storage"),
+  /** What this document IS, in the desk's words ("Production proposal — full
+   *  suite"). Shown on the composer and, when shared, on the partner's page. */
+  label: v.string(),
+  /** What the uploader's browser called the file, and what it actually was —
+   *  enough to render a filename and a type icon without fetching the blob. */
+  fileName: v.optional(v.string()),
+  contentType: v.optional(v.string()),
+  sizeBytes: v.optional(v.number()),
+  /** `internal` = desk only; `shared` = on the partner's portal page. Defaults
+   *  to `internal` at every writer — see the table doc. */
+  visibility: v.union(v.literal("internal"), v.literal("shared")),
+  uploadedByUserId: v.id("users"),
+  uploadedAt: v.number(),
+})
+  .index("by_sponsorship", ["sponsorshipId"]);

@@ -2298,3 +2298,8 @@ export * from "./powers";
 
 // ── Mailchimp audience sync: payload shape + segmentation vocabulary ─────────
 export * from "./mailchimp";
+
+// ── Partner portal: an agreement's own proposal, its rails, its balance ──────
+// The sponsor-facing half of a sponsorship — see the module doc for why the
+// allowed payment rail is a stored field rather than a default.
+export * from "./sponsorPortal";

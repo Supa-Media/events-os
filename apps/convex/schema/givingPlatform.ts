@@ -616,7 +616,15 @@ export const pendingGifts = defineTable({
   // The scoped form, for a chapter-scoped rule. Mirrors
   // `gifts.by_scope_and_received`, and for the same reason: without it a quiet
   // chapter's rule would walk every other book's in-flight money.
-  .index("by_scope_and_submitted", ["scope", "submittedAt"]);
+  .index("by_scope_and_submitted", ["scope", "submittedAt"])
+  // One agreement's in-flight bank debits (partner portal). Without this, the
+  // portal's "money still clearing" sum has to scan the newest N rows of a
+  // table shared by EVERY giving rail and filter — so a busy window could push
+  // a sponsor's own debit past the scan and undercount what is in flight, which
+  // gates the double-pay guard in `sponsorPortal.preparePayment`. A sparse
+  // index on the optional field: rows without a `sponsorshipId` simply never
+  // match a lookup by one.
+  .index("by_sponsorship", ["sponsorshipId"]);
 
 /**
  * One audit breadcrumb for a HUMAN gift change (owner request #4b — "a

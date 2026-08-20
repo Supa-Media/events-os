@@ -78,8 +78,8 @@ update these tables, `governance.test.ts` fails.
 | Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export` |
 | Financial Manager | Executive Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
-| Partnership Associate | Development Director | many | `giving.view` |
-| Fundraising Associate | Development Director | many | `giving.view` |
+| Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
+| Fundraising Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
 | Music Director | Executive Director | 1 | — |
 | A&R | Music Director | many | — |
 | Artists | Music Director | many | — |
@@ -157,6 +157,7 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `finance.ledger.publish` | Publish a closed month to the public ledger |
 | `giving.view` | Read the donor CRM at the holder's scope |
 | `giving.edit` | Record, edit, import, and configure giving |
+| `giving.partners.edit` | Compose a sponsor's partnership agreement and issue its portal link |
 | `email.assets.edit` | Own the shared design system — themes, templates, image library |
 | `email.campaigns.edit` | Compose a campaign and send it for approval |
 | `email.campaigns.approve` | Approve a campaign for sending |
@@ -360,6 +361,7 @@ involved, and the software enforces it where it can.
 |---|---|---|
 | Reimbursement | The claimant | Treasurer, or Chapter Director where the claimant is the Treasurer |
 | Contractor payment | Staff or the contractor | Treasurer or Financial Manager — never the requester |
+| Partnership agreement | The development desk composes it | **The partner signs it** — there is no staff-side way to mark an agreement signed |
 | Chapter budget | Treasurer | Chapter Director |
 | Central / annual budget | Financial Manager | Executive Director; annual budget adopted by the Board |
 | Monthly ledger publication | Treasurer (chapter) / Financial Manager (central) | Chapter Director / Executive Director |
@@ -466,6 +468,99 @@ were provided in return. Where a donor pays more than **$75** and receives
 something in return, the quid pro quo disclosure is required. The organization
 never states the value of donated property — the donor's appraisal is the
 donor's responsibility. See Bylaws Appendix D.
+
+### 8.1 Sponsorships and partnerships
+
+A **sponsor package** is a price list — a tier the Development Director authors,
+with what a partner at that tier receives and what the organization commits to
+deliver. A **partnership agreement** is a negotiation: one organization (a
+church, a business, or a foundation — never an individual) against one tier, at
+a figure and on terms that may be that partner's alone. An agreement therefore
+carries its **own proposal** — its own title, its own body, its own benefit and
+commitment lines, its own terms — and falls back to the tier wherever it has
+nothing of its own.
+
+**An agreement covers the gatherings it names.** A partnership is routinely
+more than one date — one agreement may stand behind a flagship event and a
+second gathering in the same season — and every covered event is named, with its
+date, on the partner's own page. A season or full-year agreement covers no
+single date, which is a real state rather than a missing one. Changing which
+events an agreement covers changes what the partner agreed to, and is treated as
+a term accordingly (below).
+
+**The partnership team composes the agreement.** Drafting an agreement — its
+terms, proposal, covered events, in-kind credits, and documents — and issuing
+the portal link is the `giving.partners.edit` power, carried by the Partnership
+and Fundraising Associates and, through the whole-domain grant, by the
+Development Director. It is deliberately narrower than managing the donor CRM:
+the partnership team runs an agreement end to end from the Sponsors tab without
+the power to record a gift, edit a donor, or import — those stay `giving.edit`.
+Recording a partner's payment against the agreement remains a `giving.edit`
+action.
+
+**The partner reads and signs their own agreement.** Each agreement can issue a
+secret link to a page the partner opens with no account: the proposal, the
+terms, a typed-name signature, and a way to pay. The link opens exactly that one
+agreement and authorizes exactly two acts — signing it and paying it. Nothing
+internal reaches it: the organization's due-diligence notes about a partner, the
+pipeline stage, and the internal owner are not on that page and cannot be put
+there.
+
+<!-- lifecycle:partnership-portal -->
+
+`unissued` → `awaiting_signature` → `awaiting_payment` → `settled`, with
+`payment_clearing` while an authorized bank transfer has not yet landed. Every
+one of those is **derived** from four facts — is there a live link, is the
+signature against the current terms, is anything owed, is anything in flight —
+and none is stored, so a page can never claim a signature it does not hold.
+
+<!-- /lifecycle -->
+
+**Only the partner signs.** There is no staff-side way to mark an agreement
+signed, deliberately: a signature a staffer could type is not a signature. The
+organization records the typed name, the role, the email, the moment, the
+originating IP address, and **which version of the terms was on the page**.
+
+**Editing a signed term un-signs the agreement.** Changing the amount, the
+terms, the benefits, the commitments, the summary, the covered events, or the
+title moves the
+agreement to a new version and clears the signature; the partner is asked to
+sign again, and what they originally signed stays visible to the desk. Editing
+the contact block, the payment rails, or an in-kind credit does not — reducing
+what a partner owes must never force them to re-sign.
+
+**Documents attach to an agreement, and default to internal.** Any file behind
+the deal — the agreed production proposal when a partner carries production in
+kind, a signed side letter — is stored with the agreement. Each document is
+visible to the development desk only until it is explicitly marked shared, at
+which point it appears on the partner's own portal page and is downloadable
+through their link. The default is internal by design: the failure to prevent is
+a draft or an internal note reaching a partner, so the safe state is never the
+one a staffer has to remember. A shared document is served through the same
+secret token that opens the portal — revoking the link ends document access with
+it — and an internal document is unreachable to the partner even by its id.
+
+**In-kind credit reduces what is owed; it is not revenue.** Where a partner
+carries part of an agreement in donated work — production, equipment, a venue —
+the organization values it **at its own budget lines, never at the partner's
+rate card**, lists each line on the partner's page, and counts it against the
+agreement like cash. Recording that same donation as an in-kind gift in the
+ledger is a separate, deliberate act; doing both would count one donation twice.
+The organization still never states the value of donated property to the donor
+for their tax purposes — that remains the donor's appraisal and the donor's
+responsibility (§8 above, Bylaws Appendix D).
+
+**A large partnership settles by bank transfer, and that is a money rule.** The
+processor's bank-debit fee is 0.8% **capped at $5.00**; a card is roughly 2.9% +
+30¢ with **no cap** — $101.80 of a $3,500 partnership against $5.00. Every new
+agreement therefore offers bank transfer alone. A manager may additionally allow
+card on a **small** agreement where clearing time costs more than the fee, and
+**above $1,000 the software refuses card outright**, whatever the setting says.
+
+**Money arrives as an ordinary gift.** A partnership payment is booked in the
+gifts ledger against the partner's donor record, tagged to the agreement, on the
+same rails and the same audit trail as every other gift. An agreement holds no
+money ledger of its own.
 
 **Donor data never leaves except through `data.export`,** and never goes to a
 personal spreadsheet, a personal email account, or a departing volunteer's

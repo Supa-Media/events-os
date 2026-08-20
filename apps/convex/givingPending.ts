@@ -158,6 +158,10 @@ export const recordPendingGift = internalMutation({
     isGiveDonation: v.optional(v.boolean()),
     /** `metadata.giveDonorId`. A raw string from Stripe: normalized, never trusted. */
     giveDonorId: v.optional(v.string()),
+    /** `metadata.sponsorshipId` — a PARTNER PORTAL payment
+     *  (`stripe.ts#createSponsorPortalCheckout`). Same posture as
+     *  `giveDonorId`: a raw string from Stripe, normalized here, never trusted. */
+    sponsorshipId: v.optional(v.string()),
     /** When the donor authorised the debit. Injectable so the digest's window
      *  boundaries are testable; production passes the webhook's instant. */
     submittedAt: v.optional(v.number()),
@@ -247,6 +251,55 @@ export const recordPendingGift = internalMutation({
         submittedAt: now,
         donorName: donor.name,
         donorId,
+        createdAt: now,
+      });
+      return true;
+    }
+
+    // ── 1b. A PARTNER PORTAL payment ──────────────────────────────────────
+    // A sponsorship agreement's balance, authorised by bank debit. Recorded so
+    // the digest can report it as in flight AND so the portal can tell the
+    // partner "we've got it, it's clearing" instead of showing them the same
+    // balance they just paid — the one thing most likely to produce a second
+    // $3,500.
+    //
+    // The already-settled guard mirrors the `/give` branch's, for exactly the
+    // reasons its long comment gives: a resolved pending row is DELETED, so
+    // after an out-of-order or redelivered `completed` there is no live row to
+    // dedupe against and the gift's own `externalRef` is the only key that
+    // survives.
+    if (args.sponsorshipId) {
+      const sponsorshipId = ctx.db.normalizeId("sponsorships", args.sponsorshipId);
+      if (!sponsorshipId) return false; // not one of our ids — safe no-op
+      const alreadySettled = await ctx.db
+        .query("gifts")
+        .withIndex("by_externalRef", (q) =>
+          q.eq("externalRef", `sponsor:${args.sessionId}`),
+        )
+        .first();
+      if (alreadySettled) return false;
+
+      const sponsorship = await ctx.db.get(sponsorshipId);
+      if (!sponsorship) return false;
+      const sponsorDonor = await ctx.db.get(sponsorship.donorId);
+      if (!sponsorDonor) return false;
+
+      await ctx.db.insert("pendingGifts", {
+        sessionId: args.sessionId,
+        status: "in_flight",
+        scope: sponsorDonor.scope,
+        // The CHARGE, fee coverage included — the same rule the `/give` branch
+        // books by, so the figure a digest reports as clearing is the figure
+        // that later appears as a gift.
+        amountCents: args.amountTotalCents,
+        chargeTotalCents: args.amountTotalCents,
+        currency: "usd",
+        submittedAt: now,
+        donorName: sponsorDonor.name,
+        donorId: sponsorship.donorId,
+        // Carried so `giftType` buckets the pending row exactly as it will
+        // bucket the gift it becomes.
+        sponsorshipId,
         createdAt: now,
       });
       return true;

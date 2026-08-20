@@ -71,6 +71,39 @@ export function backerPortalUrl(): string {
 }
 
 /**
+ * The PARTNER PORTAL — one sponsorship agreement's own page, opened with the
+ * secret token in the URL (`lib/sponsorPortalPage.ts`).
+ *
+ * A SITE path like `/give` and `/contract`, not an app one: the partner is a
+ * church's executive pastor, not a staff user, and must never need an account
+ * to read what they are signing or to pay it. ONE definition, used by the mint
+ * mutation's returned URL, by the invitation email, and by the Stripe return
+ * URLs — so the three can never point at different pages (the trap
+ * `repaymentLinks.repaymentLinkPath` exists to close).
+ */
+export const PARTNER_PATH = "partner";
+
+export function sponsorPortalPath(token: string): string {
+  return `/${PARTNER_PATH}/${token}`;
+}
+
+/**
+ * A shared document's download path, under the same token. Kept in one place so
+ * the path the portal page renders and the route `http.ts` serves it from can
+ * never drift. `documentId` is a Convex id string — url-safe as it stands.
+ */
+export function sponsorPortalDocPath(token: string, documentId: string): string {
+  return `/${PARTNER_PATH}/${token}/doc/${documentId}`;
+}
+
+/** Absolute URL of a partner portal, or null when no public site URL is
+ *  configured — callers omit the link rather than emailing a dead one. */
+export function sponsorPortalUrl(token: string): string | null {
+  const base = siteUrl();
+  return base ? `${base}${sponsorPortalPath(token)}` : null;
+}
+
+/**
  * Deep link into the authenticated app (the Expo web build) at `path`, when
  * APP_URL is configured. Null otherwise — callers omit the link entirely
  * rather than sending a dead one. In prod, APP_URL is

@@ -790,6 +790,18 @@
  * (its content survives inside the new question's explanation). No title,
  * slug, minutes, quizLength, section or course order moved: every table below
  * is unchanged.
+ *
+ * The PARTNER PORTAL PR (2026-08-20, founder request — "do we create portals
+ * … in which the sponsors can go in and pay for the customized packages?")
+ * APPENDED one Development section, `dev-partner-portal` (5 min, 5-quiz), into
+ * the `sponsorships-and-partnerships` course after `dev-church-partnerships`.
+ * It teaches the per-agreement proposal (own title/body/benefits/commitments/
+ * terms, falling back to the package tier), the digital signature and the
+ * terms-version rule that clears it, in-kind credit as a balance reduction
+ * rather than a gift, and why a large partnership settles by bank transfer
+ * (0.8% capped at $5 against a card's uncapped ~3%). That course now carries
+ * four modules. Nothing else moved: no slugs, titles, minutes, quiz lengths, or
+ * order changed anywhere else. Total: 99 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -913,6 +925,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "dev-sponsor-packages",
   "dev-sponsorship-pipeline",
   "dev-church-partnerships",
+  "dev-partner-portal",
   "dev-city-launch-economics",
   "dev-prospect-cities-and-map",
 ];
@@ -1823,6 +1836,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "dev-partner-portal",
+    title: "The partner portal: one page they read, sign, and pay",
+    minutes: 5,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "dev-city-launch-economics",
     title: "The 85/15 split and the City Launch Fund",
     minutes: 3,
@@ -2077,6 +2098,7 @@ const EXPECTED_COURSES: {
       "dev-sponsor-packages",
       "dev-sponsorship-pipeline",
       "dev-church-partnerships",
+      "dev-partner-portal",
     ],
   },
   {

@@ -262,12 +262,22 @@ describe("curriculum content", () => {
     // them one), that a declined card now emails the backer instead of only
     // flipping a status, and where the line falls between "your own record is
     // always yours" and the backer-only view of the org.)
-    expect(ACADEMY_SECTION_COUNT).toBe(113);
+    // + 1 (dev-partner-portal, 2026-08-20, appended to the
+    // sponsorships-and-partnerships course after dev-church-partnerships —
+    // required. A sponsor now reads, signs, and PAYS an agreement on a page of
+    // their own, and three things about it are asked out loud and get answered
+    // wrong by guessing: that editing a signed term clears the signature and
+    // asks the partner to sign again; that in-kind credit reduces what they
+    // owe WITHOUT also being recorded as a gift; and that a large partnership
+    // settles by bank transfer because the fee is capped at $5 where a card's
+    // ~3% is not — $101.80 of a $3,500 spot. Each is a money or evidence rule,
+    // not a UI detail.)
+    expect(ACADEMY_SECTION_COUNT).toBe(114);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 113 }, (_v, i) => i + 1),
+      Array.from({ length: 114 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(112);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(113);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

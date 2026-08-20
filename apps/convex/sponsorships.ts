@@ -22,11 +22,13 @@
  * Money is always integer cents; a sponsorship never holds a money ledger of
  * its own — `gifts` stays the only giving-history source record (PRD §7, B1).
  */
+import { MAX_SPONSORSHIP_EVENTS } from "@events-os/shared";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import { mutation, query } from "./_generated/server";
 import { requireUserId } from "./lib/context";
 import { requireGivingView, requireGivingManage } from "./lib/givingAccess";
+import { requirePartnershipCompose } from "./lib/sponsorAccess";
 import {
   assertPositiveGiftCents,
   recordGiftForDonor,
@@ -62,9 +64,7 @@ const SPONSORABLE_DONOR_KINDS = new Set(["church", "business", "foundation"]);
 /** A package's `benefits`/`commitments` lists are short, hand-authored bullet
  *  points — bounded well above any realistic tier's length. */
 const MAX_PACKAGE_LIST_ITEMS = 30;
-/** A sponsorship's event attachment list is bounded (a season's worth of
- *  events, not the whole calendar). */
-const MAX_SPONSORSHIP_EVENTS = 20;
+
 /** Generous bounds on list reads — this desk's row counts (tiers, agreements)
  *  are small by nature (dev-director-authored config, one org per agreement). */
 const PACKAGE_LIST_LIMIT = 200;
@@ -254,7 +254,20 @@ export const listSponsorships = query({
           ctx.db.get(sponsorship.donorId),
           ctx.db.get(sponsorship.packageId),
         ]);
-        return { sponsorship, donor, package: pkg };
+        // WHICH EVENTS EACH AGREEMENT COVERS, on the list row itself. A
+        // partnership is routinely more than one date (the Ignite agreement
+        // stands behind two), and "who is covering Love Thy Neighbor?" is a
+        // question the desk asks of the WHOLE pipeline — answering it by
+        // opening every agreement in turn is how a spreadsheet gets started
+        // alongside the product. Name only; the detail screen has the rest.
+        const events = (
+          await Promise.all(
+            (sponsorship.eventIds ?? []).map((id) => ctx.db.get(id)),
+          )
+        )
+          .filter((e): e is Doc<"events"> => e !== null)
+          .map((e) => ({ _id: e._id, name: e.name, eventDate: e.eventDate }));
+        return { sponsorship, donor, package: pkg, events };
       }),
     );
   },
@@ -328,7 +341,10 @@ export const upsertSponsorship = mutation({
   },
   returns: v.id("sponsorships"),
   handler: async (ctx, args) => {
-    await requireGivingManage(ctx, "central");
+    // Partnership-pipeline action (create/edit an agreement) — the partnership
+    // team runs this from the Sponsors tab. `giving.partners.edit`, which a
+    // central `giving.edit` holder also carries via the wildcard rule.
+    await requirePartnershipCompose(ctx);
 
     const donor = await ctx.db.get(args.donorId);
     if (!donor) {
@@ -422,7 +438,9 @@ export const setSponsorshipStatus = mutation({
   },
   returns: v.null(),
   handler: async (ctx, { sponsorshipId, status }) => {
-    await requireGivingManage(ctx, "central");
+    // Moving an agreement along the pipeline is partnership work, not
+    // donor-CRM editing — the partnership team owns it.
+    await requirePartnershipCompose(ctx);
     const sponsorship = await ctx.db.get(sponsorshipId);
     if (!sponsorship) {
       throw new ConvexError({
