@@ -699,6 +699,12 @@ export const listPersonAudit = query({
 export const create = mutation({
   args: {
     name: v.string(),
+    // Explicit name halves (Add Person modal, specs/add-person-modal-fields.md)
+    // — mirrors `update`'s own args: when either is sent, the halves are
+    // authoritative and stored as given rather than re-derived from `name`
+    // via `splitPersonName` (which refuses to guess past two tokens).
+    firstName: v.optional(v.string()),
+    lastName: v.optional(v.string()),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
     // Service Catalog ids (`serviceOptions`) — replaces the retired
@@ -719,6 +725,14 @@ export const create = mutation({
     image: v.optional(v.id("_storage")),
     socialLink: v.optional(v.string()),
     managerId: v.optional(v.id("people")),
+    // Person-form-fields widening (Add Person modal) — the remaining columns
+    // `update` already supports that `create` didn't, so the modal can set
+    // everything it collects in one mutation instead of create-then-patch.
+    location: v.optional(v.string()),
+    referralSource: v.optional(v.string()),
+    isVolunteer: v.optional(v.boolean()),
+    marketingOptOut: v.optional(v.boolean()),
+    notes: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
@@ -734,10 +748,14 @@ export const create = mutation({
     const personId = await ctx.db.insert("people", {
       chapterId: chapterId as Id<"chapters">,
       name: args.name,
-      // Structured halves when the split is unambiguous — see
-      // `@events-os/shared#names` (the one splitting rule migration 0043 and every
-      // rename write-through share).
-      ...(splitPersonName(args.name) ?? {}),
+      // Structured halves: an explicit firstName/lastName (either one) is
+      // authoritative, same rule `update` applies — otherwise fall back to
+      // the automatic split when it's unambiguous (see
+      // `@events-os/shared#names`, the one splitting rule migration 0043 and
+      // every rename write-through share).
+      ...(args.firstName !== undefined || args.lastName !== undefined
+        ? { firstName: args.firstName, lastName: args.lastName }
+        : (splitPersonName(args.name) ?? {})),
       email: args.email,
       phone: args.phone,
       serviceIds: args.serviceIds,
@@ -755,6 +773,11 @@ export const create = mutation({
       image: args.image,
       socialLink: args.socialLink,
       managerId: args.managerId,
+      location: args.location,
+      referralSource: args.referralSource,
+      isVolunteer: args.isVolunteer,
+      marketingOptOut: args.marketingOptOut,
+      notes: args.notes,
       createdAt: Date.now(),
     });
     // Person-centric audiences Phase 2 (specs/person-centric-audiences.md) —

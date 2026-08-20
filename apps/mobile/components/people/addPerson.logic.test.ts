@@ -4,15 +4,20 @@ import { describe, expect, jest, test } from "@jest/globals";
 import { addPersonAndGetOpenId } from "./addPerson.logic";
 
 /**
- * `addPersonAndGetOpenId` decides what the "Add person" row does with the
+ * `addPersonAndGetOpenId` decides what the Add Person modal does with the
  * `create` mutation's outcome: hand back the new id (so the caller opens its
  * detail sheet) on success, or hand back the caught error (so the caller can
- * surface it) on failure — the rejection must never escape uncaught.
+ * surface it) on failure — the rejection must never escape uncaught. It hands
+ * the caller's fully-built args straight through to `create`, rather than
+ * defaulting a bare name (see `addPersonForm.logic.ts#buildAddPersonArgs`,
+ * which builds those args).
  */
 describe("addPersonAndGetOpenId", () => {
   test("returns the new person's id on success", async () => {
     const create = jest.fn(async () => "person123");
-    await expect(addPersonAndGetOpenId(create)).resolves.toEqual({ id: "person123" });
+    await expect(
+      addPersonAndGetOpenId(create, { name: "Ada Lovelace" }),
+    ).resolves.toEqual({ id: "person123" });
   });
 
   test("catches a rejection and returns it as an error instead of throwing", async () => {
@@ -20,12 +25,15 @@ describe("addPersonAndGetOpenId", () => {
     const create = jest.fn(async () => {
       throw failure;
     });
-    await expect(addPersonAndGetOpenId(create)).resolves.toEqual({ error: failure });
+    await expect(
+      addPersonAndGetOpenId(create, { name: "Ada Lovelace" }),
+    ).resolves.toEqual({ error: failure });
   });
 
-  test("calls create with the default 'New person' name", async () => {
+  test("passes the given args through to create verbatim", async () => {
     const create = jest.fn(async () => "person123");
-    await addPersonAndGetOpenId(create);
-    expect(create).toHaveBeenCalledWith({ name: "New person" });
+    const args = { name: "Ada Lovelace", email: "ada@example.com" };
+    await addPersonAndGetOpenId(create, args);
+    expect(create).toHaveBeenCalledWith(args);
   });
 });
