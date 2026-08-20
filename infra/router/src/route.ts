@@ -97,6 +97,16 @@ export const CONVEX_PREFIXES = [
   // their money is. The drift guard in `drift.test.ts` caught this one before
   // it shipped, which is the whole reason that test exists.
   "/contract/",
+  // The partner portal (`apps/convex/http.ts`'s `/partner/<token>` GET, plus
+  // the `/api/partner/*` posts already covered by `/api/`). Same shape as
+  // `/contract/` and `/reimburse/`: a secret link emailed to somebody with no
+  // account, which has to reach Convex rather than the static site.
+  //
+  // This one carries MONEY IN — a partner signs a $3,500 agreement and pays it
+  // on that page — so a dead link here is not a degraded experience, it is a
+  // partnership that silently cannot be paid. The drift guard caught it before
+  // it shipped, exactly as it caught `/contract/`.
+  "/partner/",
   // Mailchimp's webhook (`apps/convex/http.ts`'s `/mailchimp/webhook`, GET +
   // POST). Bulk email lives in Mailchimp now, and this is the route that
   // carries an unsubscribe BACK into `emailSuppressions` so it silences event

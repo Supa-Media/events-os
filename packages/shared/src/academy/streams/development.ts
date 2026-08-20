@@ -1457,6 +1457,112 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
+  // ── 94b · Sponsorships: the partner portal ───────────────────────────────
+  {
+    slug: "dev-partner-portal",
+    title: "The partner portal: one page they read, sign, and pay",
+    subtitle: "A custom proposal, a digital signature, and why it's bank transfer",
+    minutes: 5,
+    blocks: [
+      {
+        kind: "p",
+        text: "A package tier is a price list. A real partnership is a negotiation — a $3,500 production spot with its own terms, its own extras, and sometimes production work donated instead of cash. So every agreement can carry its OWN proposal: a title, a free-form body in your words, its own list of what they receive and what we deliver, and its own terms. Leave a field blank and it falls back to the package tier; fill it in and this partner sees your version.",
+      },
+      {
+        kind: "p",
+        text: "Then you create a portal link and send it. One page, no login: they read what was agreed, sign it by typing their name, and pay the balance — all in the same place.",
+      },
+      {
+        kind: "rule",
+        title: "Editing what they signed un-signs it",
+        text: "Changing the amount, the terms, the benefits, the commitments, the summary, or the title bumps the agreement's version and CLEARS the partner's signature — they'll be asked to sign again. That is deliberate: a signature has to be against terms somebody actually read. Editing the contact details, the payment rails, or an in-kind credit does NOT clear it — giving a partner credit must never force them to re-sign.",
+      },
+      {
+        kind: "rule",
+        title: "Big partnerships pay by bank transfer, and that's a money decision",
+        text: "Stripe's bank-transfer (ACH) fee is 0.8% CAPPED AT $5, whatever the amount. A card is about 2.9% + 30¢ with no cap — $101.80 on a $3,500 spot against $5.00. So a new agreement offers bank transfer alone; you can add card on a small spot where four days of clearing time costs more than the fee, and above $1,000 the system won't let you.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**In-kind credit reduces what they owe; it isn't money that arrived.** A production proposal valued at our own budget lines — never their rate card — is listed line by line on their page and counts against the spot like cash. Recording it as an in-kind GIFT in the ledger is a separate, deliberate act; doing both counts the same donation twice.",
+          "**The link is stable.** Pressing \"Copy link\" twice gives you the same URL, so the one you emailed keeps working. Revoking kills it; the next one you create is a fresh address.",
+          "**A bank transfer takes about four business days.** Until it clears, the portal shows it as clearing and the balance is unchanged — no gift is recorded for money that hasn't moved, and the partner can't accidentally pay twice.",
+          "**Nothing internal reaches their page.** Due-diligence notes, the pipeline stage, the owner, and every other agreement are invisible on the portal by construction.",
+        ],
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A partner signed, then you notice the amount should have been $3,500 rather than $3,000. You fix it. What happens?",
+        answer:
+          "The agreement moves to version 2 and their signature is cleared — the desk shows \"needs re-signing\" with what they originally signed, and their portal asks them to sign the corrected terms. That's the right outcome: you would otherwise be holding a signature for a number nobody agreed to.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "You edit an agreement's terms after the partner signed. What happens to the signature?",
+        options: [
+          "It carries over — the terms are just a note",
+          "It's cleared, and the partner is asked to sign the new version",
+          "The agreement is deleted",
+          "Nothing changes until the next payment",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A signature is against a specific version of the terms. Editing a signed term bumps the version and clears the signature, so we never hold a signature for terms nobody read.",
+      },
+      {
+        prompt: "Why do large partnerships pay by bank transfer rather than card?",
+        options: [
+          "Cards aren't accepted anywhere in the app",
+          "The bank-transfer fee is capped at $5, where a card takes about 3% with no cap",
+          "Bank transfers clear faster",
+          "It's a legal requirement for churches",
+        ],
+        answerIndex: 1,
+        explanation:
+          "On a $3,500 spot a card costs about $101.80 and a bank transfer costs $5.00. That difference is a free event's worth of production, so the rail is a stored setting, not a preference.",
+      },
+      {
+        prompt: "A partner's team donates production work you value at $2,500 against a $3,500 spot. What do you do?",
+        options: [
+          "Record it as an in-kind gift AND add an in-kind credit",
+          "Add an in-kind credit line — it reduces what they still owe to $1,000",
+          "Lower the agreement amount to $1,000",
+          "Nothing can be recorded until they pay cash",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The credit reduces the balance and is listed on their page line by line. Lowering the amount would lose what the partnership is actually worth, and doing both a credit and a gift would count the same donation twice.",
+      },
+      {
+        prompt: "What can a partner do with the portal link they were sent?",
+        options: [
+          "Read, sign, and pay that one agreement — nothing else",
+          "See every sponsorship the org holds",
+          "Edit the terms before signing",
+          "Open the donor CRM",
+        ],
+        answerIndex: 0,
+        explanation:
+          "The link opens exactly one agreement and authorizes exactly two acts: signing it and paying it. It cannot read our notes, change a term, or reach any other record.",
+      },
+      {
+        prompt: "You press \"Copy link\" a second time on an agreement you already sent. What do you get?",
+        options: [
+          "A new link, and the old one stops working",
+          "The same link — the one you already emailed keeps working",
+          "An error",
+          "A link that expires in 24 hours",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Minting is idempotent on purpose. Issuing a fresh token on every press would silently break the URL you sent five minutes ago, with no way for either side to know why. Revoking is the one act that kills a link.",
+      },
+    ],
+  },
+
   // ── 95 · The city-launch story: the economics ────────────────────────────
   {
     slug: "dev-city-launch-economics",
@@ -1690,13 +1796,14 @@ export const DEVELOPMENT_COURSES: Course[] = [
     audience: "role",
     description:
       "The institutional-giving desk: dev-director-authored package tiers, " +
-      "the prospect-to-active pipeline, and church partnership principles — " +
-      "due diligence and real relationship over transactional referral.",
+      "the prospect-to-active pipeline, church partnership principles, and " +
+      "the partner portal a sponsor reads, signs, and pays on.",
     icon: "briefcase",
     moduleSlugs: [
       "dev-sponsor-packages",
       "dev-sponsorship-pipeline",
       "dev-church-partnerships",
+      "dev-partner-portal",
     ],
   },
   {

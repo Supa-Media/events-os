@@ -27,6 +27,7 @@ import {
 } from "../../../../components/ui";
 import { colors } from "../../../../lib/theme";
 import { useGivingScope } from "../../../../lib/useGivingScope";
+import { PartnerPortalSection } from "../../../../components/giving/PartnerPortalSection";
 import { sponsorshipStatusTone } from "../sponsorships";
 
 const STATUS_OPTIONS = [
@@ -155,6 +156,11 @@ export default function SponsorshipDetailScreen() {
           </View>
         )}
 
+        <PartnerPortalSection
+          sponsorshipId={sponsorshipId}
+          canManage={canManage}
+        />
+
         {canManage ? (
           <RelationshipForm
             sponsorshipId={sponsorshipId}
@@ -272,7 +278,6 @@ function RelationshipForm({
   const [ownerName, setOwnerName] = useState<string | null>(initialOwnerName);
   const [pickerOpen, setPickerOpen] = useState(false);
   const [notes, setNotes] = useState(sponsorship.dueDiligenceNotes ?? "");
-  const [terms, setTerms] = useState(sponsorship.terms ?? "");
   const [touchpoint, setTouchpoint] = useState(
     sponsorship.nextTouchpointAt
       ? new Date(sponsorship.nextTouchpointAt).toISOString().slice(0, 10)
@@ -299,7 +304,11 @@ function RelationshipForm({
         eventIds: sponsorship.eventIds ?? [],
         ownerPersonId,
         dueDiligenceNotes: notes,
-        terms,
+        // Preserved verbatim: `upsertSponsorship` treats an omitted `terms` as
+        // "clear it", and this form no longer edits the field (see the note in
+        // the JSX). Passing the row's own value back is what stops saving a
+        // touchpoint date from silently wiping a signed agreement's terms.
+        terms: sponsorship.terms,
         nextTouchpointAt,
       });
     } catch {
@@ -329,13 +338,11 @@ function RelationshipForm({
           placeholder="Statement of beliefs, pastor relationship, visited a service…"
           multiline
         />
-        <TextField
-          label="Terms"
-          value={terms}
-          onChangeText={setTerms}
-          placeholder="Agreed deliverables, invoicing cadence…"
-          multiline
-        />
+        {/* The agreement's TERMS are edited in the partner-portal composer
+            above, not here: that is the copy the partner signs, and two
+            editors for one field is how a signed version and a displayed
+            version start to differ. This form keeps the relationship fields
+            the desk owns. */}
         <TextField
           label="Next touchpoint (YYYY-MM-DD)"
           value={touchpoint}

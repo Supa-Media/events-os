@@ -46,6 +46,7 @@ import {
   REIMBURSEMENT_STATUSES,
 } from "./finance";
 import { CONTRACTOR_PAYMENT_STATUSES } from "./contractorPayments";
+import { SPONSOR_PORTAL_STATES } from "./sponsorPortal";
 
 // ── Loading ──────────────────────────────────────────────────────────────────
 const GOVERNANCE_DIR = join(
@@ -349,6 +350,13 @@ describe("operating manual: money lifecycles match their status tuples", () => {
   const cases: [string, readonly string[]][] = [
     ["lifecycle:reimbursement", REIMBURSEMENT_STATUSES],
     ["lifecycle:contractor", CONTRACTOR_PAYMENT_STATUSES],
+    // The partner portal's states are DERIVED, not stored (see
+    // `sponsorPortal.ts#sponsorPortalState`) — which makes pinning them here
+    // more important, not less: there is no table column to grep, so the
+    // manual's paragraph is the only prose copy of the vocabulary, and a
+    // renamed state would otherwise leave it quietly describing a page the
+    // product no longer has.
+    ["lifecycle:partnership-portal", SPONSOR_PORTAL_STATES],
   ];
 
   test.each(cases)("%s names every status, and no others", (anchor, statuses) => {

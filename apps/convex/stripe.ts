@@ -13,7 +13,7 @@
 import { action } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { rsvpPageUrl, appUrl } from "./lib/siteUrl";
+import { rsvpPageUrl, appUrl, sponsorPortalUrl } from "./lib/siteUrl";
 
 const STRIPE_API = "https://api.stripe.com/v1";
 
@@ -524,6 +524,141 @@ export const createPublicRepaymentCheckout = action({
       repaymentIds: prepared.repaymentIds,
       sessionId: session.id,
     });
+    return { kind: "stripe", url: session.url };
+  },
+});
+
+/**
+ * THE PARTNER PORTAL'S rail — a sponsorship agreement's balance, paid by the
+ * partner from the page they signed on (`lib/sponsorPortalPage.ts`).
+ *
+ * No auth: the portal token IS the authorization, and it authorizes exactly
+ * this. Everything that decides the money — is it signed, is this rail offered,
+ * is it allowed at this size, how much is actually owed — is resolved
+ * SERVER-SIDE in `sponsorPortal.preparePayment`. This action's only job is to
+ * turn that answer into a Checkout Session.
+ *
+ * ── WHY BANK TRANSFER IS USUALLY THE ONLY OPTION ───────────────────────────
+ * Stripe's ACH debit is 0.8% capped at $5; a card takes ~2.9% + 30¢ with no cap
+ * — $101.80 on a $3,500 Production Partner spot against $5.00. Agreements
+ * default to bank-only and the preparer refuses a rail the agreement doesn't
+ * offer, so the card branch below only ever runs for a small spot where a
+ * manager deliberately turned it on.
+ */
+export const createSponsorPortalCheckout = action({
+  args: {
+    token: v.string(),
+    method: v.union(v.literal("ach"), v.literal("card")),
+    /** A part payment. Omitted = the whole remaining balance. The preparer
+     *  clamps it; the client never supplies a ceiling. */
+    amountCents: v.optional(v.number()),
+    coverFee: v.optional(v.boolean()),
+    clientIp: v.optional(v.string()),
+  },
+  handler: async (ctx, args): Promise<{ kind: "stripe"; url: string }> => {
+    const prepared = await ctx.runMutation(
+      internal.sponsorPortal.preparePayment,
+      {
+        token: args.token,
+        rail: args.method,
+        ...(args.amountCents != null ? { amountCents: args.amountCents } : {}),
+        ...(args.coverFee != null ? { coverFee: args.coverFee } : {}),
+        ...(args.clientIp ? { clientIp: args.clientIp } : {}),
+      },
+    );
+
+    const secretKey = process.env.STRIPE_SECRET_KEY;
+    if (!secretKey) {
+      throw new ConvexError({
+        code: "PAYMENTS_NOT_CONFIGURED",
+        message: "Online payment isn't available yet — please reply to your contact and we'll invoice you.",
+      });
+    }
+
+    // Back to the portal itself, which is where the partner started and where
+    // the remaining balance lives. Composed from `sponsorPortalPath` so the
+    // link they opened, the link the email sent, and the link Stripe returns
+    // them to can never be three different pages.
+    const returnUrl = sponsorPortalUrl(args.token);
+    if (!returnUrl) {
+      // Degrade LOUDLY rather than start a Checkout with no return URL — a
+      // partner stranded on Stripe's success page with no way back is worse
+      // than being told to try later. Same posture as
+      // `createRepaymentCheckout`.
+      console.error(
+        "[stripe] createSponsorPortalCheckout: no public site URL — refusing to start a checkout with no return URL",
+      );
+      throw new ConvexError({
+        code: "PAYMENTS_NOT_CONFIGURED",
+        message: "Online payment isn't available yet — please reply to your contact and we'll invoice you.",
+      });
+    }
+
+    const body = new URLSearchParams();
+    body.set("mode", "payment");
+    if (prepared.payerEmail) body.set("customer_email", prepared.payerEmail);
+    // A bank-debit session pins `us_bank_account`, which is what makes Stripe
+    // collect bank credentials instead of a card number. A card session sends
+    // nothing and takes Stripe's default so the wallets the account already
+    // accepts stay available. Resolved in the preparer; see its doc.
+    prepared.paymentMethodTypes?.forEach((type, i) => {
+      body.set(`payment_method_types[${i}]`, type);
+    });
+    body.set("success_url", `${returnUrl}?paid=1`);
+    body.set("cancel_url", returnUrl);
+    // What the webhook reads back to know what this was. The AMOUNT is never
+    // read from metadata on settle — Stripe's own `amount_total` is — but the
+    // fee-coverage line is our arithmetic about a line item we added, so it
+    // rides here for the settler to subtract.
+    body.set("metadata[sponsorshipId]", String(prepared.sponsorshipId));
+    body.set("metadata[sponsorIntendedCents]", String(prepared.intendedCents));
+    if (prepared.feeCents > 0) {
+      body.set("metadata[sponsorFeeCents]", String(prepared.feeCents));
+    }
+
+    body.set("line_items[0][quantity]", "1");
+    body.set("line_items[0][price_data][currency]", "usd");
+    body.set(
+      "line_items[0][price_data][unit_amount]",
+      String(prepared.intendedCents),
+    );
+    body.set(
+      "line_items[0][price_data][product_data][name]",
+      `${prepared.title} — ${prepared.orgName}`,
+    );
+    // ONE fee-coverage line, named with the rate so the partner reads WHY on
+    // Stripe's own page rather than seeing a mystery surcharge.
+    if (prepared.feeCents > 0) {
+      body.set("line_items[1][quantity]", "1");
+      body.set("line_items[1][price_data][currency]", "usd");
+      body.set("line_items[1][price_data][unit_amount]", String(prepared.feeCents));
+      body.set(
+        "line_items[1][price_data][product_data][name]",
+        prepared.feeRateLabel
+          ? `Processing fee (${prepared.feeRateLabel})`
+          : "Processing fee",
+      );
+    }
+
+    const response = await fetch(`${STRIPE_API}/checkout/sessions`, {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${secretKey}`,
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: body.toString(),
+    });
+    if (!response.ok) {
+      console.error(
+        "[stripe] sponsor portal checkout session failed:",
+        await response.text(),
+      );
+      throw new ConvexError({
+        code: "STRIPE_ERROR",
+        message: "Couldn't start checkout. Please try again.",
+      });
+    }
+    const session = (await response.json()) as { id: string; url: string };
     return { kind: "stripe", url: session.url };
   },
 });

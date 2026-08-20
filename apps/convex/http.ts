@@ -53,6 +53,11 @@ import {
   renderReimburseNotFound,
 } from "./lib/reimbursePage";
 import { registerContractApiRoutes } from "./lib/contractApiRoutes";
+import { registerSponsorPortalApiRoutes } from "./lib/sponsorPortalApiRoutes";
+import {
+  renderSponsorPortal,
+  renderSponsorPortalNotFound,
+} from "./lib/sponsorPortalPage";
 import {
   renderContractAgreement,
   renderContractForm,
@@ -119,6 +124,8 @@ registerReimburseApiRoutes(http);
 // JSON API for the public contractor page's client script (/api/contract/*).
 registerContractApiRoutes(http);
 
+// JSON API for the partner portal's client script (/api/partner/*).
+registerSponsorPortalApiRoutes(http);
 // JSON API for the public giving map's become-a-backer form (/api/give/*).
 registerGiveApiRoutes(http);
 
@@ -891,6 +898,25 @@ async function settleCheckoutSession(
       refKey: `give:${obj.id}`,
       amountCents: obj.amount_total ?? 0,
     });
+  } else if (obj.metadata?.sponsorshipId) {
+    // A PARTNER PORTAL payment (`stripe.ts#createSponsorPortalCheckout`) — a
+    // sponsorship agreement's balance, paid by the partner from the page they
+    // signed on. Booked as an ordinary `gifts` row tagged with the agreement,
+    // idempotent on the session id via `gifts.by_externalRef`. Handled BEFORE
+    // the ticket/donation fan-out: a portal session is neither an order nor an
+    // event donation and would otherwise fall through to "unknown session".
+    //
+    // `sponsorFeeCents` is the coverage line the checkout added on top of the
+    // balance — parsed defensively, because metadata is a string map and a
+    // non-numeric value must degrade to "no coverage" rather than NaN its way
+    // into the ledger.
+    const sponsorFee = Number(obj.metadata.sponsorFeeCents ?? 0);
+    await ctx.runMutation(internal.sponsorPortal.recordPortalPaymentPaid, {
+      sponsorshipId: obj.metadata.sponsorshipId,
+      sessionId: obj.id,
+      amountTotalCents: obj.amount_total ?? 0,
+      feeCoverageCents: Number.isFinite(sponsorFee) ? sponsorFee : 0,
+    });
   } else if (obj.metadata?.repaymentIds) {
     // A personal-charge repayment Checkout (`stripe.ts#createRepaymentCheckout`,
     // `cards.ts`'s "Stripe repayment" section) — bundled, so metadata
@@ -1214,6 +1240,14 @@ http.route({
           isGiveDonation: obj.metadata?.giveDonation === "1",
           ...(obj.metadata?.giveDonorId
             ? { giveDonorId: obj.metadata.giveDonorId }
+            : {}),
+          // A PARTNER PORTAL payment by bank debit. The partner has authorised
+          // it and the money has not moved, so no gift is booked and the
+          // agreement's balance is unchanged — but the portal shows it as
+          // clearing, which is what stops them paying the same $3,500 twice
+          // while it settles. See `sponsorProposal.sponsorshipMoney`.
+          ...(obj.metadata?.sponsorshipId
+            ? { sponsorshipId: obj.metadata.sponsorshipId }
             : {}),
         });
         // …and TELL THEM. From the donor's side this is the moment they
@@ -1840,6 +1874,40 @@ http.route({
     // definite one to POST with, so the decoded path segment (which is what
     // resolved the chapter in the first place) is what it gets.
     return html(renderContractForm({ ...chapter, slug }));
+  }),
+});
+
+// ── Partner portal: /partner/<token> ────────────────────────────────────────
+// One sponsorship agreement, on a page the partner opens with no account —
+// read it, sign it, pay it. The sibling of /contract/ and /reimburse/ above and
+// served the same way, with one difference: there is no slug and no blank form.
+// A partnership is always an agreement we already wrote, so the token is the
+// whole address, and a request without one is a 404 rather than an invitation.
+//
+// The token is the only authority and it authorizes exactly this agreement.
+// `publicByToken` returns null for an unknown OR revoked token, and this route
+// renders the identical "nothing here" page for both — a guessed token and a
+// killed one must be indistinguishable from outside. The client script POSTs to
+// /api/partner/* above.
+
+http.route({
+  pathPrefix: "/partner/",
+  method: "GET",
+  handler: httpAction(async (ctx, req) => {
+    const url = new URL(req.url);
+    const segments = url.pathname.split("/").filter(Boolean); // ["partner", token]
+    const rawToken = segments[1];
+    if (!rawToken) return html(renderSponsorPortalNotFound(), 404);
+    let token: string;
+    try {
+      token = decodeURIComponent(rawToken);
+    } catch {
+      return html(renderSponsorPortalNotFound(), 404);
+    }
+
+    const view = await ctx.runQuery(api.sponsorPortal.publicByToken, { token });
+    if (!view) return html(renderSponsorPortalNotFound(), 404);
+    return html(renderSponsorPortal(view, token));
   }),
 });
 
