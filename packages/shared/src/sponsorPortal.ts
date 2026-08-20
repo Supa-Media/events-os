@@ -242,6 +242,44 @@ export function sponsorFeeQuote(
 // "longer than any real one, shorter than a denial-of-service". They are shared
 // so the composer's counter and the server's rejection agree on the number.
 
+/** At most this many documents on one agreement — an agreement gathers a
+ *  proposal, maybe a side letter and a countersigned copy, not a folder. */
+export const MAX_SPONSOR_DOCUMENTS = 15;
+export const SPONSOR_DOC_LABEL_MAX = 160;
+
+/**
+ * What a partnership document may be. PDFs are the point (the founder said so),
+ * and images ride along because a scanned or photographed agreement is a
+ * genuine thing somebody uploads from a phone. Anything else is refused at the
+ * attach path — a portal is not a general file host, and the narrower the set
+ * the fewer surprises a partner meets on a download.
+ */
+export const SPONSOR_DOC_CONTENT_TYPES = [
+  "application/pdf",
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/heic",
+] as const;
+export type SponsorDocContentType = (typeof SPONSOR_DOC_CONTENT_TYPES)[number];
+
+/** Whether a declared content type is one we accept. Permissive about a
+ *  missing type only at the edges — the attach mutation decides. */
+export function isAcceptedSponsorDocType(contentType: string | undefined): boolean {
+  return (
+    contentType != null &&
+    (SPONSOR_DOC_CONTENT_TYPES as readonly string[]).includes(contentType)
+  );
+}
+
+/** A one-word kind for the icon/label a surface shows, without fetching the
+ *  blob. */
+export function sponsorDocKind(contentType: string | undefined): "pdf" | "image" | "file" {
+  if (contentType === "application/pdf") return "pdf";
+  if (contentType?.startsWith("image/")) return "image";
+  return "file";
+}
+
 export const SPONSOR_TITLE_MAX = 140;
 export const SPONSOR_SUMMARY_MAX = 6_000;
 export const SPONSOR_TERMS_MAX = 12_000;

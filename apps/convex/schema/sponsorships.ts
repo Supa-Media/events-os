@@ -241,3 +241,56 @@ export const sponsorships = defineTable({
   .index("by_package", ["packageId"])
   // The portal's ONLY lookup: a token in a URL → the agreement it opens.
   .index("by_portalToken", ["portalToken"]);
+
+/**
+ * A FREE-FORM DOCUMENT attached to a partnership agreement (partner portal,
+ * 2026-08-20).
+ *
+ * Founder: "we should be able to attach freeform PDFs here for any doc we want
+ * associated with the partnership agreement — for example if someone is
+ * covering production themselves, we would upload the agreed-upon production
+ * proposal."
+ *
+ * The production-proposal case is the one that shaped this: a partner carrying
+ * part of the spot in kind submits a proposal, we value it against our own
+ * budget lines (the `inKindCredits` on the agreement), and THIS is where the
+ * document behind that number lives — the evidence a credit line points at.
+ *
+ * ── VISIBILITY IS THE LOAD-BEARING FIELD ────────────────────────────────────
+ * `internal` — the desk only. `shared` — rendered on the partner's own portal
+ * page, downloadable through their token.
+ *
+ * A document defaults to `internal` at every write path, and `shared` is only
+ * ever set by an explicit act. The failure this orders against is a private
+ * draft, or our own notes, appearing on a page a partner reads — the same leak
+ * the whole portal is built to prevent (`dueDiligenceNotes` never crosses).
+ * Defaulting the other way would make the safe state the one you have to
+ * remember, which is how the accident happens.
+ *
+ * ── NOT A SIGNED TERM ───────────────────────────────────────────────────────
+ * Attaching a document does NOT bump `sponsorships.termsVersion` or clear a
+ * signature — deliberately. The countersigned proposal is uploaded AFTER the
+ * partner signs; making the upload un-sign the agreement would be absurd, and a
+ * document is supporting material for the terms, not the terms themselves.
+ *
+ * The blob lives in `_storage`; deleting a row deletes the blob with it
+ * (`removeDocument`), so a detached file leaves nothing stranded.
+ */
+export const sponsorshipDocuments = defineTable({
+  sponsorshipId: v.id("sponsorships"),
+  storageId: v.id("_storage"),
+  /** What this document IS, in the desk's words ("Production proposal — full
+   *  suite"). Shown on the composer and, when shared, on the partner's page. */
+  label: v.string(),
+  /** What the uploader's browser called the file, and what it actually was —
+   *  enough to render a filename and a type icon without fetching the blob. */
+  fileName: v.optional(v.string()),
+  contentType: v.optional(v.string()),
+  sizeBytes: v.optional(v.number()),
+  /** `internal` = desk only; `shared` = on the partner's portal page. Defaults
+   *  to `internal` at every writer — see the table doc. */
+  visibility: v.union(v.literal("internal"), v.literal("shared")),
+  uploadedByUserId: v.id("users"),
+  uploadedAt: v.number(),
+})
+  .index("by_sponsorship", ["sponsorshipId"]);

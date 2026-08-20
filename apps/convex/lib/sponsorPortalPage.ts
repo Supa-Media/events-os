@@ -66,6 +66,7 @@ import {
   type SponsorPaymentRail,
   type SponsorPortalState,
   parseSponsorProse,
+  sponsorDocKind,
 } from "@events-os/shared";
 import { escapeHtml as esc } from "./html";
 import { FONTS, FAVICON } from "./landingPageStyles";
@@ -85,6 +86,13 @@ export type SponsorPortalView = {
   termsVersion: number;
   events: { name: string; eventDate: number }[];
   contactName: string | null;
+  documents: {
+    label: string;
+    fileName: string | null;
+    contentType: string | null;
+    sizeBytes: number | null;
+    href: string;
+  }[];
   amountCents: number;
   inKindCredits: SponsorInKindCredit[];
   balance: {
@@ -142,6 +150,9 @@ const SYMBOLS = `<svg width="0" height="0" style="position:absolute" aria-hidden
 <symbol id="i-clock" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></symbol>
 <symbol id="i-lock" viewBox="0 0 24 24"><rect x="3" y="11" width="18" height="11" rx="2"/><path d="M7 11V7a5 5 0 0 1 10 0v4"/></symbol>
 <symbol id="i-alert" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></symbol>
+<symbol id="i-file" viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></symbol>
+<symbol id="i-image" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><polyline points="21 15 16 10 5 21"/></symbol>
+<symbol id="i-download" viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/></symbol>
 </defs></svg>`;
 
 const ICON = `fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"`;
@@ -254,6 +265,17 @@ ul{margin:0;padding:0;list-style:none;}
 .cover .ic svg{width:16px;height:16px;stroke:var(--accent);}
 .cover .cn{display:block;font-weight:600;font-size:15px;line-height:21px;overflow-wrap:anywhere;}
 .cover .cd{display:block;font-size:13px;line-height:19px;color:var(--muted);margin-top:1px;}
+/* Document rows — a real download link, styled as a tappable card. */
+.docs{display:flex;flex-direction:column;gap:10px;}
+.doc-row{display:flex;gap:12px;align-items:center;text-decoration:none;color:var(--ink);border:1px solid var(--border-strong);border-radius:var(--r-md);padding:12px 14px;background:var(--raised);}
+.doc-row:hover{border-color:var(--accent);background:var(--sunken);}
+.doc-row .ic{height:34px;width:34px;border-radius:var(--r-sm);background:var(--accent-soft);display:flex;align-items:center;justify-content:center;flex:0 0 34px;}
+.doc-row .ic svg{width:16px;height:16px;stroke:var(--accent);}
+.doc-row .dt{flex:1;min-width:0;}
+.doc-row .dn{display:block;font-weight:600;font-size:14px;line-height:20px;overflow-wrap:anywhere;}
+.doc-row .df{display:block;font-size:12px;line-height:17px;color:var(--muted);overflow-wrap:anywhere;}
+.doc-row .dl{flex:0 0 auto;}
+.doc-row .dl svg{width:17px;height:17px;stroke:var(--muted);}
 .paylist{border:1px solid var(--border);border-radius:var(--r-md);overflow:hidden;}
 .paylist .pr{display:flex;justify-content:space-between;gap:12px;padding:11px 14px;border-bottom:1px solid var(--border);}
 .paylist .pr:last-child{border-bottom:none;}
@@ -448,6 +470,49 @@ function termsSection(v: SponsorPortalView): string {
 }
 
 /**
+ * SHARED DOCUMENTS — the paperwork behind the agreement, downloadable.
+ *
+ * The founder's case: a partner covering production themselves has an agreed
+ * proposal, and that PDF is the evidence behind the in-kind credit on this
+ * page. It renders after the terms — supporting material for what was agreed,
+ * not a headline — and only the documents the desk marked shared reach here at
+ * all (the query filters; this renderer never sees an internal one).
+ *
+ * Each row is a real download link to the token-scoped route, which re-checks
+ * "shared" on every request. `rel="noopener"` on the new tab, and the label is
+ * the desk's words with the filename beneath it.
+ */
+function documentsSection(v: SponsorPortalView): string {
+  if (!v.documents.length) return "";
+  const rows = v.documents
+    .map((d) => {
+      const kind = sponsorDocKind(d.contentType ?? undefined);
+      const icon = kind === "pdf" ? "i-file" : kind === "image" ? "i-image" : "i-file";
+      const size = d.sizeBytes != null ? ` · ${fmtSize(d.sizeBytes)}` : "";
+      return `<a class="doc-row" href="${esc(d.href)}" target="_blank" rel="noopener">
+      <span class="ic"><svg ${ICON}><use href="#${icon}"/></svg></span>
+      <span class="dt">
+        <span class="dn">${esc(d.label)}</span>
+        <span class="df">${esc(d.fileName ?? "Open")}${size}</span>
+      </span>
+      <span class="dl"><svg ${ICON}><use href="#i-download"/></svg></span>
+    </a>`;
+    })
+    .join("");
+  return `<section class="sec">
+  <div class="sec-h">Documents</div>
+  <div class="docs">${rows}</div>
+</section>`;
+}
+
+/** A human file size, coarse on purpose — nobody reads a byte count. */
+function fmtSize(bytes: number): string {
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${Math.round(bytes / 1024)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+/**
  * The signature panel.
  *
  * SAYS WHAT SIGNING MEANS, in a sentence, above the button rather than in fine
@@ -600,6 +665,7 @@ ${pubbar()}
   ${listSection("What we deliver", v.commitments, true)}
   ${inKindSection(v)}
   ${termsSection(v)}
+  ${documentsSection(v)}
   ${signSection(v)}
   ${paySection(v)}
   ${paymentsSection(v)}

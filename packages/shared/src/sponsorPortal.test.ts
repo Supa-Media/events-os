@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { defaultFeeRate } from "./processorFees";
 import {
   CARD_RAIL_MAX_CENTS,
+  isAcceptedSponsorDocType,
+  sponsorDocKind,
   DEFAULT_SPONSOR_RAILS,
   cardRailBlockedReason,
   inKindTotalCents,
@@ -199,5 +201,22 @@ describe("parseSponsorProse", () => {
       { kind: "paragraph", text: "One" },
       { kind: "paragraph", text: "Two" },
     ]);
+  });
+});
+
+describe("document types", () => {
+  it("accepts PDFs and images, refuses everything else", () => {
+    expect(isAcceptedSponsorDocType("application/pdf")).toBe(true);
+    expect(isAcceptedSponsorDocType("image/png")).toBe(true);
+    expect(isAcceptedSponsorDocType("image/heic")).toBe(true);
+    expect(isAcceptedSponsorDocType("application/zip")).toBe(false);
+    expect(isAcceptedSponsorDocType("text/html")).toBe(false);
+    expect(isAcceptedSponsorDocType(undefined)).toBe(false);
+  });
+
+  it("names a kind for the icon without fetching the blob", () => {
+    expect(sponsorDocKind("application/pdf")).toBe("pdf");
+    expect(sponsorDocKind("image/jpeg")).toBe("image");
+    expect(sponsorDocKind(undefined)).toBe("file");
   });
 });

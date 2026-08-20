@@ -27,6 +27,7 @@ const BASE: SponsorPortalView = {
   termsVersion: 1,
   events: [{ name: "Love Thy Neighbor", eventDate: Date.UTC(2026, 8, 26, 12) }],
   contactName: "Tolu Adeyemi",
+  documents: [],
   amountCents: 350_000,
   inKindCredits: [{ label: "Full production suite", amountCents: 250_000 }],
   balance: {
@@ -181,6 +182,56 @@ describe("renderSponsorPortal", () => {
   test("shows no coverage heading when a season agreement covers no single date", () => {
     const html = renderSponsorPortal({ ...BASE, events: [] }, "tok_123");
     expect(html).not.toContain("What this partnership covers");
+  });
+
+  test("renders shared documents as real download links to the token route", () => {
+    const html = renderSponsorPortal(
+      {
+        ...BASE,
+        documents: [
+          {
+            label: "Production proposal — full suite",
+            fileName: "ignite-production.pdf",
+            contentType: "application/pdf",
+            sizeBytes: 220_400,
+            href: "/partner/tok_123/doc/doc_abc",
+          },
+        ],
+      },
+      "tok_123",
+    );
+    expect(html).toContain("Documents");
+    expect(html).toContain("Production proposal — full suite");
+    expect(html).toContain('href="/partner/tok_123/doc/doc_abc"');
+    expect(html).toContain("ignite-production.pdf");
+    expect(html).toContain("215 KB");
+    expect(html).toContain('rel="noopener"');
+  });
+
+  test("no Documents heading when nothing is shared", () => {
+    const html = renderSponsorPortal(BASE, "tok_123");
+    expect(html).not.toContain(">Documents<");
+  });
+
+  test("escapes a document label and filename", () => {
+    const html = renderSponsorPortal(
+      {
+        ...BASE,
+        documents: [
+          {
+            label: "<script>alert(1)</script>",
+            fileName: "<img src=x>.pdf",
+            contentType: "application/pdf",
+            sizeBytes: null,
+            href: "/partner/tok/doc/x",
+          },
+        ],
+      },
+      "tok",
+    );
+    expect(html).not.toContain("<script>alert");
+    expect(html).not.toContain("<img src=x>");
+    expect(html).toContain("&lt;script&gt;");
   });
 
   test("the not-found page says the same thing for a guess and a revocation", () => {

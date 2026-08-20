@@ -1905,6 +1905,30 @@ http.route({
       return html(renderSponsorPortalNotFound(), 404);
     }
 
+    // `/partner/<token>/doc/<documentId>` — a shared document's download. The
+    // query re-checks the token opens a live agreement, the document belongs to
+    // it, AND it is shared, on every request; an internal doc or a revoked link
+    // both resolve to null here, indistinguishable from a wrong id.
+    if (segments[2] === "doc" && segments[3]) {
+      const resolved = await ctx.runQuery(
+        api.sponsorPortal.resolveSharedDocument,
+        { token, documentId: segments[3] as Id<"sponsorshipDocuments"> },
+      );
+      if (!resolved) return new Response("Not found", { status: 404 });
+      const blob = await ctx.storage.get(resolved.storageId);
+      if (!blob) return new Response("Not found", { status: 404 });
+      // `inline` so a PDF opens in the browser tab; the filename rides along so
+      // a save keeps a real name rather than the storage id.
+      const safeName = (resolved.fileName ?? "document").replace(/[^\w.\- ]+/g, "_");
+      return new Response(blob, {
+        headers: {
+          "Content-Type": resolved.contentType || blob.type || "application/octet-stream",
+          "Content-Disposition": `inline; filename="${safeName}"`,
+          "Cache-Control": "private, no-store",
+        },
+      });
+    }
+
     const view = await ctx.runQuery(api.sponsorPortal.publicByToken, { token });
     if (!view) return html(renderSponsorPortalNotFound(), 404);
     return html(renderSponsorPortal(view, token));

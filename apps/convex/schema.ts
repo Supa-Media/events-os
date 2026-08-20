@@ -113,7 +113,11 @@ import {
   dismissedGiftCandidates,
   givebutterConvertedDonations,
 } from "./schema/givingPlatform";
-import { sponsorPackages, sponsorships } from "./schema/sponsorships";
+import {
+  sponsorPackages,
+  sponsorships,
+  sponsorshipDocuments,
+} from "./schema/sponsorships";
 import { territories } from "./schema/territories";
 import { givingInterest } from "./schema/givingInterest";
 import {
@@ -499,6 +503,10 @@ const schema = defineSchema({
   // rows with `sponsorshipId` set (see schema/sponsorships.ts + sponsorships.ts).
   sponsorPackages,
   sponsorships,
+  // Free-form documents attached to an agreement (the agreed production
+  // proposal behind an in-kind credit, a signed side letter). `visibility`
+  // decides whether the partner sees it on their portal — default internal.
+  sponsorshipDocuments,
 
   // Territories (giving-territories addendum) — a territory maps 1:1 with a
   // real chapter (a "shadow chapter" while prospect); prospect pledges/donors/

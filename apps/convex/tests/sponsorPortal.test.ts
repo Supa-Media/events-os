@@ -707,6 +707,222 @@ describe("covered events", () => {
   });
 });
 
+// ── Documents ────────────────────────────────────────────────────────────────
+
+describe("agreement documents", () => {
+  /** Store a blob directly (convex-test affordance) and return its id — stands
+   *  in for the client PUT that `documentUploadUrl` sets up. */
+  async function storePdf(s: ChapterSetup): Promise<Id<"_storage">> {
+    return run(s.t, (ctx) =>
+      (ctx.storage as unknown as {
+        store: (b: Blob) => Promise<Id<"_storage">>;
+      }).store(new Blob(["%PDF-1.7"], { type: "application/pdf" })),
+    );
+  }
+
+  test("attaches a document, internal by default, and never leaks it to the partner", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const storageId = await storePdf(s);
+    const { token } = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+
+    const docId = await s.as.mutation(api.sponsorPortal.attachDocument, {
+      sponsorshipId,
+      storageId,
+      label: "Production proposal — full suite",
+      fileName: "ignite.pdf",
+      contentType: "application/pdf",
+      sizeBytes: 2048,
+    });
+
+    // The desk sees it; it is desk-only until shared.
+    const admin = await s.as.query(api.sponsorPortal.portalAdmin, { sponsorshipId });
+    expect(admin.documents).toHaveLength(1);
+    expect(admin.documents[0].shared).toBe(false);
+
+    // The partner sees NOTHING, and cannot fetch it by id.
+    const view = await s.t.query(api.sponsorPortal.publicByToken, { token });
+    expect(view!.documents).toHaveLength(0);
+    expect(
+      await s.t.query(api.sponsorPortal.resolveSharedDocument, {
+        token,
+        documentId: docId,
+      }),
+    ).toBeNull();
+  });
+
+  test("sharing a document surfaces it on the partner's page and lets the token fetch it", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const storageId = await storePdf(s);
+    const { token } = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+    const docId = await s.as.mutation(api.sponsorPortal.attachDocument, {
+      sponsorshipId,
+      storageId,
+      label: "Production proposal",
+      fileName: "ignite.pdf",
+      contentType: "application/pdf",
+    });
+
+    await s.as.mutation(api.sponsorPortal.setDocumentVisibility, {
+      documentId: docId,
+      shared: true,
+    });
+
+    const view = await s.t.query(api.sponsorPortal.publicByToken, { token });
+    expect(view!.documents).toHaveLength(1);
+    expect(view!.documents[0].label).toBe("Production proposal");
+    expect(view!.documents[0].href).toBe(`/partner/${token}/doc/${docId}`);
+    // No storage id ever reaches the partner shape.
+    expect(JSON.stringify(view!.documents[0])).not.toContain(storageId);
+
+    const resolved = await s.t.query(api.sponsorPortal.resolveSharedDocument, {
+      token,
+      documentId: docId,
+    });
+    expect(resolved!.storageId).toBe(storageId);
+  });
+
+  test("a revoked link kills document access even for a shared doc", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const storageId = await storePdf(s);
+    const { token } = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+    const docId = await s.as.mutation(api.sponsorPortal.attachDocument, {
+      sponsorshipId,
+      storageId,
+      label: "Proposal",
+      contentType: "application/pdf",
+    });
+    await s.as.mutation(api.sponsorPortal.setDocumentVisibility, {
+      documentId: docId,
+      shared: true,
+    });
+    await s.as.mutation(api.sponsorPortal.revokePortalLink, { sponsorshipId });
+
+    expect(
+      await s.t.query(api.sponsorPortal.resolveSharedDocument, {
+        token,
+        documentId: docId,
+      }),
+    ).toBeNull();
+  });
+
+  test("a document cannot be fetched through another agreement's token", async () => {
+    const s = await devDirectorSetup();
+    const a = await seedAgreement(s);
+    const b = await seedAgreement(s);
+    const storageId = await storePdf(s);
+    const docId = await s.as.mutation(api.sponsorPortal.attachDocument, {
+      sponsorshipId: a,
+      storageId,
+      label: "Proposal",
+      contentType: "application/pdf",
+    });
+    await s.as.mutation(api.sponsorPortal.setDocumentVisibility, {
+      documentId: docId,
+      shared: true,
+    });
+    const { token: bToken } = await s.as.mutation(
+      api.sponsorPortal.issuePortalLink,
+      { sponsorshipId: b },
+    );
+
+    expect(
+      await s.t.query(api.sponsorPortal.resolveSharedDocument, {
+        token: bToken,
+        documentId: docId,
+      }),
+    ).toBeNull();
+  });
+
+  test("refuses an unsupported file type and doesn't strand the blob", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const storageId = await run(s.t, (ctx) =>
+      (ctx.storage as unknown as {
+        store: (b: Blob) => Promise<Id<"_storage">>;
+      }).store(new Blob(["zip"], { type: "application/zip" })),
+    );
+    await expect(
+      s.as.mutation(api.sponsorPortal.attachDocument, {
+        sponsorshipId,
+        storageId,
+        label: "Archive",
+        contentType: "application/zip",
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("removing a document deletes the row and the blob", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const storageId = await storePdf(s);
+    const docId = await s.as.mutation(api.sponsorPortal.attachDocument, {
+      sponsorshipId,
+      storageId,
+      label: "Proposal",
+      contentType: "application/pdf",
+    });
+    await s.as.mutation(api.sponsorPortal.removeDocument, { documentId: docId });
+
+    const admin = await s.as.query(api.sponsorPortal.portalAdmin, { sponsorshipId });
+    expect(admin.documents).toHaveLength(0);
+    // The blob is gone too — nothing stranded in storage. `.get` is a
+    // convex-test affordance off the generated StorageWriter type, so it's
+    // reached through a cast, same as `.store` above.
+    const blob = await run(s.t, (ctx) =>
+      (ctx.storage as unknown as {
+        get: (id: Id<"_storage">) => Promise<Blob | null>;
+      }).get(storageId),
+    );
+    expect(blob).toBeNull();
+  });
+
+  test("attaching does not disturb a signature — a document is not a term", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const storageId = await storePdf(s);
+    const { token } = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+    await sign(s, token);
+
+    await s.as.mutation(api.sponsorPortal.attachDocument, {
+      sponsorshipId,
+      storageId,
+      label: "Countersigned proposal",
+      contentType: "application/pdf",
+    });
+
+    // Uploading the countersigned proposal AFTER signing must not un-sign it.
+    const view = await s.t.query(api.sponsorPortal.publicByToken, { token });
+    expect(view!.signed).not.toBeNull();
+    expect(view!.state).toBe("awaiting_payment");
+  });
+
+  test("an unauthenticated caller cannot attach", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = await seedAgreement(s);
+    const storageId = await storePdf(s);
+    // `s.t` is the signed-out client; the compose gate refuses it.
+    await expect(
+      s.t.mutation(api.sponsorPortal.attachDocument, {
+        sponsorshipId,
+        storageId,
+        label: "x",
+        contentType: "application/pdf",
+      }),
+    ).rejects.toThrow();
+  });
+});
+
 // ── Read receipts ────────────────────────────────────────────────────────────
 
 describe("noteView", () => {

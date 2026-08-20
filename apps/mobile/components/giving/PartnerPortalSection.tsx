@@ -36,7 +36,15 @@
  * what it is handed and never decides authority for itself.
  */
 import { useEffect, useMemo, useState } from "react";
-import { Linking, Pressable, Text, View } from "react-native";
+import {
+  ActivityIndicator,
+  Linking,
+  Platform,
+  Pressable,
+  Text,
+  View,
+} from "react-native";
+import * as ImagePicker from "expo-image-picker";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -46,6 +54,8 @@ import {
   SPONSOR_PORTAL_STATE_LABELS,
   SPONSOR_RAIL_LABELS,
   cardRailBlockedReason,
+  isAcceptedSponsorDocType,
+  sponsorDocKind,
   formatCents,
   type SponsorPaymentRail,
   type SponsorPortalState,
@@ -604,6 +614,13 @@ export function PartnerPortalSection({
         </View>
       ) : null}
 
+      {/* ── Documents ───────────────────────────────────────────────────── */}
+      {canManage ? (
+        <View className="mt-3">
+          <DocumentsCard sponsorshipId={sponsorshipId} documents={data.documents} />
+        </View>
+      ) : null}
+
       {canManage ? (
         <View className="mt-3">
           {error ? (
@@ -731,6 +748,200 @@ function CoveragePicker({
           partner to sign again, because it changes what they agreed to.
         </Text>
       )}
+    </Card>
+  );
+}
+
+/**
+ * FREE-FORM DOCUMENTS on the agreement — the paperwork behind the deal.
+ *
+ * The founder's case: a partner covering production themselves has an agreed
+ * proposal, and this is where that PDF lives — the evidence a `inKindCredits`
+ * line points at. Each document is INTERNAL until the desk explicitly shows it
+ * on the partner's page, because the failure worth ordering against is a draft
+ * or an internal note leaking to a partner (see `attachDocument`'s doc).
+ *
+ * ── WEB IS THE UPLOAD PATH, DELIBERATELY ────────────────────────────────────
+ * A PDF comes off a laptop, and the giving desk runs on the web build. The web
+ * branch is a real file input that takes PDFs and images alike. The native
+ * branch falls back to the photo library — enough for a photographed or
+ * scanned agreement — because a full native document picker means a new native
+ * module and a dev-client rebuild, which is not this PR's job. The gap is
+ * named here rather than hidden.
+ */
+function DocumentsCard({
+  sponsorshipId,
+  documents,
+}: {
+  sponsorshipId: Id<"sponsorships">;
+  documents: {
+    _id: Id<"sponsorshipDocuments">;
+    label: string;
+    fileName: string | null;
+    contentType: string | null;
+    sizeBytes: number | null;
+    shared: boolean;
+    uploadedAt: number;
+  }[];
+}) {
+  const uploadUrl = useMutation(api.sponsorPortal.documentUploadUrl);
+  const attach = useMutation(api.sponsorPortal.attachDocument);
+  const setVisibility = useMutation(api.sponsorPortal.setDocumentVisibility);
+  const remove = useMutation(api.sponsorPortal.removeDocument);
+
+  const [label, setLabel] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  async function upload(
+    blob: Blob,
+    contentType: string,
+    fileName: string,
+    sizeBytes: number,
+  ) {
+    setError(null);
+    if (!isAcceptedSponsorDocType(contentType)) {
+      setError("Attach a PDF or an image (PNG, JPEG, WebP, or HEIC).");
+      return;
+    }
+    setBusy(true);
+    try {
+      const url = await uploadUrl({});
+      const res = await fetch(url, {
+        method: "POST",
+        headers: { "Content-Type": contentType },
+        body: blob,
+      });
+      const { storageId } = (await res.json()) as {
+        storageId: Id<"_storage">;
+      };
+      await attach({
+        sponsorshipId,
+        storageId,
+        // The label is the desk's words; default it to the filename so an
+        // upload is never nameless, and let them type a better one first.
+        label: label.trim() || fileName.replace(/\.[^.]+$/, ""),
+        fileName,
+        contentType,
+        sizeBytes,
+        // Never shared on upload. Showing it to the partner is a second,
+        // deliberate tap on the row below.
+      });
+      setLabel("");
+    } catch (err) {
+      setError(messageOf(err, "Couldn't attach that — try again."));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  function pickWeb() {
+    const input = document.createElement("input");
+    input.type = "file";
+    input.accept = "application/pdf,image/*";
+    input.onchange = () => {
+      const file = input.files?.[0];
+      if (file) void upload(file, file.type || "application/pdf", file.name, file.size);
+    };
+    input.click();
+  }
+
+  async function pickNative() {
+    const result = await ImagePicker.launchImageLibraryAsync({
+      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      quality: 0.9,
+    });
+    if (result.canceled || !result.assets?.length) return;
+    const asset = result.assets[0];
+    const resp = await fetch(asset.uri);
+    const blob = await resp.blob();
+    await upload(
+      blob,
+      asset.mimeType || blob.type || "image/jpeg",
+      asset.fileName ?? "Scanned document",
+      asset.fileSize ?? blob.size ?? 0,
+    );
+  }
+
+  return (
+    <Card>
+      <Text className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+        Documents
+      </Text>
+      <Text className="mb-3 text-xs text-muted">
+        Attach any paperwork behind this partnership — the agreed production
+        proposal, a signed side letter. Each stays internal to the desk until
+        you choose to show it on the partner&apos;s page.
+      </Text>
+
+      {documents.length > 0 ? (
+        <View className="mb-3">
+          {documents.map((d) => (
+            <View
+              key={d._id}
+              className="mb-2 rounded-md border border-border p-3"
+            >
+              <View className="flex-row items-start justify-between gap-3">
+                <View className="flex-1">
+                  <Text className="text-sm font-semibold text-ink">
+                    {d.label}
+                  </Text>
+                  <Text className="mt-0.5 text-xs text-faint" numberOfLines={1}>
+                    {sponsorDocKind(d.contentType ?? undefined).toUpperCase()}
+                    {d.fileName ? ` · ${d.fileName}` : ""}
+                  </Text>
+                </View>
+                <Badge
+                  label={d.shared ? "On their page" : "Desk only"}
+                  tone={d.shared ? "info" : "neutral"}
+                />
+              </View>
+              <View className="mt-2.5 flex-row flex-wrap items-center gap-4">
+                <Pressable
+                  onPress={() =>
+                    void setVisibility({ documentId: d._id, shared: !d.shared })
+                  }
+                >
+                  <Text className="text-xs font-semibold text-accent">
+                    {d.shared ? "Hide from their page" : "Show on their page"}
+                  </Text>
+                </Pressable>
+                <Pressable onPress={() => void remove({ documentId: d._id })}>
+                  <Text className="text-xs font-semibold text-danger">
+                    Remove
+                  </Text>
+                </Pressable>
+              </View>
+            </View>
+          ))}
+        </View>
+      ) : null}
+
+      <TextField
+        label="Label (optional)"
+        value={label}
+        onChangeText={setLabel}
+        placeholder="Production proposal — full suite"
+      />
+      {error ? (
+        <Text className="mb-2 text-sm text-danger">{error}</Text>
+      ) : null}
+      <View className="flex-row items-center gap-3">
+        <Button
+          title={busy ? "Uploading…" : "Attach a document"}
+          variant="secondary"
+          size="sm"
+          disabled={busy}
+          onPress={() => (Platform.OS === "web" ? pickWeb() : void pickNative())}
+        />
+        {busy ? <ActivityIndicator size="small" /> : null}
+      </View>
+      {Platform.OS !== "web" ? (
+        <Text className="mt-2 text-xs text-faint">
+          On this device you can attach a photo or scan. To attach a PDF, open
+          the partnership on the web.
+        </Text>
+      ) : null}
     </Card>
   );
 }

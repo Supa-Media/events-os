@@ -53,7 +53,9 @@ import { ConvexError, v } from "convex/values";
 import {
   CARD_RAIL_MAX_CENTS,
   MAX_IN_KIND_CREDITS,
+  MAX_SPONSOR_DOCUMENTS,
   MAX_SPONSORSHIP_EVENTS,
+  SPONSOR_DOC_LABEL_MAX,
   SPONSOR_AMOUNT_MAX_CENTS,
   SPONSOR_CONTACT_NAME_MAX,
   SPONSOR_CREDIT_LABEL_MAX,
@@ -65,13 +67,14 @@ import {
   type SponsorPaymentRail,
   describeFeeRate,
   inKindTotalCents,
+  isAcceptedSponsorDocType,
   railAllowedAtAmount,
   sponsorAmountProblems,
   sponsorFeeQuote,
   sponsorSignatureProblems,
 } from "@events-os/shared";
 import { internal } from "./_generated/api";
-import { Doc } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import {
   internalMutation,
   internalQuery,
@@ -80,6 +83,7 @@ import {
   type MutationCtx,
   type QueryCtx,
 } from "./_generated/server";
+import { requireUserId } from "./lib/context";
 import { resolveFeeRate } from "./lib/feeSchedule";
 import { recordGiftForDonor } from "./lib/givingDonors";
 import {
@@ -97,7 +101,11 @@ import {
   sponsorshipMoney,
   termsVersionOf,
 } from "./lib/sponsorProposal";
-import { sponsorPortalPath, sponsorPortalUrl } from "./lib/siteUrl";
+import {
+  sponsorPortalDocPath,
+  sponsorPortalPath,
+  sponsorPortalUrl,
+} from "./lib/siteUrl";
 
 // ── Bounds & rate limits ─────────────────────────────────────────────────────
 
@@ -225,8 +233,27 @@ export const portalAdmin = query({
       .map((e) => ({ _id: e._id, name: e.name, eventDate: e.eventDate }));
 
     const token = portalLinkIsLive(sponsorship) ? sponsorship.portalToken! : null;
+
+    const documents = (
+      await ctx.db
+        .query("sponsorshipDocuments")
+        .withIndex("by_sponsorship", (q) => q.eq("sponsorshipId", sponsorshipId))
+        .collect()
+    )
+      .sort((a, b) => a.uploadedAt - b.uploadedAt)
+      .map((d) => ({
+        _id: d._id,
+        label: d.label,
+        fileName: d.fileName ?? null,
+        contentType: d.contentType ?? null,
+        sizeBytes: d.sizeBytes ?? null,
+        shared: d.visibility === "shared",
+        uploadedAt: d.uploadedAt,
+      }));
+
     return {
       proposal,
+      documents,
       events,
       packageName: pkg?.name ?? null,
       packagePriceCents: pkg?.pricing.amountCents ?? null,
@@ -661,9 +688,29 @@ export const publicByToken = query({
         }),
     );
 
+    const documents = (
+      await ctx.db
+        .query("sponsorshipDocuments")
+        .withIndex("by_sponsorship", (q) => q.eq("sponsorshipId", sponsorship._id))
+        .collect()
+    )
+      .filter((d) => d.visibility === "shared")
+      .sort((a, b) => a.uploadedAt - b.uploadedAt)
+      // No storageId reaches the partner — the download goes back through the
+      // token route, which re-checks `shared` every time. They get a label, a
+      // filename, a type, and a path.
+      .map((d) => ({
+        label: d.label,
+        fileName: d.fileName ?? null,
+        contentType: d.contentType ?? null,
+        sizeBytes: d.sizeBytes ?? null,
+        href: sponsorPortalDocPath(token, d._id),
+      }));
+
     return {
       orgName: donor?.name ?? "Our partner",
       title: proposal.title,
+      documents,
       summary: proposal.summary,
       benefits: proposal.benefits,
       commitments: proposal.commitments,
@@ -988,6 +1035,207 @@ export const recordPortalPaymentPaid = internalMutation({
       giftId,
     });
     return true;
+  },
+});
+
+// ── STAFF: documents ─────────────────────────────────────────────────────────
+
+/**
+ * An upload URL for a partnership document. Gated by the compose power — the
+ * same authority that writes the proposal writes the paperwork behind it.
+ *
+ * The client PUTs the file to this URL, gets a `storageId` back, and hands it
+ * to `attachDocument`. The blob is orphaned until `attachDocument` accepts it,
+ * exactly like the reimbursement receipt flow — an upload that is never
+ * attached is swept by Convex, not left as a live document.
+ */
+export const documentUploadUrl = mutation({
+  args: {},
+  returns: v.string(),
+  handler: async (ctx) => {
+    await requirePartnershipCompose(ctx);
+    return await ctx.storage.generateUploadUrl();
+  },
+});
+
+/**
+ * Record an uploaded file as a document on this agreement.
+ *
+ * VISIBILITY DEFAULTS TO INTERNAL. `shared` is set only when the caller asks
+ * for it explicitly — the safe state is the default one, so a private draft
+ * cannot reach a partner's page by omission (see the table doc in
+ * `schema/sponsorships.ts`).
+ *
+ * The content type is checked against the shared allow-list: a partner portal
+ * is not a general file host, and a stranger downloading whatever a staffer
+ * happened to upload is a surface worth keeping narrow. A bad type deletes the
+ * just-uploaded blob rather than leaving it stranded.
+ */
+export const attachDocument = mutation({
+  args: {
+    sponsorshipId: v.id("sponsorships"),
+    storageId: v.id("_storage"),
+    label: v.string(),
+    fileName: v.optional(v.string()),
+    contentType: v.optional(v.string()),
+    sizeBytes: v.optional(v.number()),
+    shared: v.optional(v.boolean()),
+  },
+  returns: v.id("sponsorshipDocuments"),
+  handler: async (ctx, args) => {
+    await requirePartnershipCompose(ctx);
+    const sponsorship = await ctx.db.get(args.sponsorshipId);
+    if (!sponsorship) {
+      // The upload succeeded but the agreement is gone — don't leave the blob.
+      await ctx.storage.delete(args.storageId);
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That sponsorship doesn't exist.",
+      });
+    }
+
+    if (!isAcceptedSponsorDocType(args.contentType)) {
+      await ctx.storage.delete(args.storageId);
+      throw new ConvexError({
+        code: "UNSUPPORTED_FILE",
+        message: "Attach a PDF or an image (PNG, JPEG, WebP, or HEIC).",
+      });
+    }
+
+    const label = args.label.trim().slice(0, SPONSOR_DOC_LABEL_MAX);
+    if (!label) {
+      await ctx.storage.delete(args.storageId);
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Give the document a short label so the desk knows what it is.",
+      });
+    }
+
+    const existing = await ctx.db
+      .query("sponsorshipDocuments")
+      .withIndex("by_sponsorship", (q) => q.eq("sponsorshipId", args.sponsorshipId))
+      .collect();
+    if (existing.length >= MAX_SPONSOR_DOCUMENTS) {
+      await ctx.storage.delete(args.storageId);
+      throw new ConvexError({
+        code: "TOO_MANY_DOCUMENTS",
+        message: `An agreement may hold at most ${MAX_SPONSOR_DOCUMENTS} documents.`,
+      });
+    }
+
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await ctx.db.insert("sponsorshipDocuments", {
+      sponsorshipId: args.sponsorshipId,
+      storageId: args.storageId,
+      label,
+      ...(args.fileName ? { fileName: args.fileName.slice(0, 300) } : {}),
+      ...(args.contentType ? { contentType: args.contentType } : {}),
+      ...(typeof args.sizeBytes === "number" && args.sizeBytes >= 0
+        ? { sizeBytes: Math.round(args.sizeBytes) }
+        : {}),
+      // Explicit-only. Absence is internal.
+      visibility: args.shared === true ? "shared" : "internal",
+      uploadedByUserId: userId,
+      uploadedAt: Date.now(),
+    });
+  },
+});
+
+/** Flip whether a document shows on the partner's page. Its own mutation
+ *  because "let them see this" is a decision worth making on purpose, one
+ *  document at a time — not a checkbox buried in a bigger save. */
+export const setDocumentVisibility = mutation({
+  args: {
+    documentId: v.id("sponsorshipDocuments"),
+    shared: v.boolean(),
+  },
+  returns: v.null(),
+  handler: async (ctx, { documentId, shared }) => {
+    await requirePartnershipCompose(ctx);
+    const doc = await ctx.db.get(documentId);
+    if (!doc) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That document doesn't exist any more.",
+      });
+    }
+    await ctx.db.patch(documentId, {
+      visibility: shared ? "shared" : "internal",
+    });
+    return null;
+  },
+});
+
+/** Remove a document — the row AND the blob, so nothing is stranded in
+ *  storage. The blob delete is best-effort after the row is gone (an
+ *  already-collected blob must not fail the removal). */
+export const removeDocument = mutation({
+  args: { documentId: v.id("sponsorshipDocuments") },
+  returns: v.null(),
+  handler: async (ctx, { documentId }) => {
+    await requirePartnershipCompose(ctx);
+    const doc = await ctx.db.get(documentId);
+    if (!doc) return null;
+    await ctx.db.delete(documentId);
+    try {
+      await ctx.storage.delete(doc.storageId);
+    } catch (err) {
+      console.warn("[sponsorPortal] blob already gone for removed document", err);
+    }
+    return null;
+  },
+});
+
+/** A short-lived signed URL for the DESK to open any document (both
+ *  visibilities), gated by the view power. The partner's own download goes
+ *  through the token route instead — see `resolveSharedDocument`. */
+export const documentUrl = query({
+  args: { documentId: v.id("sponsorshipDocuments") },
+  returns: v.union(v.string(), v.null()),
+  handler: async (ctx, { documentId }) => {
+    await requirePartnershipView(ctx);
+    const doc = await ctx.db.get(documentId);
+    if (!doc) return null;
+    return await ctx.storage.getUrl(doc.storageId);
+  },
+});
+
+/**
+ * Resolve a token + document id to the blob to stream, or null — the partner's
+ * accountless download path (`http.ts`'s `/partner/<token>/doc/<id>`).
+ *
+ * THREE CHECKS, ALL SERVER-SIDE, ON EVERY REQUEST: the token opens a live
+ * agreement, the document belongs to THAT agreement, and it is `shared`. An
+ * internal document can never be fetched even by someone holding both ids, and
+ * revoking the portal link kills document access with it — the token is the
+ * only authority, exactly as it is for reading and paying.
+ */
+export const resolveSharedDocument = query({
+  args: { token: v.string(), documentId: v.id("sponsorshipDocuments") },
+  returns: v.union(
+    v.object({
+      storageId: v.id("_storage"),
+      fileName: v.union(v.string(), v.null()),
+      contentType: v.union(v.string(), v.null()),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { token, documentId }) => {
+    const sponsorship = await agreementForToken(ctx, token);
+    if (!sponsorship) return null;
+    const doc = await ctx.db.get(documentId);
+    if (
+      !doc ||
+      doc.sponsorshipId !== sponsorship._id ||
+      doc.visibility !== "shared"
+    ) {
+      return null;
+    }
+    return {
+      storageId: doc.storageId,
+      fileName: doc.fileName ?? null,
+      contentType: doc.contentType ?? null,
+    };
   },
 });
 

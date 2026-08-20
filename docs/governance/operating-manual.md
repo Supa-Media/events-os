@@ -518,6 +518,17 @@ sign again, and what they originally signed stays visible to the desk. Editing
 the contact block, the payment rails, or an in-kind credit does not — reducing
 what a partner owes must never force them to re-sign.
 
+**Documents attach to an agreement, and default to internal.** Any file behind
+the deal — the agreed production proposal when a partner carries production in
+kind, a signed side letter — is stored with the agreement. Each document is
+visible to the development desk only until it is explicitly marked shared, at
+which point it appears on the partner's own portal page and is downloadable
+through their link. The default is internal by design: the failure to prevent is
+a draft or an internal note reaching a partner, so the safe state is never the
+one a staffer has to remember. A shared document is served through the same
+secret token that opens the portal — revoking the link ends document access with
+it — and an internal document is unreachable to the partner even by its id.
+
 **In-kind credit reduces what is owed; it is not revenue.** Where a partner
 carries part of an agreement in donated work — production, equipment, a venue —
 the organization values it **at its own budget lines, never at the partner's

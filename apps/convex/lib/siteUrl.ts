@@ -87,6 +87,15 @@ export function sponsorPortalPath(token: string): string {
   return `/${PARTNER_PATH}/${token}`;
 }
 
+/**
+ * A shared document's download path, under the same token. Kept in one place so
+ * the path the portal page renders and the route `http.ts` serves it from can
+ * never drift. `documentId` is a Convex id string — url-safe as it stands.
+ */
+export function sponsorPortalDocPath(token: string, documentId: string): string {
+  return `/${PARTNER_PATH}/${token}/doc/${documentId}`;
+}
+
 /** Absolute URL of a partner portal, or null when no public site URL is
  *  configured — callers omit the link rather than emailing a dead one. */
 export function sponsorPortalUrl(token: string): string | null {
