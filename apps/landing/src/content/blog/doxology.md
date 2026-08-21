@@ -25,9 +25,9 @@ that's hardest to find right now.
 
 ## The word: doxology
 
-**Doxology** is two Greek words stuck together: *doxa*, **glory** — who God
-is, in all His weight — and *logos*, **saying it out loud**. A doxology says
-out loud how great God is.
+**Doxology** is two Greek words stuck together. *Doxa* is **glory** — who God
+is, in all His weight. *Logos* is **saying it out loud**. A doxology says out
+loud how great God is.
 
 You've sung them your whole life. *"Praise God from whom all blessings
 flow."* The angels' *"Holy, holy, holy"* (Isa 6:3; Rev 4:8). Paul, in the
@@ -54,7 +54,7 @@ carries a risk you don't feel while you're singing. A testimony song has you
 dwelling on what God did *for you*. A prayer song, on what *you* still need.
 A confession song, on what *you* did. Sung once, at the right moment, that's
 holy. Sung every week, they slowly teach a room to spend the whole worship
-set thinking about itself — and to walk out having handed God nothing.
+set thinking about itself. The room walks out having handed God nothing.
 
 People may have cried. The altar is still empty.
 
@@ -184,7 +184,7 @@ the line back home.
   We don't build our identity on them.
 - **Mixed songs** — a chorus about God wrapped in verses about the singer's
   journey. We'll sing some. But what we're *writing* is God-centered start to
-  finish: nothing put on the altar and then taken back off.
+  finish. Nothing goes on the altar and then comes back off.
 - **"Blessed be God" and thank-you songs** (Eph 1:3–14; 1 Pet 1:3–5) — right
   on the line. They pass while the focus stays on what God did, and drift
   when they settle into what we got out of it. Test them line by line.
@@ -204,8 +204,8 @@ confession, and asking in the room, where Scripture puts them. The 80% keeps
 This is the part we care about most.
 
 We want the next wave of worshipers writing songs shaped by what moves God,
-not by how a crowd reacts — songs that stay pointed at Him from the first
-line to the last, held to Scripture before they're held to the algorithm.
+not by how a crowd reacts. Songs that stay pointed at Him from the first line
+to the last. Songs held to Scripture before they're held to the algorithm.
 
 We haven't got this figured out. We expect to keep working it out — in
 writing rooms, on platforms, and with anyone willing to hold us to Scripture
