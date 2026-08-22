@@ -52,7 +52,7 @@ import { DutyRows } from "../../../components/work/DutyRows";
 import { AddResponsibilityModal } from "../../../components/team/AddResponsibilityModal";
 import { CourseBadgeChips } from "../../../components/academy/CourseBadgeChips";
 import { DuplicatesSheet } from "../../../components/people/DuplicatesSheet";
-import { addPersonAndGetOpenId } from "../../../components/people/addPerson.logic";
+import { AddPersonModal } from "../../../components/people/AddPersonModal";
 import {
   PersonaRail,
   ServicesDropdown,
@@ -201,7 +201,6 @@ function confirmRemove(name: string): boolean {
 /** PEOPLE roster — a spreadsheet-style editable grid with per-person history. */
 export default function PeopleScreen() {
   const org = useQuery(api.org.nav);
-  const create = useMutation(api.people.create);
   // The Title column mirrors org-chart seat titles (the current model) —
   // `people.role` is only the fallback shown when someone holds no seat.
   const seatHoldings = useQuery(api.responsibilities.chapterSeatHoldings);
@@ -303,6 +302,9 @@ export default function PeopleScreen() {
   const router = useRouter();
   // Admin-only duplicate review + merge (Attendance C).
   const [dupOpen, setDupOpen] = useState(false);
+  // Add Person modal (replaces the old instant-stub-create) — see
+  // `AddPersonModal`.
+  const [addPersonOpen, setAddPersonOpen] = useState(false);
   // Full-database export entry point — its own power (`data.export`), so the
   // button below stays hidden — not just disabled — for a caller who doesn't
   // hold it (never just a "this view" export like the giving grids' button).
@@ -446,19 +448,6 @@ export default function PeopleScreen() {
   // a donor-linked row is still `isContactOnly` (provenance).
   const openPerson: Person | null =
     openPersonOnPage ?? (openPersonFallback ? { ...openPersonFallback, imageUrl: null, persona: null } : null);
-
-  async function handleAddRow() {
-    const result = await addPersonAndGetOpenId(create);
-    // Check the success arm (`id !== undefined`) rather than the error arm:
-    // `error` is typed `unknown` on the failure branch, so it isn't a
-    // discriminable literal across the union and doesn't narrow `result.id`
-    // back to `string` for `setOpenId`. Narrowing on `id` does.
-    if (result.id !== undefined) {
-      setOpenId(result.id);
-      return;
-    }
-    alertError(result.error);
-  }
 
   return (
     <Screen maxWidth={FULL_WIDTH}>
@@ -760,7 +749,7 @@ export default function PeopleScreen() {
 
         {/* Add row */}
         <Pressable
-          onPress={handleAddRow}
+          onPress={() => setAddPersonOpen(true)}
           className="flex-row items-center gap-1.5 border-t border-border px-3 py-2.5 active:bg-sunken web:hover:bg-sunken"
         >
           <Icon name="plus" size={15} color={colors.muted} />
@@ -773,7 +762,7 @@ export default function PeopleScreen() {
           <View style={{ marginTop: spacing.md }}>
             <EmptyState
               title="No people yet"
-              message="Use the “Add person” row to start your roster, then edit each cell inline."
+              message="Tap “Add person” to start your roster."
             />
           </View>
         </Narrow>
@@ -784,6 +773,17 @@ export default function PeopleScreen() {
         giverMark={openPerson ? giverMarksByPerson.get(openPerson._id) ?? null : null}
         onClose={() => setOpenId(null)}
       />
+
+      {addPersonOpen ? (
+        <AddPersonModal
+          canSetManager={org?.isAdmin === true}
+          onClose={() => setAddPersonOpen(false)}
+          onCreated={(id) => {
+            setAddPersonOpen(false);
+            setOpenId(id);
+          }}
+        />
+      ) : null}
 
       {chapterId ? (
         <DuplicatesSheet
