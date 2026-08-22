@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   View,
   Text,
@@ -176,13 +176,19 @@ const EMAIL_SELECTED_CAP = 200;
 
 /** Search debounce (owner addendum precedent —
  *  `components/finance/reconcile/ReconcileList.tsx#SEARCH_DEBOUNCE_MS`): a
- *  round trip per keystroke is wasteful now that search is server-side. */
-const SEARCH_DEBOUNCE_MS = 200;
+ *  round trip per keystroke is wasteful now that search is server-side.
+ *  350ms, not 200 — normal inter-key gaps routinely exceed 200ms, so the
+ *  shorter window still fired a server search mid-word. */
+const SEARCH_DEBOUNCE_MS = 350;
 
 /** How many rows `usePaginatedQuery` loads per page — big enough that most
  *  chapters never see a "Load more" tap, small enough that a heavily
  *  filtered/searched page still resolves in one indexed round trip. */
 const PAGE_SIZE = 50;
+
+/** Stable empty array for rows holding no seat — a fresh `?? []` per render
+ *  would defeat `PersonRow`'s memo (new reference every keystroke). */
+const NO_SEAT_TITLES: string[] = [];
 
 /** Confirm a destructive action — window.confirm on web, no prompt on native. */
 function confirmRemove(name: string): boolean {
@@ -250,7 +256,18 @@ export default function PeopleScreen() {
     },
     { initialNumItems: PAGE_SIZE },
   );
-  const people = results as Person[];
+  // Hold the last loaded page while a search/filter change re-subscribes.
+  // `usePaginatedQuery` resets to LoadingFirstPage with EMPTY results on any
+  // arg change, which used to blank the grid — and worse, swap the whole
+  // screen to `<Screen loading />`, unmounting the search input and dropping
+  // keyboard focus mid-word. Showing the stale page until the new one lands
+  // keeps the input mounted and the grid steady.
+  const lastLoadedRef = useRef<Person[] | null>(null);
+  if (pageStatus !== "LoadingFirstPage") lastLoadedRef.current = results as Person[];
+  const people: Person[] =
+    pageStatus === "LoadingFirstPage"
+      ? lastLoadedRef.current ?? []
+      : (results as Person[]);
 
   // Persona-ladder counts (All / Team / Volunteers / Vendors / Guests /
   // Contacts) — a dedicated cheap query (`people.counts`), never derived from
@@ -363,14 +380,18 @@ export default function PeopleScreen() {
     });
   }
 
-  function toggleSelectOne(id: Id<"people">) {
+  // Stable references (useCallback) — these are `PersonRow` props, and the
+  // rows are memoized; an inline lambda per row would re-render all of them
+  // on every parent render (the search-keystroke lag this fixes).
+  const toggleSelectOne = useCallback((id: Id<"people">) => {
     setSelected((cur) => {
       const next = new Set(cur);
       if (next.has(id)) next.delete(id);
       else next.add(id);
       return next;
     });
-  }
+  }, []);
+  const openPersonById = useCallback((id: Id<"people">) => setOpenId(id), []);
 
   function handleEmailSelected() {
     if (selectedCount === 0 || overCap) return;
@@ -413,7 +434,12 @@ export default function PeopleScreen() {
     setGiversOnly(false);
   }
 
-  if (pageStatus === "LoadingFirstPage" && people.length === 0) return <Screen loading />;
+  // Full-screen loading ONLY before anything has ever loaded — never while a
+  // search/filter change reloads (that unmounted the search input mid-word;
+  // the stale page above covers that case).
+  if (pageStatus === "LoadingFirstPage" && lastLoadedRef.current === null) {
+    return <Screen loading />;
+  }
 
   // Cross-tab deep link (see `openParam`/`openPersonOnPage` above) can point
   // at a CONTACT — e.g. the giving CRM's donor "Linked person" column, since
@@ -671,6 +697,13 @@ export default function PeopleScreen() {
                   No people yet — add your first below.
                 </Text>
               </View>
+            ) : people.length === 0 && pageLoading ? (
+              // A reload whose PREVIOUS page was also empty has no stale rows
+              // to show — say we're looking rather than a premature "no one
+              // matches".
+              <View className="px-3 py-6">
+                <Text className="text-sm text-faint">Searching…</Text>
+              </View>
             ) : people.length === 0 ? (
               <View className="px-3 py-6">
                 <Text className="text-sm text-faint">
@@ -697,12 +730,12 @@ export default function PeopleScreen() {
                     p.managerId ? nameById.get(p.managerId) ?? null : null
                   }
                   canEditManager={org?.isAdmin === true}
-                  seatTitles={seatTitlesByPerson.get(p._id) ?? []}
+                  seatTitles={seatTitlesByPerson.get(p._id) ?? NO_SEAT_TITLES}
                   giverMark={giverMarksByPerson.get(p._id) ?? null}
                   isLast={i === people.length - 1}
                   selected={selected.has(p._id)}
-                  onToggleSelected={() => toggleSelectOne(p._id)}
-                  onOpen={() => setOpenId(p._id)}
+                  onToggleSelected={toggleSelectOne}
+                  onOpen={openPersonById}
                 />
               ))
             )}
@@ -763,8 +796,15 @@ export default function PeopleScreen() {
   );
 }
 
-/** A single roster row of fixed-width inline-editable cells + a delete gutter. */
-function PersonRow({
+/** A single roster row of fixed-width inline-editable cells + a delete gutter.
+ *
+ *  Memoized: the search box's state lives on `PeopleScreen`, so every
+ *  keystroke re-renders the parent — without memo that re-rendered every
+ *  loaded row (~19 cells each), which made typing visibly lag. All props are
+ *  reference-stable across keystrokes (row objects come from the unchanged
+ *  query result; callbacks are `useCallback`; empty seat list is the shared
+ *  `NO_SEAT_TITLES`). */
+const PersonRow = memo(function PersonRow({
   person,
   managerName,
   canEditManager,
@@ -790,8 +830,10 @@ function PersonRow({
   isLast: boolean;
   /** People-CRM UX multi-select — local grid state, not persisted. */
   selected: boolean;
-  onToggleSelected: () => void;
-  onOpen: () => void;
+  /** Take the id (rather than closing over it) so the parent can pass ONE
+   *  stable function to every row — see the memo note above. */
+  onToggleSelected: (id: Id<"people">) => void;
+  onOpen: (id: Id<"people">) => void;
 }) {
   const update = useMutation(api.people.update);
   const remove = useMutation(api.people.remove);
@@ -845,7 +887,7 @@ function PersonRow({
       >
         <Checkbox
           checked={selected}
-          onPress={onToggleSelected}
+          onPress={() => onToggleSelected(id)}
           accessibilityLabel={`Select ${person.name || "this person"}`}
         />
       </View>
@@ -1121,7 +1163,7 @@ function PersonRow({
         className="items-center justify-center border-r border-border/60"
       >
         <Pressable
-          onPress={onOpen}
+          onPress={() => onOpen(id)}
           hitSlop={6}
           accessibilityLabel="View event history"
           className="rounded p-1.5 active:bg-sunken web:hover:bg-sunken"
@@ -1145,7 +1187,7 @@ function PersonRow({
       </View>
     </View>
   );
-}
+});
 
 /**
  * Title column body: the person's held org-chart seat titles (comma-joined),
