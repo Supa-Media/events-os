@@ -7,6 +7,14 @@
  * chapter lead can tell "Music Director — Alex" from "Music Director —
  * Vacant" before picking).
  *
+ * The input EDITS A DISPLAY PROJECTION of the stored value: a stored token
+ * `@[Label](mention:type:id)` shows as just `@Label` while editing (the raw
+ * markup made typing after a mention miserable — see
+ * `mentionDisplay.logic.ts`). Every keystroke against the projection is
+ * mapped back onto the raw string (`applyDisplayEdit`); mentions behave as
+ * atomic chips — an edit touching one deletes/replaces the whole token.
+ * `value` in and `onCommit` out remain the RAW stored string.
+ *
  * Selecting a suggestion commits IMMEDIATELY rather than waiting for blur:
  * on web, pressing a `Popover` row blurs the underlying `TextInput` first
  * (focus moves to the pressable), which would otherwise commit the
@@ -14,12 +22,20 @@
  * suppresses that stale blur-commit; `insertMention` is the sole committer
  * for the selection path.
  */
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { View, Text, TextInput, Pressable } from "react-native";
 import { encodeMention, type MentionType } from "@events-os/shared";
 import { MentionPopover } from "./MentionPopover";
 import { useAnchor } from "../ui/useAnchor";
 import { detectMentionTrigger, type MentionTrigger } from "./mentionTrigger.logic";
+import {
+  applyDisplayEdit,
+  buildMentionDisplay,
+  displayPosToRaw,
+  mentionDisplayLabel,
+  posTouchesMention,
+  type DisplaySpan,
+} from "./mentionDisplay.logic";
 import { colors } from "../../lib/theme";
 
 const MAX_SUGGESTIONS = 8;
@@ -68,12 +84,16 @@ export function MentionTextInput({
    *  styling (e.g. CopyEditor's border-accent toggle). */
   onFocusChange?: (focused: boolean) => void;
 }) {
-  const [text, setText] = useState(value);
+  // The RAW stored string is the source of truth; the TextInput renders and
+  // edits its display projection (`@Label` per token).
+  const [raw, setRaw] = useState(value);
+  const projection = useMemo(() => buildMentionDisplay(raw), [raw]);
   const [trigger, setTrigger] = useState<MentionTrigger>(null);
   // Auto-grow multiline inputs to their content height (same rationale as the
   // grid's InlineText: wrapped text must never clip).
   const [contentH, setContentH] = useState<number | undefined>(undefined);
-  const cursorRef = useRef(value.length);
+  // Caret position, in DISPLAY coordinates (what the input shows).
+  const cursorRef = useRef(projection.display.length);
   const justSelectedRef = useRef(false);
   const inputRef = useRef<TextInput>(null);
   const { ref, anchor, visible, open, close } = useAnchor();
@@ -90,16 +110,37 @@ export function MentionTextInput({
     return cursorRef.current ?? fallbackText.length;
   };
 
+  // When an edit collapses an atomic mention (or splices one in), the new
+  // display differs from what the DOM just showed — after React re-renders
+  // the projected value, put the caret where the edit logic says it belongs.
+  const pendingCursorRef = useRef<number | null>(null);
+  useEffect(() => {
+    const pending = pendingCursorRef.current;
+    if (pending == null) return;
+    pendingCursorRef.current = null;
+    cursorRef.current = pending;
+    const el = inputRef.current as unknown as {
+      setSelectionRange?: (s: number, e: number) => void;
+    } | null;
+    // Web: the ref is the DOM input/textarea. Native falls back to
+    // cursorRef, which the line above already updated.
+    el?.setSelectionRange?.(pending, pending);
+  }, [raw]);
+
   // Keep the field in sync when the underlying value changes from elsewhere
   // (mirrors InlineText).
   useEffect(() => {
-    setText(value);
-    cursorRef.current = value.length;
+    setRaw(value);
+    cursorRef.current = buildMentionDisplay(value).display.length;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [value]);
 
-  const runTrigger = (nextText: string, cursor: number) => {
-    const next = detectMentionTrigger(nextText, cursor);
+  const runTrigger = (displayText: string, cursor: number, spans: DisplaySpan[]) => {
+    let next = detectMentionTrigger(displayText, cursor);
+    // An existing token's own `@Label` must never read as an in-progress
+    // query (placing the caret right after `@Treasurer` would otherwise
+    // reopen the picker).
+    if (next && posTouchesMention(spans, next.start)) next = null;
     setTrigger(next);
     if (next) open();
     else close();
@@ -111,14 +152,19 @@ export function MentionTextInput({
 
   const insertMention = (s: Suggestion) => {
     if (!trigger) return;
-    const insertion = encodeMention(s.type, s.id, s.label) + " ";
-    const nextText =
-      text.slice(0, trigger.start) + insertion + text.slice(cursorRef.current);
-    setText(nextText);
-    cursorRef.current = trigger.start + insertion.length;
+    // Trigger start/caret are display positions inside plain text (an
+    // in-progress `@query` is never inside a token) — map them to raw and
+    // splice the encoded token into the RAW string.
+    const rStart = displayPosToRaw(projection, trigger.start);
+    const rEnd = displayPosToRaw(projection, cursorRef.current);
+    const nextRaw =
+      raw.slice(0, rStart) + encodeMention(s.type, s.id, s.label) + " " + raw.slice(rEnd);
+    setRaw(nextRaw);
+    pendingCursorRef.current =
+      trigger.start + mentionDisplayLabel(s.label).length + 1;
     setTrigger(null);
     close();
-    onCommit(nextText);
+    onCommit(nextRaw);
     // On web the portal popover prevents the suggestion click from blurring
     // the input (see MentionPopover.web), so the pressIn flag is never reset
     // by a blur — reset it here or the NEXT genuine blur would be swallowed.
@@ -133,17 +179,25 @@ export function MentionTextInput({
       <View ref={ref} className="flex-1">
         <TextInput
           ref={inputRef}
-          value={text}
-          onChangeText={(t) => {
-            setText(t);
-            const cursor = readCursor(t);
-            cursorRef.current = cursor;
-            runTrigger(t, cursor);
+          value={projection.display}
+          onChangeText={(nextDisplay) => {
+            const result = applyDisplayEdit(raw, projection.display, nextDisplay);
+            setRaw(result.raw);
+            if (result.cursorNeedsForce) {
+              pendingCursorRef.current = result.cursor;
+            } else {
+              cursorRef.current = readCursor(result.display);
+            }
+            runTrigger(
+              result.display,
+              result.cursorNeedsForce ? result.cursor : cursorRef.current,
+              result.spans,
+            );
           }}
           onSelectionChange={(e) => {
             const sel = e.nativeEvent.selection.end;
             cursorRef.current = sel;
-            runTrigger(text, sel);
+            runTrigger(projection.display, sel, projection.spans);
           }}
           onFocus={() => onFocusChange?.(true)}
           onBlur={() => {
@@ -154,7 +208,7 @@ export function MentionTextInput({
               justSelectedRef.current = false;
               return;
             }
-            onCommit(text);
+            onCommit(raw);
             onDone?.();
           }}
           placeholder={placeholder}
