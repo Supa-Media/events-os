@@ -175,7 +175,7 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("one hundred thirteen ordered sections; six capstones; one optional bonus", () => {
+  test("one hundred fifteen ordered sections; six capstones; one optional bonus", () => {
     // 79 + 5 (the "Leading a project" course: works-defining-a-project,
     // works-planning-the-work, works-the-project-budget,
     // works-tracking-and-escalating, works-finishing-well — all required,
@@ -272,12 +272,22 @@ describe("curriculum content", () => {
     // settles by bank transfer because the fee is capped at $5 where a card's
     // ~3% is not — $101.80 of a $3,500 spot. Each is a money or evidence rule,
     // not a UI detail.)
-    expect(ACADEMY_SECTION_COUNT).toBe(114);
+    // + 1 (mgmt-the-front-door, 2026-08-23, inserted into the growing-the-team
+    // course between mgmt-empower-first and mgmt-the-interview — required, not
+    // a capstone. The five-step process the surrounding lessons teach did not
+    // change; where it LIVES did. There is now a public careers page, one
+    // application form behind it, and a Hiring desk carrying the stages — and
+    // three rules that used to be discipline are now refusals the product
+    // makes: a placement needs two people's rubric reviews, a not-now needs a
+    // revisit date, and no file closes without a recorded reason. Placed
+    // immediately after the pipeline overview so a reader meets the door
+    // before the interview that happens behind it.)
+    expect(ACADEMY_SECTION_COUNT).toBe(115);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 114 }, (_v, i) => i + 1),
+      Array.from({ length: 115 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(113);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(114);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

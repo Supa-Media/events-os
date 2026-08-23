@@ -1015,6 +1015,110 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
+  // ── 35b · Management: the front door ────────────────────────────────────────
+  {
+    slug: "mgmt-the-front-door",
+    title: "The front door",
+    subtitle: "Where the pipeline actually lives now — a public page, one form, and a promise with a clock on it",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "The five steps used to live in people's heads and a few Notion pages. They live in the product now: **publicworship.life/careers** publishes the open roles, anyone can apply from it, and every application lands in one place — the **Hiring** desk in Chapter OS. Same door for a stranger who found the page and for a friend a director asked to apply properly.",
+      },
+      {
+        kind: "p",
+        text: "A role only gets published when someone can write down three things about it: the **outcomes** it's accountable for (and how we'd know one landed), what the holder gets to **decide** without asking, and what the role is **not**. If those can't be written, the seat isn't ready to be filled — that's the gate, and it sits before any candidate is ever contacted.",
+      },
+      {
+        kind: "table",
+        headers: ["Stage on the desk", "What it means"],
+        rows: [
+          ["**Applied**", "It landed. Nobody has read it yet — and the clock is running"],
+          ["**Reading it**", "A human is reading it against the role: covering, capacity, outcomes"],
+          ["**Interview · heart, then role**", "The two meetings, same rubric both times"],
+          ["**Empowerment Trial**", "Real bounded work, with the midpoint and decision dates already on the file"],
+          ["**Awaiting the call**", "The reviews are in and we owe this person an answer"],
+          ["**Placed · Not now · Declined · Withdrew**", "Closed, with a reason recorded and a message sent"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Three things the desk will not let you skip",
+        text: "You cannot **place** someone on one person's read — two people's rubric reviews, or the button refuses. You cannot record a **not-now** without a date we'll come back to them; a not-now with no date is a no nobody had to say. And you cannot close any file without writing **why** — for us, never sent to them. The candidate gets a warm, editable message instead.",
+      },
+      {
+        kind: "p",
+        text: "Running the pipeline and making the call are also different powers. A recruiting associate can read applications, book and file interviews, and start a trial. Only a director — the People Director or the ED — can close a file. That's the same rule the last lesson taught, enforced instead of remembered.",
+      },
+      {
+        kind: "p",
+        text: "The page makes one promise with a clock on it: **a human replies within a week, either way.** The desk counts the files that are past it, the ones nobody owns, and the trials past their midpoint — in red, at the top. Those numbers are the desk's own report card, and they are the reason a friendly page is a commitment rather than a brochure.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "A director you trust says a candidate is obviously right and asks you to skip the trial — they've known them for years. What actually happens?",
+        answer:
+          "Nothing changes. Familiarity is the shortcut the one-door rule exists to prevent — and the desk won't let a file be placed on a single person's review anyway. What you CAN do is make the trial short and real rather than ceremonial, and re-file how they reached us as \"personal network\" so the ordered search stays honest about where our people actually come from.",
+      },
+      {
+        kind: "tip",
+        text: "In the app · Hiring → a candidate's file. Everything in this lesson is on that one screen: their answers, the rubric, the trial brief, and the call. The public half is at publicworship.life/careers.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "What has to be true before a role gets published on the careers page?",
+        options: [
+          "Someone has time to interview",
+          "Its outcomes, the decisions the holder gets to make, and what the role is NOT can all be written down",
+          "The budget is approved",
+          "A candidate has already been found",
+        ],
+        answerIndex: 1,
+        explanation:
+          "If those three can't be written, the seat isn't ready to be filled — handing someone a responsibility without stated outcomes and authority just hands it back.",
+      },
+      {
+        prompt: "How many people's rubric reviews does it take to PLACE a candidate?",
+        options: [
+          "One — the director decides anyway",
+          "At least two different people's reviews; the desk refuses the placement otherwise",
+          "Every director on the team",
+          "None, if the trial went well",
+        ],
+        answerIndex: 1,
+        explanation:
+          "\"At least two team members, one shared rubric.\" The Director still makes the call — but not on a single person's read, and filing twice yourself doesn't count as two.",
+      },
+      {
+        prompt: "What does a \"not now\" require that a decline doesn't?",
+        options: [
+          "A longer message",
+          "A date we'll actually come back to it",
+          "The ED's approval",
+          "Nothing — they're the same",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A not-now is a promise. Without a revisit date it's just a no that nobody had to say out loud, which is the exact failure the warm-no doctrine exists to prevent.",
+      },
+      {
+        prompt: "Who can close a candidate's file?",
+        options: [
+          "Anyone with hiring desk access",
+          "Only a director — the People Director or the ED. Running the pipeline and making the call are separate powers",
+          "Whoever ran the last interview",
+          "The candidate's referrer",
+        ],
+        answerIndex: 1,
+        explanation:
+          "An associate can move candidates, file reviews, and start trials without being able to end someone's process — that separation is deliberate and it's enforced by the app.",
+      },
+    ],
+  },
+
   // ── 36 · Management: the interview ──────────────────────────────────────────
   {
     slug: "mgmt-the-interview",
@@ -1518,12 +1622,14 @@ export const MANAGEMENT_COURSES: Course[] = [
     level: "leader",
     audience: "team",
     description:
-      "Empower first, appoint second: the five-step hiring pipeline, the " +
-      "interview rubric, the Empowerment Trial, and the call that ends it " +
-      "— kindly, either way.",
+      "Empower first, appoint second: the five-step hiring pipeline, where it " +
+      "lives now (a public careers page and the Hiring desk), the interview " +
+      "rubric, the Empowerment Trial, and the call that ends it — kindly, " +
+      "either way.",
     icon: "user-plus",
     moduleSlugs: [
       "mgmt-empower-first",
+      "mgmt-the-front-door",
       "mgmt-the-interview",
       "mgmt-the-trial",
       "mgmt-the-call",

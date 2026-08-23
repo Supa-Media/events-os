@@ -1,0 +1,225 @@
+{
+  "$ref": "#/definitions/roles",
+  "definitions": {
+    "roles": {
+      "type": "object",
+      "properties": {
+        "title": {
+          "type": "string"
+        },
+        "status": {
+          "type": "string",
+          "enum": [
+            "open",
+            "filling",
+            "not_open",
+            "closed"
+          ]
+        },
+        "team": {
+          "type": "string"
+        },
+        "commitment": {
+          "type": "string",
+          "default": "Volunteer"
+        },
+        "location": {
+          "type": "string"
+        },
+        "hoursPerWeek": {
+          "type": "number"
+        },
+        "reportsTo": {
+          "type": "string"
+        },
+        "worksWith": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "manages": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "trialTrack": {
+          "type": "string",
+          "enum": [
+            "team_member",
+            "director"
+          ]
+        },
+        "seatId": {
+          "type": "string"
+        },
+        "summary": {
+          "type": "string"
+        },
+        "whyThisSeatExists": {
+          "type": "string"
+        },
+        "outcomes": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "outcome": {
+                "type": "string"
+              },
+              "doneWhen": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "outcome",
+              "doneWhen"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "authority": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "responsibilities": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "area": {
+                "type": "string"
+              },
+              "items": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                },
+                "minItems": 1
+              }
+            },
+            "required": [
+              "area",
+              "items"
+            ],
+            "additionalProperties": false
+          },
+          "minItems": 1
+        },
+        "rhythms": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "firstNinetyDays": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "required": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "preferred": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": []
+        },
+        "notThisRole": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "successLooks": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "growthPath": {
+          "type": "string"
+        },
+        "order": {
+          "type": "number",
+          "default": 100
+        },
+        "postedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "integer",
+              "format": "unix-time"
+            }
+          ]
+        },
+        "updatedAt": {
+          "anyOf": [
+            {
+              "type": "string",
+              "format": "date-time"
+            },
+            {
+              "type": "string",
+              "format": "date"
+            },
+            {
+              "type": "integer",
+              "format": "unix-time"
+            }
+          ]
+        },
+        "$schema": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "title",
+        "status",
+        "team",
+        "location",
+        "hoursPerWeek",
+        "reportsTo",
+        "trialTrack",
+        "summary",
+        "whyThisSeatExists",
+        "outcomes",
+        "authority",
+        "responsibilities",
+        "rhythms",
+        "firstNinetyDays",
+        "required",
+        "notThisRole",
+        "successLooks",
+        "postedAt"
+      ],
+      "additionalProperties": false
+    }
+  },
+  "$schema": "http://json-schema.org/draft-07/schema#"
+}

@@ -155,8 +155,17 @@ any more, and a missed rung is no longer possible.
 | `email.campaigns.edit` | Draft, submit, and send an approved campaign |
 | `email.campaigns.approve` | Review and decide on others' emails — never your own |
 | `events.checkin` | Admit a guest at an event door |
+| `hiring.view` | Read the Hiring desk — applications, rubric reviews, trials |
+| `hiring.edit` | Run the pipeline: move a candidate, file a review, start a trial |
+| `hiring.approve` | Make the call — place, not-now, or decline, and send the outcome |
 | `org.chart.edit` | Add, move, rename, and re-power seats |
 | `data.export` | Bulk-export a dataset you can already see |
+
+Hiring's three rungs are the clearest live example of why an `approve` action
+exists: a Recruiting Associate holds `hiring.edit` and runs the whole funnel
+without being able to end anyone's process, while `hiring.approve` — the call
+itself — stays with the People Director and the ED. See
+`docs/guides/hiring-a-role.md`.
 
 `finance.cards.*` is granted to nobody yet — the area exists so card access can
 be handed out broadly without inventing a power at the moment it's needed.
@@ -165,7 +174,9 @@ be handed out broadly without inventing a power at the moment it's needed.
 
 Every power on a seat is editable from the org chart: open a seat, and the
 **Powers** section renders each domain from the registry. A domain with a
-ladder (Giving, Emails) offers a segmented **None / View / Manage** control; a
+ladder (Giving, Emails, Hiring) offers a segmented control — **None / View /
+Manage** for Giving and Emails, **None / View / Run the pipeline / Make the
+call** for Hiring; a
 domain of independent powers (Finance, Events, Organization, Data) offers
 toggles.
 

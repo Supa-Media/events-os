@@ -132,6 +132,10 @@ export const POWER_DOMAINS = [
   "email",
   /** Events and the door. */
   "events",
+  /** Getting the right people in: the careers page's applications, the
+   *  interview rubric, the Empowerment Trial, and the call at the end. The
+   *  People desk — one funnel for the whole org, so it is CENTRAL only. */
+  "hiring",
   /** The org itself: the chart, the seats. */
   "org",
   /** Bulk extraction, across every dataset. */
@@ -200,6 +204,10 @@ export const POWERS = [
   "email.campaigns.approve",
   // ── events ────────────────────────────────────────────────────────────────
   "events.checkin",
+  // ── hiring ────────────────────────────────────────────────────────────────
+  "hiring.view",
+  "hiring.edit",
+  "hiring.approve",
   // ── org ───────────────────────────────────────────────────────────────────
   "org.chart.edit",
   // ── data ──────────────────────────────────────────────────────────────────
@@ -370,6 +378,54 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
     action: "checkin",
     label: "Check guests in at the door",
     description: "Scan or type a guest's ticket code and admit them.",
+  },
+
+  // ── hiring ────────────────────────────────────────────────────────────────
+  /** The People desk. Deliberately three rungs, and the third is the whole
+   *  reason this is a domain rather than a `people.*` area: the Academy's
+   *  pipeline ends with "the Director decides," so the person who RUNS a
+   *  candidate through screening and interviews must be able to do that
+   *  without also being able to close the file. A recruiting associate holds
+   *  `hiring.edit`; only the People Director and the ED hold the call.
+   *
+   *  Central-scope only (`scope: "central"` on all three): the org runs ONE
+   *  funnel with one standard — "one pipeline, one standard, someone who can
+   *  say yes, no, why, or not now" — even for a role that will sit in a
+   *  chapter. If a chapter ever runs its own intake, that is a new area here,
+   *  not a widening of these. */
+  "hiring.view": {
+    id: "hiring.view",
+    domain: "hiring",
+    action: "view",
+    label: "See the hiring pipeline",
+    description:
+      "Read applications, interview rubrics, and trial reviews on the Hiring desk.",
+    scope: "central",
+  },
+  "hiring.edit": {
+    id: "hiring.edit",
+    domain: "hiring",
+    action: "edit",
+    label: "Run the hiring pipeline",
+    description:
+      "Move candidates through the stages, file rubric reviews, and start an Empowerment Trial.",
+    scope: "central",
+  },
+  "hiring.approve": {
+    id: "hiring.approve",
+    domain: "hiring",
+    action: "approve",
+    label: "Make the call on a candidate",
+    description:
+      "Close a candidate's file — place, not-now, or decline — and send the outcome message.",
+    /** The one who decides also runs the pipeline (rule 3, a same-domain edge
+     *  the ladder rule deliberately won't derive). This is NOT the campaigns
+     *  case: there, approving is a check on someone else's send, so the
+     *  approver is a different person by design. Here the Director owns the
+     *  funnel end to end and the split exists to keep an ASSOCIATE from
+     *  closing files — not to keep the Director out of the pipeline. */
+    implies: ["hiring.edit"],
+    scope: "central",
   },
 
   // ── org ───────────────────────────────────────────────────────────────────
@@ -598,6 +654,17 @@ export const POWER_DOMAIN_DEFS: Record<PowerDomain, PowerDomainDef> = {
     id: "events",
     label: "Events",
     description: "Running events and the door.",
+  },
+  hiring: {
+    id: "hiring",
+    label: "Hiring desk",
+    description:
+      "The candidate funnel. Running the pipeline and making the call are separate rungs on purpose — the Academy's five-step process ends with the Director deciding, not with whoever screened the application.",
+    ladder: [
+      { value: "view", label: "View", power: "hiring.view" },
+      { value: "run", label: "Run the pipeline", power: "hiring.edit" },
+      { value: "decide", label: "Make the call", power: "hiring.approve" },
+    ],
   },
   org: {
     id: "org",

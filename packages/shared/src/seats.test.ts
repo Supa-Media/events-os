@@ -226,6 +226,9 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "giving.edit",
       "email.campaigns.approve",
       "data.export",
+      // 2026-08-23: the ED makes the call on senior seats and Chapter
+      // Directors (Academy step 5).
+      "hiring.approve",
     ],
     // `finance.edit` at central replaces what took four strings before
     // (`finance.manager` + `finance.central` + `finance.accounts` +
@@ -263,9 +266,13 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     social_media_manager: ["email.assets.edit"],
     graphic_designer: ["email.assets.edit"],
     marketing_associate: [],
-    expansion_director: ["giving.view", "data.export"],
+    // 2026-08-23 (careers page + hiring pipeline): the People seat holds the
+    // call on a candidate; `hiring.approve` implies `hiring.edit`, so it runs
+    // the funnel too. The associate below runs it WITHOUT being able to close
+    // a file — that split is the whole reason `hiring.approve` exists.
+    expansion_director: ["giving.view", "data.export", "hiring.approve"],
     chapter_directors: [],
-    recruiting_associate: [],
+    recruiting_associate: ["hiring.edit"],
     training_associate: [],
     // A CHAPTER seat: `finance.view` is read of the whole finance domain at
     // THIS chapter. It needs no carve-out for the org's bank accounts because

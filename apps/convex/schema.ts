@@ -30,6 +30,11 @@ import {
   projectUpdates,
   projectEmailTokens,
 } from "./schema/projects";
+import {
+  jobApplications,
+  applicationReviews,
+  applicationEvents,
+} from "./schema/hiring";
 import { registrations } from "./schema/registrations";
 import { responsibilities, checkIns } from "./schema/responsibilities";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
@@ -263,6 +268,15 @@ const schema = defineSchema({
   // revenue stream (gifts, ticket orders, sales, registrations); see
   // `schema/registrations.ts` for why it can't be a `ticketOrders` row.
   registrations,
+
+  // Hiring (2026-08-23) — the org's ONE candidate funnel: the public careers
+  // page's applications, the shared interview/trial rubric, and the timeline
+  // behind every stage move. Central-scoped; see schema/hiring.ts + hiring.ts
+  // + `@events-os/shared`'s hiring.ts for the five-step process these tables
+  // are a recording of.
+  jobApplications,
+  applicationReviews,
+  applicationEvents,
 
   // Responsibilities (recurring duties, fanned out by role) + 1:1 check-ins.
   responsibilities,

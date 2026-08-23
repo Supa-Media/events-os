@@ -169,6 +169,12 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // design — no longer listed out, since `expandPowers` derives them.
       "email.campaigns.approve",
       "data.export",
+      // The ED holds the call on a candidate (and, by the explicit edge on
+      // `hiring.approve`, may run the pipeline). Step 5 of the Academy's
+      // hiring process is a DIRECTOR's decision; for senior seats and Chapter
+      // Directors that director is the ED. Day-to-day the People seat below
+      // runs the funnel.
+      "hiring.approve",
     ],
     legacyTitle: "executive_director",
   },
@@ -387,7 +393,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // by the ED at runtime.
     // 2026-07-31: + data.export (founder grant) — chapter launches run on
     // roster/pipeline lists pulled out per territory.
-    capabilities: ["giving.view", "data.export"],
+    // 2026-08-23: + hiring.approve (which implies `hiring.edit`) — this seat
+    // IS the org's people funnel. "One pipeline, one standard, someone who can
+    // say yes, no, why, or not now" is a power, and this is the seat that
+    // holds it. See `packages/shared/src/hiring.ts` and `lib/hiringAccess.ts`.
+    capabilities: ["giving.view", "data.export", "hiring.approve"],
   },
   chapter_directors: {
     id: "chapter_directors",
@@ -406,7 +416,10 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "expansion_director",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    capabilities: [],
+    // Runs the funnel — reads applications, books and files interviews, starts
+    // trials — and deliberately CANNOT close a file. `hiring.approve` is the
+    // Director's; this is the separation the third rung exists for.
+    capabilities: ["hiring.edit"],
   },
   training_associate: {
     id: "training_associate",

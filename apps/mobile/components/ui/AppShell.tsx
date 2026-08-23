@@ -65,6 +65,14 @@ const NAV: NavEntry[] = [
   // entry is additionally gated on `deskEnabled` below and is hidden by
   // default. See `docs/plans/email-desk-parked.md`.
   { label: "Emails", icon: "mail", path: "/campaigns", group: "A" },
+  // Hiring — the People desk's candidate funnel: the public careers page's
+  // applications, the shared interview/trial rubric, and the call at the end
+  // (`apps/convex/hiring.ts`). Its own desk beside Giving, same PARA group —
+  // an ongoing responsibility, not a project. Gated by
+  // `hiring.myHiringAccess.canView` (a held hiring seat, or superuser); the
+  // in-screen `requireHiringView` gate is the real one, this is nav
+  // visibility only.
+  { label: "Hiring", icon: "user-plus", path: "/hiring", group: "A" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy", group: "R" },
   // Org Chart — read-only, org-transparent (mirrors `seats.chart`'s "the whole
@@ -110,6 +118,8 @@ function useNav(): NavEntry[] {
   const giving = useQuery(api.givingPlatform.myGivingAccess, {});
   // Campaigns' own nav gate, same shape as Giving's — see the `NAV` entry doc.
   const campaigns = useQuery(api.audiences.myCampaignsAccess, {});
+  // Hiring's own nav gate, same shape as Giving's — see the `NAV` entry doc.
+  const hiring = useQuery(api.hiring.myHiringAccess, {});
   const tier = org?.tier;
   return NAV.filter((n) => {
     switch (n.path) {
@@ -124,6 +134,8 @@ function useNav(): NavEntry[] {
         return org?.showFinances === true;
       case "/giving":
         return giving?.canView === true;
+      case "/hiring":
+        return hiring?.canView === true;
       case "/campaigns":
         // `deskEnabled` is the parked-desk flag: bulk email moved to Mailchimp
         // (2026-08-19), so the Emails desk is hidden from nav unless a

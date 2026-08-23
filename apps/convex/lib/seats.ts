@@ -317,6 +317,61 @@ export async function holdsCheckInSeatAt(
   return false;
 }
 
+// ── Hiring seat-derived capabilities ─────────────────────────────────────────
+
+/** One person's seat-derived HIRING reach. Central-scope only — a hiring power
+ *  held at a chapter scope reaches nothing (see `lib/hiringAccess.ts`), so
+ *  unlike the giving reader below there is no per-scope map to key. */
+export interface SeatDerivedHiringCapabilities {
+  /** Some central seat carries `hiring.view` (read the desk). */
+  view: boolean;
+  /** …`hiring.edit` (run the pipeline). */
+  manage: boolean;
+  /** …`hiring.approve` (close a file). */
+  decide: boolean;
+}
+
+/**
+ * The person's seat-derived HIRING capabilities. Same bounds and stance as
+ * `getSeatDerivedGivingCapabilities` below — one indexed `by_person` query
+ * capped at `PERSON_SEAT_ASSIGNMENT_LIMIT`, one `ctx.db.get` per assignment,
+ * a stale def contributes nothing, capabilities only ever OR together.
+ *
+ * The one difference: assignments at a CHAPTER scope are skipped outright.
+ * All three hiring powers are declared `scope: "central"`, so a chapter grant
+ * is meaningless; skipping it here keeps that promise in the enforcement path
+ * rather than only in the chart's rendering.
+ */
+export async function getSeatDerivedHiringCapabilities(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+): Promise<SeatDerivedHiringCapabilities> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
+
+  const result: SeatDerivedHiringCapabilities = {
+    view: false,
+    manage: false,
+    decide: false,
+  };
+  for (const assignment of assignments) {
+    if (assignment.scope !== "central") continue;
+    const def = await ctx.db.get(assignment.seatDefId);
+    if (!def) continue; // stale assignment on a deleted def
+
+    // `hiring.approve` implies `hiring.edit` implies `hiring.view` — the
+    // explicit edge plus the ladder rule, both already applied by
+    // `expandPowers`, so no manual "decide implies manage" step here.
+    const powers = expandPowers(def.capabilities);
+    if (powers.has("hiring.approve")) result.decide = true;
+    if (powers.has("hiring.edit")) result.manage = true;
+    if (powers.has("hiring.view")) result.view = true;
+  }
+  return result;
+}
+
 // ── Giving (F-6 P1) seat-derived capabilities ────────────────────────────────
 
 /** One scope's seat-derived GIVING capabilities (the donor-CRM analog of the

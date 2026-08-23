@@ -272,6 +272,12 @@ describe("legacy migration", () => {
       "finance.cards.view",
       "finance.cards.edit",
       "giving.partners.edit",
+      // The Hiring desk shipped 2026-08-23 with the public careers page —
+      // a whole new domain, so there is no legacy string that could have
+      // meant it. Nothing to migrate from.
+      "hiring.view",
+      "hiring.edit",
+      "hiring.approve",
     ]);
   });
 
@@ -385,18 +391,37 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
     }
   });
 
+  /**
+   * Domains granted DELIBERATELY, after the standardization this block
+   * guards. The invariant here is about the 2026-08-12 migration — that
+   * translating the old strings neither dropped nor widened anyone's reach.
+   * A new domain added later is a reviewed product decision, not migration
+   * drift, so it is named here (with the seats that got it) instead of the
+   * check being loosened.
+   *
+   *  - `hiring` (2026-08-23, careers page + application pipeline): the People
+   *    seat and the ED hold the call; the recruiting associate runs the
+   *    funnel without being able to close a file.
+   */
+  const POST_STANDARDIZATION_DOMAINS: Partial<Record<string, string[]>> = {
+    executive_director: ["hiring"],
+    expansion_director: ["hiring"],
+    recruiting_associate: ["hiring"],
+  };
+
   test("no seat gained a power outside its own domains", () => {
     // The wildcard rule can widen WITHIN a domain a seat already had powers in
     // (that is its purpose — `finance.edit` reaching `finance.cards.edit`).
     // Reaching a domain the seat held nothing in would be a real escalation.
     for (const seatId of SEAT_IDS) {
       const legacy = LEGACY_BY_SEAT[seatId] ?? [];
-      const legacyDomains = new Set(
-        migrateLegacyPowers(legacy).map((p) => domainOf(p)),
-      );
+      const allowedDomains = new Set([
+        ...migrateLegacyPowers(legacy).map((p) => domainOf(p)),
+        ...(POST_STANDARDIZATION_DOMAINS[seatId] ?? []),
+      ]);
       for (const power of expandPowers(SEAT_DEFS[seatId].capabilities)) {
         expect(
-          legacyDomains.has(domainOf(power)),
+          allowedDomains.has(domainOf(power)),
           `${seatId} gained ${power} in a new domain`,
         ).toBe(true);
       }
