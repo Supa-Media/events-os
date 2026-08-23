@@ -1,5 +1,5 @@
 /**
- * The careers page's read layer over the `roles` content collection.
+ * The `/team` pages' read layer over the `roles` content collection.
  *
  * Roles are markdown in this repo, not rows in a database (see the collection's
  * doc in `src/content/config.ts`). These helpers are the only place that knows
@@ -53,7 +53,7 @@ export function otherRoles(roles: Role[]): Role[] {
 }
 
 export function rolePath(role: Role): string {
-  return asset(`/careers/${role.id}`);
+  return asset(`/team/${role.id}`);
 }
 
 /** The apply link for a role — carrying the slug and title so the form knows
@@ -61,13 +61,13 @@ export function rolePath(role: Role): string {
  *  taking applications sends people to the general-interest door instead. */
 export function applyPath(role?: Role): string {
   if (!role || !roleAcceptsApplications(role.data.status as RoleStatus)) {
-    return asset("/careers/apply");
+    return asset("/team/apply");
   }
   const params = new URLSearchParams({
     role: role.id,
     title: role.data.title,
   });
-  return asset(`/careers/apply?${params.toString()}`);
+  return asset(`/team/apply?${params.toString()}`);
 }
 
 export function statusLabel(status: string): string {

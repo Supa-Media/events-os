@@ -165,7 +165,7 @@ Hiring's three rungs are the clearest live example of why an `approve` action
 exists: a Recruiting Associate holds `hiring.edit` and runs the whole funnel
 without being able to end anyone's process, while `hiring.approve` — the call
 itself — stays with the People Director and the ED. See
-`docs/guides/hiring-a-role.md`.
+`docs/guides/recruiting.md`.
 
 `finance.cards.*` is granted to nobody yet — the area exists so card access can
 be handed out broadly without inventing a power at the moment it's needed.

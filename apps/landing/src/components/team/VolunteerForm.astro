@@ -1,0 +1,171 @@
+---
+/**
+ * The volunteer signup form on `/serve`.
+ *
+ * Short on purpose, and deliberately unlike the team application: this is a
+ * hand raised, not a candidacy. Name, a way to reply, what they'd like to help
+ * with — and nothing that a two-minute conversation wouldn't answer better.
+ * The areas come from `VOLUNTEER_AREAS` in `@events-os/shared`, the same list
+ * the backend validates against and the desk maps onto Service Catalog tags
+ * when someone lands on the roster.
+ *
+ * Posts to `/api/volunteer/signup` (pw-router proxies `/api/` to Convex).
+ */
+import {
+  VOLUNTEER_AREAS,
+  VOLUNTEER_LIMITS,
+  VOLUNTEER_REPLY_DAYS,
+} from "@events-os/shared/src/volunteers";
+---
+
+<div id="volunteer-signup" class="scroll-mt-16">
+  <h2 class="font-display text-2xl font-normal text-ink">Sign up to serve</h2>
+  <p class="mt-3 max-w-prose text-ink/80">
+    Tell us who you are and what you'd like to get your hands on. A person
+    reads every one of these and replies within {VOLUNTEER_REPLY_DAYS} days —
+    then we'll let you know what's coming up that needs you.
+  </p>
+
+  <form class="mt-8 space-y-7" data-volunteer-form novalidate>
+    <div class="absolute left-[-9999px]" aria-hidden="true">
+      <label>
+        Website
+        <input type="text" name="website" tabindex="-1" autocomplete="off" />
+      </label>
+    </div>
+
+    <div class="grid gap-5 sm:grid-cols-2">
+      <label class="block">
+        <span class="text-sm font-semibold text-ink">Your name</span>
+        <input
+          type="text"
+          name="name"
+          required
+          maxlength={VOLUNTEER_LIMITS.name}
+          autocomplete="name"
+          class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+        />
+      </label>
+      <label class="block">
+        <span class="text-sm font-semibold text-ink">Email</span>
+        <input
+          type="email"
+          name="email"
+          required
+          maxlength={VOLUNTEER_LIMITS.email}
+          autocomplete="email"
+          class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+        />
+      </label>
+      <label class="block">
+        <span class="text-sm font-semibold text-ink">
+          Phone <span class="font-normal text-ink/50">(optional)</span>
+        </span>
+        <input
+          type="tel"
+          name="phone"
+          maxlength={VOLUNTEER_LIMITS.phone}
+          autocomplete="tel"
+          class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+        />
+      </label>
+      <label class="block">
+        <span class="text-sm font-semibold text-ink">
+          Where you're based <span class="font-normal text-ink/50">(optional)</span>
+        </span>
+        <input
+          type="text"
+          name="location"
+          maxlength={VOLUNTEER_LIMITS.location}
+          placeholder="Harlem, NY"
+          class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+        />
+      </label>
+    </div>
+
+    <fieldset>
+      <legend class="text-sm font-semibold text-ink">
+        What would you like to help with?
+      </legend>
+      <p class="mt-1 text-sm text-ink/65">Pick as many as fit.</p>
+      <div class="mt-3 grid gap-2 sm:grid-cols-2">
+        {
+          VOLUNTEER_AREAS.map((area) => (
+            <label class="flex cursor-pointer items-start gap-3 rounded-xl border border-ink/15 bg-cream-soft p-4 transition-colors hover:border-red-500">
+              <input
+                type="checkbox"
+                name="areas"
+                value={area.id}
+                class="mt-1 h-4 w-4 accent-red-500"
+              />
+              <span>
+                <span class="block text-sm font-semibold text-ink">
+                  {area.label}
+                </span>
+                <span class="mt-0.5 block text-sm text-ink/65">
+                  {area.blurb}
+                </span>
+              </span>
+            </label>
+          ))
+        }
+      </div>
+    </fieldset>
+
+    <label class="block">
+      <span class="text-sm font-semibold text-ink">
+        When are you usually free?
+        <span class="font-normal text-ink/50">(optional)</span>
+      </span>
+      <input
+        type="text"
+        name="availability"
+        maxlength={VOLUNTEER_LIMITS.availability}
+        placeholder="Weekends, and most weekday evenings"
+        class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+      />
+    </label>
+
+    <label class="block">
+      <span class="text-sm font-semibold text-ink">
+        Anything else? <span class="font-normal text-ink/50">(optional)</span>
+      </span>
+      <textarea
+        name="message"
+        rows="3"
+        maxlength={VOLUNTEER_LIMITS.message}
+        class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base leading-relaxed text-ink outline-none focus:border-red-500"
+      ></textarea>
+    </label>
+
+    <div class="flex flex-wrap items-center gap-4">
+      <button
+        type="submit"
+        class="inline-flex items-center justify-center gap-2 rounded-[10px] bg-red-500 px-[22px] py-3.5 text-[0.95rem] font-bold leading-none text-white transition-all duration-150 hover:bg-red-600 disabled:pointer-events-none disabled:opacity-60"
+        data-volunteer-submit
+      >
+        Count me in
+      </button>
+      <p
+        class="text-sm text-ink/70"
+        role="status"
+        aria-live="polite"
+        data-volunteer-status
+      >
+      </p>
+    </div>
+  </form>
+
+  <div class="hidden" data-volunteer-done>
+    <div class="rounded-2xl border border-ink/10 bg-cream-soft p-6 sm:p-8">
+      <h3 class="font-display text-xl font-normal text-ink">
+        Thank you — we've got it.
+      </h3>
+      <p class="mt-3 max-w-prose leading-relaxed text-ink/80">
+        Someone will be in touch within {VOLUNTEER_REPLY_DAYS} days. In the
+        meantime, come to a gathering — the fastest way to meet this team is to
+        stand next to us at one.
+      </p>
+    </div>
+  </div>
+</div>

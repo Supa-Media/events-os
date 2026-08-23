@@ -17,7 +17,17 @@ import { seatKeyOf, seatLabelOf } from "../../lib/financeSeats";
 
 type ParaGroup = "P" | "A" | "R";
 
-type NavEntry = { label: string; icon: IconName; path: string; group: ParaGroup };
+type NavEntry = {
+  label: string;
+  icon: IconName;
+  path: string;
+  group: ParaGroup;
+  /** Extra path prefixes this entry stays highlighted for. Needed only where
+   *  one entry fronts SIBLING routes rather than children of its own path —
+   *  Recruiting opens the team pipeline but also owns `/people/volunteers`,
+   *  which its own path can never prefix-match. */
+  alsoActiveOn?: string[];
+};
 
 // Fixed order — tabs appear/disappear by tier but NEVER reorder. Briefing sits
 // right after Events so a volunteer (who sees Briefing, not Events) still gets
@@ -65,14 +75,21 @@ const NAV: NavEntry[] = [
   // entry is additionally gated on `deskEnabled` below and is hidden by
   // default. See `docs/plans/email-desk-parked.md`.
   { label: "Emails", icon: "mail", path: "/campaigns", group: "A" },
-  // Hiring — the People desk's candidate funnel: the public careers page's
-  // applications, the shared interview/trial rubric, and the call at the end
-  // (`apps/convex/hiring.ts`). Its own desk beside Giving, same PARA group —
-  // an ongoing responsibility, not a project. Gated by
-  // `hiring.myHiringAccess.canView` (a held hiring seat, or superuser); the
-  // in-screen `requireHiringView` gate is the real one, this is nav
-  // visibility only.
-  { label: "Hiring", icon: "user-plus", path: "/hiring", group: "A" },
+  // Recruiting — the People seat's two pipelines: applications for a SEAT on
+  // the chart (`/people/pipeline`) and volunteer signups for a pair of hands
+  // at a gathering (`/people/volunteers`). Not called "Hiring": nobody here is
+  // paid, and the word was already wrong on the public side. Sits under
+  // /people/* because it is the same domain as the roster tab, but keeps its
+  // own nav entry so a recruiting associate can reach their work without the
+  // admin-or-lead People tab. Gated by `hiring.myHiringAccess.canView`; the
+  // in-screen gates are the real ones.
+  {
+    label: "Recruiting",
+    icon: "user-plus",
+    path: "/people/pipeline",
+    group: "A",
+    alsoActiveOn: ["/people/volunteers"],
+  },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy", group: "R" },
   // Org Chart — read-only, org-transparent (mirrors `seats.chart`'s "the whole
@@ -134,7 +151,7 @@ function useNav(): NavEntry[] {
         return org?.showFinances === true;
       case "/giving":
         return giving?.canView === true;
-      case "/hiring":
+      case "/people/pipeline":
         return hiring?.canView === true;
       case "/campaigns":
         // `deskEnabled` is the parked-desk flag: bulk email moved to Mailchimp
@@ -163,9 +180,11 @@ function useNav(): NavEntry[] {
  * segments so `/people` activates for `/people` and `/people/123` but NOT for a
  * sibling like `/peopleX` (a plain `startsWith` prefix would over-match).
  */
-function isActive(pathname: string, path: string): boolean {
+function isActive(pathname: string, path: string, alsoActiveOn?: string[]): boolean {
   if (path === "/") return pathname === "/" || pathname === "/index";
-  return pathname === path || pathname.startsWith(`${path}/`);
+  const matches = (p: string) =>
+    pathname === p || pathname.startsWith(`${p}/`);
+  return matches(path) || (alsoActiveOn ?? []).some(matches);
 }
 
 /** Desktop breakpoint — at/above this width we show the persistent sidebar. */
@@ -384,7 +403,7 @@ function Sidebar({ onCollapse }: { onCollapse: () => void }) {
                       key={n.path}
                       label={n.label}
                       icon={n.icon}
-                      active={isActive(pathname, n.path)}
+                      active={isActive(pathname, n.path, n.alsoActiveOn)}
                       onPress={() => router.navigate(n.path as any)}
                     />
                   ))}
@@ -545,7 +564,7 @@ function BottomNav() {
     <SafeAreaView edges={["bottom"]} className="border-t border-border bg-raised">
       <View className="flex-row">
         {nav.map((n) => {
-          const active = isActive(pathname, n.path);
+          const active = isActive(pathname, n.path, n.alsoActiveOn);
           return (
             <Pressable
               key={n.path}

@@ -3,8 +3,8 @@
  *
  * Three surfaces, the same PUBLIC/ADMIN split `givingInterest.ts` uses:
  *  - PUBLIC `submitApplication` (no auth) — the write path behind
- *    `POST /api/careers/apply` (`lib/careerApiRoutes.ts`), which the careers
- *    page's application form posts to. This is rung 3 of the ordered candidate
+ *    `POST /api/team/apply` (`lib/joinApiRoutes.ts`), which the `/team`
+ *    application form posts to. This is rung 3 of the ordered candidate
  *    search ("public call"), and the ONLY public surface here: nothing in this
  *    file lets an unauthenticated caller read a single field back.
  *  - DESK reads — `myHiringAccess`, `listApplications`, `pipelineSummary`,
@@ -179,12 +179,12 @@ function normalizedEmail(raw: string | undefined): string {
 // ── PUBLIC (no auth) ─────────────────────────────────────────────────────────
 
 /**
- * PUBLIC entry point for the careers page's application form (no auth — same
+ * PUBLIC entry point for `/team`'s application form (no auth — same
  * trust model as `givingInterest.submitInterest` and the public giving flow).
  *
  * What it enforces, and why each rule is here rather than only in the form:
  *  - Name and email are required. A file nobody can reply to is not an
- *    application, and the response promise on the careers page is a promise.
+ *    application, and the response promise on `/team` is a promise.
  *  - Every REQUIRED question in `APPLICATION_QUESTIONS` must be answered.
  *    Those questions are the org's actual screen — availability, spiritual
  *    covering, ownership, and how someone escalates — so an application
@@ -366,8 +366,8 @@ export const submitApplication = mutation({
       at: now,
     });
 
-    // The confirmation is part of the promise, not a courtesy: the careers
-    // page tells people what happens next, so the first thing that happens
+    // The confirmation is part of the promise, not a courtesy: `/team`
+    // tells people what happens next, so the first thing that happens
     // next has to be an email that says the same thing. Scheduled (not
     // awaited) so a Resend hiccup can never cost us the application itself.
     await ctx.scheduler.runAfter(0, internal.hiring.sendApplicationReceived, {
@@ -1191,7 +1191,7 @@ export const getApplicantEmailPayload = internalQuery({
 /**
  * "We have it, and here's what happens next."
  *
- * Sent immediately on submit, and it says exactly what the careers page says,
+ * Sent immediately on submit, and it says exactly what `/team` says,
  * because a promise made on a page and not repeated in the only artifact the
  * candidate keeps is a promise nobody can hold us to.
  */
@@ -1211,7 +1211,7 @@ export const sendApplicationReceived = internalAction({
         ${emailParagraph(`Thanks, ${escapeHtml(payload.name.split(/\s+/)[0] || "friend")} — your application for <b>${escapeHtml(payload.roleTitle)}</b> is in, and a real person reads every one.`)}
         ${emailParagraph(`<b>What happens next.</b> You'll hear from us within ${RESPONSE_PROMISE_DAYS} days either way. If we go further, it's a conversation about you and why you want to serve, then one about the role itself. Every role here starts with an Empowerment Trial — a month or two of real, bounded work — before anything is official. Nobody gets a title before they've done the work.`)}
         ${emailParagraph("If your situation changes — your time, your church, your interest — just reply to this email and tell us. We'd rather know.")}
-        ${emailButtonRow(`${siteUrl()}/careers`, "See the open roles →")}
+        ${emailButtonRow(`${siteUrl()}/team`, "See the open seats →")}
       `);
       await sendEmail(ctx, {
         to: payload.email,

@@ -2304,6 +2304,12 @@ export * from "./mailchimp";
 // allowed payment rail is a stored field rather than a default.
 export * from "./sponsorPortal";
 
+// ── Volunteers: the OTHER people pipeline (a hand-raise, not an application) ─
+// Read this next to `hiring.ts`. In an all-volunteer org the word "volunteer"
+// means nothing on its own; these two modules are where the real distinction
+// lives — a seat on the chart vs. a pair of hands at a gathering.
+export * from "./volunteers";
+
 // ── Hiring: the five-step pipeline, the shared rubric, and the role template ─
 // The Academy teaches this process (`growing-the-team`); this module is the
 // same process as constants, so the careers page, the intake, and the Hiring

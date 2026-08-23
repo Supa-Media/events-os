@@ -1,10 +1,25 @@
-# Opening a role, and running the pipeline
+# Recruiting: the two pipelines
 
 For whoever owns people — today the Executive Director, and the People Director
 once that seat is filled.
 
 This is the operational companion to the Academy's `growing-the-team` course.
 The course teaches the five steps; this guide is where the buttons are.
+
+## Two pipelines, one owner
+
+Everyone here is a volunteer, so the word says nothing on its own. What matters
+is which of these two someone is asking for:
+
+| | **A seat on the team** | **Volunteering at a gathering** |
+|---|---|---|
+| They arrive at | `/team` | `/serve` |
+| The ask | Outcomes they own, decisions they make, years | A shift, a pair of hands |
+| The process | The five steps below | Reply → onto the roster |
+| You see them in | People → Recruiting → **Team applications** | People → Recruiting → **Volunteer signups** |
+
+The rest of this guide is mostly about the first. The second is three
+paragraphs at the end, and that asymmetry is the point.
 
 ---
 
@@ -24,7 +39,7 @@ most reliable way to get it handed straight back.
 
 ---
 
-## 1 · Publish the role
+## 1 · Publish the seat
 
 Roles are markdown in this repo, not rows in a database:
 
@@ -51,9 +66,9 @@ The fields that people find unfamiliar:
 | `status` | `open` and `filling` take applications; `not_open` and `closed` render but point at general interest |
 
 Open a PR. Merging to `main` deploys the landing site, and the role is live at
-`/careers/<slug>`.
+`/team/<slug>`.
 
-**Closing a role** is a status change (`closed`), not a deletion. A candidate
+**Closing a seat** is a status change (`closed`), not a deletion. A candidate
 who bookmarked the page should find out what happened, and old applications
 still point at the slug.
 
@@ -74,8 +89,8 @@ untrue.
 
 ## 3 · Run it from the Hiring desk
 
-Chapter OS → **Hiring**. The numbers along the top are the desk's report card,
-not decoration:
+Chapter OS → **People → Recruiting → Team applications**. The numbers along the
+top are the desk's report card, not decoration:
 
 - **Past our promise** — applications older than 7 days that nobody has answered.
 - **No owner** — files nobody has claimed. An unowned file aging is the loudest
@@ -133,6 +148,41 @@ that it goes out as a form letter.
 
 ---
 
+---
+
+## The volunteer pipeline, in full
+
+Someone signs up at `/serve`. You see it in **People → Recruiting → Volunteer
+signups**, with what they'd like to help with, when they're free, and anything
+else they wrote.
+
+Do two things:
+
+1. **Reply within a week.** Same promise as the team side, published on the
+   page. Mark it "reached out" so the desk stops counting it against you.
+2. **Add to roster.** This is the only button here that changes anything: it
+   creates (or reuses) their person record, marks them a volunteer, and tags
+   them with the Service Catalog services their chosen areas imply. That
+   tagging is what makes them show up when an event needs those hands — a
+   signup sitting in the inbox is invisible to every event in the app.
+
+Then it's over. No rubric, no trial, no decision. If it turns out they want
+something bigger, point them at `/team` — and they go through the same door as
+everyone else.
+
+Two deliberate details:
+
+- A signup **never** touches the roster on its own. Same rule as an
+  application: a raised hand is not yet a relationship, and auto-creating a
+  person for everyone who clicks a button would quietly corrupt every roster
+  count in the app.
+- Areas are broad ("Music & worship"), and the roster tag stays broad — a
+  parent service, not every child underneath it. Nobody gets tagged as singing
+  tenor because they ticked a box. Narrow it on their person record once
+  you've actually talked.
+
+---
+
 ## Who can do what
 
 | | View | Run the pipeline | Make the call |
@@ -153,10 +203,10 @@ sit in a chapter.
 
 | Piece | Path |
 |---|---|
-| The process, as constants | `packages/shared/src/hiring.ts` |
-| Published roles | `apps/landing/src/content/roles/` |
-| The public pages | `apps/landing/src/pages/careers/` |
-| Application intake (public API) | `apps/convex/lib/careerApiRoutes.ts` → `hiring.submitApplication` |
-| The desk's backend | `apps/convex/hiring.ts`, gated by `apps/convex/lib/hiringAccess.ts` |
-| The desk's screens | `apps/mobile/app/(app)/hiring/` |
+| The process, as constants | `packages/shared/src/hiring.ts` (team), `packages/shared/src/volunteers.ts` (volunteers) |
+| Published seats | `apps/landing/src/content/roles/` |
+| The public pages | `apps/landing/src/pages/team/` |
+| Both intakes (public API) | `apps/convex/lib/joinApiRoutes.ts` → `hiring.submitApplication`, `volunteers.submitSignup` |
+| The desk's backend | `apps/convex/hiring.ts` + `apps/convex/volunteers.ts`, both gated by `apps/convex/lib/hiringAccess.ts` |
+| The desk's screens | `apps/mobile/app/(app)/people/pipeline/`, `.../people/volunteers.tsx` |
 | What we teach about it | `packages/shared/src/academy/streams/management.ts` (`growing-the-team`) |

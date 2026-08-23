@@ -1,5 +1,5 @@
 /**
- * The /careers/apply form's controller.
+ * The /team/apply form's controller.
  *
  * Talks to the Convex backend over a same-origin relative fetch — on
  * publicworship.life pw-router proxies everything under `/api/` to Convex
@@ -12,7 +12,7 @@
  * site ships no framework runtime, and an application form is the last place
  * to start.
  */
-const API = "/api/careers/apply";
+const API = "/api/team/apply";
 
 const form = document.querySelector<HTMLFormElement>("[data-apply-form]");
 const statusEl = document.querySelector<HTMLElement>("[data-apply-status]");
@@ -144,3 +144,9 @@ if (document.readyState === "loading") {
 } else {
   init();
 }
+
+// Marks this file a MODULE for TypeScript. Astro already bundles it as one
+// (the page imports it), but a file with no top-level import/export reads as a
+// global script to `tsc`, which then sees another page script's `form` /
+// `statusEl` as a redeclaration of this one's. No runtime effect.
+export {};

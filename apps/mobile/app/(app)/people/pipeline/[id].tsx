@@ -1,5 +1,5 @@
 /**
- * HIRING · One candidate's file — everything a director needs to run the
+ * PEOPLE · One candidate's file — everything a director needs to run the
  * Academy's process on one person, and nothing that would let them skip a
  * step.
  *
@@ -59,8 +59,8 @@ import {
   Select,
   SectionHeader,
   TextField,
-} from "../../../components/ui";
-import { stageTone } from "../../../lib/hiringStage";
+} from "../../../../components/ui";
+import { stageTone } from "../../../../lib/hiringStage";
 
 function formatDate(ts: number): string {
   return new Date(ts).toLocaleDateString("en-US", {
@@ -96,7 +96,7 @@ export default function ApplicationScreen() {
     return (
       <Screen>
         <Narrow>
-          <BackLink fallback="/hiring" label="Hiring" />
+          <BackLink fallback="/people/pipeline" label="Applications" />
           <EmptyState
             title="Not found"
             message="This application no longer exists."
@@ -172,7 +172,7 @@ function FileBody({
   return (
     <Screen>
       <Narrow>
-        <BackLink fallback="/hiring" label="Hiring" />
+        <BackLink fallback="/people/pipeline" label="Applications" />
 
         {/* ── Who, and where they are ─────────────────────────────── */}
         <View className="mb-3 mt-2 flex-row items-start justify-between gap-3">

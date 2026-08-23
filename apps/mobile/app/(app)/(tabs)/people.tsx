@@ -309,6 +309,10 @@ export default function PeopleScreen() {
   // button below stays hidden — not just disabled — for a caller who doesn't
   // hold it (never just a "this view" export like the giving grids' button).
   const exportAccess = useQuery(api.dataExports.myExportAccess);
+  // Whether to surface the recruiting pipelines from this header — the People
+  // desk's own gate, not the roster's (a chapter admin who runs no hiring
+  // shouldn't be shown a door they can't open).
+  const hiringAccess = useQuery(api.hiring.myHiringAccess, {});
 
   // The deep-linked person may not be on the currently loaded page (or on
   // ANY loaded page — pagination no longer holds the whole roster). Falls
@@ -477,6 +481,22 @@ export default function PeopleScreen() {
           </View>
         </View>
         <View className="flex-row items-center gap-3">
+          {/* The two intake pipelines that FEED this roster (2026-08-23).
+              People arrive here through one of them — a team application at
+              /team, or a volunteer signup at /serve — so the roster is where
+              a director expects the door to be. Shown only to a People-desk
+              holder; the desk's own gates are the real ones. */}
+          {hiringAccess?.canView === true ? (
+            <Pressable
+              onPress={() => router.push("/people/pipeline" as never)}
+              hitSlop={6}
+              accessibilityLabel="Open the recruiting pipelines"
+              className="flex-row items-center gap-1 rounded-md border border-border px-2 py-1 active:bg-sunken web:hover:bg-sunken"
+            >
+              <Icon name="user-plus" size={13} color={colors.muted} />
+              <Text className="text-xs font-semibold text-muted">Recruiting</Text>
+            </Pressable>
+          ) : null}
           {/* Bulk contact onboarding lives HERE, on the People tab (founder
               call, 2026-07-25) — Giving → Import stays the home for
               money-bearing files only. */}

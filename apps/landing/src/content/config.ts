@@ -77,7 +77,7 @@ const blog = defineCollection({
 });
 
 /**
- * OPEN ROLES — the careers page (`/careers`, `/careers/<slug>`).
+ * TEAM SEATS — the join-the-team pages (`/team`, `/team/<slug>`).
  *
  * This schema IS the role template. Every field below is required because a
  * role page that skips one stops being comparable to the others, and the whole
@@ -100,7 +100,7 @@ const blog = defineCollection({
  * .github/workflows/deploy-landing.yml). There is no CMS behind this on
  * purpose: a published role is a promise about what someone will be asked to
  * do, and it should go through review like anything else we promise.
- * `docs/guides/hiring-a-role.md` walks a director through it.
+ * `docs/guides/recruiting.md` walks a director through it.
  */
 const roles = defineCollection({
   loader: glob({ pattern: "**/*.md", base: "src/content/roles" }),
