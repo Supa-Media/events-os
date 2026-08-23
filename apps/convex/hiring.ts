@@ -123,6 +123,10 @@ const APPLICANT_HISTORY_LIMIT = 50;
  *  it went through should not produce two files for a director to reconcile. */
 const DUPLICATE_WINDOW_MS = 24 * 60 * 60 * 1000;
 
+/** A slug and a role title, generously. Truncated rather than refused: a stale
+ *  bookmark or a renamed posting must never cost us a candidate (same reason
+ *  the slug isn't validated against the live role list). */
+const ROLE_FIELD_MAX_LEN = 200;
 const NOTE_MAX_LEN = 4000;
 const TRIAL_BRIEF_MAX_LEN = 4000;
 const DECISION_REASON_MAX_LEN = 2000;
@@ -217,11 +221,17 @@ export const submitApplication = mutation({
   handler: async (ctx, args) => {
     const now = Date.now();
 
-    const roleSlug =
-      trimmedOrUndefined(args.roleSlug)?.toLowerCase() ?? GENERAL_INTEREST_SLUG;
-    const roleTitle =
+    // The role is whatever the page said it was — deliberately not checked
+    // against a list of open roles (see this function's doc), but still capped:
+    // every other field a crafted POST controls is, and these two land in the
+    // desk's UI and in the applicant's confirmation email.
+    const roleSlug = (
+      trimmedOrUndefined(args.roleSlug)?.toLowerCase() ?? GENERAL_INTEREST_SLUG
+    ).slice(0, ROLE_FIELD_MAX_LEN);
+    const roleTitle = (
       trimmedOrUndefined(args.roleTitle) ??
-      (roleSlug === GENERAL_INTEREST_SLUG ? GENERAL_INTEREST_TITLE : roleSlug);
+      (roleSlug === GENERAL_INTEREST_SLUG ? GENERAL_INTEREST_TITLE : roleSlug)
+    ).slice(0, ROLE_FIELD_MAX_LEN);
 
     const name = requireText(args.name, {
       field: "name",
