@@ -1,0 +1,339 @@
+---
+/**
+ * /careers/<slug> — one role, rendered from the template.
+ *
+ * Every section here is a required field on the `roles` collection, in the
+ * order `ROLE_TEMPLATE_SECTIONS` declares. That's deliberate and it is the
+ * whole point of the collection: two roles published by two different people
+ * a year apart still read the same way, and a candidate comparing them is
+ * comparing the SEATS rather than the writing.
+ */
+import { render } from "astro:content";
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import Container from "../../components/ui/Container.astro";
+import Button from "../../components/ui/Button.astro";
+import HiringProcess from "../../components/careers/HiringProcess.astro";
+import {
+  applyPath,
+  getRoles,
+  statusChipClass,
+  statusLabel,
+  type Role,
+} from "../../lib/roles";
+import {
+  RESPONSE_PROMISE_DAYS,
+  TRIAL_TRACKS,
+  roleAcceptsApplications,
+  type RoleStatus,
+} from "@events-os/shared/src/hiring";
+import { asset } from "../../lib/asset";
+
+export async function getStaticPaths() {
+  const roles = await getRoles();
+  return roles.map((role) => ({ params: { slug: role.id }, props: { role } }));
+}
+
+interface Props {
+  role: Role;
+}
+
+const { role } = Astro.props;
+const d = role.data;
+const { Content } = await render(role);
+const accepting = roleAcceptsApplications(d.status as RoleStatus);
+const track = TRIAL_TRACKS.find((t) => t.id === d.trialTrack)!;
+const applyHref = applyPath(role);
+
+const facts: { label: string; value: string }[] = [
+  { label: "Team", value: d.team },
+  { label: "Reports to", value: d.reportsTo },
+  { label: "Commitment", value: `${d.commitment} · ~${d.hoursPerWeek} hrs/week` },
+  { label: "Where", value: d.location },
+  ...(d.manages.length ? [{ label: "You'd lead", value: d.manages.join(" · ") }] : []),
+  ...(d.worksWith.length ? [{ label: "Works with", value: d.worksWith.join(" · ") }] : []),
+];
+---
+
+<BaseLayout
+  title={d.title}
+  description={d.summary}
+  canonical={new URL(`/careers/${role.id}`, Astro.site).toString()}
+>
+  <Container size="narrow" class="py-16 sm:py-24">
+    <a
+      href={asset("/careers")}
+      class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
+      >← All roles</a
+    >
+
+    <header class="mt-6 flex flex-col items-start gap-3" data-animate="fade-up">
+      <div class="flex flex-wrap items-center gap-3">
+        <span
+          class={`inline-flex items-center rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide ${statusChipClass(d.status)}`}
+        >
+          {statusLabel(d.status)}
+        </span>
+        <span class="text-xs uppercase tracking-wide text-ink/55">{d.team}</span>
+      </div>
+      <h1
+        class="font-display font-normal leading-[1.08] text-3xl sm:text-[42px] md:text-[52px]"
+      >
+        {d.title}
+      </h1>
+      <p class="max-w-prose text-lg leading-relaxed text-ink/80">{d.summary}</p>
+      <div class="mt-2 flex flex-wrap items-center gap-3">
+        <Button href={applyHref}>
+          {accepting ? "Apply for this role →" : "Register your interest →"}
+        </Button>
+        <span class="text-sm text-ink/60">
+          {
+            accepting
+              ? `A person replies within ${RESPONSE_PROMISE_DAYS} days.`
+              : "Not open yet — we'll come back to you when it is."
+          }
+        </span>
+      </div>
+    </header>
+
+    {/* ── At a glance ───────────────────────────────────────────── */}
+    <dl
+      class="mt-10 grid gap-x-8 gap-y-4 rounded-2xl border border-ink/10 bg-cream-soft p-6 sm:grid-cols-2 sm:p-7"
+      data-animate="fade-up"
+    >
+      {
+        facts.map((fact) => (
+          <div>
+            <dt class="text-xs font-bold uppercase tracking-wide text-ink/50">
+              {fact.label}
+            </dt>
+            <dd class="mt-1 text-sm text-ink/85">{fact.value}</dd>
+          </div>
+        ))
+      }
+    </dl>
+
+    {/* ── Why this seat exists ──────────────────────────────────── */}
+    <section class="mt-12" data-animate="fade-up">
+      <h2 class="font-display text-2xl font-normal text-ink">
+        Why this seat exists
+      </h2>
+      <p class="mt-3 max-w-prose leading-relaxed text-ink/80">
+        {d.whyThisSeatExists}
+      </p>
+    </section>
+
+    {/* ── Outcomes ──────────────────────────────────────────────── */}
+    <section class="mt-12" data-animate="fade-up">
+      <h2 class="font-display text-2xl font-normal text-ink">
+        What you'd be accountable for
+      </h2>
+      <p class="mt-2 max-w-prose text-sm text-ink/65">
+        Outcomes, not activities — and how we'd both know one actually landed.
+      </p>
+      <ul class="mt-5 space-y-4">
+        {
+          d.outcomes.map((o) => (
+            <li class="rounded-xl border border-ink/10 bg-cream-soft p-5">
+              <p class="font-display text-lg font-normal text-ink">
+                {o.outcome}
+              </p>
+              <p class="mt-2 text-sm leading-relaxed text-ink/75">
+                <span class="font-semibold text-ink/60">Done when: </span>
+                {o.doneWhen}
+              </p>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+
+    {/* ── Authority ─────────────────────────────────────────────── */}
+    <section class="mt-12" data-animate="fade-up">
+      <h2 class="font-display text-2xl font-normal text-ink">
+        What you'd get to decide
+      </h2>
+      <p class="mt-2 max-w-prose text-sm text-ink/65">
+        Without asking. Handing someone a responsibility without the authority
+        to go with it just hands it back.
+      </p>
+      <ul class="mt-4 space-y-2">
+        {
+          d.authority.map((a) => (
+            <li class="flex gap-3 text-ink/85">
+              <span class="mt-2 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-red-500" />
+              <span class="leading-relaxed">{a}</span>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+
+    {/* ── The work ──────────────────────────────────────────────── */}
+    <section class="mt-12" data-animate="fade-up">
+      <h2 class="font-display text-2xl font-normal text-ink">The work itself</h2>
+      <div class="mt-5 space-y-7">
+        {
+          d.responsibilities.map((group) => (
+            <div>
+              <h3 class="font-display text-lg font-normal text-red-500">
+                {group.area}
+              </h3>
+              <ul class="mt-2 space-y-2">
+                {group.items.map((item) => (
+                  <li class="flex gap-3 text-ink/85">
+                    <span class="mt-2 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-ink/25" />
+                    <span class="leading-relaxed">{item}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          ))
+        }
+      </div>
+    </section>
+
+    {/* ── Rhythms + first 90 days ───────────────────────────────── */}
+    <section class="mt-12 grid gap-6 sm:grid-cols-2" data-animate="fade-up">
+      <div>
+        <h2 class="font-display text-xl font-normal text-ink">The rhythms</h2>
+        <ul class="mt-3 space-y-2 text-sm text-ink/80">
+          {d.rhythms.map((r) => <li class="leading-relaxed">· {r}</li>)}
+        </ul>
+      </div>
+      <div>
+        <h2 class="font-display text-xl font-normal text-ink">
+          Your first 90 days
+        </h2>
+        <ul class="mt-3 space-y-2 text-sm text-ink/80">
+          {d.firstNinetyDays.map((f) => <li class="leading-relaxed">· {f}</li>)}
+        </ul>
+      </div>
+    </section>
+
+    {/* ── Who this is for ───────────────────────────────────────── */}
+    <section class="mt-12" data-animate="fade-up">
+      <h2 class="font-display text-2xl font-normal text-ink">
+        Who this is for
+      </h2>
+      <ul class="mt-4 space-y-2">
+        {
+          d.required.map((r) => (
+            <li class="flex gap-3 text-ink/85">
+              <span class="mt-2 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-red-500" />
+              <span class="leading-relaxed">{r}</span>
+            </li>
+          ))
+        }
+      </ul>
+      {
+        d.preferred.length > 0 && (
+          <>
+            <h3 class="mt-6 font-display text-lg font-normal text-ink">
+              Helpful, not required
+            </h3>
+            <ul class="mt-2 space-y-2">
+              {d.preferred.map((p) => (
+                <li class="flex gap-3 text-ink/75">
+                  <span class="mt-2 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-ink/25" />
+                  <span class="leading-relaxed">{p}</span>
+                </li>
+              ))}
+            </ul>
+          </>
+        )
+      }
+    </section>
+
+    {/* ── What it is not ────────────────────────────────────────── */}
+    <section
+      class="mt-12 rounded-2xl border border-ink/10 bg-cream-soft p-6 sm:p-7"
+      data-animate="fade-up"
+    >
+      <h2 class="font-display text-xl font-normal text-ink">
+        What this role is not
+      </h2>
+      <ul class="mt-3 space-y-2 text-sm text-ink/80">
+        {d.notThisRole.map((n) => <li class="leading-relaxed">· {n}</li>)}
+      </ul>
+    </section>
+
+    {/* ── Success ───────────────────────────────────────────────── */}
+    <section class="mt-12" data-animate="fade-up">
+      <h2 class="font-display text-2xl font-normal text-ink">
+        How we'd know it's working
+      </h2>
+      <ul class="mt-4 space-y-2">
+        {
+          d.successLooks.map((s) => (
+            <li class="flex gap-3 text-ink/85">
+              <span class="mt-2 h-1.5 w-1.5 flex-shrink-0 rounded-full bg-red-500" />
+              <span class="leading-relaxed">{s}</span>
+            </li>
+          ))
+        }
+      </ul>
+    </section>
+
+    {/* ── Growth path ───────────────────────────────────────────── */}
+    {
+      d.growthPath && (
+        <section class="mt-12" data-animate="fade-up">
+          <h2 class="font-display text-2xl font-normal text-ink">
+            Where it can go
+          </h2>
+          <p class="mt-3 max-w-prose leading-relaxed text-ink/80">
+            {d.growthPath}
+          </p>
+        </section>
+      )
+    }
+
+    {/* ── The author's own words (markdown body) ────────────────── */}
+    <section
+      class="prose-role mt-12 max-w-prose leading-relaxed text-ink/80"
+      data-animate="fade-up"
+    >
+      <Content />
+    </section>
+
+    {/* ── Process + apply ───────────────────────────────────────── */}
+    <section class="mt-16" data-animate="fade-up">
+      <h2 class="font-display text-2xl font-normal text-ink">
+        What happens after you apply
+      </h2>
+      <p class="mt-2 max-w-prose text-sm text-ink/65">
+        This role's Empowerment Trial runs on the {track.label.toLowerCase()} track:
+        a check-in at {track.midpointDays} days and a decision at {track.decisionDays}.
+      </p>
+      <HiringProcess />
+      <div class="mt-8 flex flex-wrap items-center gap-3">
+        <Button href={applyHref}>
+          {accepting ? `Apply for ${d.title} →` : "Register your interest →"}
+        </Button>
+        <a
+          href={asset("/careers")}
+          class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
+          >See the other roles</a
+        >
+      </div>
+    </section>
+
+    <p class="mt-12 text-xs text-ink/55">
+      Posted {d.postedAt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}{
+        d.updatedAt
+          ? ` · updated ${d.updatedAt.toLocaleDateString("en-US", { month: "long", day: "numeric", year: "numeric" })}`
+          : ""
+      }. Public Worship is a volunteer-run initiative of Global Echo Charitable
+      Co., a 501(c)(3) nonprofit — every role here is unpaid.
+    </p>
+  </Container>
+</BaseLayout>
+
+<style>
+  /* The markdown body is one or two closing paragraphs of context, not an
+     article — enough spacing to read as prose, no heading styles to fight
+     the structured sections above it. */
+  .prose-role :global(p + p) {
+    margin-top: 1rem;
+  }
+</style>

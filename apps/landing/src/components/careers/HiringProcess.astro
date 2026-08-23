@@ -1,0 +1,61 @@
+---
+/**
+ * The five steps, as the candidate experiences them.
+ *
+ * Rendered from `@events-os/shared`'s hiring constants rather than written out
+ * here, so this page and the Hiring desk can never describe different
+ * processes. The trial cadence numbers are the real ones the desk schedules
+ * against (`TRIAL_TRACKS`), not approximations.
+ */
+import {
+  TRIAL_TRACKS,
+  MIN_REVIEWS_BEFORE_DECISION,
+} from "@events-os/shared/src/hiring";
+
+const teamMember = TRIAL_TRACKS.find((t) => t.id === "team_member")!;
+const director = TRIAL_TRACKS.find((t) => t.id === "director")!;
+
+const steps = [
+  {
+    label: "You apply",
+    body: "Six questions, the same ones for everyone. A person reads every application.",
+  },
+  {
+    label: "A first conversation",
+    body: "Twenty or thirty minutes on you — your story, why you want to serve, and us telling you plainly what this is. Not a test.",
+  },
+  {
+    label: "A conversation about the role",
+    body: `What the seat actually owns, what you'd decide on your own, and what your trial would be. At least ${MIN_REVIEWS_BEFORE_DECISION} of us are part of the decision, working from one shared rubric — character first, then communication, people skills, execution, and availability.`,
+  },
+  {
+    label: "An Empowerment Trial",
+    body: `Real, bounded work before anything is official — about ${teamMember.decisionDays / 7} weeks for a team seat, ${director.decisionDays / 30} months for a director seat, with a check-in halfway. You do the work, we both find out what's true. Nobody here gets a title before they've done the job.`,
+  },
+  {
+    label: "The call",
+    body: "A director decides, and you hear it either way — a yes, a no with a reason, or a not-yet with a date we'll come back to you.",
+  },
+];
+---
+
+<ol class="mt-6 space-y-4">
+  {
+    steps.map((step, i) => (
+      <li class="flex gap-4">
+        <span
+          class="mt-0.5 flex h-8 w-8 flex-shrink-0 items-center justify-center rounded-full bg-red-500 font-display text-sm text-white"
+          aria-hidden="true"
+        >
+          {i + 1}
+        </span>
+        <div>
+          <p class="font-display text-lg font-normal text-ink">{step.label}</p>
+          <p class="mt-1 max-w-prose text-sm leading-relaxed text-ink/75">
+            {step.body}
+          </p>
+        </div>
+      </li>
+    ))
+  }
+</ol>

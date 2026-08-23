@@ -75,7 +75,7 @@ update these tables, `governance.test.ts` fails.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export` |
+| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve` |
 | Financial Manager | Executive Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
 | Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
@@ -89,9 +89,9 @@ update these tables, `governance.test.ts` fails.
 | Social Media Manager | Marketing Director | 1 | `email.assets.edit` |
 | Graphic Designer | Marketing Director | 1 | `email.assets.edit` |
 | Marketing Associate | Marketing Director | many | — |
-| Expansion Director | Executive Director | 1 | `giving.view`, `data.export` |
+| Expansion Director | Executive Director | 1 | `giving.view`, `data.export`, `hiring.approve` |
 | Chapter Directors | Expansion Director | many | — |
-| Recruiting Associate | Expansion Director | many | — |
+| Recruiting Associate | Expansion Director | many | `hiring.edit` |
 | Training Associate | Expansion Director | many | — |
 
 <!-- /seat-chart -->
@@ -136,6 +136,35 @@ seats) at Eden and Love Thy Neighbor scale.
 - Removing someone from a seat removes their powers immediately. Off-boarding is
   in §12.4.
 
+### 2.4 How someone gets into a seat
+
+Every seat is filled through one pipeline, whether the candidate is a stranger,
+a friend of the team, or someone already serving. The process is the one the
+Academy teaches (`growing-the-team`); since 2026-08-23 the product carries it:
+
+1. **The role is published.** A seat is posted at `publicworship.life/careers`
+   only once its outcomes, the decisions its holder makes without asking, and
+   what the role is *not* have been written down. Roles are markdown in the
+   repository (`apps/landing/src/content/roles/`), so publishing one is a
+   reviewed merge, not a form.
+2. **Candidates are found in order** — in-house, then the volunteer interest
+   pool, then the public call, then personal networks. Every source lands in the
+   same pipeline.
+3. **Interviews** — heart and alignment, then role fit — against one shared
+   rubric ranking character, communication, people skills, execution, and
+   availability, in that order.
+4. **An Empowerment Trial** of real, bounded work: about four weeks for a team
+   seat, two months for a director seat, with a midpoint review. No title before
+   the work.
+5. **A director decides**, and the candidate is told either way — a yes, a no
+   with a reason, or a not-yet carrying the date it will be revisited.
+
+Applications, rubric reviews, and decisions live on the Hiring desk in Chapter
+OS (`hiring.view` / `hiring.edit` / `hiring.approve`). The organization's stated
+commitment to an applicant is a human reply within **7 days**. Placement into a
+seat is still an appointment under §2.3 — the pipeline informs the appointment;
+it does not make it.
+
 ---
 
 ## 3 · Powers: who may do what
@@ -162,6 +191,9 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `email.campaigns.edit` | Compose a campaign and send it for approval |
 | `email.campaigns.approve` | Approve a campaign for sending |
 | `events.checkin` | Check attendees in at the door |
+| `hiring.view` | Read the Hiring desk — applications, interview rubrics, trial reviews |
+| `hiring.edit` | Run the pipeline: move candidates, file rubric reviews, start an Empowerment Trial |
+| `hiring.approve` | Make the call — place, not-now, or decline a candidate, and send the outcome message |
 | `org.chart.edit` | Edit the org chart — seats, holders, and their powers |
 | `data.export` | Export records the holder can already see, as a file |
 
@@ -366,6 +398,7 @@ involved, and the software enforces it where it can.
 | Central / annual budget | Financial Manager | Executive Director; annual budget adopted by the Board |
 | Monthly ledger publication | Treasurer (chapter) / Financial Manager (central) | Chapter Director / Executive Director |
 | Mass email campaign | Any `email.campaigns.edit` holder | A **different** `email.campaigns.approve` holder (enforced by practice, not by the tool — see below) |
+| Placing a candidate in a seat | Whoever ran the pipeline (`hiring.edit`) | A director holding `hiring.approve`, on at least **two** people's rubric reviews — enforced by the tool |
 | Executive Director compensation | — | Board, under Bylaws § 12.6 |
 | Related-party transaction | — | Disinterested directors only, Bylaws § 12.4 |
 
@@ -594,6 +627,11 @@ ledger and a public page, they are.
 - **The public ledger omits people.** Donor identities, individual compensation
   beyond what law requires, and anything that would endanger someone are never
   published (Bylaws § 11.4).
+- **Applications are confidential.** What someone writes on the careers form —
+  their church, their capacity, why they want out of where they are — is read by
+  the people running that hiring decision and nobody else. No public surface
+  returns any part of an application, and the reason a candidate was declined is
+  recorded internally and never sent to them.
 - **Devices and accounts.** Organization work happens in organization accounts.
   A personal account is not a system of record.
 
@@ -609,6 +647,7 @@ ledger and a public page, they are.
 | Org-wide priorities, seat chart, launching or closing a chapter | Executive Director |
 | Central spending within budget, staff and contractor hiring | Executive Director |
 | Publishing central's books | Executive Director / Financial Manager |
+| Placing, declining, or deferring a candidate | People Director, or the Executive Director |
 | Chapter budget approval, chapter leadership proposals | Chapter Director |
 | Publishing a chapter's month | Chapter Director |
 | Recording and reconciling chapter money, preparing the close | Treasurer |

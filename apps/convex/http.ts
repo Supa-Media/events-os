@@ -47,6 +47,7 @@ import {
   renderBackerSignIn,
 } from "./lib/backerPortalPage";
 import { registerBlogApiRoutes } from "./lib/blogApiRoutes";
+import { registerCareerApiRoutes } from "./lib/careerApiRoutes";
 import {
   renderReimburseForm,
   renderReimburseStatus,
@@ -117,6 +118,10 @@ auth.addHttpRoutes(http);
 
 // JSON API for the landing page's client script (/api/tickets/*).
 registerTicketApiRoutes(http);
+
+// The careers page's application intake (/api/careers/apply) — the public
+// half of the hiring pipeline (`hiring.ts`).
+registerCareerApiRoutes(http);
 
 // JSON API for the public reimbursement page's client script (/api/reimburse/*).
 registerReimburseApiRoutes(http);

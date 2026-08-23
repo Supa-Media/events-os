@@ -1,0 +1,243 @@
+---
+/**
+ * /careers/apply — the application form, for a specific role
+ * (`?role=<slug>&title=<title>`) or for the general-interest pool.
+ *
+ * The questions are rendered from `APPLICATION_QUESTIONS` in
+ * `@events-os/shared` — the same list the backend validates against
+ * (`hiring.submitApplication`) and the same one the Hiring desk renders answers
+ * under. Copying them into this file would guarantee the three drift apart;
+ * importing them means a reworded question ships everywhere at once.
+ *
+ * Posts to `/api/careers/apply`, which pw-router proxies to Convex on
+ * publicworship.life (every path under `/api/` already routes there).
+ */
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import Container from "../../components/ui/Container.astro";
+import Eyebrow from "../../components/ui/Eyebrow.astro";
+import {
+  APPLICATION_QUESTIONS,
+  APPLICATION_LIMITS,
+  GENERAL_INTEREST_TITLE,
+  RESPONSE_PROMISE_DAYS,
+} from "@events-os/shared/src/hiring";
+import { asset } from "../../lib/asset";
+---
+
+<BaseLayout
+  title="Apply"
+  description="Apply to serve with Public Worship. Six questions, and a real person reads every application."
+  noindex={true}
+>
+  <Container size="narrow" class="py-16 sm:py-24">
+    <a
+      href={asset("/careers")}
+      class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
+      >← All roles</a
+    >
+
+    <div class="mt-6 flex flex-col items-start gap-3">
+      <Eyebrow icon="sparkle">Application</Eyebrow>
+      <h1
+        class="font-display font-normal leading-[1.08] text-3xl sm:text-[42px]"
+      >
+        Applying for
+        <span class="text-red-500" data-apply-role-title>
+          {GENERAL_INTEREST_TITLE}
+        </span>
+      </h1>
+      <p class="max-w-prose text-base leading-relaxed text-ink/75">
+        Six questions. Honest, specific answers beat polished ones — we're
+        trying to understand you, not grade your writing. A person reads every
+        application and you'll hear back within {RESPONSE_PROMISE_DAYS} days
+        either way.
+      </p>
+    </div>
+
+    <form
+      class="mt-10 space-y-8"
+      data-apply-form
+      novalidate
+      aria-describedby="apply-status"
+    >
+      {/* The role this is an application FOR — filled from the query string by
+          careers-apply.ts, and kept in the DOM so a submission always says what
+          it was for even if the page was bookmarked. */}
+      <input type="hidden" name="roleSlug" data-apply-role-slug value="" />
+      <input type="hidden" name="roleTitle" data-apply-role-title-input value="" />
+
+      {/* Honeypot: off-screen, never announced, never focusable. A bot fills
+          it; the server sees it and quietly drops the submission. */}
+      <div class="absolute left-[-9999px]" aria-hidden="true">
+        <label>
+          Website
+          <input type="text" name="website" tabindex="-1" autocomplete="off" />
+        </label>
+      </div>
+
+      <fieldset class="space-y-5">
+        <legend class="font-display text-xl font-normal text-ink">
+          Who you are
+        </legend>
+
+        <div class="grid gap-5 sm:grid-cols-2">
+          <label class="block">
+            <span class="text-sm font-semibold text-ink">Your name</span>
+            <input
+              type="text"
+              name="name"
+              required
+              maxlength={APPLICATION_LIMITS.name}
+              autocomplete="name"
+              class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-semibold text-ink">Email</span>
+            <input
+              type="email"
+              name="email"
+              required
+              maxlength={APPLICATION_LIMITS.email}
+              autocomplete="email"
+              class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-semibold text-ink">
+              Phone <span class="font-normal text-ink/50">(optional)</span>
+            </span>
+            <input
+              type="tel"
+              name="phone"
+              maxlength={APPLICATION_LIMITS.phone}
+              autocomplete="tel"
+              class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-semibold text-ink">
+              Where you're based
+              <span class="font-normal text-ink/50">(optional)</span>
+            </span>
+            <input
+              type="text"
+              name="location"
+              maxlength={APPLICATION_LIMITS.location}
+              placeholder="Queens, NY"
+              class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+            />
+          </label>
+        </div>
+
+        <label class="block">
+          <span class="text-sm font-semibold text-ink">
+            Anything we should look at
+            <span class="font-normal text-ink/50">(optional)</span>
+          </span>
+          <span class="mt-1 block text-sm text-ink/65">
+            A portfolio, a LinkedIn, something you made. One per line, up to {APPLICATION_LIMITS.links}.
+          </span>
+          <textarea
+            name="links"
+            rows="3"
+            class="mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+          ></textarea>
+        </label>
+
+        <label class="block">
+          <span class="text-sm font-semibold text-ink">
+            Did someone here send you?
+            <span class="font-normal text-ink/50">(optional)</span>
+          </span>
+          <input
+            type="text"
+            name="referredBy"
+            maxlength={APPLICATION_LIMITS.referredBy}
+            class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+          />
+        </label>
+      </fieldset>
+
+      <fieldset class="space-y-6">
+        <legend class="font-display text-xl font-normal text-ink">
+          The questions
+        </legend>
+        {
+          APPLICATION_QUESTIONS.map((q) => (
+            <label class="block">
+              <span class="text-sm font-semibold text-ink">
+                {q.label}
+                {!q.required && (
+                  <span class="font-normal text-ink/50"> (optional)</span>
+                )}
+              </span>
+              <span class="mt-1 block text-sm leading-relaxed text-ink/65">
+                {q.help}
+              </span>
+              <textarea
+                name={`answers.${q.key}`}
+                rows={q.maxLength > 1500 ? 6 : 4}
+                maxlength={q.maxLength}
+                required={q.required}
+                class="mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base leading-relaxed text-ink outline-none focus:border-red-500"
+              />
+            </label>
+          ))
+        }
+      </fieldset>
+
+      <div class="rounded-2xl border border-pink-soft/60 bg-pink-softer/40 p-5 text-sm leading-relaxed text-ink/80">
+        Everything you write here is read by the people who would be serving
+        alongside you, and it stays inside our team. We don't sell it, publish
+        it, or share it outside Public Worship.
+      </div>
+
+      <div class="flex flex-wrap items-center gap-4">
+        <button
+          type="submit"
+          class="inline-flex items-center justify-center gap-2 rounded-[10px] bg-red-500 px-[22px] py-3.5 text-[0.95rem] font-bold leading-none text-white transition-all duration-150 hover:bg-red-600 disabled:pointer-events-none disabled:opacity-60"
+          data-apply-submit
+        >
+          Send my application
+        </button>
+        <p
+          id="apply-status"
+          class="text-sm text-ink/70"
+          role="status"
+          aria-live="polite"
+          data-apply-status
+        >
+        </p>
+      </div>
+    </form>
+
+    {/* Shown in place of the form once a submission lands. */}
+    <div class="hidden" data-apply-done>
+      <div class="rounded-2xl border border-ink/10 bg-cream-soft p-6 sm:p-8">
+        <h2 class="font-display text-2xl font-normal text-ink">
+          That's in. Thank you.
+        </h2>
+        <p class="mt-3 max-w-prose leading-relaxed text-ink/80">
+          We've emailed you a copy of what happens next. A person reads every
+          application, and you'll hear from us within {RESPONSE_PROMISE_DAYS}
+          days either way — including if the answer is no.
+        </p>
+        <p class="mt-4 max-w-prose text-sm text-ink/70">
+          If anything changes on your end before then — your time, your church,
+          your interest — just reply to that email and tell us. We'd rather
+          know.
+        </p>
+        <a
+          href={asset("/careers")}
+          class="mt-5 inline-flex items-center gap-1 text-sm font-bold text-red-500 hover:underline underline-offset-4"
+          >← Back to the roles</a
+        >
+      </div>
+    </div>
+  </Container>
+
+  <script>
+    import "../../scripts/careers-apply.ts";
+  </script>
+</BaseLayout>

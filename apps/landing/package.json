@@ -9,6 +9,7 @@
     "preview": "astro preview"
   },
   "dependencies": {
+    "@events-os/shared": "workspace:*",
     "astro": "^5.0.0",
     "@astrojs/tailwind": "^5.1.4",
     "@astrojs/sitemap": "^3.2.1",

@@ -2303,3 +2303,9 @@ export * from "./mailchimp";
 // The sponsor-facing half of a sponsorship — see the module doc for why the
 // allowed payment rail is a stored field rather than a default.
 export * from "./sponsorPortal";
+
+// ── Hiring: the five-step pipeline, the shared rubric, and the role template ─
+// The Academy teaches this process (`growing-the-team`); this module is the
+// same process as constants, so the careers page, the intake, and the Hiring
+// desk can't drift from the lessons or from each other.
+export * from "./hiring";

@@ -802,6 +802,20 @@
  * (0.8% capped at $5 against a card's uncapped ~3%). That course now carries
  * four modules. Nothing else moved: no slugs, titles, minutes, quiz lengths, or
  * order changed anywhere else. Total: 99 sections.
+ *
+ * The CAREERS PAGE + HIRING PIPELINE PR (2026-08-23, founder request — "this
+ * should live on our website natively … create an end-to-end pipeline")
+ * INSERTED one Management section, `mgmt-the-front-door` (4 min, 4-quiz), into
+ * the `growing-the-team` course between `mgmt-empower-first` and
+ * `mgmt-the-interview`. The five-step process the surrounding lessons teach is
+ * unchanged; this one teaches where it now LIVES — the public careers page,
+ * the one application form, the Hiring desk's stages, and the three rules the
+ * product now enforces rather than asks people to remember (two reviewers
+ * before a placement, a revisit date on every not-now, a recorded reason on
+ * every close). That course now carries five modules, and its description
+ * gained the careers-page clause. Every section AFTER it shifts one place in
+ * curriculum order; no slugs, titles, minutes, or quiz lengths changed
+ * anywhere else. Total: 100 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -859,6 +873,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "mgmt-the-repair-ritual",
   "mgmt-building-for-your-absence",
   "mgmt-empower-first",
+  "mgmt-the-front-door",
   "mgmt-the-interview",
   "mgmt-the-trial",
   "mgmt-the-call",
@@ -1343,6 +1358,14 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-empower-first",
     title: "Empower first, appoint second",
+    minutes: 4,
+    quizLength: 4,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
+    slug: "mgmt-the-front-door",
+    title: "The front door",
     minutes: 4,
     quizLength: 4,
     optional: false,
@@ -1953,6 +1976,7 @@ const EXPECTED_COURSES: {
     themeKey: "management",
     moduleSlugs: [
       "mgmt-empower-first",
+      "mgmt-the-front-door",
       "mgmt-the-interview",
       "mgmt-the-trial",
       "mgmt-the-call",
