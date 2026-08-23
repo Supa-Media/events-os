@@ -29,6 +29,7 @@
  * finance and giving gates.
  */
 import { ConvexError } from "convex/values";
+import { expandPowers } from "@events-os/shared";
 import { Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
@@ -127,4 +128,52 @@ export async function requireHiringDecide(ctx: QueryCtx): Promise<HiringAccess> 
     });
   }
   return access;
+}
+
+// ── Who to tell ──────────────────────────────────────────────────────────────
+
+/** Generous bound on the central seat roster — the whole central chart is a
+ *  few dozen assignments, nowhere near this. */
+const CENTRAL_ASSIGNMENT_SCAN_LIMIT = 500;
+
+/**
+ * The email addresses of everyone who can act on a new application — i.e.
+ * every central seat holder carrying `hiring.edit` (which `hiring.approve`
+ * implies).
+ *
+ * Derived from the seat chart rather than a configured inbox list on purpose:
+ * a notification list that is maintained separately from the powers goes stale
+ * the first time someone changes seats, and then the desk quietly stops
+ * telling the person who is actually responsible. Here, granting the power IS
+ * subscribing, and removing it IS unsubscribing.
+ *
+ * Placeholder roster rows and rows with no email contribute nothing. Returns a
+ * deduped list; may be empty (nobody holds the power yet), which callers must
+ * treat as "send nothing", never as an error.
+ */
+export async function hiringDeskRecipients(ctx: QueryCtx): Promise<string[]> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_scope", (q) => q.eq("scope", "central"))
+    .take(CENTRAL_ASSIGNMENT_SCAN_LIMIT);
+
+  const emails = new Set<string>();
+  const defCache = new Map<string, boolean>();
+
+  for (const assignment of assignments) {
+    const key = String(assignment.seatDefId);
+    let carries = defCache.get(key);
+    if (carries === undefined) {
+      const def = await ctx.db.get(assignment.seatDefId);
+      carries = def ? expandPowers(def.capabilities).has("hiring.edit") : false;
+      defCache.set(key, carries);
+    }
+    if (!carries) continue;
+
+    const person = await ctx.db.get(assignment.personId);
+    if (!person || person.isPlaceholder === true) continue;
+    const email = person.email?.trim();
+    if (email) emails.add(email.toLowerCase());
+  }
+  return [...emails];
 }

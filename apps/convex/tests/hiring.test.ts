@@ -27,6 +27,7 @@ import {
   APPLICATION_STAGES,
   APPLICATION_TRIAL_TRACKS,
 } from "../schema/hiring";
+import { internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 
 /** A complete, valid application body — the six answers the form requires. */
@@ -453,5 +454,41 @@ describe("hiring — the desk's numbers", () => {
     expect(summary.pastPromise).toBe(1);
     expect(summary.unassigned).toBe(1);
     expect(summary.byStage.applied).toBe(2);
+  });
+});
+
+describe("hiring — who gets told", () => {
+  test("the new-application notice goes to central hiring-power holders, and nobody else", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // Holds the power → gets told.
+    await seedHiringSeat(s, ["hiring.approve"], { slug: "director_seat" });
+    const otherUserId = await run(t, (ctx) =>
+      ctx.db.insert("users", { email: "musician@publicworship.life" }),
+    );
+    // A central seat with no hiring power → not told. Granting the power is
+    // the subscription; this is the half of that claim worth pinning.
+    await seedHiringSeat(s, ["giving.view"], {
+      slug: "music_seat",
+      userId: otherUserId,
+    });
+
+    const id = await submit(t);
+    const notice = await t.query(internal.hiring.getNewApplicationNotice, {
+      applicationId: id,
+    });
+    expect(notice?.recipients).toEqual(["seat-director_seat@publicworship.life"]);
+    expect(notice?.roleTitle).toBe("People Director");
+    // The availability answer rides along — it is the org's stated hard gate.
+    expect(notice?.capacity).toContain("10 hours a week");
+  });
+
+  test("no hiring seats yet means an empty recipient list, not a failure", async () => {
+    const t = newT();
+    const id = await submit(t);
+    const notice = await t.query(internal.hiring.getNewApplicationNotice, {
+      applicationId: id,
+    });
+    expect(notice?.recipients).toEqual([]);
   });
 });

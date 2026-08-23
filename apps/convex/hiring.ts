@@ -70,6 +70,7 @@ import {
   APPLICATION_TRIAL_TRACKS,
 } from "./schema/hiring";
 import {
+  hiringDeskRecipients,
   requireHiringDecide,
   requireHiringManage,
   requireHiringView,
@@ -77,7 +78,7 @@ import {
 } from "./lib/hiringAccess";
 import { requireUserId } from "./lib/context";
 import { escapeHtml } from "./lib/html";
-import { siteUrl } from "./lib/siteUrl";
+import { appUrl, siteUrl } from "./lib/siteUrl";
 import {
   emailButtonRow,
   emailHeading,
@@ -360,6 +361,11 @@ export const submitApplication = mutation({
     // next has to be an email that says the same thing. Scheduled (not
     // awaited) so a Resend hiccup can never cost us the application itself.
     await ctx.scheduler.runAfter(0, internal.hiring.sendApplicationReceived, {
+      applicationId,
+    });
+    // …and tell the people who can actually act on it. A desk nobody opens is
+    // how a 7-day promise quietly becomes a 7-week one.
+    await ctx.scheduler.runAfter(0, internal.hiring.sendNewApplicationNotice, {
       applicationId,
     });
     return null;
@@ -1267,6 +1273,84 @@ export const markOutcomeMessageSent = internalMutation({
       body: message,
       at: now,
     });
+    return null;
+  },
+});
+
+/** Everything the desk's new-application notice needs, or `null` when the file
+ *  vanished under a scheduled send. Recipients come from the SEAT CHART (see
+ *  `hiringDeskRecipients`), so holding the power is the subscription. */
+export const getNewApplicationNotice = internalQuery({
+  args: { applicationId: v.id("jobApplications") },
+  returns: v.union(
+    v.null(),
+    v.object({
+      recipients: v.array(v.string()),
+      name: v.string(),
+      email: v.string(),
+      roleTitle: v.string(),
+      location: v.union(v.string(), v.null()),
+      capacity: v.union(v.string(), v.null()),
+    }),
+  ),
+  handler: async (ctx, { applicationId }) => {
+    const row = await ctx.db.get(applicationId);
+    if (!row) return null;
+    return {
+      recipients: await hiringDeskRecipients(ctx),
+      name: row.name,
+      email: row.email,
+      roleTitle: row.roleTitle,
+      location: row.location ?? null,
+      // The availability answer, previewed in the notice: it is the org's
+      // stated hard gate, so it is the one answer worth reading before
+      // deciding whether this needs attention today.
+      capacity: row.answers.capacity ?? null,
+    };
+  },
+});
+
+/** Tell the hiring desk an application landed. Best-effort per recipient — one
+ *  bad address must not cost the others their notice. */
+export const sendNewApplicationNotice = internalAction({
+  args: { applicationId: v.id("jobApplications") },
+  returns: v.null(),
+  handler: async (ctx, { applicationId }) => {
+    try {
+      const payload = await ctx.runQuery(
+        internal.hiring.getNewApplicationNotice,
+        { applicationId },
+      );
+      if (!payload || payload.recipients.length === 0) return null;
+
+      const link = appUrl("/hiring");
+      const capacity = payload.capacity
+        ? emailParagraph(
+            `<b>On their time:</b> ${escapeHtml(payload.capacity.slice(0, 400))}`,
+          )
+        : "";
+      const html = emailShell(`
+        ${emailHeading("A new application")}
+        ${emailParagraph(`<b>${escapeHtml(payload.name)}</b> applied for <b>${escapeHtml(payload.roleTitle)}</b>${payload.location ? ` — ${escapeHtml(payload.location)}` : ""}.`)}
+        ${capacity}
+        ${emailParagraph(`We've told them they'll hear from a person within ${RESPONSE_PROMISE_DAYS} days. Reply to them at ${escapeHtml(payload.email)}.`, { size: 12 })}
+        ${link ? emailButtonRow(link, "Open the pipeline →") : ""}
+      `);
+
+      for (const to of payload.recipients) {
+        try {
+          await sendEmail(ctx, {
+            to,
+            subject: `New application: ${payload.name} — ${payload.roleTitle}`,
+            html,
+          });
+        } catch (err) {
+          console.error("sendNewApplicationNotice: recipient failed", to, err);
+        }
+      }
+    } catch (err) {
+      console.error("sendNewApplicationNotice: failed", applicationId, err);
+    }
     return null;
   },
 });

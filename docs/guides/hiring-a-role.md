@@ -85,6 +85,10 @@ not decoration:
 
 Zero is the right answer for all four.
 
+**You also get an email the moment an application lands** — everyone holding a
+central hiring power does. There is no separate notification list to maintain:
+granting the power *is* the subscription, and removing it is the unsubscribe.
+
 On a candidate's file you can: take ownership, move the stage, file a rubric
 review, start the trial, add notes, and — if you hold `hiring.approve` — make
 the call.
