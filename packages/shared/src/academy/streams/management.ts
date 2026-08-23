@@ -1019,12 +1019,12 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "mgmt-the-front-door",
     title: "The front door",
-    subtitle: "Where the pipeline actually lives now — a public page, one form, and a promise with a clock on it",
-    minutes: 4,
+    subtitle: "Where the pipelines actually live now — two public doors, and a promise with a clock on it",
+    minutes: 5,
     blocks: [
       {
         kind: "p",
-        text: "The five steps used to live in people's heads and a few Notion pages. They live in the product now: **publicworship.life/careers** publishes the open roles, anyone can apply from it, and every application lands in one place — the **Hiring** desk in Chapter OS. Same door for a stranger who found the page and for a friend a director asked to apply properly.",
+        text: "The five steps used to live in people's heads and a few Notion pages. They live in the product now: **publicworship.life/team** publishes the open seats, anyone can apply from it, and every application lands in one place — **People → Recruiting** in Chapter OS. Same door for a stranger who found the page and for a friend a director asked to apply properly.",
       },
       {
         kind: "p",
@@ -1041,6 +1041,11 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           ["**Awaiting the call**", "The reviews are in and we owe this person an answer"],
           ["**Placed · Not now · Declined · Withdrew**", "Closed, with a reason recorded and a message sent"],
         ],
+      },
+      {
+        kind: "rule",
+        title: "Two pipelines, one owner",
+        text: "Everyone here is a volunteer, so \"volunteer\" alone says nothing. A **seat** on the chart — with outcomes it owns and decisions it makes — is applied for at /team and takes weeks: interviews, a trial, a director's call. A **volunteer** who wants to help at a gathering signs up at /serve and the whole process is: they raise a hand, a human replies, they land on the roster tagged with what they can do. Same person owns both. Running them the same way would be wrong in both directions — a trial to hand out lanyards is absurd, and a hand-raise is not enough to hand someone a chapter.",
       },
       {
         kind: "rule",
@@ -1064,12 +1069,12 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "In the app · Hiring → a candidate's file. Everything in this lesson is on that one screen: their answers, the rubric, the trial brief, and the call. The public half is at publicworship.life/careers.",
+        text: "In the app · People → Recruiting → a candidate's file. Everything in this lesson is on that one screen: their answers, the rubric, the trial brief, and the call. The public half is at publicworship.life/team.",
       },
     ],
     quiz: [
       {
-        prompt: "What has to be true before a role gets published on the careers page?",
+        prompt: "What has to be true before a seat gets published on /team?",
         options: [
           "Someone has time to interview",
           "Its outcomes, the decisions the holder gets to make, and what the role is NOT can all be written down",
@@ -1623,7 +1628,7 @@ export const MANAGEMENT_COURSES: Course[] = [
     audience: "team",
     description:
       "Empower first, appoint second: the five-step hiring pipeline, where it " +
-      "lives now (a public careers page and the Hiring desk), the interview " +
+      "lives now (public seats at /team and the Recruiting desk), the interview " +
       "rubric, the Empowerment Trial, and the call that ends it — kindly, " +
       "either way.",
     icon: "user-plus",

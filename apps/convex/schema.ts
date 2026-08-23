@@ -35,6 +35,7 @@ import {
   applicationReviews,
   applicationEvents,
 } from "./schema/hiring";
+import { volunteerSignups } from "./schema/volunteers";
 import { registrations } from "./schema/registrations";
 import { responsibilities, checkIns } from "./schema/responsibilities";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
@@ -277,6 +278,14 @@ const schema = defineSchema({
   jobApplications,
   applicationReviews,
   applicationEvents,
+
+  // The People desk's other, much lighter pipeline: someone who wants to help
+  // at a gathering rather than hold a seat on the chart. An INBOX, not a
+  // roster — an answered signup becomes a `people` row via
+  // `volunteers.addToRoster`. See schema/volunteers.ts + volunteers.ts, and
+  // `@events-os/shared`'s volunteers.ts for why this isn't the same pipeline
+  // with a flag on it.
+  volunteerSignups,
 
   // Responsibilities (recurring duties, fanned out by role) + 1:1 check-ins.
   responsibilities,

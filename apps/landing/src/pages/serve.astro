@@ -4,6 +4,7 @@ import Container from "../components/ui/Container.astro";
 import SectionHeading from "../components/ui/SectionHeading.astro";
 import ServeNeeds from "../components/sections/ServeNeeds.astro";
 import Button from "../components/ui/Button.astro";
+import VolunteerForm from "../components/team/VolunteerForm.astro";
 import { asset } from "../lib/asset";
 ---
 
@@ -58,35 +59,34 @@ import { asset } from "../lib/asset";
       {/* Two different asks, and conflating them was costing us both. This
           page is for showing up and helping; a SEAT on the team — with
           ownership, a trial, and a decision at the end — goes through
-          /careers. */}
+          /team. */}
       <div
         class="mt-12 rounded-2xl border border-pink-soft/60 bg-pink-softer/40 p-6 sm:p-8"
       >
         <p class="font-display text-lg font-normal text-ink">
-          Looking for a role on the team, not just a shift?
+          Looking for a seat on the team, not just a shift?
         </p>
         <p class="mt-2 max-w-prose text-base leading-relaxed text-ink/80">
-          Open roles say what you'd own, what you'd decide, and exactly what
+          Open seats say what you'd own, what you'd decide, and exactly what
           happens after you apply — a conversation, a real trial project, and a
-          yes or a no from a person.
+          yes or a no from a person. More seats open as new chapters come.
         </p>
         <div class="mt-5">
-          <Button href={asset("/careers")}>See open roles →</Button>
+          <Button href={asset("/team")}>See open seats →</Button>
         </div>
       </div>
 
-      <div class="mt-12 flex flex-col items-center gap-3">
-        <Button
-          href="https://forms.gle/Sos6JfvpqoaJxj8E9"
-          variant="outline"
-          size="lg"
-          external>Fill out Form</Button
-        >
-        <p class="text-sm text-ink/60">
-          For helping at gatherings — we keep your interests and availability
-          on file.
-        </p>
+      {/* Was a Google Form until 2026-08-23. A signup that lands in a
+          spreadsheet nobody owns is the reason "we'll reach out when a need
+          arises" kept not happening — this one lands in the People desk, where
+          it is counted against a reply promise. */}
+      <div class="mt-16">
+        <VolunteerForm />
       </div>
     </Container>
   </section>
+
+  <script>
+    import "../scripts/volunteer-signup.ts";
+  </script>
 </BaseLayout>

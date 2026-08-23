@@ -47,7 +47,7 @@ import {
   renderBackerSignIn,
 } from "./lib/backerPortalPage";
 import { registerBlogApiRoutes } from "./lib/blogApiRoutes";
-import { registerCareerApiRoutes } from "./lib/careerApiRoutes";
+import { registerJoinApiRoutes } from "./lib/joinApiRoutes";
 import {
   renderReimburseForm,
   renderReimburseStatus,
@@ -119,9 +119,10 @@ auth.addHttpRoutes(http);
 // JSON API for the landing page's client script (/api/tickets/*).
 registerTicketApiRoutes(http);
 
-// The careers page's application intake (/api/careers/apply) — the public
-// half of the hiring pipeline (`hiring.ts`).
-registerCareerApiRoutes(http);
+// The two public intakes: a team application (/api/team/apply, plus the
+// original /api/careers/apply kept alive for cached pages) and a volunteer
+// signup (/api/volunteer/signup). See `lib/joinApiRoutes.ts`.
+registerJoinApiRoutes(http);
 
 // JSON API for the public reimbursement page's client script (/api/reimburse/*).
 registerReimburseApiRoutes(http);

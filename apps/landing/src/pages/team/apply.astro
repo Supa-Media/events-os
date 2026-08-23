@@ -1,6 +1,6 @@
 ---
 /**
- * /careers/apply — the application form, for a specific role
+ * /team/apply — the application form, for a specific role
  * (`?role=<slug>&title=<title>`) or for the general-interest pool.
  *
  * The questions are rendered from `APPLICATION_QUESTIONS` in
@@ -9,7 +9,7 @@
  * under. Copying them into this file would guarantee the three drift apart;
  * importing them means a reworded question ships everywhere at once.
  *
- * Posts to `/api/careers/apply`, which pw-router proxies to Convex on
+ * Posts to `/api/team/apply`, which pw-router proxies to Convex on
  * publicworship.life (every path under `/api/` already routes there).
  */
 import BaseLayout from "../../layouts/BaseLayout.astro";
@@ -31,7 +31,7 @@ import { asset } from "../../lib/asset";
 >
   <Container size="narrow" class="py-16 sm:py-24">
     <a
-      href={asset("/careers")}
+      href={asset("/team")}
       class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
       >← All roles</a
     >
@@ -61,7 +61,7 @@ import { asset } from "../../lib/asset";
       aria-describedby="apply-status"
     >
       {/* The role this is an application FOR — filled from the query string by
-          careers-apply.ts, and kept in the DOM so a submission always says what
+          team-apply.ts, and kept in the DOM so a submission always says what
           it was for even if the page was bookmarked. */}
       <input type="hidden" name="roleSlug" data-apply-role-slug value="" />
       <input type="hidden" name="roleTitle" data-apply-role-title-input value="" />
@@ -229,7 +229,7 @@ import { asset } from "../../lib/asset";
           know.
         </p>
         <a
-          href={asset("/careers")}
+          href={asset("/team")}
           class="mt-5 inline-flex items-center gap-1 text-sm font-bold text-red-500 hover:underline underline-offset-4"
           >← Back to the roles</a
         >
@@ -238,6 +238,6 @@ import { asset } from "../../lib/asset";
   </Container>
 
   <script>
-    import "../../scripts/careers-apply.ts";
+    import "../../scripts/team-apply.ts";
   </script>
 </BaseLayout>

@@ -1,5 +1,5 @@
 /**
- * HIRING · Pipeline — the People desk's whole funnel on one screen.
+ * PEOPLE · Team applications — the seat pipeline on one screen.
  *
  * Deliberately one list with stage filters rather than a board: the question
  * this screen exists to answer is not "what's the shape of the funnel" but
@@ -29,7 +29,8 @@ import {
   isStale,
   type HiringStage,
 } from "@events-os/shared";
-import { stageTone } from "../../../lib/hiringStage";
+import { stageTone } from "../../../../lib/hiringStage";
+import { PipelineTabs } from "../../../../components/people/PipelineTabs";
 import {
   Badge,
   Card,
@@ -38,7 +39,7 @@ import {
   Pill,
   Screen,
   SectionHeader,
-} from "../../../components/ui";
+} from "../../../../components/ui";
 
 function daysAgo(ts: number): string {
   const days = Math.floor((Date.now() - ts) / (24 * 60 * 60 * 1000));
@@ -71,7 +72,7 @@ function Stat({
   );
 }
 
-export default function HiringPipelineScreen() {
+export default function TeamPipelineScreen() {
   const access = useQuery(api.hiring.myHiringAccess, {});
 
   if (access === undefined) return <Screen loading />;
@@ -114,14 +115,13 @@ function PipelineBody() {
   return (
     <Screen>
       <Narrow>
-        <SectionHeader
-          title="Hiring"
-          count={`${summary.open} open`}
-        />
+        <PipelineTabs />
+        <SectionHeader title="Team applications" count={`${summary.open} open`} />
         <Text className="mb-3 text-sm text-muted">
-          Everyone who wants to join comes through here — one funnel, one
+          Everyone applying for a SEAT comes through here — one funnel, one
           standard. We promise a human reply within {RESPONSE_PROMISE_DAYS}{" "}
-          days.
+          days. (Volunteers who just want to help at a gathering are the other
+          tab.)
         </Text>
 
         <View className="mb-4 flex-row flex-wrap gap-2">
@@ -160,7 +160,7 @@ function PipelineBody() {
         {visible.length === 0 ? (
           <EmptyState
             title="Nothing here"
-            message="Applications from the careers page land in this pipeline. Nothing is sitting in this stage right now."
+            message="Applications from /team land in this pipeline. Nothing is sitting in this stage right now."
           />
         ) : (
           <View className="gap-2">
@@ -170,7 +170,7 @@ function PipelineBody() {
               return (
                 <Pressable
                   key={row._id}
-                  onPress={() => router.navigate(`/hiring/${row._id}` as never)}
+                  onPress={() => router.navigate(`/people/pipeline/${row._id}` as never)}
                 >
                   <Card padding="md">
                     <View className="mb-1 flex-row items-center justify-between gap-2">

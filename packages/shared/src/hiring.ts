@@ -7,7 +7,7 @@
  * trial", "The call"). Until now it lived only as training and tribal
  * knowledge, which is exactly the thing the People Director is being hired to
  * systematize. This module is that process written down as constants, so the
- * public careers page (`apps/landing/src/pages/careers/*`), the application
+ * public `/team` pages (`apps/landing/src/pages/team/*`), the application
  * intake (`apps/convex/hiring.ts`), and the Hiring desk (`apps/mobile/app/
  * (app)/hiring/*`) all describe the SAME pipeline and can never drift from
  * each other or from the lessons.
@@ -18,7 +18,7 @@
  *                              role page is that definition, published.
  *   2 · Find candidates      — in-house → volunteer interest pool → public
  *                              call → personal networks, ALWAYS in that
- *                              order (`CANDIDATE_SOURCES`). The careers page
+ *                              order (`CANDIDATE_SOURCES`). The `/team` page
  *                              is the "public call" rung; every rung lands in
  *                              the same table so everyone passes the same door.
  *   3 · Interview            — two meetings (heart & alignment, then role
@@ -45,7 +45,7 @@
  *     executions — is why the trial brief asks for a written playbook rather
  *     than handing one over (`TRIAL_DELIVERABLE_PROMPT`).
  * See `3-resources/books/buy-back-your-time.md` in the owner's brain for the
- * framework itself, and `docs/guides/hiring-a-role.md` for how a director
+ * framework itself, and `docs/guides/recruiting.md` for how a director
  * actually runs one of these.
  *
  * NOTHING here is chapter-scoped: hiring is a CENTRAL desk (the People seat
@@ -93,7 +93,7 @@ export interface HiringStageDef {
    *  against the response promise. */
   closed: boolean;
   /** What the CANDIDATE is told this stage means, in the confirmation email
-   *  and on the careers page's "what happens after you apply" list. Absent on
+   *  and on `/team`'s "what happens after you apply" list. Absent on
    *  stages a candidate never sees named (`withdrawn`). */
   candidateLabel?: string;
 }
@@ -502,7 +502,7 @@ export const TRIAL_DELIVERABLE_PROMPT =
 export const CANDIDATE_SOURCES = [
   { id: "in_house", label: "Already on the team", rung: 1 },
   { id: "interest_pool", label: "Volunteer interest pool", rung: 2 },
-  { id: "public_call", label: "Public call (careers page)", rung: 3 },
+  { id: "public_call", label: "Public call (/team)", rung: 3 },
   { id: "personal_network", label: "Personal network", rung: 4 },
 ] as const;
 
@@ -515,7 +515,7 @@ export function isCandidateSource(value: string): value is CandidateSource {
   return (CANDIDATE_SOURCE_IDS as string[]).includes(value);
 }
 
-/** Everything arriving through the careers form is rung 3 by definition — the
+/** Everything arriving through the `/team` form is rung 3 by definition — the
  *  public call. A director can re-file it after the fact (a personal contact
  *  they asked to apply properly is still rung 4), which is exactly the honesty
  *  the ordered search needs to be measurable. */
@@ -620,7 +620,7 @@ export const GENERAL_INTEREST_TITLE = "General interest";
  * What we promise a candidate, in days, and therefore what the desk is
  * measured against: an application gets a human reply within a week, and
  * nobody sits in an open stage for more than a month without hearing
- * something. These are PRODUCT commitments (published on the careers page),
+ * something. These are PRODUCT commitments (published on `/team`),
  * not something the Academy pinned — if they change, the page changes.
  */
 export const RESPONSE_PROMISE_DAYS = 7;
@@ -664,7 +664,7 @@ export const ROLE_TEMPLATE_SECTIONS = [
 
 export type RoleTemplateSection = (typeof ROLE_TEMPLATE_SECTIONS)[number]["key"];
 
-/** A published role's lifecycle on the careers page. `filling` keeps a role
+/** A published role's lifecycle on `/team`. `filling` keeps a role
  *  visible while its pipeline runs — an applicant seeing "we're interviewing"
  *  is treated better than one who finds the page gone. */
 export const ROLE_STATUSES = ["open", "filling", "not_open", "closed"] as const;

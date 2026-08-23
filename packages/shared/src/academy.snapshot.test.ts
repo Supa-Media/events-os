@@ -803,18 +803,21 @@
  * four modules. Nothing else moved: no slugs, titles, minutes, quiz lengths, or
  * order changed anywhere else. Total: 99 sections.
  *
- * The CAREERS PAGE + HIRING PIPELINE PR (2026-08-23, founder request — "this
+ * The JOIN-THE-TEAM PAGE + PIPELINES PR (2026-08-23, founder request — "this
  * should live on our website natively … create an end-to-end pipeline")
- * INSERTED one Management section, `mgmt-the-front-door` (4 min, 4-quiz), into
+ * INSERTED one Management section, `mgmt-the-front-door` (5 min, 4-quiz), into
  * the `growing-the-team` course between `mgmt-empower-first` and
  * `mgmt-the-interview`. The five-step process the surrounding lessons teach is
- * unchanged; this one teaches where it now LIVES — the public careers page,
- * the one application form, the Hiring desk's stages, and the three rules the
- * product now enforces rather than asks people to remember (two reviewers
- * before a placement, a revisit date on every not-now, a recorded reason on
- * every close). That course now carries five modules, and its description
- * gained the careers-page clause. Every section AFTER it shifts one place in
- * curriculum order; no slugs, titles, minutes, or quiz lengths changed
+ * unchanged; this one teaches where it now LIVES — public seats at
+ * `/team`, the volunteer signup at `/serve`, the Recruiting desk's stages, and
+ * the three rules the product now enforces rather than asks people to remember
+ * (two reviewers before a placement, a revisit date on every not-now, a
+ * recorded reason on every close). It also draws the line the whole People
+ * seat rests on: a SEAT on the chart and a pair of HANDS at a gathering are
+ * two pipelines with one owner, and running them the same way would be wrong
+ * in both directions. That course now carries five modules, and its
+ * description gained the /team clause. Every section AFTER it shifts one place
+ * in curriculum order; no slugs, titles, minutes, or quiz lengths changed
  * anywhere else. Total: 100 sections.
  */
 import { describe, expect, test } from "vitest";
@@ -1366,7 +1369,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-the-front-door",
     title: "The front door",
-    minutes: 4,
+    minutes: 5,
     quizLength: 4,
     optional: false,
     capstoneKind: null,

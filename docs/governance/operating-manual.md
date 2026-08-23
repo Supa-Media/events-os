@@ -136,13 +136,29 @@ seats) at Eden and Love Thy Neighbor scale.
 - Removing someone from a seat removes their powers immediately. Off-boarding is
   in §12.4.
 
-### 2.4 How someone gets into a seat
+### 2.4 Team and volunteers are not the same thing
+
+Everyone here is a volunteer, including the Executive Director, so the word on
+its own distinguishes nothing. Two commitments do:
+
+| | **Team** | **Volunteers** |
+|---|---|---|
+| What it is | A named seat on the chart, with outcomes it owns and decisions it makes | Hands at a gathering — setup, welcome, prayer, a camera |
+| Where they come in | `publicworship.life/team` | `publicworship.life/serve` |
+| The process | §2.5 below — interviews, a rubric, a trial, a director's call | Reply, then onto the roster with what they can do tagged |
+| Recorded as | `isTeamMember` on their roster row | `isVolunteer`, with Service Catalog tags |
+
+The **People Director owns both.** They are deliberately not run the same way:
+a trial project to hand out lanyards would be absurd, and a raised hand is not
+enough to hand someone a chapter.
+
+### 2.5 How someone gets into a seat
 
 Every seat is filled through one pipeline, whether the candidate is a stranger,
 a friend of the team, or someone already serving. The process is the one the
 Academy teaches (`growing-the-team`); since 2026-08-23 the product carries it:
 
-1. **The role is published.** A seat is posted at `publicworship.life/careers`
+1. **The seat is published.** A seat is posted at `publicworship.life/team`
    only once its outcomes, the decisions its holder makes without asking, and
    what the role is *not* have been written down. Roles are markdown in the
    repository (`apps/landing/src/content/roles/`), so publishing one is a
@@ -163,7 +179,9 @@ Applications, rubric reviews, and decisions live on the Hiring desk in Chapter
 OS (`hiring.view` / `hiring.edit` / `hiring.approve`). The organization's stated
 commitment to an applicant is a human reply within **7 days**. Placement into a
 seat is still an appointment under §2.3 — the pipeline informs the appointment;
-it does not make it.
+it does not make it. Volunteer signups are triaged on the same desk, with a
+single act at the end: adding them to the roster, which is what makes them
+invitable to an event.
 
 ---
 
@@ -627,7 +645,7 @@ ledger and a public page, they are.
 - **The public ledger omits people.** Donor identities, individual compensation
   beyond what law requires, and anything that would endanger someone are never
   published (Bylaws § 11.4).
-- **Applications are confidential.** What someone writes on the careers form —
+- **Applications are confidential.** What someone writes on the `/team` form —
   their church, their capacity, why they want out of where they are — is read by
   the people running that hiring decision and nobody else. No public surface
   returns any part of an application, and the reason a candidate was declined is

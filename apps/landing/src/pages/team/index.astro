@@ -1,9 +1,9 @@
 ---
 /**
- * /careers — the org's front door for anyone who wants to join.
+ * /team — the org's front door for anyone who wants to join.
  *
  * Two jobs, in this order: show what's actually open, and tell people exactly
- * what happens after they apply. The second one is the part most careers pages
+ * what happens after they apply. The second one is the part most such pages
  * skip, and it's the part that makes the promise on this page checkable — the
  * stages listed here are the same stages the Hiring desk moves a file through
  * (`@events-os/shared`'s `hiring.ts`), not marketing copy about them.
@@ -12,8 +12,8 @@ import BaseLayout from "../../layouts/BaseLayout.astro";
 import Container from "../../components/ui/Container.astro";
 import Eyebrow from "../../components/ui/Eyebrow.astro";
 import Button from "../../components/ui/Button.astro";
-import RoleCard from "../../components/careers/RoleCard.astro";
-import HiringProcess from "../../components/careers/HiringProcess.astro";
+import RoleCard from "../../components/team/RoleCard.astro";
+import HiringProcess from "../../components/team/HiringProcess.astro";
 import { getRoles, openRoles, otherRoles } from "../../lib/roles";
 import { RESPONSE_PROMISE_DAYS } from "@events-os/shared/src/hiring";
 import { asset } from "../../lib/asset";
@@ -24,9 +24,9 @@ const upcoming = otherRoles(roles);
 ---
 
 <BaseLayout
-  title="Open roles"
-  description="Serve with Public Worship. Open volunteer roles, what each one actually owns, and exactly what happens after you apply."
-  canonical={new URL("/careers", Astro.site).toString()}
+  title="Join the team"
+  description="Join the Public Worship team. Open seats, what each one actually owns, and exactly what happens after you apply."
+  canonical={new URL("/team", Astro.site).toString()}
 >
   <Container size="narrow" class="py-16 sm:py-24">
     <div class="flex flex-col items-start gap-3" data-animate="fade-up">
@@ -37,21 +37,26 @@ const upcoming = otherRoles(roles);
         Build this with <span class="text-red-500">us</span>
       </h1>
       <p class="max-w-prose text-lg leading-relaxed text-ink/75">
-        Public Worship is volunteer-led. Nobody here draws a salary, and the
-        thing that limits what we can do is not money or ideas — it's people
-        and leadership capacity. So these roles are real: real ownership, real
-        decisions, real weight.
+        Public Worship is volunteer-led — nobody here draws a salary, including
+        the people in these seats. What limits us isn't money or ideas; it's
+        people and leadership capacity. So these are real seats: real
+        ownership, real decisions, real weight.
       </p>
       <p class="max-w-prose text-base leading-relaxed text-ink/70">
-        Every role below says what you'd be accountable for, what you'd get to
+        Every seat below says what you'd be accountable for, what you'd get to
         decide on your own, and what it is <em>not</em>. If we can't write that
         down, we're not ready to ask someone to do it.
+      </p>
+      <p class="max-w-prose text-base leading-relaxed text-ink/70">
+        Want to help at a gathering rather than hold a seat? That's a different
+        (and much shorter) door —
+        <a href={asset("/serve")} class="text-red-500 underline-offset-2 hover:underline">volunteer with us</a>.
       </p>
     </div>
 
     {/* ── Open roles ─────────────────────────────────────────────── */}
     <section class="mt-14" data-animate="fade-up">
-      <h2 class="font-display text-2xl font-normal text-ink">Open roles</h2>
+      <h2 class="font-display text-2xl font-normal text-ink">Open seats</h2>
       {
         open.length === 0 ? (
           <p class="mt-4 max-w-prose text-ink/70">
@@ -100,16 +105,16 @@ const upcoming = otherRoles(roles);
       data-animate="fade-up"
     >
       <h2 class="font-display text-xl font-normal text-ink">
-        Don't see your role?
+        Don't see your seat?
       </h2>
       <p class="mt-3 max-w-prose text-ink/80">
-        Most people who end up on this team didn't arrive through a posting.
-        Tell us what you'd want to own and how much time you actually have, and
-        we'll keep you in the pool — that's the first place we look when
-        something opens.
+        Most people on this team didn't arrive through a posting. Tell us what
+        you'd want to own and how much time you actually have — that pool is
+        the first place we look when something opens, and new chapters are
+        coming, which means more seats than are listed here today.
       </p>
       <div class="mt-5">
-        <Button href={asset("/careers/apply")}>Tell us about you →</Button>
+        <Button href={asset("/team/apply")}>Tell us about you →</Button>
       </div>
     </section>
 

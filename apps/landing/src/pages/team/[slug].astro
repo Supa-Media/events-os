@@ -1,6 +1,6 @@
 ---
 /**
- * /careers/<slug> — one role, rendered from the template.
+ * /team/<slug> — one role, rendered from the template.
  *
  * Every section here is a required field on the `roles` collection, in the
  * order `ROLE_TEMPLATE_SECTIONS` declares. That's deliberate and it is the
@@ -12,7 +12,7 @@ import { render } from "astro:content";
 import BaseLayout from "../../layouts/BaseLayout.astro";
 import Container from "../../components/ui/Container.astro";
 import Button from "../../components/ui/Button.astro";
-import HiringProcess from "../../components/careers/HiringProcess.astro";
+import HiringProcess from "../../components/team/HiringProcess.astro";
 import {
   applyPath,
   getRoles,
@@ -57,11 +57,11 @@ const facts: { label: string; value: string }[] = [
 <BaseLayout
   title={d.title}
   description={d.summary}
-  canonical={new URL(`/careers/${role.id}`, Astro.site).toString()}
+  canonical={new URL(`/team/${role.id}`, Astro.site).toString()}
 >
   <Container size="narrow" class="py-16 sm:py-24">
     <a
-      href={asset("/careers")}
+      href={asset("/team")}
       class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
       >← All roles</a
     >
@@ -311,7 +311,7 @@ const facts: { label: string; value: string }[] = [
           {accepting ? `Apply for ${d.title} →` : "Register your interest →"}
         </Button>
         <a
-          href={asset("/careers")}
+          href={asset("/team")}
           class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
           >See the other roles</a
         >

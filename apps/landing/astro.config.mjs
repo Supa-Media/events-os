@@ -7,6 +7,12 @@ export default defineConfig({
   base: "/",
   trailingSlash: "ignore",
   redirects: {
+    // /careers shipped for a few hours before the name changed. We are 100%
+    // volunteer-run, so "careers" was the wrong word for it — the page is
+    // about joining the team, and it lives at /team now. Kept as a redirect
+    // because a link that was shared once is shared forever.
+    "/careers": "/team",
+    "/careers/[slug]": "/team/[slug]",
     "/about": "/#about",
     "/impact": "/#impact",
     "/links": "/#links",
