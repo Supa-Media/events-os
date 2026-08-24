@@ -297,11 +297,17 @@ export default function CodingScreen() {
   // between the two (mirrors `explain.tsx`'s own `showPanel`).
   const showPanel = isWide && openRow != null;
 
-  return (
-    <View style={{ flex: 1, flexDirection: showPanel ? "row" : "column" }}>
-      <View style={{ flex: 1, minWidth: 0 }}>
-        <Screen maxWidth={1080}>
-          <Narrow>
+  // Which half leads. See the render site below for the reasoning; it is read
+  // here too, because the gap between the two sections belongs to whichever
+  // one is SECOND — a fixed `mt-8` on the review block would indent it from
+  // the top of the page when it leads and leave the other flush when it
+  // doesn't.
+  const reviewFirst = actionableCount === 0;
+
+  // The two halves, built once and ORDERED below — see the comment at their
+  // render site for why the order is conditional.
+  const YOURS_TO_CODE = (
+    <View className={reviewFirst ? "mt-8" : ""}>
         {/* ── 1. YOURS TO CODE ─────────────────────────────────────────── */}
         <SectionHeader
           title="Yours to code"
@@ -415,9 +421,14 @@ export default function CodingScreen() {
           </Table>
         )}
 
+    </View>
+  );
+
+  const AWAITING_REVIEW = (
+    <>
         {/* ── 2. AWAITING REVIEW ───────────────────────────────────────── */}
         {showReviewSection ? (
-          <View className="mt-8">
+          <View className={reviewFirst ? "" : "mt-8"}>
             <SectionHeader
               title="Awaiting review"
               count={
@@ -502,6 +513,39 @@ export default function CodingScreen() {
             ) : null}
           </View>
         ) : null}
+    </>
+  );
+
+  return (
+    <View style={{ flex: 1, flexDirection: showPanel ? "row" : "column" }}>
+      <View style={{ flex: 1, minWidth: 0 }}>
+        <Screen maxWidth={1080}>
+          <Narrow>
+        {/* ── THE ORDER OF THE TWO HALVES ───────────────────────────────
+            Normally YOURS TO CODE first: your own unexplained spending
+            outranks other people's work, and putting it second would let it
+            hide behind a review queue (this screen's own module doc).
+
+            The exception is the case that rationale doesn't cover — you have
+            NOTHING to code. Founder, 2026-08-24, looking at exactly that
+            screen: "the review workflow is not as obvious." It wasn't: an
+            empty "Nothing needs you right now" card, its filter chips and its
+            explanatory paragraph filled the fold, and the one coding actually
+            waiting on them sat below all of it. When there is no work of your
+            own to outrank anything, the queue that IS waiting on you goes
+            first. The sections themselves are untouched either way — this
+            reorders them, it doesn't fork them. */}
+        {actionableCount > 0 ? (
+          <>
+            {YOURS_TO_CODE}
+            {AWAITING_REVIEW}
+          </>
+        ) : (
+          <>
+            {AWAITING_REVIEW}
+            {YOURS_TO_CODE}
+          </>
+        )}
       </Narrow>
 
           {/* NARROW screens only — the pre-panel Modal sheet, unchanged. On a

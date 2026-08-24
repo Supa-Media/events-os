@@ -17,11 +17,10 @@
  */
 import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
-import { v, ConvexError, type Infer } from "convex/values";
+import { v, ConvexError } from "convex/values";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
   RECEIPT_EXCEPTION_REASONS,
-  RECEIPT_EXCEPTION_STATUSES,
   RECEIPT_EXCEPTION_REASON_LABELS,
   financeAuditValueLabel,
   receiptExceptionApprovedKey,
@@ -44,6 +43,8 @@ import {
   decideException,
   withdrawException,
   exceptionsForTransaction,
+  exceptionRecord,
+  projectExceptionRecord,
 } from "./lib/receiptExceptions";
 
 /** One recorded yes/no, with the question it answered — see the schema's
@@ -53,9 +54,6 @@ const attestationValidator = v.array(
 );
 const reasonValidator = v.union(
   ...RECEIPT_EXCEPTION_REASONS.map((r) => v.literal(r)),
-);
-const statusValidator = v.union(
-  ...RECEIPT_EXCEPTION_STATUSES.map((s) => v.literal(s)),
 );
 
 /** The org's second-approver threshold, falling back to the shared default.
@@ -68,86 +66,13 @@ async function approvalThresholdCents(ctx: QueryCtx): Promise<number> {
   );
 }
 
-const exceptionRow = v.object({
-  _id: v.id("receiptExceptions"),
-  transactionId: v.id("transactions"),
-  amountCents: v.number(),
-  reason: reasonValidator,
-  reasonLabel: v.string(),
-  note: v.string(),
-  status: statusValidator,
-  // Evidence of the purchase — photos of what was bought, a statement line, a
-  // confirmation email. Resolved to urls for display; a file whose url can't
-  // be resolved is dropped rather than rendered as a broken thumbnail.
-  //
-  // The CONTENT TYPE rides along because the viewer needs it. This used to be
-  // a bare `string[]`, and the UI guessed the file kind with
-  // `url.toLowerCase().includes(".pdf")` — which can NEVER be true, because a
-  // Convex storage url is `/api/storage/<uuid>` with no extension anywhere in
-  // it. Every PDF filed as evidence therefore rendered as a blank box, 100% of
-  // the time. Evidence carries no filename (it is stored as bare `_storage`
-  // ids, not `receipts` rows), so the content type is the only signal there
-  // is — and it has to come from the server.
-  evidence: v.array(
-    v.object({
-      url: v.string(),
-      contentType: v.union(v.string(), v.null()),
-    }),
-  ),
-  /** What the filer said they tried, question by question — the thing that
-   *  lets an approver understand the situation without asking anyone. Always
-   *  an array (empty for rows filed before this existed), and always rendered
-   *  as ATTESTED: nobody verified any of it. */
-  attestations: v.array(
-    v.object({ key: v.string(), prompt: v.string(), answer: v.boolean() }),
-  ),
-  attestedByName: v.union(v.string(), v.null()),
-  attestedAt: v.number(),
-  decidedByName: v.union(v.string(), v.null()),
-  decidedAt: v.union(v.number(), v.null()),
-  decisionNote: v.union(v.string(), v.null()),
-});
-
-/** Project one row for display, resolving the two person names + signed urls
- *  for every evidence file. */
-async function projectException(
-  ctx: QueryCtx,
-  row: Doc<"receiptExceptions">,
-): Promise<Infer<typeof exceptionRow>> {
-  const name = async (personId?: Id<"people">) => {
-    if (!personId) return null;
-    const person = await ctx.db.get(personId);
-    return person?.name ?? null;
-  };
-  return {
-    _id: row._id,
-    transactionId: row.transactionId,
-    amountCents: row.amountCents,
-    reason: row.reason,
-    reasonLabel: RECEIPT_EXCEPTION_REASON_LABELS[row.reason],
-    note: row.note,
-    status: row.status,
-    evidence: (
-      await Promise.all(
-        (row.evidenceStorageIds ?? []).map(async (id) => {
-          const url = await ctx.storage.getUrl(id);
-          if (url == null) return null;
-          const meta = await ctx.db.system.get("_storage", id);
-          return { url, contentType: meta?.contentType ?? null };
-        }),
-      )
-    ).filter((e): e is { url: string; contentType: string | null } => e != null),
-    // `[]` for the 36 exceptions decided before this existed — they're
-    // historical rows, not incomplete ones, and an empty list renders as
-    // "nothing recorded" rather than as three unanswered questions.
-    attestations: row.attestations ?? [],
-    attestedByName: await name(row.attestedByPersonId),
-    attestedAt: row.attestedAt,
-    decidedByName: await name(row.decidedByPersonId),
-    decidedAt: row.decidedAt ?? null,
-    decisionNote: row.decisionNote ?? null,
-  };
-}
+/** The display shape of one exception — defined once in the single-writer
+ *  module (`lib/receiptExceptions.ts#exceptionRecord`) because there are two
+ *  readers with two different gates now: this file's ATTEST-gated
+ *  `listForTransaction`, and the coding reviewer's VIEW-gated
+ *  `transactionCodings.reviewRecord`. Re-exported under the local name so
+ *  existing call sites here read unchanged. */
+const exceptionRow = exceptionRecord;
 
 /**
  * Every exception ever filed against one transaction, newest first — the
@@ -165,7 +90,7 @@ export const listForTransaction = query({
   handler: async (ctx, args) => {
     await requireAttestReceiptException(ctx, args.transactionId);
     const rows = await exceptionsForTransaction(ctx, args.transactionId);
-    return Promise.all(rows.map((r) => projectException(ctx, r)));
+    return Promise.all(rows.map((r) => projectExceptionRecord(ctx, r)));
   },
 });
 
