@@ -55,7 +55,9 @@ import {
   CODING_AUDIT_STATE_LABELS,
   type CodingAuditState,
   attendeeAffiliationBreakdown,
+  displayMerchantName,
   isNonDiscretionaryFee,
+  rawBankLine,
   type ExpenseType,
   type TransactionCodingStatus,
 } from "@events-os/shared";
@@ -63,6 +65,12 @@ import { requireUserId } from "./lib/context";
 import { referenceFor } from "./reimbursements";
 import { assertSeparationOfDuties } from "./lib/finance";
 import { logFinanceAudit } from "./lib/financeAuditLog";
+import {
+  exceptionRecord,
+  exceptionsForTransaction,
+  projectExceptionRecord,
+} from "./lib/receiptExceptions";
+import { hasApproveReceiptException } from "./lib/receiptExceptionAccess";
 import {
   hasCodingNamesView,
   hasReviewCoding,
@@ -87,6 +95,7 @@ import { listActiveChapters } from "./lib/chapters";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
 import {
   assertBudgetAttributable,
+  budgetDisplayName,
   isAttributableBudget,
 } from "./finances";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
@@ -1637,6 +1646,226 @@ export const reviewQueue = query({
       rows,
       hasMore: pending.length > page.length,
       orgWide: reach.orgWide,
+    };
+  },
+});
+
+/**
+ * THE WHOLE RECORD BEHIND ONE QUEUE ROW — everything a reviewer needs in
+ * front of them before they decide, in one read.
+ *
+ * Founder, 2026-08-24, looking at the Coding tab's review queue: "when
+ * reviewing it doesn't let me review all the fields they entered, like if
+ * it's a meal, I should see people's names listed for the meal, I should also
+ * be able to review receipts or receipt exception requests."
+ *
+ * That was true, and structurally so. `reviewQueue` carries a SUMMARY of each
+ * coding — the purpose, and one substantiation line — which is enough to
+ * clear an obvious row and not enough to actually review one. The attendee
+ * list, the travelers, the category and budget the money lands in, the
+ * send-back conversation so far, the receipt itself, and the exception
+ * request standing in for a missing receipt were all reachable only from
+ * other surfaces (`explain.tsx`'s panel, Reconcile's detail) — none of which
+ * a reviewer working this queue is on. So this returns the record, whole.
+ *
+ * ── WHY THE RECEIPT AND THE EXCEPTION COME THROUGH THIS GATE ────────────────
+ * Both are served under `requireViewCoding` — whoever may AUTHOR the coding
+ * or DECIDE it. That is precisely the argument the view gate was written for
+ * (see `lib/transactionCodingAccess.ts`): a reviewer who can approve a New
+ * York charge from this queue but cannot open what documents it is approving
+ * a claim they haven't read.
+ *
+ * It matters because the two existing readers are gated differently and
+ * NEITHER fits a reviewer:
+ *  - `receipts.listForTransaction` needs BOOKKEEPER rank at the caller's home
+ *    chapter. A Chapter Director may decide codings (`requireReviewCoding`'s
+ *    chapter-local arm) and derives rank `viewer` — they would be asked to
+ *    approve documentation they are not allowed to look at.
+ *  - `receiptExceptions.listForTransaction` is gated by the ATTEST resolver,
+ *    which is home-chapter-bound: a central FM reading a chapter's row gets
+ *    NOT_FOUND from it, on a row this very queue just handed them.
+ *
+ * DECIDING an exception is a different power and is NOT widened here. It stays
+ * `requireApproveReceiptException` — Finance manager, in the row's own book —
+ * and this query reports the answer as `canDecideException` so the UI renders
+ * the request read-only instead of a button the server would refuse. Same
+ * posture `listReconcile`'s `canEdit` and this queue's own `canReview` take:
+ * show the work, say plainly whose turn it is.
+ */
+
+/** One charge's receipt files. A charge carries one or two in practice (the
+ *  itemized folio plus the card slip); the bound is a runaway guard, not a
+ *  page size. */
+const RECEIPT_FILE_LIMIT = 20;
+
+export const reviewRecord = query({
+  args: { transactionId: v.id("transactions") },
+  returns: v.object({
+    /** The charge itself, as the reviewer needs to read it — including the
+     *  RAW bank line, the only thing that can contradict a tidy merchant
+     *  name, and the category/budget the money actually lands in. */
+    charge: v.object({
+      merchantName: v.string(),
+      rawBankLine: v.union(v.string(), v.null()),
+      amountCents: v.number(),
+      postedAt: v.number(),
+      bookName: v.string(),
+      cardholderName: v.union(v.string(), v.null()),
+      categoryName: v.union(v.string(), v.null()),
+      budgetName: v.union(v.string(), v.null()),
+    }),
+    /** The coding, whole — every field the author answered, names included
+     *  for a caller who holds names-view. `null` only if the row was deleted
+     *  out from under an open record. */
+    coding: v.union(codingRow, v.null()),
+    /** True iff attendee/traveler NAMES were withheld from this projection.
+     *  Distinguishes "redacted from you" from "nobody was named" — the same
+     *  distinction `reimbursementLineContext.attendeesRedacted` draws, and for
+     *  the same reason: a reviewer must not read an empty list as a complete
+     *  one. */
+    namesRedacted: v.boolean(),
+    /** THE PROOF. Every receipt file linked to this charge, resolved for the
+     *  viewer, with the receipt's OWN extracted amount and date beside it —
+     *  the two facts a reviewer checks the charge against without leaving the
+     *  row. Empty when the charge is documented by an exception instead, or
+     *  by nothing at all (which on a SUBMITTED coding means a rule stopped
+     *  holding, and the UI says so loudly). */
+    receipts: v.array(
+      v.object({
+        url: v.union(v.string(), v.null()),
+        contentType: v.union(v.string(), v.null()),
+        filename: v.union(v.string(), v.null()),
+        amountCents: v.union(v.number(), v.null()),
+        receiptDate: v.union(v.number(), v.null()),
+        merchant: v.union(v.string(), v.null()),
+      }),
+    ),
+    /** Every exception ever filed on this charge, newest first — pending,
+     *  approved, rejected and withdrawn alike. The rejections are the point:
+     *  "what was claimed, and who decided" is the audit story a published
+     *  ledger has to be able to answer. */
+    exceptions: v.array(exceptionRecord),
+    /** True iff THIS caller may approve/reject the PENDING exception above —
+     *  `hasApproveReceiptException`, unwidened. */
+    canDecideException: v.boolean(),
+    /** True iff this caller may approve/send back the CODING — the same two
+     *  questions `approve` asks, so the record never offers a decision the
+     *  server would refuse. */
+    canReview: v.boolean(),
+  }),
+  handler: async (ctx, args) => {
+    const { txn, actorPersonId } = await requireViewCoding(
+      ctx,
+      args.transactionId,
+    );
+    const row = await codingForTransaction(ctx, args.transactionId);
+    const canSeeNames = await hasCodingNamesView(ctx, args.transactionId);
+
+    const category = txn.categoryId ? await ctx.db.get(txn.categoryId) : null;
+    const budget = txn.budgetId ? await ctx.db.get(txn.budgetId) : null;
+    const cardholder = txn.personId ? await ctx.db.get(txn.personId) : null;
+    const bookName =
+      txn.chapterId === CENTRAL
+        ? "Central"
+        : ((await ctx.db.get(txn.chapterId as Id<"chapters">))?.name ??
+          "Chapter");
+
+    // THE PROOF, read under the coding VIEW gate rather than through
+    // `receipts.listForTransaction` — see this query's doc for why a Chapter
+    // Director would otherwise be asked to approve a document they cannot
+    // open. The content type comes off the `_storage` system row, exactly as
+    // `receipts.ts#toReceiptSummary` reads it: it is not on the receipt doc,
+    // and the viewer cannot branch without it (a Convex storage url carries
+    // no extension to sniff).
+    const links = await ctx.db
+      .query("receiptLinks")
+      .withIndex("by_transaction", (q) =>
+        q.eq("transactionId", args.transactionId),
+      )
+      .take(RECEIPT_FILE_LIMIT);
+    const receipts = [];
+    for (const link of links) {
+      const receipt = await ctx.db.get(link.receiptId);
+      if (!receipt) continue;
+      receipts.push({
+        url: await ctx.storage.getUrl(receipt.storageId),
+        contentType:
+          (await ctx.db.system.get("_storage", receipt.storageId))
+            ?.contentType ?? null,
+        filename: receipt.filename ?? null,
+        amountCents: receipt.amountCents ?? null,
+        receiptDate: receipt.receiptDate ?? null,
+        merchant: receipt.merchant ?? null,
+      });
+    }
+    // THE DENORM CACHE IS THE FALLBACK, not the source. `receiptLinks` is the
+    // truth and `transactions.receiptStorageId` is the cache the link
+    // maintains (`lib/receiptLinks.ts`) — but a row predating the receipts
+    // layer, or written by a path that set the pointer without inserting a
+    // `receipts` row, would otherwise show a reviewer "no proof" on a charge
+    // the queue just told them has a receipt. `ReceiptPane` already renders
+    // that exact contradiction as a dead end ("the row says a receipt is
+    // attached, but it couldn't be found"); serving the stored file is
+    // strictly better and costs one read.
+    if (receipts.length === 0 && txn.receiptStorageId != null) {
+      receipts.push({
+        url: await ctx.storage.getUrl(txn.receiptStorageId),
+        contentType:
+          (await ctx.db.system.get("_storage", txn.receiptStorageId))
+            ?.contentType ?? null,
+        filename: null,
+        amountCents: null,
+        receiptDate: null,
+        merchant: null,
+      });
+    }
+
+    const exceptions = await Promise.all(
+      (await exceptionsForTransaction(ctx, args.transactionId)).map((e) =>
+        projectExceptionRecord(ctx, e),
+      ),
+    );
+
+    // The same two conditions `approve` enforces, asked in the same order —
+    // authority, then separation of duties, with the solo-operator relaxation
+    // last. Copied in shape from `getForTransaction` deliberately: two
+    // surfaces that disagree about whether a button should exist is how a
+    // reviewer learns to distrust both.
+    const reviewer = await hasReviewCoding(ctx, args.transactionId);
+    const canReview =
+      row != null &&
+      row.status === "submitted" &&
+      reviewer &&
+      (actorPersonId == null ||
+        actorPersonId !== row.codedByPersonId ||
+        (await maySelfDecideCoding(ctx)));
+
+    return {
+      charge: {
+        merchantName: displayMerchantName(txn),
+        rawBankLine: rawBankLine(txn),
+        amountCents: txn.amountCents,
+        postedAt: txn.postedAt,
+        bookName,
+        cardholderName: cardholder?.name ?? null,
+        categoryName: category?.name ?? null,
+        budgetName: budget ? budgetDisplayName(budget) : null,
+      },
+      coding: row ? await projectCoding(ctx, row, canSeeNames) : null,
+      // True only when there was something to withhold — a coding with no
+      // attendees and no travelers has nothing redacted, and claiming
+      // otherwise would send a reviewer hunting for a list that never existed.
+      namesRedacted:
+        !canSeeNames &&
+        row != null &&
+        ((row.attendees?.length ?? 0) > 0 || (row.travelers?.length ?? 0) > 0),
+      receipts,
+      exceptions,
+      canDecideException: await hasApproveReceiptException(
+        ctx,
+        args.transactionId,
+      ),
+      canReview,
     };
   },
 });
