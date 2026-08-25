@@ -332,6 +332,19 @@ export const upsertListing = mutation({
           : {}),
         updatedAt: now,
       });
+      // The publish gate has exactly one hole: an edit that EMPTIES a required
+      // section of an already-LIVE listing would otherwise leave it published
+      // yet incomplete — a public role page with a headed-but-empty section,
+      // the one thing publishing is supposed to prevent. So a live listing that
+      // an edit makes incomplete drops back to draft (off the public feed)
+      // until it's whole again and re-published. A draft edited incomplete is
+      // fine — that's what a draft is for.
+      if (existing.published) {
+        const updated = await ctx.db.get(args.listingId);
+        if (updated && problemsBlockingPublish(updated).length > 0) {
+          await ctx.db.patch(args.listingId, { published: false, updatedAt: now });
+        }
+      }
       return args.listingId;
     }
 

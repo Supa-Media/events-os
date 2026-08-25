@@ -120,7 +120,11 @@ export function ListingEditor({
         status: status as (typeof ROLE_STATUSES)[number],
         trialTrack: track as "team_member" | "director",
         seatId: seatId.trim() || null,
-        order: Number.parseInt(order, 10) || 100,
+        // NOT `|| 100`: order 0 is a real, deliberate value (lower sorts first),
+        // and `0 || 100` would bump a top-pinned role to 100 on every save.
+        order: Number.isNaN(Number.parseInt(order, 10))
+          ? 100
+          : Number.parseInt(order, 10),
         summary,
         whyThisSeatExists: why,
         growthPath: growthPath.trim() || null,

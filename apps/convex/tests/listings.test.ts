@@ -125,6 +125,30 @@ describe("job listings", () => {
     expect(feed[0].postedAt).toMatch(/^\d{4}-\d{2}-\d{2}$/);
   });
 
+  test("editing a live listing incomplete drops it back to draft", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["hiring.edit"]);
+
+    // Publish a complete listing.
+    const id = await s.as.mutation(api.listings.upsertListing, completeArgs());
+    await s.as.mutation(api.listings.setListingPublished, {
+      listingId: id,
+      published: true,
+    });
+    expect(await t.query(internal.listings.publicListings, {})).toHaveLength(1);
+
+    // Clear a required section — the listing must fall off the public feed
+    // rather than render an empty headed block.
+    await s.as.mutation(api.listings.upsertListing, {
+      listingId: id,
+      authority: [],
+    });
+    const row = await run(t, (ctx) => ctx.db.get(id));
+    expect(row?.published).toBe(false);
+    expect(await t.query(internal.listings.publicListings, {})).toEqual([]);
+  });
+
   test("a partial edit leaves the rest of the listing intact", async () => {
     const t = newT();
     const s = await setupChapter(t);
