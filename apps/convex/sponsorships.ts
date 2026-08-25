@@ -458,18 +458,24 @@ export const upsertSponsorship = mutation({
           message: "That sponsorship doesn't exist.",
         });
       }
+      // Every field is patched ONLY when its arg was actually sent. A partial
+      // save — the relationship form persisting just the owner, say — must
+      // leave events, notes and terms exactly as they were, never blank them
+      // because this particular call didn't carry them. `undefined` is the
+      // sentinel for "not sent"; the empty string / empty array a caller sends
+      // deliberately still comes through as a real clear.
       await ctx.db.patch(args.sponsorshipId, {
         ...(donorId ? { donorId } : {}),
         ...(args.packageId === undefined
           ? {}
           : { packageId: args.packageId ?? undefined }),
         ...(args.status !== undefined ? { status: args.status } : {}),
-        eventIds,
+        ...(args.eventIds !== undefined ? { eventIds } : {}),
         ...(args.ownerPersonId !== undefined
           ? { ownerPersonId: args.ownerPersonId }
           : {}),
-        dueDiligenceNotes,
-        terms,
+        ...(args.dueDiligenceNotes !== undefined ? { dueDiligenceNotes } : {}),
+        ...(args.terms !== undefined ? { terms } : {}),
         ...(args.nextTouchpointAt !== undefined
           ? { nextTouchpointAt: args.nextTouchpointAt }
           : {}),
