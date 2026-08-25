@@ -31,7 +31,7 @@ import { requireGivingView, requireGivingManage } from "./lib/givingAccess";
 import { requirePartnershipCompose } from "./lib/sponsorAccess";
 import {
   assertPositiveGiftCents,
-  matchOrCreateDonor,
+  matchOrCreateOrgDonor,
   recordGiftForDonor,
 } from "./lib/givingDonors";
 import { GIFT_METHODS } from "./schema/givingPlatform";
@@ -347,8 +347,10 @@ export const upsertSponsorship = mutation({
       }),
     ),
     // A saved tier to start from, or nothing — the agreement's own proposal
-    // fields carry a bespoke deal (see `schema/sponsorships.ts`).
-    packageId: v.optional(v.id("sponsorPackages")),
+    // fields carry a bespoke deal (see `schema/sponsorships.ts`). On update,
+    // `null` DETACHES a tier that was set (a deal renegotiated bespoke);
+    // omitting it leaves the tier as-is.
+    packageId: v.optional(v.union(v.id("sponsorPackages"), v.null())),
     status: v.optional(sponsorshipStatusValidator),
     eventIds: v.optional(v.array(v.id("events"))),
     ownerPersonId: v.optional(v.id("people")),
@@ -369,18 +371,25 @@ export const upsertSponsorship = mutation({
     // partnering with is partnership work, not general donor-CRM editing (it
     // can only ever mint an ORGANISATION at central — never an individual, and
     // `matchOrCreateDonor` reuses a same-name org rather than duplicating it).
+    if (args.donorId && args.newOrg) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message:
+          "Choose an existing organization or name a new one — not both.",
+      });
+    }
     let donorId = args.donorId ?? null;
     if (args.newOrg) {
-      const name = args.newOrg.name.trim();
-      if (!name) {
+      if (!args.newOrg.name.trim()) {
         throw new ConvexError({
           code: "INVALID_INPUT",
           message: "Give the sponsoring organization a name.",
         });
       }
-      donorId = await matchOrCreateDonor(ctx, {
-        scope: "central",
-        name,
+      // Keyed on (name, kind) — never reuses an individual, never drops the
+      // requested kind. See `matchOrCreateOrgDonor`.
+      donorId = await matchOrCreateOrgDonor(ctx, {
+        name: args.newOrg.name,
         kind: args.newOrg.kind,
       });
     }
@@ -407,8 +416,9 @@ export const upsertSponsorship = mutation({
       }
     }
 
-    // The package is OPTIONAL — a bespoke agreement has none. When one is
-    // named, it must exist (a stale id is a bug, not a blank deal).
+    // The package is OPTIONAL — a bespoke agreement has none. A real id must
+    // exist (a stale id is a bug); `null` means "detach" and `undefined` means
+    // "leave as-is" (handled at the patch below).
     if (args.packageId) {
       const pkg = await ctx.db.get(args.packageId);
       if (!pkg) {
@@ -450,7 +460,9 @@ export const upsertSponsorship = mutation({
       }
       await ctx.db.patch(args.sponsorshipId, {
         ...(donorId ? { donorId } : {}),
-        ...(args.packageId !== undefined ? { packageId: args.packageId } : {}),
+        ...(args.packageId === undefined
+          ? {}
+          : { packageId: args.packageId ?? undefined }),
         ...(args.status !== undefined ? { status: args.status } : {}),
         eventIds,
         ...(args.ownerPersonId !== undefined

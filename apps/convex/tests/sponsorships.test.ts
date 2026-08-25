@@ -283,6 +283,57 @@ describe("upsertSponsorship", () => {
     ).rejects.toThrow(/organization/i);
   });
 
+  test("refuses both an existing org AND a new-org name at once", async () => {
+    const s = await devDirectorSetup();
+    const donorId = await createOrgDonor(s, "business", "Acme Co");
+    await expect(
+      s.as.mutation(api.sponsorships.upsertSponsorship, {
+        donorId,
+        newOrg: { name: "Other Org", kind: "church" },
+      }),
+    ).rejects.toThrow(/not both/i);
+  });
+
+  test("a new org never reuses a same-name INDIVIDUAL — it makes a fresh org", async () => {
+    const s = await devDirectorSetup();
+    // A person happens to be named like the church.
+    await createOrgDonor(s, "individual", "Grace");
+    const sponsorshipId = (await s.as.mutation(
+      api.sponsorships.upsertSponsorship,
+      { newOrg: { name: "Grace", kind: "church" } },
+    )) as Id<"sponsorships">;
+    const detail = await s.as.query(api.sponsorships.getSponsorship, {
+      sponsorshipId,
+    });
+    // It attached to a CHURCH named Grace, not the individual.
+    expect(detail.donor?.kind).toBe("church");
+    const graces = (
+      await s.as.query(api.givingPlatform.listDonors, { scope: "central" })
+    ).filter((d) => d.name === "Grace");
+    expect(graces).toHaveLength(2); // the individual and the new church
+  });
+
+  test("a tier can be detached from an agreement with packageId: null", async () => {
+    const s = await devDirectorSetup();
+    const pkgId = await createPackage(s);
+    const donorId = await createOrgDonor(s, "church");
+    const sponsorshipId = (await s.as.mutation(
+      api.sponsorships.upsertSponsorship,
+      { donorId, packageId: pkgId },
+    )) as Id<"sponsorships">;
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(sponsorshipId)))!.packageId,
+    ).toBe(pkgId);
+
+    await s.as.mutation(api.sponsorships.upsertSponsorship, {
+      sponsorshipId,
+      packageId: null,
+    });
+    expect(
+      (await run(s.t, (ctx) => ctx.db.get(sponsorshipId)))!.packageId,
+    ).toBeUndefined();
+  });
+
   test("an existing org with no package is accepted", async () => {
     const s = await devDirectorSetup();
     const donorId = await createOrgDonor(s, "business", "Acme Co");
