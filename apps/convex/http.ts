@@ -287,6 +287,28 @@ http.route({
   }),
 });
 
+// ── Public job listings feed: GET /api/team/roles ────────────────────────────
+// Same-origin JSON the `/team` page fetches at runtime to render open seats —
+// so opening, closing, or editing a posting in the OS surfaces on
+// publicworship.life with no rebuild, exactly like the events feed above. This
+// is what replaced the old markdown role files: the listings live in Convex
+// (`listings.ts`), the page reads them here. Read-only, no PII (a listing is
+// public content); a short cache keeps it fresh without hammering the backend.
+http.route({
+  path: "/api/team/roles",
+  method: "GET",
+  handler: httpAction(async (ctx) => {
+    const roles = await ctx.runQuery(internal.listings.publicListings, {});
+    return new Response(JSON.stringify({ roles }), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=60",
+      },
+    });
+  }),
+});
+
 // ── The backer portal: /backer (sign in, then your own record) ──────────────
 //
 // ONE ROUTE, TWO PAGES. With no live session it renders the sign-in screen;

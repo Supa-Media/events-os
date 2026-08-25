@@ -1,0 +1,107 @@
+---
+/**
+ * /team/role?slug=<slug> — one role, rendered at runtime from the OS.
+ *
+ * Replaces the old static `/team/[slug]`. Job listings live in Convex now and
+ * their slugs are minted there, so there is no build-time list of paths to
+ * generate — a single static page reads `?slug=` and fetches the listing
+ * (`scripts/team-role.ts` → `GET /api/team/roles`, proxied to Convex by
+ * pw-router). The rich section-by-section design is unchanged; only the data
+ * source moved.
+ *
+ * This shell holds the ROLE-INDEPENDENT parts so they stay server-rendered and
+ * DRY: the back link, the loading/error states, the shared <HiringProcess/>,
+ * and the 501(c)(3) tail. The script fills the role-dependent DOM (the
+ * `[data-role-*]` hooks and the `[data-role-dynamic]` block).
+ */
+import BaseLayout from "../../layouts/BaseLayout.astro";
+import Container from "../../components/ui/Container.astro";
+import HiringProcess from "../../components/team/HiringProcess.astro";
+import { asset } from "../../lib/asset";
+
+// A generic title/description: the real per-role title is set client-side once
+// the listing loads (document.title in team-role.ts). Kept out of the sitemap
+// concern because every role links here with a query string, not a path.
+---
+
+<BaseLayout
+  title="Roles"
+  description="An open role at Public Worship — what it owns, what it decides, and exactly what happens after you apply."
+  canonical={new URL("/team/role", Astro.site).toString()}
+>
+  <Container size="narrow" class="py-16 sm:py-24">
+    <a
+      href={asset("/team")}
+      class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
+      >← All roles</a
+    >
+
+    {/* Loading state — replaced by the content or the error once the fetch
+        resolves. */}
+    <p id="role-loading" class="mt-10 text-ink/60">Loading this role…</p>
+
+    {/* Error / not-found state. The message is set by the script; the link out
+        is always here so the page is never a dead end. */}
+    <div id="role-error" class="mt-10 hidden">
+      <h1 class="font-display text-2xl font-normal text-ink">
+        We couldn't show this role
+      </h1>
+      <p id="role-error-msg" class="mt-3 max-w-prose text-ink/75"></p>
+      <div class="mt-5 flex flex-wrap items-center gap-3">
+        <a
+          href={asset("/team")}
+          class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
+          >← See all roles</a
+        >
+        <a
+          href={asset("/team/apply")}
+          class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
+          >Tell us about you →</a
+        >
+      </div>
+    </div>
+
+    {/* The role itself. Hidden until the script fills it. The dynamic block
+        holds header → closing prose; the static tail below it (process + apply
+        + posted line) is filled through the `[data-role-*]` hooks. */}
+    <article id="role-content" class="hidden">
+      <div data-role-dynamic></div>
+
+      {/* ── Process + apply ─────────────────────────────────────────── */}
+      <section class="mt-16">
+        <h2 class="font-display text-2xl font-normal text-ink">
+          What happens after you apply
+        </h2>
+        <p class="mt-2 max-w-prose text-sm text-ink/65" data-role-track></p>
+        <HiringProcess />
+        <div class="mt-8 flex flex-wrap items-center gap-3">
+          <a data-role-apply-cta href={asset("/team/apply")}></a>
+          <a
+            href={asset("/team")}
+            class="text-sm font-bold text-red-500 hover:underline underline-offset-4"
+            >See the other roles</a
+          >
+        </div>
+      </section>
+
+      <p class="mt-12 text-xs text-ink/55">
+        <span data-role-posted></span>Public Worship is a volunteer-run
+        initiative of Global Echo Charitable Co., a 501(c)(3) nonprofit — every
+        role here is unpaid.
+      </p>
+    </article>
+  </Container>
+
+  <script>
+    import "../../scripts/team-role.ts";
+  </script>
+</BaseLayout>
+
+<style>
+  /* The closing prose is one or two paragraphs of context, not an article —
+     enough spacing to read as prose, no heading styles to fight the structured
+     sections above it. Ported verbatim from the old [slug].astro. */
+  .prose-role :global(p + p) {
+    margin-top: 1rem;
+  }
+</style>
