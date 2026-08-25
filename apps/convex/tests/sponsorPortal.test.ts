@@ -287,6 +287,28 @@ describe("publicByToken", () => {
     expect(view!.benefits).toHaveLength(2);
   });
 
+  test("renders a package-less agreement — the bespoke deal — without crashing", async () => {
+    const s = await devDirectorSetup();
+    const sponsorshipId = (await s.as.mutation(
+      api.sponsorships.upsertSponsorship,
+      { newOrg: { name: "Ignite Church", kind: "church" } },
+    )) as Id<"sponsorships">;
+    // Give it its own amount + title (no tier to fall back to).
+    await s.as.mutation(api.sponsorPortal.saveProposal, {
+      sponsorshipId,
+      title: "Production Partner — Love Thy Neighbor",
+      amountCents: AMOUNT,
+      terms: "Settled together, in writing, in advance.",
+    });
+    const { token } = await s.as.mutation(api.sponsorPortal.issuePortalLink, {
+      sponsorshipId,
+    });
+    const view = await s.t.query(api.sponsorPortal.publicByToken, { token });
+    expect(view!.title).toBe("Production Partner — Love Thy Neighbor");
+    expect(view!.amountCents).toBe(AMOUNT);
+    expect(view!.balance.balanceCents).toBe(AMOUNT);
+  });
+
   test("offers bank transfer alone by default, with its capped fee quoted", async () => {
     const s = await devDirectorSetup();
     const sponsorshipId = await seedAgreement(s);
@@ -1071,6 +1093,20 @@ describe("noteView", () => {
 // ── The partnership team's reach ─────────────────────────────────────────────
 
 describe("partnership associate access", () => {
+  test("can create a partnership by naming a new org, no donor-tab trip", async () => {
+    const s = await associateSetup();
+    // The partnership team creates the sponsoring org inline — they have no
+    // giving.manage, so this proves the inline-create path rides the compose
+    // power, not the donor CRM.
+    const sponsorshipId = (await s.as.mutation(
+      api.sponsorships.upsertSponsorship,
+      { newOrg: { name: "Ignite Church", kind: "church" } },
+    )) as Id<"sponsorships">;
+    const admin = await s.as.query(api.sponsorPortal.portalAdmin, { sponsorshipId });
+    expect(admin.canCompose).toBe(true);
+    expect(admin.donorName).toBe("Ignite Church");
+  });
+
   test("can compose and issue links, but cannot record a gift or edit tiers", async () => {
     const s = await associateSetup();
     const sponsorshipId = await seedAgreementRaw(s);

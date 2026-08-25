@@ -265,7 +265,7 @@ function RelationshipForm({
   sponsorshipId: Id<"sponsorships">;
   sponsorship: {
     donorId: Id<"donors">;
-    packageId: Id<"sponsorPackages">;
+    packageId?: Id<"sponsorPackages">;
     eventIds?: Id<"events">[];
     ownerPersonId?: Id<"people">;
     dueDiligenceNotes?: string;
@@ -302,8 +302,8 @@ function RelationshipForm({
         : undefined;
       await upsertSponsorship({
         sponsorshipId,
-        donorId: sponsorship.donorId,
-        packageId: sponsorship.packageId,
+        // donorId / packageId omitted — an update leaves them unchanged, so
+        // saving the relationship fields can't disturb the org or the tier.
         eventIds: sponsorship.eventIds ?? [],
         ownerPersonId,
         dueDiligenceNotes: notes,

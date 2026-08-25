@@ -245,6 +245,57 @@ async function seedEvent(s: ChapterSetup): Promise<Id<"events">> {
 }
 
 describe("upsertSponsorship", () => {
+  test("creates the sponsoring org inline, with no package — the bespoke deal", async () => {
+    const s = await devDirectorSetup();
+    // No pre-existing donor, no package tier — just name the org.
+    const sponsorshipId = (await s.as.mutation(api.sponsorships.upsertSponsorship, {
+      newOrg: { name: "Ignite Church", kind: "church" },
+    })) as Id<"sponsorships">;
+
+    const detail = await s.as.query(api.sponsorships.getSponsorship, {
+      sponsorshipId,
+    });
+    expect(detail.sponsorship.status).toBe("prospect");
+    expect(detail.donor?.name).toBe("Ignite Church");
+    expect(detail.donor?.kind).toBe("church");
+    expect(detail.sponsorship.packageId).toBeUndefined();
+    expect(detail.package).toBeNull();
+  });
+
+  test("reuses a same-name org rather than duplicating it", async () => {
+    const s = await devDirectorSetup();
+    await s.as.mutation(api.sponsorships.upsertSponsorship, {
+      newOrg: { name: "Ignite Church", kind: "church" },
+    });
+    await s.as.mutation(api.sponsorships.upsertSponsorship, {
+      newOrg: { name: "Ignite Church", kind: "church" },
+    });
+    const donors = await s.as.query(api.givingPlatform.listDonors, {
+      scope: "central",
+    });
+    expect(donors.filter((d) => d.name === "Ignite Church")).toHaveLength(1);
+  });
+
+  test("refuses to create with neither an org nor a name", async () => {
+    const s = await devDirectorSetup();
+    await expect(
+      s.as.mutation(api.sponsorships.upsertSponsorship, {}),
+    ).rejects.toThrow(/organization/i);
+  });
+
+  test("an existing org with no package is accepted", async () => {
+    const s = await devDirectorSetup();
+    const donorId = await createOrgDonor(s, "business", "Acme Co");
+    const sponsorshipId = (await s.as.mutation(api.sponsorships.upsertSponsorship, {
+      donorId,
+    })) as Id<"sponsorships">;
+    const detail = await s.as.query(api.sponsorships.getSponsorship, {
+      sponsorshipId,
+    });
+    expect(detail.donor?.name).toBe("Acme Co");
+    expect(detail.package).toBeNull();
+  });
+
   test("rejects an individual donor with a clear error", async () => {
     const s = await devDirectorSetup();
     const pkgId = await createPackage(s);

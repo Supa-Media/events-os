@@ -25,6 +25,7 @@ import {
   Screen,
   SectionHeader,
   Select,
+  TextField,
 } from "../../../components/ui";
 import { colors } from "../../../lib/theme";
 import { useGivingScope } from "../../../lib/useGivingScope";
@@ -273,39 +274,81 @@ function StageSection({
   );
 }
 
+const ORG_KINDS = [
+  { value: "church", label: "Church" },
+  { value: "business", label: "Business" },
+  { value: "foundation", label: "Foundation" },
+];
+
+/**
+ * Start a partnership by NAMING the sponsoring organization — no trip to a
+ * "Donors" tab, and no "donor" framing (a sponsor gets something back; it isn't
+ * a donation). Founder, 2026-08-20: "sponsors are not donors, they are getting
+ * something out of it."
+ *
+ * You type the org's name and type, and optionally start from a saved package
+ * tier — but a bespoke deal (the Ignite $3,500 spot) needs no tier at all; you
+ * set the amount and terms on the next screen. Picking an EXISTING org is the
+ * secondary path, offered only once some exist.
+ *
+ * The org is stored as a central organization record (which is where a
+ * partner's payments book into the ledger, so the money stays in one place) —
+ * but nothing here asks you to manage it as a donor.
+ */
 function NewSponsorshipForm({ onDone }: { onDone: () => void }) {
   const donors = useQuery(api.givingPlatform.listDonors, { scope: "central" });
   const packages = useQuery(api.sponsorships.listPackages, {});
   const upsertSponsorship = useMutation(api.sponsorships.upsertSponsorship);
 
+  const orgOptions = (donors ?? [])
+    .filter((d) => d.kind !== "individual")
+    .map((d) => ({ value: d._id, label: `${d.name} (${d.kind})` }));
+
+  // Default to naming a NEW org — that is the common case and the one that used
+  // to dead-end. "Existing" is offered only when there is something to pick.
+  const [mode, setMode] = useState<"new" | "existing">("new");
+  const [orgName, setOrgName] = useState("");
+  const [orgKind, setOrgKind] = useState("church");
   const [donorId, setDonorId] = useState<string | null>(null);
   const [packageId, setPackageId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
 
-  const donorOptions = (donors ?? [])
-    .filter((d) => d.kind !== "individual")
-    .map((d) => ({ value: d._id, label: `${d.name} (${d.kind})` }));
-  const packageOptions = (packages ?? []).map((p) => ({
-    value: p._id,
-    label: p.active ? p.name : `${p.name} (inactive)`,
-  }));
+  const packageOptions = [
+    { value: "", label: "None — set the amount and terms next" },
+    ...(packages ?? []).map((p) => ({
+      value: p._id,
+      label: p.active ? p.name : `${p.name} (inactive)`,
+    })),
+  ];
 
   async function submit() {
     setError(null);
-    if (!donorId || !packageId) {
-      setError("Choose an org donor and a package.");
+    const usingExisting = mode === "existing";
+    if (usingExisting && !donorId) {
+      setError("Choose the sponsoring organization.");
+      return;
+    }
+    if (!usingExisting && !orgName.trim()) {
+      setError("Name the sponsoring organization.");
       return;
     }
     setSaving(true);
     try {
       await upsertSponsorship({
-        donorId: donorId as Id<"donors">,
-        packageId: packageId as Id<"sponsorPackages">,
+        ...(usingExisting
+          ? { donorId: donorId as Id<"donors"> }
+          : {
+              newOrg: {
+                name: orgName.trim(),
+                kind: orgKind as "church" | "business" | "foundation",
+              },
+            }),
+        ...(packageId ? { packageId: packageId as Id<"sponsorPackages"> } : {}),
       });
       onDone();
     } catch {
-      setError("Couldn't create that sponsorship — check your access and try again.");
+      setError("Couldn't create that partnership — check your access and try again.");
     } finally {
       setSaving(false);
     }
@@ -313,29 +356,70 @@ function NewSponsorshipForm({ onDone }: { onDone: () => void }) {
 
   return (
     <Card>
-      {donorOptions.length === 0 ? (
-        <Text className="mb-3 text-sm text-muted">
-          No church/business/foundation donors yet — add one from the Donors
-          tab first.
-        </Text>
-      ) : (
+      <Text className="mb-1 text-xs font-semibold uppercase tracking-wide text-muted">
+        Sponsoring organization
+      </Text>
+
+      {orgOptions.length > 0 ? (
+        <View className="mb-3 flex-row gap-2">
+          <Pressable
+            onPress={() => setMode("new")}
+            className={`rounded-pill border px-3 py-1.5 ${mode === "new" ? "border-accent bg-accent-soft" : "border-border"}`}
+          >
+            <Text className={`text-xs font-semibold ${mode === "new" ? "text-accent" : "text-muted"}`}>
+              New organization
+            </Text>
+          </Pressable>
+          <Pressable
+            onPress={() => setMode("existing")}
+            className={`rounded-pill border px-3 py-1.5 ${mode === "existing" ? "border-accent bg-accent-soft" : "border-border"}`}
+          >
+            <Text className={`text-xs font-semibold ${mode === "existing" ? "text-accent" : "text-muted"}`}>
+              Existing
+            </Text>
+          </Pressable>
+        </View>
+      ) : null}
+
+      {mode === "existing" && orgOptions.length > 0 ? (
         <Select
           label="Organization"
           value={donorId}
-          options={donorOptions}
+          options={orgOptions}
           onChange={setDonorId}
-          placeholder="Choose an org donor…"
+          placeholder="Choose an organization…"
         />
+      ) : (
+        <>
+          <TextField
+            label="Name"
+            value={orgName}
+            onChangeText={setOrgName}
+            placeholder="Ignite Church"
+          />
+          <Select
+            label="Type"
+            value={orgKind}
+            options={ORG_KINDS}
+            onChange={setOrgKind}
+          />
+        </>
       )}
+
       <Select
-        label="Package"
-        value={packageId}
+        label="Package (optional)"
+        value={packageId ?? ""}
         options={packageOptions}
-        onChange={setPackageId}
-        placeholder="Choose a package…"
+        onChange={(v) => setPackageId(v || null)}
+        placeholder="None — set the amount and terms next"
       />
+      <Text className="-mt-1 mb-3 text-xs text-muted">
+        Skip this for a one-off deal — you&apos;ll write the amount, terms, and
+        what they get on the next screen.
+      </Text>
+
       {error ? <Text className="mb-2 text-sm text-danger">{error}</Text> : null}
-      <Button title="Create sponsorship" onPress={submit} loading={saving} />
+      <Button title="Create partnership" onPress={submit} loading={saving} />
     </Card>
   );
 }

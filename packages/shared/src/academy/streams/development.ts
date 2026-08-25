@@ -1308,7 +1308,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "A sponsorship is one organization — a church, a business, or a foundation, never an individual — matched to one package. That single agreement moves through a pipeline the dev team actually works: prospect, pitched, committed, active, with lapsed and declined as the closed outcomes.",
+        text: "A sponsorship is one organization — a church, a business, or a foundation, never an individual — and you create it by naming that organization right on the Sponsorships tab; there is no trip to a donor list. A package tier is optional: start from a saved tier, or leave it blank for a bespoke deal and write the amount and terms on the agreement itself. That single agreement moves through a pipeline the dev team actually works: prospect, pitched, committed, active, with lapsed and declined as the closed outcomes.",
       },
       {
         kind: "table",
