@@ -113,6 +113,31 @@ export async function requireHiringManage(ctx: QueryCtx): Promise<HiringAccess> 
 }
 
 /**
+ * Assert the caller may MANAGE the postings on `/team` — create, edit, open,
+ * close, publish, or delete a job listing.
+ *
+ * Today this is exactly "run the hiring desk" (`hiring.edit`): the person who
+ * works the pipeline is the person who owns what's posted, and splitting the
+ * two would gate nothing anyone asked to have gated. It is its OWN named
+ * resolver anyway, per CLAUDE.md — the day posting management wants its own
+ * key (say, an associate who works candidates but can't change what's
+ * advertised), this graduates to a `hiring.listings.edit` power on the seats
+ * that should carry it and this body changes; no call site does.
+ */
+export async function requireListingManage(
+  ctx: QueryCtx,
+): Promise<HiringAccess> {
+  const access = await resolveHiringAccess(ctx);
+  if (!access.canManage) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "You don't have permission to manage job listings.",
+    });
+  }
+  return access;
+}
+
+/**
  * Assert the caller may CLOSE a file — place, not-now, or decline someone.
  * Separate from `requireHiringManage` on purpose: this is the one hiring act
  * the org reserves to a director, and the reservation is worth a gate rather

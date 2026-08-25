@@ -41,36 +41,36 @@ most reliable way to get it handed straight back.
 
 ## 1 · Publish the seat
 
-Roles are markdown in this repo, not rows in a database:
+Roles are managed in the OS, not by editing files. Go to **People → Recruiting
+→ Job listings** and tap **New listing**. Fill in every section — the same
+sections a role has always had; the editor is the template now.
 
-```
-apps/landing/src/content/roles/<slug>.md
-```
+A new listing starts as a **draft**: it's yours to write and rewrite, and it
+does not appear on `/team` until you publish it. Publishing runs a completeness
+check — a listing missing a section (an outcome with no "done when", no
+authority, no boundaries) is refused with a note of exactly what's left, because
+the whole reason we post roles this way is that a candidate can read two of them
+and tell the difference between the *seats* rather than between the writers.
 
-Copy an existing one (`people-director.md` is the fullest example) and fill in
-every field. The collection's schema — `apps/landing/src/content/config.ts` — is
-the template, and it is strict on purpose: a role that skips a section stops
-being comparable to the others, and the whole reason we publish roles this way
-is that a candidate can read two of them and tell the difference between the
-*seats* rather than between the writers.
-
-The fields that people find unfamiliar:
+The fields people find unfamiliar:
 
 | Field | What goes in it |
 |---|---|
-| `outcomes` | Each with a `doneWhen`. Results and their definition of done |
-| `authority` | What this person decides on their own |
-| `notThisRole` | What the seat does not own |
-| `hoursPerWeek` | The real number. It is a gate, so it goes on the page |
-| `trialTrack` | `team_member` (≈4 weeks) or `director` (≈2 months) |
-| `status` | `open` and `filling` take applications; `not_open` and `closed` render but point at general interest |
+| Outcomes | Each with a "done when". Results and their definition of done |
+| What you'd get to decide | What this person decides on their own |
+| What this role is NOT | What the seat does not own |
+| Hours per week | The real number. It is a gate, so it goes on the page |
+| Trial track | `team_member` (≈4 weeks) or `director` (≈2 months) |
+| Status | Open and Interviewing take applications; Not open yet and Filled render but point at general interest |
 
-Open a PR. Merging to `main` deploys the landing site, and the role is live at
-`/team/<slug>`.
+**Edits go live immediately.** The public `/team` page reads listings straight
+from the OS (`GET /api/team/roles`), so opening, closing, or editing a posting
+shows on publicworship.life with no deploy — the same way publishing an event
+surfaces it on the site.
 
-**Closing a seat** is a status change (`closed`), not a deletion. A candidate
-who bookmarked the page should find out what happened, and old applications
-still point at the slug.
+**Closing a seat** is a status change (Filled), not a delete. A candidate who
+bookmarked the page should find out what happened, and old applications still
+point at the slug. Delete is for a mistaken or never-published draft.
 
 ---
 
@@ -204,9 +204,10 @@ sit in a chapter.
 | Piece | Path |
 |---|---|
 | The process, as constants | `packages/shared/src/hiring.ts` (team), `packages/shared/src/volunteers.ts` (volunteers) |
-| Published seats | `apps/landing/src/content/roles/` |
-| The public pages | `apps/landing/src/pages/team/` |
+| Job listings (the postings) | `apps/convex/listings.ts` + `jobListings` in `apps/convex/schema/hiring.ts`; managed in `apps/mobile/app/(app)/people/listings/` |
+| Listings feed (public) | `GET /api/team/roles` (`apps/convex/http.ts` → `listings.publicListings`) |
+| The public pages | `apps/landing/src/pages/team/` (fetch the feed at runtime) |
 | Both intakes (public API) | `apps/convex/lib/joinApiRoutes.ts` → `hiring.submitApplication`, `volunteers.submitSignup` |
-| The desk's backend | `apps/convex/hiring.ts` + `apps/convex/volunteers.ts`, both gated by `apps/convex/lib/hiringAccess.ts` |
-| The desk's screens | `apps/mobile/app/(app)/people/pipeline/`, `.../people/volunteers.tsx` |
+| The desk's backend | `apps/convex/hiring.ts` + `apps/convex/volunteers.ts` + `apps/convex/listings.ts`, all gated by `apps/convex/lib/hiringAccess.ts` |
+| The desk's screens | `apps/mobile/app/(app)/people/pipeline/`, `.../people/listings/`, `.../people/volunteers.tsx` |
 | What we teach about it | `packages/shared/src/academy/streams/management.ts` (`growing-the-team`) |

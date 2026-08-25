@@ -34,6 +34,7 @@ import {
   jobApplications,
   applicationReviews,
   applicationEvents,
+  jobListings,
 } from "./schema/hiring";
 import { volunteerSignups } from "./schema/volunteers";
 import { registrations } from "./schema/registrations";
@@ -278,6 +279,9 @@ const schema = defineSchema({
   jobApplications,
   applicationReviews,
   applicationEvents,
+  // The postings themselves — the roles shown on `/team`, managed live from
+  // the OS instead of as markdown in the landing repo (see schema/hiring.ts).
+  jobListings,
 
   // The People desk's other, much lighter pipeline: someone who wants to help
   // at a gathering rather than hold a seat on the chart. An INBOX, not a

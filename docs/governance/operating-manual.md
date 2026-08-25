@@ -160,9 +160,10 @@ Academy teaches (`growing-the-team`); since 2026-08-23 the product carries it:
 
 1. **The seat is published.** A seat is posted at `publicworship.life/team`
    only once its outcomes, the decisions its holder makes without asking, and
-   what the role is *not* have been written down. Roles are markdown in the
-   repository (`apps/landing/src/content/roles/`), so publishing one is a
-   reviewed merge, not a form.
+   what the role is *not* have been written down. Listings are managed in the
+   OS (People → Recruiting → Job listings); a posting stays a private draft
+   until it is published, and publishing is refused until those required
+   sections are filled in.
 2. **Candidates are found in order** — in-house, then the volunteer interest
    pool, then the public call, then personal networks. Every source lands in the
    same pipeline.

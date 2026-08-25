@@ -12,7 +12,14 @@ export default defineConfig({
     // about joining the team, and it lives at /team now. Kept as a redirect
     // because a link that was shared once is shared forever.
     "/careers": "/team",
-    "/careers/[slug]": "/team/[slug]",
+    // Role pages used to live at /team/<slug> (statically generated from a
+    // markdown collection); listings now come live from the OS and render at
+    // /team/role?slug=<slug>. people-director is the one slug that was ever
+    // public, so the two old URLs that carried it get a concrete redirect.
+    // (No dynamic `[slug]` pattern anymore — there's no static route to
+    // enumerate paths from, and new roles were only ever born at the new URL.)
+    "/careers/people-director": "/team/role?slug=people-director",
+    "/team/people-director": "/team/role?slug=people-director",
     "/about": "/#about",
     "/impact": "/#impact",
     "/links": "/#links",

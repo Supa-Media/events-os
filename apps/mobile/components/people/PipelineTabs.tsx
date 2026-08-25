@@ -15,6 +15,11 @@ import { Pill } from "../ui";
 const TABS: { label: string; path: string }[] = [
   { label: "Team applications", path: "/people/pipeline" },
   { label: "Volunteer signups", path: "/people/volunteers" },
+  // The postings themselves — what's advertised on /team. Sits under the same
+  // People-desk nav and gate as the pipelines it feeds: the person who works
+  // the funnel is the person who owns what's open (see `lib/hiringAccess.ts`'s
+  // `requireListingManage`).
+  { label: "Job listings", path: "/people/listings" },
 ];
 
 export function PipelineTabs() {

@@ -1,5 +1,6 @@
 import { defineTable } from "convex/server";
 import { v } from "convex/values";
+import { ROLE_STATUSES } from "@events-os/shared";
 
 /**
  * HIRING — the org's candidate funnel, as tables.
@@ -227,3 +228,85 @@ export const applicationEvents = defineTable({
   body: v.optional(v.string()),
   at: v.number(),
 }).index("by_application", ["applicationId"]);
+
+/**
+ * THE POSTINGS THEMSELVES — the roles shown on `/team`.
+ *
+ * These used to be markdown files in the landing repo, add-a-role-is-a-PR. That
+ * was deliberate once, but it meant the recruiting desk had no way to open,
+ * close, edit, or add a posting from the OS — the one place a director actually
+ * works. So a listing is now a row here, the public page reads it live
+ * (`GET /api/team/roles` → `listings.publicListings`), and managing a posting
+ * is a gated mutation (`lib/hiringAccess.ts`'s `requireListingManage`) instead
+ * of a merge to `main`.
+ *
+ * The FIELD SET is the old content-collection schema, one-to-one, so nothing
+ * the role pages render was lost in the move — `packages/shared`'s
+ * `PublicJobListing` is the shared shape both this table's serializer and the
+ * landing renderer speak.
+ *
+ * A listing is NOT a foreign key for applications: `jobApplications.roleSlug`
+ * stays a denormalized snapshot (see its note), so closing or deleting a
+ * posting never disturbs the files that came from it. `status` is the public
+ * lifecycle (`ROLE_STATUSES`); `published` is separate and coarser — an
+ * unpublished listing is a DRAFT the desk is still writing and the public page
+ * never sees it at all, whatever its status.
+ */
+export const jobListings = defineTable({
+  /** The URL slug (`/team/<slug>`), minted from the title at create and then
+   *  immutable — a shared link must not rot when a title is edited. Unique;
+   *  enforced at the write gate via `by_slug`. */
+  slug: v.string(),
+  title: v.string(),
+  /** The public lifecycle — `open`/`filling` take applications, `not_open`/
+   *  `closed` render but point apply at general interest (`ROLE_STATUSES`). */
+  status: v.union(...ROLE_STATUSES.map((s) => v.literal(s))),
+  /** Draft gate. `false` = the desk is still writing it; it appears in the OS
+   *  manager but never on the public page. `true` = live content. */
+  published: v.boolean(),
+  team: v.string(),
+  /** Every seat is volunteer today; stated, not assumed. Defaulted at write. */
+  commitment: v.string(),
+  location: v.string(),
+  hoursPerWeek: v.number(),
+  reportsTo: v.string(),
+  worksWith: v.array(v.string()),
+  manages: v.array(v.string()),
+  trialTrack: v.union(...APPLICATION_TRIAL_TRACKS.map((t) => v.literal(t))),
+  /** The seat in `packages/shared/src/seats.ts` this fills, when it maps to
+   *  one. Advisory — a role can be posted before its seat exists. */
+  seatId: v.optional(v.string()),
+  /** Index sort order; lower first. */
+  order: v.number(),
+
+  // ── The role's body, section for section (the old markdown front-matter) ──
+  summary: v.string(),
+  whyThisSeatExists: v.string(),
+  outcomes: v.array(v.object({ outcome: v.string(), doneWhen: v.string() })),
+  authority: v.array(v.string()),
+  responsibilities: v.array(
+    v.object({ area: v.string(), items: v.array(v.string()) }),
+  ),
+  rhythms: v.array(v.string()),
+  firstNinetyDays: v.array(v.string()),
+  required: v.array(v.string()),
+  preferred: v.array(v.string()),
+  notThisRole: v.array(v.string()),
+  successLooks: v.array(v.string()),
+  growthPath: v.optional(v.string()),
+  /** The role's closing prose — the author's own words under the structured
+   *  sections (the old markdown body). Plain text; blank lines are paragraph
+   *  breaks on the page. Optional: not every role needs a coda. */
+  body: v.optional(v.string()),
+
+  /** When first posted, and when last edited. Stored as ms; the public
+   *  serializer converts to an ISO date string for the page. */
+  postedAt: v.number(),
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  // Unique-slug enforcement + the public `/team/<slug>` detail lookup.
+  .index("by_slug", ["slug"])
+  // The public list reads published rows; the manager reads all. Both want
+  // them grouped so the page's status ordering is a cheap client-side sort.
+  .index("by_published", ["published"]);

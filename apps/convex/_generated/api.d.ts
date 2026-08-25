@@ -102,6 +102,7 @@ import type * as integrationSettings from "../integrationSettings.js";
 import type * as inventory from "../inventory.js";
 import type * as items from "../items.js";
 import type * as legacyCards from "../legacyCards.js";
+import type * as listings from "../listings.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_aiEngine from "../lib/aiEngine.js";
 import type * as lib_assets from "../lib/assets.js";
@@ -567,6 +568,7 @@ declare const fullApi: ApiFromModules<{
   inventory: typeof inventory;
   items: typeof items;
   legacyCards: typeof legacyCards;
+  listings: typeof listings;
   "lib/access": typeof lib_access;
   "lib/aiEngine": typeof lib_aiEngine;
   "lib/assets": typeof lib_assets;

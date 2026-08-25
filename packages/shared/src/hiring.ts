@@ -682,3 +682,85 @@ export const ROLE_STATUS_LABELS: Record<RoleStatus, string> = {
 export function roleAcceptsApplications(status: RoleStatus): boolean {
   return status === "open" || status === "filling";
 }
+
+// ── The listing as public content (the /team wire shape) ─────────────────────
+
+/**
+ * A published role exactly as the public `/team` page consumes it.
+ *
+ * This is the WIRE CONTRACT between the OS and the landing site. Job listings
+ * now live in Convex (`jobListings`), not as markdown in the landing repo, so
+ * the public page fetches `GET /api/team/roles` and renders these objects —
+ * the same fetch-a-relative-JSON-API pattern the apply form already uses.
+ * `listings.ts`'s serializer produces exactly this shape and the landing
+ * renderer consumes exactly this shape; keeping the type here, in shared, is
+ * what stops the two sides from drifting.
+ *
+ * Only PUBLISHED listings ever reach this type — a draft is not content.
+ * `postedAt`/`updatedAt` are ISO date strings (not ms) because the page shows
+ * them and JSON has no date; the OS stores ms and the serializer converts.
+ */
+export interface PublicJobListing {
+  slug: string;
+  title: string;
+  status: RoleStatus;
+  team: string;
+  commitment: string;
+  location: string;
+  hoursPerWeek: number;
+  reportsTo: string;
+  worksWith: string[];
+  manages: string[];
+  trialTrack: RoleTrialTrack;
+  seatId?: string;
+  order: number;
+  summary: string;
+  whyThisSeatExists: string;
+  outcomes: RoleOutcome[];
+  authority: string[];
+  responsibilities: RoleResponsibilityArea[];
+  rhythms: string[];
+  firstNinetyDays: string[];
+  required: string[];
+  preferred: string[];
+  notThisRole: string[];
+  successLooks: string[];
+  growthPath?: string;
+  /** The role's closing prose (the old markdown body). Plain text; blank lines
+   *  are paragraph breaks. Absent when the role has no coda. */
+  body?: string;
+  /** ISO date string (YYYY-MM-DD or full ISO). */
+  postedAt: string;
+  /** ISO date string; absent when the listing has never been edited. */
+  updatedAt?: string;
+}
+
+/** Which Empowerment Trial cadence a role runs on — mirrors
+ *  `APPLICATION_TRIAL_TRACKS` in `schema/hiring.ts`. */
+export type RoleTrialTrack = "team_member" | "director";
+
+/** One accountability + its definition of done (the *Buy Back Your Time*
+ *  pairing the role template requires). */
+export interface RoleOutcome {
+  outcome: string;
+  doneWhen: string;
+}
+
+/** One area of the work, with its concrete items. */
+export interface RoleResponsibilityArea {
+  area: string;
+  items: string[];
+}
+
+/** Turn a role title into a URL slug. Stable once created — a listing keeps
+ *  its first slug even if the title is later edited, so a shared `/team` link
+ *  never rots. Kept here so the OS (which mints slugs) and any tooling that
+ *  needs to predict one agree on the rule. */
+export function roleSlugFromTitle(title: string): string {
+  return title
+    .toLowerCase()
+    .trim()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .slice(0, 60);
+}
