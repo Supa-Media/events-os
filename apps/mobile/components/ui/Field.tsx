@@ -63,12 +63,18 @@ export function TextField({ label, hint, suffix, ...inputProps }: TextFieldProps
         onContentSizeChange: (e: {
           nativeEvent: { contentSize: { height: number } };
         }) => setContentHeight(e.nativeEvent.contentSize.height),
-        style: {
-          height: Math.min(
-            MULTILINE_MAX_HEIGHT,
-            Math.max(minHeight, contentHeight),
-          ),
-        },
+        // A style ARRAY so a caller's own `style` is preserved, not replaced —
+        // RN merges arrays left-to-right, so the computed height layers on top
+        // of (and, for `height`, wins over) whatever the caller passed.
+        style: [
+          inputProps.style,
+          {
+            height: Math.min(
+              MULTILINE_MAX_HEIGHT,
+              Math.max(minHeight, contentHeight),
+            ),
+          },
+        ],
       }
     : null;
 
