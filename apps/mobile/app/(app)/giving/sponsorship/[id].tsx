@@ -302,16 +302,13 @@ function RelationshipForm({
         : undefined;
       await upsertSponsorship({
         sponsorshipId,
-        // donorId / packageId omitted — an update leaves them unchanged, so
-        // saving the relationship fields can't disturb the org or the tier.
-        eventIds: sponsorship.eventIds ?? [],
+        // Only the fields this form OWNS are sent. `upsertSponsorship` leaves
+        // every omitted field untouched, so donorId, packageId, eventIds and
+        // the signed `terms` all stay exactly as they were — saving the
+        // relationship can't disturb the org, the tier, the covered events, or
+        // a signed agreement.
         ownerPersonId,
         dueDiligenceNotes: notes,
-        // Preserved verbatim: `upsertSponsorship` treats an omitted `terms` as
-        // "clear it", and this form no longer edits the field (see the note in
-        // the JSX). Passing the row's own value back is what stops saving a
-        // touchpoint date from silently wiping a signed agreement's terms.
-        terms: sponsorship.terms,
         nextTouchpointAt,
       });
     } catch {
@@ -359,8 +356,13 @@ function RelationshipForm({
         visible={pickerOpen}
         title="Sponsorship owner"
         selectedId={ownerPersonId ?? null}
-        onPick={(personId) => {
+        onPick={(personId, person) => {
           setOwnerPersonId(personId as Id<"people">);
+          // Reflect the pick in the box IMMEDIATELY. Without this the label
+          // stayed "Unassigned" until a save round-tripped the name back
+          // through `getSponsorship`, so choosing AJ looked like it hadn't
+          // taken — the picker already hands us the name, so use it.
+          setOwnerName(person.name);
           setPickerOpen(false);
         }}
         onClear={() => {

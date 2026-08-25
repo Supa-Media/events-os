@@ -29,10 +29,48 @@ type TextFieldProps = TextInputProps & {
   suffix?: string;
 };
 
-/** A labelled text input with hover/focus ring and an optional inline suffix. */
+// A multiline box's height is content-driven: it starts tall enough to read
+// and grows to fit what's typed, so a paragraph of terms is never trapped in a
+// two-line slit. These estimate a rendered line at the `text-base`/`py-2.5`
+// metrics this component uses.
+const MULTILINE_LINE_HEIGHT = 22;
+const MULTILINE_VERTICAL_PADDING = 20;
+/** Default starting height (≈4 lines) when a caller gives no `numberOfLines`. */
+const MULTILINE_MIN_HEIGHT = 96;
+/** Ceiling past which the box scrolls internally instead of pushing the rest of
+ *  the form off-screen. */
+const MULTILINE_MAX_HEIGHT = 360;
+
+/** A labelled text input with hover/focus ring and an optional inline suffix.
+ *  When `multiline`, the box auto-grows to fit what's typed and aligns text to
+ *  the top. A caller's `numberOfLines` sets the STARTING height (so compact
+ *  two-line notes stay compact); absent it, a generous default is used. Either
+ *  way it grows with the text up to `MULTILINE_MAX_HEIGHT`. */
 export function TextField({ label, hint, suffix, ...inputProps }: TextFieldProps) {
   const [focused, setFocused] = useState(false);
+  const [contentHeight, setContentHeight] = useState(0);
   const border = focused ? "border-accent" : "border-border-strong";
+
+  // Auto-grow only matters for multiline; single-line inputs keep their
+  // padding-driven height and ignore all of this.
+  const multiline = Boolean(inputProps.multiline);
+  const minHeight = inputProps.numberOfLines
+    ? inputProps.numberOfLines * MULTILINE_LINE_HEIGHT + MULTILINE_VERTICAL_PADDING
+    : MULTILINE_MIN_HEIGHT;
+  const multilineProps = multiline
+    ? {
+        textAlignVertical: "top" as const,
+        onContentSizeChange: (e: {
+          nativeEvent: { contentSize: { height: number } };
+        }) => setContentHeight(e.nativeEvent.contentSize.height),
+        style: {
+          height: Math.min(
+            MULTILINE_MAX_HEIGHT,
+            Math.max(minHeight, contentHeight),
+          ),
+        },
+      }
+    : null;
 
   if (suffix) {
     return (
@@ -61,6 +99,7 @@ export function TextField({ label, hint, suffix, ...inputProps }: TextFieldProps
         onBlur={() => setFocused(false)}
         className={`rounded-md border ${border} bg-raised px-3 py-2.5 text-base text-ink`}
         {...inputProps}
+        {...(multilineProps ?? {})}
       />
     </Field>
   );
