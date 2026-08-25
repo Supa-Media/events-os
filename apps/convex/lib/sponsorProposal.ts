@@ -239,6 +239,8 @@ export async function loadAgreement(
 } | null> {
   const sponsorship = await ctx.db.get(sponsorshipId);
   if (!sponsorship) return null;
-  const pkg = await ctx.db.get(sponsorship.packageId);
+  const pkg = sponsorship.packageId
+    ? await ctx.db.get(sponsorship.packageId)
+    : null;
   return { sponsorship, package: pkg, proposal: resolveProposal(sponsorship, pkg) };
 }

@@ -525,11 +525,15 @@ donor's responsibility. See Bylaws Appendix D.
 A **sponsor package** is a price list — a tier the Development Director authors,
 with what a partner at that tier receives and what the organization commits to
 deliver. A **partnership agreement** is a negotiation: one organization (a
-church, a business, or a foundation — never an individual) against one tier, at
-a figure and on terms that may be that partner's alone. An agreement therefore
-carries its **own proposal** — its own title, its own body, its own benefit and
-commitment lines, its own terms — and falls back to the tier wherever it has
-nothing of its own.
+church, a business, or a foundation — never an individual), at a figure and on
+terms that may be that partner's alone. The sponsoring organization is named
+when the agreement is created — the partnership team does not pre-file it as a
+donor first; it is stored as a central organization record (where a partner's
+payments book into the giving ledger), but it is never managed as a "donor" in
+this flow. A package tier is **optional**: an agreement may start from one, or
+be wholly bespoke. Either way the agreement carries its **own proposal** — its
+own title, body, benefit and commitment lines, and terms — falling back to a
+tier only where one exists and the agreement has nothing of its own.
 
 **An agreement covers the gatherings it names.** A partnership is routinely
 more than one date — one agreement may stand behind a flagship event and a

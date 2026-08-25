@@ -667,7 +667,9 @@ export const publicByToken = query({
   handler: async (ctx, { token }) => {
     const sponsorship = await agreementForToken(ctx, token);
     if (!sponsorship) return null;
-    const pkg = await ctx.db.get(sponsorship.packageId);
+    const pkg = sponsorship.packageId
+    ? await ctx.db.get(sponsorship.packageId)
+    : null;
     const proposal = resolveProposal(sponsorship, pkg);
     const money = await sponsorshipMoney(ctx, sponsorship, proposal);
     const donor = await ctx.db.get(sponsorship.donorId);
@@ -899,7 +901,9 @@ export const preparePayment = internalMutation({
         message: "This link isn't active. Ask your contact for a fresh one.",
       });
     }
-    const pkg = await ctx.db.get(sponsorship.packageId);
+    const pkg = sponsorship.packageId
+    ? await ctx.db.get(sponsorship.packageId)
+    : null;
     const proposal = resolveProposal(sponsorship, pkg);
 
     // SIGN FIRST. Not a UI nicety: the terms are what the money is for, and a

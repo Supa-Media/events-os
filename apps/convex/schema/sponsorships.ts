@@ -100,7 +100,17 @@ export const sponsorPackages = defineTable({
  */
 export const sponsorships = defineTable({
   donorId: v.id("donors"),
-  packageId: v.id("sponsorPackages"),
+  /**
+   * The package TIER this agreement started from, when it started from one.
+   * OPTIONAL: a partnership is routinely a bespoke deal (the Ignite $3,500
+   * production spot) with no matching tier — the agreement's own proposal
+   * fields (`title`/`amountCents`/`benefits`/`commitments`/`terms`) carry the
+   * whole thing. A tier, when present, is just the starting copy those fields
+   * fall back to. Requiring one turned "write down the deal we agreed" into
+   * "first go author a price sheet", which is a forcing function nobody asked
+   * for.
+   */
+  packageId: v.optional(v.id("sponsorPackages")),
   status: v.union(...SPONSORSHIP_STATUSES.map((s) => v.literal(s))),
   eventIds: v.optional(v.array(v.id("events"))), // bounded, see MAX_SPONSORSHIP_EVENTS
   ownerPersonId: v.optional(v.id("people")),

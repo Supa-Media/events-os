@@ -31,6 +31,7 @@ import { requireGivingView, requireGivingManage } from "./lib/givingAccess";
 import { requirePartnershipCompose } from "./lib/sponsorAccess";
 import {
   assertPositiveGiftCents,
+  matchOrCreateOrgDonor,
   recordGiftForDonor,
 } from "./lib/givingDonors";
 import { GIFT_METHODS } from "./schema/givingPlatform";
@@ -252,7 +253,7 @@ export const listSponsorships = query({
       rows.map(async (sponsorship) => {
         const [donor, pkg] = await Promise.all([
           ctx.db.get(sponsorship.donorId),
-          ctx.db.get(sponsorship.packageId),
+          sponsorship.packageId ? ctx.db.get(sponsorship.packageId) : null,
         ]);
         // WHICH EVENTS EACH AGREEMENT COVERS, on the list row itself. A
         // partnership is routinely more than one date (the Ignite agreement
@@ -289,7 +290,7 @@ export const getSponsorship = query({
 
     const [donor, pkg, gifts, ownerPerson] = await Promise.all([
       ctx.db.get(sponsorship.donorId),
-      ctx.db.get(sponsorship.packageId),
+      sponsorship.packageId ? ctx.db.get(sponsorship.packageId) : null,
       ctx.db
         .query("gifts")
         .withIndex("by_sponsorship", (q) => q.eq("sponsorshipId", sponsorshipId))
@@ -330,8 +331,26 @@ export const getSponsorship = query({
 export const upsertSponsorship = mutation({
   args: {
     sponsorshipId: v.optional(v.id("sponsorships")),
-    donorId: v.id("donors"),
-    packageId: v.id("sponsorPackages"),
+    // The org this agreement is WITH. Supply an EXISTING one by id, or NAME a
+    // NEW one inline — the partnership team should never have to leave the
+    // Sponsors tab and go pre-create a "donor" first. Exactly one is required
+    // on create; on update, omit both to leave the org unchanged.
+    donorId: v.optional(v.id("donors")),
+    newOrg: v.optional(
+      v.object({
+        name: v.string(),
+        kind: v.union(
+          v.literal("church"),
+          v.literal("business"),
+          v.literal("foundation"),
+        ),
+      }),
+    ),
+    // A saved tier to start from, or nothing — the agreement's own proposal
+    // fields carry a bespoke deal (see `schema/sponsorships.ts`). On update,
+    // `null` DETACHES a tier that was set (a deal renegotiated bespoke);
+    // omitting it leaves the tier as-is.
+    packageId: v.optional(v.union(v.id("sponsorPackages"), v.null())),
     status: v.optional(sponsorshipStatusValidator),
     eventIds: v.optional(v.array(v.id("events"))),
     ownerPersonId: v.optional(v.id("people")),
@@ -346,24 +365,68 @@ export const upsertSponsorship = mutation({
     // central `giving.edit` holder also carries via the wildcard rule.
     await requirePartnershipCompose(ctx);
 
-    const donor = await ctx.db.get(args.donorId);
-    if (!donor) {
-      throw new ConvexError({ code: "NOT_FOUND", message: "Donor not found." });
-    }
-    if (!SPONSORABLE_DONOR_KINDS.has(donor.kind)) {
+    // ── Resolve the org this agreement is with ────────────────────────────
+    // Either an existing org donor, or a new one named inline. Creating the
+    // org here is deliberately part of the compose power: naming who you are
+    // partnering with is partnership work, not general donor-CRM editing (it
+    // can only ever mint an ORGANISATION at central — never an individual, and
+    // `matchOrCreateDonor` reuses a same-name org rather than duplicating it).
+    if (args.donorId && args.newOrg) {
       throw new ConvexError({
-        code: "INVALID_DONOR_KIND",
+        code: "INVALID_INPUT",
         message:
-          "Sponsorships are institutional agreements — the donor must be a church, business, or foundation, not an individual.",
+          "Choose an existing organization or name a new one — not both.",
+      });
+    }
+    let donorId = args.donorId ?? null;
+    if (args.newOrg) {
+      if (!args.newOrg.name.trim()) {
+        throw new ConvexError({
+          code: "INVALID_INPUT",
+          message: "Give the sponsoring organization a name.",
+        });
+      }
+      // Keyed on (name, kind) — never reuses an individual, never drops the
+      // requested kind. See `matchOrCreateOrgDonor`.
+      donorId = await matchOrCreateOrgDonor(ctx, {
+        name: args.newOrg.name,
+        kind: args.newOrg.kind,
       });
     }
 
-    const pkg = await ctx.db.get(args.packageId);
-    if (!pkg) {
+    // On CREATE the org is required; on UPDATE, an omitted org leaves it as-is.
+    if (!donorId && !args.sponsorshipId) {
       throw new ConvexError({
-        code: "NOT_FOUND",
-        message: "That package doesn't exist.",
+        code: "INVALID_INPUT",
+        message: "Choose or name the sponsoring organization.",
       });
+    }
+
+    if (donorId) {
+      const donor = await ctx.db.get(donorId);
+      if (!donor) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "Organization not found." });
+      }
+      if (!SPONSORABLE_DONOR_KINDS.has(donor.kind)) {
+        throw new ConvexError({
+          code: "INVALID_DONOR_KIND",
+          message:
+            "A sponsor is an organization — a church, business, or foundation, not an individual.",
+        });
+      }
+    }
+
+    // The package is OPTIONAL — a bespoke agreement has none. A real id must
+    // exist (a stale id is a bug); `null` means "detach" and `undefined` means
+    // "leave as-is" (handled at the patch below).
+    if (args.packageId) {
+      const pkg = await ctx.db.get(args.packageId);
+      if (!pkg) {
+        throw new ConvexError({
+          code: "NOT_FOUND",
+          message: "That package doesn't exist.",
+        });
+      }
     }
 
     const eventIds = args.eventIds ?? [];
@@ -396,8 +459,10 @@ export const upsertSponsorship = mutation({
         });
       }
       await ctx.db.patch(args.sponsorshipId, {
-        donorId: args.donorId,
-        packageId: args.packageId,
+        ...(donorId ? { donorId } : {}),
+        ...(args.packageId === undefined
+          ? {}
+          : { packageId: args.packageId ?? undefined }),
         ...(args.status !== undefined ? { status: args.status } : {}),
         eventIds,
         ...(args.ownerPersonId !== undefined
@@ -414,8 +479,8 @@ export const upsertSponsorship = mutation({
     }
 
     return await ctx.db.insert("sponsorships", {
-      donorId: args.donorId,
-      packageId: args.packageId,
+      donorId: donorId!,
+      ...(args.packageId ? { packageId: args.packageId } : {}),
       status: args.status ?? "prospect",
       eventIds,
       ...(args.ownerPersonId ? { ownerPersonId: args.ownerPersonId } : {}),

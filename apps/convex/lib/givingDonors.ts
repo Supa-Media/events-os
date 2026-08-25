@@ -469,6 +469,56 @@ export async function matchOrCreateDonor(
   return donorId;
 }
 
+/**
+ * Match or create a SPONSOR ORGANISATION at central scope — the inline-org path
+ * behind `sponsorships.upsertSponsorship`.
+ *
+ * DIFFERENT FROM `matchOrCreateDonor` in the one way that matters here: it
+ * matches on `(name, kind)`, not name alone. `matchOrCreateDonor` reuses any
+ * same-name donor in scope — which for a sponsor org is two bugs waiting to
+ * happen: a person named like a church ("Grace") would be reused as the
+ * sponsor (then rejected by the sponsorable-kind gate), and a same-name donor
+ * of a DIFFERENT org kind would be reused with the caller's requested kind
+ * silently dropped. Keying on the exact kind means an individual can never
+ * collide (its kind is never church/business/foundation) and "Ignite Church"
+ * the church and "Ignite" the business stay distinct records.
+ *
+ * `kind` is constrained to the sponsorable set by the caller's validator, so
+ * the created row is always an organisation. Central-scope only, so it skips
+ * the chapter person-link that `matchOrCreateDonor` does.
+ */
+export async function matchOrCreateOrgDonor(
+  ctx: MutationCtx,
+  args: { name: string; kind: "church" | "business" | "foundation" },
+): Promise<Id<"donors">> {
+  const name = args.name.trim();
+  const sameName = await ctx.db
+    .query("donors")
+    .withIndex("by_scope_and_name", (q) =>
+      q.eq("scope", "central").eq("name", name),
+    )
+    .collect();
+  const existing = sameName.find((d) => d.kind === args.kind);
+  if (existing) {
+    await syncDonorIdentity(ctx, existing._id);
+    return existing._id;
+  }
+
+  const now = Date.now();
+  const donorId = await ctx.db.insert("donors", {
+    scope: "central",
+    kind: args.kind,
+    name,
+    status: "prospect",
+    lifetimeCents: 0,
+    giftCount: 0,
+    createdAt: now,
+  });
+  await applyScopeDelta(ctx, "central", { donorDelta: 1, statusTo: "prospect" });
+  await syncDonorIdentity(ctx, donorId);
+  return donorId;
+}
+
 /** Recompute + persist a donor's status from its current rollups, shifting the
  *  scope per-status counts if it changed. */
 async function recomputeDonorStatus(
