@@ -7,20 +7,40 @@ import NavBar from "../components/collab/NavBar.astro";
 import CollabFooter from "../components/collab/CollabFooter.astro";
 import FourPaths from "../components/collab/FourPaths.astro";
 import { asset } from "../lib/asset";
+import {
+  FEATURED_ARTIST_AUDIENCE_STEP,
+  FEATURED_ARTIST_CASH_CAP_CENTS,
+  FEATURED_ARTIST_LADDER,
+  FEATURED_ARTIST_MAX_POINTS,
+  FEATURED_ARTIST_POINTS_PER_RUNG,
+  FEATURED_ARTIST_STEP_CENTS,
+  MUSIC_RATE_SHEET,
+  formatCents,
+} from "@events-os/shared";
 
-const rateSheet = [
-  { role: "Lead producer (full song)", cash: "$500", equity: "5%" },
-  { role: "Co-producer", cash: "$250", equity: "2%" },
-  { role: "Recording engineer (tracking)", cash: "$200", equity: "1.5%" },
-  { role: "Mix engineer", cash: "$400", equity: "3%" },
-  { role: "Mastering engineer", cash: "$125", equity: "0.75%" },
-  { role: "Vocal producer", cash: "$250", equity: "2%" },
-  { role: "Arranger", cash: "$200", equity: "1.5%" },
-  { role: "Featured vocalist", cash: "$300", equity: "3%" },
-  { role: "Background vocalist", cash: "$125", equity: "0.75%" },
-  { role: "Session instrumentalist", cash: "$125", equity: "0.75%" },
-  { role: "Marketing / rollout lead", cash: "$500", equity: "3%" },
-];
+const money = (cents: number) => formatCents(cents, { showCents: false });
+// Floors to whole thousands so a band's exclusive upper bound reads "199k",
+// not "199.999k".
+const compact = (n: number) => `${Math.floor(n / 1000)}k`;
+
+// Rates come from @events-os/shared so this page, /music-policy, and the
+// Academy can never print different numbers.
+const rateSheet = MUSIC_RATE_SHEET.map((r) => ({
+  role: r.role,
+  cash: money(r.cashCents),
+  equity: `${r.points}%`,
+}));
+
+const featuredLadder = FEATURED_ARTIST_LADDER.map((rung) => ({
+  band: rung.maxAudience === null
+    ? `${compact(rung.minAudience)}+`
+    : rung.minAudience === 0
+      ? `Under ${compact(rung.maxAudience)}`
+      : `${compact(rung.minAudience)} – ${compact(rung.maxAudience - 1)}`,
+  cash: money(rung.cashCents),
+  points: `${rung.points}`,
+  isCap: rung.isCap,
+}));
 
 // Per-role line shown inside relevant leaves.
 const rateRow = (role: string) => {
@@ -237,7 +257,7 @@ const rateRow = (role: string) => {
             <li>Your share of the publisher pool that flows to writers.</li>
             <li>One of the four paths for your performance/feature contribution: cash fee, master income participation, donation, or decline (see below).</li>
           </ul>
-          <p><strong class="font-semibold">Rate sheet:</strong> featured vocalist — <strong class="font-semibold">{rateRow("Featured vocalist").cash}</strong> cash or <strong class="font-semibold">{rateRow("Featured vocalist").equity}</strong> master income participation, per song.</p>
+          <p><strong class="font-semibold">Rate sheet:</strong> featured vocalist — <strong class="font-semibold">{rateRow("Featured vocalist").cash}</strong> cash or <strong class="font-semibold">{rateRow("Featured vocalist").equity}</strong> master income participation, per song. If we invited you to feature and you bring an established audience, the cash side follows the <a href="#featured-ladder" class="text-red-500 underline-offset-2 hover:underline">featured-artist ladder</a> instead — up to {money(FEATURED_ARTIST_CASH_CAP_CENTS)}.</p>
           <FourPaths />
         </div>
         <CollabFooter />
@@ -426,10 +446,10 @@ const rateRow = (role: string) => {
           </ul>
           <p><strong class="font-semibold">What it means for you:</strong></p>
           <ul class="list-disc pl-6 space-y-1.5">
-            <li><strong class="font-semibold">Featured artist credit</strong> on the release and on every DSP (Spotify, Apple Music, and the rest). The song appears under your name, not just ours.</li>
+            <li><strong class="font-semibold">Featured artist credit</strong> on the release and on every DSP (Spotify, Apple Music, and the rest). The song appears under your name, not just ours — and because your name carries its own audience, our rate sheet prices that rather than paying you a session-vocal fee.</li>
             <li><strong class="font-semibold">Your writer share stays whole</strong> on anything you write in the room — Public Worship takes 0% of writer share — plus your portion of the publisher pool that flows to writers.</li>
             <li><strong class="font-semibold">Creative input and final approval</strong> on your performance, your credit, and how your name and likeness are used. Nothing goes out that you haven't signed off on.</li>
-            <li><strong class="font-semibold">One of the four paths</strong> for the feature itself — cash when funded, master income participation, donation, or decline (below). Featured vocalist rate: <strong class="font-semibold">{rateRow("Featured vocalist").cash}</strong> cash or <strong class="font-semibold">{rateRow("Featured vocalist").equity}</strong> master income participation, per song.</li>
+            <li><strong class="font-semibold">One of the four paths</strong> for the feature itself — cash when funded, master income participation, donation, or decline (below). Because we invited you, the cash fee follows our published <a href="#featured-ladder" class="text-red-500 underline-offset-2 hover:underline">featured-artist ladder</a>: <strong class="font-semibold">{money(FEATURED_ARTIST_STEP_CENTS)} in cash, or {FEATURED_ARTIST_POINTS_PER_RUNG} master point, per {compact(FEATURED_ARTIST_AUDIENCE_STEP)} monthly listeners</strong> — cash capping at {money(FEATURED_ARTIST_CASH_CAP_CENTS)} and points at {FEATURED_ARTIST_MAX_POINTS}, per song. You can take either, or split them proportionally.</li>
             <li><strong class="font-semibold">Non-exclusive, always.</strong> You keep your career, your catalog, your label, and your deals. This song doesn't touch any of them.</li>
           </ul>
           <FourPaths />
@@ -526,6 +546,69 @@ const rateRow = (role: string) => {
         Source ranges and per-row reasoning are in the
         <a href={asset("/music-policy#rate-sheet")} class="text-red-500 underline-offset-2 hover:underline">policy rate sheet</a>.
       </p>
+
+      <div id="featured-ladder" class="mt-12 scroll-mt-16">
+        <h3 class="font-display font-normal text-xl sm:text-2xl text-ink">The featured-artist ladder</h3>
+        <div class="mt-4 max-w-prose text-ink/80 leading-relaxed flex flex-col gap-3">
+          <p>
+            The featured-vocalist row above prices a performance. It doesn't
+            price a <em>name</em>. When we invite an established artist to
+            feature on a release, part of what the song receives is their
+            audience — so the cash side scales with it, on a published formula
+            rather than a private negotiation:
+          </p>
+          <p class="font-medium text-ink">
+            {money(FEATURED_ARTIST_STEP_CENTS)} in cash, or {FEATURED_ARTIST_POINTS_PER_RUNG} master point, for every {compact(FEATURED_ARTIST_AUDIENCE_STEP)} monthly
+            listeners — cash capping at {money(FEATURED_ARTIST_CASH_CAP_CENTS)} and points at {FEATURED_ARTIST_MAX_POINTS}.
+          </p>
+        </div>
+
+        <div class="mt-6 overflow-x-auto rounded-xl border border-ink/10">
+          <table class="w-full text-sm">
+            <thead class="bg-pink-softer/40 text-ink">
+              <tr>
+                <th class="px-4 py-3 text-left font-display font-normal">Monthly audience</th>
+                <th class="px-4 py-3 text-right font-display font-normal">Cash fee, per song</th>
+                <th class="px-4 py-3 text-right font-display font-normal">or master points</th>
+              </tr>
+            </thead>
+            <tbody class="divide-y divide-ink/10">
+              {featuredLadder.map((rung) => (
+                <tr>
+                  <td class="px-4 py-3 align-top">{rung.band}</td>
+                  <td class="px-4 py-3 align-top text-right font-medium">
+                    {rung.cash}{rung.isCap ? <span class="text-ink/60 font-normal"> (cap)</span> : null}
+                  </td>
+                  <td class="px-4 py-3 align-top text-right font-medium">{rung.points}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div class="mt-4 max-w-prose text-ink/80 leading-relaxed flex flex-col gap-3">
+          <p class="text-sm text-ink/70">
+            Audience is your monthly listener count from public streaming data,
+            measured when the agreement is signed and fixed from that point.
+            Cash and points are alternatives — but they're divisible: take any
+            percentage of the cash and the remaining percentage of the points.
+            At the cap that's {money(FEATURED_ARTIST_CASH_CAP_CENTS)}, or {FEATURED_ARTIST_MAX_POINTS} points, or {money(FEATURED_ARTIST_CASH_CAP_CENTS / 2)} plus
+            {FEATURED_ARTIST_MAX_POINTS / 2} points. Cash remains conditional on the release budget,
+            exactly as below.
+          </p>
+          <p class="text-sm text-ink/70">
+            Points cap lower than the cash does, deliberately: a one-song
+            feature should never earn the ownership of a primary artist
+            building the catalog with us. And the points column never falls
+            below the flat featured-vocalist rate — being invited never costs
+            you participation.
+          </p>
+          <p class="text-sm text-ink/70">
+            Full reasoning:
+            <a href={asset("/music-policy#featured-ladder")} class="text-red-500 underline-offset-2 hover:underline">policy §12a</a>.
+          </p>
+        </div>
+      </div>
 
       <div class="mt-10 rounded-2xl bg-pink-softer/40 border border-pink-soft/60 p-6 sm:p-8">
         <p class="font-display font-normal text-lg text-ink">A note on cash availability</p>

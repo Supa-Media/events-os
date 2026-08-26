@@ -204,7 +204,9 @@
  * `music-inviting-a-collaborator` (3 min, 4-quiz), which joins the existing
  * `producing-and-artistry` course as its fourth module, plus
  * `music-greenlight-and-the-demo` (4/4), `music-three-lanes` (4/4),
- * `music-the-four-paths` (4/5), and `music-what-your-role-receives` (4/4) in a
+ * `music-the-four-paths` (4/5), and `music-what-your-role-receives` (4/5 — its
+ * quiz gained a fifth question when the featured-artist ladder shipped; see
+ * below) in a
  * NEW `collaborating-on-a-release` course appended to the Music catalog. Total:
  * 103 sections. Nothing else moved.
  *
@@ -1721,7 +1723,7 @@ const EXPECTED_SECTIONS: {
     slug: "music-what-your-role-receives",
     title: "What your role receives",
     minutes: 4,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

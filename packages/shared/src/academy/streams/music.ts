@@ -1412,6 +1412,47 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "tip",
         text: "Rates are **per song, not per session** — a producer who works on three songs is paid for three songs. These are anchored to independent-artist market rates, not major-label rates and not a \"ministry discount.\" Effective 2026, next scheduled review end of 2027 — the published sheet at publicworship.life/collaborate is canonical if this lesson ever lags behind it.",
       },
+      { kind: "heading", text: "The featured-artist ladder" },
+      {
+        kind: "p",
+        text: "The **Featured vocalist** row prices a performance — someone sings on the record. It does not price a **name**. When Public Worship invites an established artist to feature, part of what the release receives is their audience, and the flat session rate was never built to reflect that.",
+      },
+      {
+        kind: "p",
+        text: "So an invited feature scales, on a published formula rather than a private negotiation: **$300 in cash, or 1 master point, for every 100k monthly listeners** — cash capping at $1,500 and points at 5.",
+      },
+      {
+        kind: "table",
+        headers: ["Monthly audience", "Cash fee, per song", "or master points"],
+        rows: [
+          ["Under 100k", "$300", "3"],
+          ["100k – 199k", "$600", "3"],
+          ["200k – 299k", "$900", "3"],
+          ["300k – 399k", "$1,200", "4"],
+          ["400k+", "$1,500 (cap)", "5"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Why points cap at 5 when cash caps at $1,500",
+        text: "Everywhere else on the sheet a point costs roughly $100 of cash — a $500 lead producer takes 5 points, a $300 featured vocal takes 3. Carry that ratio up the ladder and a capped feature would be worth 15 points: exactly the Primary Artist baseline. A single guest verse would earn the same ownership as an artist we build a catalog with over years. So the ladder breaks the ratio on purpose. A NAME is paid in cash; equity stays weighted toward the people building the catalog. The points column is also floored at the flat featured-vocalist rate of 3 — being invited never costs you participation.",
+      },
+      {
+        kind: "rule",
+        title: "Cash and points are alternatives, but they're divisible",
+        text: "Take any percentage of the cash fee and the remaining percentage of the points. At the cap that's $1,500, or 5 points, or $750 plus 2.5 points. This is the published form of the \"partial cash plus partial equity\" the four paths have always allowed: wanting more points means taking less cash, in a stated proportion rather than a private negotiation. The split is proportional rather than a dollars-per-point exchange rate on purpose — a rate would let someone convert a capped cash fee back into points at a ratio the ladder deliberately doesn't offer. Audience is the artist's monthly listener count from public streaming data, measured when the agreement is signed and fixed from that point, so nothing is reopened mid-release in either direction.",
+      },
+      {
+        kind: "p",
+        text: "Note the bottom rung: it **is** the existing $300 featured-vocal rate. The ladder isn't a separate deal bolted onto the sheet — it's the same row, extended. And cash stays conditional on the release budget here exactly as everywhere else; a rung says what the role is worth, not what a given release can fund.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You're courting an artist with 180k monthly listeners for a feature. What's the published cash fee, and can you also offer them 3 points to close the deal?",
+        answer:
+          "$600 — 180k clears one 100k step past the floor, and the cash cap doesn't come into play until 400k. On points they'd get 3: one point per 100k earns 2, but the floor is the flat featured-vocal rate of 3, and an invited artist is never offered less than a walk-in. You can't hand them both in full — but you CAN split proportionally, say $300 plus 1.5 points. Everything that isn't a path at all still comes with it: featured credit, their whole writer share, approval rights. If the budget can't fund the cash, say so in writing before they choose.",
+      },
       {
         kind: "reveal",
         prompt:
@@ -1512,7 +1553,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           [
             "**Featured Artist**",
             "Prominently featured on one specific release — *Public Worship feat. [you]* — with no long-term commitment",
-            "Featured credit on the release and every DSP; writer share on anything written; one of the four paths for the feature itself ($300 or 3 points)",
+            "Featured credit on the release and every DSP; writer share on anything written; one of the four paths for the feature itself, on the featured-artist ladder — per 100k monthly listeners, $300 cash or 1 master point, capping at $1,500 and 5 points (and never below the flat 3)",
           ],
           [
             "**Contributor**",
@@ -1598,6 +1639,18 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The 50-point cap is reconciled BEFORE the agreement is signed, never after, and never privately with one person. The order of operations is published so nobody gets quietly reduced.",
+      },
+      {
+        prompt: "Public Worship invites an artist with 660k monthly listeners to feature. What can they take?",
+        options: [
+          "$300 or 3 points — the featured-vocalist rate covers every feature",
+          "$1,500 or 5 points — both at their cap — or any proportional split of the two",
+          "$1,980 and 6.6 points, straight from the formula",
+          "$1,500 plus 5 points, since the ladder pays both",
+        ],
+        answerIndex: 1,
+        explanation:
+          "660k is past both caps: cash stops at $1,500 (400k) and points at 5. They're alternatives, not a package — but divisible, so $750 plus 2.5 points is equally available. Points cap far below the cash-to-points ratio elsewhere on the sheet because a one-song feature must never reach the 15-point Primary Artist baseline.",
       },
       {
         prompt: "A contributor chooses the donation path. Do they still get credited?",

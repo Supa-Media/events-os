@@ -2209,6 +2209,11 @@ export * from "./academyPaths";
 // ── Finance (funds, budgets, transactions, reimbursements, cards, roles) ──────
 export * from "./finance";
 
+// ── The music rate sheet: what each contributor role earns on a release, plus
+// the featured-artist ladder that prices a courted artist's audience. Single
+// source of truth for /music-policy §12, /collaborate, and the Academy. ──────
+export * from "./musicRates";
+
 // ── Finance audit trail: state KEYS + the one renderer that words them ───────
 export * from "./financeAuditValue";
 
