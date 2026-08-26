@@ -8,7 +8,8 @@ import {
   FEATURED_ARTIST_AUDIENCE_STEP,
   FEATURED_ARTIST_CASH_CAP_CENTS,
   FEATURED_ARTIST_LADDER,
-  FEATURED_ARTIST_POINTS,
+  FEATURED_ARTIST_MAX_POINTS,
+  FEATURED_ARTIST_POINTS_PER_RUNG,
   FEATURED_ARTIST_STEP_CENTS,
   MUSIC_RATE_SHEET,
   formatCents,
@@ -67,6 +68,7 @@ const featuredLadder = FEATURED_ARTIST_LADDER.map((rung) => ({
       ? `Under ${compact(rung.maxAudience)}`
       : `${compact(rung.minAudience)} – ${compact(rung.maxAudience - 1)}`,
   cash: money(rung.cashCents),
+  points: `${rung.points}`,
   isCap: rung.isCap,
 }));
 
@@ -76,7 +78,7 @@ const summaryTable = [
   { category: "Master ownership", value: "100% Public Worship (held by Global Echo Charitable Co.); no fixed term, with stewardship clauses on dissolution, change of control, and out-of-print reversion (see §9)" },
   { category: "Master income participation", value: "Up to 50% of net to artists/contributors, by agreement" },
   { category: "Cash fees", value: "Conditional on each release's budget; never guaranteed" },
-  { category: "Featured artist fee", value: "$300 per 100k monthly listeners, capped at $1,500 (see §12a); master participation stays 3 points and is taken instead of cash, not alongside it" },
+  { category: "Featured artist fee", value: "Per 100k monthly listeners: $300 cash or 1 master point — cash capping at $1,500, points at 5, and points never below the flat 3 (see §12a). Taken instead of one another, or split proportionally" },
   { category: "Recoupment", value: "Capped per release, no cross-collateralization, agreed in writing" },
   { category: "Artist career", value: "Non-exclusive" },
   { category: "Departure", value: "Existing participation continues; future releases negotiated fresh" },
@@ -1112,7 +1114,7 @@ const summaryTable = [
             <div class="mt-2 rounded-xl bg-pink-softer/40 border border-pink-soft/60 p-5">
               <p class="font-display font-normal text-base text-ink">The formula</p>
               <p class="mt-2 text-sm text-ink/85 leading-relaxed">
-                <strong class="font-semibold">{money(FEATURED_ARTIST_STEP_CENTS)} for every {compact(FEATURED_ARTIST_AUDIENCE_STEP)} monthly listeners, capped at {money(FEATURED_ARTIST_CASH_CAP_CENTS)}.</strong>
+                <strong class="font-semibold">{money(FEATURED_ARTIST_STEP_CENTS)} in cash, or {FEATURED_ARTIST_POINTS_PER_RUNG} master point, for every {compact(FEATURED_ARTIST_AUDIENCE_STEP)} monthly listeners — cash capping at {money(FEATURED_ARTIST_CASH_CAP_CENTS)} and points at {FEATURED_ARTIST_MAX_POINTS}.</strong>
                 Audience is the artist's monthly listener count from public
                 streaming data, measured when the featured-artist agreement is
                 signed and fixed from that point — the fee is never reopened
@@ -1126,6 +1128,7 @@ const summaryTable = [
                   <tr>
                     <th class="px-4 py-3 text-left font-display font-normal">Monthly audience</th>
                     <th class="px-4 py-3 text-right font-display font-normal">Cash fee, per song</th>
+                    <th class="px-4 py-3 text-right font-display font-normal">or master points</th>
                   </tr>
                 </thead>
                 <tbody class="divide-y divide-ink/10">
@@ -1135,6 +1138,7 @@ const summaryTable = [
                       <td class="px-4 py-3 align-top text-right font-medium">
                         {rung.cash}{rung.isCap ? <span class="text-ink/60 font-normal"> (cap)</span> : null}
                       </td>
+                      <td class="px-4 py-3 align-top text-right font-medium">{rung.points}</td>
                     </tr>
                   ))}
                 </tbody>
@@ -1148,15 +1152,40 @@ const summaryTable = [
             </p>
 
             <p>
-              <strong class="font-semibold">The ladder scales cash only.</strong>
-              Master income participation for a featured artist stays flat at
-              <strong class="font-semibold">{FEATURED_ARTIST_POINTS} points</strong>
-              regardless of audience size. Two reasons: the four paths in
-              <a href="#four-paths" class="text-red-500 underline-offset-2 hover:underline">§11</a>
-              are mutually exclusive, so an artist takes the cash fee
-              <em>or</em> the points and never both; and every contributor on a
-              release has to fit inside the 50-point cap, which a scaling
-              equity tier would quietly consume.
+              <strong class="font-semibold">Why points cap at {FEATURED_ARTIST_MAX_POINTS} and cash at {money(FEATURED_ARTIST_CASH_CAP_CENTS)}.</strong>
+              Everywhere else on the sheet a point costs roughly $100 of cash —
+              a $500 lead producer takes 5 points, a $300 featured vocal takes
+              3. Carrying that ratio up the ladder would make a capped feature
+              worth 15 points, which is exactly the Primary Artist baseline in
+              <a href="#participation" class="text-red-500 underline-offset-2 hover:underline">§10</a>.
+              A single guest verse would then earn the same ownership as an
+              artist we build a catalog with over years. So the ladder breaks
+              the ratio on purpose: a <em>name</em> is paid in cash, and equity
+              stays weighted toward the people building the catalog.
+            </p>
+            <p>
+              The points column is also floored at the flat
+              <strong class="font-semibold">Featured vocalist</strong> rate. An
+              artist we invited is never offered less participation than a
+              vocalist who simply sang on the record.
+            </p>
+            <p>
+              <strong class="font-semibold">You may split the two.</strong>
+              Cash and points are alternatives, not a package — but they are
+              divisible. Take any percentage of the cash fee and the remaining
+              percentage of the points: all cash, all points, or half of each.
+              An artist at the cap could take {money(FEATURED_ARTIST_CASH_CAP_CENTS)}, or {FEATURED_ARTIST_MAX_POINTS} points, or
+              {money(FEATURED_ARTIST_CASH_CAP_CENTS / 2)} plus {FEATURED_ARTIST_MAX_POINTS / 2} points. This is the published form of
+              the "partial cash fee plus partial equity" that
+              <a href="#cash-conditional" class="text-red-500 underline-offset-2 hover:underline">§13</a>
+              has always allowed — wanting more points means taking less cash,
+              in a stated proportion rather than a private negotiation.
+            </p>
+            <p>
+              The split is proportional rather than an exchange rate on
+              purpose. A rate in dollars-per-point would let someone convert a
+              capped cash fee back into points at a ratio this section
+              deliberately does not offer.
             </p>
 
             <p>
@@ -1412,9 +1441,10 @@ const summaryTable = [
                 <a href="#featured-ladder" class="text-red-500 underline-offset-2 hover:underline">§12a</a>
                 — {money(FEATURED_ARTIST_STEP_CENTS)} per {compact(FEATURED_ARTIST_AUDIENCE_STEP)} monthly
                 listeners, capped at {money(FEATURED_ARTIST_CASH_CAP_CENTS)} — rather than the flat
-                session rate. Master participation for the feature stays at
-                {FEATURED_ARTIST_POINTS} points either way, and is taken instead of
-                the cash fee, never alongside it.
+                session rate, with master participation scaling alongside it at
+                {FEATURED_ARTIST_POINTS_PER_RUNG} point per {compact(FEATURED_ARTIST_AUDIENCE_STEP)} listeners to a ceiling of
+                {FEATURED_ARTIST_MAX_POINTS}. Cash and points are taken instead of one another, or
+                split proportionally — never both in full.
               </p>
             </div>
             <div>

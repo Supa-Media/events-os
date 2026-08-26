@@ -34,10 +34,28 @@
  * Two deliberate properties:
  *  - The existing $300 featured-vocal rate is the FLOOR, not a separate row, so
  *    the ladder is continuous with the sheet rather than bolted onto it.
- *  - The ladder scales the CASH path only. Master participation for a featured
- *    artist stays flat at `FEATURED_ARTIST_POINTS` regardless of audience, and
- *    cash and points remain mutually exclusive under the four paths (§11) — an
- *    artist taking the cash fee takes no points for the feature.
+ *  - Cash and points BOTH scale, on the same rungs: rung N is $300N in cash or
+ *    N points. Points cap at 5 while cash caps at $1,500.
+ *
+ * Why points cap so much lower than the cash:points ratio elsewhere on the
+ * sheet: every other row prices a point at roughly $100 of cash (a $500 lead
+ * producer takes 5 points; a $300 featured vocal takes 3). Carrying that ratio
+ * up the ladder would make a capped feature worth 15 points — the exact Primary
+ * Artist baseline in §10 — so a single guest verse would earn the same
+ * ownership as an artist we build a catalog with over years. The ladder
+ * deliberately breaks the ratio: a NAME is paid in cash, and equity stays
+ * weighted toward the people building the catalog.
+ *
+ * The points column is floored at `FEATURED_ARTIST_MIN_POINTS` — the flat
+ * Featured vocalist rate. Without that floor, rung one would offer an INVITED
+ * artist 1 point where a walk-in featured vocalist takes 3, paying less equity
+ * for more standing. A featured artist is never worse off on the ladder than
+ * on the flat row.
+ *
+ * Cash and points are alternatives, not a package (§11's four paths are
+ * mutually exclusive) — but they are divisible. `featuredArtistMix` splits the
+ * rung proportionally, which is what §13's "partial cash fee plus partial
+ * equity" has always gestured at without publishing a rate.
  */
 
 // ── Shape ────────────────────────────────────────────────────────────────────
@@ -147,12 +165,18 @@ export const FEATURED_ARTIST_STEP_CENTS = 30_000;
 /** The ladder stops here — reached at 400k monthly listeners and above. */
 export const FEATURED_ARTIST_CASH_CAP_CENTS = 150_000;
 
+/** Points earned per rung — one point per `FEATURED_ARTIST_AUDIENCE_STEP`. */
+export const FEATURED_ARTIST_POINTS_PER_RUNG = 1;
+
+/** Never fewer points than the flat Featured vocalist row offers a walk-in. */
+export const FEATURED_ARTIST_MIN_POINTS = 3;
+
 /**
- * Master participation offered to a featured artist INSTEAD of the cash fee.
- * Deliberately flat: the ladder prices the name in cash, not in points, and the
- * 50-point contributor cap (§11) has to absorb every contributor on a release.
+ * The points ceiling. Well under the 15-point Primary Artist baseline (§10) —
+ * a one-song feature must never earn the ownership of an artist we're building
+ * a catalog with.
  */
-export const FEATURED_ARTIST_POINTS = 3;
+export const FEATURED_ARTIST_MAX_POINTS = 5;
 
 /**
  * The published cash fee for a featured artist, per song, in integer cents.
@@ -165,11 +189,28 @@ export const FEATURED_ARTIST_POINTS = 3;
  * A missing, negative, or non-finite audience floors to the base rate rather
  * than throwing: an unknown audience must never silently price a feature high.
  */
-export function featuredArtistCashCents(monthlyAudience: number): number {
+export function featuredArtistRungs(monthlyAudience: number): number {
   const audience =
     Number.isFinite(monthlyAudience) && monthlyAudience > 0 ? monthlyAudience : 0;
-  const rungs = Math.floor(audience / FEATURED_ARTIST_AUDIENCE_STEP) + 1;
+  return Math.floor(audience / FEATURED_ARTIST_AUDIENCE_STEP) + 1;
+}
+
+export function featuredArtistCashCents(monthlyAudience: number): number {
+  const rungs = featuredArtistRungs(monthlyAudience);
   return Math.min(rungs * FEATURED_ARTIST_STEP_CENTS, FEATURED_ARTIST_CASH_CAP_CENTS);
+}
+
+/**
+ * Master income participation offered INSTEAD of the cash fee, in points.
+ * One point per 100k monthly listeners, floored at the flat featured-vocal
+ * rate and capped at `FEATURED_ARTIST_MAX_POINTS`.
+ */
+export function featuredArtistPoints(monthlyAudience: number): number {
+  const earned = featuredArtistRungs(monthlyAudience) * FEATURED_ARTIST_POINTS_PER_RUNG;
+  return Math.min(
+    Math.max(earned, FEATURED_ARTIST_MIN_POINTS),
+    FEATURED_ARTIST_MAX_POINTS,
+  );
 }
 
 export interface FeaturedArtistRung {
@@ -179,6 +220,8 @@ export interface FeaturedArtistRung {
   maxAudience: number | null;
   /** Cash fee for the band, in integer cents. */
   cashCents: number;
+  /** Master participation offered instead of the cash, in points. */
+  points: number;
   /** Whether this rung is the cap. */
   isCap: boolean;
 }
@@ -197,6 +240,7 @@ export const FEATURED_ARTIST_LADDER: readonly FeaturedArtistRung[] = (() => {
       minAudience,
       maxAudience: isCap ? null : minAudience + FEATURED_ARTIST_AUDIENCE_STEP,
       cashCents: featuredArtistCashCents(minAudience),
+      points: featuredArtistPoints(minAudience),
       isCap,
     });
   }
@@ -212,4 +256,40 @@ export const IRS_1099_THRESHOLD_CENTS = 60_000;
 
 export function requires1099(cashCents: number): boolean {
   return cashCents >= IRS_1099_THRESHOLD_CENTS;
+}
+
+export interface FeaturedArtistMix {
+  /** Cash taken, in integer cents. */
+  cashCents: number;
+  /** Points taken, rounded to the quarter-point the sheet already uses. */
+  points: number;
+}
+
+/**
+ * The published mixed path: take any percentage of the cash fee, and the
+ * REMAINING percentage of the points. 100 is all cash, 0 is all points, 50 is
+ * half of each — which is what "if you want points, take less cash" means in
+ * numbers, and what §13's "partial cash plus partial equity" always implied.
+ *
+ * Proportional rather than a $/point exchange rate on purpose: an exchange rate
+ * would let someone convert a capped cash fee into points at a ratio the sheet
+ * deliberately does not offer (see the header note on why points cap at 5).
+ *
+ * `cashPercent` is clamped to 0–100; a non-finite value is treated as all cash,
+ * since cash is the path that cannot be taken by accident — it has to be funded.
+ */
+export function featuredArtistMix(
+  monthlyAudience: number,
+  cashPercent: number,
+): FeaturedArtistMix {
+  const pct = Number.isFinite(cashPercent)
+    ? Math.min(Math.max(cashPercent, 0), 100)
+    : 100;
+  const fullCash = featuredArtistCashCents(monthlyAudience);
+  const fullPoints = featuredArtistPoints(monthlyAudience);
+  return {
+    cashCents: Math.round((fullCash * pct) / 100),
+    // Quarter-point granularity matches the 0.75/1.5 values already on the sheet.
+    points: Math.round((fullPoints * (100 - pct)) / 100 / 0.25) * 0.25,
+  };
 }

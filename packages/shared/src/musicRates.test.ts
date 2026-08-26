@@ -4,9 +4,12 @@ import {
   FEATURED_ARTIST_AUDIENCE_STEP,
   FEATURED_ARTIST_CASH_CAP_CENTS,
   FEATURED_ARTIST_LADDER,
-  FEATURED_ARTIST_POINTS,
+  FEATURED_ARTIST_MAX_POINTS,
+  FEATURED_ARTIST_MIN_POINTS,
   MUSIC_RATE_SHEET,
   featuredArtistCashCents,
+  featuredArtistMix,
+  featuredArtistPoints,
   musicRate,
   requires1099,
 } from "./musicRates";
@@ -87,6 +90,7 @@ describe("the featured-artist ladder", () => {
     expect(FEATURED_ARTIST_LADDER).toHaveLength(5);
     for (const rung of FEATURED_ARTIST_LADDER) {
       expect(rung.cashCents).toBe(featuredArtistCashCents(rung.minAudience));
+      expect(rung.points).toBe(featuredArtistPoints(rung.minAudience));
       if (rung.maxAudience !== null) {
         expect(featuredArtistCashCents(rung.maxAudience - 1)).toBe(rung.cashCents);
         expect(rung.maxAudience).toBe(rung.minAudience + FEATURED_ARTIST_AUDIENCE_STEP);
@@ -99,10 +103,43 @@ describe("the featured-artist ladder", () => {
     expect(FEATURED_ARTIST_LADDER.filter((r) => r.isCap)).toHaveLength(1);
   });
 
-  it("leaves master participation flat — the ladder prices the name in cash", () => {
-    // §11's four paths are mutually exclusive: scaling points alongside cash
-    // would hand a featured artist both, and eat into the 50-point cap.
-    expect(FEATURED_ARTIST_POINTS).toBe(musicRate("Featured vocalist").points);
+  it("scales points one per 100k, capped at 5", () => {
+    expect(featuredArtistPoints(300_000)).toBe(4);
+    expect(featuredArtistPoints(400_000)).toBe(5);
+    expect(featuredArtistPoints(660_000)).toBe(5);
+    expect(featuredArtistPoints(50_000_000)).toBe(FEATURED_ARTIST_MAX_POINTS);
+  });
+
+  it("never pays an invited artist less equity than a walk-in vocalist", () => {
+    // Without the floor, rung one would offer 1 point where the flat Featured
+    // vocalist row offers 3 — less equity for more standing.
+    expect(FEATURED_ARTIST_MIN_POINTS).toBe(musicRate("Featured vocalist").points);
+    for (let audience = 0; audience <= 2_000_000; audience += 10_000) {
+      expect(featuredArtistPoints(audience)).toBeGreaterThanOrEqual(
+        musicRate("Featured vocalist").points,
+      );
+    }
+  });
+
+  it("keeps a one-song feature below the Primary Artist baseline", () => {
+    // §10 grants a named primary artist 15 points for carrying the catalog. A
+    // guest verse must never reach that, however famous the guest.
+    expect(FEATURED_ARTIST_MAX_POINTS).toBeLessThan(15);
+    expect(featuredArtistPoints(Number.MAX_SAFE_INTEGER)).toBeLessThan(15);
+  });
+
+  it("rises monotonically in points too", () => {
+    let previous = 0;
+    for (let audience = 0; audience <= 2_000_000; audience += 25_000) {
+      const points = featuredArtistPoints(audience);
+      expect(points).toBeGreaterThanOrEqual(previous);
+      previous = points;
+    }
+  });
+
+  it("floors an unknown audience to the base points", () => {
+    expect(featuredArtistPoints(Number.NaN)).toBe(FEATURED_ARTIST_MIN_POINTS);
+    expect(featuredArtistPoints(-1)).toBe(FEATURED_ARTIST_MIN_POINTS);
   });
 });
 
@@ -142,26 +179,75 @@ describe("the Academy tracks the sheet", () => {
     }
   });
 
-  it("teaches every ladder rung at its published number", () => {
-    const ladderTable = table(["Monthly audience", "Cash fee, per song"]);
+  it("teaches every ladder rung at its published cash AND points", () => {
+    const ladderTable = table([
+      "Monthly audience",
+      "Cash fee, per song",
+      "or master points",
+    ]);
     expect(ladderTable).toBeDefined();
     expect(ladderTable!.rows).toHaveLength(FEATURED_ARTIST_LADDER.length);
     FEATURED_ARTIST_LADDER.forEach((rung, i) => {
-      const printed = ladderTable!.rows[i][1];
-      expect(printed).toContain(
-        `$${(rung.cashCents / 100).toLocaleString("en-US")}`,
-      );
-      expect(printed.includes("cap")).toBe(rung.isCap);
+      const [, cash, points] = ladderTable!.rows[i];
+      expect(cash).toContain(`$${(rung.cashCents / 100).toLocaleString("en-US")}`);
+      expect(cash.includes("cap")).toBe(rung.isCap);
+      expect(points).toBe(`${rung.points}`);
     });
   });
 
-  it("states the formula and the cap in prose", () => {
-    expect(text).toContain("$300 for every 100k monthly listeners");
-    expect(text).toContain("capped at $1,500");
+  it("states the formula and both caps in prose", () => {
+    expect(text).toContain(
+      "$300 in cash, or 1 master point, for every 100k monthly listeners",
+    );
+    expect(text).toContain("cash capping at $1,500 and points at 5");
   });
 
-  it("never teaches that cash and points can be taken together", () => {
+  it("never teaches that cash and points can be taken together in full", () => {
     // The one misreading that would cost real money on a signed agreement.
-    expect(text).toContain("INSTEAD of the cash fee, never alongside it");
+    expect(text).toContain("Cash and points are alternatives");
+    expect(text).toContain("You can't hand them both in full");
+  });
+
+  it("teaches the floor that protects an invited artist's participation", () => {
+    expect(text).toContain("being invited never costs you participation");
+  });
+});
+
+describe("the mixed path", () => {
+  const JON = 660_000; // the case this shipped for
+
+  it("gives all cash at 100 and all points at 0", () => {
+    expect(featuredArtistMix(JON, 100)).toEqual({ cashCents: 150_000, points: 0 });
+    expect(featuredArtistMix(JON, 0)).toEqual({ cashCents: 0, points: 5 });
+  });
+
+  it("splits proportionally — wanting points means taking less cash", () => {
+    expect(featuredArtistMix(JON, 50)).toEqual({ cashCents: 75_000, points: 2.5 });
+    expect(featuredArtistMix(JON, 80)).toEqual({ cashCents: 120_000, points: 1 });
+  });
+
+  it("never lets a split exceed either full path", () => {
+    for (let pct = 0; pct <= 100; pct += 5) {
+      const mix = featuredArtistMix(JON, pct);
+      expect(mix.cashCents).toBeLessThanOrEqual(featuredArtistCashCents(JON));
+      expect(mix.points).toBeLessThanOrEqual(featuredArtistPoints(JON));
+    }
+  });
+
+  it("cannot be used to convert cash into points beyond the cap", () => {
+    // The reason this is proportional and not a $/point exchange rate.
+    for (const audience of [0, 250_000, 660_000, 5_000_000]) {
+      for (let pct = 0; pct <= 100; pct += 10) {
+        expect(featuredArtistMix(audience, pct).points).toBeLessThanOrEqual(
+          FEATURED_ARTIST_MAX_POINTS,
+        );
+      }
+    }
+  });
+
+  it("clamps a nonsense percentage instead of inventing money", () => {
+    expect(featuredArtistMix(JON, 150).cashCents).toBe(150_000);
+    expect(featuredArtistMix(JON, -50).points).toBe(5);
+    expect(featuredArtistMix(JON, Number.NaN)).toEqual({ cashCents: 150_000, points: 0 });
   });
 });
