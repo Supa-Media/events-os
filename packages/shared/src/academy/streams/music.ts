@@ -1412,6 +1412,42 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "tip",
         text: "Rates are **per song, not per session** — a producer who works on three songs is paid for three songs. These are anchored to independent-artist market rates, not major-label rates and not a \"ministry discount.\" Effective 2026, next scheduled review end of 2027 — the published sheet at publicworship.life/collaborate is canonical if this lesson ever lags behind it.",
       },
+      { kind: "heading", text: "The featured-artist ladder" },
+      {
+        kind: "p",
+        text: "The **Featured vocalist** row prices a performance — someone sings on the record. It does not price a **name**. When Public Worship invites an established artist to feature, part of what the release receives is their audience, and the flat session rate was never built to reflect that.",
+      },
+      {
+        kind: "p",
+        text: "So the cash side of an invited feature scales, on a published formula rather than a private negotiation: **$300 for every 100k monthly listeners, capped at $1,500.**",
+      },
+      {
+        kind: "table",
+        headers: ["Monthly audience", "Cash fee, per song"],
+        rows: [
+          ["Under 100k", "$300"],
+          ["100k – 199k", "$600"],
+          ["200k – 299k", "$900"],
+          ["300k – 399k", "$1,200"],
+          ["400k+", "$1,500 (cap)"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "The ladder scales cash only",
+        text: "Master income participation for a featured artist stays at 3 points whatever their audience, and is taken INSTEAD of the cash fee, never alongside it. Two reasons: the four paths are mutually exclusive by design, and every contributor on a release has to fit inside the 50-point cap — a scaling equity tier would quietly eat it. Audience is the artist's monthly listener count from public streaming data, measured when the agreement is signed and fixed from that point, so the fee is never reopened mid-release in either direction.",
+      },
+      {
+        kind: "p",
+        text: "Note the bottom rung: it **is** the existing $300 featured-vocal rate. The ladder isn't a separate deal bolted onto the sheet — it's the same row, extended. And cash stays conditional on the release budget here exactly as everywhere else; a rung says what the role is worth, not what a given release can fund.",
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You're courting an artist with 180k monthly listeners for a feature. What's the published cash fee, and can you also offer them 3 points to close the deal?",
+        answer:
+          "$600 — 180k clears one 100k step past the floor, and the cap doesn't come into play until 400k. And no: cash and participation are alternatives, not a package. You can offer $600 OR 3 points, plus everything that isn't a path at all — featured credit, their whole writer share, approval rights. If the budget can't fund the $600, say so in writing before they choose.",
+      },
       {
         kind: "reveal",
         prompt:
@@ -1512,7 +1548,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           [
             "**Featured Artist**",
             "Prominently featured on one specific release — *Public Worship feat. [you]* — with no long-term commitment",
-            "Featured credit on the release and every DSP; writer share on anything written; one of the four paths for the feature itself ($300 or 3 points)",
+            "Featured credit on the release and every DSP; writer share on anything written; one of the four paths for the feature itself — 3 points, or cash on the featured-artist ladder ($300 per 100k monthly listeners, capped at $1,500)",
           ],
           [
             "**Contributor**",
@@ -1598,6 +1634,18 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The 50-point cap is reconciled BEFORE the agreement is signed, never after, and never privately with one person. The order of operations is published so nobody gets quietly reduced.",
+      },
+      {
+        prompt: "Public Worship invites an artist with 250k monthly listeners to feature. What's the published cash fee?",
+        options: [
+          "$300 — the featured-vocalist rate covers every feature",
+          "$900 — $300 for every 100k monthly listeners, under the $1,500 cap",
+          "$1,500 — invited features always pay the cap",
+          "Whatever their manager negotiates",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The featured-artist ladder prices the name, not just the performance: $300 per 100k monthly listeners, capped at $1,500 (reached at 400k). 250k clears two steps past the floor, so $900. It's a published formula precisely so it isn't negotiated case by case — and the artist could take 3 points instead, but never both.",
       },
       {
         prompt: "A contributor chooses the donation path. Do they still get credited?",
