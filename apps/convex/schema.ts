@@ -38,6 +38,7 @@ import {
 } from "./schema/hiring";
 import { volunteerSignups } from "./schema/volunteers";
 import { siteCopy, siteStats, siteLinks } from "./schema/marketing";
+import { brandColors, brandFonts, designFolders, designAssets } from "./schema/marketingDesigns";
 import { registrations } from "./schema/registrations";
 import { responsibilities, checkIns } from "./schema/responsibilities";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
@@ -181,6 +182,7 @@ import { formSubmissions, formDefinitions } from "./schema/forms";
 import { identityDecisions } from "./schema/identity";
 import { exportJobs } from "./schema/dataExports";
 import { blogReactions, blogReads } from "./schema/blog";
+import { blogPosts } from "./schema/marketingBlog";
 
 /**
  * Database schema for Chapter OS.
@@ -642,6 +644,10 @@ const schema = defineSchema({
   siteCopy,
   siteStats,
   siteLinks,
+  brandColors,
+  brandFonts,
+  designFolders,
+  designAssets,
 
   // Google Chat channels — deployment-wide named-space list (name + write-only
   // webhook URL) behind the Comms Schedule's in-app "Send" button. See
@@ -718,9 +724,16 @@ const schema = defineSchema({
   // `data.export` gate) + dataExports.ts (job lifecycle + paginated runner).
   exportJobs,
 
+  // The blog's POSTS — the writing itself, managed from the Marketing desk and
+  // server-rendered at /blog by lib/blogPage.ts. See schema/marketingBlog.ts
+  // + marketingBlog.ts (functions) + `@events-os/shared`'s marketingBlog.ts
+  // (the contract) + blogMarkdown.ts (the renderer).
+  blogPosts,
+
   // Marketing blog reactions — the anonymous emoji bar under each post on
-  // publicworship.life. The posts themselves are markdown in apps/landing,
-  // not rows here; this is only the counter. See schema/blog.ts's module doc
+  // publicworship.life. Keyed on the post's SLUG STRING, not a foreign key
+  // into blogPosts — see schema/marketingBlog.ts's module doc for why, and
+  // for the slug-freeze rule that keeps them from being orphaned.
   // + lib/blogReactions.ts (rules) + blog.ts + lib/blogApiRoutes.ts.
   blogReactions,
   blogReads,

@@ -21,6 +21,13 @@
  * `expo-image-picker` — but through `marketingSite.generateLinkImageUploadUrl`
  * rather than the general `storage.generateUploadUrl`, so the desk's uploads
  * carry the desk's power instead of "any signed-in user".
+ *
+ * ── One row each ────────────────────────────────────────────────────────────
+ * Both slots sit inside the card form's "More options", where they are two of
+ * six controls a marketer opened on purpose — so each is a single row
+ * (preview · what it is · buttons) rather than the three-deck block this was.
+ * The staged-upload note replaces the help line instead of adding a fourth,
+ * because it is the same sentence's job: telling you what this slot holds.
  */
 import { useState } from "react";
 import { ActivityIndicator, Image, Platform, Text, View } from "react-native";
@@ -29,6 +36,7 @@ import { api } from "@events-os/convex/_generated/api";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
 import { Button } from "../ui";
+import { siteImageUri } from "./LinkCardTile";
 import type { ActionRunner } from "../../lib/useActionToast";
 
 type Props = {
@@ -46,13 +54,16 @@ type Props = {
   run: ActionRunner["run"];
 };
 
+// "(optional)" in the label is the app's convention for a field you may skip
+// (`Note (optional)`, `Link (optional)`, …). Both image slots are optional, and
+// on this form saying so is the point — see `LinkCardForm`'s module doc.
 const LABELS = {
   thumbnail: {
-    title: "Logo",
+    title: "Logo (optional)",
     help: "A small mark above the card's title.",
   },
   background: {
-    title: "Background photo",
+    title: "Background photo (optional)",
     help: "Fills the whole card. The title and subtitle stop showing when one is set.",
   },
 } as const;
@@ -124,39 +135,37 @@ export function CardImagePicker({
   // `/api/site/link-image/<id>` would 404 on it) — say it's staged rather than
   // showing a broken frame.
   const has = Boolean(pending || current);
+  const currentUri = siteImageUri(current);
 
   return (
-    <View className="mb-3">
-      <Text className="mb-1 text-sm font-semibold text-ink">{labels.title}</Text>
-      <Text className="mb-2 text-xs text-muted">{labels.help}</Text>
-      <View className="flex-row items-center gap-3">
-        {pending ? (
-          <View className="h-14 w-14 items-center justify-center rounded-md border border-border bg-surface">
-            <Text className="text-[10px] text-muted">New</Text>
-          </View>
-        ) : current ? (
-          <Image
-            source={{ uri: current }}
-            className="h-14 w-14 rounded-md border border-border"
-            resizeMode="contain"
-          />
-        ) : null}
-        {uploading ? <ActivityIndicator size="small" /> : null}
-        <Button
-          title={has ? "Replace" : "Upload"}
-          size="sm"
-          variant="secondary"
-          disabled={uploading}
-          onPress={pick}
-        />
-        {has ? (
-          <Button title="Remove" size="sm" variant="ghost" onPress={onCleared} />
-        ) : null}
-      </View>
+    <View className="mb-3 flex-row items-center gap-2">
       {pending ? (
-        <Text className="mt-1.5 text-xs text-muted">
-          Uploaded — save the card to put it on the site.
+        <View className="h-10 w-10 items-center justify-center rounded-md border border-border bg-surface">
+          <Text className="text-[10px] text-muted">New</Text>
+        </View>
+      ) : currentUri ? (
+        <Image
+          source={{ uri: currentUri }}
+          className="h-10 w-10 rounded-md border border-border"
+          resizeMode="contain"
+        />
+      ) : null}
+      <View className="flex-1">
+        <Text className="text-sm font-semibold text-ink">{labels.title}</Text>
+        <Text className="text-2xs text-muted">
+          {pending ? "Uploaded — save the card to put it on the site." : labels.help}
         </Text>
+      </View>
+      {uploading ? <ActivityIndicator size="small" /> : null}
+      <Button
+        title={has ? "Replace" : "Upload"}
+        size="sm"
+        variant="secondary"
+        disabled={uploading}
+        onPress={pick}
+      />
+      {has ? (
+        <Button title="Remove" size="sm" variant="ghost" onPress={onCleared} />
       ) : null}
     </View>
   );

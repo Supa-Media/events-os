@@ -175,7 +175,7 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("one hundred sixteen ordered sections; six capstones; one optional bonus", () => {
+  test("one hundred seventeen ordered sections; six capstones; one optional bonus", () => {
     // 79 + 5 (the "Leading a project" course: works-defining-a-project,
     // works-planning-the-work, works-the-project-budget,
     // works-tracking-and-escalating, works-finishing-well — all required,
@@ -294,12 +294,19 @@ describe("curriculum content", () => {
     // the same greyed-out row and are not the same thing. Only the first is
     // ours to reverse, and a team that re-adds a spam complainer costs the
     // whole org its deliverability.)
-    expect(ACADEMY_SECTION_COUNT).toBe(116);
+    // + 1 (mktg-the-library-and-the-blog, 2026-08-28, appended after
+    // mktg-the-desk and added to brand-and-voice — required, not a capstone.
+    // The Designs and Blog tabs. Two rules that are governance rather than
+    // product and are therefore taught: reading the brand kit is ungated on
+    // purpose (a volunteer making a flyer needs the hex code), and writing a
+    // post is a different permission from publishing one — because a headline
+    // is a sentence and a post is an argument published under the org's name.)
+    expect(ACADEMY_SECTION_COUNT).toBe(117);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 116 }, (_v, i) => i + 1),
+      Array.from({ length: 117 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(115);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(116);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

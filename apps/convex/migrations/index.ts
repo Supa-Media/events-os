@@ -97,6 +97,7 @@ import { labelFeeCoverageRows } from "./0075_label_fee_coverage_rows";
 import { backfillWallFromGifts } from "./0076_backfill_wall_from_gifts";
 import { orgWideBudgetCategories } from "./0077_org_wide_budget_categories";
 import { stampInterestSourceCategory } from "./0078_stamp_interest_source_category";
+import { seedMarketingDesk } from "./0080_seed_marketing_desk";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -500,4 +501,9 @@ export const MIGRATIONS: Migration[] = [
   // the reconciliation panel offered bank interest as "giving recorded as
   // nothing". See the file.
   stampInterestSourceCategory,
+  // 0080: the Marketing desk's content — the homepage's link cards and impact
+  // numbers, and the brand kit. Here rather than in a post-deploy runbook step
+  // because the runbook step was missed and an empty desk is indistinguishable
+  // from a broken one. See the file.
+  seedMarketingDesk,
 ];

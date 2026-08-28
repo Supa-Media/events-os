@@ -282,6 +282,8 @@ import type * as lib_upcomingEvents from "../lib/upcomingEvents.js";
 import type * as lib_unsubscribePage from "../lib/unsubscribePage.js";
 import type * as mailchimpSync from "../mailchimpSync.js";
 import type * as mailingList from "../mailingList.js";
+import type * as marketingDesigns from "../marketingDesigns.js";
+import type * as marketingBlog from "../marketingBlog.js";
 import type * as marketingSite from "../marketingSite.js";
 import type * as maintenance from "../maintenance.js";
 import type * as migrations from "../migrations.js";
@@ -755,6 +757,8 @@ declare const fullApi: ApiFromModules<{
   "lib/unsubscribePage": typeof lib_unsubscribePage;
   mailchimpSync: typeof mailchimpSync;
   mailingList: typeof mailingList;
+  marketingDesigns: typeof marketingDesigns;
+  marketingBlog: typeof marketingBlog;
   marketingSite: typeof marketingSite;
   maintenance: typeof maintenance;
   migrations: typeof migrations;

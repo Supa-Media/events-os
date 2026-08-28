@@ -109,6 +109,16 @@ const PEOPLE_PER_CHAPTER_LIMIT = 5000;
 const CHAPTER_SCAN_LIMIT = 200;
 
 /**
+ * The most people one bulk action may touch.
+ *
+ * Sized to be larger than any selection a human makes on purpose and smaller
+ * than one that would blow a mutation's transaction budget. Over it the call is
+ * REFUSED, never truncated — "we removed the first 200 of your 500" is the
+ * worst possible outcome for an operation whose whole point is deliberateness.
+ */
+const BULK_LIMIT = 200;
+
+/**
  * The ceiling on how many people ONE read of this desk resolves, across every
  * chapter it covers.
  *
@@ -579,28 +589,154 @@ export const removeFromList = mutation({
     }
     await requireMailingListEdit(ctx, person.chapterId);
     const userId = (await requireUserId(ctx)) as Id<"users">;
+    return await removePersonFromList(ctx, person, userId, note);
+  },
+});
 
-    await ctx.db.patch(personId, { marketingOptOut: true });
+/** The body of one removal. Shared with `removeManyFromList` so a selection of
+ *  one and a selection of fifty do exactly the same thing to each person —
+ *  a second copy is a second place the SMS opt-out gets forgotten. Callers do
+ *  the gating; this does the work. */
+async function removePersonFromList(
+  ctx: MutationCtx,
+  person: Doc<"people">,
+  userId: Id<"users">,
+  note: string | undefined,
+): Promise<{ smsOptOutRecorded: boolean }> {
+  await ctx.db.patch(person._id, { marketingOptOut: true });
 
-    let smsOptOutRecorded = false;
-    const phone = person.phone ? normalizePhone(person.phone) : null;
-    if (phone) {
-      const existing = await ctx.db
-        .query("smsOptOuts")
-        .withIndex("by_phone", (q) => q.eq("phone", phone))
-        .first();
-      if (!existing) {
-        await ctx.db.insert("smsOptOuts", {
-          phone,
-          source: "manual",
-          note: note?.trim() || "Asked to be removed from the mailing list",
-          createdAt: Date.now(),
-          createdBy: userId,
-        });
-        smsOptOutRecorded = true;
-      }
+  const phone = person.phone ? normalizePhone(person.phone) : null;
+  if (!phone) return { smsOptOutRecorded: false };
+
+  const existing = await ctx.db
+    .query("smsOptOuts")
+    .withIndex("by_phone", (q) => q.eq("phone", phone))
+    .first();
+  if (existing) return { smsOptOutRecorded: false };
+
+  await ctx.db.insert("smsOptOuts", {
+    phone,
+    source: "manual",
+    note: note?.trim() || "Asked to be removed from the mailing list",
+    createdAt: Date.now(),
+    createdBy: userId,
+  });
+  return { smsOptOutRecorded: true };
+}
+
+/**
+ * Take SEVERAL people off the list at once.
+ *
+ * The desk is a grid with multi-select, and the founder asked for it to be one
+ * ("box selection operations"), so the bulk path is the real path and the
+ * single-row mutation above is now the special case of it. This is a loop over
+ * the same body rather than a cleverer set operation because each removal is a
+ * separate promise to a separate human and there is nothing to batch — the
+ * work is one `patch` and at most one `smsOptOuts` insert per person.
+ *
+ * ── Partial success is reported, not hidden ────────────────────────────────
+ * A selection can contain a person who was deleted or merged since the grid
+ * loaded, or one in a chapter the caller may see but not change. Failing the
+ * whole call for one bad row would make a fifty-row removal unusable; silently
+ * skipping would tell the marketer fifty people were removed when forty-nine
+ * were. So each row is attempted, and the result says how many actually moved.
+ *
+ * BOUNDED. A selection larger than `BULK_LIMIT` is refused rather than
+ * truncated — "we removed the first 200 of your 500" is the worst possible
+ * outcome for an operation whose entire point is that it is deliberate.
+ */
+export const removeManyFromList = mutation({
+  args: {
+    personIds: v.array(v.id("people")),
+    note: v.optional(v.string()),
+  },
+  returns: v.object({
+    removed: v.number(),
+    smsOptOutsRecorded: v.number(),
+    skipped: v.number(),
+  }),
+  handler: async (ctx, { personIds, note }) => {
+    if (personIds.length > BULK_LIMIT) {
+      throw new ConvexError({
+        code: "TOO_MANY",
+        message: `Take at most ${BULK_LIMIT} people off the list at a time.`,
+      });
     }
-    return { smsOptOutRecorded };
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+    let removed = 0;
+    let smsOptOutsRecorded = 0;
+    let skipped = 0;
+
+    // Cache the per-chapter gate: a selection is almost always one chapter, and
+    // re-resolving the caller's whole seat reach per row would make a 200-row
+    // removal 200 identical permission walks.
+    const access = await resolveMarketingAccess(ctx);
+    const seen = new Set<string>();
+
+    for (const personId of personIds) {
+      // A duplicate id in the selection must not double-count.
+      if (seen.has(String(personId))) continue;
+      seen.add(String(personId));
+
+      const person = await ctx.db.get(personId);
+      if (!person || !canEditMailingList(access, person.chapterId)) {
+        skipped++;
+        continue;
+      }
+      const result = await removePersonFromList(ctx, person, userId, note);
+      removed++;
+      if (result.smsOptOutRecorded) smsOptOutsRecorded++;
+    }
+    return { removed, smsOptOutsRecorded, skipped };
+  },
+});
+
+/**
+ * Put SEVERAL people back on after an opt-out.
+ *
+ * Same partial-success contract as `removeManyFromList`, plus one number the
+ * caller must not lose: how many are STILL unreachable afterwards because they
+ * carry a suppression this desk cannot lift. A bulk restore that reports
+ * "restored 12" when 4 of them will never receive anything is the exact
+ * silent-failure this desk's whole design is arranged against.
+ */
+export const restoreManyToList = mutation({
+  args: { personIds: v.array(v.id("people")) },
+  returns: v.object({
+    restored: v.number(),
+    stillSuppressed: v.number(),
+    smsStillOptedOut: v.number(),
+    skipped: v.number(),
+  }),
+  handler: async (ctx, { personIds }) => {
+    if (personIds.length > BULK_LIMIT) {
+      throw new ConvexError({
+        code: "TOO_MANY",
+        message: `Put at most ${BULK_LIMIT} people back at a time.`,
+      });
+    }
+    const access = await resolveMarketingAccess(ctx);
+    const seen = new Set<string>();
+    let restored = 0;
+    let stillSuppressed = 0;
+    let smsStillOptedOut = 0;
+    let skipped = 0;
+
+    for (const personId of personIds) {
+      if (seen.has(String(personId))) continue;
+      seen.add(String(personId));
+
+      const person = await ctx.db.get(personId);
+      if (!person || !canEditMailingList(access, person.chapterId)) {
+        skipped++;
+        continue;
+      }
+      const result = await restorePersonToList(ctx, person);
+      restored++;
+      if (result.emailStillSuppressed) stillSuppressed++;
+      if (result.smsStillOptedOut) smsStillOptedOut++;
+    }
+    return { restored, stillSuppressed, smsStillOptedOut, skipped };
   },
 });
 
@@ -629,35 +765,47 @@ export const restoreToList = mutation({
       });
     }
     await requireMailingListEdit(ctx, person.chapterId);
-    await ctx.db.patch(personId, { marketingOptOut: false });
-
-    let smsStillOptedOut = false;
-    const phone = person.phone ? normalizePhone(person.phone) : null;
-    if (phone) {
-      const existing = await ctx.db
-        .query("smsOptOuts")
-        .withIndex("by_phone", (q) => q.eq("phone", phone))
-        .first();
-      if (existing?.source === "manual") await ctx.db.delete(existing._id);
-      else if (existing) smsStillOptedOut = true;
-    }
-
-    const rows = await ctx.db
-      .query("personEmails")
-      .withIndex("by_person", (q) => q.eq("personId", personId))
-      .collect();
-    const email = normalizeEmail(resolveSendAddress(person, rows));
-    let emailStillSuppressed = false;
-    if (email) {
-      const hit = await ctx.db
-        .query("emailSuppressions")
-        .withIndex("by_email", (q) => q.eq("email", email))
-        .first();
-      emailStillSuppressed = !!hit;
-    }
-    return { smsStillOptedOut, emailStillSuppressed };
+    return await restorePersonToList(ctx, person);
   },
 });
+
+/** The body of one restore. Shared with `restoreManyToList` — see
+ *  `removePersonFromList`'s note on why this is one implementation. */
+async function restorePersonToList(
+  ctx: MutationCtx,
+  person: Doc<"people">,
+): Promise<{ smsStillOptedOut: boolean; emailStillSuppressed: boolean }> {
+  await ctx.db.patch(person._id, { marketingOptOut: false });
+
+  let smsStillOptedOut = false;
+  const phone = person.phone ? normalizePhone(person.phone) : null;
+  if (phone) {
+    const existing = await ctx.db
+      .query("smsOptOuts")
+      .withIndex("by_phone", (q) => q.eq("phone", phone))
+      .first();
+    // Only a row THIS desk wrote may be lifted. A `stop_webhook` row is a real
+    // human texting STOP to a carrier; deleting our mirror would not make the
+    // message send, only make the screen lie about it.
+    if (existing?.source === "manual") await ctx.db.delete(existing._id);
+    else if (existing) smsStillOptedOut = true;
+  }
+
+  const rows = await ctx.db
+    .query("personEmails")
+    .withIndex("by_person", (q) => q.eq("personId", person._id))
+    .collect();
+  const email = normalizeEmail(resolveSendAddress(person, rows));
+  let emailStillSuppressed = false;
+  if (email) {
+    const hit = await ctx.db
+      .query("emailSuppressions")
+      .withIndex("by_email", (q) => q.eq("email", email))
+      .first();
+    emailStillSuppressed = !!hit;
+  }
+  return { smsStillOptedOut, emailStillSuppressed };
+}
 
 // ── Export ───────────────────────────────────────────────────────────────────
 
