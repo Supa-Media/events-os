@@ -17,6 +17,7 @@
  */
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   CONTRACTOR_PAYMENT_REVIEW_STATUSES,
   CONTRACTOR_PAYMENT_TERMINAL_STATUSES,
@@ -173,4 +174,39 @@ export function isWithContractor(status: ContractorPaymentStatus): boolean {
  */
 export function centsToAmountText(cents: number): string {
   return (cents / 100).toFixed(2);
+}
+
+// ── Which books am I standing in? ────────────────────────────────────────────
+/**
+ * The finance scope of the caller's active desk — a chapter id, or `"central"`.
+ *
+ * The payments screens read and write at a SCOPE now, not at the caller's
+ * roster chapter, which is what makes a central desk show central's agreements
+ * and compose against central's books. Before this, every screen quietly used
+ * whichever chapter the operator's roster row was in, so a central desk showed
+ * (and created) New York's payments while displaying "Central" in the switcher.
+ *
+ * `null` while the context is still resolving — callers pass `"skip"` rather
+ * than guessing a scope, since guessing is exactly the bug.
+ *
+ * Mirrors the derivation `finances/book-value.tsx` already uses, minus the URL
+ * override those drill-down screens accept.
+ */
+export function financeScopeOf(
+  context:
+    | { kind: "seat"; scope: Id<"chapters"> | "central" }
+    | { kind: "peek"; chapterId: Id<"chapters">; chapterName: string }
+    | null
+    | undefined,
+): Id<"chapters"> | "central" | null {
+  if (!context) return null;
+  return context.kind === "peek" ? context.chapterId : context.scope;
+}
+
+/** Is this scope the org level? The one place the screens decide to say
+ *  "Central" instead of a chapter's name. */
+export function isCentralScope(
+  scope: Id<"chapters"> | "central" | null,
+): boolean {
+  return scope === "central";
 }

@@ -73,6 +73,8 @@ import { ContractLinkCard } from "../../../../components/finance/payments/Contra
 import { ContractorPicker } from "../../../../components/finance/payments/ContractorPicker";
 import { contractorIdentityPatch } from "../../../../components/finance/payments/contractorHelpers";
 import { LedgerPreviewCard } from "../../../../components/finance/payments/LedgerPreviewCard";
+import { financeScopeOf } from "../../../../components/finance/payments/helpers";
+import { useChapterContext } from "../../../../lib/ChapterContext";
 
 /** What the screen shows once the record exists. */
 type Created = {
@@ -87,7 +89,23 @@ function NewAgreementScreen() {
   // all — the same server-returned flag the queue gates its own button on,
   // rather than a rank re-derived here. One row is enough to ask the question.
   const access = useQuery(api.contractorPayments.list, { limit: 1 });
+  // WHOSE BOOKS this agreement will be paid from — the active desk's. Composing
+  // at the Central desk now produces a CENTRAL agreement (central reviewers,
+  // central's bank account, `/contract/central`) instead of quietly filing it
+  // under the composer's home chapter. Declared before the queries below
+  // because they read it.
+  const { context } = useChapterContext();
+  const scope = financeScopeOf(context);
+
   const options = useQuery(api.reimbursements.newRequestOptions, {});
+  // The "For" list for THIS scope — central's own budgets at a central desk,
+  // and at a chapter desk only the events/projects that chapter's budgets
+  // actually fund. `newRequestOptions` above still supplies the funds and the
+  // coding policy, which are the same question at either scope.
+  const scopedFor = useQuery(
+    api.contractorPayments.codingOptionsForScope,
+    scope ? { scope } : "skip",
+  );
   const categories = useQuery(api.finances.myChargeCategories, {});
 
   const createAgreement = useMutation(api.contractorPayments.createAgreement);
@@ -191,6 +209,7 @@ function NewAgreementScreen() {
             ? { serviceDate: draft.serviceDate }
             : {}),
           agreedAmountCents: cents,
+          ...(scope ? { scope } : {}),
           ...(draft.agreementNotes.trim()
             ? { agreementNotes: draft.agreementNotes.trim() }
             : {}),
@@ -387,10 +406,27 @@ function NewAgreementScreen() {
             onUseUsualRate={(amountText) => patch({ amountText })}
           />
 
+          {/* Say whose money this is BEFORE they write the terms — the
+              composer is where the wrong answer used to be baked in. */}
+          {scope ? (
+            <View className="mb-4 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2.5">
+              <Icon
+                name={scope === "central" ? "globe" : "map-pin"}
+                size={14}
+                color={colors.muted}
+              />
+              <Text className="flex-1 text-xs text-muted">
+                {scope === "central"
+                  ? "This will be paid from the org's central books and central's bank account — not a chapter's. Switch desks to compose a chapter agreement."
+                  : "This will be paid from this chapter's books and its bank account. Work funded by a central budget has to be composed at the Central desk."}
+              </Text>
+            </View>
+          ) : null}
+
           <AgreementFields
             value={draft}
             onChange={patch}
-            forOptions={options?.forOptions}
+            forOptions={scopedFor ?? options?.forOptions}
             categories={categories}
             mode="create"
           />

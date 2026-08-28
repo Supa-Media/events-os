@@ -14,22 +14,25 @@
  * `lib/appUrl.ts#webAppUrl`: that builds links into the AUTHENTICATED Expo app
  * under `/os`, and a contractor has no account and never sees that app.
  *
- * ── RESOLVING THE CHAPTER SLUG ───────────────────────────────────────────────
- * The slug is the one piece the app is not handed. `api.contractorPayments.get`
- * returns the token but not the payment's chapter slug, so this module resolves
- * it in two steps, and NEVER emits a guess:
+ * ── RESOLVING THE SLUG ───────────────────────────────────────────────────────
+ * THE RECORD KNOWS. `api.contractorPayments.get` now projects `scopeSlug` — the
+ * public slug of the scope that owns the payment, which for an org-level
+ * agreement is the reserved `central` (`/contract/central`). Pass it and the
+ * link is built directly, with no guessing and no verification round-trip.
  *
- *   1. If the payment record itself carries a `chapterSlug` (the one-line
- *      projection add in `get` that would make step 2 unnecessary — see
- *      `useContractLink`'s `chapterSlug` argument), that wins outright.
- *   2. Otherwise: derive a CANDIDATE from the active chapter desk's name with
- *      the same slugify the rest of the codebase uses, then VERIFY it against
- *      the real row via `api.contractorPayments.chapterForContract` — a public
- *      query that resolves slug → chapter. The candidate is used only when the
- *      chapter it resolves to IS the desk's own chapter. A slug that doesn't
- *      resolve, or resolves to a different chapter, yields NO link rather than
- *      a plausible-looking one that would 404 (or, worse, render this payment
- *      under another chapter's name).
+ * The fallback below survives ONLY for callers that don't have the record yet
+ * (the composer, between creating an agreement and refetching it): derive a
+ * CANDIDATE from the active chapter desk's name, then VERIFY it against the
+ * real row via `api.contractorPayments.chapterForContract`. It is used only
+ * when the chapter it resolves to IS the desk's own.
+ *
+ * WHAT THIS FIXED (founder, 2026-08-28: "it's like, switch to chapters desk to
+ * copy contractors link, a central desk has no public page of his own. What
+ * does that mean? Makes no sense."). It meant the slug was being derived from
+ * whichever DESK you were sitting at rather than from the payment, so the copy
+ * button died on any desk that wasn't the payment's own chapter — and at a
+ * central desk it blamed a missing public page. Central has a public page now,
+ * and either way the record is the thing that knows where its own page lives.
  *
  * A null link is a real outcome the callers must render honestly — a copy
  * button that copies a broken URL is worse than one that explains itself.
@@ -116,9 +119,10 @@ export function useContractLink(
 
   if (loading) return unavailable("Working out this chapter's public address…");
   if (!candidate || !chapterId) {
-    return unavailable(
-      "Switch to your chapter's desk to copy the contractor's link — a central desk has no public page of its own.",
-    );
+    // Only reachable for a caller that has no record to read the slug off —
+    // the composer, mid-create. With a record in hand the `chapterSlug` branch
+    // above has already answered, central included.
+    return unavailable("Working out this payment's public address…");
   }
   if (verified === undefined) {
     return unavailable("Working out this chapter's public address…");

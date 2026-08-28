@@ -55,8 +55,10 @@ import {
   ORIGIN_BADGE,
   STATUS_BADGE,
   type ContractorPaymentRow,
+  financeScopeOf,
   type FilterKey,
 } from "../../../../components/finance/payments/helpers";
+import { useChapterContext } from "../../../../lib/ChapterContext";
 
 /** Mirrors the 200-row ceiling `api.contractorPayments.list` clamps `limit` to,
  *  so the "showing the most recent N" notice can never quote a number the
@@ -68,23 +70,33 @@ function PaymentsQueue() {
   const [filterKey, setFilterKey] = useState<FilterKey>("all");
   const filter = FILTERS.find((f) => f.key === filterKey) ?? FILTERS[0];
 
+  // WHOSE QUEUE — the active desk's, not the caller's roster chapter's. A
+  // central desk asked for payments and got its operator's home chapter's,
+  // which is the "when I tried to view payments" half of the 2026-08-28 report.
+  const { context } = useChapterContext();
+  const scope = financeScopeOf(context);
+
   // Built as a ternary rather than a spread with a possibly-`undefined`
   // `status`: the arg is optional, and "absent" is not the same thing as
   // "present and undefined" to Convex's validator.
   const data = useQuery(
     api.contractorPayments.list,
-    filter.status
-      ? { status: filter.status, limit: QUEUE_READ_CAP }
-      : { limit: QUEUE_READ_CAP },
+    scope == null
+      ? "skip"
+      : filter.status
+        ? { status: filter.status, limit: QUEUE_READ_CAP, scope }
+        : { limit: QUEUE_READ_CAP, scope },
   );
 
   // The review band's own read — the WHOLE queue's `submitted` rows, so the
   // count stays true no matter which filter is showing. Convex dedupes the
   // subscription when the filter happens to be "Needs review" too.
-  const review = useQuery(api.contractorPayments.list, {
-    status: "submitted",
-    limit: QUEUE_READ_CAP,
-  });
+  const review = useQuery(
+    api.contractorPayments.list,
+    scope == null
+      ? "skip"
+      : { status: "submitted", limit: QUEUE_READ_CAP, scope },
+  );
 
   const reviewStats = useMemo(() => {
     const rows = review?.payments ?? [];

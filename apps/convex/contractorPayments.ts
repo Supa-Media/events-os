@@ -87,6 +87,7 @@ import {
   taxDocIsCurrent,
   taxDocReuseProblem,
   summarizeContractorSchedule,
+  CENTRAL,
   type ContractorPaymentStatus,
   type ContractorPaymentOrigin,
   type ContractorTaxDocKind,
@@ -112,9 +113,11 @@ import {
 } from "./lib/contractorPaymentEmails";
 import {
   resolveCallerPersonId,
+  resolveActorPersonId,
   assertSeparationOfDuties,
   defaultFundId,
   listChapterFinanceManagerPersonIds,
+  type FinanceScope,
 } from "./lib/finance";
 import {
   profileFor,
@@ -123,6 +126,18 @@ import {
   touchUnpaidTaxDoc,
 } from "./contractorProfiles";
 import { loadSchedule, hasSchedule } from "./lib/contractorSchedule";
+import {
+  gatherForPickerCandidates,
+  budgetDisplayNameFor,
+} from "./lib/forPickerCandidates";
+import { ROLLUP_SCAN_LIMIT } from "./finances";
+import {
+  scopePublicName,
+  scopeInternalName,
+  scopePublicSlug,
+  resolveContractScope,
+  CENTRAL_PUBLIC_SLUG,
+} from "./lib/financeScope";
 import {
   writeSchedule,
   installmentDraftValidator,
@@ -309,6 +324,84 @@ function scheduleChanged(
   });
 }
 
+/**
+ * THE BUDGET BEHIND A CODING TARGET, and the scope that budget belongs to.
+ *
+ * An event or a project is coded by NAME, but the money behind it lives in a
+ * `one_time` budget attached to that ref — and that budget may sit at the org
+ * level even when the event itself belongs to a chapter (see
+ * `lib/forPickerCandidates.ts`, which deliberately surfaces central project
+ * budgets in a chapter's picker). So "which chapter is this event in" is not
+ * the same question as "whose money pays for it", and only the second one
+ * decides where the spend books.
+ */
+async function fundingScopeFor(
+  ctx: QueryCtx,
+  args: {
+    eventId?: Id<"events">;
+    projectId?: Id<"projects">;
+    budgetId?: Id<"budgets">;
+  },
+): Promise<FinanceScope | null> {
+  if (args.budgetId) {
+    const budget = await ctx.db.get(args.budgetId);
+    return budget?.chapterId ?? null;
+  }
+  const ref = args.eventId ?? args.projectId;
+  if (!ref) return null;
+  const refKind = args.eventId ? "event" : "project";
+  const budgets = await ctx.db
+    .query("budgets")
+    .withIndex("by_ref", (q) =>
+      q.eq("refKind", refKind).eq("scopeRefId", String(ref)),
+    )
+    .take(10);
+  if (budgets.length === 0) return null;
+  // Oldest wins, matching `gatherForPickerCandidates`' own duplicate rule, so
+  // the picker and this check can never disagree about which budget is meant.
+  const oldest = budgets.reduce((a, b) => (a.createdAt <= b.createdAt ? a : b));
+  return oldest.chapterId;
+}
+
+/**
+ * THE SPEND MUST BOOK WHERE THE MONEY COMES FROM.
+ *
+ * Founder, 2026-08-28: "I literally chose a budget that was a central budget…
+ * and it says it's gonna be in New York's books." Exactly so, and it was wrong
+ * in both directions at once — central's budget showed no spend against it,
+ * and a chapter's books carried an expense central had agreed to pay.
+ *
+ * REFUSED, NOT SILENTLY RESCOPED. Moving the agreement to central on the
+ * author's behalf would change who reviews it, who may approve it, and which
+ * bank account sends the money — three decisions nobody made. The message says
+ * where to compose it instead.
+ *
+ * Coding to nothing at all stays legal here: a `self_serve` request arrives
+ * uncoded by design, and `approve` is what refuses to release money until a
+ * human has said where it belongs.
+ */
+async function assertCodingMatchesScope(
+  ctx: QueryCtx,
+  scope: FinanceScope,
+  args: {
+    eventId?: Id<"events">;
+    projectId?: Id<"projects">;
+    budgetId?: Id<"budgets">;
+  },
+): Promise<void> {
+  const funding = await fundingScopeFor(ctx, args);
+  if (funding == null || funding === scope) return;
+  const fundingName = await scopeInternalName(ctx, funding);
+  const scopeName = await scopeInternalName(ctx, scope);
+  throw new ConvexError({
+    code: "SCOPE_MISMATCH",
+    message:
+      funding === CENTRAL
+        ? `That's funded by a ${fundingName} budget, so it has to be paid from ${fundingName} — compose it at the ${fundingName} desk, not ${scopeName}'s.`
+        : `That's funded by ${fundingName}'s budget, so it can't be paid from ${scopeName}'s books.`,
+  });
+}
+
 /** Is this row coded enough to approve? A `self_serve` request arrives with
  *  whatever the requester claimed, which is not evidence — a human has to have
  *  said which budget it belongs to before the money can be released. */
@@ -341,18 +434,37 @@ async function loadForManage(
   ctx: MutationCtx,
   contractorPaymentId: Id<"contractorPayments">,
 ): Promise<{
-  chapterId: Id<"chapters">;
+  chapterId: FinanceScope;
   row: Doc<"contractorPayments">;
   callerPersonId: Id<"people">;
   callerEmail: string | null;
 }> {
-  const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
   const row = await ctx.db.get(contractorPaymentId);
-  await requireInChapter(ctx, chapterId, row, "Contractor payment");
-  await requireContractorPaymentsApprove(ctx, chapterId);
-  const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+  if (!row) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "Contractor payment not found.",
+    });
+  }
+  // AUTHORIZE AT THE RECORD'S OWN SCOPE, not at the caller's home chapter.
+  //
+  // This used to resolve the caller's roster chapter and demand the row match
+  // it, which quietly meant two things: a central agreement was unreachable by
+  // ANYONE (no roster person lives in "central", so the check could not pass),
+  // and which desk you were sitting at was irrelevant — the row's chapter had
+  // to equal your membership's. Asking the row whose money it is, then asking
+  // whether the caller has finance rights THERE, is both the correct gate and
+  // the one that lets a central desk open its own payments.
+  //
+  // Nothing is loosened: a New York viewer holds no finance role at Chicago's
+  // scope, so `requireContractorPaymentsApprove` refuses exactly as the old
+  // chapter comparison did — and a chapter grant deliberately does not reach
+  // central (see `getFinanceRoleAtScope`).
+  const scope = row.chapterId;
+  await requireContractorPaymentsApprove(ctx, scope);
+  const callerPersonId = await resolveActorPersonId(ctx, scope);
   const callerEmail = await getUserEmail(ctx);
-  return { chapterId, row: row!, callerPersonId, callerEmail };
+  return { chapterId: scope, row, callerPersonId, callerEmail };
 }
 
 /**
@@ -403,7 +515,7 @@ function assertContractorApprovalSoD(
  *  queryable apart. */
 async function recordApproval(
   ctx: MutationCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
   contractorPaymentId: Id<"contractorPayments">,
   action: "approve" | "reject" | "cancel" | "edit" | "pay",
   actorPersonId: Id<"people">,
@@ -458,7 +570,7 @@ async function taxDocFor(
 async function createContractorPayment(
   ctx: MutationCtx,
   args: {
-    chapterId: Id<"chapters">;
+    chapterId: FinanceScope;
     origin: ContractorPaymentOrigin;
     status: ContractorPaymentStatus;
     payeeName: string;
@@ -510,6 +622,8 @@ async function createContractorPayment(
     await requireInChapter(ctx, args.chapterId, doc, label);
   }
   if (args.categoryId) await requireBudgetCategory(ctx, args.categoryId);
+  // The spend books where the money comes from — see `assertCodingMatchesScope`.
+  await assertCodingMatchesScope(ctx, args.chapterId, args);
 
   const now = Date.now();
   const token = mintToken();
@@ -587,14 +701,33 @@ export const createAgreement = mutation({
     budgetId: v.optional(v.id("budgets")),
     categoryId: v.optional(v.id("budgetCategories")),
     fundId: v.optional(v.id("funds")),
+    // WHOSE BOOKS PAY, and therefore whose bank account sends. Defaults to the
+    // caller's home chapter, so nothing about an existing chapter flow moves.
+    //
+    // Passing `"central"` composes an ORG-LEVEL agreement: reviewed by central
+    // finance, paid from central's Increase account, booked to central's
+    // ledger, and served at `/contract/central`. Before this the scope was
+    // always the composer's roster chapter, so an agreement funded by a central
+    // budget still told the contractor it came from New York's books — and did.
+    scope: v.optional(v.union(v.id("chapters"), v.literal(CENTRAL))),
   },
-  handler: async (ctx, args) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+  handler: async (ctx, { scope, ...args }) => {
+    const chapterId: FinanceScope =
+      scope ?? ((await requireChapterId(ctx)) as Id<"chapters">);
     await requireContractorPaymentsCompose(ctx, chapterId);
-    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    const callerPersonId = await resolveActorPersonId(ctx, chapterId);
     if (args.personId) {
       const person = await ctx.db.get(args.personId);
-      await requireInChapter(ctx, chapterId, person, "Person");
+      if (!person) {
+        throw new ConvexError({ code: "NOT_FOUND", message: "Person not found." });
+      }
+      // A central agreement's payee may be on ANY chapter's roster — people
+      // belong to chapters, central does not have one — so the roster link is
+      // checked for existence rather than for membership of the paying scope.
+      // For a chapter agreement the old rule stands.
+      if (chapterId !== CENTRAL) {
+        await requireInChapter(ctx, chapterId, person, "Person");
+      }
     }
     const { id, token } = await createContractorPayment(ctx, {
       ...args,
@@ -618,11 +751,18 @@ export const createAgreement = mutation({
 export const send = mutation({
   args: { contractorPaymentId: v.id("contractorPayments") },
   handler: async (ctx, { contractorPaymentId }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
-    await requireInChapter(ctx, chapterId, row, "Contractor payment");
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    // At the RECORD's own scope — see `loadForManage`. Resolving the caller's
+    // roster chapter instead made every central agreement unreachable.
+    const chapterId: FinanceScope = row.chapterId;
     await requireContractorPaymentsCompose(ctx, chapterId);
-    assertTransition(row!.status, ["draft", "sent"], "send");
+    assertTransition(row.status, ["draft", "sent"], "send");
 
     // The link is addressed by the CHAPTER SLUG, and `chapters.slug` is
     // optional. Without one the URL degrades to `/contract/?token=…`, which the
@@ -630,8 +770,10 @@ export const send = mutation({
     // text message, and the contractor would never be able to get paid, with
     // nothing anywhere reporting a failure. Refuse loudly instead: this is the
     // one moment someone can still fix it.
-    const chapter = await ctx.db.get(chapterId);
-    if (!chapter?.slug) {
+    // Central always has one (the reserved `central` segment), so this only
+    // ever fires for a chapter that has no slug set.
+    const slug = await scopePublicSlug(ctx, chapterId);
+    if (!slug) {
       throw new ConvexError({
         code: "CHAPTER_SLUG_MISSING",
         message:
@@ -718,12 +860,19 @@ export const updateTerms = mutation({
       installments,
       ...rest
     } = args;
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
-    await requireInChapter(ctx, chapterId, row, "Contractor payment");
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    // At the RECORD's own scope — see `loadForManage`. Resolving the caller's
+    // roster chapter instead made every central agreement unreachable.
+    const chapterId: FinanceScope = row.chapterId;
     await requireContractorPaymentsCompose(ctx, chapterId);
-    assertTransition(row!.status, TERMS_EDITABLE_STATUSES, "edit");
-    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    assertTransition(row.status, TERMS_EDITABLE_STATUSES, "edit");
+    const callerPersonId = await resolveActorPersonId(ctx, chapterId);
 
     const patch: Partial<Doc<"contractorPayments">> = {};
     // Which of the three AGREED terms actually changed — the set that voids an
@@ -836,6 +985,15 @@ export const updateTerms = mutation({
       patch.fundId = rest.fundId;
     }
 
+    // Re-coding faces the same rule the create path does: an edit that points
+    // the payment at a differently-funded budget would otherwise book a
+    // chapter's spend against central's money, or the reverse.
+    await assertCodingMatchesScope(ctx, row!.chapterId, {
+      eventId: patch.eventId ?? (clearAttribution ? undefined : row!.eventId),
+      projectId: patch.projectId ?? (clearAttribution ? undefined : row!.projectId),
+      budgetId: patch.budgetId ?? (clearAttribution ? undefined : row!.budgetId),
+    });
+
     // The schedule, against the total this edit LANDS on — which is the whole
     // reason it is written here rather than through a second mutation.
     if (installments !== undefined) {
@@ -895,9 +1053,17 @@ export const list = query({
       v.union(...CONTRACTOR_PAYMENT_STATUSES.map((s) => v.literal(s))),
     ),
     limit: v.optional(v.number()),
+    // WHOSE QUEUE — a chapter, or the org level. Defaults to the caller's home
+    // chapter so every existing caller is unchanged; the app passes the active
+    // desk's scope, which is what makes a central desk show central's payments
+    // instead of silently showing the operator's home chapter's.
+    //
+    // Same shape as `finances.ts`'s own scope argument, deliberately.
+    scope: v.optional(v.union(v.id("chapters"), v.literal(CENTRAL))),
   },
-  handler: async (ctx, { status, limit }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+  handler: async (ctx, { status, limit, scope }) => {
+    const chapterId: FinanceScope =
+      scope ?? ((await requireChapterId(ctx)) as Id<"chapters">);
     await requireContractorPaymentsView(ctx, chapterId);
     const take = Math.min(Math.max(limit ?? 100, 1), 200);
 
@@ -958,9 +1124,17 @@ export const list = query({
 export const get = query({
   args: { contractorPaymentId: v.id("contractorPayments") },
   handler: async (ctx, { contractorPaymentId }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
-    await requireInChapter(ctx, chapterId, row, "Contractor payment");
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    // At the RECORD's scope — see `loadForManage` for the full reasoning. This
+    // is what lets a central desk open a central agreement, and what lets any
+    // desk open a payment it has finance rights over.
+    const chapterId: FinanceScope = row.chapterId;
     await requireContractorPaymentsView(ctx, chapterId);
 
     const canCompose = await hasContractorPaymentsCompose(ctx, chapterId);
@@ -971,9 +1145,26 @@ export const get = query({
 
     const payout = row!.payoutId ? await ctx.db.get(row!.payoutId) : null;
 
+    // THE SCOPE'S OWN PUBLIC SLUG, so the app can build the contractor's link
+    // without guessing. Before this it derived a CANDIDATE slug from whichever
+    // desk you happened to be sitting at and verified it — which meant the copy
+    // button died on any desk that wasn't the payment's chapter, and at a
+    // central desk reported that "a central desk has no public page of its
+    // own". It has one now (`/contract/central`), and either way the record is
+    // the thing that knows where its own page lives.
+    const scopeSlug = await scopePublicSlug(ctx, chapterId);
+
     return {
       _id: row!._id,
       reference: contractorReferenceFor(row!._id),
+      // Whose money this is. `scope` drives the app's own labelling ("Central"
+      // vs the chapter), `scopeSlug` builds the public link, and `scopeName` is
+      // what the CONTRACTOR would see — kept apart because "Central" is
+      // internal vocabulary that must never reach a payee.
+      scope: chapterId,
+      scopeSlug,
+      scopeName: await scopeInternalName(ctx, chapterId),
+      isCentral: chapterId === CENTRAL,
       status: row!.status,
       origin: row!.origin,
       payeeName: row!.payeeName,
@@ -1288,11 +1479,18 @@ export const cancel = mutation({
 export const viewTaxDocument = mutation({
   args: { contractorPaymentId: v.id("contractorPayments") },
   handler: async (ctx, { contractorPaymentId }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
-    await requireInChapter(ctx, chapterId, row, "Contractor payment");
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    // At the RECORD's own scope — see `loadForManage`. Resolving the caller's
+    // roster chapter instead made every central agreement unreachable.
+    const chapterId: FinanceScope = row.chapterId;
     await requireContractorTaxDocView(ctx, chapterId);
-    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    const callerPersonId = await resolveActorPersonId(ctx, chapterId);
 
     const taxDoc = await taxDocFor(ctx, row!);
     if (!taxDoc) {
@@ -1525,6 +1723,73 @@ async function assertContractNotRateLimited(
 }
 
 /**
+ * WHAT AN AGREEMENT AT THIS SCOPE MAY BE CODED TO.
+ *
+ * `reimbursements.newRequestOptions` answers this for a chapter, and its
+ * `forRequestOptions` deliberately drops central recurring budgets from the
+ * list — right for a reimbursement, which is always a chapter's, and wrong the
+ * moment an agreement can be central's. A central desk composing against that
+ * list would be offered its operator's home chapter's budgets and NOTHING of
+ * central's, so a central agreement could never be coded, and `approve` refuses
+ * an uncoded payment — an agreement you can create and never pay.
+ *
+ * Its own query rather than a `scope` argument bolted onto the reimbursement
+ * one: that function is the reimbursement composer's contract, and widening it
+ * would make every reimbursement caller's payload depend on a concept
+ * reimbursements do not have.
+ */
+export const codingOptionsForScope = query({
+  args: { scope: v.union(v.id("chapters"), v.literal(CENTRAL)) },
+  handler: async (ctx, { scope }) => {
+    await requireContractorPaymentsView(ctx, scope);
+    const { candidates } = await gatherForPickerCandidates(
+      ctx,
+      // The picker scans a chapter's events/projects; at the org level there is
+      // no chapter of events to scan, so central offers its recurring budgets
+      // and nothing else. A central ONE-TIME budget is attached to a chapter's
+      // project and is already reachable from that chapter's own picker.
+      scope === CENTRAL ? null : (scope as Id<"chapters">),
+      ROLLUP_SCAN_LIMIT,
+    );
+    const wanted = scope === CENTRAL ? "central" : "chapter";
+    return {
+      // An event or project is offered only when the budget BEHIND it belongs to
+      // this scope. That filter is the picker-side half of
+      // `assertCodingMatchesScope`: a chapter's event funded by a central budget
+      // is central's to pay, and offering it here is exactly how an agreement
+      // came to say "New York's books" over central's money.
+      events:
+        scope === CENTRAL
+          ? []
+          : candidates.flatMap((c) =>
+              c.refKind === "event" && c.budget?.chapterId === scope
+                ? [{ id: c.refId, label: c.label }]
+                : [],
+            ),
+      projects:
+        scope === CENTRAL
+          ? []
+          : candidates.flatMap((c) =>
+              c.refKind === "project" && c.budget?.chapterId === scope
+                ? [{ id: c.refId, label: c.label }]
+                : [],
+            ),
+      budgets: candidates.flatMap((c) =>
+        c.refKind === "recurring" && c.level === wanted && c.budget
+          ? [
+              {
+                id: c.budget._id,
+                label: budgetDisplayNameFor(c.budget),
+                cadence: c.budget.cadence,
+              },
+            ]
+          : [],
+      ),
+    };
+  },
+});
+
+/**
  * The chapter behind a public /contract link, plus the coding vocabulary the
  * blank request form offers.
  *
@@ -1535,15 +1800,15 @@ async function assertContractNotRateLimited(
 export const chapterForContract = query({
   args: { chapterSlug: v.string() },
   handler: async (ctx, { chapterSlug }) => {
-    const chapter = await ctx.db
-      .query("chapters")
-      .withIndex("by_slug", (q) => q.eq("slug", chapterSlug))
-      .unique();
-    if (!chapter) return null;
+    // `central` resolves here too, and is checked BEFORE any chapter lookup —
+    // it is a reserved segment, so a chapter that somehow claimed the slug
+    // could never shadow the org's own page. See `lib/financeScope.ts`.
+    const resolved = await resolveContractScope(ctx, chapterSlug);
+    if (!resolved) return null;
     return {
-      chapterId: chapter._id,
-      name: chapter.name,
-      slug: chapter.slug,
+      chapterId: resolved.scope,
+      name: resolved.name,
+      slug: resolved.slug,
     };
   },
 });
@@ -1566,7 +1831,10 @@ export const publicByToken = query({
   handler: async (ctx, { token }) => {
     const row = await paymentByToken(ctx, token);
     if (!row) return null;
-    const chapter = await ctx.db.get(row.chapterId);
+    // The scope's PUBLIC name — "Public Worship" for a central agreement, the
+    // chapter's own name otherwise. Never `ctx.db.get(row.chapterId)`: central
+    // is a sentinel, not a `chapters` row.
+    const scopeName = await scopePublicName(ctx, row.chapterId);
     const taxDoc = await taxDocFor(ctx, row);
 
     // What this PERSON already has with us, independent of this payment. Only
@@ -1601,7 +1869,7 @@ export const publicByToken = query({
 
     return {
       reference: contractorReferenceFor(row._id),
-      chapterName: chapter?.name ?? "",
+      chapterName: scopeName,
       status: row.status,
       statusLabel: CONTRACTOR_PAYMENT_STATUS_LABELS[row.status],
       installments: schedule.map((i) => ({
@@ -2107,14 +2375,14 @@ export const submitPublicRequest = mutation({
     clientIp: v.optional(v.string()),
   },
   handler: async (ctx, args) => {
-    const chapter = await ctx.db
-      .query("chapters")
-      .withIndex("by_slug", (q) => q.eq("slug", args.chapterSlug))
-      .unique();
-    if (!chapter) {
+    // `central` resolves here exactly as a chapter slug does, so a self-serve
+    // request filed from `/contract/central` lands in central's queue rather
+    // than 404ing on a page that renders perfectly well.
+    const resolved = await resolveContractScope(ctx, args.chapterSlug);
+    if (!resolved) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "We couldn't find that chapter.",
+        message: "We couldn't find that page.",
       });
     }
     const email = normalizeEmail(args.payeeEmail);
@@ -2151,13 +2419,18 @@ export const submitPublicRequest = mutation({
       .query("people")
       .withIndex("by_email", (q) => q.eq("email", email))
       .first();
+    // For a CHAPTER request the roster match must be that chapter's own person.
+    // For a CENTRAL one there is no roster to match against, so any roster row
+    // with this email is the best available link — still a convenience for the
+    // reviewer, still never an identity claim.
     const personId =
-      personMatch && personMatch.chapterId === chapter._id
+      personMatch &&
+      (resolved.scope === CENTRAL || personMatch.chapterId === resolved.scope)
         ? personMatch._id
         : undefined;
 
     const { id } = await createContractorPayment(ctx, {
-      chapterId: chapter._id,
+      chapterId: resolved.scope,
       origin: "self_serve",
       status: "submitted",
       payeeName: args.payeeName,
@@ -2206,14 +2479,11 @@ export const submitPublicRequest = mutation({
 export const publicRequestUploadUrl = mutation({
   args: { chapterSlug: v.string(), clientIp: v.optional(v.string()) },
   handler: async (ctx, { chapterSlug, clientIp }) => {
-    const chapter = await ctx.db
-      .query("chapters")
-      .withIndex("by_slug", (q) => q.eq("slug", chapterSlug))
-      .unique();
-    if (!chapter) {
+    const resolved = await resolveContractScope(ctx, chapterSlug);
+    if (!resolved) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "We couldn't find that chapter.",
+        message: "We couldn't find that page.",
       });
     }
     if (clientIp) {
@@ -2323,11 +2593,16 @@ export const noticePayload = internalQuery({
   handler: async (ctx, { contractorPaymentId }) => {
     const row = await ctx.db.get(contractorPaymentId);
     if (!row) return null;
-    const chapter = await ctx.db.get(row.chapterId);
+    // Both come from the scope, so a CENTRAL agreement's invitation says
+    // "Public Worship" and links to `/contract/central` — before this, the
+    // `ctx.db.get` here returned nothing for central and the email went out
+    // naming no one, linking nowhere.
+    const scopeName = await scopePublicName(ctx, row.chapterId);
+    const slug = await scopePublicSlug(ctx, row.chapterId);
     return {
       reference: contractorReferenceFor(row._id),
-      chapterName: chapter?.name ?? "",
-      chapterSlug: chapter?.slug ?? "",
+      chapterName: scopeName,
+      chapterSlug: slug ?? "",
       token: row.token,
       status: row.status,
       origin: row.origin,
@@ -2574,12 +2849,12 @@ export const installmentNoticePayload = internalQuery({
     if (!inst) return null;
     const row = await ctx.db.get(inst.contractorPaymentId);
     if (!row) return null;
-    const chapter = await ctx.db.get(row.chapterId);
+    const scopeName = await scopePublicName(ctx, row.chapterId);
     const schedule = await loadSchedule(ctx, row._id);
     const summary = summarizeContractorSchedule(schedule);
     return {
       reference: contractorReferenceFor(row._id),
-      chapterName: chapter?.name ?? "",
+      chapterName: scopeName,
       payeeName: row.payeeName,
       payeeEmail: row.payeeEmail,
       bankAccountLast4: row.bankAccountLast4,
@@ -2653,7 +2928,7 @@ export const sweepPendingReviews = internalAction({
     // `ctx.runQuery`.)
     const rows: Array<{
       _id: Id<"contractorPayments">;
-      chapterId: Id<"chapters">;
+      chapterId: FinanceScope;
       submittedAt: number;
       reviewNudgeSentAt?: number;
       reviewEscalatedAt?: number;

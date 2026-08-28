@@ -55,7 +55,7 @@ import {
   type ContractorPaymentStatus,
 } from "@events-os/shared";
 import { requireChapterId, requireInChapter } from "./lib/context";
-import { resolveCallerPersonId } from "./lib/finance";
+import { resolveActorPersonId, type FinanceScope } from "./lib/finance";
 import {
   requireContractorPaymentsView,
   requireContractorPaymentsCompose,
@@ -125,7 +125,7 @@ function assertSchedule(
  */
 export async function writeSchedule(
   ctx: MutationCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
   payment: Doc<"contractorPayments">,
   installments: readonly ContractorInstallmentDraft[],
   agreedAmountCents: number,
@@ -205,11 +205,19 @@ export const setSchedule = mutation({
     installments: v.array(installmentDraftValidator),
   },
   handler: async (ctx, { contractorPaymentId, installments }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
-    await requireInChapter(ctx, chapterId, row, "Contractor payment");
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    // At the RECORD's own scope — a schedule belongs to whichever books its
+    // agreement does, and a central agreement has no roster chapter to resolve
+    // the caller against. See `contractorPayments.ts#loadForManage`.
+    const chapterId: FinanceScope = row.chapterId;
     await requireContractorPaymentsCompose(ctx, chapterId);
-    const payment = row!;
+    const payment = row;
 
     if (!SCHEDULE_EDITABLE_STATUSES.includes(payment.status)) {
       throw new ConvexError({
@@ -233,7 +241,7 @@ export const setSchedule = mutation({
     // it wrong.
     const now = Date.now();
     const voidsAcceptance = payment.acceptedAt != null;
-    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    const callerPersonId = await resolveActorPersonId(ctx, chapterId);
     await ctx.db.patch(contractorPaymentId, {
       ...(voidsAcceptance
         ? {
@@ -296,11 +304,19 @@ export const cancelInstallment = mutation({
     reason: v.string(),
   },
   handler: async (ctx, { installmentId, reason }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const inst = await ctx.db.get(installmentId);
-    await requireInChapter(ctx, chapterId, inst, "Scheduled payment");
+    if (!inst) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Scheduled payment not found.",
+      });
+    }
+    // At the RECORD's own scope — a schedule belongs to whichever books its
+    // agreement does, and a central agreement has no roster chapter to resolve
+    // the caller against. See `contractorPayments.ts#loadForManage`.
+    const chapterId: FinanceScope = inst.chapterId;
     await requireContractorPaymentsApprove(ctx, chapterId);
-    const row = inst!;
+    const row = inst;
 
     const note = reason.trim();
     if (!note) {
@@ -320,7 +336,7 @@ export const cancelInstallment = mutation({
     }
 
     const now = Date.now();
-    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    const callerPersonId = await resolveActorPersonId(ctx, chapterId);
     await ctx.db.patch(installmentId, {
       status: "canceled",
       canceledAt: now,
@@ -392,10 +408,17 @@ export async function closeIfScheduleComplete(
 export const listForPayment = query({
   args: { contractorPaymentId: v.id("contractorPayments") },
   handler: async (ctx, { contractorPaymentId }) => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
-    await requireInChapter(ctx, chapterId, row, "Contractor payment");
-    await requireContractorPaymentsView(ctx, chapterId);
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    // At the RECORD's own scope — a schedule belongs to whichever books its
+    // agreement does, and a central agreement has no roster chapter to resolve
+    // the caller against. See `contractorPayments.ts#loadForManage`.
+    await requireContractorPaymentsView(ctx, row.chapterId);
 
     const rows = await loadSchedule(ctx, contractorPaymentId);
     const now = Date.now();

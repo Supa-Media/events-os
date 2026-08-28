@@ -70,6 +70,32 @@ export async function canViewChapterWork(
 /** The caller's own roster row in this chapter (people.userId link), or null.
  *  Placeholder rows never count — they're event-scoped stand-ins, and letting
  *  one act as "self" would disagree with every roster-derived surface. */
+/**
+ * The caller's roster person in ANY chapter — for work scoped to the ORG level,
+ * where there is no chapter to look them up in.
+ *
+ * People belong to chapters; `"central"` is a books-and-permissions scope, not
+ * a roster. So somebody acting on central's money is still a person somewhere,
+ * and asking `viewerPerson(ctx, "central")` would answer `null` for everyone —
+ * which reads as "you have no access" and is the reason the central desk could
+ * not open a contractor payment at all.
+ *
+ * Placeholder rows are excluded, exactly as `viewerPerson` excludes them. When
+ * a user has people in several chapters the first is taken: the answer is used
+ * for AUTHORSHIP and audit ("who did this"), never to widen reach — reach comes
+ * from the grants and seats read against the scope itself.
+ */
+export async function viewerPersonAnywhere(
+  ctx: QueryCtx,
+): Promise<Doc<"people"> | null> {
+  const userId = await requireUserId(ctx);
+  const rows = await ctx.db
+    .query("people")
+    .withIndex("by_user", (q) => q.eq("userId", userId as Id<"users">))
+    .collect();
+  return rows.find((p) => p.isPlaceholder !== true) ?? null;
+}
+
 export async function viewerPerson(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,

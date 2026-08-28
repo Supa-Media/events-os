@@ -1130,7 +1130,14 @@ export const reimbursementLineItems = defineTable({
  * hand out a storage id for a PDF with an SSN on it.
  */
 export const contractorPayments = defineTable({
-  chapterId: v.id("chapters"),
+  // A real chapter, OR the org level (`"central"`) — the same union `budgets`,
+  // `transactions` and `increaseAccounts` already carry, and for the same
+  // reason: this says WHOSE BOOKS the spend lands in and whose bank account
+  // sends it. Chapter-only until 2026-08-28, which meant an agreement funded by
+  // a central budget still posted to the composer's chapter — central's budget
+  // showed no spend, and a chapter's books carried money central had agreed to
+  // pay. There was also no way to originate a central agreement at all.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   // Secret token for the contractor's public link. Returned to staff (they
   // copy it) and to the contractor's own browser; NEVER returned by in-app list
   // queries, same rule as `reimbursementRequests.token`.
@@ -1277,7 +1284,8 @@ export const contractorPayments = defineTable({
  * asks a payout which agreement it settles keeps working unchanged.
  */
 export const contractorPaymentInstallments = defineTable({
-  chapterId: v.id("chapters"),
+  // The parent agreement's scope, mirrored — see `contractorPayments.chapterId`.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   contractorPaymentId: v.id("contractorPayments"),
   // 1-based position in the schedule. The order the parties read the deal in,
   // and the order the app renders — NOT an order the server enforces payment
@@ -1371,7 +1379,11 @@ export const contractorPaymentInstallments = defineTable({
  * is safe for a composer screen to read; that one is not.
  */
 export const contractorProfiles = defineTable({
-  chapterId: v.id("chapters"),
+  // The scope that has paid this person — a chapter, or the org level. Same
+  // union as `contractorPayments.chapterId`, so a contractor central has paid
+  // is remembered by central rather than filed under whichever chapter the
+  // composer happened to belong to.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   personId: v.id("people"),
 
   // ── The payment rail we remember ─────────────────────────────────────────
@@ -1445,7 +1457,10 @@ export const contractorProfiles = defineTable({
  * `purgeAfter` passes.
  */
 export const contractorTaxDocuments = defineTable({
-  chapterId: v.id("chapters"),
+  // The scope holding this form — mirrors the payment that collected it. A
+  // W-9 belongs to whoever is reporting the income, and for a central
+  // agreement that is central.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   contractorPaymentId: v.id("contractorPayments"),
   // Denormalized so the retention sweep and a future 1099 export can group by
   // payee without loading every payment row.
@@ -1824,7 +1839,12 @@ export const repaymentLinks = defineTable({
  *  contractor payment, can never double-pay.
  *  `provider: "manual"` covers the "mark paid" fallback when Increase isn't set. */
 export const payouts = defineTable({
-  chapterId: v.id("chapters"),
+  // The scope the money LEAVES — a chapter's Increase account, or central's
+  // (`increaseAccounts` has carried this same union since WP-1.2). Widened with
+  // contractor payments at the org level: a payout drawing a chapter's account
+  // for spend booked to central would leave that chapter's bank balance and its
+  // books disagreeing. Reimbursement payouts only ever pass a chapter id.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   // ── What this payout is FOR: exactly one of the two below ────────────────
   // The rail carries two kinds of subject now. `reimbursementId` was required
   // and was the sole idempotency key until contractor payments shipped
@@ -2087,7 +2107,11 @@ export const approvalPolicy = defineTable({
  *  who did what to a reimbursement/payout/budget/transaction, for the SoD
  *  audit history. Never updated in place. */
 export const approvals = defineTable({
-  chapterId: v.id("chapters"),
+  // The scope whose decision this was — a chapter, or the org level. Widened
+  // with central contractor payments: an approval trail that cannot record a
+  // central agreement's approval is a trail with a hole exactly where the
+  // largest payments live.
+  chapterId: v.union(v.id("chapters"), v.literal("central")),
   subjectType: v.union(
     v.literal("reimbursement"),
     v.literal("contractor_payment"),

@@ -123,7 +123,10 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
    *  the consequence (they have to sign again) happens off-screen. */
   const [voidedNotice, setVoidedNotice] = useState(false);
 
-  const link = useContractLink(payment?.token ?? null);
+  // The payment's OWN scope slug — `central` for an org-level agreement — so
+  // the link resolves from the record rather than from whichever desk the
+  // caller happens to be sitting at.
+  const link = useContractLink(payment?.token ?? null, payment?.scopeSlug);
 
   if (payment === undefined) return <Screen loading />;
 
@@ -338,6 +341,17 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
               ) : null}
               <Text className="mt-0.5 text-xs text-faint">
                 {payment.reference} · created {formatDate(payment.createdAt)}
+              </Text>
+              {/* WHOSE BOOKS. Stated because it used to be stated WRONGLY —
+                  every agreement claimed the composer's chapter, including the
+                  ones funded by central. A reader should never have to infer
+                  which set of books a payment lands in. */}
+              <Text className="mt-0.5 text-xs text-muted">
+                Paid from{" "}
+                <Text className="font-semibold text-ink">
+                  {payment.scopeName}
+                </Text>
+                {payment.isCentral ? " — the org's books, not a chapter's" : "'s books"}
               </Text>
             </View>
             <View className="items-end gap-1.5">

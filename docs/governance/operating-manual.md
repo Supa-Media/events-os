@@ -379,6 +379,22 @@ only complete when every one of its payments has reached one of the last two.
 
 <!-- /lifecycle -->
 
+**Whose books, and whose bank.** Every agreement belongs to a **scope** — a
+chapter, or **central**. The scope decides three things together: who reviews
+and approves it, which Increase account the money leaves, and which set of books
+the spend posts to. They are one decision because they cannot be allowed to
+disagree: a payout drawn on a chapter's account against central's budget leaves
+that chapter's bank balance and its ledger permanently out of step.
+
+**The books follow the budget, not the composer.** An agreement coded to a
+central budget must be composed at the central desk and is paid by central; one
+coded to a chapter's budget is that chapter's. Mismatched coding is refused
+rather than silently re-scoped — moving an agreement between scopes changes who
+may approve it, and that is not a decision software should make on someone's
+behalf. Central agreements are served to the contractor at `/contract/central`
+under the organization's own name; the word "central" is internal vocabulary and
+never appears to a payee.
+
 **Nothing in a schedule pays itself.** A due date makes a payment *due*; it never
 makes it sent. Every payment is released by a person holding the same approval
 authority that a single-payment agreement requires, and the release is recorded
@@ -437,6 +453,7 @@ involved, and the software enforces it where it can.
 | Reimbursement | The claimant | Treasurer, or Chapter Director where the claimant is the Treasurer |
 | Contractor payment | Staff or the contractor | Treasurer or Financial Manager — never the requester |
 | Releasing one payment of a contractor schedule | Whoever judges the milestone met | Treasurer or Financial Manager — never the payee; recorded by name against that payment |
+| Contractor payment from **central** funds | Staff or the contractor | **Central** finance only — a chapter finance role carries no authority over central's money, by design |
 | Partnership agreement | The development desk composes it | **The partner signs it** — there is no staff-side way to mark an agreement signed |
 | Chapter budget | Treasurer | Chapter Director |
 | Central / annual budget | Financial Manager | Executive Director; annual budget adopted by the Board |
