@@ -120,6 +120,19 @@ export type ContractPublicView = {
   serviceDate?: number | null;
   agreedAmountCents: number;
   approvedCents?: number | null;
+  /** The agreed payment schedule, when the agreement pays in parts. Empty for
+   *  an agreement paid in one go — see `schedulePanel`, which renders nothing
+   *  at all in that case rather than an empty table. */
+  installments?: Array<{
+    seq: number;
+    label: string;
+    amountCents: number;
+    trigger: string;
+    dueDate?: number | null;
+    milestoneNote?: string | null;
+    status: string;
+    paidAt?: number | null;
+  }>;
   agreementNotes?: string | null;
   agreementTermsVersion: number;
   acceptedAt?: number | null;
@@ -420,6 +433,65 @@ function pubbar(chapterName: string): string {
  * The panel is IDENTICAL either way: someone accepting a description a staffer
  * wrote is still agreeing to publish it, and deserves to see where it lands.
  */
+/**
+ * THE PAYMENT SCHEDULE, as the contractor reads it.
+ *
+ * Rendered on both of their pages, and saying a slightly different thing on
+ * each — before they sign it is what they are agreeing to, and after it is the
+ * running answer to "have you paid me yet?". One function so those two can
+ * never describe the same deal differently, which is the failure mode that
+ * would matter most here: the person on the other side of it has no other way
+ * to check.
+ *
+ * Renders NOTHING for an agreement that pays in one go. An empty schedule table
+ * on a single-payment agreement reads as a plan somebody forgot to fill in.
+ */
+function schedulePanel(view: ContractPublicView, mode: "terms" | "status"): string {
+  const rows = view.installments ?? [];
+  if (rows.length === 0) return "";
+  const paidCents = rows
+    .filter((r) => r.status === "paid")
+    .reduce((sum, r) => sum + r.amountCents, 0);
+  const remainingCents = rows
+    .filter((r) => r.status === "scheduled" || r.status === "paying")
+    .reduce((sum, r) => sum + r.amountCents, 0);
+
+  const when = (r: (typeof rows)[number]): string => {
+    if (r.trigger === "on_signing") return "When the agreement is approved";
+    if (r.trigger === "on_date") {
+      return r.dueDate != null ? `On ${fmtDay(r.dueDate)}` : "On a date";
+    }
+    return r.milestoneNote ? `When ${r.milestoneNote}` : "On a milestone";
+  };
+  const mark = (r: (typeof rows)[number]): string => {
+    if (r.status === "paid") {
+      return `<span class="badge success">Sent${r.paidAt != null ? ` ${esc(fmtDay(r.paidAt))}` : ""}</span>`;
+    }
+    if (r.status === "paying") return `<span class="badge info">On its way</span>`;
+    if (r.status === "canceled") return `<span class="badge neutral">Canceled</span>`;
+    return `<span class="badge neutral">Scheduled</span>`;
+  };
+
+  const body = rows
+    .map(
+      (r) => `<div class="sr">
+        <span class="k">${esc(r.label)}<span class="note">${esc(when(r))}</span></span>
+        <span class="v money">${esc(money(r.amountCents))}</span>${mark(r)}
+      </div>`,
+    )
+    .join("");
+
+  return `<section class="card">
+      <span class="fl">How you'll be paid</span>
+      <p class="xs muted mt8">${
+        mode === "terms"
+          ? `This agreement is paid in ${rows.length} payments rather than one. Each is sent separately, after someone at ${esc(view.chapterName)} confirms it's due — a date or a milestone doesn't send money on its own.`
+          : `Paid so far: <b class="ink">${esc(money(paidCents))}</b> of ${esc(money(view.agreedAmountCents))}. Still scheduled: <b class="ink">${esc(money(remainingCents))}</b>.`
+      }</p>
+      <div class="summ mt12">${body}</div>
+    </section>`;
+}
+
 function disclosureSection(chapterName: string, fieldHtml: string): string {
   return `<section class="disclose" aria-labelledby="disclose-h">
   <h2 id="disclose-h"><svg ${ICON_ATTRS}><use href="#i-eye"/></svg>What becomes public</h2>
@@ -988,6 +1060,8 @@ ${pubbar(view.chapterName)}
       <p class="xs muted mt8">These terms are set by ${esc(view.chapterName)} and can't be changed here. If any of them change later, your signature is voided and we'll ask you to read and sign again.</p>
     </section>
 
+    ${schedulePanel(view, "terms")}
+
     ${disclosureSection(view.chapterName, descBlock)}
 
     <section class="card">
@@ -1233,6 +1307,8 @@ ${pubbar(view.chapterName)}
         }</span></div>
       </div>
     </section>
+
+    ${schedulePanel(view, "status")}
 
     <section class="card">
       <span class="fl">What's public</span>
@@ -1523,7 +1599,7 @@ function submit(){
        because that function reads a module constant; the limit itself comes
        from the server via __CCFG__.maxCents so only one number exists. */
     if(cents<=0)return showErr('Enter the amount you\\'re owed.');
-    if(cents>C.maxCents)return showErr('The amount can\\'t be more than $'+(C.maxCents/100).toLocaleString('en-US')+'. Split a larger engagement into milestones.');
+    if(cents>C.maxCents)return showErr('The amount can\\'t be more than $'+(C.maxCents/100).toLocaleString('en-US')+'. An engagement bigger than that is handled outside the app.');
     serviceMs=readServiceMs();
   }
 

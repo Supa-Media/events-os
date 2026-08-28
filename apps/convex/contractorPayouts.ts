@@ -31,7 +31,7 @@ import {
 import type { MutationCtx } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { internal } from "./_generated/api";
-import { Id } from "./_generated/dataModel";
+import { Doc, Id } from "./_generated/dataModel";
 import {
   payoutSummaryValidator,
   toPayoutSummary,
@@ -48,6 +48,8 @@ import { increaseEnvForObjectId, increasePost } from "./lib/increaseApi";
 import { getChapterAccountForMode } from "./lib/finance";
 import { readSandbox } from "./financeSettings";
 import { settleContractorPaid } from "./lib/increasePayoutMachine";
+import { loadSchedule, describeInstallment } from "./lib/contractorSchedule";
+import { CONTRACTOR_MILESTONE_NOTE_MAX } from "@events-os/shared";
 
 /**
  * Disbursement separation of duties for the contractor rail.
@@ -100,6 +102,158 @@ async function recordContractorApproval(
   });
 }
 
+/**
+ * WHAT IS BEING PAID — the agreement, or one tranche of it?
+ *
+ * The single decision both pay paths (ACH and mark-paid-by-hand) route through,
+ * so neither can be talked into the other's answer. Three refusals, and each
+ * exists because of a specific way money could otherwise move wrongly:
+ *
+ *  - A SCHEDULED agreement paid WITHOUT naming a tranche would send the whole
+ *    agreed total in one ACH, ignoring the plan the contractor signed and the
+ *    milestones nobody has judged met yet. This is the important one: it is the
+ *    shape a pre-schedule "Pay" button still has, so it must fail loudly rather
+ *    than quietly pay everything.
+ *  - An UNSCHEDULED agreement paid WITH one is asking to release a tranche of a
+ *    plan that does not exist.
+ *  - A tranche that is not `scheduled` is already moving, already gone, or
+ *    called off.
+ */
+async function resolvePayoutSubject(
+  ctx: MutationCtx,
+  payment: Doc<"contractorPayments">,
+  installmentId: Id<"contractorPaymentInstallments"> | undefined,
+): Promise<{
+  amountCents: number;
+  installment: Doc<"contractorPaymentInstallments"> | null;
+}> {
+  const schedule = await loadSchedule(ctx, payment._id);
+
+  if (!installmentId) {
+    if (schedule.length > 0) {
+      throw new ConvexError({
+        code: "SCHEDULE_REQUIRED",
+        message:
+          "This agreement pays in parts. Release one of its scheduled payments instead of paying the whole amount.",
+      });
+    }
+    return {
+      amountCents: payment.approvedCents ?? payment.agreedAmountCents,
+      installment: null,
+    };
+  }
+
+  const inst = schedule.find((i) => i._id === installmentId);
+  if (!inst) {
+    throw new ConvexError({
+      code: "NOT_FOUND",
+      message: "That scheduled payment isn't part of this agreement.",
+    });
+  }
+  if (inst.status !== "scheduled") {
+    throw new ConvexError({
+      code: "ILLEGAL_TRANSITION",
+      message:
+        inst.status === "paid"
+          ? "That payment has already been sent."
+          : inst.status === "paying"
+            ? "That payment is already on its way."
+            : "That payment was canceled.",
+    });
+  }
+  return { amountCents: inst.amountCents, installment: inst };
+}
+
+/**
+ * The SETTLED payout for a subject, or null — "was this already sent?"
+ *
+ * Distinct from `liveContractorPayout` because `paid` is not a live status: a
+ * settled payout is the answer to "don't send this again", and on the manual
+ * path that question has to be asked before the transition guard rather than
+ * after. A scheduled agreement drops back to `approved` each time a tranche
+ * settles, so the guard alone would wave a repeat call straight through into a
+ * second payout for money that has already gone.
+ */
+async function settledContractorPayout(
+  ctx: MutationCtx,
+  contractorPaymentId: Id<"contractorPayments">,
+  installmentId: Id<"contractorPaymentInstallments"> | undefined,
+): Promise<Doc<"payouts"> | null> {
+  if (installmentId) {
+    const rows = await ctx.db
+      .query("payouts")
+      .withIndex("by_contractor_installment", (q) =>
+        q.eq("contractorInstallmentId", installmentId),
+      )
+      .take(50);
+    return rows.find((p) => p.status === "paid") ?? null;
+  }
+  const payment = await ctx.db.get(contractorPaymentId);
+  if (!payment || payment.status !== "paid") return null;
+  const rows = await ctx.db
+    .query("payouts")
+    .withIndex("by_contractor_payment", (q) =>
+      q.eq("contractorPaymentId", contractorPaymentId),
+    )
+    .take(50);
+  return rows.find((p) => p.status === "paid") ?? null;
+}
+
+/**
+ * The live payout for a subject, or null — "has this already been sent?"
+ *
+ * Scoped to the TRANCHE when there is one. On the agreement-wide index every
+ * tranche of a schedule is a hit, so asking there would make tranche two look
+ * already-paid the moment tranche one was.
+ */
+async function liveContractorPayout(
+  ctx: MutationCtx,
+  contractorPaymentId: Id<"contractorPayments">,
+  installment: Doc<"contractorPaymentInstallments"> | null,
+): Promise<Doc<"payouts"> | null> {
+  const rows = installment
+    ? await ctx.db
+        .query("payouts")
+        .withIndex("by_contractor_installment", (q) =>
+          q.eq("contractorInstallmentId", installment._id),
+        )
+        .take(50)
+    : await ctx.db
+        .query("payouts")
+        .withIndex("by_contractor_payment", (q) =>
+          q.eq("contractorPaymentId", contractorPaymentId),
+        )
+        .take(50);
+  return rows.find((p) => LIVE_PAYOUT_STATUSES.includes(p.status)) ?? null;
+}
+
+/**
+ * Record WHO judged this tranche payable and when.
+ *
+ * The agreement's own `approvedAt` says it was legal to pay; this says a named
+ * person decided that this particular milestone had been met on this particular
+ * day — the fact a schedule exists to make answerable, and the one the parent
+ * row has nowhere to put once there is more than one tranche. Set once and
+ * never overwritten, so a retry after a bounce does not rewrite the date the
+ * milestone was actually judged met.
+ */
+async function stampRelease(
+  ctx: MutationCtx,
+  installment: Doc<"contractorPaymentInstallments"> | null,
+  releasedByPersonId: Id<"people">,
+  releaseNote: string | undefined,
+): Promise<void> {
+  if (!installment || installment.releasedAt != null) return;
+  const note = releaseNote?.trim();
+  const now = Date.now();
+  await ctx.db.patch(installment._id, {
+    releasedByPersonId,
+    releasedAt: now,
+    ...(note ? { releaseNote: note.slice(0, CONTRACTOR_MILESTONE_NOTE_MAX) } : {}),
+    updatedAt: now,
+  });
+}
+
 type BeginContractorPayoutResult =
   | { kind: "existing"; payout: PayoutSummary }
   | { kind: "manual"; payout: PayoutSummary }
@@ -111,16 +265,36 @@ type BeginContractorPayoutResult =
       contractorPaymentId: Id<"contractorPayments">;
       externalAccountId: string;
       payeeName: string;
+      // The Idempotency-Key to hand Increase — THE SUBJECT'S id, which on a
+      // scheduled agreement is the TRANCHE and not the agreement. Computed here
+      // rather than in the action because this is where "what is being paid"
+      // was decided, and the action re-deriving it is exactly how the two would
+      // drift. Getting this wrong is not a small bug: Increase would answer the
+      // second tranche's request with the first tranche's transfer, the dead-
+      // replay guard would fire, and a contractor would be told their money
+      // can't be sent over ACH for a reason that has nothing to do with them.
+      idempotencyKey: string;
+      // What the ACH is FOR, for the audit note. Absent when the agreement pays
+      // in one go.
+      installmentLabel?: string;
     };
 
 /** Gate + load the payment + find-or-create its payout (idempotency-keyed on
  *  `contractorPaymentId`). Returns an existing LIVE payout as-is — never
  *  double-pays — else decides ACH-vs-manual and mints the payout row. */
 export const beginContractorPayout = internalMutation({
-  args: { contractorPaymentId: v.id("contractorPayments") },
+  args: {
+    contractorPaymentId: v.id("contractorPayments"),
+    // Which tranche is being released, on an agreement that pays in parts.
+    // Required for those (see `resolvePayoutSubject`) and refused for those
+    // that don't.
+    installmentId: v.optional(v.id("contractorPaymentInstallments")),
+    // Optional "why now" for a milestone tranche — "final cut delivered 8/27".
+    releaseNote: v.optional(v.string()),
+  },
   handler: async (
     ctx,
-    { contractorPaymentId },
+    { contractorPaymentId, installmentId, releaseNote },
   ): Promise<BeginContractorPayoutResult> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
@@ -139,18 +313,18 @@ export const beginContractorPayout = internalMutation({
     const callerEmail = await getUserEmail(ctx);
     assertContractorDisbursementSoD(callerPersonId, callerEmail, payment);
 
-    const amountCents = payment.approvedCents ?? payment.agreedAmountCents;
+    const subject = await resolvePayoutSubject(ctx, payment, installmentId);
+    const amountCents = subject.amountCents;
     assertPositivePayout(amountCents);
 
-    // IDEMPOTENT: at most one live payout per payment.
-    const existing = await ctx.db
-      .query("payouts")
-      .withIndex("by_contractor_payment", (q) =>
-        q.eq("contractorPaymentId", contractorPaymentId),
-      )
-      .take(50);
-    const live = existing.find((p) => LIVE_PAYOUT_STATUSES.includes(p.status));
+    // IDEMPOTENT: at most one live payout per SUBJECT — the tranche when the
+    // agreement pays in parts, the agreement itself when it doesn't. Keyed on
+    // the agreement in both cases, tranche two would find tranche one's payout
+    // and be handed back "already paid".
+    const live = await liveContractorPayout(ctx, contractorPaymentId, subject.installment);
     if (live) return { kind: "existing", payout: toPayoutSummary(live) };
+
+    await stampRelease(ctx, subject.installment, callerPersonId, releaseNote);
 
     const now = Date.now();
     const hasFullDestination = !!payment.externalAccountId;
@@ -175,6 +349,9 @@ export const beginContractorPayout = internalMutation({
       const payoutId = await ctx.db.insert("payouts", {
         chapterId,
         contractorPaymentId,
+        ...(subject.installment
+          ? { contractorInstallmentId: subject.installment._id }
+          : {}),
         ...(payment.personId ? { payeePersonId: payment.personId } : {}),
         amountCents,
         provider: "increase",
@@ -193,6 +370,8 @@ export const beginContractorPayout = internalMutation({
         contractorPaymentId,
         externalAccountId: payment.externalAccountId!,
         payeeName: payment.payeeName,
+        idempotencyKey: String(subject.installment?._id ?? contractorPaymentId),
+        ...(subject.installment ? { installmentLabel: subject.installment.label } : {}),
       };
     }
 
@@ -200,6 +379,9 @@ export const beginContractorPayout = internalMutation({
     const payoutId = await ctx.db.insert("payouts", {
       chapterId,
       contractorPaymentId,
+      ...(subject.installment
+        ? { contractorInstallmentId: subject.installment._id }
+        : {}),
       ...(payment.personId ? { payeePersonId: payment.personId } : {}),
       amountCents,
       provider: "manual",
@@ -269,6 +451,20 @@ export const applyContractorAchTransfer = internalMutation({
           updatedAt: now,
         });
       }
+      // The TRANCHE carries its own in-flight state. The parent's `paying` says
+      // "an ACH is out on this agreement"; this says which one, and is what
+      // stops the same tranche being released twice while the first attempt is
+      // still in the air.
+      if (payout.contractorInstallmentId) {
+        const inst = await ctx.db.get(payout.contractorInstallmentId);
+        if (inst && inst.status === "scheduled") {
+          await ctx.db.patch(inst._id, {
+            status: "paying",
+            payoutId: payout._id,
+            updatedAt: now,
+          });
+        }
+      }
     }
     return { kind: "applied" };
   },
@@ -303,12 +499,26 @@ export const failContractorPayout = internalMutation({
  * withheld from the PUBLIC, not from the bank.
  */
 export const payContractorPayment = action({
-  args: { contractorPaymentId: v.id("contractorPayments") },
+  args: {
+    contractorPaymentId: v.id("contractorPayments"),
+    // Which scheduled payment to release. Required when the agreement pays in
+    // parts — `beginContractorPayout` refuses to send the whole total behind a
+    // schedule's back.
+    installmentId: v.optional(v.id("contractorPaymentInstallments")),
+    releaseNote: v.optional(v.string()),
+  },
   returns: payoutSummaryValidator,
-  handler: async (ctx, { contractorPaymentId }): Promise<PayoutSummary> => {
+  handler: async (
+    ctx,
+    { contractorPaymentId, installmentId, releaseNote },
+  ): Promise<PayoutSummary> => {
     const result: BeginContractorPayoutResult = await ctx.runMutation(
       internal.contractorPayouts.beginContractorPayout,
-      { contractorPaymentId },
+      {
+        contractorPaymentId,
+        ...(installmentId ? { installmentId } : {}),
+        ...(releaseNote ? { releaseNote } : {}),
+      },
     );
     if (result.kind === "existing" || result.kind === "manual") {
       return result.payout;
@@ -341,8 +551,10 @@ export const payContractorPayment = action({
           external_account_id: result.externalAccountId,
         },
         // Idempotency-Key = the SUBJECT id, never the payout id. See this
-        // module's header.
-        String(contractorPaymentId),
+        // module's header — and note the subject is the TRANCHE on an agreement
+        // that pays in parts, which is why the key is computed by
+        // `beginContractorPayout` rather than assumed to be the agreement here.
+        result.idempotencyKey,
       );
       const applied = await ctx.runMutation(
         internal.contractorPayouts.applyContractorAchTransfer,
@@ -399,9 +611,18 @@ export const readPayout = internalQuery({
  * marking it paid by hand would double-pay when the ACH also settles.
  */
 export const markPaidManually = mutation({
-  args: { contractorPaymentId: v.id("contractorPayments") },
+  args: {
+    contractorPaymentId: v.id("contractorPayments"),
+    // Which scheduled payment was paid by hand. Required when the agreement
+    // pays in parts, for the same reason the ACH path requires it.
+    installmentId: v.optional(v.id("contractorPaymentInstallments")),
+    releaseNote: v.optional(v.string()),
+  },
   returns: payoutSummaryValidator,
-  handler: async (ctx, { contractorPaymentId }): Promise<PayoutSummary> => {
+  handler: async (
+    ctx,
+    { contractorPaymentId, installmentId, releaseNote },
+  ): Promise<PayoutSummary> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
     await requireInChapter(ctx, chapterId, row, "Contractor payment");
@@ -412,14 +633,23 @@ export const markPaidManually = mutation({
     const callerEmail = await getUserEmail(ctx);
     assertContractorDisbursementSoD(callerPersonId, callerEmail, payment);
 
-    const existing = await ctx.db
-      .query("payouts")
-      .withIndex("by_contractor_payment", (q) =>
-        q.eq("contractorPaymentId", contractorPaymentId),
-      )
-      .take(50);
-    let payout =
-      existing.find((p) => LIVE_PAYOUT_STATUSES.includes(p.status)) ?? null;
+    // IDEMPOTENT: an already-settled subject returns its payout as-is. Asked
+    // BEFORE the transition guard because a scheduled agreement whose tranche
+    // just settled sits back in `approved`, so a repeated call would otherwise
+    // fall through and mint a SECOND payout for a tranche already paid.
+    const settledAlready = await settledContractorPayout(
+      ctx,
+      contractorPaymentId,
+      installmentId,
+    );
+    if (settledAlready) return toPayoutSummary(settledAlready);
+
+    const subject = await resolvePayoutSubject(ctx, payment, installmentId);
+    let payout = await liveContractorPayout(
+      ctx,
+      contractorPaymentId,
+      subject.installment,
+    );
 
     if (payout && payout.provider === "increase" && payout.increaseTransferId) {
       throw new ConvexError({
@@ -429,11 +659,6 @@ export const markPaidManually = mutation({
       });
     }
 
-    // IDEMPOTENT: already settled → return as-is.
-    if (payout && payout.status === "paid" && payment.status === "paid") {
-      return toPayoutSummary(payout);
-    }
-
     if (payment.status !== "approved" && payment.status !== "paying") {
       throw new ConvexError({
         code: "ILLEGAL_TRANSITION",
@@ -441,14 +666,18 @@ export const markPaidManually = mutation({
       });
     }
 
-    const amountCents = payment.approvedCents ?? payment.agreedAmountCents;
+    const amountCents = subject.amountCents;
     assertPositivePayout(amountCents);
+    await stampRelease(ctx, subject.installment, callerPersonId, releaseNote);
 
     const now = Date.now();
     if (!payout) {
       const payoutId = await ctx.db.insert("payouts", {
         chapterId,
         contractorPaymentId,
+        ...(subject.installment
+          ? { contractorInstallmentId: subject.installment._id }
+          : {}),
         ...(payment.personId ? { payeePersonId: payment.personId } : {}),
         amountCents,
         provider: "manual",
@@ -489,7 +718,9 @@ export const markPaidManually = mutation({
       contractorPaymentId,
       "pay",
       callerPersonId,
-      "Marked paid by hand.",
+      subject.installment
+        ? `Marked paid by hand: ${describeInstallment(subject.installment, (await loadSchedule(ctx, contractorPaymentId)).length)}.`
+        : "Marked paid by hand.",
     );
     return toPayoutSummary((await ctx.db.get(payout!._id))!);
   },

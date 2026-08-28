@@ -86,6 +86,7 @@ import {
   unpaidTaxDocPurgeAfter,
   taxDocIsCurrent,
   taxDocReuseProblem,
+  summarizeContractorSchedule,
   type ContractorPaymentStatus,
   type ContractorPaymentOrigin,
   type ContractorTaxDocKind,
@@ -106,6 +107,7 @@ import {
   buildChangesRequestedNotice,
   buildApprovedNotice,
   buildPaidNotice,
+  buildInstallmentPaidNotice,
   buildReviewTask,
 } from "./lib/contractorPaymentEmails";
 import {
@@ -120,6 +122,11 @@ import {
   matchPersonByEmail,
   touchUnpaidTaxDoc,
 } from "./contractorProfiles";
+import { loadSchedule, hasSchedule } from "./lib/contractorSchedule";
+import {
+  writeSchedule,
+  installmentDraftValidator,
+} from "./contractorInstallments";
 import {
   requireContractorPaymentsView,
   requireContractorPaymentsCompose,
@@ -269,6 +276,37 @@ function assertSingleAttribution(args: {
       message: "Pick one thing this is for — an event, a project, or a budget.",
     });
   }
+}
+
+/**
+ * Did the proposed schedule actually differ from the one on file?
+ *
+ * Compared field by field rather than by identity because the detail screen
+ * re-sends the whole schedule on every terms save, unchanged or not. Treating
+ * that as a change would void a contractor's signature — and email them asking
+ * them to sign again — because a bookkeeper fixed a typo in the notes.
+ */
+function scheduleChanged(
+  before: readonly Doc<"contractorPaymentInstallments">[],
+  after: readonly {
+    label: string;
+    amountCents: number;
+    trigger: string;
+    dueDate?: number;
+    milestoneNote?: string;
+  }[],
+): boolean {
+  if (before.length !== after.length) return true;
+  return before.some((b, i) => {
+    const a = after[i];
+    return (
+      b.label !== a.label.trim() ||
+      b.amountCents !== a.amountCents ||
+      b.trigger !== a.trigger ||
+      (b.dueDate ?? null) !== (a.dueDate ?? null) ||
+      (b.milestoneNote ?? "") !== (a.milestoneNote?.trim() ?? "")
+    );
+  });
 }
 
 /** Is this row coded enough to approve? A `self_serve` request arrives with
@@ -660,6 +698,16 @@ export const updateTerms = mutation({
     clearAttribution: v.optional(v.boolean()),
     clearServiceDate: v.optional(v.boolean()),
     clearCategory: v.optional(v.boolean()),
+    // The payment SCHEDULE, when this edit changes one. Absent means "leave it
+    // alone"; an empty array means "pay this in one go after all".
+    //
+    // It rides on this mutation, rather than only on `setSchedule`, because the
+    // agreed total and the plan that splits it constrain each other: the plan
+    // must sum to the total, and the total may not move while a plan pins it.
+    // From outside a transaction there is no order to change both in — either
+    // call fails first. Inside one, the new plan is simply checked against the
+    // new total.
+    installments: v.optional(v.array(installmentDraftValidator)),
   },
   handler: async (ctx, args) => {
     const {
@@ -667,6 +715,7 @@ export const updateTerms = mutation({
       clearAttribution,
       clearServiceDate,
       clearCategory,
+      installments,
       ...rest
     } = args;
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
@@ -691,6 +740,22 @@ export const updateTerms = mutation({
     if (rest.agreedAmountCents !== undefined) {
       assertAmount(rest.agreedAmountCents);
       if (rest.agreedAmountCents !== row!.agreedAmountCents) {
+        // A SCHEDULE IS PINNED TO THE TOTAL IT SPLITS. Letting the total move
+        // out from under it would leave tranches that no longer add up —
+        // silently, since nothing re-runs the sum after the fact — and the
+        // agreement would pay out a number nobody chose. Refused here rather
+        // than auto-adjusted: which tranche absorbs a $500 increase is a
+        // decision about the deal, and the app does not get to make it.
+        //
+        // Unless the caller is re-cutting the schedule in this same edit, which
+        // is exactly how that decision gets made — see the `installments` arg.
+        if (installments === undefined && (await hasSchedule(ctx, contractorPaymentId))) {
+          throw new ConvexError({
+            code: "SCHEDULE_LOCKED",
+            message:
+              "This agreement pays on a schedule. Change the schedule to the new total — the payments have to add up to it.",
+          });
+        }
         patch.agreedAmountCents = rest.agreedAmountCents;
         termsChanged = true;
       }
@@ -769,6 +834,19 @@ export const updateTerms = mutation({
       const doc = await ctx.db.get(rest.fundId);
       await requireInChapter(ctx, chapterId, doc, "Fund");
       patch.fundId = rest.fundId;
+    }
+
+    // The schedule, against the total this edit LANDS on — which is the whole
+    // reason it is written here rather than through a second mutation.
+    if (installments !== undefined) {
+      const nextAmount = patch.agreedAmountCents ?? row!.agreedAmountCents;
+      const before = await loadSchedule(ctx, contractorPaymentId);
+      await writeSchedule(ctx, chapterId, row!, installments, nextAmount);
+      // A plan is a term, so a plan that MOVED voids an acceptance exactly as a
+      // changed amount does. Compared by value so re-saving an unchanged
+      // schedule — which the detail screen does on every terms save — does not
+      // cost somebody their signature for nothing.
+      if (scheduleChanged(before, installments)) termsChanged = true;
     }
 
     const now = Date.now();
@@ -1017,6 +1095,21 @@ export const approve = mutation({
     // MORE would be a new agreement the contractor never saw.
     const amount = approvedCents ?? row.agreedAmountCents;
     assertAmount(amount);
+    // A SCHEDULE IS APPROVED AS WRITTEN. Its tranches sum to the agreed total by
+    // construction, so approving a different number would leave the plan and
+    // the approval disagreeing about how much the org owes — and every tranche
+    // would still pay its own full amount, quietly ignoring the reduction. The
+    // way to pay a scheduled agreement less is to re-cut the schedule, which
+    // re-asks the contractor, which is the correct thing to happen when the
+    // money changes.
+    const scheduleRows = await loadSchedule(ctx, contractorPaymentId);
+    if (scheduleRows.length > 0 && amount !== row.agreedAmountCents) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message:
+          "This agreement pays on a schedule, so it's approved for the full agreed amount. Change the schedule instead — that re-asks the contractor.",
+      });
+    }
     if (amount > row.agreedAmountCents) {
       throw new ConvexError({
         code: "INVALID_INPUT",
@@ -1152,6 +1245,21 @@ export const cancel = mutation({
       status: "canceled",
       updatedAt: now,
     });
+    // Take the schedule down with the agreement. Nothing could pay these — the
+    // payout rail refuses any agreement that isn't `approved` — but a tranche
+    // left `scheduled` still reads as owed everywhere a schedule is counted,
+    // which would leave a canceled agreement reporting an outstanding balance
+    // forever. Tranches already paid are untouched: that money did leave.
+    for (const inst of await loadSchedule(ctx, contractorPaymentId)) {
+      if (inst.status !== "scheduled") continue;
+      await ctx.db.patch(inst._id, {
+        status: "canceled",
+        canceledAt: now,
+        canceledByPersonId: callerPersonId,
+        canceledReason: "The agreement was canceled.",
+        updatedAt: now,
+      });
+    }
     await recordApproval(
       ctx,
       chapterId,
@@ -1481,11 +1589,31 @@ export const publicByToken = query({
           }
         : null;
 
+    // THE SCHEDULE IS A TERM, so it belongs on the page where they read the
+    // terms — a contractor asked to sign for $10,000 is entitled to see that it
+    // arrives in two halves before they agree, not to discover it when the
+    // first one is smaller than they expected. On the status page it is also
+    // the honest answer to "have you paid me yet?".
+    //
+    // Projected field by field like everything else here: `releaseNote` and
+    // `canceledReason` are internal staff writing and deliberately stay off it.
+    const schedule = await loadSchedule(ctx, row._id);
+
     return {
       reference: contractorReferenceFor(row._id),
       chapterName: chapter?.name ?? "",
       status: row.status,
       statusLabel: CONTRACTOR_PAYMENT_STATUS_LABELS[row.status],
+      installments: schedule.map((i) => ({
+        seq: i.seq,
+        label: i.label,
+        amountCents: i.amountCents,
+        trigger: i.trigger,
+        dueDate: i.dueDate,
+        milestoneNote: i.milestoneNote,
+        status: i.status,
+        paidAt: i.paidAt,
+      })),
       canEdit: contractorCanEdit(row.status),
       origin: row.origin,
       payeeName: row.payeeName,
@@ -2416,6 +2544,88 @@ export const sendPaidNotice = internalAction({
       await sendEmail(ctx, { to: p.payeeEmail, subject, html: emailShell(html) });
     } catch (err) {
       console.error("[contractorPayments] paid notice failed", err);
+    }
+    return null;
+  },
+});
+
+/** Claim THIS tranche's paid notice, exactly as `markPaidNoticeSent` claims the
+ *  agreement's. Per tranche because a contractor owed three payments has to be
+ *  told three times — and told which one. */
+export const markInstallmentPaidNoticeSent = internalMutation({
+  args: { installmentId: v.id("contractorPaymentInstallments") },
+  handler: async (ctx, { installmentId }) => {
+    const row = await ctx.db.get(installmentId);
+    if (!row || row.paidNoticeSentAt != null) return false;
+    await ctx.db.patch(installmentId, {
+      paidNoticeSentAt: Date.now(),
+      updatedAt: Date.now(),
+    });
+    return true;
+  },
+});
+
+/** Everything the tranche notice needs — the agreement's identity plus this
+ *  tranche's place in the schedule and what is left after it. */
+export const installmentNoticePayload = internalQuery({
+  args: { installmentId: v.id("contractorPaymentInstallments") },
+  handler: async (ctx, { installmentId }) => {
+    const inst = await ctx.db.get(installmentId);
+    if (!inst) return null;
+    const row = await ctx.db.get(inst.contractorPaymentId);
+    if (!row) return null;
+    const chapter = await ctx.db.get(row.chapterId);
+    const schedule = await loadSchedule(ctx, row._id);
+    const summary = summarizeContractorSchedule(schedule);
+    return {
+      reference: contractorReferenceFor(row._id),
+      chapterName: chapter?.name ?? "",
+      payeeName: row.payeeName,
+      payeeEmail: row.payeeEmail,
+      bankAccountLast4: row.bankAccountLast4,
+      installmentLabel: inst.label,
+      installmentSeq: inst.seq,
+      installmentCount: schedule.length,
+      amountCents: inst.amountCents,
+      remainingCents: summary.remainingCents,
+      paidAt: inst.paidAt ?? Date.now(),
+    };
+  },
+});
+
+/** "One of your scheduled payments has been sent." Scheduled by
+ *  `settleContractorPaid` when a tranche settles and the schedule is NOT yet
+ *  finished — the final one gets `sendPaidNotice` instead, so a contractor is
+ *  never told the engagement is complete while money is still owed. */
+export const sendInstallmentPaidNotice = internalAction({
+  args: { installmentId: v.id("contractorPaymentInstallments") },
+  handler: async (ctx, { installmentId }) => {
+    try {
+      const claimed = await ctx.runMutation(
+        internal.contractorPayments.markInstallmentPaidNoticeSent,
+        { installmentId },
+      );
+      if (!claimed) return null;
+      const p = await ctx.runQuery(
+        internal.contractorPayments.installmentNoticePayload,
+        { installmentId },
+      );
+      if (!p?.payeeEmail) return null;
+      const { subject, html } = buildInstallmentPaidNotice({
+        payeeName: p.payeeName,
+        chapterName: p.chapterName,
+        reference: p.reference,
+        installmentLabel: p.installmentLabel,
+        installmentSeq: p.installmentSeq,
+        installmentCount: p.installmentCount,
+        amountCents: p.amountCents,
+        remainingCents: p.remainingCents,
+        bankAccountLast4: p.bankAccountLast4,
+        paidAt: p.paidAt,
+      });
+      await sendEmail(ctx, { to: p.payeeEmail, subject, html: emailShell(html) });
+    } catch (err) {
+      console.error("[contractorPayments] installment paid notice failed", err);
     }
     return null;
   },

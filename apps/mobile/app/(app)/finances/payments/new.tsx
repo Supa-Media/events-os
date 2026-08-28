@@ -63,6 +63,12 @@ import {
   emptyDraft,
   type AgreementDraft,
 } from "../../../../components/finance/payments/AgreementFields";
+import {
+  ScheduleBuilder,
+  scheduleProblem,
+  toInstallmentArgs,
+  type InstallmentDraft,
+} from "../../../../components/finance/payments/ScheduleBuilder";
 import { ContractLinkCard } from "../../../../components/finance/payments/ContractLinkCard";
 import { ContractorPicker } from "../../../../components/finance/payments/ContractorPicker";
 import { contractorIdentityPatch } from "../../../../components/finance/payments/contractorHelpers";
@@ -85,10 +91,12 @@ function NewAgreementScreen() {
   const categories = useQuery(api.finances.myChargeCategories, {});
 
   const createAgreement = useMutation(api.contractorPayments.createAgreement);
+  const setSchedule = useMutation(api.contractorInstallments.setSchedule);
   const send = useMutation(api.contractorPayments.send);
   const { run, toast, dismiss } = useActionRunner();
 
   const [draft, setDraft] = useState<AgreementDraft>(emptyDraft());
+  const [scheduleDraft, setScheduleDraft] = useState<InstallmentDraft[]>([]);
   const [problem, setProblem] = useState<string | null>(null);
   const [busy, setBusy] = useState<"draft" | "send" | null>(null);
   const [created, setCreated] = useState<Created | null>(null);
@@ -154,6 +162,11 @@ function NewAgreementScreen() {
       setProblem("Enter an amount.");
       return;
     }
+    const schedProblem = scheduleProblem(scheduleDraft, cents);
+    if (schedProblem) {
+      setProblem(schedProblem);
+      return;
+    }
     const ids = decodeForValue(draft.forValue);
     setBusy(alsoSend ? "send" : "draft");
 
@@ -191,6 +204,31 @@ function NewAgreementScreen() {
     if (result === undefined) {
       setBusy(null);
       return;
+    }
+
+    // BEFORE the link goes out, always: the schedule is a term, and a
+    // contractor who opens their agreement should read the plan they are being
+    // asked to accept rather than discover it after signing. A failure here
+    // leaves a correct DRAFT with no schedule, which the detail screen can fix
+    // — the same "the record already exists" reasoning as the send step below.
+    if (scheduleDraft.length > 0) {
+      const scheduled = await run(
+        () =>
+          setSchedule({
+            contractorPaymentId: result.contractorPaymentId,
+            installments: toInstallmentArgs(scheduleDraft),
+          }),
+        { errorTitle: "Created it, but couldn't save the payment schedule" },
+      );
+      if (scheduled === undefined) {
+        setBusy(null);
+        setCreated({
+          contractorPaymentId: result.contractorPaymentId,
+          token: result.token,
+          sent: false,
+        });
+        return;
+      }
     }
 
     if (!alsoSend) {
@@ -355,6 +393,18 @@ function NewAgreementScreen() {
             forOptions={options?.forOptions}
             categories={categories}
             mode="create"
+          />
+
+          <Text className="mb-1.5 mt-2 text-sm font-semibold text-ink">
+            How they get paid
+          </Text>
+          <ScheduleBuilder
+            rows={scheduleDraft}
+            onChange={(rows) => {
+              setScheduleDraft(rows);
+              setProblem(null);
+            }}
+            agreedAmountCents={amountCents > 0 ? amountCents : null}
           />
 
           <LedgerPreviewCard

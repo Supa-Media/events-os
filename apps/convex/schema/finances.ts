@@ -17,6 +17,8 @@ import {
   REIMBURSEMENT_STATUSES,
   CONTRACTOR_PAYMENT_STATUSES,
   CONTRACTOR_PAYMENT_ORIGINS,
+  CONTRACTOR_INSTALLMENT_STATUSES,
+  CONTRACTOR_INSTALLMENT_TRIGGERS,
   CONTRACTOR_TAX_DOC_KINDS,
   CONTRACTOR_TAX_CLASSIFICATIONS,
   CARD_TYPES,
@@ -468,6 +470,20 @@ export const transactions = defineTable({
   // inserting, which is also why a bounced payout must DELETE the row rather
   // than flag it (see `reverseSettledPayout`).
   contractorPaymentId: v.optional(v.id("contractorPayments")),
+  // The TRANCHE this row settles, when the agreement pays in parts — set
+  // alongside `contractorPaymentId`, never instead of it, so budget rollups and
+  // Reconcile keep resolving the agreement exactly as before.
+  //
+  // A SCHEDULED AGREEMENT POSTS ONE LEDGER ROW PER TRANCHE, which is the
+  // correct answer and the reason this column has to exist: each ACH is its own
+  // real movement of money on its own date, and collapsing three of them into
+  // one row would mis-date the spend and make the ledger disagree with the bank
+  // statement. It also moves the idempotency question — "have we already booked
+  // this?" is per tranche now, and asking it per agreement would silently skip
+  // booking every tranche after the first.
+  contractorInstallmentId: v.optional(
+    v.id("contractorPaymentInstallments"),
+  ),
   // The shared reference linking the two legs of a central↔chapter transfer
   // pair. Both legs carry the SAME id (see `transfers.ts#genericTransferGroupId`
   // — random-but-explicit, not deterministic; a generic transfer has no
@@ -777,6 +793,7 @@ export const transactions = defineTable({
   .index("by_person", ["personId"])
   .index("by_reimbursement", ["reimbursementId"])
   .index("by_contractor_payment", ["contractorPaymentId"])
+  .index("by_contractor_installment", ["contractorInstallmentId"])
   .index("by_transfer_group", ["transferGroupId"])
   .index("by_card_payment", ["cardPaymentId"]);
 
@@ -1235,6 +1252,96 @@ export const contractorPayments = defineTable({
   // few of them, and silently stopped stamping past the scan bound.
   .index("by_tax_document", ["taxDocumentId"])
   .index("by_status", ["status"]);
+
+/**
+ * One tranche of a contractor agreement — "half now, half on delivery".
+ *
+ * A CHILD OF `contractorPayments`, NEVER A SECOND KIND OF AGREEMENT. The parent
+ * still holds the single set of terms, the single acceptance signature, the
+ * single tax-document citation and the single approval; this row holds only
+ * WHEN a slice of that agreed total gets sent and whether it has. An agreement
+ * with no rows here behaves exactly as it did before schedules existed — one
+ * amount, one payout — which is the whole compatibility story.
+ *
+ * THE INVARIANT (`contractorScheduleProblems`, enforced on every write): the
+ * live tranches sum to EXACTLY the parent's `agreedAmountCents`. Money that is
+ * promised but unscheduled would never be sent; money scheduled beyond the
+ * total would be sent without anyone agreeing to it.
+ *
+ * WHY EACH TRANCHE IS ITS OWN PAYOUT SUBJECT. The payout rail is idempotency-
+ * keyed on its subject so a payment can never double-send. If a schedule reused
+ * the parent as that key, the second tranche would find the first one's payout
+ * and be handed back "already paid" — so `payouts.contractorInstallmentId`
+ * exists and carries the key when a tranche is what is being sent. The payout
+ * still records `contractorPaymentId` as well, so every existing reader that
+ * asks a payout which agreement it settles keeps working unchanged.
+ */
+export const contractorPaymentInstallments = defineTable({
+  chapterId: v.id("chapters"),
+  contractorPaymentId: v.id("contractorPayments"),
+  // 1-based position in the schedule. The order the parties read the deal in,
+  // and the order the app renders — NOT an order the server enforces payment
+  // in. Milestones genuinely complete out of order (the delivery lands before
+  // the revision date), and refusing to pay a met milestone because an earlier
+  // row is still open would be the app arguing with the facts.
+  seq: v.number(),
+  // What this tranche is called in the agreement — "Deposit", "On delivery".
+  // Internal: unlike `serviceDescription` it never reaches the public ledger,
+  // so it is length-capped but not PII-screened.
+  label: v.string(),
+  amountCents: v.number(),
+
+  // ── What the parties agreed makes it payable ─────────────────────────────
+  // See `CONTRACTOR_INSTALLMENT_TRIGGERS`. NONE of these release money on their
+  // own: a human with approval rights presses Pay for every tranche, exactly as
+  // for an unscheduled agreement. A passed `dueDate` makes a row *due*, which
+  // is a sorting fact and not a payment.
+  trigger: v.union(
+    ...CONTRACTOR_INSTALLMENT_TRIGGERS.map((t) => v.literal(t)),
+  ),
+  dueDate: v.optional(v.number()),
+  // What has to happen, for `on_milestone`. This is the sentence a reviewer
+  // reads before deciding the tranche has come due, so it is required for that
+  // trigger rather than decorative.
+  milestoneNote: v.optional(v.string()),
+
+  status: v.union(
+    ...CONTRACTOR_INSTALLMENT_STATUSES.map((s) => v.literal(s)),
+  ),
+
+  // ── Release ──────────────────────────────────────────────────────────────
+  // Who pressed Pay on THIS tranche and when. The parent's `approvedAt` records
+  // that the agreement was legal; this records that a person judged this
+  // particular milestone met — the fact a schedule exists to make answerable,
+  // and one the parent has no room to hold once there is more than one.
+  releasedByPersonId: v.optional(v.id("people")),
+  releasedAt: v.optional(v.number()),
+  // Optional "why now" — "final cut delivered 8/27". Internal.
+  releaseNote: v.optional(v.string()),
+  payoutId: v.optional(v.id("payouts")),
+  paidAt: v.optional(v.number()),
+  // Exactly-once guard for THIS tranche's "we've sent it" email, claimed before
+  // the send exactly as `contractorPayments.paidNoticeSentAt` is. Per tranche
+  // rather than per agreement because a contractor owed three payments has to
+  // be told three times — and told which one, and what is left. Cleared by a
+  // bounce walk-back, for the same reason the parent's is: a payment that came
+  // back out was not made.
+  paidNoticeSentAt: v.optional(v.number()),
+  // Set when the org decides this tranche will never be sent, with the reason.
+  // A canceled tranche is why the agreed total and the total actually paid are
+  // allowed to differ and can still be explained.
+  canceledAt: v.optional(v.number()),
+  canceledByPersonId: v.optional(v.id("people")),
+  canceledReason: v.optional(v.string()),
+
+  createdAt: v.number(),
+  updatedAt: v.number(),
+})
+  // The schedule of one agreement, in agreed order — every read of this table
+  // that a screen makes.
+  .index("by_payment", ["contractorPaymentId", "seq"])
+  // The chapter's tranches by state, for the "what is due" queue.
+  .index("by_chapter_and_status", ["chapterId", "status"]);
 
 /**
  * What we remember about a contractor between payments, so a returning one is
@@ -1732,6 +1839,18 @@ export const payouts = defineTable({
   // that decides where money goes. Two typed columns keep `ctx.db.get` honest.
   reimbursementId: v.optional(v.id("reimbursementRequests")),
   contractorPaymentId: v.optional(v.id("contractorPayments")),
+  // The TRANCHE this payout settles, when the agreement pays in parts. Set
+  // ALONGSIDE `contractorPaymentId` rather than instead of it — the payout is
+  // still for that agreement, and every reader that asks a payout which
+  // agreement it belongs to keeps working whether or not there is a schedule.
+  //
+  // What it changes is the IDEMPOTENCY KEY. "At most one live payout per
+  // subject" is what stops a double-send, and on a scheduled agreement the
+  // subject is the tranche: keyed on the parent instead, tranche two would find
+  // tranche one's payout and be told the money had already gone.
+  contractorInstallmentId: v.optional(
+    v.id("contractorPaymentInstallments"),
+  ),
   payeePersonId: v.optional(v.id("people")),
   amountCents: v.number(),
   provider: v.union(...PAYOUT_PROVIDERS.map((p) => v.literal(p))),
@@ -1747,6 +1866,7 @@ export const payouts = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_reimbursement", ["reimbursementId"])
   .index("by_contractor_payment", ["contractorPaymentId"])
+  .index("by_contractor_installment", ["contractorInstallmentId"])
   .index("by_increase_transfer", ["increaseTransferId"])
   .index("by_chapter_and_status", ["chapterId", "status"]);
 

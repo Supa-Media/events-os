@@ -28,6 +28,12 @@ import {
   deriveContractorTxnFields,
   deriveContractorCodingMaterialization,
 } from "./contractorTxnFields";
+import {
+  loadSchedule,
+  installmentForPayout,
+  describeInstallment,
+} from "./contractorSchedule";
+import { contractorScheduleIsComplete } from "@events-os/shared";
 
 /**
  * The single transaction recording a reimbursement payout leaving the account.
@@ -389,12 +395,25 @@ export async function postContractorSpend(
   row: Doc<"contractorPayments">,
   payout: Doc<"payouts">,
 ): Promise<Id<"transactions">> {
-  const existing = await ctx.db
-    .query("transactions")
-    .withIndex("by_contractor_payment", (q) =>
-      q.eq("contractorPaymentId", row._id),
-    )
-    .first();
+  // A SCHEDULED AGREEMENT POSTS ONE ROW PER TRANCHE, so "have we booked this
+  // already?" is asked of the tranche. Asked of the agreement instead, the
+  // first tranche's row would answer for every later one and the ledger would
+  // record a $10,000 engagement as the $5,000 deposit — for the rest of time,
+  // silently, with the budget under-spent by half.
+  const installment = await installmentForPayout(ctx, payout);
+  const existing = installment
+    ? await ctx.db
+        .query("transactions")
+        .withIndex("by_contractor_installment", (q) =>
+          q.eq("contractorInstallmentId", installment._id),
+        )
+        .first()
+    : await ctx.db
+        .query("transactions")
+        .withIndex("by_contractor_payment", (q) =>
+          q.eq("contractorPaymentId", row._id),
+        )
+        .first();
   if (existing) {
     if (!payout.transactionId) {
       await ctx.db.patch(payout._id, {
@@ -407,6 +426,15 @@ export async function postContractorSpend(
 
   const now = Date.now();
   const ported = deriveContractorTxnFields(row);
+  if (installment) {
+    // Name the tranche in the INTERNAL description only. `merchantName` is
+    // untouched and still the constant, so this cannot reach the public ledger
+    // — read `contractorTxnFields.ts`'s header before changing that. What it
+    // buys is a Reconcile queue where three ACHs to the same person on the same
+    // agreement are told apart by the deal's own words rather than by amount.
+    const total = (await loadSchedule(ctx, row._id)).length;
+    ported.description = `${ported.description} — ${describeInstallment(installment, total)}`;
+  }
   const txnId = await ctx.db.insert("transactions", {
     chapterId,
     source: "contractor_payment",
@@ -419,6 +447,7 @@ export async function postContractorSpend(
     // would attach a contractor's roster identity to a ledger row, and identity
     // on this rail lives on the payment record instead.
     contractorPaymentId: row._id,
+    ...(installment ? { contractorInstallmentId: installment._id } : {}),
     status: "reconciled",
     createdAt: now,
     ...ported,
@@ -452,14 +481,78 @@ export async function postContractorSpend(
 /** Settle a contractor payout: mark the payment `paid`, post the `outflow` row,
  *  and tell the contractor their money went out. THE ONE PLACE A CONTRACTOR
  *  PAYMENT BECOMES PAID, which is why the notice hangs here rather than at
- *  either call site — same argument as `settleReimbursementPaid`. */
+ *  either call site — same argument as `settleReimbursementPaid`.
+ *
+ *  ON A SCHEDULED AGREEMENT this settles a TRANCHE, and the difference is the
+ *  whole point: `paid` is terminal, so stamping it when the deposit lands would
+ *  close an agreement that still owes somebody the other half — and close it
+ *  where nothing would ever reopen it. A tranche settling mid-schedule walks
+ *  the agreement back to `approved` instead, which is both true (it is approved
+ *  and not yet fully paid) and the state the next tranche can be released
+ *  from. */
 export async function settleContractorPaid(
   ctx: MutationCtx,
   row: Doc<"contractorPayments">,
   payout: Doc<"payouts">,
 ): Promise<void> {
   const now = Date.now();
-  if (row.status !== "paid") {
+  const installment = await installmentForPayout(ctx, payout);
+
+  if (installment) {
+    if (installment.status !== "paid") {
+      await ctx.db.patch(installment._id, {
+        status: "paid",
+        paidAt: installment.paidAt ?? now,
+        payoutId: payout._id,
+        updatedAt: now,
+      });
+    }
+    // Re-read: `contractorScheduleIsComplete` has to see the patch above, and
+    // the answer decides whether this was the last payment of the engagement or
+    // one of several.
+    const schedule = await loadSchedule(ctx, row._id);
+    const finished = contractorScheduleIsComplete(schedule);
+
+    if (finished && row.status !== "paid") {
+      await ctx.db.patch(row._id, {
+        status: "paid",
+        paidAt: row.paidAt ?? now,
+        payoutId: payout._id,
+        updatedAt: now,
+      });
+    } else if (!finished && row.status === "paying") {
+      // Back to the state the next tranche is released from. Note this is a
+      // walk BACK from `paying`, not a failure: the ACH succeeded, and the
+      // agreement simply is not finished.
+      await ctx.db.patch(row._id, {
+        status: "approved",
+        payoutId: payout._id,
+        updatedAt: now,
+      });
+    }
+    // ALWAYS the tranche notice on a scheduled agreement, the last one
+    // included. `sendPaidNotice` states the agreement's FULL agreed amount as
+    // the sum just sent, which is true only when the agreement pays in one go —
+    // on the final tranche of a schedule it would tell somebody who has just
+    // received $500 that $1,000 is on its way. The tranche notice names the
+    // payment that actually moved and says what remains, which on the last one
+    // is nothing.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.contractorPayments.sendInstallmentPaidNotice,
+      { installmentId: installment._id },
+    );
+    // Money has actually moved, so the payee is a returning contractor and
+    // their tax document moves onto the four-year clock — on the FIRST tranche,
+    // not the last. Waiting for the schedule to finish would leave a real paid
+    // contractor off the roster for months. Idempotent by design, so calling it
+    // once per tranche is safe.
+    await ctx.scheduler.runAfter(
+      0,
+      internal.contractorProfiles.rememberPaidContractor,
+      { contractorPaymentId: row._id },
+    );
+  } else if (row.status !== "paid") {
     await ctx.db.patch(row._id, {
       status: "paid",
       paidAt: row.paidAt ?? now,
@@ -511,6 +604,23 @@ async function reverseSettledContractorPayout(
     transactionId: undefined,
     updatedAt: now,
   });
+  // The TRANCHE goes back to `scheduled` — payable again, by the same person,
+  // once the bank details are fixed. Its release stamp is deliberately LEFT
+  // ALONE: somebody did judge the milestone met on that day, and the ACH
+  // bouncing days later does not unmake that judgement.
+  const installment = await installmentForPayout(ctx, payout);
+  if (installment && installment.status === "paid") {
+    await ctx.db.patch(installment._id, {
+      status: "scheduled",
+      paidAt: undefined,
+      payoutId: undefined,
+      // Give back this tranche's notice, for the reason the agreement-level one
+      // is given back below: they were told this payment was sent, and it came
+      // back out.
+      paidNoticeSentAt: undefined,
+      updatedAt: now,
+    });
+  }
   if (row && row.status === "paid") {
     await ctx.db.patch(row._id, {
       status: "approved",
@@ -570,6 +680,16 @@ async function applyContractorPayoutOutcome(
       // Walk the payment back so a manager can retry or fix the bank details.
       if (row && row.status === "paying") {
         await ctx.db.patch(row._id, { status: "approved", updatedAt: now });
+      }
+      // And the tranche with it, or the retry would be refused as "already on
+      // its way" by a payout that is no longer going anywhere.
+      const failedInstallment = await installmentForPayout(ctx, payout);
+      if (failedInstallment && failedInstallment.status === "paying") {
+        await ctx.db.patch(failedInstallment._id, {
+          status: "scheduled",
+          payoutId: undefined,
+          updatedAt: now,
+        });
       }
       return;
   }
