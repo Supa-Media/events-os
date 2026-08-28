@@ -7,32 +7,36 @@
  * invented. The colors are read off `@events-os/shared`'s
  * `PUBLIC_WORSHIP_THEME` — the email theme whose own doc says its values were
  * taken from Public Worship's real monthly newsletter, not chosen. The fonts
- * and the folder names come from the Academy's `mktg-the-look` lesson
- * (`packages/shared/src/academy/streams/marketing.ts`): its three named faces,
- * and the five rows of its "where the assets live" table.
+ * and the folder names come from the Academy's brand lesson
+ * (`packages/shared/src/academy/streams/marketing.ts`) and from that same
+ * newsletter theme.
  *
  * Referencing the theme rather than retyping the hexes is the point. A brand
  * kit that restates `#891d1a` in a second file is a brand kit with two answers
  * the day somebody adjusts one of them, which is exactly the drift the Designs
  * tab exists to end. If the newsletter's palette moves, this seed follows it.
  *
- * ── THE FONT CONFLICT IS REAL, AND THIS FILE DOES NOT RESOLVE IT ────────────
- * The Academy lesson teaches THREE faces — Times New Roman Condensed for
+ * ── FOUR FACES, AND THAT IS NOT A BUG TO BE FIXED ───────────────────────────
+ * The brand lesson named three faces — Times New Roman Condensed for
  * headlines, SF Pro Display for captions, Barbra Condensed as the supporting
- * face — and quizzes people on them. `PUBLIC_WORSHIP_THEME`, read off the
- * actual newsletter that goes out, sets both its heading and body stacks to
- * INTER. Both are true statements about this repo today, and they disagree
- * about what the org's body face is.
+ * face. `PUBLIC_WORSHIP_THEME`, read off the actual newsletter that goes out,
+ * sets both its heading and body stacks to INTER. Rather than have a seed
+ * quietly pick a winner between two true statements about this org, the kit
+ * carries ALL FOUR, each with the role its source assigns it.
  *
- * The kit therefore carries all four, each with the ROLE the source it came
- * from assigns it, rather than a seed quietly picking a winner. A seed is the
- * wrong place to settle a brand question: whichever face it dropped, somebody
- * would find the kit contradicting a document they were trained on, with no
- * record of the choice. A HUMAN — the Marketing Director or the designer —
- * should look at these four rows, decide whether Inter is the body face or the
- * email-only face, and edit the kit in the app. When they do, the losing entry
- * gets deleted here and `mktg-the-look` gets updated in the same PR (see
- * CLAUDE.md's "The Academy Must Track the Product").
+ * That is the founder's call, made 2026-08-28: *"it doesn't matter, put all of
+ * the fonts there and then make sure the designer can edit it when they
+ * want."* So this is not an open question awaiting resolution — it is the kit
+ * in its intended state. The designer owns the list from here: they can add a
+ * face, change what one is for, reorder them, or delete one, from Marketing →
+ * Designs, with no PR and nobody's approval. **Do not "resolve" this by
+ * deleting a row from this seed.** A seed only ever runs on a deployment with
+ * an empty table; editing it changes nothing anyone can see, and would only
+ * make a fresh environment start out disagreeing with the live one.
+ *
+ * The Academy no longer lists the faces or prints the hexes at all — it points
+ * at this kit — precisely so the designer's edits never leave a lesson behind
+ * teaching last season's brand.
  *
  * Typed loosely (no generated types) like every other file in `seed/` — it is
  * plain content, inserted by the mutation that owns the table shape. Same
@@ -84,7 +88,7 @@ export const BRAND_COLOR_SEED = [
 
 /**
  * The four faces, with the role each source assigns it. See this file's doc for
- * why Inter sits alongside the lesson's three rather than replacing them.
+ * why all four ship and why that is deliberate rather than unfinished.
  *
  * No `sourceUrl` on any of them yet: the lesson points at a Notion page and a
  * Dropbox folder, and neither is a stable link to a font FILE. Leaving the
@@ -104,7 +108,7 @@ export const BRAND_FONT_SEED = [
     name: "Inter",
     role: "body" as const,
     notes:
-      "The face the real newsletter is set in, heading and body both. Conflicts with the brand lesson's three-face list — a human needs to decide whether Inter is the org's body face or just the email face.",
+      "The face the real newsletter is set in, heading and body both — so anything that has to sit next to an email uses it. Sits alongside the three faces from the brand lesson rather than replacing them; the designer decides how the four divide the work.",
     order: 200,
   },
   {

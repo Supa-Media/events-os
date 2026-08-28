@@ -165,21 +165,61 @@ describe("colors", () => {
 });
 
 describe("fonts", () => {
-  test("two faces may share a role — the kit holds an unresolved argument", async () => {
+  test("two faces may share a role — the brand lesson promises this", async () => {
     const s = await setupEditor();
     await s.as.mutation(api.marketingDesigns.upsertFont, {
       name: "Times New Roman Condensed",
       role: "headline",
     });
-    // Nothing refuses this, on purpose: the Academy lesson and the real
-    // newsletter disagree about the faces, and a uniqueness check would make
-    // the backend pick a side in a brand argument. See seed/brandKit.ts.
+    // Nothing refuses this, on purpose, and it is now a claim made in TRAINING:
+    // `mktg-the-look` tells people "more than one face can share a job; the kit
+    // shows you which". A uniqueness check added later would make that lesson a
+    // lie and would also have the backend picking a side in a brand argument
+    // that is explicitly the designer's to settle. See seed/brandKit.ts.
     await s.as.mutation(api.marketingDesigns.upsertFont, {
       name: "Inter",
       role: "headline",
     });
     const lib = await s.as.query(api.marketingDesigns.library, {});
     expect(lib.fonts.filter((f) => f.role === "headline")).toHaveLength(2);
+  });
+
+  test("the designer can re-role, reorder and remove a face without a deploy", async () => {
+    // The other half of the same promise. The founder's instruction was "put
+    // all of the fonts there and then make sure the designer can edit it when
+    // they want", so the seeded list has to be fully mutable from the app —
+    // not a fixed set with notes attached. Every verb the Designs tab offers is
+    // exercised here against a seat that holds only `marketing.designs.edit`.
+    const s = await setupEditor();
+    const headline = await s.as.mutation(api.marketingDesigns.upsertFont, {
+      name: "Times New Roman Condensed",
+      role: "headline",
+    });
+    const body = await s.as.mutation(api.marketingDesigns.upsertFont, {
+      name: "Inter",
+      role: "body",
+    });
+
+    // Change what a face is FOR — the edit the font question in the lesson
+    // describes ("they edit the fonts in Designs, and everyone sees the new
+    // one"). Re-roling must not require deleting and re-adding.
+    await s.as.mutation(api.marketingDesigns.upsertFont, {
+      fontId: body,
+      name: "Inter",
+      role: "caption",
+      notes: "Moved to captions by the designer.",
+    });
+
+    await s.as.mutation(api.marketingDesigns.reorderFonts, {
+      fontIds: [body, headline],
+    });
+    await s.as.mutation(api.marketingDesigns.deleteFont, { fontId: headline });
+
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.fonts.map((f) => [f.name, f.role])).toEqual([
+      ["Inter", "caption"],
+    ]);
+    expect(lib.fonts[0]?.notes).toBe("Moved to captions by the designer.");
   });
 
   test("a download link has to be a real link", async () => {
@@ -561,15 +601,17 @@ describe("the seed", () => {
     expect(lib.colors[0].usage).toMatch(/anything public-facing/i);
   });
 
-  test("carries BOTH sides of the font conflict, with roles", async () => {
+  test("carries all four faces, with roles", async () => {
     const t = newT();
     await t.mutation(internal.marketingDesigns.seedBrandKitIfEmpty, {});
     const s = await setupChapter(t);
     const lib = await s.as.query(api.marketingDesigns.library, {});
 
-    // The Academy's `mktg-the-look` names three faces; the real newsletter is
-    // set in Inter. The kit holds all four with roles rather than a seed
-    // silently settling a brand argument — see lib/seed/brandKit.ts.
+    // Three faces come from the Academy's brand lesson, the fourth (Inter) from
+    // the real newsletter. All four ship, by the founder's own call — "put all
+    // of the fonts there" — rather than a seed silently settling a brand
+    // question. If you are here because you want to delete one: do it in the
+    // app, not in the seed. See lib/seed/brandKit.ts.
     expect(lib.fonts.map((f) => [f.name, f.role])).toEqual([
       ["Times New Roman Condensed", "headline"],
       ["Inter", "body"],

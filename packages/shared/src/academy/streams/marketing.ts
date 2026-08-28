@@ -58,7 +58,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "mktg-the-look",
     title: "The look",
-    subtitle: "PW Red, three fonts, and a folder anyone can open",
+    subtitle: "One red, a set of faces, and a kit anyone can open",
     minutes: 3,
     blocks: [
       {
@@ -66,12 +66,16 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Every flyer, banner, overlay, and sign that says Public Worship should look like it came from the same place — whether it was made by the founding team or a brand-new chapter three time zones away. That's what a brand kit buys you: consistency without a bottleneck.",
       },
       {
+        kind: "p",
+        text: "**The kit lives in Marketing → Designs, and that is the answer to every \"what red is it?\" question.** This lesson deliberately does not print the hex codes or list the typefaces. The designer changes those — that is their job, and the kit is built for them to do it without filing a ticket. A lesson that repeated today's values would be a second answer that goes quietly wrong the day the first one moves, and the person it misleads is the one who trusted their training.",
+      },
+      {
         kind: "bullets",
         items: [
-          "**Color:** PW Red — **#891d1a**. It's the one color that has to show up somewhere on anything public-facing. It's also the default accent color in the org's saved email templates (Emails → Templates), so an email and a flyer carry the same red.",
-          "**Fonts:** Times New Roman Condensed for headlines, **SF Pro Display** for captions specifically, and Barbra Condensed as the third supporting face.",
-          "**Logos:** live in the shared Logos folder in Dropbox — pull from there, don't recreate one from a screenshot.",
-          "**Templates:** Canva templates cover the recurring shapes — flyers for distribution, banners, social media overlays, and signage. Duplicate a template, don't build from a blank canvas.",
+          "**Colors:** open Designs and tap one to copy its hex. The brand red is the one color that has to show up somewhere on anything public-facing — it's also the default accent in the org's saved email templates, so an email and a flyer carry the same red.",
+          "**Fonts:** listed in Designs grouped by what each is for, so \"what do I set a headline in?\" has exactly one answer. More than one face can share a job; the kit shows you which.",
+          "**Logos:** in Designs, and in the shared Logos folder they point at — pull from there, don't recreate one from a screenshot.",
+          "**Templates:** the Canva files cover the recurring shapes — flyers for distribution, banners, social media overlays, signage. Duplicate a template, don't build from a blank canvas.",
         ],
       },
       {
@@ -82,62 +86,67 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "table",
         headers: ["Need", "Where it lives"],
         rows: [
-          ["Logo (any format)", "Logos — shared Dropbox folder"],
-          ["A flyer", "Canva — PW Flyer for Distribution template"],
-          ["A banner", "Canva — PW Banners template"],
-          ["A social media overlay", "Canva — Social Media Overlays template"],
-          ["Signage", "Canva — Signage template"],
+          ["The brand red, or any brand color", "Marketing → Designs, Colors — tap to copy"],
+          ["What to set a headline or caption in", "Marketing → Designs, Fonts — grouped by role"],
+          ["Logo (any format)", "Marketing → Designs, Logos folder"],
+          ["A flyer, banner, overlay, or signage", "Marketing → Designs — open the Canva template and duplicate it"],
         ],
       },
       {
         kind: "rule",
         title: "Nobody should have to ask permission to look right",
-        text: "A chapter in a new city should be able to make something that looks unmistakably PW without messaging anyone for help. The color, the fonts, and the templates exist precisely so the look scales without a single point of failure.",
+        text: "A chapter in a new city should be able to make something that looks unmistakably PW without messaging anyone for help. That is why reading the kit needs no marketing seat at all: if you are making a flyer at 11pm and you need the red, you should be able to get the red. Changing the kit is a different matter, and belongs to marketing.",
       },
       {
         kind: "reveal",
         prompt:
           "A brand-new chapter needs a flyer for their first event and nobody from the founding team is reachable this week. What do they do?",
         answer:
-          "They don't wait. Pull the logo from the shared Logos folder, duplicate the PW Flyer for Distribution template in Canva, and swap in their event details. The whole point of a shared, self-serve asset kit is that a chapter never has to stall on a design because HQ is asleep or busy.",
+          "They don't wait, and they don't guess. Open Marketing → Designs, copy the brand color, take the logo from the Logos folder, duplicate the flyer template, and swap in their event details. The whole point of a self-serve kit is that a chapter never stalls on a design because HQ is asleep — and never has to eyeball a red off an old JPEG either.",
       },
       {
         kind: "link",
         label: "Further reading: PW Designs, Flyers, Fonts, Colors",
         url: "https://www.notion.so/29c7f1c177b680e49273d51138fc1677",
+        note: "Background and history. Where the two disagree, the kit in Marketing → Designs is right — it's the one the designer maintains.",
       },
     ],
     quiz: [
       {
-        prompt: "What is the PW brand red's hex code?",
-        options: ["#891d1a", "#eaca6d", "#ff0000", "#1a1d89"],
-        answerIndex: 0,
-        explanation:
-          "#891d1a — PW Red — is the one color that should show up somewhere on anything public-facing, regardless of who made it. It's the same red the org's saved email templates use by default, so print and email don't drift apart.",
-      },
-      {
-        prompt: "Which font is specifically used for captions?",
+        prompt: "You need the exact brand red for a flyer. Where do you get it?",
         options: [
-          "Times New Roman Condensed",
-          "Barbra Condensed",
-          "SF Pro Display",
-          "Helvetica",
-        ],
-        answerIndex: 2,
-        explanation:
-          "SF Pro Display is the caption font specifically; Times New Roman Condensed and Barbra Condensed round out the other two brand faces.",
-      },
-      {
-        prompt: "Where do brand assets like the logo and design templates actually live?",
-        options: [
-          "Whoever made the last design keeps them on their own laptop",
-          "A shared Dropbox logo folder and a set of Canva templates anyone can duplicate",
-          "They get remade from scratch each time by whoever's asking",
-          "Only the founding team has access",
+          "From this lesson — the training writes the hex code down",
+          "Marketing → Designs: open Colors and tap it to copy the hex",
+          "Eyedropper it off the most recent flyer you can find",
+          "Message the Marketing Director and wait",
         ],
         answerIndex: 1,
         explanation:
-          "Logos and Canva templates are shared and self-serve on purpose — no chapter should need to ask permission to look on-brand.",
+          "The kit is the only copy that is current. Training, old flyers, and someone's memory are all snapshots of what the brand was on the day they were made — and the designer is allowed to move it. Going to the kit is a habit worth having even on the days the answer hasn't changed.",
+      },
+      {
+        prompt: "Who can open the brand kit, and who can change it?",
+        options: [
+          "Only the Marketing Director can do either",
+          "Anyone can open it, and anyone can change it",
+          "Anyone on the team can open it; changing it needs a marketing seat",
+          "You need a design seat even to look",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Reading the kit is deliberately ungated — a brand kit behind a permission is a brand kit people work around, and the person making something at 11pm is exactly who needs it. Changing it belongs to marketing, so the org has one look rather than five.",
+      },
+      {
+        prompt: "The designer decides the org should use a different face for captions. What has to happen?",
+        options: [
+          "They edit the fonts in Marketing → Designs, and everyone reading the kit sees the new one",
+          "A developer changes it in the code and ships a release",
+          "Nothing can change — the brand faces are fixed",
+          "Every chapter picks its own face from then on",
+        ],
+        answerIndex: 0,
+        explanation:
+          "The kit is theirs to curate — add a face, change what it's for, reorder it, remove one. That is the whole reason it is a live tool and not a page of documentation, and it is why this lesson points at the kit instead of listing the faces.",
       },
       {
         prompt: "Why should a brand-new chapter be able to make an on-brand flyer without asking anyone?",
@@ -648,8 +657,8 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Colors** — tap one to copy the hex. **PW Red is #891d1a** and it hasn't moved.",
-          "**Fonts** — grouped by what each is for, so \"what do I set a headline in?\" has one answer.",
+          "**Colors** — tap one to copy the hex. This is where the brand red lives now; nothing else in the Academy prints it, so there is only ever one answer to check.",
+          "**Fonts** — grouped by what each is for, so \"what do I set a headline in?\" has one answer. The designer curates the list, including having more than one face for a job.",
           "**Designs** — Canva and Figma files render right there; click through to open the real thing in the real tool. Anything else (a Dropbox folder, a Drive file) is a labelled link.",
           "**Folders** — marketing names them. \"Instagram posts\", \"Event flyers\", whatever matches how they actually work.",
         ],
