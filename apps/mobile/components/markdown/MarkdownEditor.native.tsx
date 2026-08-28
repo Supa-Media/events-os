@@ -17,8 +17,20 @@
  * Same props as MarkdownEditor.web — see ./types.ts.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
-import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import {
+  ActivityIndicator,
+  Linking,
+  Platform,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import {
+  loadWebView,
+  type WebViewInstance,
+  type WebViewMessageEvent,
+} from "../../lib/nativeWebView";
 // expo-image-picker is Expo Go-safe (classified `core` in native-deps.json);
 // only used on native, where the WebView can't reach the OS clipboard/files.
 import * as ImagePicker from "expo-image-picker";
@@ -58,7 +70,8 @@ export function MarkdownEditor({
   minHeight = 480,
   uploadImage,
 }: MarkdownEditorProps) {
-  const webRef = useRef<WebView | null>(null);
+  const nativeWebView = loadWebView();
+  const webRef = useRef<WebViewInstance | null>(null);
   const readyRef = useRef(false);
   const [uploading, setUploading] = useState(false);
   // Read the latest uploadImage through a ref so the picker callback never goes
@@ -142,6 +155,40 @@ export function MarkdownEditor({
 
   // Show the control only when editing AND an upload path is wired (matches web).
   const showAddImage = editable && !!uploadImage;
+
+  // No WebView on this build (see `lib/nativeWebView.ts`): fall back to a plain
+  // TextInput over the same Markdown string. This one MUST keep working rather
+  // than merely not crash — it is the only way to author a How-To doc, and the
+  // value is literal Markdown either way, so the fallback loses the live
+  // preview and the toolbar, not the ability to write or the content itself.
+  if (!nativeWebView) {
+    return (
+      <View
+        className="overflow-hidden rounded-lg border border-border bg-surface"
+        style={{ height: minHeight }}
+      >
+        <TextInput
+          value={value}
+          onChangeText={onChange}
+          editable={editable}
+          placeholder={placeholder}
+          multiline
+          textAlignVertical="top"
+          autoCapitalize="none"
+          autoCorrect={false}
+          accessibilityLabel="Markdown editor"
+          style={{
+            flex: 1,
+            padding: 14,
+            fontSize: 14,
+            lineHeight: 20,
+            fontFamily: Platform.OS === "ios" ? "Menlo" : "monospace",
+          }}
+        />
+      </View>
+    );
+  }
+  const { WebView } = nativeWebView;
 
   return (
     <View

@@ -30,7 +30,7 @@
  * network PDF into a WebView; confirm the iOS inline render on a real device.
  */
 import { Linking, Platform, Pressable, Text, View } from "react-native";
-import { WebView } from "react-native-webview";
+import { loadWebView } from "../../lib/nativeWebView";
 import { Icon } from "./Icon";
 import { colors } from "../../lib/theme";
 import type { NativePdfPaneProps } from "./NativePdfPane";
@@ -45,7 +45,11 @@ function originOf(uri: string): string {
 }
 
 export function NativePdfPane({ uri, filename }: NativePdfPaneProps) {
-  if (Platform.OS === "android") {
+  // A build without the WebView native module lands in the SAME place Android
+  // already does — hand the file to the OS viewer. See `lib/nativeWebView.ts`
+  // for why a bundle can outrun the binary it runs on.
+  const webView = loadWebView();
+  if (Platform.OS === "android" || !webView) {
     return (
       <View className="h-full w-full items-center justify-center gap-2 px-8">
         <Icon name="file-text" size={26} color={colors.faint} />
@@ -69,6 +73,7 @@ export function NativePdfPane({ uri, filename }: NativePdfPaneProps) {
     );
   }
 
+  const { WebView } = webView;
   return (
     <View style={{ flex: 1, backgroundColor: "#fff" }}>
       <WebView source={{ uri }} originWhitelist={[originOf(uri)]} />
