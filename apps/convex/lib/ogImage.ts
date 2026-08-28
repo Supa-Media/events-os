@@ -134,12 +134,10 @@ export function extractOgImageUrl(html: string, pageUrl: string): string | null 
 //      endpoint, the API that EXISTS for third-party preview fetching and sits
 //      outside the bot wall.
 //
-// NOTE (2026-08-28): this sandbox's egress policy blocks canva.com entirely,
-// so the two endpoints below are from the tools' published oEmbed
-// registrations and could not be re-verified live from here. Both are
-// fail-soft — a 404 from either simply falls through to the page scrape — and
-// the capture's error now carries the HTTP status precisely so the next
-// real-world failure names itself.
+// LIVE-VERIFIED (2026-08-28, local machine): Canva's registered `/_oembed`
+// endpoint returned 200 JSON with `thumbnail_url`. The page request with the
+// exact headers below also returned 200 HTML with `og:image`; there was no
+// bot-wall. Both paths remain fail-soft because third-party behavior can change.
 
 /** What a page-load-shaped request sends. A named bot UA is honest but is
  *  also exactly what bot walls refuse; the og tags are public content served
@@ -192,7 +190,7 @@ export function oembedEndpointFor(pageUrl: string): string | null {
   const host = u.hostname.replace(/^www\./, "").toLowerCase();
   const encoded = encodeURIComponent(u.toString());
   if (host === "canva.com" || host.endsWith(".canva.com")) {
-    return `https://www.canva.com/_oembed/types/rich?url=${encoded}`;
+    return `https://www.canva.com/_oembed?url=${encoded}`;
   }
   if (host === "figma.com" || host.endsWith(".figma.com")) {
     return `https://www.figma.com/api/oembed?url=${encoded}`;

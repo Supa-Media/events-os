@@ -815,7 +815,7 @@ describe("design covers — captured from the tool's own og:image", () => {
    * fails loudly rather than hitting the network.
    */
   const PAGE_URL = "https://www.canva.com/design/DAGtest123/view";
-  const OEMBED_URL = `https://www.canva.com/_oembed/types/rich?url=${encodeURIComponent(PAGE_URL)}`;
+  const OEMBED_URL = `https://www.canva.com/_oembed?url=${encodeURIComponent(PAGE_URL)}`;
   const IMG_URL = "https://media.example-cdn.com/covers/first.png";
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10]);
 
@@ -1067,7 +1067,7 @@ describe("cover capture — the field failure and its fixes", () => {
    */
   const EDIT_URL = "https://www.canva.com/design/DAGtest123/edit";
   const VIEW_URL = "https://www.canva.com/design/DAGtest123/view";
-  const VIEW_OEMBED = `https://www.canva.com/_oembed/types/rich?url=${encodeURIComponent(VIEW_URL)}`;
+  const VIEW_OEMBED = `https://www.canva.com/_oembed?url=${encodeURIComponent(VIEW_URL)}`;
   const IMG = "https://media.example-cdn.com/covers/first.png";
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
 
