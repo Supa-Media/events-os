@@ -60,6 +60,52 @@ async function seedSeat(s: ChapterSetup, capabilities: string[]): Promise<void> 
   });
 }
 
+/**
+ * A SECOND identity inside an existing test database, holding its own seat.
+ *
+ * `writer()` and `publisher()` each stand up a fresh `newT()`, which is right
+ * for a test about one caller and wrong for any test about two — a post
+ * created by one would be invisible to the other, and a refusal would be
+ * indistinguishable from a missing row.
+ */
+async function addSeatHolder(
+  s: ChapterSetup,
+  email: string,
+  capabilities: string[],
+): Promise<ChapterSetup["as"]> {
+  const now = Date.now();
+  const userId = await run(s.t, async (ctx) => {
+    const userId = await ctx.db.insert("users", { email });
+    const personId = await ctx.db.insert("people", {
+      chapterId: s.chapterId,
+      name: email,
+      email,
+      userId,
+      createdAt: now,
+    });
+    const seatDefId = await ctx.db.insert("seatDefs", {
+      slug: `test_blog_seat_${email}`,
+      title: "Test Blog Seat",
+      chart: "central",
+      parentSlug: "root",
+      maxHolders: 1,
+      duties: [],
+      capabilities,
+      sortOrder: 0,
+      createdAt: now,
+      updatedAt: now,
+    });
+    await ctx.db.insert("seatAssignments", {
+      seatDefId,
+      scope: "central",
+      personId,
+      createdAt: now,
+    });
+    return userId;
+  });
+  return s.t.withIdentity({ subject: `${userId}|session` });
+}
+
 /** A writer (`marketing.blog.edit` only) — the seat an associate holds. */
 async function writer(): Promise<ChapterSetup> {
   const t = newT();
@@ -71,15 +117,14 @@ async function writer(): Promise<ChapterSetup> {
 /**
  * A publisher — someone who can both write and put a post on the internet.
  *
- * BOTH powers are listed, and that is a statement about the current state of
- * `powers.ts` rather than a preference. `seats.ts` grants the Marketing
- * Director and the ED `marketing.blog.publish` ALONE, with a comment saying it
- * "implies `blog.edit`" — but `expandPowers` implies nothing from it today
- * (the ladder rule only grants `.view`, and there is no `marketing.blog.view`
- * power), so those two seats can publish a post they are not allowed to save.
- * The fix is one `implies: ["marketing.blog.edit"]` on the `publish` def; this
- * fixture spells out both so the tests below are about THIS module's rules and
- * not about that one.
+ * Both strings are listed even though `marketing.blog.publish` now implies
+ * `marketing.blog.edit`, so this fixture is explicit about the reach it grants
+ * rather than depending on an implication rule these tests are not about.
+ * (That implication was MISSING when this file was written — the ladder rule
+ * grants only `.view`, so the ED and the Marketing Director, who hold the
+ * publish string alone, could publish a post they could not save. It is fixed
+ * on the `publish` def, and `powers.test.ts` now fails for any approve/publish
+ * power lacking its own area's edit.)
  */
 async function publisher(): Promise<ChapterSetup> {
   const t = newT();
@@ -499,6 +544,76 @@ describe("deletePost", () => {
 });
 
 // ── The desk list ────────────────────────────────────────────────────────────
+
+describe("what a writer may undo, and what only a publisher may", () => {
+  test("a post archived from DRAFT can go back to draft", async () => {
+    const s = await publisher();
+    const postId = await newPost(s);
+    // Never published, so there is no link out there to protect. Refusing this
+    // left a mis-clicked draft stuck forever behind a message that was false
+    // about its own case ("a post that has been public…").
+    await s.as.mutation(api.marketingBlog.setPostStatus, {
+      postId,
+      status: "archived",
+    });
+    await s.as.mutation(api.marketingBlog.setPostStatus, {
+      postId,
+      status: "draft",
+    });
+    const post = await s.as.query(api.marketingBlog.getPost, { postId });
+    expect(post?.status).toBe("draft");
+  });
+
+  test("a post archived from PUBLISHED still cannot", async () => {
+    const s = await publisher();
+    const postId = await livePost(s);
+    await s.as.mutation(api.marketingBlog.setPostStatus, {
+      postId,
+      status: "archived",
+    });
+    await expect(
+      s.as.mutation(api.marketingBlog.setPostStatus, { postId, status: "draft" }),
+    ).rejects.toThrow(/its link is out there/i);
+  });
+
+  test("deleting an ARCHIVED once-public post needs the publish power", async () => {
+    // Taking it down needed `blog.publish`; erasing that it ever existed must
+    // not need less. Otherwise a writer undoes a Director's decision one screen
+    // later, which is the shape of every separation-of-duties bug.
+    //
+    // Both identities live in ONE database — `writer()`/`publisher()` each
+    // call `newT()`, so using them together would put the post in a database
+    // the second caller cannot see, and the refusal under test would be
+    // indistinguishable from "no such post".
+    const pub = await publisher();
+    const postId = await livePost(pub);
+    await pub.as.mutation(api.marketingBlog.setPostStatus, {
+      postId,
+      status: "archived",
+    });
+
+    const writerOnly = await addSeatHolder(pub, "writer@publicworship.life", [
+      "marketing.blog.edit",
+    ]);
+    await expect(
+      writerOnly.mutation(api.marketingBlog.deletePost, { postId }),
+    ).rejects.toThrow(/publish/i);
+
+    // The row survived the refusal, so its URL still resolves.
+    expect(await pub.as.query(api.marketingBlog.getPost, { postId })).not.toBeNull();
+
+    // And a publisher may finish the job.
+    await pub.as.mutation(api.marketingBlog.deletePost, { postId });
+    expect(await pub.as.query(api.marketingBlog.getPost, { postId })).toBeNull();
+  });
+
+  test("deleting a never-published draft still needs only the write power", async () => {
+    const s = await writer();
+    const postId = await newPost(s);
+    await s.as.mutation(api.marketingBlog.deletePost, { postId });
+    expect(await s.as.query(api.marketingBlog.getPost, { postId })).toBeNull();
+  });
+});
 
 describe("listPosts", () => {
   test("shows every status, carries reading minutes, and never carries a token", async () => {

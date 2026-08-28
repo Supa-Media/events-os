@@ -198,14 +198,20 @@ function EventsRowEditor({
   }) => void;
   onCancel: () => void;
 }) {
+  // SEEDED ONCE, never re-synced from the query.
+  //
+  // The obvious version — an effect that copies `row` into state whenever it
+  // changes — silently threw away unsaved work. `pinnedEventSlugs` and
+  // `hiddenEventSlugs` are fresh array identities on every `siteContent`
+  // result, so ANY unrelated change to `siteLinks` (someone renaming a card,
+  // this desk's own reorder, a second tab) re-ran it and reset the pins the
+  // marketer was in the middle of setting. The editor is short-lived and opens
+  // from a button, so seeding at mount is enough; the cost — a concurrent edit
+  // to this one row is not pulled in — is smaller than losing the edit in
+  // progress, and closing and reopening picks it up.
   const [max, setMax] = useState(String(row.maxEvents ?? 0));
   const [pinned, setPinned] = useState<string[]>(row.pinnedEventSlugs ?? []);
   const [hidden, setHidden] = useState<string[]>(row.hiddenEventSlugs ?? []);
-  useEffect(() => {
-    setMax(String(row.maxEvents ?? 0));
-    setPinned(row.pinnedEventSlugs ?? []);
-    setHidden(row.hiddenEventSlugs ?? []);
-  }, [row.maxEvents, row.pinnedEventSlugs, row.hiddenEventSlugs]);
 
   const dirty =
     Number(max) !== (row.maxEvents ?? 0) ||
@@ -312,18 +318,48 @@ function EventsRowEditor({
             Recently finished
           </Text>
           <Text className="mb-2 text-xs text-muted">
-            Off the grid on their own, the day after the event. Nothing here to
-            set.
+            These drop off the grid on their own, the day after the event —
+            there is nothing to set. A leftover setting can still be cleared.
           </Text>
-          {finished.map((ev) => (
-            <Text
-              key={ev.slug}
-              className="mb-1 text-xs text-faint"
-              numberOfLines={1}
-            >
-              {ev.title} · {formatEventDay(ev.startDate)}
-            </Text>
-          ))}
+          {finished.map((ev) => {
+            // A finished event can still CARRY a pin or a hide set while it was
+            // upcoming. Offering Lead-with/Hide here would be offering controls
+            // that do nothing (`resolveEventCards` drops it either way), but
+            // leaving it as plain text was the gap that reaching back for these
+            // rows was meant to close: the setting would be stuck forever,
+            // invisible, and would fire again if the event were ever
+            // rescheduled. So the only affordance is the one that has an
+            // effect — taking it off.
+            const stale = pinned.includes(ev.slug)
+              ? "Leading"
+              : hidden.includes(ev.slug)
+                ? "Hidden"
+                : null;
+            return (
+              <View
+                key={ev.slug}
+                className="mb-1.5 flex-row items-center justify-between gap-2"
+              >
+                <Text className="flex-1 text-xs text-faint" numberOfLines={1}>
+                  {ev.title} · {formatEventDay(ev.startDate)}
+                </Text>
+                {stale ? (
+                  <>
+                    <Badge label={stale} tone="neutral" />
+                    <Button
+                      title="Clear"
+                      size="sm"
+                      variant="ghost"
+                      onPress={() => {
+                        setPinned((prev) => prev.filter((sl) => sl !== ev.slug));
+                        setHidden((prev) => prev.filter((sl) => sl !== ev.slug));
+                      }}
+                    />
+                  </>
+                ) : null}
+              </View>
+            );
+          })}
         </View>
       ) : null}
 

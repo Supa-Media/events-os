@@ -557,11 +557,18 @@ export const setPostStatus = mutation({
     if (args.status === post.status) return null;
 
     if (args.status === "draft") {
-      throw new ConvexError({
-        code: "INVALID_TRANSITION",
-        message:
-          "A post that has been public can't go back to being a draft — its link is out there. Archive it instead: the page keeps resolving and says it was taken down.",
-      });
+      // `publishedAt` is the honest test, not `status`. A post archived
+      // straight from draft — a mistaken click on a piece nobody outside the
+      // org ever saw — has no link out there to protect, and refusing it left
+      // that post stuck forever behind an error message that was false about
+      // its own case ("a post that has been public…" when it never had been).
+      if (post.publishedAt !== undefined) {
+        throw new ConvexError({
+          code: "INVALID_TRANSITION",
+          message:
+            "A post that has been public can't go back to being a draft — its link is out there. Archive it instead: the page keeps resolving and says it was taken down.",
+        });
+      }
     }
 
     if (args.status === "published") {
@@ -587,7 +594,7 @@ export const setPostStatus = mutation({
 });
 
 /**
- * Delete a post — and refuse when it has been published.
+ * Delete a post — and refuse while it is published.
  *
  * The refusal is the point, and it is where this parts company with
  * `listings.ts#deleteListing`. A published post's URL is held by strangers,
@@ -596,9 +603,17 @@ export const setPostStatus = mutation({
  * resolving to a page that says the post was taken down, which is the honest
  * answer and the one the public renderer is built for.
  *
- * A draft or an archived post deletes cleanly: a draft was never public, and
- * an archived one is a deliberate second decision by someone who has already
- * seen the page it leaves behind.
+ * ── Two gates, because there are two different deletions ────────────────────
+ * A post that was NEVER public is a draft somebody wrote and thought better
+ * of; `marketing.blog.edit` — the power to write — is the right authority to
+ * throw it away.
+ *
+ * A post that HAS been public is different even once archived: its URL is
+ * still out there resolving, and deleting it turns a page that says "we took
+ * this down" into a 404 while orphaning its reactions. Taking it down needed
+ * `marketing.blog.publish`; erasing the evidence that it ever existed should
+ * not need less. Gating this on `edit` let a writer undo a Director's decision
+ * one screen later, which is the shape of every separation-of-duties bug.
  */
 export const deletePost = mutation({
   args: { postId: v.id("blogPosts") },
@@ -607,6 +622,7 @@ export const deletePost = mutation({
     await requireBlogEdit(ctx);
     const post = await ctx.db.get(args.postId);
     if (!post) return null; // deleting twice is not an error
+    if (post.publishedAt !== undefined) await requireBlogPublish(ctx);
     if (post.status === "published") {
       throw new ConvexError({
         code: "PUBLISHED_POST",

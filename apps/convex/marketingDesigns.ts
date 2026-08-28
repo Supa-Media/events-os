@@ -187,11 +187,55 @@ async function applyOrder(
     await patch(id, order);
     order += ORDER_STEP;
   }
-  const rest = await ctx.db.query(table).take(scanLimit);
+  // The tail — rows the caller did not name — keeps its RELATIVE order, which
+  // means reading it through `by_order` rather than the table's creation order.
+  // A bare `ctx.db.query(table)` returns rows oldest-first, so a row added
+  // while the drag was in flight would be interleaved by age instead of
+  // appended, silently reshuffling a list the caller thought it had fixed.
+  const rest = await ctx.db.query(table).withIndex("by_order").take(scanLimit);
   for (const doc of rest) {
     if (seen.has(String(doc._id))) continue;
     await patch(doc._id, order);
     order += ORDER_STEP;
+  }
+}
+
+/**
+ * Delete the storage blobs a save has just orphaned.
+ *
+ * Called after the row is patched, with the storage ids that SURVIVED. Anything
+ * the old row pointed at that the new one does not is now unreachable through
+ * the library — and a Convex blob with no row pointing at it is not garbage
+ * collected, it is simply a file at a permanent, unauthenticated URL that
+ * somebody may still have.
+ *
+ * That URL is the whole reason this exists. `ctx.storage.getUrl` returns an
+ * address that never rotates and never expires, and the library caches it on
+ * the row precisely so a picker does not pay a round trip per image — so a
+ * "removed" background that only had its id unset stays fetchable by anyone
+ * who ever loaded the desk. `deleteDesign` already hard-deletes for this
+ * reason; leaving replace and clear behind would mean the same button taught
+ * two different things about what "remove" does.
+ *
+ * Best-effort per blob: a storage id that is already gone (a double-save, a
+ * hand-cleaned deployment) must not fail a save that has otherwise committed.
+ */
+async function dropOrphanedBlobs(
+  ctx: MutationCtx,
+  previous: Doc<"designAssets">,
+  keptImage: Id<"_storage"> | undefined,
+  keptThumbnail: Id<"_storage"> | undefined,
+): Promise<void> {
+  const kept = new Set(
+    [keptImage, keptThumbnail].filter(Boolean).map((id) => String(id)),
+  );
+  for (const old of [previous.imageStorage, previous.thumbnailStorage]) {
+    if (!old || kept.has(String(old))) continue;
+    try {
+      await ctx.storage.delete(old);
+    } catch {
+      // Already gone. Nothing to clean up, and nothing worth failing over.
+    }
   }
 }
 
@@ -830,6 +874,12 @@ export const upsertDesign = mutation({
     // Resolve the two uploads FIRST, so a bad storage id fails before anything
     // is written — a half-saved design with the new title and the old picture
     // is a state nobody asked for.
+    //
+    // Whatever this save orphans is hard-deleted at the end, after the row is
+    // written. Unsetting the id alone leaves the blob fetchable at the URL the
+    // library already handed out, which is the exact outcome `deleteDesign`
+    // hard-deletes to prevent — "removed" has to mean removed, or the two
+    // paths teach different things about the same button.
     const image = args.clearImage
       ? { storage: undefined, url: undefined }
       : args.imageStorage
@@ -881,6 +931,9 @@ export const upsertDesign = mutation({
         // Keep-if-not-resent — moving is `moveDesignToFolder`'s job.
         folderId: args.folderId ?? existing.folderId,
       });
+      // AFTER the row is written, never before: if the patch failed we would
+      // have deleted the blob a still-live row points at.
+      await dropOrphanedBlobs(ctx, existing, image.storage, thumbnail.storage);
       return args.designId;
     }
 
