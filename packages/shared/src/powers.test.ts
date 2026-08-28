@@ -278,6 +278,12 @@ describe("legacy migration", () => {
       "hiring.view",
       "hiring.edit",
       "hiring.approve",
+      // The Marketing desk shipped 2026-08-28 (the homepage's own copy and
+      // link cards + the mailing/SMS list). Same story as `hiring` — a new
+      // domain, nothing in the old vocabulary meant it.
+      "marketing.site.edit",
+      "marketing.list.view",
+      "marketing.list.edit",
     ]);
   });
 
@@ -402,11 +408,21 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
    *  - `hiring` (2026-08-23, careers page + application pipeline): the People
    *    seat and the ED hold the call; the recruiting associate runs the
    *    funnel without being able to close a file.
+   *  - `marketing` (2026-08-28, the Marketing desk): the marketing chain gets
+   *    the homepage's words and cards; the Director and the ED also get the
+   *    mailing list, while the associate and the chapter Marketing Lead only
+   *    read it. This is a NEW surface, not a re-grant — before the desk
+   *    existed, changing a headline or a link was a pull request.
    */
   const POST_STANDARDIZATION_DOMAINS: Partial<Record<string, string[]>> = {
-    executive_director: ["hiring"],
+    executive_director: ["hiring", "marketing"],
     expansion_director: ["hiring"],
     recruiting_associate: ["hiring"],
+    marketing_director: ["marketing"],
+    social_media_manager: ["marketing"],
+    graphic_designer: ["marketing"],
+    marketing_associate: ["marketing"],
+    marketing_lead: ["marketing"],
   };
 
   test("no seat gained a power outside its own domains", () => {
@@ -490,8 +506,14 @@ describe("areas are earned, not reserved", () => {
 
   test("the vocabulary stays small — a growing list is the smell this replaced", () => {
     // Not a hard cap, a speed bump: if this trips, ask whether the new power
-    // needed to exist or belonged inside an existing string.
-    expect(POWERS.length).toBeLessThanOrEqual(20);
+    // needed to exist or belonged inside an existing string. Raised to 22 on
+    // 2026-08-28 for the Marketing desk's three, and the question was asked:
+    // site-vs-list had to split (a designer places cards, they don't touch the
+    // roster) and view-vs-edit had to split (an associate reads the list, a
+    // Director takes people off it). Export deliberately did NOT get a fourth
+    // string — `data.export` already means that. Kept tight on purpose so the
+    // NEXT power trips this again.
+    expect(POWERS.length).toBeLessThanOrEqual(22);
   });
 });
 

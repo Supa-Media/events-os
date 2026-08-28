@@ -2320,3 +2320,9 @@ export * from "./volunteers";
 // same process as constants, so the careers page, the intake, and the Hiring
 // desk can't drift from the lessons or from each other.
 export * from "./hiring";
+
+// ── Marketing: the homepage's editable copy, cards, and impact numbers ───────
+// The wire contract three things share and must not drift on — the OS's
+// serializer, `GET /api/site/home`, and the landing renderer. Read this next to
+// `hiring.ts`, which does the same job for `/team`'s job postings.
+export * from "./marketing";

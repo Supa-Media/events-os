@@ -452,6 +452,74 @@ export async function getSeatDerivedGivingCapabilities(
   return result;
 }
 
+// ── Marketing seat-derived capabilities ──────────────────────────────────────
+
+/** One scope's seat-derived MARKETING capabilities. */
+export interface SeatDerivedMarketingScopeCapabilities {
+  /** Some seat at this scope carries `marketing.site.edit`. Only ever true at
+   *  `central` — the power is declared `scope: "central"` and this function
+   *  honors that at derivation, not just at rendering. */
+  site: boolean;
+  /** Some seat at this scope carries `marketing.list.view`. */
+  listView: boolean;
+  /** Some seat at this scope carries `marketing.list.edit`. */
+  listEdit: boolean;
+}
+
+/** Per-scope seat-derived marketing capabilities, keyed by `scopeKey` (the
+ *  literal `"central"` or an `Id<"chapters">`) — same shape as the giving
+ *  record above. */
+export type SeatDerivedMarketingCapabilities = Record<
+  string,
+  SeatDerivedMarketingScopeCapabilities
+>;
+
+/**
+ * The person's seat-derived MARKETING capabilities, per scope. The Marketing
+ * desk's analog of `getSeatDerivedGivingCapabilities`, with the same bounds
+ * (one indexed `by_person` query capped at `PERSON_SEAT_ASSIGNMENT_LIMIT`, one
+ * `ctx.db.get` per assignment, a stale def contributes nothing, capabilities
+ * only ever OR together).
+ *
+ * `marketing.site.edit` is skipped outright at a chapter scope — the same
+ * treatment `getSeatDerivedHiringCapabilities` gives the hiring trio, and for
+ * the same reason: the power is `scope: "central"` because the org has ONE
+ * homepage, so a chapter grant must reach nothing in the enforcement path and
+ * not only in the chart's rendering. The list powers carry no such declaration
+ * and ARE chapter-scopable: a chapter's Marketing Lead reading their own
+ * chapter's list is exactly the intended grant.
+ */
+export async function getSeatDerivedMarketingCapabilities(
+  ctx: QueryCtx,
+  personId: Id<"people">,
+): Promise<SeatDerivedMarketingCapabilities> {
+  const assignments = await ctx.db
+    .query("seatAssignments")
+    .withIndex("by_person", (q) => q.eq("personId", personId))
+    .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
+
+  const result: SeatDerivedMarketingCapabilities = {};
+  for (const assignment of assignments) {
+    const def = await ctx.db.get(assignment.seatDefId);
+    if (!def) continue; // stale assignment on a deleted def
+
+    const scopeKey = String(assignment.scope);
+    const entry =
+      result[scopeKey] ??
+      (result[scopeKey] = { site: false, listView: false, listEdit: false });
+
+    // `marketing.list.edit` implies `.list.view` via the ladder rule, already
+    // applied by `expandPowers` — no manual "edit implies read" step here.
+    const powers = expandPowers(def.capabilities);
+    if (powers.has("marketing.site.edit") && scopeKey === CENTRAL_SCOPE_KEY) {
+      entry.site = true;
+    }
+    if (powers.has("marketing.list.edit")) entry.listEdit = true;
+    if (powers.has("marketing.list.view")) entry.listView = true;
+  }
+  return result;
+}
+
 // ── Data export seat-derived capability ──────────────────────────────────────
 
 /**

@@ -37,6 +37,7 @@ import {
   jobListings,
 } from "./schema/hiring";
 import { volunteerSignups } from "./schema/volunteers";
+import { siteCopy, siteStats, siteLinks } from "./schema/marketing";
 import { registrations } from "./schema/registrations";
 import { responsibilities, checkIns } from "./schema/responsibilities";
 import { songs, setlistEntries, songRequests } from "./schema/songs";
@@ -627,6 +628,15 @@ const schema = defineSchema({
   // schema/mailchimp.ts + mailchimpSync.ts.
   mailchimpMembers,
   mailchimpSyncRuns,
+
+  // The public homepage's own content — its copy, its impact numbers, and the
+  // Important Links grid (including the row that decides where the live event
+  // cards land and which ones show). Read by publicworship.life at runtime over
+  // GET /api/site/home; written only through `marketing.site.edit`. See
+  // schema/marketing.ts + marketingSite.ts + `@events-os/shared`'s marketing.ts.
+  siteCopy,
+  siteStats,
+  siteLinks,
 
   // Google Chat channels — deployment-wide named-space list (name + write-only
   // webhook URL) behind the Comms Schedule's in-app "Send" button. See

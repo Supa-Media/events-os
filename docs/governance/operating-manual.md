@@ -75,7 +75,7 @@ update these tables, `governance.test.ts` fails.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve` |
+| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit` |
 | Financial Manager | Executive Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
 | Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
@@ -85,10 +85,10 @@ update these tables, `governance.test.ts` fails.
 | Artists | Music Director | many | — |
 | Musicians | Music Director | many | — |
 | Songwriters | Music Director | many | — |
-| Marketing Director | Executive Director | 1 | `email.campaigns.approve`, `data.export` |
-| Social Media Manager | Marketing Director | 1 | `email.assets.edit` |
-| Graphic Designer | Marketing Director | 1 | `email.assets.edit` |
-| Marketing Associate | Marketing Director | many | — |
+| Marketing Director | Executive Director | 1 | `email.campaigns.approve`, `data.export`, `marketing.site.edit`, `marketing.list.edit` |
+| Social Media Manager | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.list.view` |
+| Graphic Designer | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit` |
+| Marketing Associate | Marketing Director | many | `marketing.list.view` |
 | Expansion Director | Executive Director | 1 | `giving.view`, `data.export`, `hiring.approve` |
 | Chapter Directors | Expansion Director | many | — |
 | Recruiting Associate | Expansion Director | many | `hiring.edit` |
@@ -116,7 +116,7 @@ Every chapter is stamped with this chart.
 | Event Lead | Chapter Director | 1 | `events.checkin` |
 | Event Organizers | Event Lead | many | `events.checkin` |
 | Production Coordinator | Event Lead | many | `events.checkin` |
-| Marketing Lead | Chapter Director | 1 | — |
+| Marketing Lead | Chapter Director | 1 | `marketing.list.view` |
 
 <!-- /seat-chart -->
 
@@ -213,6 +213,9 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `hiring.view` | Read the Hiring desk — applications, interview rubrics, trial reviews |
 | `hiring.edit` | Run the pipeline: move candidates, file rubric reviews, start an Empowerment Trial |
 | `hiring.approve` | Make the call — place, not-now, or decline a candidate, and send the outcome message |
+| `marketing.site.edit` | Change the public homepage's copy, impact numbers, and Important Links cards — live, with no deploy |
+| `marketing.list.view` | Read the email and SMS mailing lists at the holder's scope, and who has opted out |
+| `marketing.list.edit` | Add someone to the mailing list, and take someone off it when they ask |
 | `org.chart.edit` | Edit the org chart — seats, holders, and their powers |
 | `data.export` | Export records the holder can already see, as a file |
 

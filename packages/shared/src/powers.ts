@@ -136,6 +136,11 @@ export const POWER_DOMAINS = [
    *  interview rubric, the Empowerment Trial, and the call at the end. The
    *  People desk — one funnel for the whole org, so it is CENTRAL only. */
   "hiring",
+  /** The public face: the website's own copy and link cards, and the mailing
+   *  and SMS lists the org can reach. Named `marketing` rather than `site`
+   *  because the desk is a FUNCTION's home (the Marketing seat's), not one
+   *  surface — the list lives here for the same reason the copy does. */
+  "marketing",
   /** The org itself: the chart, the seats. */
   "org",
   /** Bulk extraction, across every dataset. */
@@ -208,6 +213,10 @@ export const POWERS = [
   "hiring.view",
   "hiring.edit",
   "hiring.approve",
+  // ── marketing ─────────────────────────────────────────────────────────────
+  "marketing.site.edit",
+  "marketing.list.view",
+  "marketing.list.edit",
   // ── org ───────────────────────────────────────────────────────────────────
   "org.chart.edit",
   // ── data ──────────────────────────────────────────────────────────────────
@@ -426,6 +435,64 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
      *  closing files — not to keep the Director out of the pipeline. */
     implies: ["hiring.edit"],
     scope: "central",
+  },
+
+  // ── marketing ─────────────────────────────────────────────────────────────
+  /**
+   * The homepage's own words and cards. `edit` rather than a separate
+   * `publish` rung, deliberately, and it is worth saying why given
+   * `finance.ledger.publish` right above went the other way: a published
+   * NUMBER is a claim about money that can only be amended in public, so it
+   * earns a second party. A headline is a sentence, changed the moment someone
+   * notices it is wrong, by the seat whose whole job is the public voice.
+   * Gating it twice would just mean the words go stale — which is the failure
+   * this desk exists to fix.
+   *
+   * A card can still be saved unpublished (`siteLinks.published`) — that is a
+   * DRAFT, the same split `jobListings` uses, not a second authority.
+   */
+  "marketing.site.edit": {
+    id: "marketing.site.edit",
+    domain: "marketing",
+    area: "site",
+    action: "edit",
+    label: "Edit the public site",
+    description:
+      "Change the homepage's copy, impact numbers, and Important Links cards — live, with no deploy.",
+    // publicworship.life is the ORG's site. A chapter has no homepage of its
+    // own to edit, so a chapter-scoped grant would reach nothing.
+    scope: "central",
+  },
+  /**
+   * The mailing and SMS lists. Its own AREA rather than riding on
+   * `email.campaigns.*`, because the two came apart in practice: bulk email
+   * moved to Mailchimp (`docs/plans/email-desk-parked.md`) and the Emails desk
+   * is parked, but the org still keeps a list — who is on it, who asked off it,
+   * who to export for a Mailchimp import. Owning the LIST and SENDING to it are
+   * now genuinely different jobs held by different people.
+   *
+   * EXPORTING the list is deliberately NOT here: walking a whole contact set
+   * out of the building as a file is what `data.export` already means, and
+   * `requireMailingListExport` (`apps/convex/lib/marketingAccess.ts`) asks for
+   * both. A fourth string would have said the same thing twice.
+   */
+  "marketing.list.view": {
+    id: "marketing.list.view",
+    domain: "marketing",
+    area: "list",
+    action: "view",
+    label: "See the mailing list",
+    description:
+      "Read who is on the email and SMS lists, and who has opted out.",
+  },
+  "marketing.list.edit": {
+    id: "marketing.list.edit",
+    domain: "marketing",
+    area: "list",
+    action: "edit",
+    label: "Manage the mailing list",
+    description:
+      "Add someone to the list, and take someone off it when they ask.",
   },
 
   // ── org ───────────────────────────────────────────────────────────────────
@@ -665,6 +732,12 @@ export const POWER_DOMAIN_DEFS: Record<PowerDomain, PowerDomainDef> = {
       { value: "run", label: "Run the pipeline", power: "hiring.edit" },
       { value: "decide", label: "Make the call", power: "hiring.approve" },
     ],
+  },
+  marketing: {
+    id: "marketing",
+    label: "Marketing desk",
+    description:
+      "The public homepage's words and cards, and the mailing and SMS lists. A SET, not a ladder: the person who makes the card art has no reason to see the roster, and the person who keeps the list has no reason to touch the homepage.",
   },
   org: {
     id: "org",

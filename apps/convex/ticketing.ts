@@ -47,7 +47,7 @@ import { beginEmailVerification, clearEmailCode } from "./lib/emailCodes";
 import { linkRsvpToPerson } from "./lib/rsvpPeople";
 import { createPaidDonationForOrder } from "./giving";
 import { RSVP_STATUSES } from "./schema/ticketing";
-import { startOfNextEasternDay } from "@events-os/shared";
+import { listUpcomingEventPages } from "./lib/upcomingEvents";
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
@@ -1122,55 +1122,15 @@ export const getPublicPage = query({
  * Read cost stays flat as historical published pages accumulate: we read the
  * most-recently-created published pages first (upcoming events are always among
  * them) and bound the scan, rather than reading every published page ever.
+ *
+ * The selection itself lives in `lib/upcomingEvents.ts` — lifted out when the
+ * Marketing desk needed the same list inside its own queries (the homepage's
+ * link grid now applies pins/hides on top of it). This stays the public
+ * function; that is the one rule.
  */
 export const listPublishedUpcoming = query({
   args: { limit: v.optional(v.number()) },
-  handler: async (ctx, { limit }) => {
-    const now = Date.now();
-    const max = Math.max(1, Math.min(limit ?? 6, 24));
-
-    const pages = await ctx.db
-      .query("eventPages")
-      .withIndex("by_published", (q) => q.eq("published", true))
-      .order("desc")
-      .take(100);
-
-    const upcoming: Array<{
-      slug: string;
-      eventName: string;
-      startDate: number;
-      endDate: number | null;
-      tagline: string | null;
-      venueName: string | null;
-      hasCover: boolean;
-      coverFocalX: number;
-      coverFocalY: number;
-    }> = [];
-    for (const page of pages) {
-      const event = await ctx.db.get(page.eventId);
-      // Skip orphaned pages and the Academy's training sandbox events.
-      if (!event || event.isTraining) continue;
-      const endsAt = page.endDate ?? event.eventDate;
-      // Keep the card up through the whole event day (ET); drop it only once
-      // the Eastern day AFTER the event's end has begun.
-      if (now >= startOfNextEasternDay(endsAt)) continue;
-      upcoming.push({
-        slug: page.slug,
-        eventName: event.name,
-        startDate: event.eventDate,
-        endDate: page.endDate ?? null,
-        tagline: page.tagline ?? null,
-        venueName: page.venueName ?? null,
-        hasCover: !!page.coverImage,
-        // Cover crop focal point (percent) so marketing surfaces (the
-        // "Important Links" card) crop the same way the landing page does.
-        coverFocalX: page.coverFocalX ?? 50,
-        coverFocalY: page.coverFocalY ?? 50,
-      });
-    }
-    upcoming.sort((a, b) => a.startDate - b.startDate);
-    return upcoming.slice(0, max);
-  },
+  handler: async (ctx, { limit }) => await listUpcomingEventPages(ctx, limit),
 });
 
 /** Reaction rollup for one activity target. */
