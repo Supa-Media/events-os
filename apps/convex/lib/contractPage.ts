@@ -310,6 +310,14 @@ input[type=file].forminput{padding:9px 10px;font-size:13px;}
 .summ .sr:last-child{border-bottom:none;}
 .summ .sr .k{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--muted);flex:0 0 auto;padding-top:2px;}
 .summ .sr .v{text-align:right;font-size:14px;overflow-wrap:anywhere;}
+/* Schedule rows carry prose in the key cell — the payment's name with its
+   timing on a second line — so unlike the term rows the key takes the slack
+   and wraps, while the money and the badge hold their width instead of being
+   crushed into a character per line. */
+.summ .sr.sched .k{flex:1 1 auto;min-width:0;}
+.summ .sr.sched .k .note{display:block;margin-top:2px;font-size:12px;line-height:17px;font-weight:400;letter-spacing:0;text-transform:none;color:var(--muted);}
+.summ .sr.sched .v.money{flex:0 0 auto;white-space:nowrap;overflow-wrap:normal;}
+.summ .sr.sched .badge{flex:0 0 auto;}
 .timeline{display:flex;flex-direction:column;}
 .tl{display:flex;gap:14px;}
 .tl .tll{display:flex;flex-direction:column;align-items:center;flex:0 0 26px;}
@@ -474,7 +482,7 @@ function schedulePanel(view: ContractPublicView, mode: "terms" | "status"): stri
 
   const body = rows
     .map(
-      (r) => `<div class="sr">
+      (r) => `<div class="sr sched">
         <span class="k">${esc(r.label)}<span class="note">${esc(when(r))}</span></span>
         <span class="v money">${esc(money(r.amountCents))}</span>${mark(r)}
       </div>`,
