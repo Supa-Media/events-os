@@ -716,6 +716,15 @@ around — which is the exact inconsistency it exists to prevent.
 One brand, org-wide. A chapter does not get its own colors; the power is
 central-scoped and a chapter grant reaches nothing.
 
+**The kit is the only place the values are written down, and nothing else may
+restate them.** Training, this manual, a handbook, a slide — none of them print
+a hex code or list the typefaces; they point here. The reason is not tidiness:
+the designer is meant to change the brand without asking anyone, so any second
+copy is a copy that goes wrong silently, and the person it misleads is whoever
+trusted the document instead of the kit. The kit may carry more than one face
+for the same job; deciding how they divide the work is the designer's, and
+needs no approval and no release.
+
 Design files are stored as LINKS to the tool they live in (Canva, Figma,
 Dropbox) plus a thumbnail the Corporation hosts itself. Never store a design
 tool's own preview URL as the thumbnail — those expire, and a library of dead
