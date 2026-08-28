@@ -19,8 +19,10 @@
  *  1. Colors are a wall of swatches, not a table of hexes. (`SwatchWall`)
  *  2. Faces are specimens set in themselves — or an honest "this device doesn't
  *     have it" plus the download. (`SpecimenWall`, `designs/fontSpecimen.shared`)
- *  3. Files are a grid of thumbnails; the LIVE Canva/Figma embed renders once,
- *     in the viewer, not nine times in a grid. (`DesignGrid`, `DesignInspector`)
+ *  3. Files are a grid of LIVE previews on web — every Canva/Figma tile
+ *     renders its real embed, per the founder's later call ("just render the
+ *     iframe for all of them"); stills and stored thumbnails remain the
+ *     fallback and the native answer. (`DesignGrid`, `DesignInspector`)
  *  4. Folders are navigated from a rail rather than scrolled past, and an empty
  *     shelf asks for its first file instead of reporting a zero. (`FolderRail`)
  *  5. Editing moved into the viewer panel, so the browse surface stays a browse
@@ -562,7 +564,7 @@ function ShelfEmptyState({
       title={everything ? "No design files yet" : `Nothing on ${shelfName} yet`}
       message={
         canEdit
-          ? "Paste a Canva or Figma link and it lands here, renders in the viewer, and stays one tap from the editable file."
+          ? "Paste a Canva or Figma link and it lands here, previews right on its tile, and stays one tap from the editable file."
           : "The marketing team hasn't put anything here yet."
       }
       action={

@@ -1,11 +1,24 @@
 /**
  * MARKETING · Designs — the files, as a grid of things you can see.
  *
- * The shipped tab drew a card per design with a live Canva frame inside it. The
- * grid draws a STORED THUMBNAIL and nothing else; the live embed happens once,
- * in the viewer, for the one file you opened. That is the mockup's own call and
- * it is the difference between a library that loads and nine authenticated
- * iframes racing each other.
+ * ── On web, a tile IS the live preview ──────────────────────────────────────
+ * A Canva/Figma tile renders its real embed, right in the grid. This reverses
+ * the workstation redesign's thumbnails-only rule on the founder's explicit
+ * call: "It makes no sense that we're able to render this page but not able
+ * to preview it. I don't care how slow it's gonna make the page — we just
+ * render the iframe for all of them." The costs that rule was avoiding are
+ * kept survivable rather than avoided: frames load lazily, the still or
+ * placeholder stays painted UNDERNEATH so a loading tile is never a white
+ * box, and `GRID_EMBED_MAX` (library.shared) caps how many mount at once —
+ * the "maybe we put a limit" half of the same instruction.
+ *
+ * The frame is `pointerEvents: none`, on the wrapper and the iframe both: a
+ * tile is a button that opens the inspector, and an iframe that swallows the
+ * click turns the whole library into a wall of things you can look at but
+ * not open.
+ *
+ * Native still draws the still — same reasoning as `DesignEmbed`'s native
+ * branch: a phone-width authenticated canvas is a sign-in wall, not a preview.
  *
  * ── A design with no thumbnail is not a grey box ────────────────────────────
  * It gets a typographic tile painted from the ORG'S palette — the same colors
@@ -17,16 +30,17 @@
  * ── Grid and list are the same rows ─────────────────────────────────────────
  * The toggle changes density, not content: the list is for a folder of forty
  * near-identical story overlays where the title is the distinguishing feature,
- * the grid is for everything else.
+ * the grid is for everything else. The list's 40px stamp stays a still on
+ * every platform — an embed the width of a thumb tells you nothing.
  */
 import { useState } from "react";
-import { Image, Pressable, Text, View } from "react-native";
+import { Image, Platform, Pressable, Text, View } from "react-native";
 import {
   DESIGN_KIND_LABELS,
   type BrandColor,
   type DesignAsset,
 } from "@events-os/shared";
-import { designPreview, type DesignPreview } from "./library.shared";
+import { designPreview, gridEmbeds, type DesignPreview } from "./library.shared";
 
 export function DesignGrid({
   designs,
@@ -56,6 +70,10 @@ export function DesignGrid({
     );
   }
 
+  // Which tiles carry a live frame — web only; native tiles stay stills.
+  const live =
+    Platform.OS === "web" ? gridEmbeds(designs) : new Set<string>();
+
   return (
     <View className="flex-row flex-wrap gap-3.5">
       {designs.map((design) => (
@@ -63,6 +81,7 @@ export function DesignGrid({
           key={design.id}
           design={design}
           palette={palette}
+          live={live.has(design.id)}
           onOpen={onOpen}
         />
       ))}
@@ -73,10 +92,13 @@ export function DesignGrid({
 function DesignTile({
   design,
   palette,
+  live,
   onOpen,
 }: {
   design: DesignAsset;
   palette: BrandColor[];
+  /** Render the design's real embed on this tile (web, under the cap). */
+  live: boolean;
   onOpen: (design: DesignAsset) => void;
 }) {
   const [hovered, setHovered] = useState(false);
@@ -95,6 +117,30 @@ function DesignTile({
     >
       <View className="h-[210px] w-full">
         <Preview preview={preview} title={design.title} />
+        {live && design.embedUrl ? (
+          // The still/placeholder above stays painted underneath, so the tile
+          // shows the brand while the frame loads instead of a white box.
+          // pointerEvents none on both layers: the press belongs to the tile.
+          <View
+            className="absolute bottom-0 left-0 right-0 top-0"
+            style={{ pointerEvents: "none" }}
+          >
+            {/* RN-web renders this iframe directly in the DOM. */}
+            <iframe
+              src={design.embedUrl}
+              title={design.title}
+              loading="lazy"
+              tabIndex={-1}
+              aria-hidden
+              style={{
+                width: "100%",
+                height: "100%",
+                border: "0",
+                pointerEvents: "none",
+              }}
+            />
+          </View>
+        ) : null}
         <View className="absolute left-2 top-2 rounded-pill bg-raised/95 px-2 py-0.5">
           <Text className="text-2xs font-semibold text-ink">
             {DESIGN_KIND_LABELS[design.kind]}
