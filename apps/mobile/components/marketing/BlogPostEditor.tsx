@@ -457,8 +457,7 @@ function PublishCard({
       {/* The link block. A draft's preview link is how it reaches an editor
           before it is public — per-post and revocable, unlike the shared
           password it replaces. Both are shown selectable as well as copyable,
-          because `copyToClipboard` reports failure on native rather than
-          pretending. */}
+          because `copyToClipboard` reports failure rather than pretending. */}
       <View className="mb-3">
         <Text className="mb-1 text-xs font-semibold text-ink">
           {post.status === "published" ? "Public link" : "Preview link"}

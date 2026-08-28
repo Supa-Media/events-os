@@ -99,11 +99,9 @@ function formatDate(ms: number): string {
 /**
  * A draft's shareable link, fetched on press.
  *
- * `copyToClipboard` reports failure rather than lying on native (no
- * `expo-clipboard` in this workspace), so a failed copy REVEALS the URL as
- * selectable text instead of silently doing nothing — long-press-to-select is
- * the working affordance there, and a "Copied!" that didn't copy is worse
- * than no button at all.
+ * If the system clipboard rejects a copy, the URL is revealed as selectable
+ * text instead of silently doing nothing. A "Copied!" that didn't copy is
+ * worse than no button at all.
  */
 function PreviewLinkAction({
   post,

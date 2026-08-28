@@ -8,11 +8,9 @@
  *
  * ── One tap does the thing people came for ──────────────────────────────────
  * Pressing a swatch copies its hex AND opens it in the viewer, which is what
- * the approved mockup does. The copy is best-effort: `copyToClipboard` reports
- * failure rather than lying on native (there is no clipboard module in this
- * workspace yet), and the tile only says "Copied" when the clipboard actually
- * took it. On a phone the panel that opens is where the hex is legible and
- * selectable, so the tap is still useful when the copy isn't available.
+ * the approved mockup does. The copy is best-effort: the tile only says
+ * "Copied" when the system clipboard actually took it. The panel that opens is
+ * still where the hex is legible and selectable if the copy is unavailable.
  *
  * ── Tiles are a fixed width, not a computed column count ────────────────────
  * `flex-wrap` with a fixed tile width reflows correctly on every platform

@@ -225,10 +225,9 @@ export function MailingListRemoveConfirm({
  *
  * Copy-to-clipboard is the primary affordance because the destination is
  * Mailchimp's paste box, and because a real file download is web-only in this
- * app. `copyToClipboard` returns false on native (no clipboard module is
- * installed), so the rows stay reachable there through "Show the rows" — a
- * selectable text block. A copy button that silently did nothing on a phone
- * would be worse than one that admits what it can do.
+ * app. If the system clipboard rejects a copy, the rows stay reachable through
+ * "Show the rows" — a selectable text block. A copy button that silently did
+ * nothing would be worse than one that admits what it can do.
  */
 export function MailingListCsvPanel({
   title,
@@ -259,8 +258,8 @@ export function MailingListCsvPanel({
           onPress={() => {
             void copyToClipboard(csv).then((ok) => {
               setCopied(ok);
-              // No clipboard on native — open the rows instead of leaving the
-              // press looking like it worked.
+              // Open the rows instead of leaving a failed copy looking like it
+              // worked.
               if (!ok) setShowRows(true);
             });
           }}
