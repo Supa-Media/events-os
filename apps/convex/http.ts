@@ -48,6 +48,7 @@ import {
 } from "./lib/backerPortalPage";
 import { registerBlogApiRoutes } from "./lib/blogApiRoutes";
 import { registerJoinApiRoutes } from "./lib/joinApiRoutes";
+import { registerMarketingApiRoutes } from "./lib/marketingApiRoutes";
 import {
   renderReimburseForm,
   renderReimburseStatus,
@@ -137,6 +138,11 @@ registerGiveApiRoutes(http);
 
 // JSON API for the marketing blog's emoji reactions (/api/blog/reactions).
 registerBlogApiRoutes(http);
+
+// The homepage's own content (/api/site/home, /api/site/link-image/*) and the
+// mailing-list signup (/api/subscribe) — the Marketing desk's public surface.
+// See `lib/marketingApiRoutes.ts`.
+registerMarketingApiRoutes(http);
 
 // JSON API for the signed-in backer portal (/api/backer/*).
 registerBackerApiRoutes(http);

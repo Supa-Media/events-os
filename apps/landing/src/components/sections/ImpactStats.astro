@@ -1,5 +1,14 @@
 ---
+/**
+ * "Transformative Impact" — the three numbers.
+ *
+ * OS-managed (`siteStats`, edited on the Marketing desk) and replaced wholesale
+ * at runtime by `scripts/site-content.ts`. `impact.yaml` renders below as the
+ * build-time fallback; the OS wins the moment it answers. See
+ * `lib/siteContent.ts`.
+ */
 import { getCollection } from "astro:content";
+import { SITE_COPY_DEFS } from "@events-os/shared/src/marketing";
 import Container from "../ui/Container.astro";
 import SectionHeading from "../ui/SectionHeading.astro";
 import StatCard from "../ui/StatCard.astro";
@@ -10,12 +19,20 @@ const stats = await getCollection("impact");
 <section id="impact" class="py-20 sm:py-28 scroll-mt-16">
   <Container size="wide">
     <div data-animate="fade-up">
-      <SectionHeading eyebrow="Impact" align="left">
-        <span class="text-red-500">Transformative Impact</span> of Our Hard Work
+      <SectionHeading
+        eyebrow={SITE_COPY_DEFS["impact.eyebrow"].defaultValue}
+        eyebrowCopyKey="impact.eyebrow"
+        align="left"
+      >
+        <span class="text-red-500" data-copy-key="impact.headingLead"
+          >{SITE_COPY_DEFS["impact.headingLead"].defaultValue}</span
+        >{" "}<span data-copy-key="impact.headingAccent"
+          >{SITE_COPY_DEFS["impact.headingAccent"].defaultValue}</span
+        >
       </SectionHeading>
     </div>
 
-    <div class="mt-12 grid gap-10 sm:grid-cols-3">
+    <div id="pw-impact-grid" class="mt-12 grid gap-10 sm:grid-cols-3">
       {
         stats.map((s, i) => (
           <div data-animate="fade-up" style={`--delay: ${i * 100}ms`}>

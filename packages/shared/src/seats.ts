@@ -175,6 +175,12 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // Directors that director is the ED. Day-to-day the People seat below
       // runs the funnel.
       "hiring.approve",
+      // 2026-08-28: the org's public words and its list. The ED is the one
+      // seat that answers for what publicworship.life says, so they can change
+      // it without going through the Marketing Director — and can take someone
+      // off the list when the ask lands in their inbox instead of hers.
+      "marketing.site.edit",
+      "marketing.list.edit",
     ],
     legacyTitle: "executive_director",
   },
@@ -325,7 +331,18 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // spreadsheet. Note they hold NO `giving.view`, so their people export
     // comes back without giving columns rather than failing (see
     // `lib/dataExportAccess.ts`).
-    capabilities: ["email.campaigns.approve", "data.export"],
+    // 2026-08-28: + the Marketing desk (`/marketing`). The MD owns the public
+    // voice, so they own the homepage's words, its Important Links cards, and
+    // the mailing/SMS lists — the three things that used to require a
+    // developer and a deploy. `marketing.list.edit` implies `.list.view` by
+    // the ladder rule; `data.export` above is what lets them take the list out
+    // as a CSV for Mailchimp (see `lib/marketingAccess.ts`).
+    capabilities: [
+      "email.campaigns.approve",
+      "data.export",
+      "marketing.site.edit",
+      "marketing.list.edit",
+    ],
   },
   social_media_manager: {
     id: "social_media_manager",
@@ -345,7 +362,16 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // Marketing Director / ED / FM makes, and the ED can promote this seat
     // to Compose or Approve at runtime from the org chart
     // (`apps/convex/seats.ts#setSeatCampaignPower`).
-    capabilities: ["email.assets.edit"],
+    // 2026-08-28: + `marketing.site.edit` — this seat writes the copy and swaps
+    // the link cards day to day; that IS running the social/links surface.
+    // Read-only on the list (`marketing.list.view`): who is on it is the
+    // Director's to change, but a manager who cannot see the audience cannot
+    // plan for it.
+    capabilities: [
+      "email.assets.edit",
+      "marketing.site.edit",
+      "marketing.list.view",
+    ],
   },
   graphic_designer: {
     id: "graphic_designer",
@@ -363,7 +389,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // designer couldn't even open the Campaigns desk. Same rung (and same
     // deliberate absence of `campaigns.compose`) as the Social Media Manager
     // above.
-    capabilities: ["email.assets.edit"],
+    // 2026-08-28: + `marketing.site.edit` — an Important Links card is mostly
+    // a picture, and the seat that makes the picture should be able to place
+    // it without waiting on someone else to upload it. No list access: nothing
+    // in this seat's work needs the roster.
+    capabilities: ["email.assets.edit", "marketing.site.edit"],
   },
   marketing_associate: {
     id: "marketing_associate",
@@ -372,7 +402,11 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "marketing_director",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    capabilities: [],
+    // 2026-08-28: read-only on the mailing list. An associate answers "are we
+    // reaching this person?" and works signups; taking someone off the list is
+    // a promise to a real human, so it stays with a seat that can be held to
+    // it (`marketing.list.edit`, the Director).
+    capabilities: ["marketing.list.view"],
   },
   expansion_director: {
     id: "expansion_director",
@@ -568,7 +602,13 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "Manage chapter social presence",
       "Coordinate flyers & signage",
     ],
-    capabilities: [],
+    // 2026-08-28: their own chapter's mailing list, read-only — `marketing.list.*`
+    // is chapter-scopable (see `lib/marketingAccess.ts`), so this reaches
+    // exactly the people on this chapter's roster and nobody else's. NOT
+    // `marketing.site.edit`: that power is `scope: "central"` because
+    // publicworship.life is the ORG's homepage; a chapter lead granted it
+    // would reach nothing, and the org chart would print a lie.
+    capabilities: ["marketing.list.view"],
   },
 };
 

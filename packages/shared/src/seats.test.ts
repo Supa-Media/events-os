@@ -229,6 +229,10 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       // 2026-08-23: the ED makes the call on senior seats and Chapter
       // Directors (Academy step 5).
       "hiring.approve",
+      // 2026-08-28: the Marketing desk. The ED answers for what the homepage
+      // says and can act on an unsubscribe ask that lands in their inbox.
+      "marketing.site.edit",
+      "marketing.list.edit",
     ],
     // `finance.edit` at central replaces what took four strings before
     // (`finance.manager` + `finance.central` + `finance.accounts` +
@@ -258,14 +262,29 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     songwriters: [],
     // 2026-07-24 (founder, verbatim: "ED approved by Marketing Director") —
     // a valid second party for two-party campaign approval.
-    marketing_director: ["email.campaigns.approve", "data.export"],
+    // 2026-08-28: the Marketing desk's owner — the homepage's copy and cards,
+    // and the mailing/SMS list. `data.export` above is what turns the list into
+    // a CSV.
+    marketing_director: [
+      "email.campaigns.approve",
+      "data.export",
+      "marketing.site.edit",
+      "marketing.list.edit",
+    ],
     // The two seats that actually build the newsletter own themes, templates
     // and the image library, but a mass send stays a two-party decision above
     // them. The ED can promote either to Compose/Approve at runtime
     // (`seats.ts#setSeatCampaignPower`).
-    social_media_manager: ["email.assets.edit"],
-    graphic_designer: ["email.assets.edit"],
-    marketing_associate: [],
+    // 2026-08-28: both also edit the public site — one writes the copy, the
+    // other makes the card art. Only the manager reads the list; the designer
+    // has no reason to see the roster.
+    social_media_manager: [
+      "email.assets.edit",
+      "marketing.site.edit",
+      "marketing.list.view",
+    ],
+    graphic_designer: ["email.assets.edit", "marketing.site.edit"],
+    marketing_associate: ["marketing.list.view"],
     // 2026-08-23 (careers page + hiring pipeline): the People seat holds the
     // call on a candidate; `hiring.approve` implies `hiring.edit`, so it runs
     // the funnel too. The associate below runs it WITHOUT being able to close
@@ -298,7 +317,9 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     event_lead: ["events.checkin"],
     event_organizers: ["events.checkin"],
     production_coordinator: ["events.checkin"],
-    marketing_lead: [],
+    // Their own chapter's list, read-only. NOT `marketing.site.edit` — that
+    // power is central-scope (the org has one homepage).
+    marketing_lead: ["marketing.list.view"],
   };
 
   test("SEAT_IDS has exactly 27 seats", () => {

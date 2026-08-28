@@ -331,7 +331,13 @@ describe("campaigns.design — the desk's bottom rung", () => {
 
   test("graphic_designer's post-seed default opens the desk but grants no approval power", async () => {
     const s = await designerSetup();
-    expect(await capsOf(s, "graphic_designer")).toEqual(["email.assets.edit"]);
+    // The seat also carries `marketing.site.edit` (2026-08-28, the Marketing
+    // desk) — a different domain, listed here because this assertion is exact
+    // and a reader should not have to wonder whether it leaked in.
+    expect(await capsOf(s, "graphic_designer")).toEqual([
+      "email.assets.edit",
+      "marketing.site.edit",
+    ]);
     expect(await s.as.query(api.audiences.myCampaignsAccess, {})).toEqual({
       canView: true,
       canDesign: true,
@@ -850,22 +856,32 @@ describe("campaigns.design — the desk's bottom rung", () => {
     // honestly without an implication rule — there is one now, and the seat
     // panel renders the expanded set, so the honest reading survives without a
     // stored list that can drift from it.
+    //
+    // The seat's OTHER domain rides along untouched through every rung. That
+    // is `setDomainPowersImpl`'s domain-scoping doing its job, and it became
+    // observable when the Graphic Designer picked up `marketing.site.edit`
+    // (2026-08-28) — before that, every seat this test touched had exactly one
+    // domain, so an editor that quietly replaced the whole array would have
+    // passed. It would not now.
+    const OTHER_DOMAIN = "marketing.site.edit";
+
     const asApprove = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: designer._id,
       power: "approve",
     });
-    expect(asApprove).toEqual(["email.campaigns.approve"]);
+    expect(asApprove).toEqual([OTHER_DOMAIN, "email.campaigns.approve"]);
     expect([...expandPowers(asApprove)].sort()).toEqual([
       "email.assets.edit",
       "email.campaigns.approve",
       "email.campaigns.edit",
+      OTHER_DOMAIN,
     ]);
 
     const asCompose = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: designer._id,
       power: "compose",
     });
-    expect(asCompose).toEqual(["email.campaigns.edit"]);
+    expect(asCompose).toEqual([OTHER_DOMAIN, "email.campaigns.edit"]);
     expect(expandPowers(asCompose)).toContain("email.assets.edit");
     expect(expandPowers(asCompose)).not.toContain("email.campaigns.approve");
 
@@ -873,14 +889,15 @@ describe("campaigns.design — the desk's bottom rung", () => {
       seatDefId: designer._id,
       power: "design",
     });
-    expect(asDesign).toEqual(["email.assets.edit"]);
+    expect(asDesign).toEqual([OTHER_DOMAIN, "email.assets.edit"]);
 
+    // Setting the EMAIL rung to none clears the email domain and nothing else.
     const asNone = await s.as.mutation(api.seats.setSeatCampaignPower, {
       seatDefId: designer._id,
       power: "none",
     });
-    expect(asNone).toEqual([]);
-    expect(await capsOf(s, "graphic_designer")).toEqual([]);
+    expect(asNone).toEqual([OTHER_DOMAIN]);
+    expect(await capsOf(s, "graphic_designer")).toEqual([OTHER_DOMAIN]);
   });
 
   test("stripping a designer seat to none closes the desk again", async () => {
@@ -1036,8 +1053,17 @@ describe("0053_add_campaign_design_defaults", () => {
     // the design power; it is derived rather than recorded.
     expect(result.patched).toBe(2);
 
-    expect(await capsFor(t, "graphic_designer")).toEqual(["email.assets.edit"]);
-    expect(await capsFor(t, "social_media_manager")).toEqual(["email.assets.edit"]);
+    // The marketing-domain powers each seat carries (2026-08-28) are untouched
+    // by an email-domain migration and sit ahead of the appended rung.
+    expect(await capsFor(t, "graphic_designer")).toEqual([
+      "marketing.site.edit",
+      "email.assets.edit",
+    ]);
+    expect(await capsFor(t, "social_media_manager")).toEqual([
+      "marketing.site.edit",
+      "marketing.list.view",
+      "email.assets.edit",
+    ]);
     for (const slug of ["executive_director", "financial_manager", "marketing_director"]) {
       expect(expandPowers(await capsFor(t, slug))).toContain("email.assets.edit");
     }

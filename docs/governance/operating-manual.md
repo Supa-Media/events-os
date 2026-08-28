@@ -75,7 +75,7 @@ update these tables, `governance.test.ts` fails.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve` |
+| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit` |
 | Financial Manager | Executive Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
 | Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
@@ -85,10 +85,10 @@ update these tables, `governance.test.ts` fails.
 | Artists | Music Director | many | — |
 | Musicians | Music Director | many | — |
 | Songwriters | Music Director | many | — |
-| Marketing Director | Executive Director | 1 | `email.campaigns.approve`, `data.export` |
-| Social Media Manager | Marketing Director | 1 | `email.assets.edit` |
-| Graphic Designer | Marketing Director | 1 | `email.assets.edit` |
-| Marketing Associate | Marketing Director | many | — |
+| Marketing Director | Executive Director | 1 | `email.campaigns.approve`, `data.export`, `marketing.site.edit`, `marketing.list.edit` |
+| Social Media Manager | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.list.view` |
+| Graphic Designer | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit` |
+| Marketing Associate | Marketing Director | many | `marketing.list.view` |
 | Expansion Director | Executive Director | 1 | `giving.view`, `data.export`, `hiring.approve` |
 | Chapter Directors | Expansion Director | many | — |
 | Recruiting Associate | Expansion Director | many | `hiring.edit` |
@@ -116,7 +116,7 @@ Every chapter is stamped with this chart.
 | Event Lead | Chapter Director | 1 | `events.checkin` |
 | Event Organizers | Event Lead | many | `events.checkin` |
 | Production Coordinator | Event Lead | many | `events.checkin` |
-| Marketing Lead | Chapter Director | 1 | — |
+| Marketing Lead | Chapter Director | 1 | `marketing.list.view` |
 
 <!-- /seat-chart -->
 
@@ -213,6 +213,9 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `hiring.view` | Read the Hiring desk — applications, interview rubrics, trial reviews |
 | `hiring.edit` | Run the pipeline: move candidates, file rubric reviews, start an Empowerment Trial |
 | `hiring.approve` | Make the call — place, not-now, or decline a candidate, and send the outcome message |
+| `marketing.site.edit` | Change the public homepage's copy, impact numbers, and Important Links cards — live, with no deploy |
+| `marketing.list.view` | Read the email and SMS mailing lists at the holder's scope, and who has opted out |
+| `marketing.list.edit` | Add someone to the mailing list, and take someone off it when they ask |
 | `org.chart.edit` | Edit the org chart — seats, holders, and their powers |
 | `data.export` | Export records the holder can already see, as a file |
 
@@ -661,6 +664,53 @@ ever, on any channel** — this is an absolute condition of tax exemption
 
 Speak about people the way you would if they were reading — because on a public
 ledger and a public page, they are.
+
+### 9.1 The public site
+
+The homepage's copy, its impact numbers, and its Important Links cards are
+edited in Chapter OS (Marketing desk) by a `marketing.site.edit` holder, and go
+live with no deploy and no second approver. That is deliberate and it is not the
+same standard as §4.6's published ledger: a headline is a sentence, and the seat
+that owns the public voice should be able to correct one the moment it is
+noticed. A published NUMBER about money is a claim that can only be amended in
+public, which is why that one keeps its second party.
+
+Two limits are worth stating because they are not obvious from the tool:
+
+- **An impact number is a claim.** "700,000+ people reached" is a statement the
+  Corporation makes about itself, and it must be traceable to something real and
+  revised down when it stops being. It is not marketing decoration.
+- **Nothing on the front page names a person without their consent**, including
+  in an event card pulled through automatically. §10's minors rule binds here
+  first, because this is the surface with the widest audience.
+
+### 9.2 The mailing list
+
+The email and SMS lists live on the roster itself, not in a separate tool: a
+person on the list is a `people` row, and `marketing.list.view` /
+`marketing.list.edit` govern who reads and changes it. Bulk sending is done in
+Mailchimp; the Corporation's own record of who agreed to be contacted, and when,
+is here.
+
+Three rules bind:
+
+1. **An opt-out we set and an unsubscribe the person set are different things.**
+   The first is ours to reverse. The second is not reversible by any seat at any
+   time — the only thing that clears an unsubscribe is the person filling in the
+   public sign-up form themselves, and even that clears nothing else: a hard
+   bounce, a spam complaint, and a staff-entered suppression survive it, as does
+   every SMS opt-out (which the carrier enforces regardless of what our records
+   say).
+2. **Taking someone off stops every marketing channel**, not the one they
+   happened to mention. It never stops transactional mail — a receipt, an RSVP
+   confirmation, a reimbursement notice — which is not marketing and which the
+   Corporation may owe them.
+3. **An export contains reachable people only.** An opt-out or a complaint must
+   not be able to cross a system boundary into a sending tool by accident.
+
+Consent is RECORDED (who said yes, when, and where) and is never used to make a
+suppressed address sendable again. Recording a "yes" and honoring a "no" are
+separate ledgers on purpose.
 
 ---
 
