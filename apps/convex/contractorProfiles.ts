@@ -35,7 +35,9 @@ import {
 } from "@events-os/shared";
 import { normalizeEmail } from "./lib/access";
 import { requireChapterId, requireInChapter } from "./lib/context";
-import { resolveCallerPersonId } from "./lib/finance";
+import { resolveCallerPersonId,
+  type FinanceScope,
+} from "./lib/finance";
 import {
   requireContractorRosterView,
   requireContractorRosterManage,
@@ -48,7 +50,7 @@ import {
 /** The profile for one person in this chapter, or null. */
 export async function profileFor(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
   personId: Id<"people">,
 ): Promise<Doc<"contractorProfiles"> | null> {
   return await ctx.db
@@ -64,7 +66,7 @@ export async function profileFor(
  *  behind not re-asking. */
 export async function latestTaxDocFor(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
   personId: Id<"people">,
 ): Promise<Doc<"contractorTaxDocuments"> | null> {
   const docs = await ctx.db
@@ -199,7 +201,7 @@ export const onFileFor = query({
  */
 export async function matchPersonByEmail(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
   rawEmail: string | undefined,
 ): Promise<{ personId?: Id<"people">; ambiguous?: boolean }> {
   const email = normalizeEmail(rawEmail);
@@ -243,7 +245,7 @@ export async function matchPersonByEmail(
 export async function upsertProfile(
   ctx: MutationCtx,
   args: {
-    chapterId: Id<"chapters">;
+    chapterId: FinanceScope;
     personId: Id<"people">;
     externalAccountId?: string;
     bankAccountLast4?: string;

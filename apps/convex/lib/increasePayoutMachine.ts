@@ -34,6 +34,7 @@ import {
   describeInstallment,
 } from "./contractorSchedule";
 import { contractorScheduleIsComplete } from "@events-os/shared";
+import type { FinanceScope } from "./finance";
 
 /**
  * The single transaction recording a reimbursement payout leaving the account.
@@ -391,7 +392,10 @@ export async function applyPayoutOutcome(
  */
 export async function postContractorSpend(
   ctx: MutationCtx,
-  chapterId: Id<"chapters">,
+  // The SCOPE the spend books to — a chapter, or central. `transactions` has
+  // carried this union all along; the contractor rail is what finally passes
+  // something other than a chapter through it.
+  chapterId: FinanceScope,
   row: Doc<"contractorPayments">,
   payout: Doc<"payouts">,
 ): Promise<Id<"transactions">> {

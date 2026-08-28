@@ -47,10 +47,10 @@ import {
 import { Doc, Id } from "../_generated/dataModel";
 import { MutationCtx, QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
-import { viewerPerson } from "./org";
+import { viewerPerson, viewerPersonAnywhere } from "./org";
 import { requireUserId } from "./context";
 import { getSeatDerivedCapabilities, holdsApprovalSeatAt } from "./seats";
-import { expandPowers } from "@events-os/shared";
+import { expandPowers, CENTRAL } from "@events-os/shared";
 
 // A generous bound on a single chapter's funds (they number in the single
 // digits post-WP-1.4; this mirrors the scan limits used elsewhere in finance).
@@ -253,6 +253,152 @@ export async function getFinanceRole(
   };
 }
 
+/**
+ * FINANCE ACCESS AT A SCOPE — a chapter, or the ORG level (`"central"`).
+ *
+ * `getFinanceRole` answers "what can this caller do in THIS CHAPTER", and it
+ * resolves the caller by looking for their roster person IN that chapter. That
+ * is right for a chapter and wrong for central, which has no roster: everyone
+ * came back with no person, hence no role, hence no access — which is why a
+ * central desk could not so much as OPEN a contractor payment.
+ *
+ * The split this function makes:
+ *   - WHO YOU ARE is resolved org-wide (`viewerPersonAnywhere`) — a person
+ *     acting on central's money still lives in some chapter's roster.
+ *   - WHAT YOU MAY DO at central comes ONLY from central-scoped authority: a
+ *     `financeRoles` grant carrying `scope: "central"`, or a seat whose
+ *     capabilities include central reach. A chapter grant deliberately does
+ *     NOT reach central — the whole point of the org level is that a New York
+ *     treasurer does not get to spend the City Launch Fund.
+ *
+ * A chapter scope delegates to `getFinanceRole` unchanged, so nothing about
+ * per-chapter behaviour moves.
+ */
+export async function getFinanceRoleAtScope(
+  ctx: QueryCtx,
+  scope: FinanceScope,
+): Promise<FinanceAccess> {
+  if (scope !== CENTRAL) {
+    return await getFinanceRole(ctx, scope as Id<"chapters">);
+  }
+
+  if (await isSuperuser(ctx)) {
+    const self = await viewerPersonAnywhere(ctx);
+    return {
+      personId: self?._id ?? null,
+      role: "manager",
+      scope: "central",
+      isManager: true,
+      isCentral: true,
+    };
+  }
+
+  const person = await viewerPersonAnywhere(ctx);
+  if (!person) {
+    return {
+      personId: null,
+      role: null,
+      scope: null,
+      isManager: false,
+      isCentral: false,
+    };
+  }
+
+  const grants = await ctx.db
+    .query("financeRoles")
+    .withIndex("by_person", (q) => q.eq("personId", person._id))
+    .collect();
+  // CENTRAL GRANTS ONLY. Note this is strictly narrower than the chapter path,
+  // which folds central grants in on top of the chapter's own — reach flows
+  // down from the org level, never up from one chapter into it.
+  const applicable = grants.filter(
+    (g) => g.scope === "central" || g.chapterId === CENTRAL,
+  );
+  let storedRole: FinanceRole | null = null;
+  for (const g of applicable) {
+    if (
+      storedRole == null ||
+      FINANCE_ROLE_RANK[g.role] > FINANCE_ROLE_RANK[storedRole]
+    ) {
+      storedRole = g.role;
+    }
+  }
+
+  // The seat-derived half of the same union `getFinanceRole` computes, read at
+  // the central scope: a seat carrying central reach (an Executive Director,
+  // a Financial Manager) is central authority whether or not a stored grant
+  // was ever bridged for it.
+  const seatDerived = await getSeatDerivedCapabilities(ctx, person._id);
+  const seatCentral = seatDerived[CENTRAL] ?? null;
+  const seatRole = seatCentral?.financeRole ?? null;
+  const seatCentralReach = Object.values(seatDerived).some(
+    (caps) => caps.centralReach,
+  );
+
+  const role = maxRole(seatRole, storedRole);
+  const isCentral = role != null || seatCentralReach;
+  return {
+    personId: person._id,
+    role,
+    scope: isCentral && role != null ? "central" : null,
+    isManager: role === "manager",
+    isCentral: isCentral && role != null,
+  };
+}
+
+/**
+ * WHO IS ACTING, at any scope — the caller's roster person id.
+ *
+ * `resolveCallerPersonId` looks the caller up inside a chapter, which is right
+ * for chapter work and impossible at the org level: central has books and
+ * permissions but no roster, so every central caller came back "you don't have
+ * a roster profile in this chapter yet". Authorship and the audit trail need an
+ * answer regardless — somebody composed that agreement, and the approvals trail
+ * has to name them.
+ *
+ * Identity only. What they may DO at the scope is decided by
+ * `requireFinanceRoleAtScope`, never by which chapter their roster row is in.
+ */
+export async function resolveActorPersonId(
+  ctx: QueryCtx,
+  scope: FinanceScope,
+): Promise<Id<"people">> {
+  const person =
+    scope === CENTRAL
+      ? await viewerPersonAnywhere(ctx)
+      : await viewerPerson(ctx, scope as Id<"chapters">);
+  if (!person) {
+    throw new ConvexError({
+      code: "NO_PERSON",
+      message:
+        scope === CENTRAL
+          ? "You don't have a roster profile anywhere yet, so we can't record who did this."
+          : "You don't have a roster profile in this chapter yet.",
+    });
+  }
+  return person._id;
+}
+
+/** The throwing form of `getFinanceRoleAtScope`, mirroring
+ *  `requireFinanceRole`'s shape so call sites read the same at either scope. */
+export async function requireFinanceRoleAtScope(
+  ctx: QueryCtx,
+  scope: FinanceScope,
+  min: FinanceRole,
+): Promise<FinanceAccess> {
+  const access = await getFinanceRoleAtScope(ctx, scope);
+  if (!financeRoleAtLeast(access.role, min)) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message:
+        scope === CENTRAL
+          ? `This is central's money — it needs at least the ${FINANCE_ROLE_LABELS[min]} finance role at the org level.`
+          : `This action needs at least the ${FINANCE_ROLE_LABELS[min]} finance role.`,
+    });
+  }
+  return access;
+}
+
 // Generous bounds for the manager-enumeration reads below — mirrors
 // `FUND_SCAN_LIMIT`'s reasoning (a chapter's finance grants/seat holders
 // number in the single digits to low dozens, never near this).
@@ -283,7 +429,7 @@ const SEAT_ASSIGNMENT_SCAN_LIMIT = 5000;
  */
 export async function listChapterFinanceManagerPersonIds(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
 ): Promise<Set<Id<"people">>> {
   const personIds = new Set<Id<"people">>();
   const scopes: FinanceScope[] = [chapterId, "central"];

@@ -190,6 +190,18 @@
  * in-flight send still has to be finishable. Its title and placement are
  * unchanged. No slugs, sections, or courses moved; total stays 98 sections.
  *
+ * Contractor payments AT CENTRAL (founder report, 2026-08-28: "why can't I
+ * send agreements or payments that are central? I literally chose a budget that
+ * was a central budget… and it says it's gonna be in New York's books").
+ * Agreements now belong to a SCOPE — a chapter or central — which settles the
+ * reviewer, the bank account and the books together, and the books follow the
+ * BUDGET rather than whoever composed. `finance-paying-a-contractor` gained one
+ * rule, "Whose books is this coming out of?", covering the scope choice, the
+ * refusal to silently re-file a mismatched coding, and the fact that a payee
+ * never sees the internal word "Central". No quiz change — the existing five
+ * still test the distinctions most often got wrong, and the cap is five;
+ * minutes 6→7 (bumped below). No slugs, sections, or courses moved.
+ *
  * Contractor payment SCHEDULES (founder ask, 2026-08-28: "an agreed upon amount
  * and… agreed payment dates or agreed payment milestones… so we know we've paid
  * this halfway"). An agreement can now split its agreed total into payments
@@ -1499,7 +1511,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-paying-a-contractor",
     title: "Paying a contractor",
-    minutes: 6,
+    minutes: 7,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

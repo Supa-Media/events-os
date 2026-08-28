@@ -1847,7 +1847,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-paying-a-contractor",
     title: "Paying a contractor",
     subtitle: "Not a reimbursement — an agreement, and income",
-    minutes: 6,
+    minutes: 7,
     blocks: [
       {
         kind: "p",
@@ -1891,6 +1891,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Changing the terms unsigns the agreement",
         text: "The **amount**, the **description of the work**, and the **service date** are the agreed terms — the things the contractor actually said yes to. Edit any of them after they've accepted and their acceptance is VOIDED: the agreement goes back to *Awaiting contractor*, they're emailed to review and accept again, and nothing is payable until they do.\n\nThat isn't friction for its own sake. The alternative is holding somebody's signature against terms they never saw, which is the single worst thing this feature could do, so it isn't reachable at all — not by a form, not by an admin.\n\nChanging only the CODING — which budget, category or fund pays for it — voids nothing. The contractor never agreed to which line of our books they come out of, and re-asking for a signature because a bookkeeper moved a category would just teach people to click through acceptance without reading it.",
+      },
+      {
+        kind: "rule",
+        title: "Whose books is this coming out of?",
+        text: "Every agreement belongs to a **scope** — a chapter, or **central**. Whichever desk you compose at is the one that pays, and that single choice settles three things at once: who reviews and approves it, which bank account the money actually leaves, and which set of books the spend lands in.\n\nThey move together on purpose. If a payout left a chapter's account while the expense posted against central's budget, that chapter's bank balance and its ledger would disagree from then on, and nothing downstream would ever reconcile.\n\nSo: **the books follow the budget, not the person composing.** Work paid for by a central budget has to be composed at the Central desk. Pick a central budget while you're standing in a chapter and you'll be told to switch desks rather than have it quietly re-filed for you — moving an agreement between scopes changes who's allowed to approve it, and that isn't the app's call to make.\n\nOne thing the contractor never sees: the word *Central*. That's our internal name for a set of books. Their agreement comes from **Public Worship**.",
       },
       {
         kind: "rule",

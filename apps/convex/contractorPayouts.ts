@@ -41,7 +41,11 @@ import {
   type PayoutSummary,
 } from "./lib/increaseShapes";
 import { requireChapterId, requireInChapter } from "./lib/context";
-import { resolveCallerPersonId, assertSeparationOfDuties } from "./lib/finance";
+import {
+  resolveActorPersonId,
+  assertSeparationOfDuties,
+  type FinanceScope,
+} from "./lib/finance";
 import { normalizeEmail, getUserEmail } from "./lib/access";
 import { requireContractorPaymentsApprove } from "./lib/contractorPaymentsAccess";
 import { increaseEnvForObjectId, increasePost } from "./lib/increaseApi";
@@ -85,7 +89,7 @@ function assertContractorDisbursementSoD(
  *  two rails already share the table, not the function. */
 async function recordContractorApproval(
   ctx: MutationCtx,
-  chapterId: Id<"chapters">,
+  chapterId: FinanceScope,
   contractorPaymentId: Id<"contractorPayments">,
   action: "approve" | "reject" | "cancel" | "edit" | "pay",
   actorPersonId: Id<"people">,
@@ -296,11 +300,22 @@ export const beginContractorPayout = internalMutation({
     ctx,
     { contractorPaymentId, installmentId, releaseNote },
   ): Promise<BeginContractorPayoutResult> => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
-    await requireInChapter(ctx, chapterId, row, "Contractor payment");
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    // THE SCOPE THE MONEY LEAVES is the agreement's own — a chapter's Increase
+    // account, or central's. Resolving it from the CALLER's home chapter (as
+    // this did) meant a central agreement drew a chapter's bank account while
+    // booking to central's ledger, leaving that chapter's balance and its books
+    // permanently disagreeing. It also made central agreements unpayable by
+    // anyone, since no roster person lives in "central".
+    const chapterId = row.chapterId;
     await requireContractorPaymentsApprove(ctx, chapterId);
-    const payment = row!;
+    const payment = row;
 
     if (payment.status !== "approved") {
       throw new ConvexError({
@@ -309,7 +324,7 @@ export const beginContractorPayout = internalMutation({
       });
     }
 
-    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    const callerPersonId = await resolveActorPersonId(ctx, chapterId);
     const callerEmail = await getUserEmail(ctx);
     assertContractorDisbursementSoD(callerPersonId, callerEmail, payment);
 
@@ -623,13 +638,24 @@ export const markPaidManually = mutation({
     ctx,
     { contractorPaymentId, installmentId, releaseNote },
   ): Promise<PayoutSummary> => {
-    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const row = await ctx.db.get(contractorPaymentId);
-    await requireInChapter(ctx, chapterId, row, "Contractor payment");
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    // THE SCOPE THE MONEY LEAVES is the agreement's own — a chapter's Increase
+    // account, or central's. Resolving it from the CALLER's home chapter (as
+    // this did) meant a central agreement drew a chapter's bank account while
+    // booking to central's ledger, leaving that chapter's balance and its books
+    // permanently disagreeing. It also made central agreements unpayable by
+    // anyone, since no roster person lives in "central".
+    const chapterId = row.chapterId;
     await requireContractorPaymentsApprove(ctx, chapterId);
-    const payment = row!;
+    const payment = row;
 
-    const callerPersonId = await resolveCallerPersonId(ctx, chapterId);
+    const callerPersonId = await resolveActorPersonId(ctx, chapterId);
     const callerEmail = await getUserEmail(ctx);
     assertContractorDisbursementSoD(callerPersonId, callerEmail, payment);
 

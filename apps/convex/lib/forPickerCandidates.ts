@@ -94,22 +94,31 @@ export function budgetDisplayNameFor(b: Doc<"budgets">): string {
  */
 export async function gatherForPickerCandidates(
   ctx: QueryCtx,
-  homeChapterId: Id<"chapters">,
+  // `null` means "the ORG level" — there is no chapter of events or projects to
+  // scan there, so only central's own budgets come back. Every existing caller
+  // passes a real chapter and is unaffected.
+  homeChapterId: Id<"chapters"> | null,
   scanLimit: number,
 ): Promise<{ candidates: PickerCandidate[]; truncated: boolean }> {
   const [events, projects, chapterBudgets, centralBudgets] = await Promise.all([
-    ctx.db
-      .query("events")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
-      .take(scanLimit),
-    ctx.db
-      .query("projects")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
-      .take(scanLimit),
-    ctx.db
-      .query("budgets")
-      .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
-      .take(scanLimit),
+    homeChapterId
+      ? ctx.db
+          .query("events")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
+          .take(scanLimit)
+      : Promise.resolve([]),
+    homeChapterId
+      ? ctx.db
+          .query("projects")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
+          .take(scanLimit)
+      : Promise.resolve([]),
+    homeChapterId
+      ? ctx.db
+          .query("budgets")
+          .withIndex("by_chapter", (q) => q.eq("chapterId", homeChapterId))
+          .take(scanLimit)
+      : Promise.resolve([]),
     ctx.db
       .query("budgets")
       .withIndex("by_chapter", (q) => q.eq("chapterId", CENTRAL))

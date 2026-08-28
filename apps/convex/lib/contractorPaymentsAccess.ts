@@ -28,9 +28,12 @@
  * reaches by accident, so a permission wall is the honest answer and the app's
  * `FinanceBoundary` already renders it.
  */
-import { Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
-import { getFinanceRole, requireFinanceRole } from "./finance";
+import {
+  getFinanceRoleAtScope,
+  requireFinanceRoleAtScope,
+  type FinanceScope,
+} from "./finance";
 
 /**
  * May the caller see the chapter's contractor payments — the queue, the terms,
@@ -41,17 +44,17 @@ import { getFinanceRole, requireFinanceRole } from "./finance";
  */
 export async function requireContractorPaymentsView(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<void> {
-  await requireFinanceRole(ctx, chapterId, "viewer");
+  await requireFinanceRoleAtScope(ctx, scope, "viewer");
 }
 
 /** Non-throwing form, for deciding whether to OFFER an affordance. */
 export async function hasContractorPaymentsCompose(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<boolean> {
-  const access = await getFinanceRole(ctx, chapterId);
+  const access = await getFinanceRoleAtScope(ctx, scope);
   return access.isManager || access.isCentral;
 }
 
@@ -66,17 +69,17 @@ export async function hasContractorPaymentsCompose(
  */
 export async function requireContractorPaymentsCompose(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<void> {
-  await requireFinanceRole(ctx, chapterId, "manager");
+  await requireFinanceRoleAtScope(ctx, scope, "manager");
 }
 
 /** Non-throwing form, for deciding whether to OFFER approve/reject controls. */
 export async function hasContractorPaymentsApprove(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<boolean> {
-  const access = await getFinanceRole(ctx, chapterId);
+  const access = await getFinanceRoleAtScope(ctx, scope);
   return access.isManager || access.isCentral;
 }
 
@@ -97,18 +100,18 @@ export async function hasContractorPaymentsApprove(
  */
 export async function requireContractorPaymentsApprove(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<void> {
-  await requireFinanceRole(ctx, chapterId, "manager");
+  await requireFinanceRoleAtScope(ctx, scope, "manager");
 }
 
 /** Non-throwing form — lets a detail screen decide whether to render a "View
  *  W-9" control or the metadata-only line, without provoking a throw. */
 export async function hasContractorTaxDocView(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<boolean> {
-  const access = await getFinanceRole(ctx, chapterId);
+  const access = await getFinanceRoleAtScope(ctx, scope);
   return access.isManager || access.isCentral;
 }
 
@@ -138,9 +141,9 @@ export async function hasContractorTaxDocView(
  */
 export async function requireContractorTaxDocView(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<void> {
-  await requireFinanceRole(ctx, chapterId, "manager");
+  await requireFinanceRoleAtScope(ctx, scope, "manager");
 }
 
 // ── The contractor roster (who we have paid before) ─────────────────────────
@@ -148,9 +151,9 @@ export async function requireContractorTaxDocView(
  *  affordance on the composer. */
 export async function hasContractorRosterView(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<boolean> {
-  const access = await getFinanceRole(ctx, chapterId);
+  const access = await getFinanceRoleAtScope(ctx, scope);
   return access.isManager || access.isCentral;
 }
 
@@ -171,17 +174,17 @@ export async function hasContractorRosterView(
  */
 export async function requireContractorRosterView(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<void> {
-  await requireFinanceRole(ctx, chapterId, "manager");
+  await requireFinanceRoleAtScope(ctx, scope, "manager");
 }
 
 /** Non-throwing form, for deciding whether to OFFER roster editing. */
 export async function hasContractorRosterManage(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<boolean> {
-  const access = await getFinanceRole(ctx, chapterId);
+  const access = await getFinanceRoleAtScope(ctx, scope);
   return access.isManager || access.isCentral;
 }
 
@@ -196,9 +199,9 @@ export async function hasContractorRosterManage(
  */
 export async function requireContractorRosterManage(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<void> {
-  await requireFinanceRole(ctx, chapterId, "manager");
+  await requireFinanceRoleAtScope(ctx, scope, "manager");
 }
 
 /** Non-throwing form, for deciding whether to OFFER the forget control. Kept
@@ -208,9 +211,9 @@ export async function requireContractorRosterManage(
  *  the moment they diverge. */
 export async function hasContractorForget(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<boolean> {
-  const access = await getFinanceRole(ctx, chapterId);
+  const access = await getFinanceRoleAtScope(ctx, scope);
   return access.isManager || access.isCentral;
 }
 
@@ -232,7 +235,7 @@ export async function hasContractorForget(
  */
 export async function requireContractorForget(
   ctx: QueryCtx,
-  chapterId: Id<"chapters">,
+  scope: FinanceScope,
 ): Promise<void> {
-  await requireFinanceRole(ctx, chapterId, "manager");
+  await requireFinanceRoleAtScope(ctx, scope, "manager");
 }
