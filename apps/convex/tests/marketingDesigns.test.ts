@@ -883,12 +883,14 @@ describe("design covers — captured from the tool's own og:image", () => {
       expect(row?.thumbnailStorage).toBeDefined();
       expect(row?.thumbnailUrl).toBeTruthy();
       // The oEmbed probe first (404 here), then the page once, then the FIRST
-      // image — never the second.
-      expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual([
-        OEMBED_URL,
-        PAGE_URL,
-        IMG_URL,
-      ]);
+      // image — never the second. Filtered to THIS design's URLs: other tests
+      // in this file upsert designs whose zero-delay background captures can
+      // fire while this stub is live (they did, on CI), and their stray
+      // fetches are not this test's subject.
+      const mine = fetchMock.mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => [OEMBED_URL, PAGE_URL, IMG_URL].includes(u));
+      expect(mine).toEqual([OEMBED_URL, PAGE_URL, IMG_URL]);
       // The bytes are OURS now: what the grid renders is our storage URL, not
       // the CDN address that will someday die.
       expect(row?.thumbnailUrl).not.toContain("example-cdn.com");
@@ -927,7 +929,12 @@ describe("design covers — captured from the tool's own og:image", () => {
       // exit is only an optimization (the atomic guard in `applyCover` is what
       // actually protects the cover, proven separately below), but an
       // optimization the org relies on to not hammer Canva deserves a pin.
-      expect(fetchMock.mock.calls).toHaveLength(0);
+      // Counted over THIS design's URLs only — see the ordering test above for
+      // why strays from other tests' background captures can appear here.
+      const fetched = fetchMock.mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => [OEMBED_URL, PAGE_URL, IMG_URL].includes(u));
+      expect(fetched).toHaveLength(0);
     } finally {
       vi.unstubAllGlobals();
       vi.useRealTimers();
@@ -1129,10 +1136,12 @@ describe("cover capture — the field failure and its fixes", () => {
       });
       await s.t.finishAllScheduledFunctions(vi.runAllTimers);
       expect((await run(s.t, (ctx) => ctx.db.get(designId)))?.thumbnailStorage).toBeDefined();
-      expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual([
-        VIEW_OEMBED,
-        IMG,
-      ]);
+      // Filtered to this design's URLs (strays from other tests' background
+      // captures — see above): the oEmbed doc won, the page was NEVER scraped.
+      const mine = fetchMock.mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => [VIEW_OEMBED, VIEW_URL, IMG].includes(u));
+      expect(mine).toEqual([VIEW_OEMBED, IMG]);
     } finally {
       vi.unstubAllGlobals();
       vi.useRealTimers();
