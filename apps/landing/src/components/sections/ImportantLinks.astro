@@ -13,6 +13,13 @@
  * sees if the backend is unreachable and what a crawler sees before JS runs.
  * See `lib/siteContent.ts` for why the homepage hydrates over real markup
  * instead of filling empty shells the way `/team` does.
+ *
+ * NEITHER AUTO ROW HAS A FALLBACK, and the blog posts row deliberately never
+ * will. The events row's cards were always live data; a checked-in copy of
+ * "the latest post" would be a stale claim about the org's writing baked into
+ * a build, which is worse than no claim. So with the backend unreachable, or
+ * with JS off, both rows contribute nothing and the grid below IS the page —
+ * no empty heading, no orphaned section, no gap where cards would have been.
  */
 import { getCollection } from "astro:content";
 import { SITE_COPY_DEFS } from "@events-os/shared/src/marketing";
@@ -28,7 +35,8 @@ const trail = entries.filter((e) => e.data.slot !== "lead");
 
 // Reserve grid slots for the events so the trailing cards' entrance stagger
 // stays continuous whether or not any are live. Matches the seeded row's
-// `maxEvents`.
+// `maxEvents`. The posts row gets no reserve: it is not in this file at all,
+// and the stagger it would reserve for is a 60ms animation delay, not a slot.
 const MAX_EVENTS = 2;
 const delayFor = (i: number) => `--delay: ${i * 60}ms`;
 ---

@@ -11,12 +11,23 @@
  * This is the thing to understand before adding a call site, because the desk
  * looks like one surface and is governed like several:
  *
- *   CENTRAL, NO SCOPE ARGUMENT — the site, the brand kit, the blog. There is
- *   one homepage, one brand, and one blog, so all four powers behind them are
- *   declared `scope: "central"` and a chapter-scope grant reaches nothing —
- *   enforced at derivation (`lib/seats.ts#getSeatDerivedMarketingCapabilities`),
- *   not merely rendered honestly on the chart. Their `require*` functions take
- *   no scope argument at all, which is the type system saying the same thing.
+ *   GLOBAL, NO SCOPE ARGUMENT — the site, the brand kit, the blog. There is one
+ *   homepage, one brand, and one blog, so their `require*` functions take no
+ *   scope argument at all: there is no second copy to name. That is a statement
+ *   about the RESOURCE, and for the site and the blog it also settles the
+ *   editors — those two powers are declared `scope: "central"` and a
+ *   chapter-scope grant reaches nothing, enforced at derivation
+ *   (`lib/seats.ts#getSeatDerivedMarketingCapabilities`) rather than merely
+ *   rendered honestly on the chart.
+ *
+ *   THE BRAND KIT IS THE EXCEPTION, and it is the interesting one. It is just
+ *   as global, but `marketing.designs.edit` is NOT `scope: "central"`: a
+ *   Chapter Director holding it at their chapter edits the org's one kit, which
+ *   is the only kit there is. "One brand" was never an argument about who may
+ *   change the brand — the two got conflated, and were separated on 2026-08-28
+ *   when the founder asked for the ED and Chapter Directors to be able to edit
+ *   it. So `canEditDesigns` is an OR across every scope the caller holds a seat
+ *   at, while `canEditSite` / `canEditBlog` can only ever come from central.
  *
  *   CHAPTER-SCOPED — the mailing list, exactly like the giving CRM. A central
  *   holder reaches every chapter's people; a chapter's Marketing Lead reaches
@@ -68,7 +79,9 @@ export interface MarketingAccess {
   /** May edit the public homepage's copy, stats, and link cards. Central-only
    *  by construction — see the module doc. */
   canEditSite: boolean;
-  /** May change the brand kit and the design library. Central-only.
+  /** May change the brand kit and the design library. NOT central-only: one
+   *  kit, but a chapter-scope holder (the Chapter Director) editing it edits
+   *  the org's kit rather than a chapter one, so any scope grants it.
    *  READING the library needs nothing at all — see `marketing.designs.edit`. */
   canEditDesigns: boolean;
   /** May write a blog post. Central-only. */
@@ -142,9 +155,11 @@ export async function resolveMarketingAccess(
     if (person.isPlaceholder === true) continue;
     const caps = await getSeatDerivedMarketingCapabilities(ctx, person._id);
     for (const [scopeKey, scopeCaps] of Object.entries(caps)) {
-      // The four central-only flags are already false at any chapter scope —
-      // the derivation drops them rather than trusting this loop to remember
-      // the rule.
+      // `site`, `blogEdit` and `blogPublish` are already false at any chapter
+      // scope — the derivation drops them rather than trusting this loop to
+      // remember the rule. `designs` is NOT dropped there, deliberately: a
+      // chapter-scoped Chapter Director editing the org's one brand kit is the
+      // intended grant, so this OR is what carries it through.
       if (scopeCaps.site) access.canEditSite = true;
       if (scopeCaps.designs) access.canEditDesigns = true;
       if (scopeCaps.blogEdit) access.canEditBlog = true;
@@ -226,7 +241,7 @@ export async function requireDesignsEdit(
     throw new ConvexError({
       code: "FORBIDDEN",
       message:
-        "You don't have permission to change the brand kit. Ask the Marketing Director or a designer.",
+        "You don't have permission to change the brand kit. Ask the Marketing Director, a designer, or your Chapter Director.",
     });
   }
   return access;

@@ -309,6 +309,12 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // `finance.ledger.publish` publishes their own chapter's month — paired
     // with the Treasurer PREPARING it, which is exactly why the Treasurer
     // below does not carry it.
+    // 2026-08-28: `marketing.designs.edit` — founder instruction ("me as
+    // executive director and even Chapter Directors can also edit [the brand
+    // kit]"). Still ONE brand: the CD edits the org's kit, not a chapter copy,
+    // because there is no chapter copy. The power had to stop being
+    // `scope: "central"` for this to reach anything (see `powers.ts`), which
+    // is why the grant and the scope change land together.
     chapter_director: [
       "finance.view",
       "finance.budgets.approve",
@@ -316,6 +322,7 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "giving.view",
       "data.export",
       "events.checkin",
+      "marketing.designs.edit",
     ],
     // `finance.edit` at CHAPTER scope — the whole finance domain for this
     // chapter and nothing beyond it.
@@ -328,7 +335,12 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     event_organizers: ["events.checkin"],
     production_coordinator: ["events.checkin"],
     // Their own chapter's list, read-only. NOT `marketing.site.edit` — that
-    // power is central-scope (the org has one homepage).
+    // power is central-scope (the org has one homepage). And deliberately NOT
+    // `marketing.designs.edit`, which as of 2026-08-28 a chapter seat CAN hold
+    // for real: reading the kit is already ungated for this seat, so the grant
+    // would only add the ability to change the org's brand from a chapter
+    // promotions desk. The founder named the ED and Chapter Directors; the ED
+    // can add this seat at runtime if a chapter wants it.
     marketing_lead: ["marketing.list.view"],
   };
 

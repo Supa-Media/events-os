@@ -27,6 +27,12 @@
  * exactly where `ImportantLinks.astro` used to inject them from a hardcoded
  * position — the seed preserves the page as it stands, and moving them is now
  * somebody's decision rather than a deploy.
+ *
+ * The POSTS row follows it, above the socials, for the same reason the events
+ * row is there: what is happening next and what we last published are the two
+ * things worth reading before someone leaves for Instagram. An existing
+ * deployment gets it from `marketingSite.ensurePostsRow` instead — this list
+ * only ever runs against an empty table.
  */
 export const SITE_LINK_SEED = [
   {
@@ -51,12 +57,27 @@ export const SITE_LINK_SEED = [
     hiddenEventSlugs: [],
   },
   {
+    kind: "posts" as const,
+    // Never rendered either — the desk's own label for the row, same as above.
+    title: "Latest blog posts",
+    align: "center" as const,
+    order: 300,
+    published: true,
+    // ONE, not two. The page never carried a post card before this row
+    // existed, so the seed is the smallest change that puts the blog on the
+    // homepage at all; the marketer raises it (to `SITE_LINK_MAX_POSTS_CAP`)
+    // if the reading earns the space.
+    maxPosts: 1,
+    pinnedPostSlugs: [],
+    hiddenPostSlugs: [],
+  },
+  {
     kind: "link" as const,
     title: "Instagram",
     url: "https://instagram.com/publicworship.life",
     thumbnailPath: "/links/instagram-photo.png",
     align: "center" as const,
-    order: 300,
+    order: 400,
     published: true,
   },
   {
@@ -65,7 +86,7 @@ export const SITE_LINK_SEED = [
     url: "https://www.tiktok.com/@publicworship.life",
     thumbnailPath: "/links/tiktok-photo.png",
     align: "center" as const,
-    order: 400,
+    order: 500,
     published: true,
   },
   {
@@ -76,7 +97,7 @@ export const SITE_LINK_SEED = [
     copy: "give@publicworship.life",
     cta: "(Click to Copy)",
     align: "center" as const,
-    order: 500,
+    order: 600,
     published: true,
   },
 ];

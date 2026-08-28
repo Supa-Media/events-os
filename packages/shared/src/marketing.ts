@@ -20,11 +20,12 @@
  *          catalog, because the count is genuinely the org's call (three today;
  *          a fourth is a decision, not a schema change).
  *
- *   LINKS  `PublicSiteLink` — the Important Links grid. Also a list, plus one
- *          special row: `kind: "events"`, the placeholder standing in for the
- *          live event cards the page pulls from `GET /api/events/upcoming`. It
- *          sits in the SAME ordered list as the fixed cards, which is what lets
- *          "move the events above Donate" be a drag rather than a code change.
+ *   LINKS  `PublicSiteLink` — the Important Links grid. Also a list, plus two
+ *          AUTO rows: `kind: "events"` stands in for the live event cards, and
+ *          `kind: "posts"` for the latest blog posts. Both sit in the SAME
+ *          ordered list as the fixed cards, which is what lets "move the
+ *          events above Donate" be a drag rather than a code change — and what
+ *          made adding the posts row a new row rather than a new section.
  *
  * THE CONTRACT. `PublicSiteContent` is the wire shape three things share and
  * must not drift on: the serializer (`apps/convex/marketingSite.ts`), the
@@ -245,13 +246,20 @@ export type SiteLinkAlign = (typeof SITE_LINK_ALIGNS)[number];
  * What a row in the Important Links grid IS.
  *
  *  `link`   a fixed card — a URL, or a string to copy (the Zelle card).
- *  `events` THE placeholder for the live event cards. Exactly one row may
- *           carry this kind, and it is never deletable: deleting it would not
- *           remove the events from the page, it would remove the marketer's
- *           only handle on where they land and how many show. Hiding them is
- *           what `published: false` is for.
+ *  `events` THE placeholder for the live event cards.
+ *  `posts`  THE placeholder for the latest blog posts.
+ *
+ * The two AUTO kinds behave identically and are singletons: exactly one row may
+ * carry each, and neither is deletable. Deleting one would not remove its cards
+ * from the page — it would remove the marketer's only handle on where they land
+ * and how many show. `published: false` is how you take them off the page.
+ *
+ * They are separate kinds rather than one `auto` kind with a source field
+ * because the two answer to different questions — "what is happening next" vs
+ * "what did we last publish" — and a marketer choosing a row's SOURCE from a
+ * dropdown is a worse affordance than choosing the row they want.
  */
-export const SITE_LINK_KINDS = ["link", "events"] as const;
+export const SITE_LINK_KINDS = ["link", "events", "posts"] as const;
 export type SiteLinkKind = (typeof SITE_LINK_KINDS)[number];
 
 /** One card in the Important Links grid, on the wire. */
@@ -293,6 +301,26 @@ export interface PublicSiteLink {
    * business on the front page.
    */
   hiddenEventSlugs: string[] | null;
+  /**
+   * `kind: "posts"` only — how many published posts to show, newest first. The
+   * events row's `maxEvents`, asked about posts; 0 keeps the row and its
+   * position while showing nothing.
+   */
+  maxPosts: number | null;
+  /**
+   * `kind: "posts"` only — post slugs to show ahead of the automatic selection,
+   * in this order. An evergreen essay the team wants leading the grid rather
+   * than whatever happened to go up last. A slug naming nothing PUBLISHED is
+   * skipped, never rendered as a dead card — the same "intent, not reference"
+   * rule the event pins follow, and for the same reason: a post can be taken
+   * down, and a pin surviving that must not put a 404 on the front page.
+   */
+  pinnedPostSlugs: string[] | null;
+  /**
+   * `kind: "posts"` only — post slugs to keep OUT of the grid though published.
+   * A post that is public but not front-page material.
+   */
+  hiddenPostSlugs: string[] | null;
 }
 
 export const SITE_LINK_TITLE_MAX = 60;
@@ -305,6 +333,11 @@ export const SITE_LINK_MAX_COUNT = 30;
 /** The grid reserves room for the auto events; more than this and the fixed
  *  cards start scrolling off a phone before anyone reaches the socials. */
 export const SITE_LINK_MAX_EVENTS_CAP = 4;
+/** Same bound, same reason, for the posts row. Lower than the events cap on
+ *  purpose: an event card is a thing you can attend on a date, and a post is
+ *  something to read — three of them above the socials is already a lot of
+ *  reading to put in front of somebody looking for the Give button. */
+export const SITE_LINK_MAX_POSTS_CAP = 3;
 
 /**
  * URL schemes a card may point at. A card's `url` is typed into the OS by a
@@ -364,6 +397,40 @@ export interface PublicSiteEventCard {
   pinned: boolean;
 }
 
+/**
+ * One blog post card, already chosen and ordered by the OS.
+ *
+ * Deliberately NOT `BlogPostSummary` from `marketingBlog.ts`. That type is the
+ * blog index's payload and carries fields the homepage has no use for
+ * (`status`, `updatedAt`, the preview token). This is the homepage's own view
+ * of a post — the four things a link card renders — so the two can move
+ * independently, and so a field added for the blog index cannot silently start
+ * being published on the front page.
+ */
+export interface PublicSitePostCard {
+  slug: string;
+  title: string;
+  /**
+   * The post's own one-sentence description — the SAME sentence that is its
+   * `<meta name="description">` and its card on the blog index. Not a separate
+   * homepage summary and not a truncation of the body: a card that summarised
+   * the post differently from the post's own page would be two claims about one
+   * thing, and the one on the front page is the one nobody would notice going
+   * stale. Non-null, because `BlogPost.description` is required — a published
+   * post always has a sentence.
+   */
+  description: string;
+  /** The post's path on this site — `/blog/<slug>`. */
+  href: string;
+  /** Hero image, when the post has one. */
+  coverUrl: string | null;
+  /** When it went live. The card shows a date; the ORDER is the OS's. */
+  publishedAt: number;
+  /** True when a human pinned this rather than it being the newest. Shown only
+   *  in the desk's preview — the public card is identical either way. */
+  pinned: boolean;
+}
+
 // ── The wire contract ────────────────────────────────────────────────────────
 
 /**
@@ -386,6 +453,13 @@ export interface PublicSiteContent {
    * know which.
    */
   events: PublicSiteEventCard[];
+  /**
+   * The blog post cards to render AT the `posts` row's position, already
+   * filtered, ordered, and capped. Empty when nothing is published, when the
+   * row is unpublished, or when `maxPosts` is 0 — same as `events`, the
+   * renderer does not need to know which.
+   */
+  posts: PublicSitePostCard[];
 }
 
 // ── The mailing list ─────────────────────────────────────────────────────────

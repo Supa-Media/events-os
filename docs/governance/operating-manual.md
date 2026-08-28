@@ -108,7 +108,7 @@ Every chapter is stamped with this chart.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Chapter Director | — (chart root) | 1 | `finance.view`, `finance.budgets.approve`, `finance.ledger.publish`, `giving.view`, `data.export`, `events.checkin` |
+| Chapter Director | — (chart root) | 1 | `finance.view`, `finance.budgets.approve`, `finance.ledger.publish`, `giving.view`, `data.export`, `events.checkin`, `marketing.designs.edit` |
 | Treasurer | Chapter Director | 1 | `finance.edit`, `giving.view` |
 | Music Lead | Chapter Director | 1 | — |
 | Vocal Lead | Music Lead | 1 | — |
@@ -674,9 +674,10 @@ laptop. Donor lists are never sold, rented, or traded.
 
 ## 9 · Communications
 
-One brand, centrally owned, locally used. Chapters promote locally within the
-brand; central owns the design system, the templates, and the image library
-(`email.assets.edit`).
+One brand, org-wide, locally used. Chapters promote locally within the brand
+rather than inventing their own; the kit itself is stewarded by the seats §9.2
+names, which since 2026-08-28 includes every Chapter Director. Central owns the
+email design system, the templates, and the image library (`email.assets.edit`).
 
 **Every mass send is two-party** (§5). **No political campaign intervention,
 ever, on any channel** — this is an absolute condition of tax exemption
@@ -713,8 +714,18 @@ volunteer making a flyer needs the hex code and the logo at the moment they are
 making it, and a brand kit behind a permission is a brand kit people work
 around — which is the exact inconsistency it exists to prevent.
 
-One brand, org-wide. A chapter does not get its own colors; the power is
-central-scoped and a chapter grant reaches nothing.
+One brand, org-wide. A chapter does not get its own colors — there is exactly
+one kit and no per-chapter copy of it. That is a statement about the BRAND, not
+about who may change it, and the two were briefly conflated: the power was
+central-scoped, so a Chapter Director could be granted it and it would reach
+nothing. It is no longer scoped that way. `marketing.designs.edit` may be held
+at a chapter, and a Chapter Director holding it is editing the ORG's kit —
+which is the only kit there is — not minting a local one. The Executive
+Director and every Chapter Director carry it by default, alongside the
+marketing chain (Marketing Director, Social Media Manager, Graphic Designer).
+The chapter Marketing Lead does not, by default: reading the kit is already
+open to them, and changing the org's brand is a grant the ED makes
+deliberately, seat by seat, from the org chart.
 
 **The kit is the only place the values are written down, and nothing else may
 restate them.** Training, this manual, a handbook, a slide — none of them print

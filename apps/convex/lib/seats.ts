@@ -460,9 +460,12 @@ export interface SeatDerivedMarketingScopeCapabilities {
    *  `central` — the power is declared `scope: "central"` and this function
    *  honors that at derivation, not just at rendering. */
   site: boolean;
-  /** `marketing.designs.edit` — change the brand kit. Central-only, same rule
-   *  as `site` (one org, one brand). Note there is deliberately no `view`
-   *  counterpart: the library is readable by the whole team. */
+  /** `marketing.designs.edit` — change the brand kit. NOT central-only: there
+   *  is one kit, but editing it from a chapter seat edits the ORG's kit rather
+   *  than minting a chapter one, so a chapter-scope grant is honored here (the
+   *  Chapter Director carries it — founder decision 2026-08-28). Note there is
+   *  deliberately no `view` counterpart: the library is readable by the whole
+   *  team. */
   designs: boolean;
   /** `marketing.blog.edit` — write a post. Central-only. */
   blogEdit: boolean;
@@ -490,14 +493,21 @@ export type SeatDerivedMarketingCapabilities = Record<
  * `ctx.db.get` per assignment, a stale def contributes nothing, capabilities
  * only ever OR together).
  *
- * The site, designs, and blog powers are skipped outright at a chapter scope —
- * the same treatment `getSeatDerivedHiringCapabilities` gives the hiring trio,
- * and for the same reason: all four are `scope: "central"` because the org has
- * ONE homepage, ONE brand, and ONE blog, so a chapter grant must reach nothing
- * in the enforcement path and not only in the chart's rendering. The LIST
- * powers carry no such declaration and ARE chapter-scopable: a chapter's
- * Marketing Lead reading their own chapter's list is exactly the intended
- * grant.
+ * The site and blog powers are skipped outright at a chapter scope — the same
+ * treatment `getSeatDerivedHiringCapabilities` gives the hiring trio, and for
+ * the same reason: they are `scope: "central"` because the org has ONE homepage
+ * and ONE blog, so a chapter grant must reach nothing in the enforcement path
+ * and not only in the chart's rendering.
+ *
+ * DESIGNS IS NOT ONE OF THEM, as of 2026-08-28, and the distinction is the
+ * point: `scope: "central"` says the RESOURCE is absent at a chapter scope, not
+ * that only central-chart seats may act. The org still has exactly ONE brand
+ * kit — but a Chapter Director editing it is editing the org's kit, which is
+ * the only kit there is, so there is nothing per-chapter for the scope rule to
+ * bite on. Dropping it here was inert-grant removal: the power sat on
+ * `chapter_director` reaching nothing until this stopped filtering it. The LIST
+ * powers were always chapter-scopable for the ordinary reason — a chapter's
+ * Marketing Lead reading their own chapter's list.
  */
 export async function getSeatDerivedMarketingCapabilities(
   ctx: QueryCtx,
@@ -528,16 +538,21 @@ export async function getSeatDerivedMarketingCapabilities(
     // `marketing.list.edit` implies `.list.view` via the ladder rule, already
     // applied by `expandPowers` — no manual "edit implies read" step here.
     const powers = expandPowers(def.capabilities);
-    // The four `scope: "central"` powers, dropped outright at a chapter scope —
+    // The three `scope: "central"` powers, dropped outright at a chapter scope —
     // see this function's doc for why that belongs here and not only on the
     // chart. `blog.publish` implies `blog.edit` via the ladder rule, already
     // applied by `expandPowers`.
     if (scopeKey === CENTRAL_SCOPE_KEY) {
       if (powers.has("marketing.site.edit")) entry.site = true;
-      if (powers.has("marketing.designs.edit")) entry.designs = true;
       if (powers.has("marketing.blog.edit")) entry.blogEdit = true;
       if (powers.has("marketing.blog.publish")) entry.blogPublish = true;
     }
+    // DELIBERATELY OUTSIDE the central block. There is one brand kit and no
+    // chapter copy of it, so a chapter-scoped holder editing it edits the org's
+    // brand — which is what the Chapter Director's grant is FOR. Do not move
+    // this back up; `resolveMarketingAccess` ORs `designs` across every scope
+    // precisely so this line is the only thing deciding.
+    if (powers.has("marketing.designs.edit")) entry.designs = true;
     if (powers.has("marketing.list.edit")) entry.listEdit = true;
     if (powers.has("marketing.list.view")) entry.listView = true;
   }

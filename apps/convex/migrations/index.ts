@@ -98,6 +98,8 @@ import { backfillWallFromGifts } from "./0076_backfill_wall_from_gifts";
 import { orgWideBudgetCategories } from "./0077_org_wide_budget_categories";
 import { stampInterestSourceCategory } from "./0078_stamp_interest_source_category";
 import { seedMarketingDesk } from "./0080_seed_marketing_desk";
+import { addPostsLinkRow } from "./0081_add_posts_link_row";
+import { correctInterFontNote } from "./0082_correct_inter_font_note";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -506,4 +508,17 @@ export const MIGRATIONS: Migration[] = [
   // because the runbook step was missed and an empty desk is indistinguishable
   // from a broken one. See the file.
   seedMarketingDesk,
+  // 0081: the Important Links grid's second auto row — the latest blog posts.
+  // A migration rather than a seed addition because `siteLinks` has had rows
+  // since 0080, and a seed only ever fires against an empty table. Safe to
+  // insert-if-missing only because the row is undeletable, so absent can only
+  // mean "predates the feature". See the file.
+  addPostsLinkRow,
+  // 0082: the brand kit's Inter row was still telling the designer to settle a
+  // question the founder had already settled ("put all of the fonts there").
+  // The seed was corrected, which reached nothing — the table was long since
+  // seeded. Patches only a row whose note is still byte-for-byte the stale
+  // seeded sentence, so a designer's own edit is never overwritten. See the
+  // file.
+  correctInterFontNote,
 ];

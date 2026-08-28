@@ -178,6 +178,17 @@ export interface PowerDef {
    * expanded set, and without this field it would print "Open the Accounts tab"
    * on a seat that cannot open it. Being safe and reading honestly are
    * different properties; this field is how the second one is kept.
+   *
+   * IT IS NOT A STATEMENT ABOUT WHO MAY ACT. "The resource is global" and
+   * "only central-chart seats may change it" are different claims, and this
+   * field makes only the first. A resource the whole org shares can perfectly
+   * well be edited by a chapter-chart seat — that seat is then editing the
+   * ORG's copy, which is the only copy there is. `marketing.designs.edit` was
+   * declared here on exactly that confusion (2026-08-28): there is one brand
+   * kit, so the reasoning went, therefore only central may touch it. The kit
+   * is global; the editors are a separate question the SEAT CHART answers.
+   * Before adding this field, ask the narrow question it asks — is the thing
+   * this power acts on ABSENT at a chapter scope? — and nothing wider.
    */
   scope?: "central";
 }
@@ -483,6 +494,21 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
    * Emails desk: that one owns email themes and the newsletter's image
    * library, is scoped to a surface the org no longer sends from, and reusing
    * it here would tie a live feature to a mothballed domain.
+   *
+   * ── Why this is NOT `scope: "central"` ──────────────────────────────────────
+   * It was, until 2026-08-28, on the reasoning "one brand — a chapter that
+   * invented its own colors would defeat the point". The invariant is right and
+   * still holds; the conclusion did not follow from it. `scope: "central"`
+   * documents WHERE THE RESOURCE LIVES, and declaring it here made the power
+   * INERT on any chapter-chart seat — a grant the org chart would print and the
+   * gate would never honor.
+   *
+   * The kit is global, and stays global: there is exactly one, and editing it
+   * from a chapter seat changes the ORG's brand rather than minting a chapter
+   * one. Nothing about the resource is per-chapter, so nothing about the
+   * resource stops a chapter-chart seat from editing it. Founder decision
+   * (2026-08-28): the ED and Chapter Directors may. Who exactly may is the SEAT
+   * CHART's answer (`seats.ts`), not this field's — do not re-add it here.
    */
   "marketing.designs.edit": {
     id: "marketing.designs.edit",
@@ -492,8 +518,7 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
     label: "Manage the brand kit",
     description:
       "Add and organize brand colors, fonts, and design files. Everyone can see them; this changes them.",
-    // One brand. A chapter that invented its own colors would defeat the point.
-    scope: "central",
+    // Deliberately no `scope` — one brand, but not one chart's brand. See above.
   },
   /**
    * Write a post for the public blog. NOT publish it — see below.

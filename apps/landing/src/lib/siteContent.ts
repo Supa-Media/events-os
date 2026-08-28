@@ -27,11 +27,17 @@ import type {
   PublicSiteContent,
   PublicSiteEventCard,
   PublicSiteLink,
+  PublicSitePostCard,
   SiteCopyKey,
 } from "@events-os/shared/src/marketing";
 import { asset } from "./asset";
 
-export type { PublicSiteContent, PublicSiteEventCard, PublicSiteLink };
+export type {
+  PublicSiteContent,
+  PublicSiteEventCard,
+  PublicSiteLink,
+  PublicSitePostCard,
+};
 
 /** Where the homepage's content comes from. Same-origin; pw-router proxies
  *  `/api/*` to Convex. */
@@ -57,7 +63,11 @@ export async function fetchSiteContent(): Promise<PublicSiteContent | null> {
     if (!body.copy || !Array.isArray(body.links) || !Array.isArray(body.stats)) {
       return null;
     }
+    // The two AUTO rows' payloads are normalized rather than required: an
+    // older backend that predates a row simply omits it, and the correct
+    // reading of "no array" is "no cards", not "no content".
     if (!Array.isArray(body.events)) body.events = [];
+    if (!Array.isArray(body.posts)) body.posts = [];
     return body;
   } catch {
     return null;
@@ -235,6 +245,112 @@ export function formatEventDate(ms: number): string {
       month: "short",
       day: "numeric",
     });
+  } catch {
+    return "";
+  }
+}
+
+/**
+ * A blog post card — the posts row's counterpart to `buildEventCard`.
+ *
+ * Deliberately NOT the same treatment, and the difference is what the two
+ * images are. An event's cover is a poster with the event's own name set into
+ * it, which is why that card is the image and nothing else. A post's hero is a
+ * photograph that says nothing, so the title has to be ON the card either way:
+ * over the image when there is one (with a scrim, because the photograph is
+ * arbitrary and the text has to stay legible over it), on the flat pink card
+ * when there is not. A post with no hero is a text card, never a broken image
+ * box.
+ *
+ * Title, date, and the post's own description, always — `description` is
+ * required on a published post, so there is no title-only card to design for.
+ *
+ * `createElement`/`textContent` throughout, same rule as `buildLinkCard`: a
+ * post's title and description are a human's prose arriving over the network.
+ */
+export function buildPostCard(post: PublicSitePostCard): HTMLAnchorElement {
+  const a = document.createElement("a");
+  a.href = asset(post.href);
+  a.className = CARD_CLASS;
+  a.setAttribute("aria-label", post.title);
+
+  const hasCover = Boolean(post.coverUrl);
+  if (post.coverUrl) {
+    const img = document.createElement("img");
+    img.src = asset(post.coverUrl);
+    // Decorative: the title sitting on top of it already says this.
+    img.alt = "";
+    img.loading = "lazy";
+    img.decoding = "async";
+    img.className = "absolute inset-0 h-full w-full object-cover";
+    a.appendChild(img);
+
+    const scrim = document.createElement("div");
+    scrim.className =
+      "absolute inset-0 bg-gradient-to-t from-black/75 via-black/40 to-black/10";
+    a.appendChild(scrim);
+  }
+
+  // With a cover the text is pinned to the bottom of the card by absolute
+  // positioning rather than `justify-end`: the image is out of flow, so the
+  // card has no content height for a percentage height to resolve against.
+  const inner = document.createElement("div");
+  inner.className = hasCover
+    ? "absolute inset-x-0 bottom-0 z-[1] flex flex-col gap-1 p-6 text-left sm:p-8"
+    : "relative z-[1] flex h-full flex-col items-start gap-1 p-8 text-left sm:p-10";
+
+  const h3 = document.createElement("h3");
+  h3.className = `font-display text-xl sm:text-2xl ${
+    hasCover ? "text-white" : "text-link-blue"
+  }`;
+  h3.textContent = post.title;
+  inner.appendChild(h3);
+
+  const when = formatPostDate(post.publishedAt);
+  if (when) {
+    const time = document.createElement("time");
+    const iso = isoTimestamp(post.publishedAt);
+    if (iso) time.dateTime = iso;
+    time.className = hasCover ? "text-sm text-white/80" : "text-sm text-link-blue/75";
+    time.textContent = when;
+    inner.appendChild(time);
+  }
+
+  // The post's own description, whole — clamped by CSS, never cut. The string
+  // stays complete in the markup (a crawler reads the sentence; the card shows
+  // as much of it as it has room for), and it is the SAME sentence as the
+  // post's meta description, so the front page cannot drift from the post.
+  const p = document.createElement("p");
+  p.className = `text-sm sm:text-base ${
+    hasCover ? "line-clamp-2 text-white/90" : "line-clamp-3 text-link-blue"
+  }`;
+  p.textContent = post.description;
+  inner.appendChild(p);
+
+  a.appendChild(inner);
+  return a;
+}
+
+/** "Aug 30, 2026" in the visitor's own locale. Same failure rule as
+ *  `formatEventDate`: an unformattable timestamp costs the line, not the
+ *  card. Carries the year because a post can be years old, where an event card
+ *  is always something coming up. */
+export function formatPostDate(ms: number): string {
+  try {
+    return new Date(ms).toLocaleDateString(undefined, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+    });
+  } catch {
+    return "";
+  }
+}
+
+/** `datetime` for a `<time>`, or "" when the timestamp will not make one. */
+function isoTimestamp(ms: number): string {
+  try {
+    return new Date(ms).toISOString();
   } catch {
     return "";
   }

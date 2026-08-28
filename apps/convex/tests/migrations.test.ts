@@ -359,6 +359,11 @@ const REGISTRY_NAMES = [
   "0077_org_wide_budget_categories",
   "0078_stamp_interest_source_category",
   "0080_seed_marketing_desk",
+  // 0081/0082 (2026-08-28): the posts link row for already-seeded deployments,
+  // and the brand kit's stale Inter note. Both exist BECAUSE this table was
+  // already populated — the seed can no longer reach it. See each file.
+  "0081_add_posts_link_row",
+  "0082_correct_inter_font_note",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
