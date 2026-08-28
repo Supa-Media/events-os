@@ -1,15 +1,59 @@
----
-title: "Why We Sing What We Sing"
-description: "Most of our songs are about God. Not about how we feel about God, or what we get from God. Just God Himself. Here is the word for that kind of song, and the test we run every lyric through."
-subtitle: "What you should expect when you worship with us, and the standard we invite every worship leader who serves with us into."
-audience: "everyone who worships with us"
-pubDate: 2026-08-25
-author: "The Public Worship Team"
-tags: ["Songwriting", "Song Selection", "Worship"]
-draft: false
----
+/**
+ * The ONE post that existed as markdown when the blog moved into the OS.
+ *
+ * `apps/landing/src/content/blog/doxology.md`, migrated VERBATIM: the body
+ * below is the file's markdown byte for byte (frontmatter removed — those
+ * fields became columns), and the fields around it are that frontmatter's
+ * values, including its `pubDate: 2026-08-25`. Nothing is paraphrased and
+ * nothing is "tidied", because this post is live, has been shared, and has
+ * `blogReactions` rows recorded against its slug.
+ *
+ * ── The slug is pinned, not derived ─────────────────────────────────────────
+ * `doxology` is the live URL: Astro's glob loader sets `post.id` from the
+ * filename (`doxology.md`), `[...slug].astro` routes on `post.id`, and PR #795
+ * shipped it as "Publish the doxology essay at /blog/doxology".
+ * `blogSlugFromTitle("Why We Sing What We Sing")` would produce
+ * `why-we-sing-what-we-sing` — a tidier slug that would 404 every shared link
+ * and orphan every `blogReactions` row. The migration keeps the URL people
+ * already hold.
+ *
+ * DO NOT take `doxological-worship` from `tests/blogReactions.test.ts` as the
+ * answer here. That is an arbitrary fixture string in a test about slug
+ * NORMALIZATION, not a record of what the post is called; an earlier draft of
+ * this file used it and would have 404'd the one live post on the day the blog
+ * moved. The authority is the filename and the two commits that named the URL
+ * (#782 renamed the file precisely so the post would live at /blog/doxology,
+ * noting the previous slug had never been linked).
+ *
+ * Consumed by `marketingBlog.ts#seedBlogPostsIfEmpty`, which inserts it only
+ * into an empty table — the same "if empty" rule as
+ * `listings.ts#seedListingsIfEmpty` and `marketingSite.ts#seedSiteContentIfEmpty`.
+ */
 
-We center our catalog on doxological worship: songs whose whole subject is the glory of God, with the worshiper present only as an instrument of that declaration.
+/** `pubDate: 2026-08-25` from the frontmatter, as ms. UTC midnight, matching
+ *  how Astro's content collection parsed a bare `YYYY-MM-DD` — the date the
+ *  page prints must not move by a day under a reader mid-migration. */
+export const DOXOLOGY_PUBLISHED_AT = Date.UTC(2026, 7, 25);
+
+/** The migrated post, minus the fields only a live row can have (ids, the
+ *  preview token, timestamps) — `seedBlogPostsIfEmpty` supplies those. */
+export const DOXOLOGY_POST = {
+  slug: "doxology",
+  status: "published" as const,
+  title: "Why We Sing What We Sing",
+  description:
+    "Most of our songs are about God. Not about how we feel about God, or what we get from God. Just God Himself. Here is the word for that kind of song, and the test we run every lyric through.",
+  subtitle:
+    "What you should expect when you worship with us, and the standard we invite every worship leader who serves with us into.",
+  audience: "everyone who worships with us",
+  author: "The Public Worship Team",
+  tags: ["Songwriting", "Song Selection", "Worship"],
+  reactionsEnabled: true,
+  publishedAt: DOXOLOGY_PUBLISHED_AT,
+};
+
+/** The post's markdown, exactly as it stood in the repo. */
+export const DOXOLOGY_BODY = `We center our catalog on doxological worship: songs whose whole subject is the glory of God, with the worshiper present only as an instrument of that declaration.
 
 Most of the songs we write and sing are directed towards God. Not about how we feel about God. Not about what we get from God. Just God Himself.
 
@@ -234,3 +278,4 @@ We are working through as many worship songs as we can and will publish that lis
 - **[Isaac Watts, Preface to *Hymns and Spiritual Songs*](https://www.ccel.org/ccel/ccel/eee/files/wattsprh.htm)** (1707). The case for worship written in the singer's own voice and a check on overcorrecting.
 - **[Justin Taylor, "Don't Neglect the Horizontal Dimension of Singing and Worship"](https://www.thegospelcoalition.org/blogs/justin-taylor/dont-neglect-the-horizontal-dimension-of-singing-and-worship/)** (TGC, 2017). An argument through Eph 5:19 and Col 3:16 that singing is also addressed to one another. He is right; calling others in lives inside Offering because of him. Read it before you trust us too much.
 - **[Walter Brueggemann, "The Costly Loss of Lament"](https://doi.org/10.1177/030908928601103605)** (JSOT, 1986). A warning that a catalog with no place for grief becomes dangerous in the opposite direction.
+`;

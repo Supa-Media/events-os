@@ -222,25 +222,55 @@ describe("route: legacy subdomain redirects", () => {
   });
 });
 
-describe("route: unpublished blog posts are gated", () => {
+describe("route: the blog is served by Convex", () => {
+  // Posts live in Convex (apps/convex/lib/blogPage.ts) — a path that isn't
+  // proxied here doesn't degrade, it 404s at the edge from the static build
+  // while Convex is never asked. drift.test.ts pins these against the shared
+  // contract's own path constants; these cases pin the shapes around them.
   it.each([
-    "/blog/drafts",
-    "/blog/drafts/",
-    "/blog/drafts/some-post",
-    "/blog/drafts/some-post/",
-  ])("%s serves assets behind the draft gate", (path) => {
+    "/blog",
+    "/blog/",
+    "/blog/why-we-sing-what-we-sing",
+    "/blog/rss.xml",
+    "/blog/sitemap.xml",
+  ])("%s is proxied to Convex", (path) => {
     expect(route(u(`https://publicworship.life${path}`))).toEqual({
-      kind: "assets",
-      gate: "draft",
+      kind: "proxy",
+      target: `${CONVEX_ORIGIN}${path}`,
     });
   });
 
-  it.each(["/blog", "/blog/some-post", "/blog/draftsy", "/blogs/drafts"])(
-    "%s is a published path — no gate",
+  it("carries a preview token through to Convex", () => {
+    expect(
+      route(u("https://publicworship.life/blog/a-draft?preview=abc123")),
+    ).toEqual({
+      kind: "proxy",
+      target: `${CONVEX_ORIGIN}/blog/a-draft?preview=abc123`,
+    });
+  });
+
+  it("a retired /blog/drafts/* URL is proxied like any other post path (Convex 404s it)", () => {
+    // The gated prefix is gone; these URLs must reach the blog's own 404 page
+    // rather than a password form or the static build's empty 404.
+    expect(route(u("https://publicworship.life/blog/drafts/some-post"))).toEqual({
+      kind: "proxy",
+      target: `${CONVEX_ORIGIN}/blog/drafts/some-post`,
+    });
+  });
+
+  it.each(["/blogs/drafts", "/blogging"])(
+    "%s is not the blog — still a static asset",
     (path) => {
       expect(route(u(`https://publicworship.life${path}`))).toEqual({
         kind: "assets",
       });
     },
   );
+
+  it("the old /rss.xml redirects to the blog's feed", () => {
+    expect(route(u("https://publicworship.life/rss.xml"))).toEqual({
+      kind: "redirect",
+      location: "https://publicworship.life/blog/rss.xml",
+    });
+  });
 });

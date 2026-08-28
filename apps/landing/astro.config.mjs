@@ -27,12 +27,13 @@ export default defineConfig({
   },
   integrations: [
     tailwind({ applyBaseStyles: false }),
-    sitemap({
-      // Unpublished posts build to /blog/drafts/* so pw-router can hold them
-      // behind a password (infra/router/src/draftGate.ts). Handing their URLs
-      // to search engines in the sitemap would defeat the point of gating
-      // them — the gate would hold, but the URL would be public knowledge.
-      filter: (page) => !page.includes("/blog/drafts"),
-    }),
+    // No filter: the only pages this build produces are public ones. It used
+    // to exclude /blog/drafts/*, the password-gated unpublished posts, which
+    // no longer exist — a draft is a Convex row shared with a per-post preview
+    // token now. NOTE that this sitemap covers the STATIC pages only: /blog,
+    // /blog/<slug>, /give and /finances are served by Convex and no build step
+    // here knows they exist. The blog publishes its own at /blog/sitemap.xml
+    // (apps/convex/lib/blogPage.ts), named in public/robots.txt.
+    sitemap(),
   ],
 });

@@ -101,6 +101,71 @@ describe("drift guard: apps/convex/http.ts public routes are all proxied", () =>
   });
 });
 
+/**
+ * THE BLOG'S PUBLIC PATHS.
+ *
+ * The guard above only sees routes written as literals in apps/convex/http.ts.
+ * The blog's are not: they are registered from apps/convex/lib/blogPage.ts
+ * (`registerBlogPageRoutes`), the same way the /api/* routes are registered
+ * from their own lib modules — http.ts contains one import and one call. So
+ * that scrape cannot cover them, and something else has to.
+ *
+ * This block derives the blog's URLs from the place both sides already read,
+ * packages/shared/src/marketingBlog.ts, and asserts the Worker proxies every
+ * one of them. Posts are database rows now: a path that isn't proxied here
+ * doesn't render a stale copy, it doesn't exist — the Worker answers a shared
+ * link from the static build (an empty 404) and Convex is never consulted,
+ * which is exactly what happened to /finances on 2026-08-12.
+ */
+describe("drift guard: the blog's shared paths are proxied to Convex", () => {
+  const sharedBlog = read("packages/shared/src/marketingBlog.ts");
+
+  const constant = (name: string): string => {
+    const m = sharedBlog.match(new RegExp(`${name}\\s*=\\s*"([^"]+)"`));
+    expect(
+      m,
+      `couldn't find ${name} in packages/shared/src/marketingBlog.ts — update this regex`,
+    ).not.toBeNull();
+    return m![1];
+  };
+
+  const indexPath = constant("BLOG_INDEX_PATH");
+  const feedPath = constant("BLOG_FEED_PATH");
+  const sitemapPath = constant("BLOG_SITEMAP_PATH");
+  // `blogPostPath` is a template, not a constant: resolve its one
+  // interpolation with a sample slug so a real post URL gets checked.
+  const postTemplate = sharedBlog.match(
+    /export function blogPostPath\(slug: string\): string \{\s*return `([^`]+)`/,
+  );
+  expect(
+    postTemplate,
+    "couldn't find blogPostPath's returned template in " +
+      "packages/shared/src/marketingBlog.ts — update this regex",
+  ).not.toBeNull();
+  const postPath = postTemplate![1].replace(
+    /\$\{slug\}/g,
+    "why-we-sing-what-we-sing",
+  );
+
+  it.each([
+    indexPath,
+    // The trailing-slash spelling of the index, which Astro's
+    // `trailingSlash: "ignore"` made a live URL for as long as the blog was
+    // static, so links to it are in circulation.
+    `${indexPath}/`,
+    postPath,
+    feedPath,
+    sitemapPath,
+  ])("%s reaches Convex", (path) => {
+    expect(
+      route(new URL(`https://publicworship.life${path}`)),
+      `packages/shared/src/marketingBlog.ts publishes "${path}" but the router ` +
+        "doesn't proxy it to Convex — update infra/router/src/route.ts's " +
+        "CONVEX_PREFIXES (or the /blog exact-path case).",
+    ).toEqual({ kind: "proxy", target: `${CONVEX_ORIGIN}${path}` });
+  });
+});
+
 describe("drift guard: Expo web app base path matches OS_PREFIX", () => {
   it("apps/mobile/lib/appUrl.ts's APP_BASE_PATH matches route.ts's OS_PREFIX", () => {
     const appUrlTs = read("apps/mobile/lib/appUrl.ts");

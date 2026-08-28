@@ -8,7 +8,7 @@
  * checks here are a courtesy that saves a round trip, and every server error
  * comes back as a human sentence we show verbatim rather than a status code.
  *
- * Deliberately vanilla, like `blog-reactions.ts` and `collaborate.ts`: this
+ * Deliberately vanilla, like `collaborate.ts`: this
  * site ships no framework runtime, and an application form is the last place
  * to start.
  */

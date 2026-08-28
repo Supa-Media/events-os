@@ -21,9 +21,7 @@
 export type RouteDecision =
   | { kind: "redirect"; location: string }
   | { kind: "proxy"; target: string; cache?: "immutable" }
-  // `gate: "draft"` marks the unpublished-blog-post prefix, which index.ts
-  // puts behind a shared password before serving the asset. See draftGate.ts.
-  | { kind: "assets"; gate?: "draft" };
+  | { kind: "assets" };
 
 export const EXPO_ORIGIN = "https://events-os.expo.app";
 export const CONVEX_ORIGIN = "https://vivid-rhinoceros-688.convex.site";
@@ -34,11 +32,13 @@ export const CONVEX_ORIGIN = "https://vivid-rhinoceros-688.convex.site";
 // three stay in sync.
 export const OS_PREFIX = "/os";
 
-// Unpublished blog posts. Astro builds a `draft: true` post to
-// /blog/drafts/<slug> instead of /blog/<slug> (apps/landing/src/pages/blog/)
-// precisely so this one prefix can be gated — see draftGate.ts. Everything
-// under it, HTML and assets alike, needs the password.
-export const DRAFTS_PREFIX = "/blog/drafts";
+// The blog's OLD feed path. Posts moved into Convex and the feed moved with
+// them to /blog/rss.xml (packages/shared/src/marketingBlog.ts#BLOG_FEED_PATH),
+// because /rss.xml was an Astro route and could not follow them without
+// teaching this router a one-file exception. A feed URL is subscribed to once
+// and then polled forever by software nobody will update, so it redirects
+// rather than 404s.
+export const LEGACY_FEED_PATH = "/rss.xml";
 
 const APEX = "publicworship.life";
 const WWW_HOST = "www.publicworship.life";
@@ -117,6 +117,18 @@ export const CONVEX_PREFIXES = [
   // The GET matters too: Mailchimp refuses to SAVE a webhook whose URL doesn't
   // 200 on a GET, so without this the integration cannot even be configured.
   "/mailchimp/",
+  // THE BLOG (`apps/convex/lib/blogPage.ts`'s `registerBlogPageRoutes`):
+  // `/blog/<slug>`, `/blog/rss.xml`, `/blog/sitemap.xml`. Posts are database
+  // rows now, so a post that isn't proxied here doesn't render stale — it
+  // does not exist at all, and the Worker answers a shared link with the
+  // static build's empty 404 while Convex is never consulted. That is the
+  // exact failure that took `/finances` down on 2026-08-12.
+  //
+  // These routes are registered in `lib/blogPage.ts` rather than inline in
+  // `apps/convex/http.ts`, which is where drift.test.ts scrapes route
+  // literals — so the guard covering them derives the blog's paths from
+  // `packages/shared/src/marketingBlog.ts` instead. See drift.test.ts.
+  "/blog/",
 ] as const;
 
 function isConvexPath(pathname: string): boolean {
@@ -134,6 +146,9 @@ function isConvexPath(pathname: string): boolean {
   // finance ledger down on 2026-08-12 and that `drift.test.ts` exists to
   // catch. It caught this one before it shipped.
   if (pathname === "/backer") return true;
+  // Same exact-path + prefix pair as /give and /finances: `/blog` is the
+  // index, `/blog/...` a post, the feed, or the sitemap.
+  if (pathname === "/blog") return true;
   return CONVEX_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
@@ -199,14 +214,17 @@ export function route(url: URL): RouteDecision {
     };
   }
 
-  if (isConvexPath(pathname)) {
-    return { kind: "proxy", target: `${CONVEX_ORIGIN}${pathname}${search}` };
+  // The blog's old feed URL, kept alive for everyone already subscribed to it.
+  // EXACT PATH: /rss.xml was one file, and a prefix rule would only invent
+  // ways for a typo to land somewhere odd. 301 rather than a proxy so readers
+  // and aggregators record the new address instead of asking this Worker
+  // forever.
+  if (pathname === LEGACY_FEED_PATH) {
+    return { kind: "redirect", location: `https://${APEX}/blog/rss.xml` };
   }
 
-  // Draft posts are still static assets — they just don't get served until
-  // index.ts has checked the password.
-  if (pathname === DRAFTS_PREFIX || pathname.startsWith(`${DRAFTS_PREFIX}/`)) {
-    return { kind: "assets", gate: "draft" };
+  if (isConvexPath(pathname)) {
+    return { kind: "proxy", target: `${CONVEX_ORIGIN}${pathname}${search}` };
   }
 
   return { kind: "assets" };

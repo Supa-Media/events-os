@@ -1,11 +1,16 @@
 # publicworship.life
 #
-# Unpublished blog posts live under /blog/drafts/ and are password-protected
-# by pw-router (infra/router/src/draftGate.ts) — a crawler could not read one
-# anyway. This rule is belt-and-braces so a shared draft link never turns up
-# in a search result, alongside each draft page's own noindex meta tag and
-# X-Robots-Tag header.
+# The blog is served from Convex (apps/convex/lib/blogPage.ts), so its URLs are
+# absent from sitemap-index.xml, which @astrojs/sitemap builds from the static
+# pages only. /blog/sitemap.xml is the blog's own, and naming it here is what
+# makes a post discoverable at all. (/give and /finances have the same gap and
+# no sitemap of their own — pre-existing, and out of scope here.)
+#
+# There is no /blog/drafts/ rule any more: unpublished posts were static pages
+# behind a shared password, and are now database rows reachable only with a
+# per-post preview token, which carries its own noindex + no-store.
 User-agent: *
-Disallow: /blog/drafts/
+Allow: /
 
 Sitemap: https://publicworship.life/sitemap-index.xml
+Sitemap: https://publicworship.life/blog/sitemap.xml
