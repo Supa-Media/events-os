@@ -8,13 +8,13 @@
  * and hand over to the real tool. A preview without a way out is a dead end, and
  * a link without a preview is the Google Doc of design libraries.
  *
- * ── It renders ONCE, in the viewer ──────────────────────────────────────────
- * This used to sit on every card in a scrolling list, which meant a library of
- * nine files was nine authenticated Canva iframes racing each other. The
- * workstation's grid draws a stored thumbnail instead (`designs/DesignGrid`,
- * `designPreview`), and this component is mounted only by `DesignInspector` —
- * for the one file somebody actually opened. That is the mockup's own call and
- * the reason the grid loads.
+ * ── The viewer's copy of the preview ────────────────────────────────────────
+ * This component is mounted only by `DesignInspector`, for the one file
+ * somebody opened. The GRID now previews live too — on web every Canva/Figma
+ * tile carries its own lazy frame (`designs/DesignGrid`, founder's call:
+ * "just render the iframe for all of them"), so this frame is the big,
+ * interactive copy rather than the only one. The grid's frames are inert
+ * (`pointerEvents: none`); this one you can actually page through.
  *
  * ── Web renders a frame. Native does not, on purpose ────────────────────────
  * On web an embeddable design becomes a real `<iframe>` in a 16/9 box, copied

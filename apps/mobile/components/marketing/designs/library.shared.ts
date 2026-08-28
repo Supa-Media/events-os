@@ -267,12 +267,39 @@ export function parentChoicesFor(
 // ── The picture on a tile ────────────────────────────────────────────────────
 
 /**
- * What a tile draws in its picture box.
+ * How many grid tiles may carry a LIVE embed at once.
  *
- * The grid NEVER renders a live embed — the mockup's own note has the reason:
- * nine files would be nine Canva iframes, which is slow, rate-limited, and
- * pointless when the thing being scanned is a thumbnail-sized picture. The live
- * embed belongs in the viewer, where exactly one is on screen.
+ * The founder's call, reversing the first cut's thumbnails-only rule: "I don't
+ * care how slow it's gonna make the page — we just render the iframe for all
+ * of them." So on web the grid embeds every Canva/Figma tile it shows, and
+ * this cap is the "maybe we put a limit" half of the same instruction: past
+ * it, tiles fall back to the still/placeholder ladder rather than mounting
+ * hundreds of authenticated frames in one DOM (the library holds up to
+ * `DESIGN_MAX_COUNT` = 500). Forty is far above any real shelf today.
+ */
+export const GRID_EMBED_MAX = 40;
+
+/**
+ * Which of the shown designs get a live frame on their tile: the first
+ * `limit` that have an embeddable URL, in the order the grid draws them.
+ * Order-based rather than per-tile so the cap is a property of the SHELF —
+ * the same design can be live on a short shelf and a still on "All files".
+ */
+export function gridEmbeds(
+  designs: Pick<DesignAsset, "id" | "embedUrl">[],
+  limit: number = GRID_EMBED_MAX,
+): Set<string> {
+  const live = new Set<string>();
+  for (const design of designs) {
+    if (live.size >= limit) break;
+    if (design.embedUrl) live.add(design.id);
+  }
+  return live;
+}
+
+/**
+ * What a tile draws in its picture box — and, on web, what sits UNDER the live
+ * frame while it loads (see `GRID_EMBED_MAX` above for the embed rule).
  */
 export type DesignPreview =
   | { kind: "image"; uri: string }

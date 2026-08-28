@@ -8,6 +8,7 @@ import {
   buildShelves,
   designMatches,
   designPreview,
+  gridEmbeds,
   initialsFor,
   folderOptions,
   isUnfiled,
@@ -343,5 +344,32 @@ describe("designPreview", () => {
 
   test("an empty kit still paints something rather than a grey box", () => {
     expect(placeholderPaint("d1", [])).toBe("#D23B3A");
+  });
+});
+
+describe("gridEmbeds", () => {
+  const embed = "https://www.canva.com/design/abc/def/view?embed";
+
+  test("every embeddable design gets a live frame — the founder's call", () => {
+    const shelf = [
+      design("d1", "Flyer", null, { embedUrl: embed }),
+      design("d2", "Drive folder", null, { kind: "link" }),
+      design("d3", "Banner", null, { embedUrl: embed }),
+    ];
+    expect(gridEmbeds(shelf)).toEqual(new Set(["d1", "d3"]));
+  });
+
+  test("a design with no embed never gets a frame, whatever the budget", () => {
+    expect(gridEmbeds([design("d1", "Drive folder", null)])).toEqual(new Set());
+  });
+
+  test("past the cap, tiles fall back to stills — in draw order", () => {
+    const shelf = [
+      design("d1", "A", null, { embedUrl: embed }),
+      design("d2", "B", null),
+      design("d3", "C", null, { embedUrl: embed }),
+      design("d4", "D", null, { embedUrl: embed }),
+    ];
+    expect(gridEmbeds(shelf, 2)).toEqual(new Set(["d1", "d3"]));
   });
 });
