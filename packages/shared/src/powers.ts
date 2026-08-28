@@ -215,6 +215,9 @@ export const POWERS = [
   "hiring.approve",
   // ── marketing ─────────────────────────────────────────────────────────────
   "marketing.site.edit",
+  "marketing.designs.edit",
+  "marketing.blog.edit",
+  "marketing.blog.publish",
   "marketing.list.view",
   "marketing.list.edit",
   // ── org ───────────────────────────────────────────────────────────────────
@@ -461,6 +464,95 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
       "Change the homepage's copy, impact numbers, and Important Links cards — live, with no deploy.",
     // publicworship.life is the ORG's site. A chapter has no homepage of its
     // own to edit, so a chapter-scoped grant would reach nothing.
+    scope: "central",
+  },
+  /**
+   * The brand kit and the design library — the colors, the fonts, and the
+   * Canva/Figma files the team makes everything out of.
+   *
+   * ── There is no `marketing.designs.view`, on purpose ────────────────────────
+   * The library is READABLE BY THE WHOLE TEAM, ungated, and that is the feature
+   * rather than an oversight. The Academy's own brand lesson puts it best:
+   * "Nobody should have to ask permission to look right." A chapter volunteer
+   * making a flyer at 11pm needs the hex code and the logo file, and a brand
+   * kit behind a permission is a brand kit people work around — which is
+   * exactly the inconsistency it exists to prevent. So the gate is on CHANGING
+   * the kit, where a wrong answer propagates, not on reading it.
+   *
+   * Distinct from `email.assets.edit`, which is the same idea for the parked
+   * Emails desk: that one owns email themes and the newsletter's image
+   * library, is scoped to a surface the org no longer sends from, and reusing
+   * it here would tie a live feature to a mothballed domain.
+   */
+  "marketing.designs.edit": {
+    id: "marketing.designs.edit",
+    domain: "marketing",
+    area: "designs",
+    action: "edit",
+    label: "Manage the brand kit",
+    description:
+      "Add and organize brand colors, fonts, and design files. Everyone can see them; this changes them.",
+    // One brand. A chapter that invented its own colors would defeat the point.
+    scope: "central",
+  },
+  /**
+   * Write a post for the public blog. NOT publish it — see below.
+   */
+  "marketing.blog.edit": {
+    id: "marketing.blog.edit",
+    domain: "marketing",
+    area: "blog",
+    action: "edit",
+    label: "Write blog posts",
+    description:
+      "Draft, edit, and revise posts for the public blog. Publishing is separate.",
+    scope: "central",
+  },
+  /**
+   * Put a post on the internet under the organization's name.
+   *
+   * SPLIT FROM `edit`, and worth defending because the sibling power
+   * `marketing.site.edit` deliberately went the other way. A headline is a
+   * sentence that the seat which owns the public voice should be able to
+   * correct the moment it is noticed. A blog post is a long-form argument
+   * published under the Corporation's name, about what it believes — the kind
+   * of thing that gets quoted back years later and cannot be un-said by an
+   * edit. Its closest relative in this vocabulary is `finance.ledger.publish`,
+   * not `marketing.site.edit`.
+   *
+   * The workflow this gates ALREADY EXISTS: the landing repo's `draft: true`
+   * builds a post to a password-gated URL specifically so a work in progress
+   * can be shared with an editor before it is public. This is that convention,
+   * turned from a habit into a rule.
+   */
+  "marketing.blog.publish": {
+    id: "marketing.blog.publish",
+    domain: "marketing",
+    area: "blog",
+    action: "publish",
+    label: "Publish blog posts",
+    description:
+      "Put a post on the public blog — and take one down. A published post is quotable forever.",
+    /**
+     * The one who decides also writes (rule 3, a same-domain edge the ladder
+     * rule will not derive). Exactly `hiring.approve`'s case and for exactly
+     * its reason: the split exists so an ASSOCIATE cannot put a post on the
+     * internet, not so the Director cannot save a draft.
+     *
+     * THIS WAS A REAL BUG, caught in review before it shipped. The ladder rule
+     * grants `view` at a power's own prefix, so `marketing.blog.publish`
+     * expanded to `marketing.blog.publish` and a nonexistent
+     * `marketing.blog.view` — and nothing else. Since `seats.ts` grants the ED
+     * and the Marketing Director this power ALONE (minimal storage: you write
+     * down only what isn't implied), those two seats could publish a post they
+     * could not save. Every comment around it asserted the opposite, which is
+     * why it read as correct.
+     *
+     * The lesson generalizes: `approve`/`publish` never imply `edit`. If a
+     * seat is meant to hold both, either the edge is declared here or both
+     * strings go on the seat.
+     */
+    implies: ["marketing.blog.edit"],
     scope: "central",
   },
   /**

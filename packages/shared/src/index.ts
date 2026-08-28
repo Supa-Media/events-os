@@ -2326,3 +2326,15 @@ export * from "./hiring";
 // serializer, `GET /api/site/home`, and the landing renderer. Read this next to
 // `hiring.ts`, which does the same job for `/team`'s job postings.
 export * from "./marketing";
+
+// ── Marketing · Designs: the brand kit and the design library ───────────────
+// Colors, fonts, folders, and the Canva/Figma embed rule. Reading this library
+// is deliberately ungated — see `marketing.designs.edit`'s doc in powers.ts.
+export * from "./marketingDesigns";
+
+// ── Marketing · Blog: posts as data, rendered server-side by Convex ─────────
+// Read the module doc for why this one is server-rendered rather than
+// hydrated like the homepage's copy: a post has no repo fallback, and a post
+// no crawler can see is not a post.
+export * from "./blogMarkdown";
+export * from "./marketingBlog";

@@ -282,6 +282,9 @@ describe("legacy migration", () => {
       // link cards + the mailing/SMS list). Same story as `hiring` — a new
       // domain, nothing in the old vocabulary meant it.
       "marketing.site.edit",
+      "marketing.designs.edit",
+      "marketing.blog.edit",
+      "marketing.blog.publish",
       "marketing.list.view",
       "marketing.list.edit",
     ]);
@@ -504,16 +507,62 @@ describe("areas are earned, not reserved", () => {
     }
   });
 
+  /**
+   * The bug this pins shipped into a review and was caught there, not by a
+   * test: `marketing.blog.publish` was granted to the ED and the Marketing
+   * Director ALONE (correct under minimal storage), while every comment around
+   * it claimed it implied `marketing.blog.edit`. It did not — the ladder rule
+   * grants `view` at a power's own prefix, never `edit` — so those two seats
+   * could publish a post they were unable to save.
+   *
+   * The general rule the codebase relies on: a seat stores the MINIMAL set, so
+   * a power that is meant to carry a weaker sibling MUST declare the edge. Any
+   * `approve`/`publish` power whose domain also has an `edit` at the same
+   * prefix is a candidate for that mistake, and this test is the reason the
+   * next one fails loudly instead of reaching a Director's screen.
+   */
+  test("an approve/publish power implies its own area's edit, or says why not", () => {
+    // `email.campaigns.approve` is the deliberate exception, and it is the
+    // exception that makes the rule legible: approving a campaign is a CHECK
+    // on somebody else's send, so the approver is a different person by
+    // design — see its def and `campaigns.ts`'s state-machine doc.
+    const DELIBERATELY_UNLINKED: readonly Power[] = ["email.campaigns.approve"];
+
+    for (const power of POWERS) {
+      const def = POWER_DEFS[power];
+      if (def.action !== "approve" && def.action !== "publish") continue;
+      if (DELIBERATELY_UNLINKED.includes(power)) continue;
+
+      const prefix = def.area ? `${def.domain}.${def.area}` : def.domain;
+      const sibling = `${prefix}.edit` as Power;
+      if (!POWERS.includes(sibling)) continue; // no edit at this prefix
+
+      expect(
+        expandPowers([power]).has(sibling),
+        `${power} does not grant ${sibling} — a seat holding only ${power} could ${def.action} something it cannot edit`,
+      ).toBe(true);
+    }
+  });
+
   test("the vocabulary stays small — a growing list is the smell this replaced", () => {
     // Not a hard cap, a speed bump: if this trips, ask whether the new power
     // needed to exist or belonged inside an existing string. Raised to 22 on
-    // 2026-08-28 for the Marketing desk's three, and the question was asked:
-    // site-vs-list had to split (a designer places cards, they don't touch the
-    // roster) and view-vs-edit had to split (an associate reads the list, a
-    // Director takes people off it). Export deliberately did NOT get a fourth
-    // string — `data.export` already means that. Kept tight on purpose so the
-    // NEXT power trips this again.
-    expect(POWERS.length).toBeLessThanOrEqual(22);
+    // 2026-08-28 for the Marketing desk's first three, and the question was
+    // asked: site-vs-list had to split (a designer places cards, they don't
+    // touch the roster) and view-vs-edit had to split (an associate reads the
+    // list, a Director takes people off it). Export deliberately did NOT get a
+    // fourth string — `data.export` already means that.
+    //
+    // Raised again to 25 the same day, when the desk grew a design library and
+    // the blog. The question was asked three more times and the answers are
+    // written on each def:
+    //  - `designs.edit` has NO `designs.view` sibling, because reading the
+    //    brand kit is deliberately ungated for the whole team.
+    //  - `blog.edit` / `blog.publish` split because a post is published under
+    //    the org's name and is quotable forever — the `ledger.publish` case,
+    //    not the `site.edit` one.
+    // Kept tight on purpose so the NEXT power trips this again.
+    expect(POWERS.length).toBeLessThanOrEqual(25);
   });
 });
 

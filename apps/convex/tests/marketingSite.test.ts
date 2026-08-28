@@ -490,6 +490,9 @@ describe("access", () => {
     expect(access).toEqual({
       canViewDesk: false,
       canEditSite: false,
+      canEditDesigns: false,
+      canEditBlog: false,
+      canPublishBlog: false,
       canViewList: false,
       canEditList: false,
     });

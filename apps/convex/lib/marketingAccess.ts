@@ -1,29 +1,41 @@
 /**
  * MARKETING authorization — the Marketing desk's gate.
  *
- * The named resolver pair CLAUDE.md's "Gate It Behind a Power" section
- * requires: nothing in `marketingSite.ts` or `mailingList.ts` checks a seat, a
- * title, or a chapter inline. Read `@events-os/shared`'s `powers.ts` for the
- * three strings themselves; this module is only how they are enforced.
+ * The named resolvers CLAUDE.md's "Gate It Behind a Power" section requires:
+ * nothing in `marketingSite.ts`, `mailingList.ts`, `marketingDesigns.ts`, or
+ * `marketingBlog.ts` checks a seat, a title, or a chapter inline. Read
+ * `@events-os/shared`'s `powers.ts` for the strings themselves; this module is
+ * only how they are enforced.
  *
- * ── TWO HALVES, TWO SCOPE MODELS ────────────────────────────────────────────
- * This is the one thing to understand before adding a call site here, because
- * the desk looks like one surface and is governed like two:
+ * ── ONE DESK, FOUR SURFACES, THREE SHAPES OF GATE ───────────────────────────
+ * This is the thing to understand before adding a call site, because the desk
+ * looks like one surface and is governed like several:
  *
- *   THE SITE is central, full stop. publicworship.life is the ORG's homepage;
- *   there is no per-chapter homepage to edit, so `marketing.site.edit` is
+ *   CENTRAL, NO SCOPE ARGUMENT — the site, the brand kit, the blog. There is
+ *   one homepage, one brand, and one blog, so all four powers behind them are
  *   declared `scope: "central"` and a chapter-scope grant reaches nothing —
  *   enforced at derivation (`lib/seats.ts#getSeatDerivedMarketingCapabilities`),
- *   not merely rendered honestly on the chart. `requireSiteEdit` takes no
- *   scope argument at all, which is the type system saying the same thing.
+ *   not merely rendered honestly on the chart. Their `require*` functions take
+ *   no scope argument at all, which is the type system saying the same thing.
  *
- *   THE LIST is chapter-scoped, exactly like the giving CRM. A central holder
- *   reaches every chapter's people; a chapter's Marketing Lead reaches their
- *   own chapter's and nobody else's. `requireMailingListView` /
+ *   CHAPTER-SCOPED — the mailing list, exactly like the giving CRM. A central
+ *   holder reaches every chapter's people; a chapter's Marketing Lead reaches
+ *   their own and nobody else's. `requireMailingListView` /
  *   `requireMailingListEdit` therefore mirror `requireGivingView` /
  *   `requireGivingManage` one-for-one, including the `canView*`/`canManage*`
  *   filtering twins a list surface needs when the wrong shape would be a
  *   throw-per-row.
+ *
+ *   NOT GATED AT ALL — READING the brand kit. Deliberate, and the only
+ *   ungated read on this desk: a chapter volunteer making a flyer needs the hex
+ *   code and the logo file, and a brand kit behind a permission is one people
+ *   work around. There is no `requireDesignsView`; do not add one.
+ *
+ * ── ONE PLACE THIS DESK ASKS FOR A SECOND PARTY ─────────────────────────────
+ * `requireBlogPublish`. Everything else here trusts the seat that holds it,
+ * including changing the homepage's headline — because a headline is a sentence
+ * and a blog post is an argument published under the Corporation's name that
+ * gets quoted back years later.
  *
  * ── EXPORT IS NOT A FOURTH POWER ────────────────────────────────────────────
  * `requireMailingListExport` asks for BOTH `marketing.list.view` at the scope
@@ -56,6 +68,14 @@ export interface MarketingAccess {
   /** May edit the public homepage's copy, stats, and link cards. Central-only
    *  by construction — see the module doc. */
   canEditSite: boolean;
+  /** May change the brand kit and the design library. Central-only.
+   *  READING the library needs nothing at all — see `marketing.designs.edit`. */
+  canEditDesigns: boolean;
+  /** May write a blog post. Central-only. */
+  canEditBlog: boolean;
+  /** May put a post on the public blog, or take one down. Central-only, and
+   *  implies `canEditBlog`. */
+  canPublishBlog: boolean;
   /** Central-scope `marketing.list.view` (implies view of every chapter). */
   centralListView: boolean;
   /** Central-scope `marketing.list.edit` (implies edit of every chapter). */
@@ -72,6 +92,9 @@ function emptyAccess(): MarketingAccess {
   return {
     isSuperuser: false,
     canEditSite: false,
+    canEditDesigns: false,
+    canEditBlog: false,
+    canPublishBlog: false,
     centralListView: false,
     centralListEdit: false,
     listViewChapters: new Set<string>(),
@@ -97,6 +120,9 @@ export async function resolveMarketingAccess(
   if (await isSuperuser(ctx)) {
     access.isSuperuser = true;
     access.canEditSite = true;
+    access.canEditDesigns = true;
+    access.canEditBlog = true;
+    access.canPublishBlog = true;
     access.centralListView = true;
     access.centralListEdit = true;
     access.canViewDesk = true;
@@ -116,9 +142,13 @@ export async function resolveMarketingAccess(
     if (person.isPlaceholder === true) continue;
     const caps = await getSeatDerivedMarketingCapabilities(ctx, person._id);
     for (const [scopeKey, scopeCaps] of Object.entries(caps)) {
-      // `site` is already false at any chapter scope — the derivation drops it
-      // rather than trusting this loop to remember the rule.
+      // The four central-only flags are already false at any chapter scope —
+      // the derivation drops them rather than trusting this loop to remember
+      // the rule.
       if (scopeCaps.site) access.canEditSite = true;
+      if (scopeCaps.designs) access.canEditDesigns = true;
+      if (scopeCaps.blogEdit) access.canEditBlog = true;
+      if (scopeCaps.blogPublish) access.canPublishBlog = true;
       if (scopeKey === "central") {
         if (scopeCaps.listView) access.centralListView = true;
         if (scopeCaps.listEdit) access.centralListEdit = true;
@@ -131,6 +161,8 @@ export async function resolveMarketingAccess(
 
   access.canViewDesk =
     access.canEditSite ||
+    access.canEditDesigns ||
+    access.canEditBlog ||
     access.centralListView ||
     access.listViewChapters.size > 0;
   return access;
@@ -172,6 +204,66 @@ export async function requireSiteEdit(
       code: "FORBIDDEN",
       message:
         "You don't have permission to edit the public site. Ask the Marketing Director or the ED.",
+    });
+  }
+  return access;
+}
+
+/**
+ * Assert the caller may CHANGE the brand kit — add a color, a font, a design
+ * file, or a folder.
+ *
+ * There is no `requireDesignsView` and there must not be one. The library is
+ * readable by anybody signed in: a chapter volunteer making a flyer needs the
+ * hex code and the logo, and a brand kit behind a permission is a brand kit
+ * people work around. `marketing.designs.edit`'s doc has the rest.
+ */
+export async function requireDesignsEdit(
+  ctx: QueryCtx,
+): Promise<MarketingAccess> {
+  const access = await resolveMarketingAccess(ctx);
+  if (!access.canEditDesigns) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message:
+        "You don't have permission to change the brand kit. Ask the Marketing Director or a designer.",
+    });
+  }
+  return access;
+}
+
+/** Assert the caller may WRITE a blog post (draft, edit, revise). */
+export async function requireBlogEdit(
+  ctx: QueryCtx,
+): Promise<MarketingAccess> {
+  const access = await resolveMarketingAccess(ctx);
+  if (!access.canEditBlog) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "You don't have permission to write blog posts.",
+    });
+  }
+  return access;
+}
+
+/**
+ * Assert the caller may PUBLISH a post — or take a published one down.
+ *
+ * Separate from `requireBlogEdit` on purpose, and the one place in this module
+ * where the split costs somebody a click: a post goes on the internet under the
+ * Corporation's name and gets quoted back years later. See
+ * `marketing.blog.publish`'s doc for why this is `finance.ledger.publish`'s
+ * relative and not `marketing.site.edit`'s.
+ */
+export async function requireBlogPublish(
+  ctx: QueryCtx,
+): Promise<MarketingAccess> {
+  const access = await resolveMarketingAccess(ctx);
+  if (!access.canPublishBlog) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message:
+        "Only the Marketing Director or the ED can publish a post. Save it as a draft and share the preview link for review.",
     });
   }
   return access;

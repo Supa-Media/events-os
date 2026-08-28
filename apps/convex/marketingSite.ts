@@ -63,7 +63,10 @@ import {
 import { requireSiteEdit, resolveMarketingAccess } from "./lib/marketingAccess";
 import { requireUserId } from "./lib/context";
 import { SITE_LINK_SEED, SITE_STAT_SEED } from "./lib/seed/siteContent";
-import { listUpcomingEventPages } from "./lib/upcomingEvents";
+import {
+  listPickableEventPages,
+  listUpcomingEventPages,
+} from "./lib/upcomingEvents";
 
 /** Generous bound — the grid has never held more than six cards. */
 const LINK_SCAN_LIMIT = 100;
@@ -73,6 +76,9 @@ const STAT_SCAN_LIMIT = 50;
  *  may be weeks out and therefore well down the date-sorted list; this is the
  *  window a pin can reach into. `listPublishedUpcoming` caps at 24 anyway. */
 const UPCOMING_LOOKAHEAD = 24;
+/** How far back the desk's event picker reaches. A season, so a marketer can
+ *  still see (and un-hide) something that ran last month. */
+const PICKER_LOOKBACK_DAYS = 90;
 /** Order values are spaced this far apart so a reorder rewrites one row. */
 const ORDER_STEP = 100;
 
@@ -328,6 +334,9 @@ export const myMarketingAccess = query({
   returns: v.object({
     canViewDesk: v.boolean(),
     canEditSite: v.boolean(),
+    canEditDesigns: v.boolean(),
+    canEditBlog: v.boolean(),
+    canPublishBlog: v.boolean(),
     canViewList: v.boolean(),
     canEditList: v.boolean(),
   }),
@@ -336,6 +345,9 @@ export const myMarketingAccess = query({
     return {
       canViewDesk: access.canViewDesk,
       canEditSite: access.canEditSite,
+      canEditDesigns: access.canEditDesigns,
+      canEditBlog: access.canEditBlog,
+      canPublishBlog: access.canPublishBlog,
       // "Anywhere" rather than "at central" — a chapter Marketing Lead's desk
       // is real, it is just narrower. The list screen resolves the scope.
       canViewList:
@@ -818,19 +830,49 @@ export const setEventsRow = mutation({
 /**
  * The published RSVP pages the desk can pin or hide — the picker's options.
  *
- * Deliberately the SAME source `resolveEventCards` selects from, so the desk
- * can never offer a pin for something the page would then refuse to render.
+ * ── Why this shows finished events too ──────────────────────────────────────
+ * It used to return exactly what the homepage would render, on the reasoning
+ * that the desk should never offer a pin the page would refuse. That reasoning
+ * was right about pins and wrong about the picker: the founder's report was
+ * that he wanted to see "the things that already appear in that section" and
+ * "past event links" here, and both were missing. An event that finished
+ * yesterday dropped out of the list entirely — taking with it any hide he had
+ * set on it, which then had no way to be un-set.
+ *
+ * So the picker reaches back (`listPickableEventPages`), and each row says
+ * which side of the line it is on:
+ *   `isUpcoming` — the page would render it, so a pin does something.
+ *   `onPageNow`  — it is on the homepage AT THIS MOMENT, pinned or not.
+ * The desk shows a finished event as finished rather than offering it as
+ * though pinning would bring it back; `resolveEventCards` is unchanged and
+ * still drops it.
  */
 export const pinnableEvents = query({
   args: {},
   handler: async (ctx) => {
     await requireSiteEdit(ctx);
-    const upcoming = await listUpcomingEventPages(ctx, UPCOMING_LOOKAHEAD);
-    return upcoming.map((e) => ({
+    const rows = await listPickableEventPages(ctx, {
+      recentDays: PICKER_LOOKBACK_DAYS,
+    });
+
+    // What the page is showing right now — the same resolver the public feed
+    // runs, so "on the page" here means exactly what a visitor sees.
+    const links = await ctx.db
+      .query("siteLinks")
+      .withIndex("by_order")
+      .take(LINK_SCAN_LIMIT);
+    const eventsRow = links.find((l) => l.kind === "events");
+    const live = new Set(
+      (await resolveEventCards(ctx, eventsRow)).map((e) => e.slug),
+    );
+
+    return rows.map((e) => ({
       slug: e.slug,
       title: e.eventName,
       startDate: e.startDate,
       venueName: e.venueName,
+      isUpcoming: e.isUpcoming,
+      onPageNow: live.has(e.slug),
     }));
   },
 });
@@ -852,29 +894,41 @@ export const generateLinkImageUploadUrl = mutation({
  * Restore the homepage content that was YAML before this desk existed.
  *
  * Idempotent and all-or-nothing per table: a deployment that already has cards
- * is left alone. Run once after deploy —
- * `npx convex run marketingSite:seedSiteContentIfEmpty`.
+ * is left alone.
+ *
+ * ── This is NOT a "run it after deploy" seed, and that is the point ─────────
+ * It shipped as one, and the desk was empty on the founder's first look — the
+ * grid showed nothing, so the tab read as broken rather than as unseeded, and
+ * the honest failure ("somebody has to run a command") is invisible from
+ * inside the app. A seed whose absence looks like a bug is a seed that belongs
+ * in the deploy, so the body lives in `seedSiteContent` below and migration
+ * `0080` calls it on every deploy until it has run. The internal mutation
+ * stays for a manual re-run.
  */
+export async function seedSiteContent(
+  ctx: MutationCtx,
+): Promise<{ links: number; stats: number }> {
+  const now = Date.now();
+  let links = 0;
+  let stats = 0;
+
+  if (!(await ctx.db.query("siteLinks").first())) {
+    for (const row of SITE_LINK_SEED) {
+      await ctx.db.insert("siteLinks", { ...row, createdAt: now, updatedAt: now });
+      links++;
+    }
+  }
+  if (!(await ctx.db.query("siteStats").first())) {
+    for (const row of SITE_STAT_SEED) {
+      await ctx.db.insert("siteStats", { ...row, updatedAt: now });
+      stats++;
+    }
+  }
+  return { links, stats };
+}
+
 export const seedSiteContentIfEmpty = internalMutation({
   args: {},
   returns: v.object({ links: v.number(), stats: v.number() }),
-  handler: async (ctx: MutationCtx) => {
-    const now = Date.now();
-    let links = 0;
-    let stats = 0;
-
-    if (!(await ctx.db.query("siteLinks").first())) {
-      for (const row of SITE_LINK_SEED) {
-        await ctx.db.insert("siteLinks", { ...row, createdAt: now, updatedAt: now });
-        links++;
-      }
-    }
-    if (!(await ctx.db.query("siteStats").first())) {
-      for (const row of SITE_STAT_SEED) {
-        await ctx.db.insert("siteStats", { ...row, updatedAt: now });
-        stats++;
-      }
-    }
-    return { links, stats };
-  },
+  handler: async (ctx: MutationCtx) => await seedSiteContent(ctx),
 });

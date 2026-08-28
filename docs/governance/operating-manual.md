@@ -75,7 +75,7 @@ update these tables, `governance.test.ts` fails.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit` |
+| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit`, `marketing.blog.publish`, `marketing.designs.edit` |
 | Financial Manager | Executive Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
 | Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
@@ -85,10 +85,10 @@ update these tables, `governance.test.ts` fails.
 | Artists | Music Director | many | — |
 | Musicians | Music Director | many | — |
 | Songwriters | Music Director | many | — |
-| Marketing Director | Executive Director | 1 | `email.campaigns.approve`, `data.export`, `marketing.site.edit`, `marketing.list.edit` |
-| Social Media Manager | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.list.view` |
-| Graphic Designer | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit` |
-| Marketing Associate | Marketing Director | many | `marketing.list.view` |
+| Marketing Director | Executive Director | 1 | `email.campaigns.approve`, `data.export`, `marketing.site.edit`, `marketing.list.edit`, `marketing.designs.edit`, `marketing.blog.publish` |
+| Social Media Manager | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.list.view`, `marketing.blog.edit`, `marketing.designs.edit` |
+| Graphic Designer | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.designs.edit` |
+| Marketing Associate | Marketing Director | many | `marketing.list.view`, `marketing.blog.edit` |
 | Expansion Director | Executive Director | 1 | `giving.view`, `data.export`, `hiring.approve` |
 | Chapter Directors | Expansion Director | many | — |
 | Recruiting Associate | Expansion Director | many | `hiring.edit` |
@@ -214,6 +214,9 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `hiring.edit` | Run the pipeline: move candidates, file rubric reviews, start an Empowerment Trial |
 | `hiring.approve` | Make the call — place, not-now, or decline a candidate, and send the outcome message |
 | `marketing.site.edit` | Change the public homepage's copy, impact numbers, and Important Links cards — live, with no deploy |
+| `marketing.designs.edit` | Change the brand kit — colors, fonts, and the design library. Everyone may READ it; this changes it |
+| `marketing.blog.edit` | Draft and revise posts for the public blog |
+| `marketing.blog.publish` | Put a post on the public blog, and take one down |
 | `marketing.list.view` | Read the email and SMS mailing lists at the holder's scope, and who has opted out |
 | `marketing.list.edit` | Add someone to the mailing list, and take someone off it when they ask |
 | `org.chart.edit` | Edit the org chart — seats, holders, and their powers |
@@ -684,7 +687,54 @@ Two limits are worth stating because they are not obvious from the tool:
   in an event card pulled through automatically. §10's minors rule binds here
   first, because this is the surface with the widest audience.
 
-### 9.2 The mailing list
+### 9.2 The brand kit
+
+The colors, the typefaces, and the design library live in Chapter OS (Marketing
+→ Designs). **Anyone signed in may read them; only `marketing.designs.edit` may
+change them.** That asymmetry is deliberate and is the whole point: a chapter
+volunteer making a flyer needs the hex code and the logo at the moment they are
+making it, and a brand kit behind a permission is a brand kit people work
+around — which is the exact inconsistency it exists to prevent.
+
+One brand, org-wide. A chapter does not get its own colors; the power is
+central-scoped and a chapter grant reaches nothing.
+
+Design files are stored as LINKS to the tool they live in (Canva, Figma,
+Dropbox) plus a thumbnail the Corporation hosts itself. Never store a design
+tool's own preview URL as the thumbnail — those expire, and a library of dead
+images is worse than an empty one.
+
+### 9.3 The blog
+
+Posts live in Chapter OS (Marketing → Blog) and are served from there. Two
+powers, and the split is the one place on this desk that asks for a second
+party:
+
+- `marketing.blog.edit` — draft and revise. Held by the marketing chain.
+- `marketing.blog.publish` — put it on the internet, or take it down. Held by
+  the Marketing Director and the ED only.
+
+This is a different standard from §9.1's homepage copy, and the reason is worth
+stating: a headline is a sentence, and the seat that owns the public voice
+should be able to correct one the moment it is noticed. **A post is an argument
+published under the Corporation's name.** It gets quoted back years later and
+cannot be un-said by an edit. Its closest relative in this manual is §4.6's
+published ledger, not §9.1.
+
+Three rules bind:
+
+1. **A draft is shared by preview link, never by publishing it "briefly".** Each
+   post carries its own unguessable link that a reviewer can open; it is
+   `noindex`, uncached, and revocable for that post alone.
+2. **A published post is taken down, not deleted.** Its URL keeps resolving, to
+   a page that says it was taken down. A link that was shared once is shared
+   forever, and a 404 tells a reader we lost something rather than that we
+   withdrew it.
+3. **A correction is dated.** A materially revised post says it was updated —
+   the same instinct as Bylaws Article XI's correction rule for published
+   figures.
+
+### 9.4 The mailing list
 
 The email and SMS lists live on the roster itself, not in a separate tool: a
 person on the list is a `people` row, and `marketing.list.view` /
