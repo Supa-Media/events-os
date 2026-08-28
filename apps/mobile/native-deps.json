@@ -5,6 +5,7 @@
     "expo-router",
     "expo-status-bar",
     "expo-constants",
+    "expo-clipboard",
     "expo-linking",
     "expo-secure-store",
     "expo-updates",
