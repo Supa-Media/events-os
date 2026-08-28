@@ -1,5 +1,5 @@
 /**
- * MARKETING · Designs — one design's preview, and the way out of it.
+ * MARKETING · Designs — one design's LIVE preview, and the way out of it.
  *
  * The founder's ask for this tab was specific: "it should ideally render, so
  * you can click in, and then it renders, but you can click in and go to the
@@ -7,6 +7,14 @@
  * decision — whatever we can show inline, we show; whatever we can't, we say so
  * and hand over to the real tool. A preview without a way out is a dead end, and
  * a link without a preview is the Google Doc of design libraries.
+ *
+ * ── It renders ONCE, in the viewer ──────────────────────────────────────────
+ * This used to sit on every card in a scrolling list, which meant a library of
+ * nine files was nine authenticated Canva iframes racing each other. The
+ * workstation's grid draws a stored thumbnail instead (`designs/DesignGrid`,
+ * `designPreview`), and this component is mounted only by `DesignInspector` —
+ * for the one file somebody actually opened. That is the mockup's own call and
+ * the reason the grid loads.
  *
  * ── Web renders a frame. Native does not, on purpose ────────────────────────
  * On web an embeddable design becomes a real `<iframe>` in a 16/9 box, copied

@@ -672,9 +672,9 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Colors** — tap one to copy the hex. This is where the brand red lives now; nothing else in the Academy prints it, so there is only ever one answer to check.",
-          "**Fonts** — grouped by what each is for, so \"what do I set a headline in?\" has one answer. The designer curates the list, including having more than one face for a job.",
-          "**Designs** — Canva and Figma files render right there; click through to open the real thing in the real tool. Anything else (a Dropbox folder, a Drive file) is a labelled link.",
-          "**Folders** — marketing names them. \"Instagram posts\", \"Event flyers\", whatever matches how they actually work.",
+          "**Faces** — each one shown as a specimen set in the face itself, grouped by what it's for, so \"what do I set a headline in?\" has one answer. If your device can't show a face, the card says so honestly and offers the download instead of showing you a lookalike. The designer curates the list, including having more than one face for a job.",
+          "**Design files** — a grid of the files themselves. Open one and the Canva or Figma file renders full size, one tap from the real, editable thing. Anything else (a Dropbox folder, a Drive file) is a labelled link.",
+          "**Folders** — the shelves down the side. Marketing names them — \"Instagram posts\", \"Event flyers\", whatever matches how they actually work — and you step into one to see what's on it.",
         ],
       },
       {
