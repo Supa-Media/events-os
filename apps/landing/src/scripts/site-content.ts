@@ -21,6 +21,7 @@ import {
   applyCopy,
   buildEventCard,
   buildLinkCard,
+  buildPostCard,
   buildStatCard,
   fetchSiteContent,
 } from "../lib/siteContent";
@@ -34,8 +35,14 @@ import type { PublicSiteContent } from "../lib/siteContent";
  * inputs — and a diff would be more code standing between the desk and what it
  * just published. The one thing that IS preserved is the entrance stagger:
  * cards are wrapped in the same `data-animate` shell at the same 60ms cadence,
- * counted across the whole grid so the events sitting in the middle do not
+ * counted across the whole grid so the auto rows sitting in the middle do not
  * reset it.
+ *
+ * THE AUTO ROWS render AT their own position. `events` and `posts` are rows in
+ * this same ordered list, so "move the posts above Donate" is a drag on the
+ * desk and nothing here — the loop expands each row in place. Either can
+ * expand to nothing (unpublished, capped at 0, nothing to show), and then the
+ * row simply contributes no cards: no heading, no empty shell, no gap.
  */
 function renderLinks(content: PublicSiteContent): void {
   const grid = document.getElementById("pw-links-grid");
@@ -54,6 +61,18 @@ function renderLinks(content: PublicSiteContent): void {
       }
       continue;
     }
+    if (link.kind === "posts") {
+      for (const post of content.posts) {
+        frag.appendChild(animateIn(buildPostCard(post), delayIndex++));
+      }
+      continue;
+    }
+    // An auto row this build has never heard of — the OS gained a kind after
+    // this page was deployed, which it can, because the two sides ship
+    // separately. Skipping it is the only safe reading: falling through would
+    // paint the desk's internal label for the row ("Live events") as a dead
+    // card with no destination.
+    if (link.kind !== "link") continue;
     frag.appendChild(animateIn(buildLinkCard(link), delayIndex++));
   }
   grid.replaceChildren(frag);
