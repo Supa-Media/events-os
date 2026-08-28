@@ -22,14 +22,23 @@
  */
 import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
-import { PUBLIC_WORSHIP_THEME } from "@events-os/shared";
+import { PUBLIC_WORSHIP_THEME, SEAT_DEFS } from "@events-os/shared";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 
-/** Give the test's user a central seat carrying `capabilities`. Same two-insert
- *  fixture `marketingSite.test.ts` uses — sharing it across files is not worth
- *  the coupling. */
-async function seedSeat(s: ChapterSetup, capabilities: string[]): Promise<void> {
+/** Give the test's user a seat carrying `capabilities`, on `chart`, held at
+ *  `scope`. Same two-insert fixture `marketingSite.test.ts` uses — sharing it
+ *  across files is not worth the coupling — generalized over chart/scope so a
+ *  CHAPTER-chart seat held at a real chapter can be seeded, which is the whole
+ *  question for `marketing.designs.edit` (see the chapter-scope describe
+ *  block). Defaults are the central case every other test here wants. */
+async function seedSeat(
+  s: ChapterSetup,
+  capabilities: readonly string[],
+  opts: { chart?: "central" | "chapter"; scope?: "central" | Id<"chapters"> } = {},
+): Promise<void> {
+  const chart = opts.chart ?? "central";
+  const scope = opts.scope ?? "central";
   const now = Date.now();
   await run(s.t, async (ctx) => {
     const personId = await ctx.db.insert("people", {
@@ -40,20 +49,20 @@ async function seedSeat(s: ChapterSetup, capabilities: string[]): Promise<void> 
       createdAt: now,
     });
     const seatDefId = await ctx.db.insert("seatDefs", {
-      slug: "test_designs_seat",
+      slug: `test_designs_seat_${chart}`,
       title: "Test Designs Seat",
-      chart: "central",
+      chart,
       parentSlug: "root",
       maxHolders: 1,
       duties: [],
-      capabilities,
+      capabilities: [...capabilities],
       sortOrder: 0,
       createdAt: now,
       updatedAt: now,
     });
     await ctx.db.insert("seatAssignments", {
       seatDefId,
-      scope: "central",
+      scope,
       personId,
       createdAt: now,
     });
@@ -106,6 +115,130 @@ describe("who can read and who can write", () => {
   test("ungated does not mean public — a signed-out caller is refused", async () => {
     const t = newT();
     await expect(t.query(api.marketingDesigns.library, {})).rejects.toThrow();
+  });
+});
+
+describe("who may edit it — the ED, and a CHAPTER Director", () => {
+  /**
+   * The founder's instruction, 2026-08-28: "make sure that me as executive
+   * director and even Chapter Directors can also edit [the brand kit]".
+   *
+   * These tests exist because the obvious way to satisfy that instruction does
+   * NOT work. `marketing.designs.edit` was declared `scope: "central"`, and
+   * `getSeatDerivedMarketingCapabilities` honored that by setting `designs`
+   * only inside its central-scope branch — so putting the power on the
+   * chapter-chart `chapter_director` seat would have produced a grant the org
+   * chart printed and the gate ignored, silently, forever.
+   *
+   * So none of this asserts on a fixture flag. Each one seeds the REAL seat
+   * definition's capability array, at a real scope, and drives a real mutation
+   * through `requireDesignsEdit` — the derivation and the resolver both run.
+   * Delete the `designs` line from that derivation and every test in this block
+   * fails; that is the intended tripwire.
+   */
+  test("a Chapter Director, scoped to their own chapter, can change the kit", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, SEAT_DEFS.chapter_director.capabilities, {
+      chart: "chapter",
+      scope: s.chapterId,
+    });
+
+    // Not "a flag is set" — a real write through the real gate.
+    await s.as.mutation(api.marketingDesigns.upsertColor, {
+      name: "Approved by the CD",
+      hex: "#123456",
+    });
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.canEdit).toBe(true);
+    expect(lib.colors.find((c) => c.name === "Approved by the CD")?.hex).toBe(
+      "#123456",
+    );
+  });
+
+  test("ONE BRAND still — the CD's edit lands in the org's single kit", async () => {
+    // The invariant the scope change did NOT touch. There is no per-chapter
+    // library, so a chapter-scoped editor and an ungated reader with no seat at
+    // all are looking at the same rows.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, SEAT_DEFS.chapter_director.capabilities, {
+      chart: "chapter",
+      scope: s.chapterId,
+    });
+    await s.as.mutation(api.marketingDesigns.upsertColor, {
+      name: "One kit",
+      hex: "#654321",
+    });
+
+    // Somebody in a DIFFERENT chapter, with no seat at all, reads the same row
+    // back. `library` takes no scope argument — there is nothing to pass — and
+    // this is that fact observed rather than asserted.
+    const other = await setupChapter(t, {
+      email: "denver@publicworship.life",
+      chapterName: "Denver",
+    });
+    expect(other.chapterId).not.toBe(s.chapterId);
+    const theirs = await other.as.query(api.marketingDesigns.library, {});
+    expect(theirs.colors.map((c) => c.name)).toContain("One kit");
+    expect(theirs.canEdit).toBe(false);
+  });
+
+  test("the Executive Director can change the kit", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, SEAT_DEFS.executive_director.capabilities);
+    // Pinned rather than assumed: the ED's seat really does carry the power.
+    expect(SEAT_DEFS.executive_director.capabilities).toContain(
+      "marketing.designs.edit",
+    );
+    await s.as.mutation(api.marketingDesigns.upsertColor, {
+      name: "Approved by the ED",
+      hex: "#0f0f0f",
+    });
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.canEdit).toBe(true);
+  });
+
+  test("it is the POWER doing the work, not the chapter scope", async () => {
+    // The control. A chapter Marketing Lead sits at exactly the same scope as
+    // the Chapter Director above and is refused — so the first test proves a
+    // grant was honored, not that chapter scope became a free pass.
+    const t = newT();
+    const s = await setupChapter(t);
+    expect(SEAT_DEFS.marketing_lead.capabilities).not.toContain(
+      "marketing.designs.edit",
+    );
+    await seedSeat(s, SEAT_DEFS.marketing_lead.capabilities, {
+      chart: "chapter",
+      scope: s.chapterId,
+    });
+    await expect(
+      s.as.mutation(api.marketingDesigns.upsertColor, {
+        name: "Not theirs to make",
+        hex: "#ff0000",
+      }),
+    ).rejects.toThrow(/permission to change the brand kit/i);
+    // ...and reading is still wide open to them, which is the point.
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.canEdit).toBe(false);
+  });
+
+  test("widening the kit did NOT widen the homepage or the blog", async () => {
+    // The founder asked about the brand kit only. `marketing.site.edit` and the
+    // two blog powers are still `scope: "central"`, so a chapter-scope holder
+    // of ALL of them still reaches none of them — the derivation's central
+    // branch is intact.
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(
+      s,
+      ["marketing.site.edit", "marketing.blog.publish", "marketing.designs.edit"],
+      { chart: "chapter", scope: s.chapterId },
+    );
+    const access = await s.as.query(api.marketingSite.myMarketingAccess, {});
+    expect(access.canEditDesigns).toBe(true);
+    expect(access.canEditSite).toBe(false);
   });
 });
 

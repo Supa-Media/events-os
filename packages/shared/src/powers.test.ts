@@ -14,6 +14,7 @@ import {
   isPower,
   migrateLegacyPowers,
   powerLabel,
+  powersAtScope,
 } from "./powers";
 import { SEAT_DEFS, SEAT_IDS } from "./seats";
 
@@ -416,6 +417,9 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
    *    mailing list, while the associate and the chapter Marketing Lead only
    *    read it. This is a NEW surface, not a re-grant — before the desk
    *    existed, changing a headline or a link was a pull request.
+   *  - `marketing` for `chapter_director` (2026-08-28, second wave): the brand
+   *    kit, on the founder's instruction. The CD held nothing in this domain
+   *    before, so it is named here for the same reason the rest are.
    */
   const POST_STANDARDIZATION_DOMAINS: Partial<Record<string, string[]>> = {
     executive_director: ["hiring", "marketing"],
@@ -426,6 +430,7 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
     graphic_designer: ["marketing"],
     marketing_associate: ["marketing"],
     marketing_lead: ["marketing"],
+    chapter_director: ["marketing"],
   };
 
   test("no seat gained a power outside its own domains", () => {
@@ -482,6 +487,60 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
       expect(
         expandPowers(SEAT_DEFS[seat].capabilities).has("finance.accounts.view"),
       ).toBe(true);
+    }
+  });
+});
+
+describe("scope says where the RESOURCE lives, not who may edit it", () => {
+  /**
+   * `marketing.designs.edit` is the case that made this distinction explicit.
+   * It carried `scope: "central"` on the reasoning "one brand" — which is a
+   * true statement about the RESOURCE and does not follow to a claim about the
+   * editors. The declaration made a chapter-chart grant INERT: the org chart
+   * would print it and the gate would never honor it, which is exactly the
+   * dishonest rendering the field exists to prevent, pointed the other way.
+   *
+   * These four assertions are the tripwire for someone "restoring" it. If the
+   * founder's decision is ever reversed, the fix is to remove the grant from
+   * `chapter_director`, not to re-add `scope` here — the resource is still
+   * global either way.
+   */
+  test("the brand kit is global but NOT scope-central, so a chapter seat can hold it", () => {
+    expect(POWER_DEFS["marketing.designs.edit"].scope).toBeUndefined();
+    expect(SEAT_DEFS.chapter_director.chart).toBe("chapter");
+    expect(SEAT_DEFS.chapter_director.capabilities).toContain(
+      "marketing.designs.edit",
+    );
+    // The point of the whole change: it survives the chapter-scope filter, so
+    // the chart prints a power the holder can actually exercise.
+    expect(
+      powersAtScope(SEAT_DEFS.chapter_director.capabilities, "chapter"),
+    ).toContain("marketing.designs.edit");
+  });
+
+  test("the ED holds the brand kit power too — the other half of the founder's ask", () => {
+    expect(SEAT_DEFS.executive_director.capabilities).toContain(
+      "marketing.designs.edit",
+    );
+    expect(
+      grantsPower(
+        SEAT_DEFS.executive_director.capabilities,
+        "marketing.designs.edit",
+      ),
+    ).toBe(true);
+  });
+
+  test("the site and the blog did NOT move — only the brand kit did", () => {
+    // The founder asked about the brand kit. publicworship.life is still the
+    // ORG's one homepage and the blog is still the org's one blog, so those
+    // three stay `scope: "central"` and stay invisible at a chapter scope.
+    for (const power of [
+      "marketing.site.edit",
+      "marketing.blog.edit",
+      "marketing.blog.publish",
+    ] as const) {
+      expect(POWER_DEFS[power].scope, power).toBe("central");
+      expect(powersAtScope([power], "chapter"), power).not.toContain(power);
     }
   });
 });

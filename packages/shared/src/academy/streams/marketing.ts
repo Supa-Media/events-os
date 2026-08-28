@@ -42,6 +42,16 @@
  * five questions, and folding these in would have meant dropping the mailing
  * list's consent questions, which are the ones that protect the org from a
  * self-inflicted wound.
+ *
+ * CORRECTED 2026-08-28 (same day, third wave): both brand-kit lessons said
+ * changing the kit "belongs to marketing" / "needs a marketing seat". That was
+ * never quite the rule — the gate is a POWER, not a desk — and it became flatly
+ * wrong when the founder had `marketing.designs.edit` granted to the ED and
+ * every Chapter Director. Copy only: no section was added, moved, or resized,
+ * so `academy.snapshot.test.ts`'s pinned minutes and quiz lengths are unchanged
+ * (one paragraph is not a minute). Note both lessons still refuse to name a hex
+ * or a face — `brandSingleSource.test.ts` enforces that, and the correction had
+ * no reason to touch it.
  */
 
 import type {
@@ -95,7 +105,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Nobody should have to ask permission to look right",
-        text: "A chapter in a new city should be able to make something that looks unmistakably PW without messaging anyone for help. That is why reading the kit needs no marketing seat at all: if you are making a flyer at 11pm and you need the red, you should be able to get the red. Changing the kit is a different matter, and belongs to marketing.",
+        text: "A chapter in a new city should be able to make something that looks unmistakably PW without messaging anyone for help. That is why reading the kit needs no seat at all: if you are making a flyer at 11pm and you need the red, you should be able to get the red. Changing the kit is a different matter — it takes the \"Manage the brand kit\" power, which the marketing chain holds, and so do the Executive Director and every Chapter Director. One kit, one look, and a short list of people who can move it.",
       },
       {
         kind: "reveal",
@@ -129,12 +139,12 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         options: [
           "Only the Marketing Director can do either",
           "Anyone can open it, and anyone can change it",
-          "Anyone on the team can open it; changing it needs a marketing seat",
+          "Anyone on the team can open it; changing it takes the brand-kit power",
           "You need a design seat even to look",
         ],
         answerIndex: 2,
         explanation:
-          "Reading the kit is deliberately ungated — a brand kit behind a permission is a brand kit people work around, and the person making something at 11pm is exactly who needs it. Changing it belongs to marketing, so the org has one look rather than five.",
+          "Reading the kit is deliberately ungated — a brand kit behind a permission is a brand kit people work around, and the person making something at 11pm is exactly who needs it. Changing it takes a named power, held by the marketing chain plus the ED and Chapter Directors, so the org has one look rather than five.",
       },
       {
         prompt: "The designer decides the org should use a different face for captions. What has to happen?",
@@ -648,11 +658,15 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "heading",
-        text: "Designs: anyone can look, marketing can change",
+        text: "Designs: anyone can look, a named few can change",
       },
       {
         kind: "p",
-        text: "The colors, the typefaces, and the Canva and Figma files are all in **Marketing → Designs**, and you do not need a marketing seat to open it. That is deliberate, and it is the brand lesson's rule made real: if you are making a flyer at 11pm and you need the red, you should be able to get the red.",
+        text: "The colors, the typefaces, and the Canva and Figma files are all in **Marketing → Designs**, and you do not need any seat at all to open it. That is deliberate, and it is the brand lesson's rule made real: if you are making a flyer at 11pm and you need the brand red, you should be able to get it.",
+      },
+      {
+        kind: "p",
+        text: "**Changing** the kit is the gated half, and the gate is a power — \"Manage the brand kit\" — not a desk you belong to. The marketing chain holds it, and so do the Executive Director and every **Chapter Director**. There is still exactly one kit: a Chapter Director editing it is editing the org's brand, not giving their chapter its own. That is the whole reason the list of people who can is short and deliberate.",
       },
       {
         kind: "bullets",
@@ -736,7 +750,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "Reading is deliberately open to everyone; changing it is the part that's gated. Nobody should have to ask permission to look right.",
+          "Reading is deliberately open to everyone; changing it is the part that's gated, and that gate is the \"Manage the brand kit\" power — held by the marketing chain, the ED, and Chapter Directors. Nobody should have to ask permission to look right.",
       },
       {
         prompt: "Why does a design row link to the Canva file rather than to an exported image?",

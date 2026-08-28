@@ -527,6 +527,16 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // 2026-08-06: door check-in access for the QR scanner — the CD is one
       // of the "signed-in people we've given access to" by default.
       "events.checkin",
+      // 2026-08-28 (founder, verbatim: "make sure that me as executive
+      // director and even Chapter Directors can also edit [the brand kit]").
+      // ONE BRAND STILL — a CD editing the kit is editing the org's brand,
+      // not minting their chapter one; there is exactly one kit and it has no
+      // per-chapter copy. That is why this is not a contradiction of "central
+      // owns the design system": the CD is trusted with the org's brand, the
+      // way they are already trusted to publish their chapter's month to the
+      // public ledger. The power had to lose `scope: "central"` for this grant
+      // to reach anything at all — see `powers.ts`.
+      "marketing.designs.edit",
     ],
     legacyTitle: "president",
   },
@@ -631,6 +641,17 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // `marketing.site.edit`: that power is `scope: "central"` because
     // publicworship.life is the ORG's homepage; a chapter lead granted it
     // would reach nothing, and the org chart would print a lie.
+    //
+    // NOT `marketing.designs.edit` either, and for a DIFFERENT reason now that
+    // the power is chapter-grantable (2026-08-28) — it would reach the real
+    // kit, which is exactly why this seat does not get it by default. The
+    // founder named the ED and Chapter Directors; a Marketing Lead promotes
+    // their chapter's events with the brand, and READING the kit is ungated
+    // for everyone, so that job is already fully served. Changing the org's
+    // one brand from a chapter promotions seat is a wider grant than was
+    // asked for, and a wrong answer there propagates to every chapter. If a
+    // particular chapter's lead should have it, the ED grants it to that seat
+    // at runtime from the org chart — which now actually works.
     capabilities: ["marketing.list.view"],
   },
 };

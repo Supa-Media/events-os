@@ -108,6 +108,10 @@ describe("0025_add_cd_finance_viewer", () => {
       "data.export",
       // 2026-08-06: door check-in access.
       "events.checkin",
+      // 2026-08-28: the brand kit (founder instruction). Listed here because
+      // this assertion pins the TEMPLATE's exact array — it is not about
+      // finance, it just happens to be the fixture that reads it back.
+      "marketing.designs.edit",
     ]);
 
     const result = await run(t, (ctx) => runAddCdFinanceViewer(ctx));
@@ -157,6 +161,8 @@ describe("0025_add_cd_finance_viewer", () => {
       "giving.view",
       "data.export",
       "events.checkin",
+      // 2026-08-28: the brand kit (founder instruction) — see above.
+      "marketing.designs.edit",
     ]);
   });
 });

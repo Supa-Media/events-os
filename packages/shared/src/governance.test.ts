@@ -33,7 +33,7 @@ import {
   type SeatChart,
   type SeatDef,
 } from "./seats";
-import { POWERS, POWER_DOMAINS } from "./powers";
+import { POWERS, POWER_DEFS, POWER_DOMAINS } from "./powers";
 import {
   AFFORDABILITY_TIERS,
   BACKER_UNIT_CENTS,
@@ -112,6 +112,18 @@ function tableRows(markdown: string): string[][] {
     )
     .filter((cells) => !cells.every((cell) => /^-*:?-*$/.test(cell)))
     .slice(1);
+}
+
+/** The body of a `###`-level section, from its heading to the next heading of
+ *  the same or a higher level. Unlike `anchored` this needs no HTML comment —
+ *  it is for PROSE claims, where the checkable thing is a sentence rather than
+ *  a table, and where there is nothing to fence off. */
+function section(doc: string, heading: string): string {
+  const start = doc.indexOf(heading);
+  if (start === -1) throw new Error(`missing section: ${heading}`);
+  const rest = doc.slice(start + heading.length);
+  const end = rest.search(/\n#{1,3} /);
+  return end === -1 ? rest : rest.slice(0, end);
 }
 
 /** Every `` `backticked` `` token in a chunk of markdown. */
@@ -278,6 +290,50 @@ describe("operating manual: powers", () => {
           true,
         );
       }
+    }
+  });
+});
+
+// ── Prose that has to track the seat chart ───────────────────────────────────
+describe("operating manual: §9.2's brand-kit editors track the code", () => {
+  /**
+   * The tables above are structural and would have passed happily through the
+   * bug this guards. §9.2 used to say the brand-kit power "is central-scoped
+   * and a chapter grant reaches nothing" — TRUE when written, and false the
+   * moment `marketing.designs.edit` stopped being `scope: "central"` and the
+   * Chapter Director was granted it (founder instruction, 2026-08-28). Nothing
+   * else in this file could see that sentence.
+   *
+   * Two claims, both derived from the code rather than restated:
+   */
+  const BRAND_KIT = section(MANUAL, "### 9.2 The brand kit");
+
+  test("it names the Chapter Director exactly when the seat chart grants it", () => {
+    const granted = (
+      SEAT_DEFS.chapter_director.capabilities as readonly string[]
+    ).includes("marketing.designs.edit");
+    expect(
+      /Chapter Director/.test(BRAND_KIT),
+      granted
+        ? "chapter_director holds marketing.designs.edit — §9.2 must say so"
+        : "chapter_director no longer holds marketing.designs.edit — §9.2 still says it does",
+    ).toBe(granted);
+  });
+
+  test("it does not still claim a chapter grant reaches nothing", () => {
+    // Deliberately matching the STALE CLAIM rather than the word
+    // "central-scoped": §9.2 legitimately narrates the history in the past
+    // tense ("the power WAS central-scoped"), and a test that banned the term
+    // outright would push the honest explanation out of the document.
+    if (POWER_DEFS["marketing.designs.edit"].scope === "central") return;
+    for (const stale of [
+      /chapter grant reaches nothing/i,
+      /the power is\s+central-scoped/i,
+    ]) {
+      expect(
+        BRAND_KIT,
+        `marketing.designs.edit is grantable at a chapter scope; §9.2 must not say ${stale}`,
+      ).not.toMatch(stale);
     }
   });
 });
