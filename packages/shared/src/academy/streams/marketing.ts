@@ -33,6 +33,15 @@
  * opt-out we set and an unsubscribe the person set is the one thing a
  * marketing seat can get wrong in a way that costs the whole org its
  * deliverability.
+ *
+ * ADDED 2026-08-28 (same day, second wave): `mktg-the-library-and-the-blog`,
+ * for the Designs and Blog tabs. It is a SEPARATE lesson rather than more of
+ * `mktg-the-desk` because its two rules are governance rather than product —
+ * that reading the brand kit is ungated on purpose, and that writing a post
+ * and publishing one are deliberately different permissions. The quiz cap is
+ * five questions, and folding these in would have meant dropping the mailing
+ * list's consent questions, which are the ones that protect the org from a
+ * self-inflicted wound.
  */
 
 import type {
@@ -507,7 +516,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Taking someone off is one tap, and it stops **both** email and texts from one action. That's on purpose: nobody who says \"stop emailing me\" means \"but keep texting me.\"",
+        text: "Taking someone off stops **both** email and texts in one action. That's on purpose: nobody who says \"stop emailing me\" means \"but keep texting me.\" It asks you to confirm first — a removal is a promise to a real person, and several at once is several promises.",
       },
       {
         kind: "heading",
@@ -519,7 +528,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "In the app · Marketing → Mailing list → Sign-up link. Export CSV gives you the reachable people only — opted-out and unsubscribed addresses are never in the file, so you can paste it into Mailchimp without carrying a mistake across.",
+        text: "In the app · Marketing → Mailing list. It's a grid, like People — tick rows to remove, put back, or export a batch at once, and tap a name to open that person's record. Export gives you the reachable people only: opted-out and unsubscribed addresses are never in the file, so you can paste it into Mailchimp without carrying a mistake across.",
       },
       {
         kind: "scenario",
@@ -616,6 +625,161 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       },
     ],
   },
+
+  // ── 50 · Brand & Voice: the library and the blog ──────────────────────────
+  {
+    slug: "mktg-the-library-and-the-blog",
+    title: "The library and the blog",
+    subtitle: "Where the brand kit lives now, and who decides a post goes live",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Two of the marketing desk's tabs are the answer to questions this Academy has been answering in prose: **Designs** is the brand kit as a real thing you can open, and **Blog** is where the org's public writing is written.",
+      },
+      {
+        kind: "heading",
+        text: "Designs: anyone can look, marketing can change",
+      },
+      {
+        kind: "p",
+        text: "The colors, the typefaces, and the Canva and Figma files are all in **Marketing → Designs**, and you do not need a marketing seat to open it. That is deliberate, and it is the brand lesson's rule made real: if you are making a flyer at 11pm and you need the red, you should be able to get the red.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Colors** — tap one to copy the hex. **PW Red is #891d1a** and it hasn't moved.",
+          "**Fonts** — grouped by what each is for, so \"what do I set a headline in?\" has one answer.",
+          "**Designs** — Canva and Figma files render right there; click through to open the real thing in the real tool. Anything else (a Dropbox folder, a Drive file) is a labelled link.",
+          "**Folders** — marketing names them. \"Instagram posts\", \"Event flyers\", whatever matches how they actually work.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Link to the tool, not to the picture",
+        text: "A design row points at the Canva or Figma file — the place you can actually edit it — not at an exported image. We learned this the expensive way with pasted newsletters: design tools' own image links expire, and a library full of dead thumbnails is worse than an empty one. The little preview image is one we host ourselves.",
+      },
+      {
+        kind: "heading",
+        text: "Blog: writing it and publishing it are two different jobs",
+      },
+      {
+        kind: "p",
+        text: "Posts live in **Marketing → Blog** now, not as files in the website's code, so writing one no longer needs a developer. But unlike everything else on this desk, putting one live is a separate permission.",
+      },
+      {
+        kind: "table",
+        headers: ["You can", "If you hold"],
+        rows: [
+          ["Write, edit, and revise a post", "Write blog posts"],
+          ["Share a draft for review", "Write blog posts"],
+          ["Put it on the internet, or take it down", "Publish blog posts"],
+        ],
+      },
+      {
+        kind: "rule",
+        title: "A headline is a sentence. A post is an argument.",
+        text: "You can fix the homepage's headline yourself, the moment you notice it — nobody approves that. A blog post is different in kind: it says what Public Worship believes, under Public Worship's name, and people quote it back years later. An edit can't un-say it. So the person who writes it and the person who decides it goes live are allowed to be two people, and on our chart usually are.",
+      },
+      {
+        kind: "p",
+        text: "**Sharing a draft doesn't mean publishing it briefly.** Every draft has its own private link you can send to whoever is reviewing — it stays out of search, and it can be revoked for that post alone.",
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "A post from last year says something the team no longer wants to stand behind. What do you do?",
+        options: [
+          {
+            text: "Delete it, so it's gone.",
+            feedback:
+              "The app won't let you, and that's on purpose: people have that link in emails, in messages, in their notes. A 404 tells a reader we lost something rather than that we withdrew it.",
+          },
+          {
+            text: "Take it down — the URL still works and says the post was taken down.",
+            correct: true,
+            feedback:
+              "Right. Anyone who follows an old link gets an honest answer instead of a dead end, and the post stops being in the index, the feed, and search.",
+          },
+          {
+            text: "Quietly rewrite it so it says something else.",
+            feedback:
+              "Tempting and wrong. If a post has changed materially it should say it was updated — the same rule the published finances follow when a figure is corrected.",
+          },
+        ],
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You're a Marketing Associate. You've finished a post and the Publish button won't do anything for you. What's actually happening, and what do you do?",
+        answer:
+          "Publishing is a separate permission and you don't hold it — that isn't a bug, it's the rule that a post goes out under the org's name with somebody accountable for it. Save it, copy the draft's preview link, and send it to the Marketing Director or the ED. Your draft is safe and nothing you wrote is lost.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "Who can open Marketing → Designs and read the brand kit?",
+        options: [
+          "Only the Marketing Director",
+          "Only people with a marketing seat",
+          "Anyone signed in",
+          "Nobody — it's a Dropbox folder",
+        ],
+        answerIndex: 2,
+        explanation:
+          "Reading is deliberately open to everyone; changing it is the part that's gated. Nobody should have to ask permission to look right.",
+      },
+      {
+        prompt: "Why does a design row link to the Canva file rather than to an exported image?",
+        options: [
+          "Images are too large to store",
+          "Design tools' own image links expire, and the library fills with dead thumbnails",
+          "Canva doesn't allow image export",
+          "It's an arbitrary preference",
+        ],
+        answerIndex: 1,
+        explanation:
+          "This already happened once with pasted newsletter designs. The link goes to the editable file; the small preview is one we host ourselves.",
+      },
+      {
+        prompt:
+          "You can edit the homepage's headline yourself with no approval. Why is a blog post different?",
+        options: [
+          "Blog posts are longer",
+          "The blog is on a different server",
+          "A post is an argument published under the org's name that gets quoted back later — an edit can't un-say it",
+          "It isn't different; the rule is inconsistent",
+        ],
+        answerIndex: 2,
+        explanation:
+          "A headline is a sentence, fixable the moment it's noticed. A post is a position, and publishing one is closer to publishing the finances than to fixing a headline.",
+      },
+      {
+        prompt: "How do you get a draft in front of a reviewer?",
+        options: [
+          "Publish it, then unpublish it after they've read it",
+          "Copy the draft's own private preview link and send it",
+          "Email them a screenshot",
+          "Add them as an author",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Every draft has its own link that stays out of search and can be revoked on its own. Publishing something \"briefly\" puts it in feeds and caches you don't control.",
+      },
+      {
+        prompt: "What happens to the URL of a post that gets taken down?",
+        options: [
+          "It 404s",
+          "It redirects to the blog index",
+          "It keeps working and says the post was taken down",
+          "It stays live but hidden from the index",
+        ],
+        answerIndex: 2,
+        explanation:
+          "A link that was shared once is shared forever. An honest \"this was taken down\" beats a dead end, and the post leaves the index, the feed, and search either way.",
+      },
+    ],
+  },
 ];
 
 /** The Marketing & Media stream's theme entry. */
@@ -649,7 +813,7 @@ export const MARKETING_COURSES: Course[] = [
       "link cards, and the mailing list. (The house caption voice is coming " +
       "soon, once the Marketing Director authors current guidance.)",
     icon: "pen-tool",
-    moduleSlugs: ["mktg-the-look", "mktg-the-desk"],
+    moduleSlugs: ["mktg-the-look", "mktg-the-desk", "mktg-the-library-and-the-blog"],
   },
   {
     slug: "media-pipeline",

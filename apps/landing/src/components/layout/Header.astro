@@ -4,7 +4,6 @@ import Button from "../ui/Button.astro";
 import Logo from "../icons/Logo.astro";
 import MenuIcon from "../icons/MenuIcon.astro";
 import { asset } from "../../lib/asset";
-import { hasPublishedPosts } from "../../lib/blog";
 
 export interface Props {
   brand?: "public-worship" | "global-echo";
@@ -14,16 +13,21 @@ const { brand = "public-worship" } = Astro.props;
 
 const home = asset(brand === "global-echo" ? "/ge" : "/");
 
-// The blog only enters the nav once something is actually published — a link
-// to an empty page is worse than no link. Drafts don't count (see lib/blog.ts).
-const showBlog = await hasPublishedPosts();
+// The Blog link is unconditional. It used to be gated on a build-time
+// `hasPublishedPosts()` over the markdown collection — a link to an empty page
+// being worse than no link — but posts are Convex rows now (/blog is
+// server-rendered by apps/convex/lib/blogPage.ts), and a static build cannot
+// know what is published without asking the database at build time, which
+// would put the nav back to needing a deploy to be correct. There is always at
+// least one post, and the index renders its own "nothing published yet" state
+// if there is ever not.
 
 const navLinks = [
   { label: "About", href: `${home}#about` },
   { label: "Impact", href: `${home}#impact` },
   { label: "Links", href: `${home}#links` },
   { label: "FAQ", href: `${home}#faq` },
-  ...(showBlog ? [{ label: "Blog", href: asset("/blog") }] : []),
+  { label: "Blog", href: asset("/blog") },
 ];
 ---
 

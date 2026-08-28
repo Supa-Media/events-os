@@ -460,6 +460,15 @@ export interface SeatDerivedMarketingScopeCapabilities {
    *  `central` — the power is declared `scope: "central"` and this function
    *  honors that at derivation, not just at rendering. */
   site: boolean;
+  /** `marketing.designs.edit` — change the brand kit. Central-only, same rule
+   *  as `site` (one org, one brand). Note there is deliberately no `view`
+   *  counterpart: the library is readable by the whole team. */
+  designs: boolean;
+  /** `marketing.blog.edit` — write a post. Central-only. */
+  blogEdit: boolean;
+  /** `marketing.blog.publish` — put one on the internet. Central-only, and
+   *  implies `blogEdit` through the ladder rule. */
+  blogPublish: boolean;
   /** Some seat at this scope carries `marketing.list.view`. */
   listView: boolean;
   /** Some seat at this scope carries `marketing.list.edit`. */
@@ -481,13 +490,14 @@ export type SeatDerivedMarketingCapabilities = Record<
  * `ctx.db.get` per assignment, a stale def contributes nothing, capabilities
  * only ever OR together).
  *
- * `marketing.site.edit` is skipped outright at a chapter scope — the same
- * treatment `getSeatDerivedHiringCapabilities` gives the hiring trio, and for
- * the same reason: the power is `scope: "central"` because the org has ONE
- * homepage, so a chapter grant must reach nothing in the enforcement path and
- * not only in the chart's rendering. The list powers carry no such declaration
- * and ARE chapter-scopable: a chapter's Marketing Lead reading their own
- * chapter's list is exactly the intended grant.
+ * The site, designs, and blog powers are skipped outright at a chapter scope —
+ * the same treatment `getSeatDerivedHiringCapabilities` gives the hiring trio,
+ * and for the same reason: all four are `scope: "central"` because the org has
+ * ONE homepage, ONE brand, and ONE blog, so a chapter grant must reach nothing
+ * in the enforcement path and not only in the chart's rendering. The LIST
+ * powers carry no such declaration and ARE chapter-scopable: a chapter's
+ * Marketing Lead reading their own chapter's list is exactly the intended
+ * grant.
  */
 export async function getSeatDerivedMarketingCapabilities(
   ctx: QueryCtx,
@@ -506,13 +516,27 @@ export async function getSeatDerivedMarketingCapabilities(
     const scopeKey = String(assignment.scope);
     const entry =
       result[scopeKey] ??
-      (result[scopeKey] = { site: false, listView: false, listEdit: false });
+      (result[scopeKey] = {
+        site: false,
+        designs: false,
+        blogEdit: false,
+        blogPublish: false,
+        listView: false,
+        listEdit: false,
+      });
 
     // `marketing.list.edit` implies `.list.view` via the ladder rule, already
     // applied by `expandPowers` — no manual "edit implies read" step here.
     const powers = expandPowers(def.capabilities);
-    if (powers.has("marketing.site.edit") && scopeKey === CENTRAL_SCOPE_KEY) {
-      entry.site = true;
+    // The four `scope: "central"` powers, dropped outright at a chapter scope —
+    // see this function's doc for why that belongs here and not only on the
+    // chart. `blog.publish` implies `blog.edit` via the ladder rule, already
+    // applied by `expandPowers`.
+    if (scopeKey === CENTRAL_SCOPE_KEY) {
+      if (powers.has("marketing.site.edit")) entry.site = true;
+      if (powers.has("marketing.designs.edit")) entry.designs = true;
+      if (powers.has("marketing.blog.edit")) entry.blogEdit = true;
+      if (powers.has("marketing.blog.publish")) entry.blogPublish = true;
     }
     if (powers.has("marketing.list.edit")) entry.listEdit = true;
     if (powers.has("marketing.list.view")) entry.listView = true;

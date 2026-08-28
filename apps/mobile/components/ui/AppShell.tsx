@@ -62,19 +62,19 @@ const NAV: NavEntry[] = [
   // seat, or superuser) — the in-screen `requireGivingView` gate is the real
   // one; this is nav visibility only.
   { label: "Giving", icon: "gift", path: "/giving", group: "A" },
-  // Emails — the org's email desk (block-based designer + audience
-  // segments + reply inbox). Its own desk beside Giving (same PARA group:
-  // an ongoing-responsibility function, not a one-off project). Gated by
-  // `audiences.myCampaignsAccess.canView` (a held campaigns seat, or
-  // superuser) — mirrors Giving's `nav.giving` gate exactly; the in-screen
-  // guards on each campaigns/campaign route are the real enforcement, this
-  // is nav visibility only. The route and the API keep the older "campaign"
-  // name — see `docs/guides/email-terminology.md`.
+  // NO "Emails" ENTRY, deliberately (removed 2026-08-28). Bulk email went to
+  // Mailchimp on 2026-08-19 and the desk was parked behind a `deskEnabled`
+  // flag that defaulted to ON for any deployment that had never set it — so on
+  // production it was still in the sidebar, advertising a tool the org had
+  // decided not to send from. The founder's call: "let's get rid of the emails
+  // on the sidebar, since we've already said we're not having that."
   //
-  // PARKED (2026-08-19): bulk email goes out through Mailchimp now, so this
-  // entry is additionally gated on `deskEnabled` below and is hidden by
-  // default. See `docs/plans/email-desk-parked.md`.
-  { label: "Emails", icon: "mail", path: "/campaigns", group: "A" },
+  // The ROUTES are untouched. `/campaigns/*` still resolves with its guards
+  // intact, so an in-flight send can be finished and the history stays
+  // readable — this only stops the app offering it. Where the newsletter
+  // actually lives is now answered by Marketing → Emails, which is a signpost
+  // written for that question rather than a desk nobody should open.
+  //
   // Marketing — the public-face desk: the homepage's own copy and Important
   // Links cards, plus the mailing and SMS lists. Its own desk beside Giving and
   // Emails (same PARA group: an ongoing-responsibility function). It exists
@@ -142,8 +142,6 @@ function useNav(): NavEntry[] {
   // superuser) — separate from `org.nav` so the development desk's visibility
   // stays a pure `nav.giving` check, mirroring `financeRoles.mySeats`.
   const giving = useQuery(api.givingPlatform.myGivingAccess, {});
-  // Campaigns' own nav gate, same shape as Giving's — see the `NAV` entry doc.
-  const campaigns = useQuery(api.audiences.myCampaignsAccess, {});
   // Hiring's own nav gate, same shape as Giving's — see the `NAV` entry doc.
   const hiring = useQuery(api.hiring.myHiringAccess, {});
   // Marketing's own nav gate, same shape as Giving's — see the `NAV` entry doc.
@@ -166,14 +164,6 @@ function useNav(): NavEntry[] {
         return hiring?.canView === true;
       case "/marketing":
         return marketing?.canViewDesk === true;
-      case "/campaigns":
-        // `deskEnabled` is the parked-desk flag: bulk email moved to Mailchimp
-        // (2026-08-19), so the Emails desk is hidden from nav unless a
-        // superuser turns it back on at Profile → Integrations. Nav only —
-        // the routes and their in-screen guards are unchanged, so an
-        // in-flight send can still be finished by direct URL. See
-        // `audiences.myCampaignsAccess`.
-        return campaigns?.canView === true && campaigns?.deskEnabled === true;
       case "/team":
         // Work: everyone except volunteer — but keep the teamView nuance so a
         // caller with no roster row isn't shown an empty Work tab.

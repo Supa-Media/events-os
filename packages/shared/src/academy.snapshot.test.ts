@@ -864,6 +864,15 @@
  * reverse. Every section AFTER it shifts one place in curriculum order; no
  * slugs, titles, minutes, or quiz lengths changed anywhere else.
  * Total: 101 sections.
+ *
+ * And, the same day, `mktg-the-library-and-the-blog` — appended after
+ * `mktg-the-desk` and added to `brand-and-voice`, which now carries three
+ * modules. Its own lesson rather than more of the desk lesson because its two
+ * rules are governance, not product: reading the brand kit is ungated on
+ * purpose, and writing a post is a different permission from publishing one.
+ * Folding them into the desk lesson would have meant dropping mailing-list
+ * consent questions to stay inside the five-question cap, and those are the
+ * ones that protect the org from a self-inflicted wound. Total: 102 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -976,6 +985,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "mktg-shoot-to-timeline",
   "mktg-getting-access",
   "mktg-the-desk",
+  "mktg-the-library-and-the-blog",
   "dev-giving-vocabulary",
   "dev-donor-crm-basics",
   "dev-relationship-workflow",
@@ -1812,6 +1822,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "mktg-the-library-and-the-blog",
+    title: "The library and the blog",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "dev-giving-vocabulary",
     title: "Donors, backers, sponsors: the words we use",
     minutes: 4,
@@ -2140,7 +2158,11 @@ const EXPECTED_COURSES: {
   {
     slug: "brand-and-voice",
     themeKey: "marketing",
-    moduleSlugs: ["mktg-the-look", "mktg-the-desk"],
+    moduleSlugs: [
+      "mktg-the-look",
+      "mktg-the-desk",
+      "mktg-the-library-and-the-blog",
+    ],
   },
   {
     slug: "media-pipeline",

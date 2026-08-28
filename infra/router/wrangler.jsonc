@@ -5,15 +5,18 @@
   // doc comment for the full routing table. In short:
   //   - publicworship.life (apex): /os/* -> Expo web app (prefix stripped),
   //     Convex prefixes (/event/, /e/, /t/, /give, /give/*, /finances,
-  //     /finances/*, /p/, /reimburse/, /api/, /stripe/, /increase/) ->
-  //     Convex HTTP actions (unchanged),
+  //     /finances/*, /blog, /blog/*, /p/, /reimburse/, /api/, /stripe/,
+  //     /increase/) -> Convex HTTP actions (unchanged),
   //     everything else -> static assets (the Astro landing build).
   //   - www.publicworship.life -> 301 to https://publicworship.life<path>
   //   - events.publicworship.life -> 301 to https://publicworship.life/os<path>
   //   - rsvp.publicworship.life -> 301 to https://publicworship.life<path>
   //
-  // DRAFT_PASSWORD (see "vars" below) — the shared password in front of
-  // /blog/drafts/*, the unpublished blog posts. See src/draftGate.ts.
+  // This Worker has NO vars and NO secrets. It used to carry DRAFT_PASSWORD,
+  // the shared password in front of /blog/drafts/*; the blog moved into
+  // Convex and an unpublished post is now shared with a per-post preview
+  // token the backend checks, so the gate (and its plaintext password) is
+  // gone. See src/index.ts's module doc.
   //
   // Custom domains: this Worker is NOT attached to any route here. The four
   // hostnames above (publicworship.life, www., events., rsvp.) are attached
@@ -26,29 +29,6 @@
   // Stable past date rather than "today": a future-dated (or clock-skewed)
   // runner can reject a compatibility_date that resolves to "in the future".
   "compatibility_date": "2026-07-01",
-
-  "vars": {
-    // The password in front of unpublished blog posts (/blog/drafts/*).
-    //
-    // THIS VALUE IS PUBLIC. It is committed to a public repository, so it is
-    // readable by anyone who opens this file, and it will stay readable in
-    // git history even after it is changed here. That is a deliberate,
-    // eyes-open trade: this gate exists so a work-in-progress post isn't
-    // sitting on a guessable URL for crawlers and casual visitors, not to
-    // withstand anyone who thinks to check GitHub. Drafts of a marketing
-    // blog are the only thing behind it, and nothing that would matter if
-    // read early belongs in one.
-    //
-    // To make it genuinely private later:
-    //   1. DELETE this whole "vars" block, then
-    //   2. `npx wrangler secret put DRAFT_PASSWORD` from this directory.
-    // Both steps, in that order — a plaintext var here and a secret of the
-    // same name collide, and a deploy carrying the var would overwrite the
-    // secret with this value. With the block gone and no secret set, the
-    // drafts prefix fails CLOSED (503) rather than opening, so a
-    // half-finished migration cannot publish a draft.
-    "DRAFT_PASSWORD": "doxology"
-  },
 
   "assets": {
     // Built by `pnpm --filter "./apps/landing" build` (Astro) before deploy —

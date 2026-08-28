@@ -233,6 +233,8 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       // says and can act on an unsubscribe ask that lands in their inbox.
       "marketing.site.edit",
       "marketing.list.edit",
+      "marketing.blog.publish",
+      "marketing.designs.edit",
     ],
     // `finance.edit` at central replaces what took four strings before
     // (`finance.manager` + `finance.central` + `finance.accounts` +
@@ -270,6 +272,8 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "data.export",
       "marketing.site.edit",
       "marketing.list.edit",
+      "marketing.designs.edit",
+      "marketing.blog.publish",
     ],
     // The two seats that actually build the newsletter own themes, templates
     // and the image library, but a mass send stays a two-party decision above
@@ -282,9 +286,15 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "email.assets.edit",
       "marketing.site.edit",
       "marketing.list.view",
+      "marketing.blog.edit",
+      "marketing.designs.edit",
     ],
-    graphic_designer: ["email.assets.edit", "marketing.site.edit"],
-    marketing_associate: ["marketing.list.view"],
+    graphic_designer: [
+      "email.assets.edit",
+      "marketing.site.edit",
+      "marketing.designs.edit",
+    ],
+    marketing_associate: ["marketing.list.view", "marketing.blog.edit"],
     // 2026-08-23 (careers page + hiring pipeline): the People seat holds the
     // call on a candidate; `hiring.approve` implies `hiring.edit`, so it runs
     // the funnel too. The associate below runs it WITHOUT being able to close

@@ -80,3 +80,65 @@ export async function listUpcomingEventPages(
   upcoming.sort((a, b) => a.startDate - b.startDate);
   return upcoming.slice(0, max);
 }
+
+/**
+ * Published event pages the MARKETING DESK should see — upcoming, plus the
+ * ones that have just finished.
+ *
+ * Separate from `listUpcomingEventPages` because the two answer different
+ * questions and conflating them was a real complaint. That one answers "what
+ * does the homepage put up?", and its cutoff (drop the day after the event
+ * ends) is exactly right for a public grid. This one answers "what can I
+ * choose from?", and there a hard cutoff is wrong twice over: an event that
+ * ended yesterday vanishes from the picker while the marketer is still
+ * thinking about it, and a hide they set on it silently becomes unreachable
+ * to un-set.
+ *
+ * `recentDays` reaches back past the cutoff. `isUpcoming` says which side of it
+ * each row is on, so the desk can show a finished event as finished rather
+ * than offering it as if pinning it would put it back on the page — it would
+ * not; `resolveEventCards` still drops it.
+ */
+export async function listPickableEventPages(
+  ctx: QueryCtx,
+  opts: { recentDays?: number; limit?: number } = {},
+): Promise<(UpcomingEventPage & { isUpcoming: boolean })[]> {
+  const now = Date.now();
+  const max = Math.max(1, Math.min(opts.limit ?? 40, 100));
+  const floor = now - (opts.recentDays ?? 90) * 24 * 60 * 60 * 1000;
+
+  const pages = await ctx.db
+    .query("eventPages")
+    .withIndex("by_published", (q) => q.eq("published", true))
+    .order("desc")
+    .take(PAGE_SCAN_LIMIT);
+
+  const rows: (UpcomingEventPage & { isUpcoming: boolean })[] = [];
+  for (const page of pages) {
+    const event = await ctx.db.get(page.eventId);
+    if (!event || event.isTraining) continue;
+    const endsAt = page.endDate ?? event.eventDate;
+    if (endsAt < floor) continue;
+    rows.push({
+      slug: page.slug,
+      eventName: event.name,
+      startDate: event.eventDate,
+      endDate: page.endDate ?? null,
+      tagline: page.tagline ?? null,
+      venueName: page.venueName ?? null,
+      hasCover: !!page.coverImage,
+      coverFocalX: page.coverFocalX ?? 50,
+      coverFocalY: page.coverFocalY ?? 50,
+      // The SAME predicate `listUpcomingEventPages` filters on, so "is this
+      // one still live?" has one answer across both.
+      isUpcoming: now < startOfNextEasternDay(endsAt),
+    });
+  }
+  // Soonest-first among the upcoming, then the finished ones most-recent-first
+  // beneath them — the order a marketer reads: what's next, then what just was.
+  rows.sort((a, b) => {
+    if (a.isUpcoming !== b.isUpcoming) return a.isUpcoming ? -1 : 1;
+    return a.isUpcoming ? a.startDate - b.startDate : b.startDate - a.startDate;
+  });
+  return rows.slice(0, max);
+}

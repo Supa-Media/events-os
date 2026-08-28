@@ -358,6 +358,7 @@ const REGISTRY_NAMES = [
   "0076_backfill_wall_from_gifts",
   "0077_org_wide_budget_categories",
   "0078_stamp_interest_source_category",
+  "0080_seed_marketing_desk",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

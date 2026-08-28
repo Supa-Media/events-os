@@ -49,6 +49,7 @@ import {
 import { registerBlogApiRoutes } from "./lib/blogApiRoutes";
 import { registerJoinApiRoutes } from "./lib/joinApiRoutes";
 import { registerMarketingApiRoutes } from "./lib/marketingApiRoutes";
+import { registerBlogPageRoutes } from "./lib/blogPage";
 import {
   renderReimburseForm,
   renderReimburseStatus,
@@ -138,6 +139,14 @@ registerGiveApiRoutes(http);
 
 // JSON API for the marketing blog's emoji reactions (/api/blog/reactions).
 registerBlogApiRoutes(http);
+
+// The blog itself — /blog, /blog/<slug>, /blog/rss.xml, /blog/sitemap.xml.
+// Server-rendered here rather than built by Astro because a post exists only
+// in this database and a hydrated one would be invisible to crawlers and
+// absent from the feed; see `lib/blogPage.ts`. pw-router proxies `/blog` and
+// `/blog/*` to Convex, and the Astro blog pages are deleted — so if this call
+// goes missing the whole blog 404s, including the one live post.
+registerBlogPageRoutes(http);
 
 // The homepage's own content (/api/site/home, /api/site/link-image/*) and the
 // mailing-list signup (/api/subscribe) — the Marketing desk's public surface.

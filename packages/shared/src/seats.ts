@@ -181,6 +181,10 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // off the list when the ask lands in their inbox instead of hers.
       "marketing.site.edit",
       "marketing.list.edit",
+      // 2026-08-28: the ED is one of two seats that may put a post on the
+      // internet under the org's name (`blog.publish` implies `blog.edit`).
+      "marketing.blog.publish",
+      "marketing.designs.edit",
     ],
     legacyTitle: "executive_director",
   },
@@ -342,6 +346,10 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "data.export",
       "marketing.site.edit",
       "marketing.list.edit",
+      // 2026-08-28: the brand kit and the blog. `blog.publish` implies
+      // `blog.edit` — the Director writes and decides; the seats below draft.
+      "marketing.designs.edit",
+      "marketing.blog.publish",
     ],
   },
   social_media_manager: {
@@ -371,6 +379,12 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       "email.assets.edit",
       "marketing.site.edit",
       "marketing.list.view",
+      // 2026-08-28: writes posts, doesn't decide when one goes live — the same
+      // draft-then-editor rhythm the landing repo's password-gated drafts were
+      // already built for. Also keeps the brand kit, since this seat is the one
+      // producing against it every day.
+      "marketing.blog.edit",
+      "marketing.designs.edit",
     ],
   },
   graphic_designer: {
@@ -393,7 +407,14 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // a picture, and the seat that makes the picture should be able to place
     // it without waiting on someone else to upload it. No list access: nothing
     // in this seat's work needs the roster.
-    capabilities: ["email.assets.edit", "marketing.site.edit"],
+    // 2026-08-28: + `marketing.designs.edit` — this is the seat that MAKES the
+    // colors, the fonts, and the files the library holds. If any seat owns the
+    // brand kit as a working surface rather than a reference, it is this one.
+    capabilities: [
+      "email.assets.edit",
+      "marketing.site.edit",
+      "marketing.designs.edit",
+    ],
   },
   marketing_associate: {
     id: "marketing_associate",
@@ -406,7 +427,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // reaching this person?" and works signups; taking someone off the list is
     // a promise to a real human, so it stays with a seat that can be held to
     // it (`marketing.list.edit`, the Director).
-    capabilities: ["marketing.list.view"],
+    // 2026-08-28: + `marketing.blog.edit`. An associate drafting a post is the
+    // ordinary case; deciding it goes live under the org's name is not.
+    capabilities: ["marketing.list.view", "marketing.blog.edit"],
   },
   expansion_director: {
     id: "expansion_director",

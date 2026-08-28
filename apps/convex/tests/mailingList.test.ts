@@ -449,6 +449,125 @@ describe("adding and removing", () => {
   });
 });
 
+describe("bulk actions", () => {
+  test("a duplicated id in the selection counts once", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.list.edit"]);
+    const a = await seedPerson(s, { name: "A", email: "a@example.com" });
+    const b = await seedPerson(s, {
+      name: "B",
+      email: "b@example.com",
+      phone: "+12125550201",
+    });
+
+    const res = await s.as.mutation(api.mailingList.removeManyFromList, {
+      personIds: [a, b, a],
+    });
+    expect(res.removed).toBe(2);
+    expect(res.smsOptOutsRecorded).toBe(1); // only B has a phone
+    expect(res.skipped).toBe(0);
+    expect((await run(t, (ctx) => ctx.db.get(a)))?.marketingOptOut).toBe(true);
+  });
+
+  test("a chapter-scoped holder skips rows outside their chapter", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // CHAPTER scope, not central. A central `marketing.list.edit` holder
+    // reaches every chapter by design (`canEditMailingList`), so this rule is
+    // only observable from a chapter seat — the first draft of this test used
+    // a central seat and asserted a skip that correctly never happened.
+    await seedSeat(s, ["marketing.list.edit"], s.chapterId);
+    const mine = await seedPerson(s, { name: "Mine", email: "mine@example.com" });
+
+    const otherChapterId = await run(t, (ctx) =>
+      ctx.db.insert("chapters", {
+        name: "Chicago",
+        isActive: true,
+        createdAt: Date.now(),
+      }),
+    );
+    const outsider = await run(t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: otherChapterId,
+        name: "Outsider",
+        email: "out@example.com",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const res = await s.as.mutation(api.mailingList.removeManyFromList, {
+      personIds: [mine, outsider],
+    });
+    // Partial success, reported. Failing the whole call for one unreachable
+    // row would make a mixed selection unusable; skipping silently would
+    // report two removals when there was one.
+    expect(res.removed).toBe(1);
+    expect(res.skipped).toBe(1);
+    expect((await run(t, (ctx) => ctx.db.get(mine)))?.marketingOptOut).toBe(true);
+    expect(
+      (await run(t, (ctx) => ctx.db.get(outsider)))?.marketingOptOut,
+    ).toBeUndefined();
+  });
+
+  test("restoring many says how many are STILL unreachable", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.list.edit"]);
+    const clean = await seedPerson(s, { name: "Clean", email: "clean@example.com" });
+    const bounced = await seedPerson(s, {
+      name: "Bounced",
+      email: "hard@example.com",
+    });
+    await run(t, async (ctx) => {
+      await ctx.db.patch(clean, { marketingOptOut: true });
+      await ctx.db.patch(bounced, { marketingOptOut: true });
+      await ctx.db.insert("emailSuppressions", {
+        email: "hard@example.com",
+        reason: "bounce",
+        createdAt: Date.now(),
+      });
+    });
+
+    const res = await s.as.mutation(api.mailingList.restoreManyToList, {
+      personIds: [clean, bounced],
+    });
+    // "restored 2" alone would be a lie by omission — one of them will still
+    // never receive anything, and the desk has to be able to say so.
+    expect(res.restored).toBe(2);
+    expect(res.stillSuppressed).toBe(1);
+  });
+
+  test("a selection bigger than the cap is refused, never truncated", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.list.edit"]);
+    const one = await seedPerson(s, { name: "One", email: "one@example.com" });
+    // "We removed the first 200 of your 500" is the worst outcome for an
+    // operation whose whole point is deliberateness.
+    await expect(
+      s.as.mutation(api.mailingList.removeManyFromList, {
+        personIds: Array.from({ length: 201 }, () => one),
+      }),
+    ).rejects.toThrow(/at most 200/i);
+  });
+
+  test("a view-only holder cannot bulk-remove", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.list.view"]);
+    const p = await seedPerson(s, { name: "Safe", email: "safe@example.com" });
+    const res = await s.as.mutation(api.mailingList.removeManyFromList, {
+      personIds: [p],
+    });
+    // Skipped rather than thrown: the gate is per-row, so a mixed selection
+    // does the part it may and reports the rest.
+    expect(res.removed).toBe(0);
+    expect(res.skipped).toBe(1);
+    expect((await run(t, (ctx) => ctx.db.get(p)))?.marketingOptOut).toBeUndefined();
+  });
+});
+
 describe("export", () => {
   test("list access alone is not enough — it also needs data.export", async () => {
     const t = newT();
@@ -511,6 +630,40 @@ describe("the public signup", () => {
     expect(added?.consentSource).toBe("Public signup form");
     // A public signup is a CONTACT, never a roster teammate.
     expect(added?.isContactOnly).toBe(true);
+  });
+
+  test("a subscriber lands on the People roster, findable as a Contact", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+
+    await t.mutation(api.mailingList.subscribe, {
+      name: "Newsletter Signup",
+      email: "signup@example.com",
+    });
+
+    // The founder's rule, pinned: "every people is the superset, and the
+    // mailing list is the subset." A signup that only existed on the mailing
+    // list would be a fifth place a contact can live, which is exactly what
+    // the contact-consolidation work exists to prevent.
+    const contacts = await s.as.query(api.people.listPaginated, {
+      paginationOpts: { numItems: 50, cursor: null },
+      persona: "contact",
+    });
+    expect(contacts.page.map((p: { name: string }) => p.name)).toContain(
+      "Newsletter Signup",
+    );
+
+    // And they are a CONTACT, not a teammate — so the roster's default view
+    // (persona "team") stays the team. This is why a subscriber is one click
+    // away rather than on the front page of People, and it is deliberate: the
+    // alternative floods the roster with every imported address.
+    const team = await s.as.query(api.people.listPaginated, {
+      paginationOpts: { numItems: 50, cursor: null },
+      persona: "team",
+    });
+    expect(team.page.map((p: { name: string }) => p.name)).not.toContain(
+      "Newsletter Signup",
+    );
   });
 
   test("needs one of an email or a phone, and says which", async () => {
