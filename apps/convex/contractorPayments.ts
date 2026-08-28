@@ -582,6 +582,7 @@ async function createContractorPayment(
     serviceDate?: number;
     agreedAmountCents: number;
     agreementNotes?: string;
+    additionalTerms?: string;
     eventId?: Id<"events">;
     projectId?: Id<"projects">;
     budgetId?: Id<"budgets">;
@@ -651,6 +652,9 @@ async function createContractorPayment(
     ...(capOptional(args.agreementNotes, 4000)
       ? { agreementNotes: capOptional(args.agreementNotes, 4000) }
       : {}),
+    ...(capOptional(args.additionalTerms, 4000)
+      ? { additionalTerms: capOptional(args.additionalTerms, 4000) }
+      : {}),
     agreementTermsVersion: 1,
     ...(args.eventId ? { eventId: args.eventId } : {}),
     ...(args.projectId ? { projectId: args.projectId } : {}),
@@ -696,6 +700,9 @@ export const createAgreement = mutation({
     serviceDate: v.optional(v.number()),
     agreedAmountCents: v.number(),
     agreementNotes: v.optional(v.string()),
+    // Extra AGREED terms, shown to the contractor and covered by their
+    // signature — unlike `agreementNotes`, which stays finance-private.
+    additionalTerms: v.optional(v.string()),
     eventId: v.optional(v.id("events")),
     projectId: v.optional(v.id("projects")),
     budgetId: v.optional(v.id("budgets")),
@@ -826,6 +833,9 @@ export const updateTerms = mutation({
     serviceDate: v.optional(v.number()),
     agreedAmountCents: v.optional(v.number()),
     agreementNotes: v.optional(v.string()),
+    // An AGREED term (see the schema) — an empty string clears it, and a real
+    // change voids an acceptance exactly as changing the amount does.
+    additionalTerms: v.optional(v.string()),
     eventId: v.optional(v.id("events")),
     projectId: v.optional(v.id("projects")),
     budgetId: v.optional(v.id("budgets")),
@@ -920,6 +930,16 @@ export const updateTerms = mutation({
       const next = assertServiceDate(rest.serviceDate);
       if (next !== row!.serviceDate) {
         patch.serviceDate = next;
+        termsChanged = true;
+      }
+    }
+    if (rest.additionalTerms !== undefined) {
+      // The contractor reads and signs these on their page, so a change here is
+      // a change to the agreed terms — compared by value like the rest of the
+      // bucket, and an empty string is an explicit clear (also a change).
+      const next = capOptional(rest.additionalTerms, 4000);
+      if ((next ?? null) !== (row!.additionalTerms ?? null)) {
+        patch.additionalTerms = next;
         termsChanged = true;
       }
     }
@@ -1176,6 +1196,7 @@ export const get = query({
       serviceDate: row!.serviceDate,
       agreedAmountCents: row!.agreedAmountCents,
       agreementNotes: row!.agreementNotes,
+      additionalTerms: row!.additionalTerms,
       agreementTermsVersion: row!.agreementTermsVersion,
       acceptedAt: row!.acceptedAt,
       acceptedTermsVersion: row!.acceptedTermsVersion,
@@ -1200,6 +1221,14 @@ export const get = query({
       canCompose,
       canApprove,
       canViewTaxDoc,
+      // The contractor's own invoice, when they attached one. Metadata only,
+      // same posture as the tax document — opening it is `viewInvoice`.
+      invoice: row!.invoiceStorageId
+        ? {
+            fileName: row!.invoiceFileName,
+            uploadedAt: row!.invoiceUploadedAt,
+          }
+        : null,
       // METADATA ONLY — never the storageId. See this function's doc.
       taxDocument: taxDoc
         ? {
@@ -1536,6 +1565,62 @@ export const viewTaxDocument = mutation({
       });
     }
     return { url, kind: taxDoc.kind, fileName: taxDoc.fileName };
+  },
+});
+
+/**
+ * Open the invoice the contractor attached. A MUTATION like `viewTaxDocument`
+ * and for the same reason: the URL only exists after an audit row says who
+ * asked for it. Gated at VIEW rank rather than the tax-document power — an
+ * invoice is billing paper, not a form with a tax ID on it — but it rides the
+ * same per-caller rate budget, because "legitimate power, dangerous in bulk"
+ * is about the scrape, not the document kind.
+ */
+export const viewInvoice = mutation({
+  args: { contractorPaymentId: v.id("contractorPayments") },
+  handler: async (ctx, { contractorPaymentId }) => {
+    const row = await ctx.db.get(contractorPaymentId);
+    if (!row) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "Contractor payment not found.",
+      });
+    }
+    const chapterId: FinanceScope = row.chapterId;
+    await requireContractorPaymentsView(ctx, chapterId);
+    const callerPersonId = await resolveActorPersonId(ctx, chapterId);
+
+    if (!row.invoiceStorageId) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "No invoice has been attached to this payment.",
+      });
+    }
+
+    await assertContractNotRateLimited(
+      ctx,
+      `invoice_view:${String(callerPersonId)}`,
+      TAX_DOC_VIEW_MAX_PER_HOUR,
+    );
+
+    await ctx.db.insert("approvals", {
+      chapterId,
+      subjectType: "contractor_payment",
+      subjectId: String(contractorPaymentId),
+      action: "edit",
+      actorPersonId: callerPersonId,
+      note: "Viewed the invoice on file.",
+      createdAt: Date.now(),
+    });
+
+    const url = await ctx.storage.getUrl(row.invoiceStorageId);
+    if (!url) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "That invoice is no longer stored.",
+      });
+    }
+    return { url, fileName: row.invoiceFileName };
   },
 });
 
@@ -1896,7 +1981,13 @@ export const publicByToken = query({
       // contractor whose $1,200 was approved at $600 that "$1,200.00 was sent
       // to your bank". Null until somebody decides.
       approvedCents: row.approvedCents,
-      agreementNotes: row.agreementNotes,
+      // The extra agreed terms they sign, NOT `agreementNotes`: the file note
+      // is the finance team's own writing, promised private by the composer
+      // ("never shown to the contractor or published"), and until 2026-08-28
+      // this projection broke that promise by feeding it to the terms card.
+      additionalTerms: row.additionalTerms,
+      // Their own invoice's filename, so the page can confirm we hold it.
+      invoiceFileName: row.invoiceFileName,
       agreementTermsVersion: row.agreementTermsVersion,
       acceptedAt: row.acceptedAt,
       // True only when the acceptance matches the CURRENT terms. A terms bump
@@ -2148,6 +2239,63 @@ async function citeExistingTaxDocument(
 }
 
 /**
+ * Attach the contractor's own INVOICE to their payment. Optional on both
+ * public submit paths — an invoice is the contractor's bill, not the org's
+ * substantiation (that is the agreement itself), so nothing requires one.
+ *
+ * Same validation posture as `attachTaxDocument` and for the same reason: the
+ * `_storage` system row is the file's REAL type and size, not the browser's
+ * claim. Same shapes and the same ceiling, because "a PDF or a photo of a
+ * document, under 20MB" is what both of these are.
+ *
+ * Supersedes a previous invoice, file and all — unlike tax documents an
+ * invoice is never shared between payments, so the old file has no other
+ * dependents and can simply go.
+ */
+async function attachInvoice(
+  ctx: MutationCtx,
+  row: Doc<"contractorPayments">,
+  storageId: Id<"_storage">,
+  fileName?: string,
+): Promise<void> {
+  const meta = await ctx.db.system.get(storageId);
+  if (!meta) {
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message:
+        "Your invoice upload didn't finish — please try attaching it again.",
+    });
+  }
+  if (meta.contentType && !TAX_DOC_CONTENT_TYPES.includes(meta.contentType)) {
+    await ctx.storage.delete(storageId);
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "Upload the invoice as a PDF or a photo.",
+    });
+  }
+  if (meta.size > TAX_DOC_MAX_BYTES) {
+    await ctx.storage.delete(storageId);
+    throw new ConvexError({
+      code: "INVALID_INPUT",
+      message: "That invoice is too large — keep it under 20MB.",
+    });
+  }
+  if (row.invoiceStorageId && row.invoiceStorageId !== storageId) {
+    try {
+      await ctx.storage.delete(row.invoiceStorageId);
+    } catch {
+      // Already gone — the new one still replaces it.
+    }
+  }
+  await ctx.db.patch(row._id, {
+    invoiceStorageId: storageId,
+    invoiceFileName: fileName ? cap(fileName, 200) : undefined,
+    invoiceUploadedAt: Date.now(),
+    updatedAt: Date.now(),
+  });
+}
+
+/**
  * The contractor completes their half of a PRE-FILLED agreement: accept the
  * terms, say who they are, attach the tax form, and confirm where the money
  * goes.
@@ -2197,6 +2345,9 @@ export const completeAgreement = mutation({
     // only one of them is a person taking responsibility for where their money
     // goes.
     reuseBankDetails: v.optional(v.boolean()),
+    // Their own invoice, optional — validated and attached by `attachInvoice`.
+    invoiceStorageId: v.optional(v.id("_storage")),
+    invoiceFileName: v.optional(v.string()),
     // The typed-name signature and the accepted-terms acknowledgement.
     signature: v.string(),
     clientIp: v.optional(v.string()),
@@ -2264,6 +2415,10 @@ export const completeAgreement = mutation({
         args.taxDocFileName,
         args.taxDocSignedAt,
       );
+    }
+
+    if (args.invoiceStorageId) {
+      await attachInvoice(ctx, row, args.invoiceStorageId, args.invoiceFileName);
     }
 
     // THE BANK. Reuse requires an explicit confirmation and a real account on
@@ -2369,6 +2524,9 @@ export const submitPublicRequest = mutation({
     // expired, and the contractor is asked for a fresh form on their next
     // payment despite having given us a perfectly current one.
     taxDocSignedAt: v.optional(v.number()),
+    // Their own invoice, optional — validated and attached by `attachInvoice`.
+    invoiceStorageId: v.optional(v.id("_storage")),
+    invoiceFileName: v.optional(v.string()),
     externalAccountId: v.string(),
     bankAccountLast4: v.string(),
     signature: v.string(),
@@ -2453,6 +2611,9 @@ export const submitPublicRequest = mutation({
       args.taxDocFileName,
       args.taxDocSignedAt,
     );
+    if (args.invoiceStorageId) {
+      await attachInvoice(ctx, row, args.invoiceStorageId, args.invoiceFileName);
+    }
     const now = Date.now();
     await ctx.db.patch(id, {
       externalAccountId: args.externalAccountId,

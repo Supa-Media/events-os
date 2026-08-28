@@ -291,6 +291,12 @@ export function registerContractApiRoutes(http: HttpRouter): void {
         externalAccountId: bank?.externalAccountId,
         bankAccountLast4: bank?.last4,
         reuseBankDetails: reuseBankDetails ? true : undefined,
+        // Optional invoice, uploaded the same way as the tax form. The
+        // storageId only becomes an invoice if `attachInvoice` accepts it.
+        invoiceStorageId: optStr(body.invoiceStorageId) as
+          | Id<"_storage">
+          | undefined,
+        invoiceFileName: optStr(body.invoiceFileName),
         signature: String(body.signature ?? ""),
         // Forwarded so the mutation can rate-limit per IP and stamp
         // `acceptedIp` on the signature.
@@ -338,6 +344,11 @@ export function registerContractApiRoutes(http: HttpRouter): void {
         taxDocStorageId: String(body.taxDocStorageId ?? "") as Id<"_storage">,
         taxDocKind: toTaxDocKind(body.taxDocKind),
         taxDocFileName: optStr(body.taxDocFileName),
+        // Optional invoice, same upload path as the tax form.
+        invoiceStorageId: optStr(body.invoiceStorageId) as
+          | Id<"_storage">
+          | undefined,
+        invoiceFileName: optStr(body.invoiceFileName),
         externalAccountId: bank.externalAccountId,
         bankAccountLast4: bank.last4,
         signature: String(body.signature ?? ""),

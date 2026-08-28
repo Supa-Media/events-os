@@ -1176,3 +1176,222 @@ describe("access gates", () => {
     );
   });
 });
+
+// ── 8. Additional terms vs. the private file note ───────────────────────────
+/**
+ * The two free-text fields make OPPOSITE promises and both must hold:
+ * `additionalTerms` is shown to the contractor and covered by their signature;
+ * `agreementNotes` is the finance team's file note, promised "never shown to
+ * the contractor or published" by the composer that writes it. Until
+ * 2026-08-28 they were one field that kept neither promise — the public view
+ * fed the private note to the terms card, and editing it after acceptance
+ * didn't void the signature the card said it was part of.
+ */
+describe("additional terms are signed; the file note stays private", () => {
+  test("the public view carries additionalTerms and never agreementNotes", async () => {
+    const { s, budgetId } = await setup();
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      {
+        ...AGREEMENT,
+        budgetId,
+        additionalTerms: "Master owned by the org; writers keep writer shares.",
+        agreementNotes: "PRIVATE: their manager first asked for $1,500.",
+      },
+    );
+    await s.as.mutation(api.contractorPayments.send, { contractorPaymentId });
+    const token = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(contractorPaymentId))!.token,
+    );
+    const view = await s.t.query(api.contractorPayments.publicByToken, {
+      token,
+    });
+    expect(view?.additionalTerms).toBe(
+      "Master owned by the org; writers keep writer shares.",
+    );
+    // Whole-payload assertion, same shape as the storage-id leak tests: a
+    // future projection change that re-adds the note should fail loudly.
+    expect(JSON.stringify(view)).not.toContain("PRIVATE:");
+  });
+
+  test("changing additionalTerms voids the acceptance; the file note doesn't", async () => {
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+
+    const notesResult = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: id,
+      agreementNotes: "A different private note.",
+    });
+    expect(notesResult.acceptanceVoided).toBe(false);
+
+    const termsResult = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: id,
+      additionalTerms: "Delivery includes stems and a clean edit.",
+    });
+    expect(termsResult.acceptanceVoided).toBe(true);
+    const after = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(after!.status).toBe("sent");
+    expect(after!.additionalTerms).toBe(
+      "Delivery includes stems and a clean edit.",
+    );
+  });
+
+  test("re-saving the same additionalTerms voids nothing; clearing them voids", async () => {
+    const { s, budgetId } = await setup();
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      { ...AGREEMENT, budgetId, additionalTerms: "Stems included." },
+    );
+    await s.as.mutation(api.contractorPayments.send, { contractorPaymentId });
+    const token = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(contractorPaymentId))!.token,
+    );
+    const storageId = await storeBlob(s.t);
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token,
+      payeeName: AGREEMENT.payeeName,
+      payeeEmail: AGREEMENT.payeeEmail,
+      taxDocStorageId: storageId,
+      taxDocKind: "w9",
+      externalAccountId: "extacct_test",
+      bankAccountLast4: "6789",
+      signature: "Jane Contractor",
+    });
+
+    const noop = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId,
+      additionalTerms: "Stems included.",
+    });
+    expect(noop.acceptanceVoided).toBe(false);
+
+    // An empty string is an explicit clear — the contractor signed terms that
+    // said "stems included", so removing that sentence re-asks.
+    const cleared = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId,
+      additionalTerms: "",
+    });
+    expect(cleared.acceptanceVoided).toBe(true);
+    const after = await run(s.t, (ctx) => ctx.db.get(contractorPaymentId));
+    expect(after!.additionalTerms).toBeUndefined();
+  });
+});
+
+// ── 9. The contractor's invoice ─────────────────────────────────────────────
+describe("the contractor's invoice", () => {
+  /** Complete a sent agreement WITH an invoice attached. */
+  async function completeWithInvoice(
+    s: ChapterSetup,
+    budgetId: Id<"budgets">,
+  ): Promise<Id<"contractorPayments">> {
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      { ...AGREEMENT, budgetId },
+    );
+    await s.as.mutation(api.contractorPayments.send, { contractorPaymentId });
+    const token = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(contractorPaymentId))!.token,
+    );
+    const taxStorageId = await storeBlob(s.t);
+    const invoiceStorageId = await storeBlob(s.t);
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token,
+      payeeName: AGREEMENT.payeeName,
+      payeeEmail: AGREEMENT.payeeEmail,
+      taxDocStorageId: taxStorageId,
+      taxDocKind: "w9",
+      invoiceStorageId,
+      invoiceFileName: "invoice-042.pdf",
+      externalAccountId: "extacct_test",
+      bankAccountLast4: "6789",
+      signature: "Jane Contractor",
+    });
+    return contractorPaymentId;
+  }
+
+  test("an invoice attached on completion reaches the finance view — metadata only", async () => {
+    const { s, budgetId } = await setup();
+    const id = await completeWithInvoice(s, budgetId);
+
+    const row = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(row!.invoiceStorageId).toBeTruthy();
+    expect(row!.invoiceFileName).toBe("invoice-042.pdf");
+
+    const detail = await s.as.query(api.contractorPayments.get, {
+      contractorPaymentId: id,
+    });
+    expect(detail.invoice?.fileName).toBe("invoice-042.pdf");
+    // The storage id itself never leaves the server — same rule as the W-9's.
+    expect(JSON.stringify(detail)).not.toContain(String(row!.invoiceStorageId));
+
+    const token = row!.token;
+    const view = await s.t.query(api.contractorPayments.publicByToken, {
+      token,
+    });
+    expect(view?.invoiceFileName).toBe("invoice-042.pdf");
+    expect(JSON.stringify(view)).not.toContain(String(row!.invoiceStorageId));
+  });
+
+  test("viewInvoice hands a URL to finance and logs the look", async () => {
+    const { s, budgetId } = await setup();
+    const id = await completeWithInvoice(s, budgetId);
+    const res = await s.as.mutation(api.contractorPayments.viewInvoice, {
+      contractorPaymentId: id,
+    });
+    expect(res.url).toBeTruthy();
+    expect(res.fileName).toBe("invoice-042.pdf");
+    const logged = await run(s.t, (ctx) =>
+      ctx.db
+        .query("approvals")
+        .filter((q) => q.eq(q.field("subjectId"), String(id)))
+        .collect(),
+    );
+    expect(
+      logged.some((l) => l.note === "Viewed the invoice on file."),
+    ).toBe(true);
+  });
+
+  test("viewInvoice refuses when no invoice was attached", async () => {
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+    await expect(
+      s.as.mutation(api.contractorPayments.viewInvoice, {
+        contractorPaymentId: id,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a self-serve request can attach an invoice too", async () => {
+    const { s } = await setup();
+    const taxStorageId = await storeBlob(s.t);
+    const invoiceStorageId = await storeBlob(s.t);
+    const { reference } = await s.t.mutation(
+      api.contractorPayments.submitPublicRequest,
+      {
+        chapterSlug: "new-york",
+        payeeName: "Sam Selfserve",
+        payeeEmail: "sam@example.com",
+        serviceDescription: "Stage design for the fall retreat weekend",
+        requestedAmountCents: 40_000,
+        taxDocStorageId: taxStorageId,
+        taxDocKind: "w9",
+        invoiceStorageId,
+        invoiceFileName: "sam-invoice.pdf",
+        externalAccountId: "extacct_test",
+        bankAccountLast4: "1234",
+        signature: "Sam Selfserve",
+      },
+    );
+    expect(reference).toBeTruthy();
+    const row = await run(s.t, (ctx) =>
+      ctx.db
+        .query("contractorPayments")
+        .filter((q) => q.eq(q.field("payeeName"), "Sam Selfserve"))
+        .first(),
+    );
+    expect(row!.invoiceFileName).toBe("sam-invoice.pdf");
+    expect(row!.invoiceStorageId).toBe(invoiceStorageId);
+  });
+});
