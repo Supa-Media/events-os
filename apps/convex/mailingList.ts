@@ -61,16 +61,17 @@ import {
 import { normalizeEmail } from "./lib/access";
 import { normalizePhone } from "./lib/twilio";
 import { resolveSendAddress } from "./lib/personEmails";
-import { requireUserId } from "./lib/context";
+import { requireChapterId, requireUserId } from "./lib/context";
 import {
   canEditMailingList,
+  canViewMailingList,
   requireMailingListEdit,
   requireMailingListExport,
   requireMailingListView,
   resolveMarketingAccess,
-  type MarketingScope,
 } from "./lib/marketingAccess";
-import { matchOrCreatePersonContact } from "./givingImport";
+import { matchIdentity, matchOrCreatePersonContact } from "./givingImport";
+import { chapterRoster } from "./lib/org";
 import { listActiveChapters } from "./lib/chapters";
 
 const channelValidator = v.union(...MAILING_CHANNELS.map((c) => v.literal(c)));
@@ -103,6 +104,26 @@ function usableEmail(raw: string | undefined): string | null {
  * desk and the sync disagree about who is on the list.
  */
 const PEOPLE_PER_CHAPTER_LIMIT = 5000;
+
+/** The org has a handful of chapters; this is generous headroom. */
+const CHAPTER_SCAN_LIMIT = 200;
+
+/**
+ * The ceiling on how many people ONE read of this desk resolves, across every
+ * chapter it covers.
+ *
+ * This exists because the desk's default is the CENTRAL lens, where no
+ * `chapterId` is in hand and the answer to "the list" is every chapter's
+ * people — and resolving a person on the email channel costs an extra indexed
+ * read for their addresses plus one for the suppression ledger. Left unbounded,
+ * a reactive query on a busy deployment would walk `chapters × 5000 × 3` reads
+ * on every keystroke in the search box. `mailchimpSync.ts` faces the same
+ * arithmetic and solves it by paging one chapter per action; a live query has
+ * no such luxury, so it stops early and SAYS it stopped (`scanTruncated`),
+ * which the desk surfaces as "narrow this down" rather than quietly showing a
+ * short list as if it were the whole one.
+ */
+const TOTAL_PEOPLE_SCAN_LIMIT = 4000;
 
 /** One person, resolved on one channel. Internal shape; `MailingListRow` is
  *  the wire shape the app renders. */
@@ -173,22 +194,37 @@ async function resolvePerson(
   return { person, destination, exclusions };
 }
 
-/** Every non-placeholder person in one chapter, resolved on one channel. */
+/**
+ * Every non-placeholder person in one chapter, resolved on one channel, up to
+ * `budget` people.
+ *
+ * `budget` is the shared allowance across the whole read (see
+ * `TOTAL_PEOPLE_SCAN_LIMIT`), threaded through rather than applied per chapter
+ * so ten small chapters cost what one big one does. Returns how much it spent
+ * so the caller can stop.
+ */
 async function resolveChapter(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   channel: MailingChannel,
-): Promise<ResolvedPerson[]> {
+  budget: number,
+): Promise<{ people: ResolvedPerson[]; spent: number; truncated: boolean }> {
+  if (budget <= 0) return { people: [], spent: 0, truncated: true };
   const rows = await ctx.db
     .query("people")
     .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId))
-    .take(PEOPLE_PER_CHAPTER_LIMIT);
-  const out: ResolvedPerson[] = [];
+    .take(Math.min(PEOPLE_PER_CHAPTER_LIMIT, budget));
+  const people: ResolvedPerson[] = [];
   for (const person of rows) {
     if (person.isPlaceholder === true) continue;
-    out.push(await resolvePerson(ctx, person, channel));
+    people.push(await resolvePerson(ctx, person, channel));
   }
-  return out;
+  return {
+    people,
+    spent: rows.length,
+    // A full take is the only signal we have that more exist beyond it.
+    truncated: rows.length >= Math.min(PEOPLE_PER_CHAPTER_LIMIT, budget),
+  };
 }
 
 function toRow(resolved: ResolvedPerson, chapterName: string | null): MailingListRow {
@@ -224,13 +260,8 @@ async function scopedChapters(
     return chapter ? [chapter] : [];
   }
   const access = await resolveMarketingAccess(ctx);
-  const all = await ctx.db.query("chapters").take(200);
-  const visible = all.filter((c) =>
-    canEditMailingList(access, c._id) ||
-    access.isSuperuser ||
-    access.centralListView ||
-    access.listViewChapters.has(String(c._id)),
-  );
+  const all = await ctx.db.query("chapters").take(CHAPTER_SCAN_LIMIT);
+  const visible = all.filter((c) => canViewMailingList(access, c._id));
   if (visible.length === 0) {
     throw new ConvexError({
       code: "FORBIDDEN",
@@ -272,8 +303,13 @@ export const listMailingList = query({
     const rows: MailingListRow[] = [];
     let subscribed = 0;
     let excluded = 0;
+    let budget = TOTAL_PEOPLE_SCAN_LIMIT;
+    let scanTruncated = false;
     for (const chapter of chapters) {
-      for (const resolved of await resolveChapter(ctx, chapter._id, args.channel)) {
+      const slice = await resolveChapter(ctx, chapter._id, args.channel, budget);
+      budget -= slice.spent;
+      if (slice.truncated) scanTruncated = true;
+      for (const resolved of slice.people) {
         const reachable = resolved.exclusions.length === 0;
         if (reachable) subscribed++;
         else excluded++;
@@ -283,6 +319,10 @@ export const listMailingList = query({
           if (!haystack.includes(needle)) continue;
         }
         rows.push(toRow(resolved, chapters.length > 1 ? chapter.name : null));
+      }
+      if (budget <= 0) {
+        scanTruncated = true;
+        break;
       }
     }
     rows.sort((a, b) => a.name.localeCompare(b.name));
@@ -294,6 +334,11 @@ export const listMailingList = query({
       // number a marketer is actually asking for.
       matched: rows.length,
       truncated: rows.length > limit,
+      // A DIFFERENT truncation from `truncated` above, and the counts are the
+      // reason it must be its own flag: `truncated` means "more rows matched
+      // than we're showing you", while this means "we didn't finish counting" —
+      // so `subscribed`/`excluded` are floors, not totals.
+      scanTruncated,
       subscribed,
       excluded,
       canEdit: chapters.every((c) => canEditMailingList(access, c._id)),
@@ -329,7 +374,16 @@ export const listMailingList = query({
  */
 export const addToList = mutation({
   args: {
-    chapterId: v.id("chapters"),
+    /**
+     * Which chapter's roster this person joins. Optional because the desk is
+     * usually open on the CENTRAL lens, where the app has no chapter in hand —
+     * and refusing to add anyone from the lens a central Marketing Director
+     * works in all day would make the fastest path (someone hands you their
+     * email at a gathering) the one that does not work. Omitted, it falls back
+     * to the caller's own chapter, the same "where do I belong" answer every
+     * other roster write in the app uses.
+     */
+    chapterId: v.optional(v.id("chapters")),
     name: v.string(),
     email: v.optional(v.string()),
     phone: v.optional(v.string()),
@@ -343,14 +397,34 @@ export const addToList = mutation({
     stillSuppressed: v.boolean(),
   }),
   handler: async (ctx, args) => {
-    await requireMailingListEdit(ctx, args.chapterId);
-    return await addPersonToList(ctx, args);
+    const chapterId =
+      args.chapterId ?? ((await requireChapterId(ctx)) as Id<"chapters">);
+    await requireMailingListEdit(ctx, chapterId);
+    return await addPersonToList(ctx, { ...args, chapterId, door: "desk" });
   },
 });
 
-/** The shared body of `addToList` and the public `subscribe` below — one
- *  matcher, one consent stamp, one suppression check, whichever door it came
- *  through. Callers do the gating; this does the work. */
+/**
+ * The shared body of `addToList` and the public `subscribe` below — one
+ * matcher, one consent stamp, one suppression check, whichever door it came
+ * through. Callers do the gating; this does the work.
+ *
+ * ── `door` is not a formality ───────────────────────────────────────────────
+ * The two callers are a seated staff member and an anonymous stranger, and two
+ * things must differ between them. Both were live bugs in the first cut of this
+ * file, and both are the same mistake: sharing a helper is not the same as
+ * sharing a trust level.
+ *
+ *  1. LIFTING AN OPT-OUT. A staff member re-adding someone is acting on a
+ *     conversation they had. A stranger posting a form is not: because the
+ *     matcher falls back to an exact NAME match, and staff names are public on
+ *     `/team`, a public post of "<staff name> + any address" would otherwise
+ *     silently clear that person's `marketingOptOut`.
+ *  2. MATCHING BY NAME AT ALL. Same root cause, worse outcome: a name-only
+ *     match lets a stranger blank-fill THEIR email and phone onto an existing
+ *     roster person's record. The public door therefore matches on an
+ *     identifier or not at all — see `identifierOnlyPool`.
+ */
 async function addPersonToList(
   ctx: MutationCtx,
   args: {
@@ -359,6 +433,8 @@ async function addPersonToList(
     email?: string;
     phone?: string;
     consentSource?: string;
+    /** `"desk"` — a gated staff write. `"public"` — the signup form. */
+    door: "desk" | "public";
   },
 ): Promise<{
   personId: Id<"people"> | null;
@@ -397,13 +473,25 @@ async function addPersonToList(
   }
 
   const now = Date.now();
-  const result = await matchOrCreatePersonContact(ctx, args.chapterId, {
-    name,
-    email,
-    phone,
-    consentedAt: now,
-    consentSource: args.consentSource?.trim() || MAILING_MANUAL_SOURCE,
-  });
+  const result = await matchOrCreatePersonContact(
+    ctx,
+    args.chapterId,
+    {
+      name,
+      email,
+      phone,
+      consentedAt: now,
+      consentSource: args.consentSource?.trim() || MAILING_MANUAL_SOURCE,
+    },
+    // The pool the matcher is allowed to match against. A public signup gets a
+    // pre-filtered one so its name fallback can never fire; the desk gets the
+    // matcher's own default (undefined → the whole roster), because a staff
+    // member typing a name they recognize is exactly the case that fallback is
+    // for. See the `door` doc above.
+    args.door === "public"
+      ? await identifierOnlyPool(ctx, args.chapterId, { email, phone })
+      : undefined,
+  );
   if (result.personId === null) {
     // Unreachable given the identifier check above, but the matcher's contract
     // allows it and a silent null would be worse than a plain sentence.
@@ -414,7 +502,10 @@ async function addPersonToList(
   }
 
   const person = await ctx.db.get(result.personId);
-  if (person?.marketingOptOut === true) {
+  // DESK ONLY. A stranger must not be able to lift a person-level stop — see
+  // the `door` doc. The public door's own way back on is narrower and lives in
+  // `clearSelfServiceUnsubscribe` below.
+  if (args.door === "desk" && person?.marketingOptOut === true) {
     await ctx.db.patch(result.personId, { marketingOptOut: false });
   }
   // A matched person whose consent was never recorded gets this one stamped;
@@ -592,7 +683,11 @@ export const exportMailingList = query({
     chapterId: v.optional(v.id("chapters")),
     channel: channelValidator,
   },
-  returns: v.object({ csv: v.string(), rows: v.number() }),
+  returns: v.object({
+    csv: v.string(),
+    rows: v.number(),
+    scanTruncated: v.boolean(),
+  }),
   handler: async (ctx, args) => {
     const chapters = await scopedChapters(ctx, args.chapterId);
     for (const chapter of chapters) {
@@ -604,8 +699,13 @@ export const exportMailingList = query({
         ? ["Name", "Email", "Chapter", "Consented", "Consent source"]
         : ["Name", "Phone", "Chapter", "Consented", "Consent source"];
     const body: string[][] = [];
+    let budget = TOTAL_PEOPLE_SCAN_LIMIT;
+    let scanTruncated = false;
     for (const chapter of chapters) {
-      for (const resolved of await resolveChapter(ctx, chapter._id, args.channel)) {
+      const slice = await resolveChapter(ctx, chapter._id, args.channel, budget);
+      budget -= slice.spent;
+      if (slice.truncated) scanTruncated = true;
+      for (const resolved of slice.people) {
         if (resolved.exclusions.length > 0) continue;
         body.push([
           resolved.person.name,
@@ -617,13 +717,86 @@ export const exportMailingList = query({
           resolved.person.consentSource ?? "",
         ]);
       }
+      if (budget <= 0) {
+        scanTruncated = true;
+        break;
+      }
     }
     body.sort((a, b) => a[0].localeCompare(b[0]));
-    return { csv: toCsv(header, body), rows: body.length };
+    // A partial export is worse than an obvious one: pasted into Mailchimp, a
+    // silently short file looks like a complete audience.
+    return { csv: toCsv(header, body), rows: body.length, scanTruncated };
   },
 });
 
 // ── The public signup form ───────────────────────────────────────────────────
+
+/**
+ * The roster, narrowed to rows that match on an EMAIL or PHONE.
+ *
+ * Handed to `matchOrCreatePersonContact` as its `prefetchedRoster` so its
+ * name-match fallback has nothing to reach: every row in the pool already
+ * matches on an identifier, so the matcher either finds one of them or creates
+ * a fresh contact. Uses the same normalization the matcher itself does
+ * (`matchIdentity`), so a pool member is never one this matcher would then
+ * disagree about.
+ *
+ * An empty pool is the common case (a genuinely new subscriber) and is exactly
+ * right: the matcher creates.
+ */
+async function identifierOnlyPool(
+  ctx: MutationCtx,
+  chapterId: Id<"chapters">,
+  ids: { email?: string; phone?: string },
+): Promise<Doc<"people">[]> {
+  const roster = await chapterRoster(ctx, chapterId);
+  return roster.filter((p) => {
+    const { via } = matchIdentity([p], { email: ids.email, phone: ids.phone });
+    return via === "email" || via === "phone";
+  });
+}
+
+/**
+ * Clear a suppression the person is REVERSING THEMSELVES through the public
+ * signup form — and only that one.
+ *
+ * This is the narrow door the Academy lesson and the operating manual both
+ * point at, and it has to be narrow or it is the hole every rule in this file
+ * exists to close:
+ *
+ *  - `unsubscribe` — CLEARED. The person clicked "unsubscribe" and has now
+ *    filled in a signup form with the same address. That is the same human
+ *    reversing the same decision, which is exactly what a preference is. Every
+ *    mailing tool works this way, and refusing would mean an address could
+ *    never come back at all.
+ *  - `bounce` — kept. That is a fact about the mailbox, not a decision. If the
+ *    address really works now, the next successful send proves it; nothing
+ *    typed into a form does.
+ *  - `complaint` — kept, permanently. Someone reported us as spam. Mailing them
+ *    again on the strength of a web form is how a sending domain's reputation
+ *    dies, and it takes every other recipient's mail down with it.
+ *  - `manual` — kept. Somebody at the org suppressed this address deliberately
+ *    and a stranger's form submission is not the review that should undo it.
+ *
+ * SMS is deliberately not touched at all. A texted STOP is enforced by the
+ * carrier through Twilio's Advanced Opt-Out; clearing our mirror would not make
+ * the message send, it would only make our screen lie about it.
+ *
+ * Returns whether the person is STILL unreachable by email afterwards.
+ */
+async function clearSelfServiceUnsubscribe(
+  ctx: MutationCtx,
+  email: string,
+): Promise<boolean> {
+  const hit = await ctx.db
+    .query("emailSuppressions")
+    .withIndex("by_email", (q) => q.eq("email", email))
+    .first();
+  if (!hit) return false;
+  if (hit.reason !== "unsubscribe") return true;
+  await ctx.db.delete(hit._id);
+  return false;
+}
 
 /**
  * Which chapter a public signup lands in.
@@ -681,6 +854,15 @@ async function signupChapter(
  * value is deliberately uniform: it never says whether an address was already
  * on the list, because that would turn this endpoint into an oracle for "is
  * this person in your database."
+ *
+ * ── The one thing this can undo ─────────────────────────────────────────────
+ * A person who previously clicked "unsubscribe" and now fills in this form is
+ * reversing their own decision, and this is the only path in the whole app that
+ * honors that — the desk deliberately cannot. It reaches an `unsubscribe`
+ * suppression and nothing else: a bounce, a spam complaint, and a
+ * staff-entered suppression all survive it, as does every SMS opt-out. That is
+ * the whole of `clearSelfServiceUnsubscribe`, which has the reasoning per
+ * reason.
  */
 export const subscribe = mutation({
   args: {
@@ -731,7 +913,13 @@ export const subscribe = mutation({
       email: email ?? undefined,
       phone: phone ?? undefined,
       consentSource: MAILING_SIGNUP_SOURCE,
+      door: "public",
     });
+
+    // Their own "yes", undoing their own "no" — and nothing else's. See
+    // `clearSelfServiceUnsubscribe` for exactly which suppressions this
+    // reaches and, more importantly, which it never will.
+    if (email) await clearSelfServiceUnsubscribe(ctx, email);
     return null;
   },
 });

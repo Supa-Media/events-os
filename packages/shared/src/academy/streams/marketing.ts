@@ -495,7 +495,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "bullets",
         items: [
           "**Opted out** — someone at the org marked this person as not-to-be-marketed. You can put them back.",
-          "**Unsubscribed or bounced** — the person clicked unsubscribe, texted STOP, or the address hard-bounced. **You can never undo this from here**, and adding them again won't either.",
+          "**Unsubscribed or bounced** — the person clicked unsubscribe, texted STOP, or the address hard-bounced. **Nothing you do in the app undoes this**, adding them again included. Only the person can, and only by filling in the sign-up link themselves.",
           "**No address on file** — nothing to send to.",
           "**Inactive** — off the roster entirely.",
         ],
@@ -576,7 +576,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "That state came from the person or from a bounce, and nothing in the app clears it. Their own sign-up is the only thing that can — which is why the link exists.",
+          "That state came from the person or from a bounce, and nothing you do in the app clears it. Their own sign-up can — for an unsubscribe. A bounce or a spam complaint survives even that.",
       },
       {
         prompt: "You take someone off the mailing list. What stops?",

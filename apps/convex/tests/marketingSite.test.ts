@@ -202,6 +202,88 @@ describe("link cards", () => {
     }
   });
 
+  test("editing a card keeps its image — the rename-deletes-the-logo case", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.site.edit"]);
+    await t.mutation(internal.marketingSite.seedSiteContentIfEmpty, {});
+
+    const instagram = await run(t, async (ctx) => {
+      const rows = await ctx.db.query("siteLinks").collect();
+      return rows.find((r) => r.title === "Instagram")!;
+    });
+    expect(instagram.thumbnailPath).toBe("/links/instagram-photo.png");
+
+    // The editor posts the whole form and carries no image path, so "not sent"
+    // must mean KEEP — otherwise a rename silently strips the logo off the live
+    // site with no way back from inside the app.
+    await s.as.mutation(api.marketingSite.upsertLink, {
+      linkId: instagram._id,
+      title: "Instagram (renamed)",
+      url: instagram.url,
+      align: "center",
+      published: true,
+    });
+    const after = await run(t, (ctx) => ctx.db.get(instagram._id));
+    expect(after?.thumbnailPath).toBe("/links/instagram-photo.png");
+
+    // Removing it is a deliberate act, and it clears BOTH forms of the field.
+    await s.as.mutation(api.marketingSite.upsertLink, {
+      linkId: instagram._id,
+      title: "Instagram",
+      url: instagram.url,
+      align: "center",
+      published: true,
+      clearThumbnail: true,
+    });
+    const cleared = await run(t, (ctx) => ctx.db.get(instagram._id));
+    expect(cleared?.thumbnailPath).toBeUndefined();
+    expect(cleared?.thumbnailStorage).toBeUndefined();
+  });
+
+  test("a card cannot carry both a link and copy text", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.site.edit"]);
+    // `LinkCard` renders any card with `copy` as a button, so the link would
+    // never fire — refused rather than silently resolved by precedence.
+    await expect(
+      s.as.mutation(api.marketingSite.upsertLink, {
+        title: "Both",
+        url: "/give",
+        copy: "give@publicworship.life",
+        align: "center",
+        published: true,
+      }),
+    ).rejects.toThrow(/not both/i);
+  });
+
+  test("the public feed never carries the events row's hide list", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.site.edit"]);
+    await seedEvent(s, { slug: "team-only-retreat", name: "Team retreat", daysOut: 3 });
+    await s.as.mutation(api.marketingSite.setEventsRow, {
+      maxEvents: 2,
+      hiddenEventSlugs: ["team-only-retreat"],
+    });
+
+    // The hide list is an inventory of gatherings we deliberately did not
+    // advertise, and the page never needed it — the OS already resolved the
+    // selection into `events`.
+    const feed = await t.query(internal.marketingSite.publicSiteContent, {});
+    expect(JSON.stringify(feed)).not.toContain("team-only-retreat");
+    const eventsRow = feed.links.find((l) => l.kind === "events");
+    expect(eventsRow?.hiddenEventSlugs).toBeNull();
+    expect(eventsRow?.maxEvents).toBeNull();
+
+    // The DESK still sees the controls — it has to, to render them.
+    const desk = await s.as.query(api.marketingSite.siteContent, {});
+    const deskRow = desk.links.find((l) => l.kind === "events");
+    expect(deskRow?.hiddenEventSlugs).toEqual(["team-only-retreat"]);
+    expect(deskRow?.maxEvents).toBe(2);
+  });
+
   test("an unpublished card never reaches the public feed", async () => {
     const t = newT();
     const s = await setupChapter(t);

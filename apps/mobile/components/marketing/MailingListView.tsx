@@ -262,14 +262,14 @@ export function MailingListView() {
               <Button
                 title="Add"
                 size="sm"
-                disabled={
-                  !newName.trim() || (!newEmail.trim() && !newPhone.trim()) || !chapterId
-                }
+                disabled={!newName.trim() || (!newEmail.trim() && !newPhone.trim())}
                 onPress={() =>
                   void run(
                     () =>
                       addToList({
-                        chapterId: chapterId as Id<"chapters">,
+                        // Omitted on the central lens — the backend falls back
+                        // to the caller's own chapter rather than refusing.
+                        ...(chapterId ? { chapterId } : {}),
                         name: newName,
                         ...(newEmail.trim() ? { email: newEmail } : {}),
                         ...(newPhone.trim() ? { phone: newPhone } : {}),
@@ -307,7 +307,8 @@ export function MailingListView() {
             </View>
             {!chapterId ? (
               <Text className="mt-2 text-xs text-muted">
-                Pick a chapter from the header first — a person belongs to one.
+                They'll join your own chapter's roster. Switch the chapter in the
+                header first to file them somewhere else.
               </Text>
             ) : null}
           </Card>

@@ -154,9 +154,34 @@ function serializeLink(doc: Doc<"siteLinks">): PublicSiteLink {
     cta: doc.cta ?? null,
     copy: doc.copy ?? null,
     align: doc.align,
+    // The events row's CONTROLS are desk-only — see `serializeLinkForDesk`.
+    maxEvents: null,
+    pinnedEventSlugs: null,
+    hiddenEventSlugs: null,
+  };
+}
+
+/**
+ * The desk's view of a card: the public shape plus the fields only the desk
+ * needs.
+ *
+ * The events row's `hiddenEventSlugs` is the reason this split exists. Its
+ * documented use is keeping a team-only or invite-only gathering off the front
+ * page, so the list is a small inventory of "events we have deliberately not
+ * advertised" — and `GET /api/site/home` is read by anyone. The page never
+ * needed those fields (the OS already resolved the selection into
+ * `content.events`), so publishing them was pure leak with no consumer.
+ */
+function serializeLinkForDesk(
+  doc: Doc<"siteLinks">,
+): PublicSiteLink & { published: boolean; order: number } {
+  return {
+    ...serializeLink(doc),
     maxEvents: doc.kind === "events" ? (doc.maxEvents ?? 0) : null,
     pinnedEventSlugs: doc.kind === "events" ? (doc.pinnedEventSlugs ?? []) : null,
     hiddenEventSlugs: doc.kind === "events" ? (doc.hiddenEventSlugs ?? []) : null,
+    published: doc.published,
+    order: doc.order,
   };
 }
 
@@ -348,11 +373,7 @@ export const siteContent = query({
     return {
       copy: resolveSiteCopy(await readCopy(ctx)),
       stats: stats.map(serializeStat),
-      links: links.map((doc) => ({
-        ...serializeLink(doc),
-        published: doc.published,
-        order: doc.order,
-      })),
+      links: links.map(serializeLinkForDesk),
       // Unpublishing the row hides the cards from the page but NOT from this
       // preview — the marketer needs to see what turning it back on would do.
       eventPreview: await resolveEventCards(
@@ -527,8 +548,18 @@ export const upsertLink = mutation({
     copy: v.optional(v.string()),
     align: alignValidator,
     published: v.boolean(),
-    /** Clears the stored upload rather than leaving it shadowed — the explicit
-     *  "remove this image" the optional fields above cannot express. */
+    /**
+     * Remove this card's image entirely — BOTH the OS upload and the
+     * repo-path form.
+     *
+     * Necessary because "not sent" cannot mean "remove" on an update: the
+     * editor posts its whole form on every save and carries neither the file
+     * bytes nor, for the seeded cards, the `/links/…` path they were authored
+     * with. Without an explicit flag, renaming the Instagram card would delete
+     * its logo from the live site with no way to put it back from inside the
+     * app. So an omitted image field is KEPT and removing one is a deliberate
+     * act.
+     */
     clearThumbnail: v.optional(v.boolean()),
     clearBgImage: v.optional(v.boolean()),
   },
@@ -563,6 +594,17 @@ export const upsertLink = mutation({
           "A card needs somewhere to go — either a link, or text it copies when tapped.",
       });
     }
+    // `LinkCard.astro` (and its runtime twin) treat ANY card with `copy` as a
+    // tap-to-copy button, so a card carrying both would silently lose its link.
+    // Refused rather than resolved by precedence: whichever way the tie broke,
+    // half the people who set both would get the other one.
+    if (url && copy) {
+      throw new ConvexError({
+        code: "AMBIGUOUS_CARD",
+        message:
+          "A card either goes somewhere or copies something — not both. Clear one of them.",
+      });
+    }
     if (url && !isAllowedSiteLinkUrl(url)) {
       throw new ConvexError({
         code: "INVALID_URL",
@@ -580,10 +622,6 @@ export const upsertLink = mutation({
       copy,
       align: args.align,
       published: args.published,
-      thumbnailPath: clean(args.thumbnailPath),
-      bgImagePath: clean(args.bgImagePath),
-      thumbnailStorage: args.clearThumbnail ? undefined : args.thumbnailStorage,
-      bgImageStorage: args.clearBgImage ? undefined : args.bgImageStorage,
       updatedAt: now,
       updatedBy: userId,
     };
@@ -603,17 +641,22 @@ export const upsertLink = mutation({
             "The live-events row is edited from the Events section, not as a card.",
         });
       }
-      // An upload the caller didn't re-send is KEPT, unless they asked to clear
-      // it: the editor sends the whole form back on every save, and a form that
-      // doesn't carry the file bytes would otherwise silently drop the image.
+      // KEEP-IF-NOT-RESENT, on all four image fields — see `clearThumbnail`'s
+      // doc for why an omitted image must not mean "delete it".
       await ctx.db.patch(args.linkId, {
         ...fields,
         thumbnailStorage: args.clearThumbnail
           ? undefined
           : (args.thumbnailStorage ?? existing.thumbnailStorage),
+        thumbnailPath: args.clearThumbnail
+          ? undefined
+          : (clean(args.thumbnailPath) ?? existing.thumbnailPath),
         bgImageStorage: args.clearBgImage
           ? undefined
           : (args.bgImageStorage ?? existing.bgImageStorage),
+        bgImagePath: args.clearBgImage
+          ? undefined
+          : (clean(args.bgImagePath) ?? existing.bgImagePath),
       });
       return args.linkId;
     }
@@ -629,6 +672,10 @@ export const upsertLink = mutation({
     return await ctx.db.insert("siteLinks", {
       kind: "link",
       ...fields,
+      thumbnailPath: clean(args.thumbnailPath),
+      thumbnailStorage: args.thumbnailStorage,
+      bgImagePath: clean(args.bgImagePath),
+      bgImageStorage: args.bgImageStorage,
       order: lastOrder + ORDER_STEP,
       createdAt: now,
     });

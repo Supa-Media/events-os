@@ -208,6 +208,22 @@ describe("adding and removing", () => {
     expect(res.personId).toBe(existing);
   });
 
+  test("adding with no chapter falls back to the caller's own", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.list.edit"]);
+    // The central lens has no chapter in hand. Refusing here would break the
+    // fastest path there is — someone hands you their email at a gathering.
+    const res = await s.as.mutation(api.mailingList.addToList, {
+      name: "From the central lens",
+      email: "central@example.com",
+    });
+    const person = await run(t, (ctx) =>
+      ctx.db.get(res.personId as Id<"people">),
+    );
+    expect(person?.chapterId).toBe(s.chapterId);
+  });
+
   test("adding records consent, and never overwrites an earlier yes", async () => {
     const t = newT();
     const s = await setupChapter(t);
@@ -268,6 +284,97 @@ describe("adding and removing", () => {
     );
     expect(rows).toHaveLength(1);
     expect(rows[0].reason).toBe("complaint");
+  });
+
+  test("a public signup can NOT lift an opt-out somebody at the org set", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const staff = await seedPerson(s, {
+      name: "Charisma Stevens",
+      email: "charisma@publicworship.life",
+    });
+    await run(t, (ctx) => ctx.db.patch(staff, { marketingOptOut: true }));
+
+    // Staff names are public on /team, and the matcher falls back to an exact
+    // NAME match — so without the door distinction this post would silently
+    // clear a colleague's opt-out AND write a stranger's address onto their row.
+    await t.mutation(api.mailingList.subscribe, {
+      name: "Charisma Stevens",
+      email: "someone-else@example.com",
+    });
+
+    const after = await run(t, (ctx) => ctx.db.get(staff));
+    expect(after?.marketingOptOut).toBe(true);
+    expect(after?.email).toBe("charisma@publicworship.life");
+
+    // The stranger became their own contact rather than being merged in.
+    const all = await run(t, (ctx) =>
+      ctx.db
+        .query("people")
+        .withIndex("by_chapter", (q) => q.eq("chapterId", s.chapterId))
+        .collect(),
+    );
+    expect(all.filter((p) => p.name === "Charisma Stevens")).toHaveLength(2);
+  });
+
+  test("a public signup reverses the person's OWN unsubscribe, and nothing else", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    for (const [email, reason] of [
+      ["unsub@example.com", "unsubscribe"],
+      ["bounced@example.com", "bounce"],
+      ["spam@example.com", "complaint"],
+      ["blocked@example.com", "manual"],
+    ] as const) {
+      await seedPerson(s, { name: `Person ${email}`, email });
+      await run(t, (ctx) =>
+        ctx.db.insert("emailSuppressions", {
+          email,
+          reason,
+          createdAt: Date.now(),
+        }),
+      );
+      await t.mutation(api.mailingList.subscribe, {
+        name: `Person ${email}`,
+        email,
+      });
+    }
+
+    const left = await run(t, (ctx) =>
+      ctx.db.query("emailSuppressions").collect(),
+    );
+    // The unsubscribe is gone — that's the same human reversing the same
+    // decision. A bounce is a fact about the mailbox, a complaint is a report
+    // against us, and a manual suppression is a staff decision; none of the
+    // three is a web form's to undo.
+    expect(left.map((r) => r.email).sort()).toEqual([
+      "blocked@example.com",
+      "bounced@example.com",
+      "spam@example.com",
+    ]);
+  });
+
+  test("the DESK cannot lift any suppression, including an unsubscribe", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["marketing.list.edit"]);
+    await seedPerson(s, { name: "Left us", email: "left@example.com" });
+    await run(t, (ctx) =>
+      ctx.db.insert("emailSuppressions", {
+        email: "left@example.com",
+        reason: "unsubscribe",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const res = await s.as.mutation(api.mailingList.addToList, {
+      chapterId: s.chapterId,
+      name: "Left us",
+      email: "left@example.com",
+    });
+    expect(res.stillSuppressed).toBe(true);
+    expect(await run(t, (ctx) => ctx.db.query("emailSuppressions").collect()))
+      .toHaveLength(1);
   });
 
   test("removing sets the person-level stop and an SMS opt-out — but no email suppression", async () => {

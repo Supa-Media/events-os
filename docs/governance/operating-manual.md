@@ -670,10 +670,12 @@ is here.
 Three rules bind:
 
 1. **An opt-out we set and an unsubscribe the person set are different things.**
-   The first is ours to reverse. The second — an unsubscribe click, a hard
-   bounce, a spam complaint, a texted STOP — is never reversed from inside the
-   OS by anyone, at any seat. Someone who wants back on re-subscribes
-   themselves.
+   The first is ours to reverse. The second is not reversible by any seat at any
+   time — the only thing that clears an unsubscribe is the person filling in the
+   public sign-up form themselves, and even that clears nothing else: a hard
+   bounce, a spam complaint, and a staff-entered suppression survive it, as does
+   every SMS opt-out (which the carrier enforces regardless of what our records
+   say).
 2. **Taking someone off stops every marketing channel**, not the one they
    happened to mention. It never stops transactional mail — a receipt, an RSVP
    confirmation, a reimbursement notice — which is not marketing and which the

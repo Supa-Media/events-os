@@ -54,7 +54,8 @@ import {
   TextField,
   ToastView,
 } from "../ui";
-import { useActionRunner } from "../../lib/useActionToast";
+import { useActionRunner, type ActionRunner } from "../../lib/useActionToast";
+import { CardImagePicker } from "./CardImagePicker";
 
 type LinkRow = {
   id: string;
@@ -89,12 +90,30 @@ const EMPTY_DRAFT = {
   copy: "",
   align: "center" as SiteLinkAlign,
   published: false,
+  /**
+   * IMAGES ARE THREE-STATE, not two, and flattening them is how the first cut
+   * of this screen deleted the Instagram logo on a rename.
+   *
+   *   `pending` set     a file uploaded in this session, to be saved with the card
+   *   `cleared` true    remove whatever the card has
+   *   neither           leave it alone
+   *
+   * The third state is the one that needs a name: the form does not know a
+   * seeded card's `/links/…` path or an upload's bytes, so "not sent" has to
+   * mean KEEP. The backend applies the same rule (`upsertLink`'s
+   * keep-if-not-resent), and this is its other half.
+   */
+  thumbnailPending: null as string | null,
+  thumbnailCleared: false,
+  bgPending: null as string | null,
+  bgCleared: false,
 };
 
 type Draft = typeof EMPTY_DRAFT;
 
 function draftFrom(row: LinkRow): Draft {
   return {
+    ...EMPTY_DRAFT,
     title: row.title,
     subtitle: row.subtitle ?? "",
     url: row.url ?? "",
@@ -114,17 +133,25 @@ function CardEditor({
   onSave,
   onCancel,
   saveLabel,
+  row,
+  run,
 }: {
   draft: Draft;
   setDraft: (next: Draft) => void;
   onSave: () => void;
   onCancel: () => void;
   saveLabel: string;
+  /** The card being edited, for its current images. Absent when creating. */
+  row?: LinkRow;
+  run: ActionRunner["run"];
 }) {
-  // The one rule worth stating in the UI rather than only in the error: a card
-  // either goes somewhere or copies something. The Zelle card is the reason —
-  // it navigates nowhere on purpose.
-  const usable = draft.title.trim() && (draft.url.trim() || draft.copy.trim());
+  // Two rules worth stating in the UI rather than only in the error: a card
+  // needs somewhere to go OR something to copy (the Zelle card navigates
+  // nowhere on purpose), and it can't have both — a card carrying `copy`
+  // renders as a button, so a link beside it would silently never fire.
+  const bothSet = Boolean(draft.url.trim() && draft.copy.trim());
+  const usable =
+    draft.title.trim() && (draft.url.trim() || draft.copy.trim()) && !bothSet;
   return (
     <View>
       <TextField
@@ -162,6 +189,31 @@ function CardEditor({
         onChangeText={(cta) => setDraft({ ...draft, cta })}
         maxLength={SITE_LINK_CTA_MAX}
         hint="Sits under the subtitle — “(Click to Copy)”."
+      />
+      {bothSet ? (
+        <Text className="mb-3 text-xs text-danger">
+          A card either goes somewhere or copies something — clear one of them.
+        </Text>
+      ) : null}
+      <CardImagePicker
+        kind="thumbnail"
+        current={draft.thumbnailCleared ? null : (row?.thumbnail ?? null)}
+        pending={draft.thumbnailPending}
+        onPicked={(id) =>
+          setDraft({ ...draft, thumbnailPending: id, thumbnailCleared: false })
+        }
+        onCleared={() =>
+          setDraft({ ...draft, thumbnailPending: null, thumbnailCleared: true })
+        }
+        run={run}
+      />
+      <CardImagePicker
+        kind="background"
+        current={draft.bgCleared ? null : (row?.bgImage ?? null)}
+        pending={draft.bgPending}
+        onPicked={(id) => setDraft({ ...draft, bgPending: id, bgCleared: false })}
+        onCleared={() => setDraft({ ...draft, bgPending: null, bgCleared: true })}
+        run={run}
       />
       <Select
         label="Text position"
@@ -395,6 +447,16 @@ export function MarketingLinksView() {
           ...(d.copy ? { copy: d.copy } : {}),
           align: d.align,
           published: d.published,
+          // Omitted unless the marketer actually did something to the image —
+          // see `EMPTY_DRAFT`'s three-state note.
+          ...(d.thumbnailPending
+            ? { thumbnailStorage: d.thumbnailPending as Id<"_storage"> }
+            : {}),
+          ...(d.thumbnailCleared ? { clearThumbnail: true } : {}),
+          ...(d.bgPending
+            ? { bgImageStorage: d.bgPending as Id<"_storage"> }
+            : {}),
+          ...(d.bgCleared ? { clearBgImage: true } : {}),
         }),
       {
         errorTitle: "Couldn't save that card",
@@ -478,6 +540,8 @@ export function MarketingLinksView() {
                   draft={draft}
                   setDraft={setDraft}
                   saveLabel="Save"
+                  row={row}
+                  run={run}
                   onSave={() => saveCard(row.id, draft)}
                   onCancel={() => setEditingId(null)}
                 />
@@ -531,6 +595,7 @@ export function MarketingLinksView() {
               draft={newDraft}
               setDraft={setNewDraft}
               saveLabel="Add card"
+              run={run}
               onSave={() => saveCard(null, newDraft)}
               onCancel={() => {
                 setCreating(false);
