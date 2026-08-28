@@ -9,6 +9,14 @@ export interface Props {
   icon?: "sparkle" | "pray" | "image";
   iconSrc?: string;
   class?: string;
+  /**
+   * Marks this eyebrow's TEXT as an OS-editable copy slot
+   * (`@events-os/shared`'s `SITE_COPY_KEYS`). The label gets its own inner
+   * `<span data-copy-key>` rather than the attribute going on the wrapper,
+   * because the runtime patch sets `textContent` — on the wrapper that would
+   * take the icon out with it.
+   */
+  copyKey?: string;
 }
 
 const {
@@ -16,6 +24,7 @@ const {
   icon = "sparkle",
   iconSrc,
   class: className = "",
+  copyKey,
 } = Astro.props;
 
 const wrapperClass = size === "sm" ? "pw-eyebrow-sm" : "pw-eyebrow";
@@ -26,5 +35,5 @@ const iconSize = size === "sm" ? "h-3.5 w-3.5" : "h-4 w-4";
   {icon === "pray" && <PrayIcon class={iconSize} />}
   {icon === "sparkle" && <SparkleIcon class={iconSize} />}
   {icon === "image" && iconSrc && <img src={iconSrc} alt="" class={iconSize} />}
-  <slot />
+  {copyKey ? <span data-copy-key={copyKey}><slot /></span> : <slot />}
 </span>

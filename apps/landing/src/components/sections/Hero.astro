@@ -1,7 +1,22 @@
 ---
+/**
+ * The hero. Its words are OS-managed (`siteCopy`, edited on the Marketing
+ * desk) — `scripts/site-content.ts` patches every `data-copy-key` slot below
+ * once the live content arrives.
+ *
+ * What renders at build time is `SITE_COPY_DEFS[...].defaultValue`, imported
+ * rather than retyped so the fallback and the seed are literally the same
+ * strings. An `<h1>` above the fold is the one place an empty shell would be
+ * unacceptable — see `lib/siteContent.ts`.
+ *
+ * The headline is two slots because the design sets its second half in red.
+ * Two plain-text fields rather than one field carrying markup: see
+ * `SITE_COPY_KEYS`'s doc.
+ */
 import Button from "../ui/Button.astro";
 import Eyebrow from "../ui/Eyebrow.astro";
 import Container from "../ui/Container.astro";
+import { SITE_COPY_DEFS } from "@events-os/shared/src/marketing";
 import { asset } from "../../lib/asset";
 ---
 
@@ -57,7 +72,9 @@ import { asset } from "../../lib/asset";
 
   <Container size="default" class="relative">
     <div class="flex flex-col items-center text-center gap-7" data-animate="fade-up">
-      <Eyebrow>Worship with us</Eyebrow>
+      <Eyebrow copyKey="hero.eyebrow"
+        >{SITE_COPY_DEFS["hero.eyebrow"].defaultValue}</Eyebrow
+      >
 
       {/* H1 size verified from source DOM: 68px desktop, line-height 1.08,
        * fontFamily Corben, fontWeight 400, container max-w 768px (max-w-3xl).
@@ -65,25 +82,35 @@ import { asset } from "../../lib/asset";
       <h1
         class="font-display font-normal text-ink leading-[1.08] text-4xl sm:text-5xl md:text-[68px] max-w-3xl"
       >
-        Together, Let's Forge a Future of
-        <span class="text-red-500">Bold and Radical Jesus Worship</span>
+        <span data-copy-key="hero.headingLead"
+          >{SITE_COPY_DEFS["hero.headingLead"].defaultValue}</span
+        >{" "}<span class="text-red-500" data-copy-key="hero.headingAccent"
+          >{SITE_COPY_DEFS["hero.headingAccent"].defaultValue}</span
+        >
       </h1>
 
       {/* Source: 20px / 1.44, full ink color, max-width 480px. */}
-      <p class="max-w-[480px] text-lg sm:text-xl leading-[1.44] text-ink">
-        We're building a Revelations 7:9 future where every nation, tribe and
-        tongue will worship God in spirit and in truth.
+      <p
+        class="max-w-[480px] text-lg sm:text-xl leading-[1.44] text-ink"
+        data-copy-key="hero.body"
+      >
+        {SITE_COPY_DEFS["hero.body"].defaultValue}
       </p>
 
       <div class="flex flex-wrap items-center justify-center gap-3 pt-2">
-        <Button
-          href={asset("/give")}
-          variant="primary"
-          size="lg"
-        >
-          Make a Donation
+        {/* The LABELS are editable; the destinations are not. A homepage
+            button that can be pointed anywhere from a text box is a phishing
+            surface, and nobody asked for it — see `SITE_COPY_DEFS`. */}
+        <Button href={asset("/give")} variant="primary" size="lg">
+          <span data-copy-key="hero.primaryCtaLabel"
+            >{SITE_COPY_DEFS["hero.primaryCtaLabel"].defaultValue}</span
+          >
         </Button>
-        <Button href={asset("/ge")} variant="outline" size="lg">About Public Worship</Button>
+        <Button href={asset("/ge")} variant="outline" size="lg">
+          <span data-copy-key="hero.secondaryCtaLabel"
+            >{SITE_COPY_DEFS["hero.secondaryCtaLabel"].defaultValue}</span
+          >
+        </Button>
       </div>
     </div>
   </Container>

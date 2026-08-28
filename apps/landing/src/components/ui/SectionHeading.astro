@@ -7,6 +7,9 @@ export interface Props {
   /** Visual style for the eyebrow. Source uses a chip on most sections and a
    * small inline label only on the FAQ heading. */
   eyebrowSize?: "chip" | "sm";
+  /** Passed through to `Eyebrow` — marks the eyebrow's text as an OS-editable
+   *  copy slot. See that component's `copyKey` doc. */
+  eyebrowCopyKey?: string;
   align?: "left" | "center";
   as?: "h1" | "h2";
   class?: string;
@@ -16,6 +19,7 @@ const {
   eyebrow,
   eyebrowIcon = "sparkle",
   eyebrowSize = "chip",
+  eyebrowCopyKey,
   align = "center",
   as: Tag = "h2",
   class: className = "",
@@ -34,7 +38,13 @@ const eyebrowGap = eyebrowSize === "sm" ? "gap-1" : "gap-3";
 ---
 
 <div class={`flex flex-col ${eyebrowGap} ${alignClass} ${className}`}>
-  {eyebrow && <Eyebrow icon={eyebrowIcon} size={eyebrowSize}>{eyebrow}</Eyebrow>}
+  {
+    eyebrow && (
+      <Eyebrow icon={eyebrowIcon} size={eyebrowSize} copyKey={eyebrowCopyKey}>
+        {eyebrow}
+      </Eyebrow>
+    )
+  }
   <Tag class={`font-display font-normal ${headingLeading} ${headingSize}`}>
     <slot />
   </Tag>

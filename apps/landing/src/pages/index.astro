@@ -28,3 +28,11 @@ import MidVideo from "../components/sections/MidVideo.astro";
     cards="illustrations"
   />
 </BaseLayout>
+
+{/* The homepage's OS-managed content — hero copy, the impact numbers, and the
+    Important Links grid — patched over the built markup once
+    `GET /api/site/home` answers. One fetch for all three; degrades silently to
+    the page as built. See `scripts/site-content.ts`. */}
+<script>
+  import "../scripts/site-content";
+</script>

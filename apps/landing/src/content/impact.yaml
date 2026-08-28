@@ -1,7 +1,11 @@
 # =====================================================================
 # Impact stats — homepage "Transformative Impact" section
 # =====================================================================
-
+# THE OS IS THE SOURCE OF TRUTH. These numbers are edited on the Marketing
+# desk (Chapter OS → Marketing → Site) and stored in Convex (`siteStats`).
+# The homepage fetches them at runtime and replaces the cards built from this
+# file. What is here is the build-time FALLBACK — see links.yaml's header.
+# =====================================================================
 - id: reach
   value: "700,000+"
   label: People Reached

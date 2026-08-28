@@ -1,19 +1,34 @@
 ---
+/**
+ * Important Links — the homepage's link grid.
+ *
+ * The cards are OS-managed now (`siteLinks` in Convex, edited on the Marketing
+ * desk), fetched at runtime with the rest of the homepage's content by
+ * `scripts/site-content.ts`. That script REPLACES the grid below once the live
+ * content arrives, including choosing where the live event cards sit and which
+ * ones show — the OS resolves that, because it is the only side that can see
+ * the desk's pins, hides, and count.
+ *
+ * What is rendered here is the FALLBACK: `links.yaml`, which is what a visitor
+ * sees if the backend is unreachable and what a crawler sees before JS runs.
+ * See `lib/siteContent.ts` for why the homepage hydrates over real markup
+ * instead of filling empty shells the way `/team` does.
+ */
 import { getCollection } from "astro:content";
+import { SITE_COPY_DEFS } from "@events-os/shared/src/marketing";
 import Container from "../ui/Container.astro";
 import Eyebrow from "../ui/Eyebrow.astro";
 import LinkCard from "../ui/LinkCard.astro";
 
-// Fixed cards come from links.yaml. Between the `lead` card (Donate) and the
-// `trail` cards (socials + Zelle) we inject up to two currently-published event
-// RSVP pages, fetched live from the OS at runtime (see the <script> below and
-// GET /api/events/upcoming) — so the section tracks the OS with no rebuild.
+// Ordering here mirrors the seed's: the `lead` card, then the events, then the
+// rest. Live, that order is whatever the desk dragged it into.
 const entries = await getCollection("links");
 const lead = entries.filter((e) => e.data.slot === "lead");
 const trail = entries.filter((e) => e.data.slot !== "lead");
 
-// Reserve two grid slots for the auto-inserted events so the trailing cards'
-// entrance stagger stays continuous whether or not any events are live.
+// Reserve grid slots for the events so the trailing cards' entrance stagger
+// stays continuous whether or not any are live. Matches the seeded row's
+// `maxEvents`.
 const MAX_EVENTS = 2;
 const delayFor = (i: number) => `--delay: ${i * 60}ms`;
 ---
@@ -24,16 +39,28 @@ const delayFor = (i: number) => `--delay: ${i * 60}ms`;
       class="flex flex-col items-center gap-3 text-center mb-12 sm:mb-14"
       data-animate="fade-up"
     >
-      <Eyebrow icon="sparkle">Public Worship</Eyebrow>
+      <Eyebrow icon="sparkle" copyKey="links.eyebrow">
+        {SITE_COPY_DEFS["links.eyebrow"].defaultValue}
+      </Eyebrow>
       {/* Source H2: 52px / 1.08 / Corben 400. */}
       <h2
         class="font-display font-normal leading-[1.08] text-3xl sm:text-[42px] md:text-[52px]"
       >
-        Important <span class="text-red-500">Links</span>
+        <span data-copy-key="links.headingLead"
+          >{SITE_COPY_DEFS["links.headingLead"].defaultValue}</span
+        >{" "}<span class="text-red-500" data-copy-key="links.headingAccent"
+          >{SITE_COPY_DEFS["links.headingAccent"].defaultValue}</span
+        >
       </h2>
     </div>
 
-    <div class="grid gap-4 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3">
+    {/* `scripts/site-content.ts` replaces this grid's children wholesale once
+        the live content lands. Until then (and forever, with JS off) these are
+        the cards. */}
+    <div
+      id="pw-links-grid"
+      class="grid gap-4 sm:gap-5 sm:grid-cols-2 lg:grid-cols-3"
+    >
       {
         lead.map((entry, i) => (
           <div data-animate="fade-up" style={delayFor(i)}>
@@ -50,16 +77,6 @@ const delayFor = (i: number) => `--delay: ${i * 60}ms`;
           </div>
         ))
       }
-
-      {/* Live event cards inject here (display:contents → children become grid
-          items in place). Populated by the script below; empty = no live events. */}
-      <div
-        id="pw-live-events"
-        class="contents"
-        data-lead-count={lead.length}
-        data-max-events={MAX_EVENTS}
-      >
-      </div>
 
       {
         trail.map((entry, i) => (
@@ -83,129 +100,3 @@ const delayFor = (i: number) => `--delay: ${i * 60}ms`;
     </div>
   </Container>
 </section>
-
-<script>
-  // Pull currently-published event RSVP pages from the OS (same origin, routed
-  // to Convex by pw-router) and drop them into the Important Links grid between
-  // Donate and the socials. All-or-nothing best effort: if the fetch fails
-  // (e.g. `astro dev` with no backend) the grid just shows the fixed cards.
-  type LiveEvent = {
-    title: string;
-    tagline: string | null;
-    venueName: string | null;
-    startDate: number;
-    endDate: number | null;
-    href: string;
-    coverUrl: string | null;
-    coverFocalX?: number | null;
-    coverFocalY?: number | null;
-  };
-
-  const CARD_CLASS =
-    "group relative block w-full min-h-[150px] cursor-pointer appearance-none " +
-    "overflow-hidden rounded-2xl bg-pink-softer transition-transform hover:-translate-y-0.5";
-
-  function formatDate(ms: number): string {
-    try {
-      return new Date(ms).toLocaleDateString(undefined, {
-        weekday: "short",
-        month: "short",
-        day: "numeric",
-      });
-    } catch {
-      return "";
-    }
-  }
-
-  function buildCard(ev: LiveEvent): HTMLAnchorElement {
-    const a = document.createElement("a");
-    a.href = ev.href;
-    a.className = CARD_CLASS;
-    a.setAttribute("aria-label", ev.title);
-
-    if (ev.coverUrl) {
-      // Poster-style card: full-bleed cover, no text overlay (matches how the
-      // fixed poster cards render in LinkCard.astro's bgImage branch).
-      const img = document.createElement("img");
-      img.src = ev.coverUrl;
-      img.alt = ev.title;
-      img.loading = "lazy";
-      img.decoding = "async";
-      img.className = "absolute inset-0 h-full w-full object-cover";
-      // Honor the host's chosen crop focal point (percent) so this card frames
-      // the cover the same way the event landing page does. Default centered.
-      const fx = typeof ev.coverFocalX === "number" ? ev.coverFocalX : 50;
-      const fy = typeof ev.coverFocalY === "number" ? ev.coverFocalY : 50;
-      img.style.objectPosition = `${fx}% ${fy}%`;
-      a.appendChild(img);
-    } else {
-      // Text card: title + date, mirroring LinkCard.astro's no-image branch.
-      const inner = document.createElement("div");
-      inner.className =
-        "relative z-[1] flex h-full flex-col items-center justify-center gap-1 " +
-        "text-center p-8 sm:p-12";
-      const h3 = document.createElement("h3");
-      h3.className = "font-display text-xl sm:text-2xl text-link-blue";
-      h3.textContent = ev.title;
-      inner.appendChild(h3);
-      const when = formatDate(ev.startDate);
-      if (when) {
-        const p = document.createElement("p");
-        p.className = "text-sm sm:text-base text-link-blue";
-        p.textContent = when;
-        inner.appendChild(p);
-      }
-      a.appendChild(inner);
-    }
-    return a;
-  }
-
-  async function hydrateLiveEvents(): Promise<void> {
-    const host = document.getElementById("pw-live-events");
-    if (!host) return;
-    const leadCount = Number(host.dataset.leadCount ?? "1");
-    const max = Number(host.dataset.maxEvents ?? "2");
-
-    let events: LiveEvent[] = [];
-    try {
-      const res = await fetch(`/api/events/upcoming?limit=${max}`, {
-        headers: { Accept: "application/json" },
-      });
-      if (!res.ok) return;
-      events = (await res.json()) as LiveEvent[];
-    } catch {
-      return; // No backend reachable (e.g. local dev) — leave the fixed cards.
-    }
-    if (!Array.isArray(events) || events.length === 0) return;
-
-    const reduceMotion = window.matchMedia(
-      "(prefers-reduced-motion: reduce)",
-    ).matches;
-
-    events.slice(0, max).forEach((ev, i) => {
-      const wrapper = document.createElement("div");
-      wrapper.setAttribute("data-animate", "fade-up");
-      wrapper.style.setProperty("--delay", `${(leadCount + i) * 60}ms`);
-      wrapper.appendChild(buildCard(ev));
-      host.appendChild(wrapper);
-      // These cards mount after the IntersectionObserver in scroll-animate.ts
-      // has already taken its census, so it never sees them — flip them into
-      // view ourselves (next frame so the fade-up transition still plays).
-      if (reduceMotion) {
-        wrapper.setAttribute("data-animate-in", "true");
-      } else {
-        requestAnimationFrame(() =>
-          requestAnimationFrame(() =>
-            wrapper.setAttribute("data-animate-in", "true"),
-          ),
-        );
-      }
-    });
-  }
-
-  if (document.readyState === "loading") {
-    document.addEventListener("DOMContentLoaded", hydrateLiveEvents);
-  } else {
-    void hydrateLiveEvents();
-  }
-</script>
