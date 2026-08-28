@@ -640,6 +640,51 @@ ever, on any channel** — this is an absolute condition of tax exemption
 Speak about people the way you would if they were reading — because on a public
 ledger and a public page, they are.
 
+### 9.1 The public site
+
+The homepage's copy, its impact numbers, and its Important Links cards are
+edited in Chapter OS (Marketing desk) by a `marketing.site.edit` holder, and go
+live with no deploy and no second approver. That is deliberate and it is not the
+same standard as §4.6's published ledger: a headline is a sentence, and the seat
+that owns the public voice should be able to correct one the moment it is
+noticed. A published NUMBER about money is a claim that can only be amended in
+public, which is why that one keeps its second party.
+
+Two limits are worth stating because they are not obvious from the tool:
+
+- **An impact number is a claim.** "700,000+ people reached" is a statement the
+  Corporation makes about itself, and it must be traceable to something real and
+  revised down when it stops being. It is not marketing decoration.
+- **Nothing on the front page names a person without their consent**, including
+  in an event card pulled through automatically. §10's minors rule binds here
+  first, because this is the surface with the widest audience.
+
+### 9.2 The mailing list
+
+The email and SMS lists live on the roster itself, not in a separate tool: a
+person on the list is a `people` row, and `marketing.list.view` /
+`marketing.list.edit` govern who reads and changes it. Bulk sending is done in
+Mailchimp; the Corporation's own record of who agreed to be contacted, and when,
+is here.
+
+Three rules bind:
+
+1. **An opt-out we set and an unsubscribe the person set are different things.**
+   The first is ours to reverse. The second — an unsubscribe click, a hard
+   bounce, a spam complaint, a texted STOP — is never reversed from inside the
+   OS by anyone, at any seat. Someone who wants back on re-subscribes
+   themselves.
+2. **Taking someone off stops every marketing channel**, not the one they
+   happened to mention. It never stops transactional mail — a receipt, an RSVP
+   confirmation, a reimbursement notice — which is not marketing and which the
+   Corporation may owe them.
+3. **An export contains reachable people only.** An opt-out or a complaint must
+   not be able to cross a system boundary into a sending tool by accident.
+
+Consent is RECORDED (who said yes, when, and where) and is never used to make a
+suppressed address sendable again. Recording a "yes" and honoring a "no" are
+separate ledgers on purpose.
+
 ---
 
 ## 10 · Data, privacy, and access

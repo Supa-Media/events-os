@@ -821,6 +821,18 @@
  * description gained the /team clause. Every section AFTER it shifts one place
  * in curriculum order; no slugs, titles, minutes, or quiz lengths changed
  * anywhere else. Total: 100 sections.
+ *
+ * And the Marketing desk (2026-08-28) — `mktg-the-desk` appended to the
+ * Marketing & Media stream after `mktg-getting-access` and added to
+ * `brand-and-voice`, which now carries two modules and gained a clause about
+ * the desk in its description. It teaches the tab that shipped with it: that
+ * homepage copy is live the moment it saves with nobody downstream to catch a
+ * typo, that a pin only reorders already-published event pages, and — the part
+ * worth a lesson on its own — that an opt-out we set and an unsubscribe the
+ * person set look identical and are not, because only one of them is ours to
+ * reverse. Every section AFTER it shifts one place in curriculum order; no
+ * slugs, titles, minutes, or quiz lengths changed anywhere else.
+ * Total: 101 sections.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -932,6 +944,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "mktg-hit-record",
   "mktg-shoot-to-timeline",
   "mktg-getting-access",
+  "mktg-the-desk",
   "dev-giving-vocabulary",
   "dev-donor-crm-basics",
   "dev-relationship-workflow",
@@ -1760,6 +1773,14 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
+    slug: "mktg-the-desk",
+    title: "The marketing desk",
+    minutes: 4,
+    quizLength: 5,
+    optional: false,
+    capstoneKind: null,
+  },
+  {
     slug: "dev-giving-vocabulary",
     title: "Donors, backers, sponsors: the words we use",
     minutes: 4,
@@ -2088,7 +2109,7 @@ const EXPECTED_COURSES: {
   {
     slug: "brand-and-voice",
     themeKey: "marketing",
-    moduleSlugs: ["mktg-the-look"],
+    moduleSlugs: ["mktg-the-look", "mktg-the-desk"],
   },
   {
     slug: "media-pipeline",

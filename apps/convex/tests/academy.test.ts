@@ -175,7 +175,7 @@ async function platformTemplates(s: ChapterSetup) {
 }
 
 describe("curriculum content", () => {
-  test("one hundred fifteen ordered sections; six capstones; one optional bonus", () => {
+  test("one hundred sixteen ordered sections; six capstones; one optional bonus", () => {
     // 79 + 5 (the "Leading a project" course: works-defining-a-project,
     // works-planning-the-work, works-the-project-budget,
     // works-tracking-and-escalating, works-finishing-well — all required,
@@ -282,12 +282,24 @@ describe("curriculum content", () => {
     // revisit date, and no file closes without a recorded reason. Placed
     // immediately after the pipeline overview so a reader meets the door
     // before the interview that happens behind it.)
-    expect(ACADEMY_SECTION_COUNT).toBe(115);
+    // + 1 (mktg-the-desk, 2026-08-28, appended to the Marketing & Media stream
+    // and added to the brand-and-voice course — required, not a capstone.
+    // Marketing got a desk: the homepage's copy and impact numbers, the
+    // Important Links cards and where the automatic event cards land, and the
+    // mailing list. Two things in it are taught rather than left to be
+    // inferred, because both are wrong-by-guessing. First, site copy is live
+    // the moment it saves — no approval, no deploy, and therefore nobody
+    // downstream to catch a typo. Second, and the reason this is a lesson at
+    // all: an opt-out the org set and an unsubscribe the PERSON set render as
+    // the same greyed-out row and are not the same thing. Only the first is
+    // ours to reverse, and a team that re-adds a spam complainer costs the
+    // whole org its deliverability.)
+    expect(ACADEMY_SECTION_COUNT).toBe(116);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 115 }, (_v, i) => i + 1),
+      Array.from({ length: 116 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(114);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(115);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

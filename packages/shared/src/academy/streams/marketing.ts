@@ -23,6 +23,16 @@
  * (see the PR that introduced this stream) if ever wanted as a starting
  * point. `mktg-the-look` was kept — the owner didn't dispute the brand
  * kit content.
+ *
+ * ADDED 2026-08-28: `mktg-the-desk`, for the Marketing desk that shipped with
+ * it (Chapter OS → Marketing). It sits in `brand-and-voice` rather than
+ * `media-pipeline` because it is about the org's public VOICE — the homepage's
+ * words, the link cards, and the promise the mailing list represents — not
+ * about capture and edit. The half of that lesson that will age worst is the
+ * consent half, and it is the half that matters: the difference between an
+ * opt-out we set and an unsubscribe the person set is the one thing a
+ * marketing seat can get wrong in a way that costs the whole org its
+ * deliverability.
  */
 
 import type {
@@ -430,6 +440,182 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       },
     ],
   },
+
+  // ── 49 · Brand & Voice: the marketing desk ────────────────────────────────
+  {
+    slug: "mktg-the-desk",
+    title: "The marketing desk",
+    subtitle: "Changing the site yourself, and keeping the list honest",
+    minutes: 4,
+    blocks: [
+      {
+        kind: "p",
+        text: "Marketing is the one function whose work is entirely public, and for a long time it was the function with the least control over anything public. Changing a headline on publicworship.life, reordering the link cards, or adding somebody to the newsletter all meant asking a developer. The **Marketing** tab in Chapter OS is where those things live now.",
+      },
+      {
+        kind: "table",
+        headers: ["Tab", "What it's for"],
+        rows: [
+          ["Site", "The homepage's hero copy and the three impact numbers"],
+          ["Links", "The Important Links cards, their order, and which events show"],
+          ["Mailing list", "Who we can reach by email and text, and who asked us not to"],
+          ["Emails", "A pointer to Mailchimp, where the newsletter actually goes out"],
+        ],
+      },
+      {
+        kind: "heading",
+        text: "The site changes as soon as you save it",
+      },
+      {
+        kind: "p",
+        text: "There is no publish step on copy, no review queue, and no deploy. Edit a field, leave it, and the live page carries the new words within about a minute. That's deliberate — a headline is a sentence, and a sentence somebody spots as wrong should be fixable by the person who spotted it. It also means there is nobody downstream to catch a typo for you.",
+      },
+      {
+        kind: "tip",
+        text: "In the app · Marketing → Site. Each field saves on its own when you tap away from it. The counter under a field turns red before you hit the limit — those limits are where the design actually breaks, not arbitrary.",
+      },
+      {
+        kind: "p",
+        text: "The Links tab works the same way, with one difference: a **card** has a show/hide switch, so you can build one before its announcement goes out. The row called **Live event cards** isn't a card at all — it's the rule for the event pages the homepage pulls in automatically. Set how many show, lead with a specific event, or keep one off the front page entirely. The preview under it is the real thing: what it lists is what the site will show.",
+      },
+      {
+        kind: "rule",
+        title: "Only what's already published can be pinned",
+        text: "Leading with an event doesn't publish it. If an event's RSVP page isn't live, pinning it does nothing — because the alternative would be putting a link to a 404 on the front page. Publish the page from the event first, then choose where it sits.",
+      },
+      {
+        kind: "heading",
+        text: "The mailing list is a promise, not a spreadsheet",
+      },
+      {
+        kind: "p",
+        text: "The list is not its own table of names — it's every person the OS already knows, with the added question of whether we can actually reach them. That's why adding someone who's already a donor updates that person instead of creating a second one, and why a name added here shows up on the People tab too.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Opted out** — someone at the org marked this person as not-to-be-marketed. You can put them back.",
+          "**Unsubscribed or bounced** — the person clicked unsubscribe, texted STOP, or the address hard-bounced. **You can never undo this from here**, and adding them again won't either.",
+          "**No address on file** — nothing to send to.",
+          "**Inactive** — off the roster entirely.",
+        ],
+      },
+      {
+        kind: "rule",
+        title: "Their \"no\" outranks our \"but\"",
+        text: "The two greyed-out reasons look identical to a sender and are completely different to us. One is our decision and ours to reverse. The other is theirs, and no conversation at an event changes it — if someone who unsubscribed wants back on, they re-subscribe themselves through the sign-up link. Re-adding them in the app will look like it worked and won't be.",
+      },
+      {
+        kind: "p",
+        text: "Taking someone off is one tap, and it stops **both** email and texts from one action. That's on purpose: nobody who says \"stop emailing me\" means \"but keep texting me.\"",
+      },
+      {
+        kind: "heading",
+        text: "Stop sending people Google Forms",
+      },
+      {
+        kind: "p",
+        text: "There's a sign-up link at the top of the Mailing list tab — copy it and share it. It goes to a page that writes straight into this list, with the person's name, what they agreed to, and the date. A Google Form put those names in a spreadsheet nothing else could see, so every signup was a manual re-entry away from being reachable, and nobody could answer \"did this person ever actually say yes?\"",
+      },
+      {
+        kind: "tip",
+        text: "In the app · Marketing → Mailing list → Sign-up link. Export CSV gives you the reachable people only — opted-out and unsubscribed addresses are never in the file, so you can paste it into Mailchimp without carrying a mistake across.",
+      },
+      {
+        kind: "scenario",
+        prompt:
+          "Someone comes up to you after a gathering: \"I unsubscribed a while back but I do want the newsletter again.\" What do you do?",
+        options: [
+          {
+            text: "Add them on the Mailing list tab — they asked, so it's handled.",
+            feedback:
+              "It'll look like it worked. It won't: an unsubscribe is address-level and adding someone again doesn't clear it, so they still get nothing and you won't find out for weeks.",
+          },
+          {
+            text: "Hand them the sign-up link and let them re-subscribe themselves.",
+            correct: true,
+            feedback:
+              "Right. Their own \"yes\" is the only thing that can undo their own \"no\" — and it lands with a fresh consent record and date.",
+          },
+          {
+            text: "Ask a developer to delete the unsubscribe row.",
+            feedback:
+              "Nobody should be reaching into that ledger by hand, and it isn't necessary — the sign-up link is the supported path and it takes them thirty seconds.",
+          },
+        ],
+      },
+      {
+        kind: "reveal",
+        prompt:
+          "You've got a big event in six weeks and a small one this Saturday. The homepage is showing the small one. What do you change?",
+        answer:
+          "On Marketing → Links, open the Live event cards row and \"Lead with\" the six-week event — pins go first, in the order you set them, then everything else by date. Bump the count to 2 and both show. Check the preview underneath before you leave: it runs the same selection the site does.",
+      },
+    ],
+    quiz: [
+      {
+        prompt: "You fix a typo in the homepage headline. What has to happen before it's live?",
+        options: [
+          "Someone has to approve it",
+          "Nothing — it's live within about a minute",
+          "A developer has to deploy the site",
+          "It goes out with the next newsletter",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Copy has no publish step and no deploy. That's the point of the desk — and it means nobody downstream catches your typo either.",
+      },
+      {
+        prompt:
+          "Someone's row says \"Unsubscribed or bounced\" and they've told you in person they want back on. What actually works?",
+        options: [
+          "Adding them again on the Mailing list tab",
+          "Tapping \"Put back\"",
+          "They re-subscribe themselves through the sign-up link",
+          "Nothing — they can never receive our email again",
+        ],
+        answerIndex: 2,
+        explanation:
+          "That state came from the person or from a bounce, and nothing in the app clears it. Their own sign-up is the only thing that can — which is why the link exists.",
+      },
+      {
+        prompt: "You take someone off the mailing list. What stops?",
+        options: [
+          "Only the newsletter",
+          "Only our text messages",
+          "Both email and texts",
+          "Everything, including their donation receipts",
+        ],
+        answerIndex: 2,
+        explanation:
+          "One action covers both channels — nobody who asks us to stop emailing means \"keep texting.\" Receipts and RSVP confirmations aren't marketing and keep arriving.",
+      },
+      {
+        prompt: "You \"lead with\" an event whose RSVP page isn't published yet. What shows on the homepage?",
+        options: [
+          "The event, which publishes it automatically",
+          "The event, linking to a page that 404s",
+          "Nothing for that event — the pin is skipped",
+          "An error on the links section",
+        ],
+        answerIndex: 2,
+        explanation:
+          "A pin can only reorder pages that are already publishable. Publish the RSVP page from its event first, then choose where it sits.",
+      },
+      {
+        prompt: "What's in the mailing-list CSV export?",
+        options: [
+          "Everyone in the database",
+          "Only people we can actually reach right now",
+          "Everyone, with an \"opted out\" column",
+          "Only people who signed up through the public form",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Exports carry reachable people only, so an opt-out or a spam complaint can't be carried across into a sending tool by accident.",
+      },
+    ],
+  },
 ];
 
 /** The Marketing & Media stream's theme entry. */
@@ -459,10 +645,11 @@ export const MARKETING_COURSES: Course[] = [
     audience: "role",
     description:
       "The PW look — the color, fonts, and self-serve templates that make " +
-      "anything on-brand. (The house caption voice is coming soon, once the " +
-      "Marketing Director authors current guidance.)",
+      "anything on-brand — plus the Marketing desk: editing the homepage, the " +
+      "link cards, and the mailing list. (The house caption voice is coming " +
+      "soon, once the Marketing Director authors current guidance.)",
     icon: "pen-tool",
-    moduleSlugs: ["mktg-the-look"],
+    moduleSlugs: ["mktg-the-look", "mktg-the-desk"],
   },
   {
     slug: "media-pipeline",

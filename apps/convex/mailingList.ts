@@ -76,6 +76,28 @@ import { listActiveChapters } from "./lib/chapters";
 const channelValidator = v.union(...MAILING_CHANNELS.map((c) => v.literal(c)));
 
 /**
+ * A shape check, not a deliverability check.
+ *
+ * `normalizeEmail` only lowercases and trims — it answers "what is the
+ * canonical form of this string", not "is this an address". Both write paths
+ * below need the second question asked, and for the same reason: an address
+ * with no `@` in it creates a person nobody can ever reach and nothing ever
+ * tells you about, whether it was typed by a stranger on the signup form or by
+ * a marketer at an event. Same regex `volunteers.submitSignup` uses, so the
+ * public forms agree on what they will accept.
+ */
+const EMAIL_SHAPE = /^[^@\s]+@[^@\s]+\.[^@\s]+$/;
+
+/** Normalize and shape-check in one step. Returns null for anything unusable —
+ *  including a string the caller clearly meant as an address but got wrong,
+ *  which the callers turn into a message rather than a silent drop. */
+function usableEmail(raw: string | undefined): string | null {
+  const normalized = normalizeEmail(raw);
+  if (!normalized || !EMAIL_SHAPE.test(normalized)) return null;
+  return normalized;
+}
+
+/**
  * The per-chapter people bound. Matches `mailchimpSync.ts`'s own scan limit —
  * the two surfaces read the same set and a different bound here would mean the
  * desk and the sync disagree about who is on the list.
@@ -343,10 +365,24 @@ async function addPersonToList(
   isNew: boolean;
   stillSuppressed: boolean;
 }> {
-  const email = normalizeEmail(args.email) ?? undefined;
+  const email = usableEmail(args.email) ?? undefined;
   const phone = args.phone ? (normalizePhone(args.phone) ?? undefined) : undefined;
   const name = args.name.trim();
 
+  // A typo'd address is its own message: dropping to "we need an identifier"
+  // when the caller plainly supplied one reads as a bug, not a correction.
+  if (args.email?.trim() && !email) {
+    throw new ConvexError({
+      code: "INVALID_EMAIL",
+      message: "That email address doesn't look right.",
+    });
+  }
+  if (args.phone?.trim() && !phone) {
+    throw new ConvexError({
+      code: "INVALID_PHONE",
+      message: "That phone number doesn't look right — include the area code.",
+    });
+  }
   if (!email && !phone) {
     throw new ConvexError({
       code: "NO_IDENTIFIER",
@@ -664,14 +700,10 @@ export const subscribe = mutation({
         message: "Please tell us your name.",
       });
     }
-    const email = normalizeEmail(args.email);
+    const email = usableEmail(args.email);
     const phone = args.phone?.trim() ? normalizePhone(args.phone) : null;
-    if (!email && !phone) {
-      throw new ConvexError({
-        code: "INVALID_SUBMISSION",
-        message: "Please give us an email address or a phone number.",
-      });
-    }
+    // The typo'd-field messages come FIRST: someone who mistyped their address
+    // should be told that, not told to supply one they can see they supplied.
     if (args.email?.trim() && !email) {
       throw new ConvexError({
         code: "INVALID_EMAIL",
@@ -682,6 +714,12 @@ export const subscribe = mutation({
       throw new ConvexError({
         code: "INVALID_PHONE",
         message: "That phone number doesn't look right — include the area code.",
+      });
+    }
+    if (!email && !phone) {
+      throw new ConvexError({
+        code: "INVALID_SUBMISSION",
+        message: "Please give us an email address or a phone number.",
       });
     }
 
