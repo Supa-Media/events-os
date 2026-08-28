@@ -410,9 +410,16 @@ export interface PublicSiteEventCard {
 export interface PublicSitePostCard {
   slug: string;
   title: string;
-  /** The post's own excerpt, already trimmed by the OS. Null when it has none;
-   *  the card then renders title-only rather than an invented summary. */
-  excerpt: string | null;
+  /**
+   * The post's own one-sentence description — the SAME sentence that is its
+   * `<meta name="description">` and its card on the blog index. Not a separate
+   * homepage summary and not a truncation of the body: a card that summarised
+   * the post differently from the post's own page would be two claims about one
+   * thing, and the one on the front page is the one nobody would notice going
+   * stale. Non-null, because `BlogPost.description` is required — a published
+   * post always has a sentence.
+   */
+  description: string;
   /** The post's path on this site — `/blog/<slug>`. */
   href: string;
   /** Hero image, when the post has one. */
