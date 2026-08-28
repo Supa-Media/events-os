@@ -815,6 +815,7 @@ describe("design covers — captured from the tool's own og:image", () => {
    * fails loudly rather than hitting the network.
    */
   const PAGE_URL = "https://www.canva.com/design/DAGtest123/view";
+  const OEMBED_URL = `https://www.canva.com/_oembed?url=${encodeURIComponent(PAGE_URL)}`;
   const IMG_URL = "https://media.example-cdn.com/covers/first.png";
   const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10]);
 
@@ -822,6 +823,10 @@ describe("design covers — captured from the tool's own og:image", () => {
     html?: string;
     imageStatus?: number;
     imageType?: string;
+    /** JSON body for the oEmbed endpoint; default is a 404, sending the
+     *  pipeline down the page-scrape path most tests exercise. */
+    oembed?: unknown;
+    pageStatus?: number;
   }) {
     const html =
       overrides?.html ??
@@ -831,9 +836,17 @@ describe("design covers — captured from the tool's own og:image", () => {
        </head><body></body></html>`;
     const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input);
+      if (url === OEMBED_URL) {
+        return overrides?.oembed !== undefined
+          ? new Response(JSON.stringify(overrides.oembed), {
+              status: 200,
+              headers: { "content-type": "application/json" },
+            })
+          : new Response("not found", { status: 404 });
+      }
       if (url === PAGE_URL) {
         return new Response(html, {
-          status: 200,
+          status: overrides?.pageStatus ?? 200,
           headers: { "content-type": "text/html" },
         });
       }
@@ -869,11 +882,15 @@ describe("design covers — captured from the tool's own og:image", () => {
       const row = await designRow(s, String(designId));
       expect(row?.thumbnailStorage).toBeDefined();
       expect(row?.thumbnailUrl).toBeTruthy();
-      // The first image, not the second — and the page exactly once.
-      expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual([
-        PAGE_URL,
-        IMG_URL,
-      ]);
+      // The oEmbed probe first (404 here), then the page once, then the FIRST
+      // image — never the second. Filtered to THIS design's URLs: other tests
+      // in this file upsert designs whose zero-delay background captures can
+      // fire while this stub is live (they did, on CI), and their stray
+      // fetches are not this test's subject.
+      const mine = fetchMock.mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => [OEMBED_URL, PAGE_URL, IMG_URL].includes(u));
+      expect(mine).toEqual([OEMBED_URL, PAGE_URL, IMG_URL]);
       // The bytes are OURS now: what the grid renders is our storage URL, not
       // the CDN address that will someday die.
       expect(row?.thumbnailUrl).not.toContain("example-cdn.com");
@@ -912,7 +929,12 @@ describe("design covers — captured from the tool's own og:image", () => {
       // exit is only an optimization (the atomic guard in `applyCover` is what
       // actually protects the cover, proven separately below), but an
       // optimization the org relies on to not hammer Canva deserves a pin.
-      expect(fetchMock.mock.calls).toHaveLength(0);
+      // Counted over THIS design's URLs only — see the ordering test above for
+      // why strays from other tests' background captures can appear here.
+      const fetched = fetchMock.mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => [OEMBED_URL, PAGE_URL, IMG_URL].includes(u));
+      expect(fetched).toHaveLength(0);
     } finally {
       vi.unstubAllGlobals();
       vi.useRealTimers();
@@ -1029,6 +1051,123 @@ describe("design covers — captured from the tool's own og:image", () => {
     } finally {
       vi.unstubAllGlobals();
       vi.useRealTimers();
+    }
+  });
+});
+
+describe("cover capture — the field failure and its fixes", () => {
+  /**
+   * The founder's first real press of Refresh, on the real PW Flyer, came back
+   * "couldn't be reached". Two causes, both encoded here so they cannot
+   * quietly return: the stored link was the /edit URL (which Canva never
+   * serves anonymously — only the embed rewrite was normalizing it), and the
+   * error flattened the HTTP status away, making the report undiagnosable.
+   * The pipeline also now asks the tool's own oEmbed endpoint before scraping,
+   * since that is the API that exists for third-party preview fetching.
+   */
+  const EDIT_URL = "https://www.canva.com/design/DAGtest123/edit";
+  const VIEW_URL = "https://www.canva.com/design/DAGtest123/view";
+  const VIEW_OEMBED = `https://www.canva.com/_oembed?url=${encodeURIComponent(VIEW_URL)}`;
+  const IMG = "https://media.example-cdn.com/covers/first.png";
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47]);
+
+  function stub(routes: Record<string, () => Response>) {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const handler = routes[String(input)];
+      if (!handler) throw new Error(`unexpected fetch in test: ${String(input)}`);
+      return handler();
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+  const png = () =>
+    new Response(PNG, { status: 200, headers: { "content-type": "image/png" } });
+
+  test("an /edit link is captured via its /view page — the founder's exact case", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupEditor();
+      const fetchMock = stub({
+        [VIEW_OEMBED]: () => new Response("nope", { status: 404 }),
+        [VIEW_URL]: () =>
+          new Response(
+            `<head><meta property="og:image" content="${IMG}"></head>`,
+            { status: 200, headers: { "content-type": "text/html" } },
+          ),
+        [IMG]: png,
+      });
+      const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "canva",
+        title: "PW Flyer",
+        url: EDIT_URL,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      const row = await run(s.t, (ctx) => ctx.db.get(designId));
+      expect(row?.thumbnailStorage).toBeDefined();
+      // The stored link stays the marketer's /edit URL — normalization is a
+      // FETCH-time concern, not a rewrite of what they saved.
+      expect(row?.url).toBe(EDIT_URL);
+      // And nothing ever requested the /edit page.
+      const urls = fetchMock.mock.calls.map((c) => String(c[0]));
+      expect(urls).not.toContain(EDIT_URL);
+      expect(urls).toContain(VIEW_URL);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  test("the oEmbed thumbnail wins without the page ever being scraped", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupEditor();
+      const fetchMock = stub({
+        [VIEW_OEMBED]: () =>
+          new Response(JSON.stringify({ type: "rich", thumbnail_url: IMG }), {
+            status: 200,
+            headers: { "content-type": "application/json" },
+          }),
+        [IMG]: png,
+      });
+      const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "canva",
+        title: "PW Flyer",
+        url: VIEW_URL,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect((await run(s.t, (ctx) => ctx.db.get(designId)))?.thumbnailStorage).toBeDefined();
+      // Filtered to this design's URLs (strays from other tests' background
+      // captures — see above): the oEmbed doc won, the page was NEVER scraped.
+      const mine = fetchMock.mock.calls
+        .map((c) => String(c[0]))
+        .filter((u) => [VIEW_OEMBED, VIEW_URL, IMG].includes(u));
+      expect(mine).toEqual([VIEW_OEMBED, IMG]);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  test("a 403 page tells the human it was REFUSED, with the status, not 'unreachable'", async () => {
+    const s = await setupEditor();
+    stub({
+      [VIEW_OEMBED]: () => new Response("nope", { status: 404 }),
+      [VIEW_URL]: () => new Response("forbidden", { status: 403 }),
+    });
+    try {
+      const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "canva",
+        title: "PW Flyer",
+        url: VIEW_URL,
+        thumbnailStorage: await storeBlob(s.t),
+      });
+      // The status travels into the message — the first field report was
+      // undiagnosable precisely because it didn't.
+      await expect(
+        s.as.action(api.marketingDesigns.refreshCover, { designId }),
+      ).rejects.toThrow(/refused.*403.*anyone with it can view/is);
+    } finally {
+      vi.unstubAllGlobals();
     }
   });
 });

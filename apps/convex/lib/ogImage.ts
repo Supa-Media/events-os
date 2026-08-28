@@ -115,3 +115,93 @@ export function extractOgImageUrl(html: string, pageUrl: string): string | null 
   }
   return null;
 }
+
+// ── Where to actually ASK for a cover ────────────────────────────────────────
+//
+// The first shipped capture fetched the STORED link verbatim, announcing
+// itself as "ChapterOS-LinkPreview/1.0" — and the founder's first real press
+// of Refresh came back "couldn't be reached". Two causes, both fixed here and
+// both invisible from a test suite that stubs fetch:
+//
+//   1. The stored link was the /edit URL. Canva never serves /edit to an
+//      anonymous request — the PANEL still worked because `designEmbedUrl`
+//      rewrites edit→view before embedding, and the capture pipeline was the
+//      one caller using the link raw.
+//   2. A custom bot UA from a datacenter IP is the exact signature WAFs
+//      reject. The page every unfurler successfully reads is served to
+//      requests that look like a page load, so the pipeline now sends a plain
+//      browser UA — and, before scraping at all, asks the tool's own oEmbed
+//      endpoint, the API that EXISTS for third-party preview fetching and sits
+//      outside the bot wall.
+//
+// LIVE-VERIFIED (2026-08-28, local machine): Canva's registered `/_oembed`
+// endpoint returned 200 JSON with `thumbnail_url`. The page request with the
+// exact headers below also returned 200 HTML with `og:image`; there was no
+// bot-wall. Both paths remain fail-soft because third-party behavior can change.
+
+/** What a page-load-shaped request sends. A named bot UA is honest but is
+ *  also exactly what bot walls refuse; the og tags are public content served
+ *  to every browser, and this fetches them the way a browser would. */
+export const PAGE_FETCH_HEADERS: Record<string, string> = {
+  "user-agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36",
+  accept: "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+  "accept-language": "en-US,en;q=0.9",
+};
+
+/**
+ * The URL whose PAGE carries the cover — normalized away from forms that are
+ * never served anonymously. Mirrors `designEmbedUrl`'s canva edit→view rewrite
+ * (`@events-os/shared`), which is why the viewer embed worked while the
+ * capture failed: the embed normalized and the capture did not. Everything
+ * that isn't a Canva design link passes through untouched.
+ */
+export function coverPageUrl(raw: string): string {
+  let u: URL;
+  try {
+    u = new URL(raw.trim());
+  } catch {
+    return raw;
+  }
+  const host = u.hostname.replace(/^www\./, "").toLowerCase();
+  if (
+    (host === "canva.com" || host.endsWith(".canva.com")) &&
+    u.pathname.startsWith("/design/")
+  ) {
+    const base = `https://www.canva.com${u.pathname.replace(/\/?$/, "")}`;
+    return base.replace(/\/(view|edit)$/, "/view");
+  }
+  return raw;
+}
+
+/**
+ * The tool's own oEmbed endpoint for this link, or null for hosts that have
+ * none. oEmbed is the mechanism BUILT for "some other server wants a preview
+ * of this URL" — WordPress, Notion and Slack all consume it — so it is served
+ * to plain server-side fetches that the design page itself may refuse.
+ */
+export function oembedEndpointFor(pageUrl: string): string | null {
+  let u: URL;
+  try {
+    u = new URL(pageUrl);
+  } catch {
+    return null;
+  }
+  const host = u.hostname.replace(/^www\./, "").toLowerCase();
+  const encoded = encodeURIComponent(u.toString());
+  if (host === "canva.com" || host.endsWith(".canva.com")) {
+    return `https://www.canva.com/_oembed?url=${encoded}`;
+  }
+  if (host === "figma.com" || host.endsWith(".figma.com")) {
+    return `https://www.figma.com/api/oembed?url=${encoded}`;
+  }
+  return null;
+}
+
+/** The image an oEmbed document offers, if it offers one we may fetch. */
+export function oembedThumbnailUrl(doc: unknown): string | null {
+  if (!doc || typeof doc !== "object") return null;
+  const url = (doc as { thumbnail_url?: unknown }).thumbnail_url;
+  if (typeof url !== "string") return null;
+  return isFetchableImageUrl(url) ? url : null;
+}

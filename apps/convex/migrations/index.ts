@@ -101,6 +101,7 @@ import { seedMarketingDesk } from "./0080_seed_marketing_desk";
 import { addPostsLinkRow } from "./0081_add_posts_link_row";
 import { correctInterFontNote } from "./0082_correct_inter_font_note";
 import { captureDesignCovers } from "./0083_capture_design_covers";
+import { recaptureDesignCovers } from "./0084_recapture_design_covers";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -527,4 +528,9 @@ export const MIGRATIONS: Migration[] = [
   // save path uses, onlyIfBare, so a hand-picked cover is never touched and a
   // re-run is harmless. See the file.
   captureDesignCovers,
+  // 0084: 0083's pass ran with a fetch Canva's bot wall refuses and an
+  // un-normalized /edit URL, so it failed on the very row it existed for.
+  // Same body, same onlyIfBare safety, now that the pipeline can reach the
+  // page. See the file.
+  recaptureDesignCovers,
 ];
