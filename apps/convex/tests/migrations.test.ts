@@ -365,6 +365,7 @@ const REGISTRY_NAMES = [
   "0081_add_posts_link_row",
   "0082_correct_inter_font_note",
   "0083_capture_design_covers",
+  "0084_recapture_design_covers",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

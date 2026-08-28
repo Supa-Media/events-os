@@ -75,7 +75,14 @@ import {
   type DesignLibrary,
 } from "@events-os/shared";
 import { requireDesignsEdit, resolveMarketingAccess } from "./lib/marketingAccess";
-import { extractOgImageUrl, isFetchableImageUrl } from "./lib/ogImage";
+import {
+  PAGE_FETCH_HEADERS,
+  coverPageUrl,
+  extractOgImageUrl,
+  isFetchableImageUrl,
+  oembedEndpointFor,
+  oembedThumbnailUrl,
+} from "./lib/ogImage";
 import { requireUserId } from "./lib/context";
 import {
   BRAND_COLOR_SEED,
@@ -1271,22 +1278,58 @@ export const captureCover = internalAction({
     if (onlyIfBare && target.hasThumbnail) return { applied: false, reason: "kept" };
     if (!target.url) return { applied: false, reason: "no-link" };
 
-    let pageRes: Response;
-    try {
-      pageRes = await fetch(target.url, {
-        redirect: "follow",
-        headers: {
-          // Unfurl-shaped, because the og tags are what unfurlers are served.
-          "user-agent": "Mozilla/5.0 (compatible; ChapterOS-LinkPreview/1.0)",
-          accept: "text/html,application/xhtml+xml",
-        },
-      });
-    } catch {
-      return { applied: false, reason: "page-unreachable" };
-    }
-    if (!pageRes.ok) return { applied: false, reason: "page-unreachable" };
+    // Normalize away forms never served anonymously (Canva /edit → /view).
+    // The founder's first real Refresh failed on exactly this: the stored link
+    // was the /edit URL, which only the embed rewrite was normalizing.
+    const pageUrl = coverPageUrl(target.url);
 
-    const imageUrl = extractOgImageUrl(await pageRes.text(), target.url);
+    // FIRST ask the tool's own oEmbed endpoint — the API that exists for
+    // third-party preview fetching, served to plain server-side requests that
+    // the design page's bot wall may refuse. Every failure here falls through
+    // to the page scrape, so a wrong endpoint costs one request, never the
+    // cover.
+    let imageUrl: string | null = null;
+    const oembedUrl = oembedEndpointFor(pageUrl);
+    if (oembedUrl) {
+      try {
+        const oembedRes = await fetch(oembedUrl, {
+          redirect: "follow",
+          headers: { ...PAGE_FETCH_HEADERS, accept: "application/json" },
+        });
+        if (oembedRes.ok) {
+          imageUrl = oembedThumbnailUrl(await oembedRes.json());
+        }
+      } catch {
+        // Fall through to the page scrape.
+      }
+    }
+
+    if (!imageUrl) {
+      let pageRes: Response;
+      try {
+        pageRes = await fetch(pageUrl, {
+          redirect: "follow",
+          headers: PAGE_FETCH_HEADERS,
+        });
+      } catch {
+        return { applied: false, reason: "page-unreachable" };
+      }
+      if (!pageRes.ok) {
+        // The status IS the diagnosis — 403 is a bot wall or a private link,
+        // 404 a dead one — so it travels in the reason instead of being
+        // flattened to "unreachable", which is what made the first field
+        // failure report undiagnosable.
+        return {
+          applied: false,
+          reason:
+            pageRes.status === 401 || pageRes.status === 403
+              ? `page-blocked:${pageRes.status}`
+              : `page-unreachable:${pageRes.status}`,
+        };
+      }
+      imageUrl = extractOgImageUrl(await pageRes.text(), pageUrl);
+    }
+
     if (!imageUrl || !isFetchableImageUrl(imageUrl)) {
       return { applied: false, reason: "no-preview" };
     }
@@ -1345,14 +1388,18 @@ export const refreshCover = action({
       { designId, onlyIfBare: false },
     );
     if (result.applied) return null;
+    const reason = result.reason ?? "";
+    const status = reason.includes(":") ? ` (HTTP ${reason.split(":")[1]})` : "";
     const message =
-      result.reason === "no-link"
+      reason === "no-link"
         ? "This design has no link to capture a cover from — upload a picture instead."
-        : result.reason === "gone"
+        : reason === "gone"
           ? "That design is no longer in the library."
-          : result.reason === "page-unreachable"
-            ? "The design's page couldn't be reached. Check the link still works."
-            : "The page didn't offer a preview image. For Canva, make sure the link is set so anyone with it can view; or upload a cover by hand.";
+          : reason.startsWith("page-blocked")
+            ? `The design tool refused to show the page to the app${status}. Make sure the link is a share link set so anyone with it can view — an /edit link only works for people signed in to Canva.`
+            : reason.startsWith("page-unreachable")
+              ? `The design's page couldn't be reached${status}. Check the link still works.`
+              : "The page didn't offer a preview image. For Canva, make sure the link is set so anyone with it can view; or upload a cover by hand.";
     throw new ConvexError({ code: "NO_COVER", message });
   },
 });
