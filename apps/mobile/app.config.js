@@ -70,6 +70,12 @@ module.exports = ({ config }) => ({
       },
     ],
   },
+  web: {
+    // The PW mark (apps/landing/public/images/pw-mark.png), trimmed and
+    // squared — `expo export` turns it into the favicon.ico the web app
+    // serves at publicworship.life/os.
+    favicon: "./assets/favicon.png",
+  },
   plugins: [
     "expo-router",
     [
