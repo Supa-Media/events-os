@@ -93,6 +93,16 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
     contractorPaymentId: id,
   });
   const options = useQuery(api.reimbursements.newRequestOptions, {});
+  // The "For" options at the RECORD's own scope — central's budgets for a
+  // central agreement, the chapter's for a chapter one. `newRequestOptions`
+  // above lists the CALLER's home chapter, and offering that list here meant a
+  // reviewer at a central agreement was shown options every save then refused
+  // with "not found in your chapter" (the same bug the composer had, fixed the
+  // same way — `new.tsx` uses this exact query).
+  const scopedFor = useQuery(
+    api.contractorPayments.codingOptionsForScope,
+    payment?.scope ? { scope: payment.scope } : "skip",
+  );
   const categories = useQuery(api.finances.myChargeCategories, {});
 
   const send = useMutation(api.contractorPayments.send);
@@ -401,7 +411,7 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
           {payment.canApprove && needsReview(payment.status) ? (
             <ReviewPanel
               payment={payment}
-              forOptions={options?.forOptions}
+              forOptions={scopedFor ?? options?.forOptions}
             />
           ) : null}
 
@@ -455,7 +465,7 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
                   setDraft((d) => (d ? { ...d, ...p } : d));
                   setEditProblem(null);
                 }}
-                forOptions={options?.forOptions}
+                forOptions={scopedFor ?? options?.forOptions}
                 categories={categories}
                 mode="edit"
                 accepted={payment.acceptedAt != null}
@@ -503,7 +513,7 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
               </View>
             </View>
           ) : (
-            <TermsCard payment={payment} forOptions={options?.forOptions} />
+            <TermsCard payment={payment} forOptions={scopedFor ?? options?.forOptions} />
           )}
 
           {/* ── How it pays out, and how much has ────────────────────────── */}
