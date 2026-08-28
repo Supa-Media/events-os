@@ -24,7 +24,7 @@
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
-import { useMutation } from "convex/react";
+import { useAction, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
   DESIGN_KINDS,
@@ -108,6 +108,8 @@ export function DesignInspector({
   const deleteDesign = useMutation(api.marketingDesigns.deleteDesign);
   const reorderDesigns = useMutation(api.marketingDesigns.reorderDesigns);
   const moveDesignToFolder = useMutation(api.marketingDesigns.moveDesignToFolder);
+  const refreshCover = useAction(api.marketingDesigns.refreshCover);
+  const [refreshingCover, setRefreshingCover] = useState(false);
 
   const [draft, setDraft] = useState(
     design
@@ -206,6 +208,25 @@ export function DesignInspector({
                   disabled={!usable}
                   onPress={save}
                 />
+                {design?.url && design.kind !== "image" ? (
+                  // Re-capture the tile's picture from the design's own page —
+                  // for when the art changed in Canva and the grid still shows
+                  // the old cover. The automatic capture only fills a blank;
+                  // this button is the explicit overwrite.
+                  <Button
+                    title={refreshingCover ? "Refreshing…" : "Refresh cover"}
+                    size="sm"
+                    variant="ghost"
+                    disabled={refreshingCover}
+                    onPress={() => {
+                      setRefreshingCover(true);
+                      void run(
+                        () => refreshCover({ designId: asId(design.id) }),
+                        { errorTitle: "Couldn't refresh the cover" },
+                      ).finally(() => setRefreshingCover(false));
+                    }}
+                  />
+                ) : null}
                 {design ? (
                   <Button
                     title="Remove"

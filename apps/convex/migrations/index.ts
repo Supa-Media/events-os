@@ -100,6 +100,7 @@ import { stampInterestSourceCategory } from "./0078_stamp_interest_source_catego
 import { seedMarketingDesk } from "./0080_seed_marketing_desk";
 import { addPostsLinkRow } from "./0081_add_posts_link_row";
 import { correctInterFontNote } from "./0082_correct_inter_font_note";
+import { captureDesignCovers } from "./0083_capture_design_covers";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -521,4 +522,9 @@ export const MIGRATIONS: Migration[] = [
   // seeded sentence, so a designer's own edit is never overwritten. See the
   // file.
   correctInterFontNote,
+  // 0083: cover capture runs on SAVE, so designs already in production keep
+  // their typographic placeholder until edited. Schedules the same capture the
+  // save path uses, onlyIfBare, so a hand-picked cover is never touched and a
+  // re-run is harmless. See the file.
+  captureDesignCovers,
 ];
