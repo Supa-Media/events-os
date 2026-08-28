@@ -1166,9 +1166,18 @@ export const contractorPayments = defineTable({
   // convention as reimbursement line dates).
   serviceDate: v.optional(v.number()),
   agreedAmountCents: v.number(),
-  // Free-text terms beyond the one-line description — the "this is for this
-  // service on this date for this thing" long form. Internal; never published.
+  // The finance team's own file note. INTERNAL: never shown to the contractor
+  // and never published — the composer promises exactly that, and the promise
+  // held everywhere except the contract page until 2026-08-28, when this field
+  // was split in two (see `additionalTerms` below) so it could be kept.
+  // On the self-serve path it carries the requester's note TO the treasurer.
   agreementNotes: v.optional(v.string()),
+  // Extra agreed terms SHOWN TO THE CONTRACTOR on their page, as part of what
+  // they sign — deliverables, IP language, anything that doesn't belong in the
+  // one-line public description. An AGREED term: editing it after acceptance
+  // voids the signature exactly as editing the amount does (`updateTerms`).
+  // Never published to the public ledger.
+  additionalTerms: v.optional(v.string()),
 
   // Bumped every time a term the contractor agreed to (amount, description,
   // service date) is edited after they accepted. Bumping CLEARS the acceptance
@@ -1217,6 +1226,16 @@ export const contractorPayments = defineTable({
   // payment can still say a form existed and when it went, rather than reading
   // as though one was never collected.
   taxDocPurgedAt: v.optional(v.number()),
+
+  // ── Invoice (optional — the contractor's own bill) ────────────────────────
+  // Attached by the contractor from their public page, alongside their tax
+  // form. INTERNAL: visible to the finance team on the payment, never
+  // published. Unlike the tax document it carries no tax ID, so the storage id
+  // may live on this row and the file's life simply follows the payment's —
+  // no retention sweep of its own. Validated (type/size) by `attachInvoice`.
+  invoiceStorageId: v.optional(v.id("_storage")),
+  invoiceFileName: v.optional(v.string()),
+  invoiceUploadedAt: v.optional(v.number()),
 
   // ── Payout destination ───────────────────────────────────────────────────
   // Increase's reusable reference for the payee's bank account. The RAW

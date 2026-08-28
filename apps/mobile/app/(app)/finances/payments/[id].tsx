@@ -99,6 +99,7 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
   const updateTerms = useMutation(api.contractorPayments.updateTerms);
   const cancel = useMutation(api.contractorPayments.cancel);
   const viewTaxDocument = useMutation(api.contractorPayments.viewTaxDocument);
+  const viewInvoice = useMutation(api.contractorPayments.viewInvoice);
   const markPaidManually = useMutation(
     api.contractorPayouts.markPaidManually,
   );
@@ -183,6 +184,9 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
             ? { serviceDate: draft.serviceDate }
             : { clearServiceDate: true }),
           agreedAmountCents: cents,
+          // An empty string is an explicit clear server-side, for both — but
+          // only `additionalTerms` is an agreed term that can void a signature.
+          additionalTerms: draft.additionalTerms.trim(),
           agreementNotes: draft.agreementNotes.trim(),
           // An absent key means "unchanged", so saying "none" has to be said
           // explicitly — that's what `clearAttribution` is for.
@@ -212,12 +216,14 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
       draft != null &&
       (draft.serviceDescription.trim() !== p.serviceDescription ||
         (draftAmountCents(draft) ?? -1) !== p.agreedAmountCents ||
-        (draft.serviceDate ?? undefined) !== p.serviceDate);
+        (draft.serviceDate ?? undefined) !== p.serviceDate ||
+        (draft.additionalTerms.trim() || undefined) !==
+          (p.additionalTerms ?? undefined));
     if (p.acceptedAt != null && termsMoved) {
       confirmAction({
         title: "This voids their acceptance",
         message:
-          "They've already signed these terms. Saving a different amount, service or date cancels that signature and asks them to sign again — the payment goes back to waiting on them.",
+          "They've already signed these terms. Saving a different amount, service, date, or additional terms cancels that signature and asks them to sign again — the payment goes back to waiting on them.",
         confirmLabel: "Save and re-ask",
         destructive: true,
         onConfirm: () => void saveTerms(p),
@@ -238,6 +244,16 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
     setBusy("taxdoc");
     void run(() => viewTaxDocument({ contractorPaymentId: p._id }), {
       errorTitle: "Couldn't open the document",
+    }).then((res) => {
+      setBusy(null);
+      if (res?.url) void Linking.openURL(res.url);
+    });
+  }
+
+  function handleOpenInvoice(p: ContractorPaymentDetail) {
+    setBusy("invoice");
+    void run(() => viewInvoice({ contractorPaymentId: p._id }), {
+      errorTitle: "Couldn't open the invoice",
     }).then((res) => {
       setBusy(null);
       if (res?.url) void Linking.openURL(res.url);
@@ -511,6 +527,35 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
             opening={busy === "taxdoc"}
           />
 
+          {/* ── Their invoice, when they attached one ────────────────────── */}
+          {payment.invoice ? (
+            <>
+              <SectionHeader title="Invoice" />
+              <View className="mb-3 rounded-lg border border-border bg-raised px-4 py-3">
+                <View className="flex-row flex-wrap items-center gap-2">
+                  <Icon name="file-text" size={14} color={colors.muted} />
+                  <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
+                    {payment.invoice.fileName ?? "Invoice"}
+                  </Text>
+                </View>
+                {payment.invoice.uploadedAt != null ? (
+                  <Text className="mt-0.5 text-xs text-muted">
+                    Attached {formatDate(payment.invoice.uploadedAt)}
+                  </Text>
+                ) : null}
+                <Button
+                  title="Open the invoice"
+                  icon="external-link"
+                  variant="secondary"
+                  size="sm"
+                  className="mt-2.5 self-start"
+                  loading={busy === "invoice"}
+                  onPress={() => handleOpenInvoice(payment)}
+                />
+              </View>
+            </>
+          ) : null}
+
           {/* ── The money rail ───────────────────────────────────────────── */}
           <SectionHeader title="Payment" />
           <View className="rounded-lg border border-border bg-raised px-4 py-3">
@@ -674,6 +719,12 @@ function TermsCard({
           "None on file — you'll need to send the link yourself"
         }
       />
+      {payment.additionalTerms ? (
+        <DetailRow
+          label="Additional terms"
+          value={payment.additionalTerms}
+        />
+      ) : null}
       {payment.agreementNotes ? (
         <DetailRow
           label="Notes (private)"

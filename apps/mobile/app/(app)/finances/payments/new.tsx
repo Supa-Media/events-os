@@ -210,6 +210,9 @@ function NewAgreementScreen() {
             : {}),
           agreedAmountCents: cents,
           ...(scope ? { scope } : {}),
+          ...(draft.additionalTerms.trim()
+            ? { additionalTerms: draft.additionalTerms.trim() }
+            : {}),
           ...(draft.agreementNotes.trim()
             ? { agreementNotes: draft.agreementNotes.trim() }
             : {}),

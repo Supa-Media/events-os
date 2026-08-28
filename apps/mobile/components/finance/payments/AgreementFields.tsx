@@ -68,6 +68,9 @@ export type AgreementDraft = {
   /** `null` = not set. Optional on the backend too. */
   serviceDate: number | null;
   amountText: string;
+  /** Extra AGREED terms — shown to the contractor and covered by their
+   *  signature, unlike `agreementNotes` below, which never leaves finance. */
+  additionalTerms: string;
   agreementNotes: string;
   /** `""` | `event:<id>` | `project:<id>` | `budget:<id>`. */
   forValue: string;
@@ -83,6 +86,7 @@ export function emptyDraft(): AgreementDraft {
     serviceDescription: "",
     serviceDate: null,
     amountText: "",
+    additionalTerms: "",
     agreementNotes: "",
     forValue: "",
     categoryId: "",
@@ -98,6 +102,7 @@ export function draftFromPayment(payment: {
   serviceDescription: string;
   serviceDate?: number;
   agreedAmountCents: number;
+  additionalTerms?: string;
   agreementNotes?: string;
   eventId?: Id<"events">;
   projectId?: Id<"projects">;
@@ -111,6 +116,7 @@ export function draftFromPayment(payment: {
     serviceDescription: payment.serviceDescription,
     serviceDate: payment.serviceDate ?? null,
     amountText: centsToAmountText(payment.agreedAmountCents),
+    additionalTerms: payment.additionalTerms ?? "",
     agreementNotes: payment.agreementNotes ?? "",
     forValue: payment.eventId
       ? `event:${payment.eventId}`
@@ -311,13 +317,24 @@ export function AgreementFields({
         </View>
       </View>
 
+      <TextField
+        label="Additional terms (optional)"
+        hint="Shown to the contractor on their page and covered by their signature — deliverables, rights, anything that doesn't fit the one-line description. Never published on the ledger."
+        value={value.additionalTerms}
+        onChangeText={(v) => onChange({ additionalTerms: v })}
+        placeholder="e.g. Master owned by the org; writers keep 100% of writer shares…"
+        multiline
+        numberOfLines={3}
+      />
+
       {accepted ? (
         <View className="mb-3 flex-row items-start gap-2 rounded-md bg-warn-bg px-3 py-2.5">
           <Icon name="alert-triangle" size={14} color={colors.warn} />
           <Text className="flex-1 text-xs text-warn">
             They&apos;ve already accepted these terms. Changing the work, the
-            amount, or the service date will VOID their acceptance and ask them
-            to sign again. Changing the coding or your private notes won&apos;t.
+            amount, the service date, or the additional terms will VOID their
+            acceptance and ask them to sign again. Changing the coding or your
+            private notes won&apos;t.
           </Text>
         </View>
       ) : null}

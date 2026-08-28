@@ -133,7 +133,13 @@ export type ContractPublicView = {
     status: string;
     paidAt?: number | null;
   }>;
-  agreementNotes?: string | null;
+  /** Extra AGREED terms the org wrote for the contractor to read and sign.
+   *  NOT `agreementNotes` — that field is the finance team's private file
+   *  note and never reaches this page. */
+  additionalTerms?: string | null;
+  /** The invoice they attached, when they did — filename only, echoed back on
+   *  their own tokened page so they can see we hold it. */
+  invoiceFileName?: string | null;
   agreementTermsVersion: number;
   acceptedAt?: number | null;
   acceptedCurrentTerms: boolean;
@@ -331,7 +337,10 @@ input[type=file].forminput{padding:9px 10px;font-size:13px;}
 .tl .tlc{padding-bottom:18px;}
 .tl .tlt{font-weight:600;font-size:14px;}
 .tl .tls{font-size:13px;line-height:19px;color:var(--muted);}
-.hide{display:none;}
+/* !important because "hidden" must beat any class that sets its own display:
+   .chip (inline-flex) is declared later with equal specificity, and without
+   this an empty upload chip renders as a bare green strip on page load. */
+.hide{display:none!important;}
 .footnote{text-align:center;color:var(--faint);font-size:12px;line-height:18px;margin-top:24px;}
 
 /* ── contract-only ────────────────────────────────────────────────────────── */
@@ -834,6 +843,26 @@ function bankSection(view: ContractPublicView): string {
   </section>`;
 }
 
+/**
+ * THE INVOICE, optional on both submitting surfaces. The contractor's own
+ * bill, riding the same upload path as the tax form and validated the same way
+ * server-side (`attachInvoice`). Deliberately one optional input and nothing
+ * more: nothing requires an invoice — the agreement is the substantiation —
+ * so the section says what attaching one does and stays out of the way.
+ */
+function invoiceSection(): string {
+  return `<section class="card">
+  <span class="fl">Your invoice (optional)</span>
+  <p class="xs muted mt4">If you bill from an invoice, attach it and it stays with this payment for the finance team. It is never published.</p>
+  <div class="field mt12">
+    <label class="fl" for="f_invfile">Attach your invoice</label>
+    <input id="f_invfile" class="forminput" type="file" accept="application/pdf,image/*" aria-describedby="invfile-h">
+    <div class="chip hide" id="f_invchip"><svg ${ICON_ATTRS}><use href="#i-check"/></svg><span></span></div>
+    <span class="xs faint" id="invfile-h">A PDF or a photo, under 20MB.</span>
+  </div>
+</section>`;
+}
+
 /** The signature. A typed name, recorded against the terms version that was on
  *  screen — see `completeAgreement`'s `acceptedTermsVersion`. */
 function signatureFields(agreeLabel: string): string {
@@ -934,6 +963,8 @@ ${pubbar(chapter.name)}
       <span class="fl">Where the money goes</span>
       <div class="mt12">${bankFields()}</div>
     </section>
+
+    ${invoiceSection()}
 
     <section class="card">
       <span class="fl">Sign and send</span>
@@ -1060,8 +1091,8 @@ ${pubbar(view.chapterName)}
         }</span></div>
         <div class="sr"><span class="k">Paid by</span><span class="v">Direct deposit, after a treasurer approves</span></div>
         ${
-          view.agreementNotes
-            ? `<div class="sr"><span class="k">Notes</span><span class="v terms-note">${esc(view.agreementNotes)}</span></div>`
+          view.additionalTerms
+            ? `<div class="sr"><span class="k">Additional terms</span><span class="v terms-note">${esc(view.additionalTerms)}</span></div>`
             : ""
         }
       </div>
@@ -1080,6 +1111,8 @@ ${pubbar(view.chapterName)}
     ${taxSection(view)}
 
     ${bankSection(view)}
+
+    ${invoiceSection()}
 
     <section class="card">
       <span class="fl">Accept and sign</span>
@@ -1295,6 +1328,11 @@ ${pubbar(view.chapterName)}
       <span class="fl">What we have</span>
       <div class="summ mt12">
         <div class="sr"><span class="k">The work</span><span class="v terms-note">${esc(view.serviceDescription)}</span></div>
+        ${
+          view.additionalTerms
+            ? `<div class="sr"><span class="k">Additional terms</span><span class="v terms-note">${esc(view.additionalTerms)}</span></div>`
+            : ""
+        }
         <div class="sr"><span class="k">Amount</span><span class="v money">${esc(money(settledCents(view)))}</span>${
           view.approvedCents != null && view.approvedCents !== view.agreedAmountCents
             ? `<span class="note">Approved for less than the agreed ${esc(money(view.agreedAmountCents))} — the note below says why.</span>`
@@ -1306,6 +1344,11 @@ ${pubbar(view.chapterName)}
         <div class="sr"><span class="k">Tax form</span><span class="v">${
           view.hasTaxDocument ? "On file" : "Not on file"
         }</span></div>
+        ${
+          view.invoiceFileName
+            ? `<div class="sr"><span class="k">Your invoice</span><span class="v">${esc(view.invoiceFileName)}</span></div>`
+            : ""
+        }
         <div class="sr"><span class="k">Paying to</span><span class="v">${
           view.hasBankDestination
             ? view.bankAccountLast4
@@ -1533,6 +1576,19 @@ taxFile.addEventListener('change',function(){
   taxChip.classList.remove('hide');
 });
 
+/* The optional invoice — same chip idiom as the tax form. Guarded because the
+   input is only as old as the section that renders it. */
+var invFile=$('f_invfile');
+var invChip=$('f_invchip');
+if(invFile){
+  invFile.addEventListener('change',function(){
+    var f=invFile.files&&invFile.files[0];
+    if(!f){invChip.classList.add('hide');return;}
+    invChip.querySelector('span').textContent=f.name;
+    invChip.classList.remove('hide');
+  });
+}
+
 /* ── the returning contractor's two confirmations ────────────────────────
    Which option is selected, or '' when the person hasn't answered yet. That
    empty string is a REAL state that submit() refuses by name — neither radio
@@ -1658,9 +1714,14 @@ function submit(){
   var was=label.textContent;
   label.textContent='Sending…';
 
-  /* Reusing the form on file means there is no file and nothing to upload. */
+  /* Reusing the form on file means there is no file and nothing to upload.
+     The invoice is optional and uploads alongside — two PUTs, one submit. */
+  var inv=invFile&&invFile.files&&invFile.files[0];
   var uploaded=reuseTax?Promise.resolve(null):uploadFile(file);
-  uploaded.then(function(storageId){
+  var invUploaded=inv?uploadFile(inv):Promise.resolve(null);
+  Promise.all([uploaded,invUploaded]).then(function(ids){
+    var storageId=ids[0];
+    var invoiceId=ids[1];
     var common={
       payeeName:name,
       payeeEmail:email,
@@ -1677,6 +1738,10 @@ function submit(){
       common.taxDocKind=taxKind();
       common.taxDocFileName=file.name;
       if(signedMs!=null)common.taxDocSignedAt=signedMs;
+    }
+    if(invoiceId){
+      common.invoiceStorageId=invoiceId;
+      common.invoiceFileName=inv.name;
     }
     if(reuseBank){
       common.reuseBankDetails=true;
