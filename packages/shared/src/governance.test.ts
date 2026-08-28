@@ -45,7 +45,10 @@ import {
   RECEIPT_GRACE_DAYS,
   REIMBURSEMENT_STATUSES,
 } from "./finance";
-import { CONTRACTOR_PAYMENT_STATUSES } from "./contractorPayments";
+import {
+  CONTRACTOR_PAYMENT_STATUSES,
+  CONTRACTOR_INSTALLMENT_STATUSES,
+} from "./contractorPayments";
 import { SPONSOR_PORTAL_STATES } from "./sponsorPortal";
 
 // ── Loading ──────────────────────────────────────────────────────────────────
@@ -350,6 +353,12 @@ describe("operating manual: money lifecycles match their status tuples", () => {
   const cases: [string, readonly string[]][] = [
     ["lifecycle:reimbursement", REIMBURSEMENT_STATUSES],
     ["lifecycle:contractor", CONTRACTOR_PAYMENT_STATUSES],
+    // A scheduled agreement pays in tranches, and each tranche runs its OWN
+    // short machine. Pinned separately because the two vocabularies overlap
+    // (`paying`, `paid`, `canceled` mean the same thing at both levels but are
+    // reached differently), and prose that quietly merged them would describe a
+    // product where releasing a deposit ends the engagement.
+    ["lifecycle:contractor-installment", CONTRACTOR_INSTALLMENT_STATUSES],
     // The partner portal's states are DERIVED, not stored (see
     // `sponsorPortal.ts#sponsorPortalState`) — which makes pinning them here
     // more important, not less: there is no table column to grep, so the

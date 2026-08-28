@@ -34,6 +34,7 @@ import type * as cards from "../cards.js";
 import type * as checkIns from "../checkIns.js";
 import type * as columns from "../columns.js";
 import type * as commsSend from "../commsSend.js";
+import type * as contractorInstallments from "../contractorInstallments.js";
 import type * as contractorPayments from "../contractorPayments.js";
 import type * as contractorPayouts from "../contractorPayouts.js";
 import type * as contractorProfiles from "../contractorProfiles.js";
@@ -500,6 +501,7 @@ declare const fullApi: ApiFromModules<{
   checkIns: typeof checkIns;
   columns: typeof columns;
   commsSend: typeof commsSend;
+  contractorInstallments: typeof contractorInstallments;
   contractorPayments: typeof contractorPayments;
   contractorPayouts: typeof contractorPayouts;
   contractorProfiles: typeof contractorProfiles;

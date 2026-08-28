@@ -256,6 +256,72 @@ export function buildPaidNotice(args: {
 }
 
 /**
+ * "One of your scheduled payments has been sent."
+ *
+ * THE DIFFERENCE FROM `buildPaidNotice` IS THE WHOLE REASON THIS EXISTS: that
+ * one says the money is on its way and stops, which for a contractor owed three
+ * payments reads as "the job is settled". This one names WHICH payment went and
+ * states what is still scheduled, so nobody concludes from a deposit landing
+ * that the balance was forgotten — or, worse, that it was already paid.
+ *
+ * Says what remains, never WHEN it will arrive. The remaining tranches are
+ * gated on dates and milestones that have not happened yet, and a date this
+ * email cannot keep is worse than no date — the same rule
+ * `buildApprovedNotice` follows for the same reason.
+ */
+export function buildInstallmentPaidNotice(args: {
+  payeeName: string;
+  chapterName: string;
+  reference: string;
+  installmentLabel: string;
+  installmentSeq: number;
+  installmentCount: number;
+  amountCents: number;
+  remainingCents: number;
+  bankAccountLast4?: string;
+  paidAt: number;
+}): { subject: string; html: string } {
+  const which = `payment ${args.installmentSeq} of ${args.installmentCount}`;
+  return {
+    subject: `Sent: ${usd(args.amountCents)} from ${args.chapterName} (${which})`,
+    html: `
+      ${emailHeading("A scheduled payment is on its way", { size: 26 })}
+      ${emailParagraph(
+        `Hi ${escapeHtml(args.payeeName)} — ${escapeHtml(args.chapterName)} sent ${usd(args.amountCents)}${
+          args.bankAccountLast4
+            ? ` to the account ending ${escapeHtml(args.bankAccountLast4)}`
+            : ""
+        } on ${shortDate(args.paidAt)}. Bank transfers usually arrive within a couple of business days.`,
+        { margin: "0 0 16px" },
+      )}
+      ${emailPanel(`
+        ${emailParagraph(`<strong>This payment:</strong> ${escapeHtml(args.installmentLabel)} (${which})`, { margin: "0 0 8px" })}
+        ${emailParagraph(`<strong>Amount sent:</strong> ${usd(args.amountCents)}`, { margin: "0 0 8px" })}
+        ${emailParagraph(
+          args.remainingCents > 0
+            ? `<strong>Still scheduled:</strong> ${usd(args.remainingCents)}`
+            : `<strong>Still scheduled:</strong> nothing — this agreement is settled`,
+          { margin: "0" },
+        )}
+      `)}
+      ${emailParagraph(
+        args.remainingCents > 0
+          ? "The rest of your agreement is scheduled as you agreed it. We'll email you each time one is sent."
+          : "That was the last payment on this agreement — it's now settled in full.",
+        { margin: "16px 0 16px" },
+      )}
+      ${emailParagraph(
+        "If this payment hasn't arrived within five business days, reply to this email and we'll look into it.",
+        { margin: "0 0 16px" },
+      )}
+      ${emailParagraph(`Reference: ${escapeHtml(args.reference)}`, {
+        margin: "16px 0 0",
+      })}
+    `,
+  };
+}
+
+/**
  * The treasurer's task email — "here is a thing waiting on you."
  *
  * The founder asked for this by name: emailing treasurers about what they need

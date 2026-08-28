@@ -1847,7 +1847,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-paying-a-contractor",
     title: "Paying a contractor",
     subtitle: "Not a reimbursement — an agreement, and income",
-    minutes: 5,
+    minutes: 6,
     blocks: [
       {
         kind: "p",
@@ -1891,6 +1891,15 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Changing the terms unsigns the agreement",
         text: "The **amount**, the **description of the work**, and the **service date** are the agreed terms — the things the contractor actually said yes to. Edit any of them after they've accepted and their acceptance is VOIDED: the agreement goes back to *Awaiting contractor*, they're emailed to review and accept again, and nothing is payable until they do.\n\nThat isn't friction for its own sake. The alternative is holding somebody's signature against terms they never saw, which is the single worst thing this feature could do, so it isn't reachable at all — not by a form, not by an admin.\n\nChanging only the CODING — which budget, category or fund pays for it — voids nothing. The contractor never agreed to which line of our books they come out of, and re-asking for a signature because a bookkeeper moved a category would just teach people to click through acceptance without reading it.",
+      },
+      {
+        kind: "rule",
+        title: "An agreement can pay in parts",
+        text: "Plenty of real deals aren't one payment: half up front and half on delivery, a deposit and two dated instalments, a payment per milestone. So an agreement can carry a **payment schedule** — and it is one agreement, one signature, one tax form, one approval, with the agreed total split into payments that go out separately.\n\nThree things to hold on to.\n\n**The payments have to add up to the agreed amount, exactly.** Not at most — exactly. A schedule that adds up to less looks finished on screen and quietly short-changes somebody who signed for the full number.\n\n**A schedule is a TERM, like the amount.** The contractor sees it on their page before they sign, and adding or re-cutting one after they've accepted voids that acceptance and asks them again — the same rule as changing the amount, for the same reason.\n\n**Nothing pays itself.** A date arriving makes a payment show as *due*; it never sends it. Every payment is released by a person, and the app records who released it and when. A milestone payment doesn't even mark itself due — no clock can know whether the record was delivered.",
+      },
+      {
+        kind: "tip",
+        text: "**Look at the schedule before you ask \"have we paid them?\"** The agreement's page shows what's gone out, what's left, and which payment is which — so \"we're halfway\" is something you read rather than something you work out. If a payment is never going to be sent, cancel that one with a reason; the agreed total and the amount actually paid are then allowed to differ, and the record can say why.",
       },
       {
         kind: "tip",
@@ -1980,16 +1989,16 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         prompt:
-          "A submitted payment has been sitting undecided for eight days. What has happened to it?",
+          "A $4,000 agreement is set up to pay $2,000 on signing and $2,000 on delivery. The deposit goes out. What is the state of the agreement?",
         options: [
-          "It was auto-cancelled at seven days and the contractor has to start over",
-          "Nothing — the queue is a list, and someone will get to it",
-          "Treasurers were nudged at three days and it escalated to the central Financial Manager at seven; it is still live and still payable",
-          "It was auto-approved, since nobody objected within the window",
+          "Paid — money has gone out under it, so the agreement is complete",
+          "Still approved and still owing $2,000; it only reaches Paid when every scheduled payment has been sent or cancelled",
+          "Awaiting contractor, because the second payment needs a fresh signature",
+          "Split into two agreements at the moment the first one paid",
         ],
-        answerIndex: 2,
+        answerIndex: 1,
         explanation:
-          "Submitting already emails everyone who could decide it; the sweep then nudges at day 3 and escalates by name to central at day 7, so an unattended queue has an owner. Nothing is ever auto-cancelled and nothing is ever auto-approved — the first would punish the contractor for our delay, and the second would release money nobody decided to release.",
+          "Paid is an ENDING — nothing more happens to an agreement that reaches it. So a deposit landing must not stamp it, or the balance would be stranded with nothing able to pay it and the contractor would be owed $2,000 that the app no longer thinks it owes. The agreement drops back to Approved between payments, which is exactly the state the next one is released from, and closes only when the whole schedule has been settled one way or the other.",
       },
     ],
   },

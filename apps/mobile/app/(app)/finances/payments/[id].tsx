@@ -66,6 +66,13 @@ import {
 import { ContractLinkCard } from "../../../../components/finance/payments/ContractLinkCard";
 import { LedgerPreviewCard } from "../../../../components/finance/payments/LedgerPreviewCard";
 import { ReviewPanel } from "../../../../components/finance/payments/ReviewPanel";
+import { ScheduleCard } from "../../../../components/finance/payments/ScheduleCard";
+import {
+  ScheduleBuilder,
+  scheduleProblem,
+  toInstallmentArgs,
+  type InstallmentDraft,
+} from "../../../../components/finance/payments/ScheduleBuilder";
 import { TaxDocumentCard } from "../../../../components/finance/payments/TaxDocumentCard";
 import {
   ORIGIN_BADGE,
@@ -74,6 +81,7 @@ import {
   canEditTerms,
   canPayOut,
   canSendLink,
+  centsToAmountText,
   isTerminal,
   isWithContractor,
   needsReview,
@@ -95,11 +103,21 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
     api.contractorPayouts.markPaidManually,
   );
   const payContractor = useAction(api.contractorPayouts.payContractorPayment);
+  const schedule = useQuery(api.contractorInstallments.listForPayment, {
+    contractorPaymentId: id,
+  });
+  const setSchedule = useMutation(api.contractorInstallments.setSchedule);
+  const cancelInstallment = useMutation(
+    api.contractorInstallments.cancelInstallment,
+  );
   const { run, toast, dismiss } = useActionRunner();
 
   const [busy, setBusy] = useState<string | null>(null);
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState<AgreementDraft | null>(null);
+  const [scheduleDraft, setScheduleDraft] = useState<InstallmentDraft[]>([]);
+  const [payingInstallment, setPayingInstallment] =
+    useState<Id<"contractorPaymentInstallments"> | null>(null);
   const [editProblem, setEditProblem] = useState<string | null>(null);
   /** Set after a save that voided an acceptance — confirmed in words, because
    *  the consequence (they have to sign again) happens off-screen. */
@@ -115,6 +133,15 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
 
   function startEditing(p: ContractorPaymentDetail) {
     setDraft(draftFromPayment(p));
+    setScheduleDraft(
+      (schedule?.installments ?? []).map((i) => ({
+        label: i.label,
+        amountText: centsToAmountText(i.amountCents),
+        trigger: i.trigger,
+        dueDate: i.dueDate ?? undefined,
+        milestoneNote: i.milestoneNote ?? "",
+      })),
+    );
     setEditProblem(null);
     setVoidedNotice(false);
     setEditing(true);
@@ -130,6 +157,11 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
     const cents = draftAmountCents(draft);
     if (cents == null) {
       setEditProblem("Enter an amount.");
+      return;
+    }
+    const schedProblem = scheduleProblem(scheduleDraft, cents);
+    if (schedProblem) {
+      setEditProblem(schedProblem);
       return;
     }
     const ids = decodeForValue(draft.forValue);
@@ -155,6 +187,10 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
           ...(draft.categoryId
             ? { categoryId: draft.categoryId as Id<"budgetCategories"> }
             : { clearCategory: true }),
+          // Always sent, so clearing a schedule back to one payment is
+          // expressible. The server compares it against what is on file and
+          // only counts a real change as a change (see `scheduleChanged`).
+          installments: toInstallmentArgs(scheduleDraft),
         }),
       { errorTitle: "Couldn't save the terms" },
     );
@@ -162,6 +198,7 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
     if (result === undefined) return;
     setEditing(false);
     setDraft(null);
+    setScheduleDraft([]);
     setVoidedNotice(result.acceptanceVoided);
   }
 
@@ -224,6 +261,46 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
         }).then(() => setBusy(null));
       },
     });
+  }
+
+  function handlePayInstallment(
+    p: ContractorPaymentDetail,
+    installmentId: Id<"contractorPaymentInstallments">,
+  ) {
+    setPayingInstallment(installmentId);
+    void run(
+      () => payContractor({ contractorPaymentId: p._id, installmentId }),
+      { errorTitle: "Couldn't start the ACH payout" },
+    ).then(() => setPayingInstallment(null));
+  }
+
+  function handleMarkInstallmentPaid(
+    p: ContractorPaymentDetail,
+    installmentId: Id<"contractorPaymentInstallments">,
+  ) {
+    confirmAction({
+      title: "Mark this payment paid?",
+      message:
+        "Only do this once the transfer has actually left the chapter's account — it posts this payment to the ledger as paid.",
+      confirmLabel: "Mark paid",
+      onConfirm: () => {
+        setPayingInstallment(installmentId);
+        void run(
+          () => markPaidManually({ contractorPaymentId: p._id, installmentId }),
+          { errorTitle: "Couldn't mark it paid" },
+        ).then(() => setPayingInstallment(null));
+      },
+    });
+  }
+
+  function handleCancelInstallment(
+    installmentId: Id<"contractorPaymentInstallments">,
+    reason: string,
+  ) {
+    setPayingInstallment(installmentId);
+    void run(() => cancelInstallment({ installmentId, reason }), {
+      errorTitle: "Couldn't cancel it",
+    }).then(() => setPayingInstallment(null));
   }
 
   function handleCancel(p: ContractorPaymentDetail) {
@@ -353,6 +430,18 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
                 mode="edit"
                 accepted={payment.acceptedAt != null}
               />
+              <Text className="mb-1.5 mt-2 text-sm font-semibold text-ink">
+                How they get paid
+              </Text>
+              <ScheduleBuilder
+                rows={scheduleDraft}
+                onChange={(rows) => {
+                  setScheduleDraft(rows);
+                  setEditProblem(null);
+                }}
+                agreedAmountCents={draftAmountCents(draft)}
+                disabled={(schedule?.summary.paidCount ?? 0) > 0}
+              />
               <LedgerPreviewCard
                 serviceDescription={draft.serviceDescription}
                 amountCents={draftAmountCents(draft) ?? 0}
@@ -386,6 +475,18 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
           ) : (
             <TermsCard payment={payment} forOptions={options?.forOptions} />
           )}
+
+          {/* ── How it pays out, and how much has ────────────────────────── */}
+          {schedule?.scheduled ? (
+            <ScheduleCard
+              schedule={schedule}
+              canPay={payment.canApprove && canPayOut(payment.status)}
+              onPay={(iid) => handlePayInstallment(payment, iid)}
+              onMarkPaid={(iid) => handleMarkInstallmentPaid(payment, iid)}
+              onCancelInstallment={handleCancelInstallment}
+              busyInstallmentId={payingInstallment}
+            />
+          ) : null}
 
           {/* ── Their tax form ───────────────────────────────────────────── */}
           <SectionHeader title="Tax form" />
@@ -421,7 +522,13 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
               <DetailRow label="Paid" value={formatDateTime(payment.paidAt)} />
             ) : null}
 
-            {payment.canApprove && canPayOut(payment.status) ? (
+            {/* A SCHEDULED agreement is paid tranche by tranche, from the
+                schedule card above — `beginContractorPayout` refuses to send
+                the whole total behind a schedule's back, so offering the button
+                here would only ever produce an error. */}
+            {payment.canApprove &&
+            canPayOut(payment.status) &&
+            !schedule?.scheduled ? (
               <View className="mt-3 flex-row flex-wrap gap-2">
                 <Button
                   title="Pay by ACH"

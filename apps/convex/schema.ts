@@ -72,6 +72,7 @@ import {
   reimbursementRequests,
   reimbursementLineItems,
   contractorPayments,
+  contractorPaymentInstallments,
   contractorProfiles,
   contractorTaxDocuments,
   cards,
@@ -352,6 +353,10 @@ const schema = defineSchema({
   // that ends in an ACH. Sibling of reimbursements, not a flavour of one — a
   // reimbursement pays back a receipt, this pays for work.
   contractorPayments,
+  // The tranches of an agreement that pays in parts — "half now, half on
+  // delivery". Child rows of one agreement, summing to its agreed total; an
+  // agreement with none behaves exactly as it did before schedules existed.
+  contractorPaymentInstallments,
   // What we remember about a contractor between payments so a returning one
   // isn't asked to fill the whole form again. A satellite on `people`, never a
   // second roster.

@@ -361,6 +361,30 @@ are indistinguishable — `changes_requested` where terms need work, then
 
 <!-- /lifecycle -->
 
+**Paying in parts.** An agreement may be paid on a **schedule** rather than all
+at once — a deposit up front and the balance on delivery, or a set of dated
+payments. The schedule is part of the agreed terms: the contractor sees it
+before they sign, and changing it voids their acceptance and re-asks, exactly as
+changing the amount does. The scheduled payments must add up to the agreed
+amount exactly.
+
+<!-- lifecycle:contractor-installment -->
+
+Each payment in a schedule walks its own short lifecycle: `scheduled` until
+somebody releases it, `paying` while the transfer is in flight, then `paid`.
+A payment the organization decides not to send is `canceled`, with a required
+reason — this is why the agreed amount and the amount actually paid may differ,
+and the record must always be able to explain the gap. The agreement itself is
+only complete when every one of its payments has reached one of the last two.
+
+<!-- /lifecycle -->
+
+**Nothing in a schedule pays itself.** A due date makes a payment *due*; it never
+makes it sent. Every payment is released by a person holding the same approval
+authority that a single-payment agreement requires, and the release is recorded
+against them by name — which is what makes "who decided this milestone was met,
+and when?" an answerable question rather than an inference from a bank date.
+
 Collect a **W-9 before the first payment**, not at year end. Payments of $600 or
 more in a calendar year to an unincorporated payee require a **1099-NEC by
 January 31**. Classify honestly: someone whose hours, methods, and tools the
@@ -412,6 +436,7 @@ involved, and the software enforces it where it can.
 |---|---|---|
 | Reimbursement | The claimant | Treasurer, or Chapter Director where the claimant is the Treasurer |
 | Contractor payment | Staff or the contractor | Treasurer or Financial Manager — never the requester |
+| Releasing one payment of a contractor schedule | Whoever judges the milestone met | Treasurer or Financial Manager — never the payee; recorded by name against that payment |
 | Partnership agreement | The development desk composes it | **The partner signs it** — there is no staff-side way to mark an agreement signed |
 | Chapter budget | Treasurer | Chapter Director |
 | Central / annual budget | Financial Manager | Executive Director; annual budget adopted by the Board |

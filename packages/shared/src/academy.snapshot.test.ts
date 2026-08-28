@@ -190,6 +190,25 @@
  * in-flight send still has to be finishable. Its title and placement are
  * unchanged. No slugs, sections, or courses moved; total stays 98 sections.
  *
+ * Contractor payment SCHEDULES (founder ask, 2026-08-28: "an agreed upon amount
+ * and… agreed payment dates or agreed payment milestones… so we know we've paid
+ * this halfway"). An agreement can now split its agreed total into payments
+ * that are released separately, so `finance-paying-a-contractor` gained a rule
+ * ("An agreement can pay in parts" — the payments must sum to the agreed total
+ * exactly, a schedule is a TERM whose change voids an acceptance, and nothing
+ * pays itself on a date) plus a tip on reading the paid/remaining split and on
+ * cancelling a payment that will never be sent. It also gained ONE quiz
+ * question, on the rule most likely to be got wrong from outside the code: a
+ * deposit going out does NOT stamp the agreement Paid, because Paid is an
+ * ending and stamping it would strand the balance. That question REPLACES the
+ * "sitting undecided for eight days" one — the quiz cap is five, and the nudge
+ * and escalation timings it tested are already stated verbatim in a tip in the
+ * same section, while the schedule rule is a money rule with nowhere else to
+ * live. Quiz length stays 5; minutes 5→6 (bumped below). `finance-contractor-tax-
+ * and-privacy` was left alone deliberately: the W-9 and the publishing rules
+ * are per-AGREEMENT and a schedule changes neither. Its title and placement,
+ * and every other section, are unchanged; total stays 111 sections.
+ *
  * Finance audit trail (`financeAuditLog`, founder ask: more audit trails on
  * reconcile edits): `finance-reconcile-grid`'s `try_status` caption now says
  * excluding a charge requires a reason, and the section gained one quiz
@@ -1467,7 +1486,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-paying-a-contractor",
     title: "Paying a contractor",
-    minutes: 5,
+    minutes: 6,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

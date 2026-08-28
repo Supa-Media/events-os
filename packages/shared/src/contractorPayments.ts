@@ -450,8 +450,12 @@ export function contractorDescriptionProblems(text: string): string[] {
  * a typo limit. The failure this exists for is a staffer typing an amount in
  * dollars into a field that means cents, or adding a zero; both produce a
  * number that is obviously wrong and that nobody wants discovered by an ACH
- * that already left. A genuinely larger engagement splits into milestones or
- * gets handled off-platform.
+ * that already left. A genuinely larger engagement gets handled off-platform.
+ *
+ * THIS CAPS THE AGREEMENT, NOT THE PAYMENT. A schedule (see below) splits the
+ * total into tranches that each leave separately, so the ceiling has to bind
+ * the total the org promised — otherwise twelve compliant tranches would add up
+ * to a promise this rule exists to refuse.
  */
 export const CONTRACTOR_PAYMENT_MAX_CENTS = 50_000_00;
 
@@ -466,8 +470,303 @@ export function contractorAmountProblems(amountCents: number): string[] {
     return [
       `The amount can't be more than $${(
         CONTRACTOR_PAYMENT_MAX_CENTS / 100
-      ).toLocaleString("en-US")}. Split a larger engagement into milestones.`,
+      ).toLocaleString("en-US")}. An engagement bigger than that is handled outside the app.`,
     ];
   }
   return [];
+}
+
+// ── Payment schedules (milestones and installments) ─────────────────────────
+/**
+ * A CONTRACTOR AGREEMENT CAN PAY IN PARTS — "half now, half on delivery".
+ *
+ * The founder's ask (2026-08-28): one agreed total, several agreed payments,
+ * and a place you can look to see how much of it has actually gone out. Before
+ * this, an agreement was one amount and one ACH, so the real-world deal — a
+ * deposit up front, the balance when the record is delivered — could only be
+ * modelled as two unrelated agreements with two signatures, two tax-document
+ * citations, and nothing tying them together. The total nobody agreed to was
+ * then the sum of two rows a human had to remember to add up.
+ *
+ * THE SHAPE. The agreement stays ONE row (`contractorPayments`) — one set of
+ * terms, one acceptance, one tax document, one approval. The schedule is a list
+ * of child rows, each of which is a tranche of the same agreed total and each
+ * of which gets its OWN payout when the org releases it. An agreement with no
+ * schedule is exactly what it was before: one amount paid once. That is the
+ * compatibility promise, and it is why the schedule is a separate table rather
+ * than a shape the amount field grew.
+ *
+ * THE INVARIANT that makes the whole thing trustworthy: the live installments
+ * sum to EXACTLY `agreedAmountCents`. A schedule that sums to less is money the
+ * contractor was promised and will never be sent; one that sums to more pays
+ * out more than anybody signed. `contractorScheduleProblems` is the single
+ * enforcement of that rule and every writer — the composer, the public page,
+ * the server — runs it.
+ */
+export const CONTRACTOR_INSTALLMENT_STATUSES = [
+  // Agreed but not sent. The resting state: a tranche waits here whether it is
+  // waiting on a date, on a milestone, or just on somebody pressing Pay.
+  "scheduled",
+  // A payout for this tranche is in flight. Its own state (rather than the
+  // parent's) is what lets one tranche be moving while the others sit still.
+  "paying",
+  "paid",
+  // Called off — the work stopped, the deliverable changed, the deal was
+  // renegotiated. NOT the same as unpaid: it records that the org decided this
+  // tranche would never be sent, which is why the agreed total and the total
+  // actually paid are allowed to differ and can still be explained.
+  "canceled",
+] as const;
+export type ContractorInstallmentStatus =
+  (typeof CONTRACTOR_INSTALLMENT_STATUSES)[number];
+
+export const CONTRACTOR_INSTALLMENT_STATUS_LABELS: Record<
+  ContractorInstallmentStatus,
+  string
+> = {
+  scheduled: "Scheduled",
+  paying: "Paying",
+  paid: "Paid",
+  canceled: "Canceled",
+};
+
+/**
+ * What the parties agreed makes a tranche payable.
+ *
+ * DELIBERATELY NOT AN AUTOMATION. None of these releases money on its own — a
+ * human with approval rights presses Pay every time, exactly as they do for an
+ * unscheduled agreement. The trigger is the AGREEMENT'S language, recorded so
+ * both sides can point at it and so the queue knows what to surface when.
+ *
+ * A date that has passed makes a tranche *due*, which is a sorting fact, not a
+ * payment. Nothing in this system moves money because a clock ticked.
+ */
+export const CONTRACTOR_INSTALLMENT_TRIGGERS = [
+  // Payable as soon as the agreement is approved — the deposit, the "half now".
+  "on_signing",
+  // Payable on or after a calendar date. `dueDate` is required.
+  "on_date",
+  // Payable when something happens that only a person can judge: delivery,
+  // final cut, load-out. `milestoneNote` is required and says what that is.
+  "on_milestone",
+] as const;
+export type ContractorInstallmentTrigger =
+  (typeof CONTRACTOR_INSTALLMENT_TRIGGERS)[number];
+
+export const CONTRACTOR_INSTALLMENT_TRIGGER_LABELS: Record<
+  ContractorInstallmentTrigger,
+  string
+> = {
+  on_signing: "On signing",
+  on_date: "On a date",
+  on_milestone: "On a milestone",
+};
+
+/** How many tranches one agreement may carry. A typo limit and a legibility
+ *  limit, in the same spirit as `CONTRACTOR_PAYMENT_MAX_CENTS`: a schedule a
+ *  treasurer cannot read on one screen is a schedule nobody checks. */
+export const MAX_CONTRACTOR_INSTALLMENTS = 12;
+
+/** Caps for the two free-text fields on a tranche. Both are INTERNAL — unlike
+ *  `serviceDescription`, neither reaches the public ledger — so they are
+ *  length-capped but not run through `publicTextProblems`. */
+export const CONTRACTOR_INSTALLMENT_LABEL_MAX = 80;
+export const CONTRACTOR_MILESTONE_NOTE_MAX = 240;
+
+/** One tranche as a writer proposes it, before it is a row. */
+export type ContractorInstallmentDraft = {
+  label: string;
+  amountCents: number;
+  trigger: ContractorInstallmentTrigger;
+  dueDate?: number;
+  milestoneNote?: string;
+};
+
+/**
+ * Everything wrong with a proposed schedule, in human words, empty when it is
+ * payable as written.
+ *
+ * THE ONE RULE WORTH STATING TWICE: the tranches must sum to the agreed total
+ * exactly. Not "at most" — exactly. A schedule that sums to less looks complete
+ * on screen and quietly under-pays a contractor who signed for the full number;
+ * the error message therefore names the gap in dollars rather than saying the
+ * schedule is invalid, because the fix is always "put the missing money
+ * somewhere" and the writer needs to know how much is missing.
+ *
+ * Shared so the in-app composer shows the same sentence inline that the server
+ * would have thrown, and so neither can be bypassed by posting directly.
+ */
+export function contractorScheduleProblems(
+  drafts: readonly ContractorInstallmentDraft[],
+  agreedAmountCents: number,
+): string[] {
+  if (drafts.length === 0) return [];
+  const problems: string[] = [];
+
+  if (drafts.length > MAX_CONTRACTOR_INSTALLMENTS) {
+    problems.push(
+      `A schedule can have at most ${MAX_CONTRACTOR_INSTALLMENTS} payments. Anything more complicated than that belongs in separate agreements.`,
+    );
+  }
+
+  drafts.forEach((d, i) => {
+    const n = i + 1;
+    if (!d.label.trim()) {
+      problems.push(`Payment ${n} needs a name — "Deposit", "On delivery".`);
+    } else if (d.label.trim().length > CONTRACTOR_INSTALLMENT_LABEL_MAX) {
+      problems.push(
+        `Payment ${n}'s name is too long — keep it under ${CONTRACTOR_INSTALLMENT_LABEL_MAX} characters.`,
+      );
+    }
+    // Each tranche is money that will actually be sent, so it faces the same
+    // amount rule the whole agreement does — including the ceiling, which a
+    // single tranche can never legitimately exceed since the total cannot.
+    const amountProblems = contractorAmountProblems(d.amountCents);
+    if (amountProblems.length > 0) {
+      problems.push(`Payment ${n}: ${amountProblems[0]}`);
+    }
+    if (d.trigger === "on_date" && (d.dueDate == null || !Number.isFinite(d.dueDate))) {
+      problems.push(`Payment ${n} is set to pay on a date — say which date.`);
+    }
+    if (d.trigger === "on_milestone" && !d.milestoneNote?.trim()) {
+      problems.push(
+        `Payment ${n} is set to pay on a milestone — say what has to happen first.`,
+      );
+    }
+    if ((d.milestoneNote?.trim().length ?? 0) > CONTRACTOR_MILESTONE_NOTE_MAX) {
+      problems.push(
+        `Payment ${n}'s milestone is too long — keep it under ${CONTRACTOR_MILESTONE_NOTE_MAX} characters.`,
+      );
+    }
+  });
+
+  const total = drafts.reduce(
+    (sum, d) => sum + (Number.isFinite(d.amountCents) ? d.amountCents : 0),
+    0,
+  );
+  if (total !== agreedAmountCents) {
+    const diff = agreedAmountCents - total;
+    const dollars = `$${(Math.abs(diff) / 100).toLocaleString("en-US", {
+      minimumFractionDigits: 2,
+      maximumFractionDigits: 2,
+    })}`;
+    problems.push(
+      diff > 0
+        ? `The payments add up to ${dollars} less than the agreed amount. Every dollar of the agreement has to be scheduled.`
+        : `The payments add up to ${dollars} more than the agreed amount. Lower a payment or raise the agreed amount.`,
+    );
+  }
+
+  return problems;
+}
+
+/** A tranche as the app and the contract page read it back — the draft fields
+ *  plus where it got to. */
+export type ContractorInstallmentView = ContractorInstallmentDraft & {
+  seq: number;
+  status: ContractorInstallmentStatus;
+  paidAt?: number;
+};
+
+/** Statuses where this tranche's money is spoken for — it has gone or is going.
+ *  What "how much have we actually paid?" counts, and what blocks an edit. */
+export const CONTRACTOR_INSTALLMENT_COMMITTED_STATUSES: ContractorInstallmentStatus[] =
+  ["paying", "paid"];
+
+/**
+ * Is this tranche waiting on nothing but a human pressing Pay?
+ *
+ * `on_signing` is due the moment the agreement is approved; `on_date` once the
+ * date arrives; `on_milestone` never answers true, because whether a milestone
+ * happened is not a fact this function can know — a person decides that, and
+ * the queue shows the tranche with its milestone text rather than pretending.
+ */
+export function contractorInstallmentIsDue(
+  inst: Pick<ContractorInstallmentView, "status" | "trigger" | "dueDate">,
+  now: number = Date.now(),
+): boolean {
+  if (inst.status !== "scheduled") return false;
+  if (inst.trigger === "on_signing") return true;
+  if (inst.trigger === "on_date") return inst.dueDate != null && inst.dueDate <= now;
+  return false;
+}
+
+/** The sentence a schedule row reads as, on the contractor's page and in the
+ *  app. One function so the two can never word the same deal differently. */
+export function describeContractorInstallmentTiming(
+  inst: Pick<ContractorInstallmentView, "trigger" | "dueDate" | "milestoneNote">,
+  formatDate: (ms: number) => string,
+): string {
+  switch (inst.trigger) {
+    case "on_signing":
+      return "When the agreement is approved";
+    case "on_date":
+      return inst.dueDate != null ? `On ${formatDate(inst.dueDate)}` : "On a date";
+    case "on_milestone":
+      return inst.milestoneNote?.trim()
+        ? `When ${inst.milestoneNote.trim()}`
+        : "On a milestone";
+  }
+}
+
+/** What a schedule adds up to, split the four ways anyone asks about it.
+ *  `remainingCents` is the number the founder asked for — "we know we've paid
+ *  this halfway" — and it excludes canceled tranches, which are money the org
+ *  decided not to send rather than money still owed. */
+export function summarizeContractorSchedule(
+  rows: readonly Pick<ContractorInstallmentView, "amountCents" | "status">[],
+): {
+  count: number;
+  paidCents: number;
+  payingCents: number;
+  scheduledCents: number;
+  canceledCents: number;
+  remainingCents: number;
+  paidCount: number;
+} {
+  let paidCents = 0;
+  let payingCents = 0;
+  let scheduledCents = 0;
+  let canceledCents = 0;
+  let paidCount = 0;
+  for (const r of rows) {
+    switch (r.status) {
+      case "paid":
+        paidCents += r.amountCents;
+        paidCount += 1;
+        break;
+      case "paying":
+        payingCents += r.amountCents;
+        break;
+      case "scheduled":
+        scheduledCents += r.amountCents;
+        break;
+      case "canceled":
+        canceledCents += r.amountCents;
+        break;
+    }
+  }
+  return {
+    count: rows.length,
+    paidCents,
+    payingCents,
+    scheduledCents,
+    canceledCents,
+    // Still to go out: what is scheduled plus what is already moving.
+    remainingCents: scheduledCents + payingCents,
+    paidCount,
+  };
+}
+
+/** Is every tranche of this schedule settled one way or the other — paid, or
+ *  called off? THE TEST THAT CLOSES AN AGREEMENT: a scheduled payment reaches
+ *  `paid` only when this is true, which is why a tranche settling mid-schedule
+ *  walks the parent back to `approved` instead of ending it. */
+export function contractorScheduleIsComplete(
+  rows: readonly Pick<ContractorInstallmentView, "status">[],
+): boolean {
+  return (
+    rows.length > 0 &&
+    rows.every((r) => r.status === "paid" || r.status === "canceled")
+  );
 }
