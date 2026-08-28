@@ -1699,6 +1699,11 @@ export const reviewerRecipients = internalQuery({
         payeeName: row.payeeName,
         serviceDescription: row.serviceDescription,
         agreedAmountCents: row.agreedAmountCents,
+        // A reviewer approving a schedule is approving a payment CYCLE, not
+        // one transfer — the task email says so from this count.
+        installmentCount: (await loadSchedule(ctx, row._id)).filter(
+          (i) => i.status !== "canceled",
+        ).length,
         origin: row.origin,
         chapterId: row.chapterId,
       },
@@ -2777,6 +2782,18 @@ export const noticePayload = internalQuery({
       reviewNote: row.reviewNote,
       paidAt: row.paidAt,
       agreementTermsVersion: row.agreementTermsVersion,
+      // The agreed schedule, for the emails' "How you'll be paid" panel —
+      // canceled tranches are dropped because the panel states what WILL be
+      // paid, and the cancel's own story lives on the schedule card in-app.
+      installments: (await loadSchedule(ctx, row._id))
+        .filter((i) => i.status !== "canceled")
+        .map((i) => ({
+          label: i.label,
+          amountCents: i.amountCents,
+          trigger: i.trigger,
+          dueDate: i.dueDate,
+          milestoneNote: i.milestoneNote,
+        })),
     };
   },
 });
@@ -2803,6 +2820,7 @@ export const sendAgreementInvite = internalAction({
         serviceDescription: p.serviceDescription,
         serviceDate: p.serviceDate,
         amountCents: p.agreedAmountCents,
+        installments: p.installments,
         url,
         // A version past the first means these are re-issued terms, not a
         // first invitation — the email says so rather than looking like a
@@ -2839,6 +2857,7 @@ export const sendSubmittedNotices = internalAction({
           serviceDescription: p.serviceDescription,
           serviceDate: p.serviceDate,
           amountCents: p.agreedAmountCents,
+          installments: p.installments,
           bankAccountLast4: p.bankAccountLast4,
           origin: p.origin,
         });
@@ -2881,6 +2900,7 @@ export const sendReviewTasks = internalAction({
         payeeName: payment.payeeName,
         serviceDescription: payment.serviceDescription,
         amountCents: payment.agreedAmountCents,
+        installmentCount: payment.installmentCount,
         origin: payment.origin,
         url,
         escalated,
@@ -2945,6 +2965,7 @@ export const sendApprovedNotice = internalAction({
         chapterName: p.chapterName,
         reference: p.reference,
         amountCents: p.approvedCents ?? p.agreedAmountCents,
+        installments: p.installments,
         bankAccountLast4: p.bankAccountLast4,
       });
       await sendEmail(ctx, { to: p.payeeEmail, subject, html: emailShell(html) });

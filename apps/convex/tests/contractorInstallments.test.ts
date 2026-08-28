@@ -9,9 +9,15 @@ import {
   disarmCodingPolicy,
   type ChapterSetup,
 } from "./setup.helpers";
-import { api } from "../_generated/api";
+import { api, internal } from "../_generated/api";
 import { CONTRACTOR_LEDGER_COUNTERPARTY, displayMerchantName } from "@events-os/shared";
-import { buildInstallmentPaidNotice } from "../lib/contractorPaymentEmails";
+import {
+  buildAgreementInvite,
+  buildApprovedNotice,
+  buildInstallmentPaidNotice,
+  buildReviewTask,
+  buildSubmittedReceipt,
+} from "../lib/contractorPaymentEmails";
 import type { Id } from "../_generated/dataModel";
 
 /**
@@ -783,5 +789,117 @@ describe("a payment plan is part of the deal", () => {
     // counted, so a canceled agreement would report a balance forever.
     const sched = await scheduleOf(s, id);
     expect(sched.every((i) => i.status === "canceled")).toBe(true);
+  });
+});
+
+// ── 7. Every notice states the payment cycle ────────────────────────────────
+/**
+ * A deposit-and-balance agreement whose emails say only "you're being paid
+ * $1,000" produces exactly the confusion the schedule exists to prevent: the
+ * contractor reads the whole amount as coming now, and the deposit landing
+ * reads as a shortfall. So the invitation, the receipt, and the approved
+ * notice all render the same "How you'll be paid" panel the page shows, and
+ * the treasurer's task email says a schedule is a cycle, not one transfer.
+ */
+describe("the emails state the payment cycle", () => {
+  const INSTALLMENTS = [
+    { label: "Deposit", amountCents: 50_000, trigger: "on_signing" },
+    {
+      label: "On delivery",
+      amountCents: 50_000,
+      trigger: "on_milestone",
+      milestoneNote: "the final master is delivered",
+    },
+  ];
+  const BASE = {
+    payeeName: "Jane Contractor",
+    chapterName: "New York",
+    serviceDescription: AGREEMENT.serviceDescription,
+    amountCents: AGREEMENT.agreedAmountCents,
+  };
+
+  test("noticePayload carries the agreed schedule for the senders", async () => {
+    const { s, budgetId } = await setup();
+    const id = await scheduledAndSubmitted(s, budgetId);
+    const p = await s.t.query(internal.contractorPayments.noticePayload, {
+      contractorPaymentId: id,
+    });
+    expect(p?.installments).toHaveLength(2);
+    expect(p?.installments[0]).toMatchObject({
+      label: "Deposit",
+      amountCents: 50_000,
+      trigger: "on_signing",
+    });
+    expect(p?.installments[1].milestoneNote).toBe(
+      "the final master is delivered",
+    );
+  });
+
+  test("invite and receipt render 'How you'll be paid' with each tranche", async () => {
+    const invite = buildAgreementInvite({
+      ...BASE,
+      installments: INSTALLMENTS,
+      url: "https://example.com/contract",
+      isResend: false,
+    });
+    expect(invite.html).toContain("How you'll be paid");
+    expect(invite.html).toContain("2 payments");
+    expect(invite.html).toContain("Deposit");
+    expect(invite.html).toContain("$500.00");
+    expect(invite.html).toContain("when the agreement is approved");
+    expect(invite.html).toContain("when the final master is delivered");
+
+    const receipt = buildSubmittedReceipt({
+      ...BASE,
+      reference: "CP-TEST",
+      installments: INSTALLMENTS,
+      origin: "staff_prefilled",
+    });
+    expect(receipt.html).toContain("2 payments");
+    expect(receipt.html).toContain("when the final master is delivered");
+  });
+
+  test("the approved notice says the money follows the schedule, not 'it'll be sent'", async () => {
+    const scheduled = buildApprovedNotice({
+      ...BASE,
+      reference: "CP-TEST",
+      installments: INSTALLMENTS,
+    });
+    expect(scheduled.html).toContain("schedule you signed");
+    expect(scheduled.html).toContain("Deposit");
+    expect(scheduled.html).not.toContain("once it's on its way");
+
+    // A single-payment agreement keeps the one-shot copy — a schedule panel on
+    // an agreement with no schedule would be an invented promise.
+    const oneShot = buildApprovedNotice({ ...BASE, reference: "CP-TEST" });
+    expect(oneShot.html).toContain("bank transfer");
+    expect(oneShot.html).not.toContain("How you'll be paid");
+  });
+
+  test("the treasurer task email says a schedule is a cycle", async () => {
+    const task = buildReviewTask({
+      reference: "CP-TEST",
+      payeeName: BASE.payeeName,
+      serviceDescription: BASE.serviceDescription,
+      amountCents: BASE.amountCents,
+      installmentCount: 2,
+      origin: "staff_prefilled",
+      url: "https://example.com/app",
+      escalated: false,
+    });
+    expect(task.html).toContain("schedule of 2 payments");
+    expect(task.html).toContain("released separately");
+
+    const single = buildReviewTask({
+      reference: "CP-TEST",
+      payeeName: BASE.payeeName,
+      serviceDescription: BASE.serviceDescription,
+      amountCents: BASE.amountCents,
+      installmentCount: 0,
+      origin: "staff_prefilled",
+      url: "https://example.com/app",
+      escalated: false,
+    });
+    expect(single.html).not.toContain("schedule of");
   });
 });

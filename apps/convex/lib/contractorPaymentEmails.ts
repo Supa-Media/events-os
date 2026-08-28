@@ -64,6 +64,61 @@ function termsPanel(args: {
   `);
 }
 
+/** One row of the agreed payment schedule, as the emails print it. Mirrors the
+ *  contract page's own installment projection — label, amount, and when. */
+export type NoticeInstallment = {
+  label: string;
+  amountCents: number;
+  trigger: string;
+  dueDate?: number;
+  milestoneNote?: string;
+};
+
+/** The same sentence the contract page's schedule panel uses for "when", so
+ *  the email and the page can never describe the same tranche differently. */
+function installmentWhen(i: NoticeInstallment): string {
+  if (i.trigger === "on_signing") return "when the agreement is approved";
+  if (i.trigger === "on_date") {
+    return i.dueDate != null ? `on ${shortDate(i.dueDate)}` : "on a set date";
+  }
+  return i.milestoneNote ? `when ${i.milestoneNote}` : "on a milestone";
+}
+
+/**
+ * "How you'll be paid", for an agreement paid on a schedule.
+ *
+ * Rendered in the invitation, the submitted receipt, AND the approved notice
+ * whenever the agreement pays in parts — an email that says only "you're being
+ * paid $750" about a deposit-and-balance deal is the exact confusion the
+ * schedule feature exists to prevent: the contractor concludes the whole
+ * amount is coming now, and the first tranche landing reads as a shortfall.
+ * Renders nothing for a single-payment agreement, same as the page.
+ */
+function schedulePanel(args: {
+  installments?: NoticeInstallment[];
+  chapterName: string;
+}): string {
+  const rows = args.installments ?? [];
+  if (rows.length === 0) return "";
+  const lines = rows
+    .map(
+      (i, idx) =>
+        emailParagraph(
+          `<strong>${escapeHtml(i.label)}:</strong> ${usd(i.amountCents)}, ${escapeHtml(installmentWhen(i))}`,
+          { margin: idx === rows.length - 1 ? "0" : "0 0 8px" },
+        ),
+    )
+    .join("");
+  return `
+    ${emailHeading("How you'll be paid", { size: 18 })}
+    ${emailParagraph(
+      `This agreement is paid in <strong>${rows.length} payments</strong>, not one. Each is sent separately after someone at ${escapeHtml(args.chapterName)} confirms it's due — a date or a milestone doesn't send money on its own.`,
+      { margin: "0 0 12px" },
+    )}
+    ${emailPanel(lines)}
+  `;
+}
+
 /**
  * "Here is what we agreed — fill in your details."
  *
@@ -79,6 +134,8 @@ export function buildAgreementInvite(args: {
   serviceDescription: string;
   serviceDate?: number;
   amountCents: number;
+  /** The agreed payment schedule, when the agreement pays in parts. */
+  installments?: NoticeInstallment[];
   url: string;
   isResend: boolean;
 }): { subject: string; html: string } {
@@ -94,6 +151,7 @@ export function buildAgreementInvite(args: {
       { margin: "0 0 16px" },
     )}
     ${termsPanel(args)}
+    ${schedulePanel(args)}
     ${emailParagraph(
       "To get paid, open the link below and add your details: your name and email, a completed W-9, and the bank account the money should go to. It takes a few minutes.",
       { margin: "16px 0" },
@@ -124,6 +182,8 @@ export function buildSubmittedReceipt(args: {
   serviceDescription: string;
   serviceDate?: number;
   amountCents: number;
+  /** The agreed payment schedule, when the agreement pays in parts. */
+  installments?: NoticeInstallment[];
   bankAccountLast4?: string;
   origin: ContractorPaymentOrigin;
 }): { subject: string; html: string } {
@@ -137,6 +197,7 @@ export function buildSubmittedReceipt(args: {
       { margin: "0 0 16px" },
     )}
     ${termsPanel(args)}
+    ${schedulePanel(args)}
     ${
       args.bankAccountLast4
         ? emailParagraph(
@@ -202,8 +263,14 @@ export function buildApprovedNotice(args: {
   chapterName: string;
   reference: string;
   amountCents: number;
+  /** The agreed payment schedule, when the agreement pays in parts. With one,
+   *  the body says the money follows the schedule — the single-payment copy
+   *  ("it'll be sent") about a deposit-and-balance deal reads as "the whole
+   *  amount is coming now", and the deposit landing then reads as a shortfall. */
+  installments?: NoticeInstallment[];
   bankAccountLast4?: string;
 }): { subject: string; html: string } {
+  const scheduled = (args.installments?.length ?? 0) > 0;
   return {
     subject: `Approved: ${usd(args.amountCents)} from ${args.chapterName}`,
     html: `
@@ -213,9 +280,14 @@ export function buildApprovedNotice(args: {
           args.bankAccountLast4
             ? ` to the account ending ${escapeHtml(args.bankAccountLast4)}`
             : ""
-        }. It'll be sent by bank transfer, and we'll email you once it's on its way.`,
+        }. ${
+          scheduled
+            ? "It's paid on the schedule you signed — we'll email you each time a payment is sent, starting with the first one below."
+            : "It'll be sent by bank transfer, and we'll email you once it's on its way."
+        }`,
         { margin: "0 0 16px" },
       )}
+      ${schedulePanel(args)}
       ${emailParagraph(`Reference: ${escapeHtml(args.reference)}`, {
         margin: "16px 0 0",
       })}
@@ -338,6 +410,10 @@ export function buildReviewTask(args: {
   payeeName: string;
   serviceDescription: string;
   amountCents: number;
+  /** How many scheduled payments the agreement splits into, when it does —
+   *  the reviewer is approving a payment CYCLE, not one transfer, and should
+   *  know that from the task email rather than discover it on the screen. */
+  installmentCount?: number;
   origin: ContractorPaymentOrigin;
   url: string | null;
   escalated: boolean;
@@ -364,6 +440,14 @@ export function buildReviewTask(args: {
         ${emailParagraph(`<strong>${escapeHtml(args.payeeName)}</strong> — ${escapeHtml(args.serviceDescription)}`, { margin: "0 0 4px" })}
         ${emailParagraph(`${usd(args.amountCents)} · ${escapeHtml(args.reference)}`, { margin: "0" })}
       `)}
+      ${
+        (args.installmentCount ?? 0) > 0
+          ? emailParagraph(
+              `This agreement pays on a <strong>schedule of ${args.installmentCount} payments</strong> — approving it releases nothing by itself; each payment is released separately when it's due.`,
+              { margin: "16px 0 0" },
+            )
+          : ""
+      }
       ${
         args.origin === "self_serve"
           ? emailParagraph(
