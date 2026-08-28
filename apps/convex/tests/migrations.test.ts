@@ -364,6 +364,7 @@ const REGISTRY_NAMES = [
   // already populated — the seed can no longer reach it. See each file.
   "0081_add_posts_link_row",
   "0082_correct_inter_font_note",
+  "0083_capture_design_covers",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

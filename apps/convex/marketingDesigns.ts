@@ -39,7 +39,15 @@
  *     upload we host, resolved through `ctx.storage`.
  */
 import { ConvexError, v } from "convex/values";
-import { internalMutation, mutation, query } from "./_generated/server";
+import {
+  action,
+  internalAction,
+  internalMutation,
+  internalQuery,
+  mutation,
+  query,
+} from "./_generated/server";
+import { internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -67,6 +75,7 @@ import {
   type DesignLibrary,
 } from "@events-os/shared";
 import { requireDesignsEdit, resolveMarketingAccess } from "./lib/marketingAccess";
+import { extractOgImageUrl, isFetchableImageUrl } from "./lib/ogImage";
 import { requireUserId } from "./lib/context";
 import {
   BRAND_COLOR_SEED,
@@ -934,6 +943,15 @@ export const upsertDesign = mutation({
       // AFTER the row is written, never before: if the patch failed we would
       // have deleted the blob a still-live row points at.
       await dropOrphanedBlobs(ctx, existing, image.storage, thumbnail.storage);
+      if (url && !thumbnail.storage) {
+        // A linked design saved without a cover gets one captured from its own
+        // page (see the covers section below). `onlyIfBare` makes this safe to
+        // schedule redundantly: it fills a blank and never overwrites.
+        await ctx.scheduler.runAfter(0, internal.marketingDesigns.captureCover, {
+          designId: args.designId,
+          onlyIfBare: true,
+        });
+      }
       return args.designId;
     }
 
@@ -950,12 +968,21 @@ export const upsertDesign = mutation({
         message: `The library holds at most ${DESIGN_MAX_COUNT} designs. Delete something retired before adding another.`,
       });
     }
-    return await ctx.db.insert("designAssets", {
+    const designId = await ctx.db.insert("designAssets", {
       ...fields,
       folderId: args.folderId,
       order: nextOrder(rows),
       createdAt: now,
     });
+    if (url && !thumbnail.storage) {
+      // Same capture as the edit path — a brand-new Canva link should get its
+      // real cover without anyone screenshotting anything.
+      await ctx.scheduler.runAfter(0, internal.marketingDesigns.captureCover, {
+        designId,
+        onlyIfBare: true,
+      });
+    }
+    return designId;
   },
 });
 
@@ -1129,4 +1156,203 @@ export const seedBrandKitIfEmpty = internalMutation({
     folders: v.number(),
   }),
   handler: async (ctx: MutationCtx) => await seedBrandKit(ctx),
+});
+
+// ── Covers: the tile picture, captured from the design tool itself ──────────
+//
+// The library never renders a third party's image URL (they expire — the
+// pasted-newsletter lesson), which left every linked design's tile as a
+// typographic placeholder unless a human uploaded a screenshot. Nobody does
+// that. But Canva and Figma already publish the picture we want: the
+// `og:image` on a share link is the cover the tool itself renders for link
+// unfurls, kept current by the tool. So:
+//
+//   · Saving a linked design with NO thumbnail schedules a capture — fetch the
+//     page, take the FIRST og:image (the founder's call, 2026-08-28), store
+//     the BYTES in our storage, write it as the thumbnail. Bytes, not the URL:
+//     what we host cannot expire, so "expiry" stops being a failure mode.
+//   · "Refresh cover" in the viewer re-captures on demand — for when the
+//     design has been reworked in Canva and the tile still shows the old art.
+//     A refresh OVERWRITES; the automatic capture only ever fills a blank, so
+//     it can never clobber a cover somebody chose by hand.
+//
+// The pipeline is an action (it fetches the outside world); every database
+// step lives in the internal query/mutation pair so the decisions that must be
+// atomic — "is the row still bare?", "which blob is now orphaned?" — happen
+// inside a transaction, not in the action's racy gap.
+
+/** Reject a page or image response bigger than this. A cover is a preview;
+ *  anything larger than 8MB is not a preview, and the action's memory is the
+ *  budget being protected. */
+const COVER_IMAGE_MAX_BYTES = 8 * 1024 * 1024;
+
+/** What the capture pipeline needs to know about a design, read atomically. */
+export const coverTarget = internalQuery({
+  args: { designId: v.id("designAssets") },
+  returns: v.union(
+    v.object({
+      url: v.union(v.string(), v.null()),
+      hasThumbnail: v.boolean(),
+    }),
+    v.null(),
+  ),
+  handler: async (ctx, { designId }) => {
+    const design = await ctx.db.get(designId);
+    if (!design) return null;
+    return {
+      url: design.url ?? null,
+      hasThumbnail: design.thumbnailStorage !== undefined,
+    };
+  },
+});
+
+/**
+ * Write a captured cover onto the design — or refuse it, atomically.
+ *
+ * The action stored the blob BEFORE this runs, so every refusal path must
+ * delete that blob or it leaks: the row may have been deleted, or (for the
+ * automatic capture) may have grown a hand-picked thumbnail in the gap between
+ * scheduling and running. `onlyIfBare` is the automatic path's promise that it
+ * never clobbers a human's choice; the Refresh button passes false.
+ */
+export const applyCover = internalMutation({
+  args: {
+    designId: v.id("designAssets"),
+    storageId: v.id("_storage"),
+    onlyIfBare: v.boolean(),
+  },
+  returns: v.object({ applied: v.boolean() }),
+  handler: async (ctx, { designId, storageId, onlyIfBare }) => {
+    const design = await ctx.db.get(designId);
+    if (!design || (onlyIfBare && design.thumbnailStorage !== undefined)) {
+      try {
+        await ctx.storage.delete(storageId);
+      } catch {
+        // Already gone — the leak this branch exists to prevent isn't there.
+      }
+      return { applied: false };
+    }
+    await ctx.db.patch(designId, {
+      thumbnailStorage: storageId,
+      thumbnailUrl: await resolveUpload(ctx, storageId),
+      updatedAt: Date.now(),
+    });
+    // AFTER the patch, same rule as `upsertDesign`: the replaced thumbnail is
+    // orphaned only once the row no longer points at it.
+    await dropOrphanedBlobs(ctx, design, design.imageStorage, storageId);
+    return { applied: true };
+  },
+});
+
+/**
+ * Fetch the design's page, take its advertised og:image, host the bytes.
+ *
+ * Runs with no caller identity (the scheduler drops it), which is why it is
+ * internal and why its writes go through `applyCover` rather than any public
+ * mutation. Failures are deliberately quiet on the automatic path — a design
+ * whose page offers no preview simply keeps its typographic tile — and loud on
+ * the Refresh path, where a human is waiting for an answer.
+ */
+export const captureCover = internalAction({
+  args: { designId: v.id("designAssets"), onlyIfBare: v.boolean() },
+  returns: v.object({ applied: v.boolean(), reason: v.optional(v.string()) }),
+  handler: async (
+    ctx,
+    { designId, onlyIfBare },
+  ): Promise<{ applied: boolean; reason?: string }> => {
+    // The explicit return type (and the ones on `target`/`result` below) break
+    // the type cycle a same-module `internal.marketingDesigns.*` call creates —
+    // without them the whole generated `api` type collapses to `any`.
+    const target: { url: string | null; hasThumbnail: boolean } | null =
+      await ctx.runQuery(internal.marketingDesigns.coverTarget, {
+        designId,
+      });
+    if (!target) return { applied: false, reason: "gone" };
+    if (onlyIfBare && target.hasThumbnail) return { applied: false, reason: "kept" };
+    if (!target.url) return { applied: false, reason: "no-link" };
+
+    let pageRes: Response;
+    try {
+      pageRes = await fetch(target.url, {
+        redirect: "follow",
+        headers: {
+          // Unfurl-shaped, because the og tags are what unfurlers are served.
+          "user-agent": "Mozilla/5.0 (compatible; ChapterOS-LinkPreview/1.0)",
+          accept: "text/html,application/xhtml+xml",
+        },
+      });
+    } catch {
+      return { applied: false, reason: "page-unreachable" };
+    }
+    if (!pageRes.ok) return { applied: false, reason: "page-unreachable" };
+
+    const imageUrl = extractOgImageUrl(await pageRes.text(), target.url);
+    if (!imageUrl || !isFetchableImageUrl(imageUrl)) {
+      return { applied: false, reason: "no-preview" };
+    }
+
+    let imageRes: Response;
+    try {
+      imageRes = await fetch(imageUrl, { redirect: "follow" });
+    } catch {
+      return { applied: false, reason: "image-unreachable" };
+    }
+    const contentType = imageRes.headers.get("content-type") ?? "";
+    if (!imageRes.ok || !contentType.startsWith("image/")) {
+      return { applied: false, reason: "no-preview" };
+    }
+    const blob = await imageRes.blob();
+    if (blob.size === 0 || blob.size > COVER_IMAGE_MAX_BYTES) {
+      return { applied: false, reason: "no-preview" };
+    }
+
+    const storageId = await ctx.storage.store(blob);
+    const result: { applied: boolean } = await ctx.runMutation(
+      internal.marketingDesigns.applyCover,
+      { designId, storageId, onlyIfBare },
+    );
+    return { applied: result.applied, reason: result.applied ? undefined : "kept" };
+  },
+});
+
+/** The auth gate for `refreshCover`, split out because an action has no `db`
+ *  of its own — the resolver runs inside a query with the caller's identity. */
+export const assertCanEditDesigns = internalQuery({
+  args: {},
+  returns: v.null(),
+  handler: async (ctx) => {
+    await requireDesignsEdit(ctx);
+    return null;
+  },
+});
+
+/**
+ * The Refresh button: re-capture this design's cover from its page, now.
+ *
+ * Overwrites whatever thumbnail is there — that is the button's meaning ("the
+ * art changed; update the tile"), and it is explicit where the automatic
+ * capture is conservative. Errors are thrown, not swallowed: a human pressed
+ * this and deserves to know that the Canva link isn't public, not a silent
+ * unchanged tile.
+ */
+export const refreshCover = action({
+  args: { designId: v.id("designAssets") },
+  returns: v.null(),
+  handler: async (ctx, { designId }): Promise<null> => {
+    await ctx.runQuery(internal.marketingDesigns.assertCanEditDesigns, {});
+    const result: { applied: boolean; reason?: string } = await ctx.runAction(
+      internal.marketingDesigns.captureCover,
+      { designId, onlyIfBare: false },
+    );
+    if (result.applied) return null;
+    const message =
+      result.reason === "no-link"
+        ? "This design has no link to capture a cover from — upload a picture instead."
+        : result.reason === "gone"
+          ? "That design is no longer in the library."
+          : result.reason === "page-unreachable"
+            ? "The design's page couldn't be reached. Check the link still works."
+            : "The page didn't offer a preview image. For Canva, make sure the link is set so anyone with it can view; or upload a cover by hand.";
+    throw new ConvexError({ code: "NO_COVER", message });
+  },
 });

@@ -20,7 +20,7 @@
  *  · The seed is idempotent, carries the newsletter's real red, and carries
  *    BOTH sides of the font conflict.
  */
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "../_generated/api";
 import { PUBLIC_WORSHIP_THEME, SEAT_DEFS } from "@events-os/shared";
 import type { Id } from "../_generated/dataModel";
@@ -799,5 +799,236 @@ describe("superuser", () => {
       { name: "PW Red", hex: "#891d1a" },
     );
     expect(id).toBeTruthy();
+  });
+});
+
+describe("design covers — captured from the tool's own og:image", () => {
+  /**
+   * The rule set (founder, 2026-08-28: "just save the first og image, and if
+   * it expires we can click a button to refresh"): a linked design saved
+   * without a cover captures one automatically from its page's og:image, as
+   * BYTES in our storage (so nothing we render can expire); the automatic
+   * path only ever fills a blank; Refresh is the explicit overwrite.
+   *
+   * `fetch` is stubbed per-URL: the design's page answers with og-tagged
+   * HTML, the CDN answers with PNG bytes. Everything else is a test bug and
+   * fails loudly rather than hitting the network.
+   */
+  const PAGE_URL = "https://www.canva.com/design/DAGtest123/view";
+  const IMG_URL = "https://media.example-cdn.com/covers/first.png";
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 13, 10, 26, 10]);
+
+  function stubFetch(overrides?: {
+    html?: string;
+    imageStatus?: number;
+    imageType?: string;
+  }) {
+    const html =
+      overrides?.html ??
+      `<html><head>
+         <meta property="og:image" content="${IMG_URL}">
+         <meta property="og:image" content="https://media.example-cdn.com/covers/second.png">
+       </head><body></body></html>`;
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === PAGE_URL) {
+        return new Response(html, {
+          status: 200,
+          headers: { "content-type": "text/html" },
+        });
+      }
+      if (url === IMG_URL) {
+        return new Response(PNG, {
+          status: overrides?.imageStatus ?? 200,
+          headers: { "content-type": overrides?.imageType ?? "image/png" },
+        });
+      }
+      throw new Error(`unexpected fetch in test: ${url}`);
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    return fetchMock;
+  }
+
+  async function designRow(s: ChapterSetup, designId: string) {
+    return await run(s.t, async (ctx) => await ctx.db.get(asId(designId)));
+  }
+  const asId = (id: string) => id as unknown as Id<"designAssets">;
+
+  test("a new Canva link captures the FIRST og:image as its cover", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupEditor();
+      const fetchMock = stubFetch();
+      const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "canva",
+        title: "PW Flyer",
+        url: PAGE_URL,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const row = await designRow(s, String(designId));
+      expect(row?.thumbnailStorage).toBeDefined();
+      expect(row?.thumbnailUrl).toBeTruthy();
+      // The first image, not the second — and the page exactly once.
+      expect(fetchMock.mock.calls.map((c) => String(c[0]))).toEqual([
+        PAGE_URL,
+        IMG_URL,
+      ]);
+      // The bytes are OURS now: what the grid renders is our storage URL, not
+      // the CDN address that will someday die.
+      expect(row?.thumbnailUrl).not.toContain("example-cdn.com");
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  test("the automatic capture never overwrites a cover somebody chose", async () => {
+    // The race the mutation decides atomically: capture is IN FLIGHT when a
+    // human uploads their own cover. The human wins, and the captured blob is
+    // discarded rather than leaked.
+    vi.useFakeTimers();
+    try {
+      const s = await setupEditor();
+      const fetchMock = stubFetch();
+      const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "canva",
+        title: "PW Flyer",
+        url: PAGE_URL,
+      });
+      const manual = await storeBlob(s.t);
+      await s.as.mutation(api.marketingDesigns.upsertDesign, {
+        designId,
+        kind: "canva",
+        title: "PW Flyer",
+        url: PAGE_URL,
+        thumbnailStorage: manual,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      const row = await designRow(s, String(designId));
+      expect(String(row?.thumbnailStorage)).toBe(String(manual));
+      // And the pending capture noticed BEFORE fetching anything — the early
+      // exit is only an optimization (the atomic guard in `applyCover` is what
+      // actually protects the cover, proven separately below), but an
+      // optimization the org relies on to not hammer Canva deserves a pin.
+      expect(fetchMock.mock.calls).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  test("the atomic half of never-overwrite: applyCover itself refuses a taken slot", async () => {
+    // The capture pipeline has TWO guards against clobbering a human's cover:
+    // the action's early exit (exercised by the scheduled-path test above) and
+    // the mutation's atomic re-check, which exists for the race the action
+    // cannot close — the cover chosen in the gap between the action's read and
+    // its write. Sabotaging either one alone left the OTHER test green, which
+    // is exactly the "two independent guards, one test" false-green from the
+    // engineering notes — so the inner guard gets its own direct probe.
+    const s = await setupEditor();
+    const manual = await storeBlob(s.t);
+    const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+      kind: "canva",
+      title: "PW Flyer",
+      url: PAGE_URL,
+      thumbnailStorage: manual,
+    });
+    const captured = await storeBlob(s.t);
+    const result = await s.t.mutation(internal.marketingDesigns.applyCover, {
+      designId,
+      storageId: captured,
+      onlyIfBare: true,
+    });
+    expect(result.applied).toBe(false);
+    const row = await designRow(s, String(designId));
+    expect(String(row?.thumbnailStorage)).toBe(String(manual));
+    // The losing blob is discarded, not leaked: the action stored it before
+    // the mutation could know it would refuse.
+    expect(await run(s.t, (ctx) => ctx.storage.getUrl(captured))).toBeNull();
+  });
+
+  test("Refresh overwrites, and the replaced cover is really gone", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupEditor();
+      stubFetch();
+      const manual = await storeBlob(s.t);
+      const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "canva",
+        title: "PW Flyer",
+        url: PAGE_URL,
+        thumbnailStorage: manual,
+      });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers); // nothing pending — thumb present
+
+      await s.as.action(api.marketingDesigns.refreshCover, { designId });
+
+      const row = await designRow(s, String(designId));
+      expect(String(row?.thumbnailStorage)).not.toBe(String(manual));
+      // Hard-deleted, same rule as removing an upload by hand: "replaced" must
+      // mean gone, or the library keeps serving an image nothing points at.
+      const oldUrl = await run(s.t, (ctx) => ctx.storage.getUrl(manual));
+      expect(oldUrl).toBeNull();
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
+  });
+
+  test("Refresh without the seat is refused before any fetch happens", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const fetchMock = stubFetch();
+    try {
+      // A design exists (seeded by an editor elsewhere); a seatless caller
+      // cannot re-capture it. The refusal must come from the gate, not from
+      // the fetch failing — hence the call-count assertion.
+      const editor = await setupEditor();
+      const designId = await editor.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "canva",
+        title: "PW Flyer",
+        url: PAGE_URL,
+        thumbnailStorage: await storeBlob(editor.t),
+      });
+      void designId;
+      await expect(
+        s.as.action(api.marketingDesigns.refreshCover, {
+          designId: designId as never,
+        }),
+      ).rejects.toThrow();
+      expect(
+        fetchMock.mock.calls.filter((c) => String(c[0]) === PAGE_URL),
+      ).toHaveLength(0);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  test("a page with no preview is a plain answer, not a silent unchanged tile", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupEditor();
+      stubFetch({ html: "<html><head><title>private</title></head></html>" });
+      const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "canva",
+        title: "Private design",
+        url: PAGE_URL,
+      });
+      // The automatic pass finds nothing and stays quiet — the tile keeps its
+      // typographic placeholder, which is the designed no-cover state.
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect((await designRow(s, String(designId)))?.thumbnailStorage).toBeUndefined();
+
+      // The BUTTON is different: a human is waiting, so the same outcome is an
+      // error with the likely cause (a Canva link not set to public).
+      await expect(
+        s.as.action(api.marketingDesigns.refreshCover, { designId }),
+      ).rejects.toThrow(/didn't offer a preview/i);
+    } finally {
+      vi.unstubAllGlobals();
+      vi.useRealTimers();
+    }
   });
 });
