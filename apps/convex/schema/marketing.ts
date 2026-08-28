@@ -89,6 +89,19 @@ export const siteStats = defineTable({
  * while a dangling id would have to be either an error or a silent skip. The
  * pin list is an intent, not a reference.
  *
+ * ── The posts row ───────────────────────────────────────────────────────────
+ * `kind: "posts"` is the same row, asked about the blog: `maxPosts` /
+ * `pinnedPostSlugs` / `hiddenPostSlugs` mean to published posts exactly what
+ * the events trio means to RSVP pages, down to the slug-not-id reasoning above
+ * — a post can be taken down, and a pin that outlives it must degrade to
+ * "this pin does nothing" rather than to a 404 on the front page.
+ *
+ * Two triples rather than one generic pair (`maxItems`, `pinnedSlugs`) because
+ * the two lists name things in DIFFERENT namespaces: an RSVP slug and a post
+ * slug can collide, and a shared column would let a hide meant for an event
+ * silently suppress a post. See `SITE_LINK_KINDS`'s doc for why the kinds
+ * themselves stayed separate.
+ *
  * ── Images ──────────────────────────────────────────────────────────────────
  * `thumbnailPath` / `bgImagePath` hold a path into the landing site's own
  * `/public` (`/links/instagram-photo.png`) — how every card was authored before
@@ -122,6 +135,10 @@ export const siteLinks = defineTable({
   maxEvents: v.optional(v.number()),
   pinnedEventSlugs: v.optional(v.array(v.string())),
   hiddenEventSlugs: v.optional(v.array(v.string())),
+  // ── `kind: "posts"` only ───────────────────────────────────────────────────
+  maxPosts: v.optional(v.number()),
+  pinnedPostSlugs: v.optional(v.array(v.string())),
+  hiddenPostSlugs: v.optional(v.array(v.string())),
   createdAt: v.number(),
   updatedAt: v.number(),
   updatedBy: v.optional(v.id("users")),
