@@ -75,6 +75,15 @@ const NAV: NavEntry[] = [
   // entry is additionally gated on `deskEnabled` below and is hidden by
   // default. See `docs/plans/email-desk-parked.md`.
   { label: "Emails", icon: "mail", path: "/campaigns", group: "A" },
+  // Marketing — the public-face desk: the homepage's own copy and Important
+  // Links cards, plus the mailing and SMS lists. Its own desk beside Giving and
+  // Emails (same PARA group: an ongoing-responsibility function). It exists
+  // because marketing was the one function with no home in here, which meant
+  // the team whose entire job is public had to file a pull request to change a
+  // headline. Gated by `marketingSite.myMarketingAccess.canViewDesk` — mirrors
+  // Giving's gate exactly; the in-screen guards on each route are the real
+  // enforcement, this is nav visibility only.
+  { label: "Marketing", icon: "megaphone", path: "/marketing", group: "A" },
   // Recruiting — the People seat's two pipelines: applications for a SEAT on
   // the chart (`/people/pipeline`) and volunteer signups for a pair of hands
   // at a gathering (`/people/volunteers`). Not called "Hiring": nobody here is
@@ -137,6 +146,8 @@ function useNav(): NavEntry[] {
   const campaigns = useQuery(api.audiences.myCampaignsAccess, {});
   // Hiring's own nav gate, same shape as Giving's — see the `NAV` entry doc.
   const hiring = useQuery(api.hiring.myHiringAccess, {});
+  // Marketing's own nav gate, same shape as Giving's — see the `NAV` entry doc.
+  const marketing = useQuery(api.marketingSite.myMarketingAccess, {});
   const tier = org?.tier;
   return NAV.filter((n) => {
     switch (n.path) {
@@ -153,6 +164,8 @@ function useNav(): NavEntry[] {
         return giving?.canView === true;
       case "/people/pipeline":
         return hiring?.canView === true;
+      case "/marketing":
+        return marketing?.canViewDesk === true;
       case "/campaigns":
         // `deskEnabled` is the parked-desk flag: bulk email moved to Mailchimp
         // (2026-08-19), so the Emails desk is hidden from nav unless a

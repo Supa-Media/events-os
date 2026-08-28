@@ -20,6 +20,10 @@ const IONICONS_ALIASES = {
   // Feather has no building glyph; Ionicons' "business" reads as the
   // recognizable building icon used for the People tab's "backer" mark.
   building: "business",
+  // Feather has no megaphone, and the Marketing desk's whole job is the public
+  // voice — no Feather glyph (radio, send, globe) reads as "we announce
+  // things" the way this one does.
+  megaphone: "megaphone",
 } as const;
 
 export type IconName =
