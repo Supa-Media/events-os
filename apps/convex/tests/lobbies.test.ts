@@ -417,7 +417,12 @@ describe("org.nav showFinances", () => {
     expect(nav.showFinances).toBe(true);
   });
 
-  test("seatless member → false", async () => {
+  // 2026-08-30: the tab is every team member's now (founder — everybody on the
+  // team can get a card, so everybody needs the tab that manages it, and
+  // everybody reads the books). These two cases asserted the OPPOSITE while the
+  // gate was seat-derived; they are kept, inverted, because they are exactly
+  // the population the change is for.
+  test("seatless member → true", async () => {
     const s = await setupChapter(newT());
     const person = await addPerson(s, "Plain Member", { isTeamMember: true });
     const { as } = await addUser(s, "plain@publicworship.life", {
@@ -425,18 +430,16 @@ describe("org.nav showFinances", () => {
     });
     const nav = await as.query(api.org.nav, {});
     expect(nav.tier).toBe("member");
-    expect(nav.showFinances).toBe(false);
+    expect(nav.showFinances).toBe(true);
   });
 
-  test("a seat with unrelated capabilities does not grant it", async () => {
+  test("a seat with unrelated capabilities still gets the tab (membership does it)", async () => {
     const s = await setupChapter(newT());
-    const person = await addPerson(s, "Bookkeeper", { isTeamMember: true });
+    const person = await addPerson(s, "Door Volunteer", { isTeamMember: true });
     const seatId = await addSeat(s, {
       slug: "bookkeeper_seat",
       title: "Bookkeeper",
       chart: "chapter",
-      // A power in a DIFFERENT domain — the Finances tab is derived from
-      // holding any `finance.*` power, so this must not surface it.
       capabilities: ["events.checkin"],
     });
     await addSeatAssignment(s, seatId, s.chapterId, person);
@@ -444,6 +447,52 @@ describe("org.nav showFinances", () => {
       personId: person,
     });
     const nav = await as.query(api.org.nav, {});
+    // Not because of the seat — because they are on the roster at all.
+    expect(nav.showFinances).toBe(true);
+  });
+
+  test("the volunteer tier does NOT get it", async () => {
+    const s = await setupChapter(newT());
+    // An engagement and nothing else = the volunteer tier, whose lobby is
+    // Briefing alone. "Everybody on the team" is the core team, not somebody
+    // signed up to help at one event.
+    const person = await addPerson(s, "Door Helper");
+    const { as, userId } = await addUser(s, "helper@publicworship.life", {
+      personId: person,
+    });
+    await run(s.t, async (ctx) => {
+      const now = Date.now();
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Show",
+        slug: `show-${now}`,
+        version: 1,
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const eventId = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Show",
+        eventDate: now + DAY,
+        status: "planning",
+        createdBy: userId,
+        createdAt: now,
+        updatedAt: now,
+      });
+      await ctx.db.insert("engagements", {
+        chapterId: s.chapterId,
+        eventId,
+        personId: person,
+        type: "volunteer",
+        status: "confirmed",
+        createdAt: now,
+      });
+    });
+    const nav = await as.query(api.org.nav, {});
+    expect(nav.tier).toBe("volunteer");
     expect(nav.showFinances).toBe(false);
   });
 

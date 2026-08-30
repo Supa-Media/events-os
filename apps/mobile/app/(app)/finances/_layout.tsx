@@ -105,6 +105,12 @@ const REIMBURSEMENTS_TAB: Tab = {
 // money — is the one who can least afford a destination two taps deep.
 const PAYMENTS_TAB: Tab = { label: "Payments", path: "/finances/payments" };
 
+/** The read-only ledger every team member can open (`publicLedger.teamStatement`).
+ *  Seat holders get it too — a treasurer wanting "what will the public see for
+ *  August" should not have to mint a preview token to find out — but it sits at
+ *  the END of their bar, after the surfaces they work in. */
+const LEDGER_TAB: Tab = { label: "Ledger", path: "/finances/ledger" };
+
 // "Book", not "Reconcile": the tab now holds every question you can ask of
 // the ledger — what needs attention, what's waiting on you, a month's
 // backfill, the receipt chase — and "reconcile" names only one of them (close
@@ -122,13 +128,25 @@ const SEAT_TABS: Tab[] = [
   // no-seat member would land on a permission wall — the exact thing the
   // reduced MEMBER_TABS set exists to prevent.
   PAYMENTS_TAB,
+  LEDGER_TAB,
 ];
 
 // The member (no-seat) set. Their own charges live at `/code` now — off this
 // bar entirely, which is why the Coding chip and its had-work/no-work
 // conditional are both gone: a page that requires no seat has no business
 // being gated behind a finance tab bar in the first place.
+//
+// LEDGER (2026-08-30) is the member's read of the org's money — the founder's
+// "they can see the full thing ... they just can't edit". It is deliberately
+// NOT the Book: the Book is a working surface (bulk coding, the receipt chase,
+// nudges, the publish console) whose every control a member would be refused.
+// The Ledger is the same month the public page shows, built by the same
+// snapshot builder, with no affordance to change anything on it.
+//
+// It leads rather than trails My Card, because the tab exists for two reasons
+// now and this is the one that is new to a member opening it.
 const MEMBER_TABS: Tab[] = [
+  LEDGER_TAB,
   { label: "My Card", path: "/finances/cards" },
   REIMBURSEMENTS_TAB,
   BUDGETS_TAB,

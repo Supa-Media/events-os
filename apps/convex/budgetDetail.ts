@@ -44,7 +44,8 @@ import {
   effectiveBudgetApprovalStatus,
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
-import { requireFinanceRole, requireFinanceCentral, type FinanceAccess } from "./lib/finance";
+import { getFinanceRole, requireFinanceCentral, type FinanceAccess } from "./lib/finance";
+import { requireBooksRead } from "./lib/booksAccess";
 import { resolveTitleForBudget } from "./lib/budgetTitleResolve";
 import { readSandbox } from "./financeSettings";
 import {
@@ -164,10 +165,19 @@ export const getBudgetDetail = query({
     const budget = await ctx.db.get(budgetId);
     if (!budget) return null;
 
-    // Tenancy + role gate — mirrors `dashboardCharts.budgetTransactions`'s own
-    // doc comment: the budget's own chapter at viewer rank, or central reach
-    // through the caller's own home chapter for a budget owned by a
-    // different chapter or by `"central"`.
+    // Tenancy + role gate. A FOREIGN book (another chapter's budget, or
+    // central's) still needs central reach through the caller's own home
+    // chapter — unchanged. The caller's OWN chapter is now readable by any
+    // team member (`lib/booksAccess.ts`), which answers the one policy
+    // question `specs/pm-budgets-spec.md` §Q1 left open: "should a cardholder
+    // with no finance seat see line-level expenses?" Founder, 2026-08-30:
+    // yes — they see the full thing, they just can't edit it.
+    //
+    // What that exposes is exactly what the spec named: who spent, at what
+    // merchant, and whether the receipt is in. That is the same person-level
+    // detail the Budgets tab's own glance list already implies and the public
+    // ledger already publishes by line, so the honest place for it is next to
+    // the number it explains rather than behind a lock the member can't act on.
     const ownChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     let access: FinanceAccess;
     if (budget.chapterId !== ownChapterId) {
@@ -179,7 +189,10 @@ export const getBudgetDetail = query({
       }
       access = await requireFinanceCentral(ctx, ownChapterId);
     } else {
-      access = await requireFinanceRole(ctx, ownChapterId, "viewer");
+      await requireBooksRead(ctx, ownChapterId);
+      // The graded role still decides the WRITE affordance below; a member
+      // resolves to no role at all, so `canEdit` reads false for them.
+      access = await getFinanceRole(ctx, ownChapterId);
     }
     // `access` above already asserts at least viewer/central reach for the
     // gate; `canEdit` mirrors `updateBudget`'s own write gate (manager rank
