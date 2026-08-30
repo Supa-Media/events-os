@@ -61,8 +61,8 @@ import {
   TextInput,
   View,
   useWindowDimensions,
+  ScrollView,
 } from "react-native";
-import type { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
@@ -139,7 +139,7 @@ export function MarketingDesignsView() {
   // offsets of the three sections. Same arrangement `project/[id]` uses to jump
   // to its money section: the scroller belongs to `Screen`, and which offset to
   // scroll to is something only this page knows.
-  const scrollRef = useRef<ComponentRef<typeof KeyboardAwareScrollView>>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const shellY = useRef(0);
   const canvasY = useRef(0);
   const sectionY = useRef<Record<string, number>>({});

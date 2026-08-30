@@ -9,8 +9,8 @@
  * not-found state so a shared link never confirms existence to an outsider.
  */
 import { ComponentRef, useEffect, useMemo, useRef, useState } from "react";
-import { View, Text, Pressable, Platform } from "react-native";
-import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import { View, Text, Pressable, Platform, ScrollView } from "react-native";
+import { KeyboardAwareScroll } from "../../../components/ui/KeyboardAwareScroll";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -58,7 +58,7 @@ export default function ProjectScreen() {
   // ONCE by design — after the first jump the reader owns the scroll
   // position, and a re-scroll on any later re-layout would yank the page out
   // from under them.
-  const scrollRef = useRef<ComponentRef<typeof KeyboardAwareScrollView>>(null);
+  const scrollRef = useRef<ScrollView>(null);
   const [moneyY, setMoneyY] = useState<number | null>(null);
   const jumpedRef = useRef(false);
   useEffect(() => {
