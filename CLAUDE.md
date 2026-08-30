@@ -106,6 +106,40 @@ packages from GitHub Packages + reusable workflows pinned `@main`; local checkou
 - `supa.config.ts` is the framework config surface — keep it truthful (vault
   name, EAS project id); `scripts/dev.js` loads it at runtime.
 
+## A New Native Dependency Is `gated`, Not `core`
+
+**Every native build of this app shares one runtime version, deliberately.** An
+OTA update therefore reaches EVERY installed binary, not only the ones built
+since a dependency landed. The gate against newer JS crashing an older binary
+is in JS: a native module that might be absent is resolved at runtime and falls
+back when it isn't there.
+
+`apps/mobile/native-deps.json` records that. `core` is a claim that the module
+is in every binary in the field; `gated` means it must never be statically
+imported. `@supa-media/testing`'s `nativeImports` check enforces the second
+half — but `core` is exempt from it, so **classifying a new dependency as
+`core` silently opts out of the whole mechanism.**
+
+So: **a native dependency you add today goes in `gated`.** It is, by
+definition, absent from every phone that already has the app. It graduates to
+`core` only once a native build containing it is the oldest binary in the
+field — a release decision, recorded by editing `BASELINE_CORE` in
+`__tests__/nativeDepsBaseline.test.js`.
+
+Copy `lib/cameraScanning.ts` or `lib/clipboard.ts`: a runtime `require` through
+a variable, inside try/catch, cached, returning `null` when the module is
+missing, and every consumer handling that `null`. No static reference of any
+kind — not a type-only import, not even the module name inside a comment; the
+guardrail's scan is textual and will catch both.
+
+This rule exists because 2026-08-28 (#806) added `expo-clipboard` as `core`,
+statically imported from `lib/clipboard.ts` and reached through
+`components/ui`'s barrel by every screen. The OTA published on that merge threw
+as the bundle loaded on any older binary — before React mounted, so nothing
+could catch it — and expo-updates' ErrorRecovery escalated it to a native
+abort. The crash report (TestFlight 1.0.0 build 8, 2026-08-30) was all
+`ErrorRecovery.crash()` frames and never mentioned a clipboard.
+
 ## The Academy Must Track the Product
 
 The Academy (packages/shared/src/academy/) is the org's canonical training —
