@@ -132,6 +132,16 @@ missing, and every consumer handling that `null`. No static reference of any
 kind — not a type-only import, not even the module name inside a comment; the
 guardrail's scan is textual and will catch both.
 
+**And the other half: some modules cannot be gated at all.** `react-native`,
+`react-native-reanimated` + `react-native-worklets`, `react-native-screens`,
+`react-native-safe-area-context`, `react-native-gesture-handler`,
+`expo-router`, `react-native-css-interop` are structural — the app cannot
+start without them, so there is no fallback to write. When one of those is
+ADDED or takes a major upgrade (reanimated 3 → 4 pulling in the separate
+`react-native-worklets` module is the example that bit us), **no OTA can rescue
+a binary that predates it. Ship a native build before the next OTA goes out**,
+or every installed copy crashes on launch until someone reinstalls.
+
 This rule exists because 2026-08-28 (#806) added `expo-clipboard` as `core`,
 statically imported from `lib/clipboard.ts` and reached through
 `components/ui`'s barrel by every screen. The OTA published on that merge threw

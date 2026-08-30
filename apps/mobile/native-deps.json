@@ -8,8 +8,6 @@
     "expo-linking",
     "expo-secure-store",
     "expo-updates",
-    "expo-notifications",
-    "expo-device",
     "expo-font",
     "expo-image-picker",
     "expo-splash-screen",
@@ -29,6 +27,8 @@
   ],
   "gated": [
     "expo-camera",
-    "expo-clipboard"
+    "expo-clipboard",
+    "expo-device",
+    "expo-notifications"
   ]
 }
