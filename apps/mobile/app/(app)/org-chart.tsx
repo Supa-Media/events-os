@@ -60,6 +60,7 @@ import {
   type FullChart,
   type TreeNode,
 } from "../../components/orgchart/treeUtils";
+import { useMobileChrome } from "../../components/ui/MobileChrome";
 
 /** Overlay panel width — clamped to the window width on narrow screens so it
  *  reads as a near-full-width drawer on phones instead of overflowing. */
@@ -67,6 +68,9 @@ const PANEL_WIDTH = 380;
 const PANEL_MARGIN = 24;
 
 export default function OrgChartScreen() {
+  // How much edge the phone shell's floating chrome occupies. Zeros on
+  // desktop and outside the shell.
+  const chrome = useMobileChrome();
   const chart = useQuery(api.seats.chart, {}) as FullChart | undefined;
   const me = useQuery(api.profiles.me);
   const isSuperuser = me?.isSuperuser === true;
@@ -245,7 +249,15 @@ export default function OrgChartScreen() {
           See PR #206 review point 1. */}
       <View
         pointerEvents="box-none"
-        style={{ position: "absolute", top: 0, left: 0, right: panelOpen ? panelWidth : 0 }}
+        style={{
+          position: "absolute",
+          // Below the phone shell's floating top buttons, which hover over
+          // this canvas rather than pushing it down. 0 on desktop, where the
+          // sidebar is a column beside the page and nothing floats over it.
+          top: chrome.top,
+          left: 0,
+          right: panelOpen ? panelWidth : 0,
+        }}
       >
         <OrgChartToolbar
           chart={chart}

@@ -3,6 +3,7 @@ import { View, Text, Pressable } from "react-native";
 import { ConvexError } from "convex/values";
 import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
+import { useMobileChrome } from "../ui/MobileChrome";
 
 /**
  * Shared building blocks for the two AI assistant panels (`AiAssistantPanel`
@@ -28,12 +29,17 @@ export function errorMessage(err: unknown): string {
  * Identical across both panels.
  */
 export function AssistantFab({ onPress }: { onPress: () => void }) {
+  const chrome = useMobileChrome();
   return (
     <Pressable
       onPress={onPress}
       accessibilityRole="button"
-      className="absolute bottom-6 right-6 active:opacity-80"
+      className="absolute right-6 active:opacity-80"
       style={{
+        // Above the phone shell's floating dock — the dock is centered and
+        // reaches under this corner on a narrow screen. 0 outside the phone
+        // shell, so desktop keeps the plain 24px inset.
+        bottom: 24 + chrome.bottom,
         width: 52,
         height: 52,
         borderRadius: 26,

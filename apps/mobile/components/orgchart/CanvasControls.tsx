@@ -1,6 +1,7 @@
 import { Pressable, Text, View } from "react-native";
 import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
+import { useMobileChrome } from "../ui/MobileChrome";
 
 /**
  * The small, unobtrusive zoom controls in the canvas's bottom-right corner —
@@ -27,11 +28,15 @@ export function CanvasControls({
    *  panel's own strip. See `org-chart.tsx`'s `controlsRightInset`. */
   rightInset?: number;
 }) {
+  const chrome = useMobileChrome();
   return (
     <View
       pointerEvents="box-none"
-      className="absolute bottom-4 z-40 flex-row items-center gap-1 rounded-md border border-border bg-raised px-1 py-1 shadow-card"
-      style={{ right: 16 + rightInset }}
+      className="absolute z-40 flex-row items-center gap-1 rounded-md border border-border bg-raised px-1 py-1 shadow-card"
+      // Lifted clear of the phone shell's floating dock, which is centered and
+      // wide enough to reach under this cluster on a narrow screen. `bottom`
+      // is 0 outside the phone shell, so desktop keeps the plain 16px inset.
+      style={{ right: 16 + rightInset, bottom: 16 + chrome.bottom }}
     >
       <ControlButton icon="zoom-out" label="Zoom out" onPress={onZoomOut} />
       <Text className="min-w-[38px] text-center text-xs font-semibold text-muted">

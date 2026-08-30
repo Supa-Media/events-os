@@ -60,24 +60,43 @@ export default function RootLayout() {
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider>
         <SafeAreaProvider>
-          {/* extra.convexUrl is the env URL with loopback rewritten to the
-              machine's LAN IP at dev-server start (see app.config.js) —
-              Chrome blocks cross-origin loopback and devices can't reach it. */}
-          <SupaConvexProvider
-            url={
-              Constants.expoConfig?.extra?.convexUrl ??
-              process.env.EXPO_PUBLIC_CONVEX_URL
-            }
-          >
-            <NotificationProvider>
-              <StatusBar style="dark" />
-              {/* Catches render errors in any screen so a thrown exception shows
-                  a recovery UI instead of a blank tree. Kept below the Convex/
-                  auth + notification providers so its recovery Screen still has
-                  context, but above the route Slot so it wraps every screen. */}
-              <ErrorBoundary>{showApp ? <Slot /> : null}</ErrorBoundary>
-            </NotificationProvider>
-          </SupaConvexProvider>
+          {/* OUTER boundary — wraps the providers themselves.
+              
+              Without it, a throw from `SupaConvexProvider` or
+              `NotificationProvider` while they mount has nothing above it to
+              catch it: React unmounts the whole tree, RN reports a fatal JS
+              error, and on a release build expo-updates' ErrorRecovery
+              escalates that to a native abort. What reaches you then is a
+              SIGABRT crash log whose only frames are `ErrorRecovery.crash()`
+              — the JS error that actually caused it is nowhere in the report,
+              which is exactly how a startup crash becomes undiagnosable.
+              
+              This boundary is deliberately OUTSIDE both providers and uses
+              only `View`/`Text`/`Screen`, none of which need Convex or
+              notification context. The inner boundary below stays where it is:
+              it wraps the route tree, where the recovery UI SHOULD have those
+              contexts available. */}
+          <ErrorBoundary>
+            {/* extra.convexUrl is the env URL with loopback rewritten to the
+                machine's LAN IP at dev-server start (see app.config.js) —
+                Chrome blocks cross-origin loopback and devices can't reach it. */}
+            <SupaConvexProvider
+              url={
+                Constants.expoConfig?.extra?.convexUrl ??
+                process.env.EXPO_PUBLIC_CONVEX_URL
+              }
+            >
+              <NotificationProvider>
+                <StatusBar style="dark" />
+                {/* Catches render errors in any screen so a thrown exception
+                    shows a recovery UI instead of a blank tree. Kept below the
+                    Convex/auth + notification providers so its recovery Screen
+                    still has context, but above the route Slot so it wraps
+                    every screen. */}
+                <ErrorBoundary>{showApp ? <Slot /> : null}</ErrorBoundary>
+              </NotificationProvider>
+            </SupaConvexProvider>
+          </ErrorBoundary>
         </SafeAreaProvider>
       </KeyboardProvider>
     </GestureHandlerRootView>

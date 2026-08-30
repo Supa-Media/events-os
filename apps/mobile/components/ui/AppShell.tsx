@@ -411,12 +411,15 @@ function AccountSheet({
         <>
           <SheetSectionLabel label="Chapter" />
           <SheetGroup>
+            {/* No `onPress`: which chapter you're at is a fact here, not a
+                control. The desktop sidebar footer makes the same call for a
+                single-context caller — a switcher only appears for someone
+                who has something to switch, and that's the top-right pill. */}
             <SheetRow
               label={org.chapterName}
               sublabel={summary ? `${summary.peopleCount} people` : undefined}
               icon="home"
               first
-              onPress={onClose}
             />
           </SheetGroup>
         </>

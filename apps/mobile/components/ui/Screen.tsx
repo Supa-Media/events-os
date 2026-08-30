@@ -71,6 +71,10 @@ export function Screen({
   if (loading) {
     return (
       <View
+        // Padded by the chrome so the spinner lands in the middle of the
+        // VISIBLE page rather than the middle of the window, which on a phone
+        // sits noticeably low once the dock is accounted for. Both are 0
+        // outside the phone shell, where the class alone centers it.
         style={{ paddingTop: chrome.top, paddingBottom: chrome.bottom }}
         className="flex-1 items-center justify-center bg-surface"
       >
@@ -92,12 +96,22 @@ export function Screen({
           style={{
             width: "100%",
             maxWidth,
+            // Phone only, and spread so the desktop branch passes NO padding
+            // keys at all: an inline `style` beats a NativeWind class, so a
+            // literal `paddingTop: 0` here would silently cancel the `py-7`
+            // below and flatten every desktop page against its top edge.
+            //
             // `chrome.*` already carries the safe-area inset, so on a phone
             // inside the shell this IS the page's whole vertical padding, not
-            // an addition to it. Outside the shell there is no chrome to clear
-            // and the page falls back to plain phone padding.
-            paddingTop: phone ? (chrome.top || 0) + PHONE_PAD_TOP : 0,
-            paddingBottom: phone ? (chrome.bottom || 0) + PHONE_PAD_BOTTOM : 0,
+            // an addition to it. Outside the shell (login, onboarding, the
+            // public share/pay routes) it reads zero and the page falls back
+            // to plain phone padding.
+            ...(phone
+              ? {
+                  paddingTop: chrome.top + PHONE_PAD_TOP,
+                  paddingBottom: chrome.bottom + PHONE_PAD_BOTTOM,
+                }
+              : null),
           }}
           className={phone ? "px-4" : "px-6 py-7 sm:px-8 sm:py-8"}
         >

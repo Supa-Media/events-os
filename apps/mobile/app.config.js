@@ -27,8 +27,43 @@ function resolveConvexUrl() {
   return url;
 }
 
+/**
+ * Refuse to configure a REAL build (staging/production) without the Convex URL.
+ *
+ * `EXPO_PUBLIC_*` vars are inlined at build/export time, so a build that runs
+ * without this one ships `undefined` as the backend URL. What the user sees is
+ * not a helpful error: the app throws while mounting its providers, and on a
+ * release build expo-updates' ErrorRecovery escalates that fatal JS error into
+ * a native abort — a SIGABRT crash log whose frames are all
+ * `ErrorRecovery.crash()`, with the actual cause nowhere in the report.
+ *
+ * `deploy-mobile-update.yml` and `deploy-web.yml` already refuse to run without
+ * it ("would ship `undefined` and crash the app on launch"). `eas build` was
+ * the one path with no such check, and it is the path that produces the
+ * binaries people install. Failing here turns "ships a crashing build" into
+ * "the build stops with a message".
+ *
+ * Scoped to APP_ENV staging/production — the values `eas.json`'s two release
+ * profiles set — so local dev, `pnpm dev`, and tooling that evaluates this
+ * config without a backend are unaffected.
+ */
+function assertConvexUrlForReleaseBuilds() {
+  const appEnv = process.env.APP_ENV;
+  if (appEnv !== "staging" && appEnv !== "production") return;
+  if (process.env.EXPO_PUBLIC_CONVEX_URL) return;
+  throw new Error(
+    `EXPO_PUBLIC_CONVEX_URL is not set, but APP_ENV=${appEnv}.\n\n` +
+      "EXPO_PUBLIC_* vars are baked into the JS bundle at build time, so this " +
+      "build would ship with no backend URL and crash on launch.\n\n" +
+      "Set it in the EAS project's environment variables (`eas env:create`), " +
+      "or export it in the shell running `eas build`.",
+  );
+}
+
 /** @type {import('expo/config').ExpoConfig} */
-module.exports = ({ config }) => ({
+module.exports = ({ config }) => (
+  assertConvexUrlForReleaseBuilds(),
+  {
   ...config,
   name: "Chapter OS",
   slug: "events-os",
@@ -119,4 +154,5 @@ module.exports = ({ config }) => ({
   updates: {
     url: `https://u.expo.dev/4d2f4932-3e26-433f-a8db-6da4571dff18`,
   },
-});
+  }
+);

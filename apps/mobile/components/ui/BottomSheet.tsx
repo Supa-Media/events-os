@@ -171,8 +171,13 @@ export function SheetSectionLabel({ label }: { label: string }) {
 }
 
 /**
- * A single tappable row. `first` suppresses the leading separator — the caller
- * passes it because only the caller knows the row's position in its group.
+ * A single row. `first` suppresses the leading separator — the caller passes it
+ * because only the caller knows the row's position in its group.
+ *
+ * With no `onPress` the row is a STATEMENT, not a control: it renders as plain
+ * text with no press affordance. Some rows in a sheet are facts rather than
+ * destinations — which chapter you're at, for a caller who has only one — and
+ * a row that highlights under a finger but does nothing is worse than a label.
  */
 export function SheetRow({
   label,
@@ -187,7 +192,8 @@ export function SheetRow({
   label: string;
   sublabel?: string;
   icon?: IconName;
-  onPress: () => void;
+  /** Omit for a non-interactive informational row. */
+  onPress?: () => void;
   active?: boolean;
   destructive?: boolean;
   first?: boolean;
@@ -199,16 +205,14 @@ export function SheetRow({
     : active
       ? colors.accent
       : colors.muted;
-  return (
-    <Pressable
-      accessibilityRole="button"
-      accessibilityLabel={label}
-      accessibilityState={{ selected: active }}
-      onPress={onPress}
-      className={`flex-row items-center gap-3.5 px-4 active:bg-sunken web:hover:bg-sunken ${
-        sublabel ? "py-2.5" : "py-3"
-      } ${first ? "" : "border-t border-border"}`}
-    >
+  // NativeWind interops on the LITERAL component in the JSX, so the two cases
+  // are written out rather than switched through a `const Row = onPress ?
+  // Pressable : View` — a dynamic component reference gets no className, the
+  // same silent-drop this file's `Animated.View` comment describes.
+  const padding = `${sublabel ? "py-2.5" : "py-3"} ${first ? "" : "border-t border-border"}`;
+
+  const body = (
+    <>
       {icon ? (
         <View className="w-5 items-center">
           <Icon name={icon} size={17} color={iconTint} />
@@ -230,6 +234,30 @@ export function SheetRow({
       </View>
       {trailing ??
         (active ? <Icon name="check" size={16} color={colors.accent} /> : null)}
+    </>
+  );
+
+  if (!onPress) {
+    return (
+      <View
+        accessible
+        accessibilityRole="text"
+        className={`flex-row items-center gap-3.5 px-4 ${padding}`}
+      >
+        {body}
+      </View>
+    );
+  }
+
+  return (
+    <Pressable
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected: active }}
+      onPress={onPress}
+      className={`flex-row items-center gap-3.5 px-4 active:bg-sunken web:hover:bg-sunken ${padding}`}
+    >
+      {body}
     </Pressable>
   );
 }
