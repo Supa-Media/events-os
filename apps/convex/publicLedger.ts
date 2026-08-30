@@ -74,6 +74,7 @@ import {
   requireLedgerPrepare,
   requireLedgerPublish,
 } from "./lib/publicLedgerAccess";
+import { requireBooksRead } from "./lib/booksAccess";
 import {
   buildSnapshot,
   type EntryDraft,
@@ -101,6 +102,12 @@ const amendmentReasonValidator = v.union(
  *  survives being shared as a link). Above it the page says so and points at
  *  the CSV, which is unbounded by design. */
 export const PUBLIC_PAGE_ENTRY_LIMIT = 1200;
+
+/** Hard ceiling on how far back the in-app team ledger's picker reaches
+ *  (`teamLedgerMonths`), mirroring the publish console's own ceiling. The
+ *  window itself is derived from the book's earliest transaction — see that
+ *  query — so this only bounds a pathological book, never a real calendar. */
+const TEAM_LEDGER_MONTH_CEILING = 60;
 
 /**
  * How long a minted preview token (`mintLedgerPreviewToken`) stays valid.
@@ -1684,5 +1691,189 @@ export const previewByToken = internalQuery({
       gifts,
       totalBooks,
     };
+  },
+});
+
+// ── The TEAM statement: the same ledger, in-app, for everyone on the roster ──
+/**
+ * THE BOOKS, FOR THE TEAM (2026-08-30).
+ *
+ * Founder decision, verbatim: "they can see the ledger too. They can see the
+ * full thing because ... it's publicly set anyways, um, but they just can't
+ * edit." A team member opens Finances and reads this organization's money.
+ *
+ * ── WHY THIS REUSES THE PUBLIC PROJECTION EXACTLY ───────────────────────────
+ *
+ * This is `previewByToken`'s twin: the same `buildSnapshot` over the LIVE
+ * books, the same `draftToPublicEntry` mapping, the same `statementShape`. The
+ * only difference is the credential — a roster profile instead of a minted
+ * token.
+ *
+ * That reuse IS the redaction guarantee, and it is the reason this query lives
+ * here rather than in a new member-facing module with a hand-written
+ * projection. Every rule the org has already decided about what a ledger line
+ * may say — attendee names never appear (decided 2026-08-08; the line carries
+ * headcount and affiliation mix instead), a contractor's name never appears, a
+ * donor's name never appears (gifts publish as an anonymous roll) — is
+ * enforced once, in the snapshot builder, for the public page and this screen
+ * together. A separate internal projection would be a second place to
+ * remember all of it, and the first place to forget one.
+ *
+ * So a team member sees precisely what the world will see when the month is
+ * published — just earlier, and for months that are still open. That is the
+ * whole ask ("the full thing"), and it is also strictly less than what the
+ * reconcile grid shows a bookkeeper (no reconcile notes, no attendee roster,
+ * no card/holder detail, no coding workflow).
+ *
+ * ── SCOPE: ONE BOOK AT A TIME, AND ONLY THE CALLER'S OWN ────────────────────
+ *
+ * `book: "mine"` is the caller's own chapter; `"central"` is the org level.
+ * Both are readable by any member — the same `scopeVisibleToChapter` rule the
+ * rest of finance uses (a central-account card charge belongs to the chapter
+ * person who spent it, so hiding central would hide their own spending).
+ * ANOTHER chapter's book is deliberately not reachable here at all: it is not
+ * an argument this query accepts, so no URL can widen it, mirroring
+ * `budgetsGlance`'s own reasoning about a member-visible query's `scope` arg.
+ * Cross-book reach stays with central finance authority and its own gates.
+ *
+ * Never `assertPublishable`, never a publication row: LOOKING is not
+ * publishing, and an unpublished month reads exactly as it stands today.
+ */
+export const teamStatement = query({
+  args: {
+    periodKey: v.string(),
+    book: v.optional(v.union(v.literal("mine"), v.literal("central"))),
+  },
+  returns: v.object({
+    periodKey: v.string(),
+    label: v.string(),
+    bookLabel: v.string(),
+    ...statementShape,
+  }),
+  handler: async (ctx, args) => {
+    assertPeriodKey(args.periodKey);
+    const homeChapterId = await requireHomeChapter(ctx);
+    // Membership is the gate. A member reads their own chapter's books and
+    // central's; nothing here consults the graded ladder, because nothing here
+    // writes.
+    await requireBooksRead(ctx, homeChapterId);
+
+    const scope: FinanceScope =
+      args.book === "central" ? CENTRAL : homeChapterId;
+    const sandboxMode = await readSandbox(ctx);
+    const snapshot = await buildSnapshot(ctx, scope, args.periodKey, sandboxMode);
+    const bookLabel =
+      scope === CENTRAL
+        ? "Central"
+        : ((await ctx.db.get(homeChapterId))?.name ?? "Chapter");
+
+    // Same cap and truncation signal the public page applies, for the same
+    // reason: one response, bounded, and honest when there is more.
+    const entriesTruncated = snapshot.entries.length > PUBLIC_PAGE_ENTRY_LIMIT;
+    const capped = snapshot.entries.slice(0, PUBLIC_PAGE_ENTRY_LIMIT);
+    const entries = capped
+      .filter((e) => e.kind === "ledger")
+      .map(draftToPublicEntry);
+    const gifts = capped.filter((e) => e.kind === "gift").map(draftToPublicGift);
+
+    const spendByBudget: BudgetRow[] = snapshot.spendByBudget.map((b) => ({
+      label: b.label,
+      allocatedCents: b.allocatedCents ?? null,
+      spentCents: b.spentCents,
+      count: b.count,
+    }));
+
+    // `books` is the PUBLICATION history — which revisions of this month the
+    // public has actually been shown. An unpublished month has none, and says
+    // so by being empty rather than by inventing a revision 0.
+    const pub = await findPublication(ctx, scope, args.periodKey);
+    const books =
+      pub && pub.isLive && pub.liveRevision != null
+        ? [
+            {
+              bookLabel,
+              periodKey: args.periodKey,
+              label: periodLabel(args.periodKey),
+              revision: pub.liveRevision,
+              publishedAt: pub.updatedAt,
+              amendments: [],
+            },
+          ]
+        : [];
+
+    return {
+      periodKey: args.periodKey,
+      label: periodLabel(args.periodKey),
+      bookLabel,
+      incomeCents: snapshot.incomeCents,
+      expenseCents: snapshot.expenseCents,
+      netCents: snapshot.incomeCents - snapshot.expenseCents,
+      incomeByStream: snapshot.incomeByStream,
+      expenseByCategory: snapshot.expenseByCategory,
+      expenseByProject: snapshot.expenseByProject,
+      spendByBudget,
+      reconstructedCount: snapshot.reconstructedCount,
+      reconstructedCents: snapshot.reconstructedCents,
+      undocumentedCount: snapshot.undocumentedCount,
+      undocumentedCents: snapshot.undocumentedCents,
+      uncodedCount: snapshot.uncodedCount,
+      uncodedCents: snapshot.uncodedCents,
+      unexplainedCount: snapshot.unexplainedCount,
+      unexplainedCents: snapshot.unexplainedCents,
+      entryCount: snapshot.entryCount,
+      giftCount: snapshot.giftCount,
+      giverCount: snapshot.giverCount,
+      backerCount: snapshot.backerCount,
+      entriesTruncated,
+      books,
+      entries,
+      gifts,
+    };
+  },
+});
+
+/**
+ * The months the team ledger's picker offers, newest first.
+ *
+ * Reaches back to the BOOK'S OWN BEGINNING — its earliest transaction,
+ * Eastern-bucketed — exactly as the publish console's calendar does, and for
+ * the reason recorded there: a fixed window silently cut the calendar short
+ * (founder report, 2026-08-12: "coding publish only goes back March 2025" when
+ * the genesis backfill reaches into 2024). Nothing was wrong with the data; the
+ * cap was. Shipping a fresh fixed window here would have reintroduced the same
+ * bug on a screen every member opens, so this repeats the console's derivation
+ * rather than its earlier mistake — one bounded indexed read, same 60-month
+ * hard ceiling, and if that ceiling ever bites it gets widened out loud.
+ */
+export const teamLedgerMonths = query({
+  args: { book: v.optional(v.union(v.literal("mine"), v.literal("central"))) },
+  returns: v.array(v.object({ periodKey: v.string(), label: v.string() })),
+  handler: async (ctx, args) => {
+    const homeChapterId = await requireHomeChapter(ctx);
+    await requireBooksRead(ctx, homeChapterId);
+    const scope: FinanceScope =
+      args.book === "central" ? CENTRAL : homeChapterId;
+
+    const now = new Date();
+    const nowIndex = now.getUTCFullYear() * 12 + now.getUTCMonth();
+    let count = 12;
+    const earliestTxn = await ctx.db
+      .query("transactions")
+      .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", scope))
+      .order("asc")
+      .first();
+    if (earliestTxn) {
+      const p = easternParts(earliestTxn.postedAt);
+      count = Math.max(count, nowIndex - (p.year * 12 + (p.month - 1)) + 1);
+    }
+    count = Math.max(1, Math.min(count, TEAM_LEDGER_MONTH_CEILING));
+
+    const out: { periodKey: string; label: string }[] = [];
+    for (let i = 0; i < count; i += 1) {
+      const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      const key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, "0")}`;
+      out.push({ periodKey: key, label: periodLabel(key) });
+    }
+    return out;
   },
 });

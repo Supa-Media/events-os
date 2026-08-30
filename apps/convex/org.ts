@@ -35,7 +35,6 @@ import type { QueryCtx } from "./_generated/server";
 import { Doc, Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
-  grantsAnyInDomain,
   isOperationalEvent,
   responsibilityAppliesTo,
 } from "@events-os/shared";
@@ -90,12 +89,26 @@ const NAV_RETURNS = v.object({
   /** The chapter's display name — the shell shows who you're operating as. */
   chapterName: v.union(v.string(), v.null()),
   /**
-   * Whether the Finances tab should show in the nav. True for the `admin`/
-   * `lead` tiers (the transition grandfather — nobody loses the tab while
-   * seats roll out, an explicit owner decision) OR when the caller holds ANY
-   * seat (any scope — central or a chapter) carrying ANY power in the
-   * `finance` domain. This is nav VISIBILITY only, not access control: the
-   * in-screen finance guards (already seat-aware) stay the real gate.
+   * Whether the Finances tab should show in the nav. True for EVERY team
+   * member with a roster profile — founder decision, 2026-08-30: everybody on
+   * the team can get a Public Worship card, so everybody needs the tab that
+   * manages it, and everybody reads the books (`lib/booksAccess.ts`).
+   *
+   * The one exclusion is the `volunteer` tier — somebody signed up to help at
+   * an event, with no other affiliation. Their lobby is Briefing and nothing
+   * else by design (see `deriveTier`), and Finances would be the only other
+   * tab they'd have; the founder's "everybody on the team" is the core team,
+   * not a one-event helper. `admin`/`lead` stay listed explicitly so a chapter
+   * admin with no roster row of their own keeps the tab they have today.
+   *
+   * This used to require the `admin`/`lead` tier or a seat carrying a power in
+   * the `finance` domain — which hid the tab from exactly the population the
+   * member finance view (PRD WP-1.3: My Card · Reimbursements · Budgets) was
+   * built for. The member view worked; nothing led to it.
+   *
+   * Still nav VISIBILITY only, not access control: the in-screen finance
+   * guards stay the real gate, and they are what keeps a member reading rather
+   * than writing.
    */
   showFinances: v.boolean(),
 });
@@ -120,57 +133,6 @@ async function selfSeatIds(
   return rows
     .filter((r) => r.scope === "central" || r.scope === chapterId)
     .map((r) => r.seatDefId);
-}
-
-/** Bound on how many seat assignments a single person can hold, mirroring
- *  `selfSeatIds`/`lib/seats.ts`'s same-purpose limits — generous for a real
- *  person's small handful of seats. */
-const PERSON_SEAT_ASSIGNMENT_LIMIT = 200;
-
-/**
- * True iff `personId` holds ANY seat assignment — at ANY scope, central or
- * every chapter, unlike `selfSeatIds`'s chapter-scoped resolution — carrying
- * ANY power in the `finance` domain. This is a pure nav-visibility check (see
- * `showFinances`'s doc on `NAV_RETURNS`); it does not gate money access
- * anywhere.
- *
- * DERIVED, not granted. There used to be a `nav.finances` capability a seat
- * had to carry in addition to its real finance powers, which is one more thing
- * to forget — and forgetting it produced the silent failure of a seat that can
- * do finance work but has no tab to do it from. The tab now shows exactly when
- * the holder can do something behind it. Every seat that carried
- * `nav.finances` also held a real finance power, so nothing changes hands.
- *
- * PERSON-KEYED, not user-keyed like `lib/finance.ts#isCentralEdOrFm` — this
- * only ever gets called with `nav`'s own `self` (the caller's HOME-chapter
- * `people` row from `viewerPerson`), not every `people` row the caller's
- * `userId` owns. `isCentralEdOrFm` deliberately walks every row for the
- * user (mirroring `financeRoles.mySeats`) specifically so a seat on a
- * non-home row still counts; this helper inherits `nav`'s existing
- * home-chapter-only scoping instead of introducing a different one for just
- * this field. Practically: a genuinely multi-chapter user whose
- * `nav.finances` seat hangs off a `people` row OTHER than their home-chapter
- * one won't see it here and falls back to the tier grandfather (still true
- * for admin/lead). This is the same latent gap `lib/context.ts`'s
- * `requireChapterId` doc tracks as `TODO(latent, #143)` — every
- * `viewerPerson`-derived read in `nav`/`lib/org.ts`/`lib/finance.ts`
- * (`tier`, `canManage`, `teamView`, `getFinanceRole`) already only acts on
- * the home-chapter row, so this isn't a new restriction, just one more read
- * that inherits it. Not a bug to fix here — see that TODO for the real fix.
- */
-async function hasFinancesNavSeat(
-  ctx: QueryCtx,
-  personId: Id<"people">,
-): Promise<boolean> {
-  const assignments = await ctx.db
-    .query("seatAssignments")
-    .withIndex("by_person", (q) => q.eq("personId", personId))
-    .take(PERSON_SEAT_ASSIGNMENT_LIMIT);
-  for (const assignment of assignments) {
-    const def = await ctx.db.get(assignment.seatDefId);
-    if (def && grantsAnyInDomain(def.capabilities, "finance")) return true;
-  }
-  return false;
 }
 
 /**
@@ -291,13 +253,11 @@ export const nav = query({
       canManage,
       self,
     );
-    // Finances tab visibility: tier admin/lead (transition grandfather — see
-    // `showFinances`'s doc) OR a held `nav.finances` seat. Placeholder rows
-    // never reach here as `self` — `viewerPerson` already excludes them.
+    // Finances tab visibility: every roster member except the volunteer tier
+    // (see `showFinances`'s doc). Placeholder rows never reach here as
+    // `self` — `viewerPerson` already excludes them.
     const showFinances =
-      tier === "admin" ||
-      tier === "lead" ||
-      (self != null && (await hasFinancesNavSeat(ctx, self._id)));
+      tier === "admin" || tier === "lead" || (self != null && tier !== "volunteer");
     return {
       isAdmin,
       canManage,

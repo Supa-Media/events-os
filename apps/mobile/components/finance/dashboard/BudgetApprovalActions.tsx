@@ -81,13 +81,27 @@ export function BudgetApprovalChip({
 /** Submit / Approve / Request-changes actions for one budget, keyed off its
  *  effective `approvalStatus`. Renders nothing once a budget is plainly
  *  `"approved"` (the chip alone says enough) — the chip is rendered
- *  separately by the caller so it can sit next to the card's cadence chip. */
+ *  separately by the caller so it can sit next to the card's cadence chip.
+ *
+ *  `canSubmit`/`canDecide` gate the two halves, and both DEFAULT TO TRUE so the
+ *  dashboard callers (`BudgetTable`, `AttentionRail`, `CentralView`) are
+ *  unchanged — every one of them already renders behind a finance seat, so the
+ *  question could not arise there. The budget DETAIL page is the call site that
+ *  needs them: it opened to every team member (2026-08-30), and this component
+ *  keyed its buttons off the budget's status alone, so a member would have been
+ *  offered "Approve" on a submitted budget and refused on tap. The page passes
+ *  the server's own answer (`getBudgetDetail`'s `canSubmit`/`canDecide`, which
+ *  mirror the mutations' gates) rather than guessing from a role here. */
 export function BudgetApprovalActions({
   budgetId,
   status,
+  canSubmit = true,
+  canDecide = true,
 }: {
   budgetId: Id<"budgets">;
   status: BudgetApprovalStatus;
+  canSubmit?: boolean;
+  canDecide?: boolean;
 }) {
   const submit = useMutation(api.finances.submitBudgetForApproval);
   const approve = useMutation(api.finances.approveBudget);
@@ -107,6 +121,7 @@ export function BudgetApprovalActions({
   }
 
   if (status === "draft" || status === "changes_requested") {
+    if (!canSubmit) return null;
     return (
       <Button
         title="Send for review"
@@ -119,6 +134,7 @@ export function BudgetApprovalActions({
   }
 
   if (status === "submitted") {
+    if (!canDecide) return null;
     return (
       <>
         <View className="flex-row gap-2">

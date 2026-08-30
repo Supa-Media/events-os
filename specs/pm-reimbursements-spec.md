@@ -10,7 +10,10 @@ against the repo at the file:line given.
 ## 0. The founder's complaints, restated as claims to verify
 
 1. "The reimbursement stuff is hidden within cards." — **TRUE for a finance-seat
-   holder, FALSE for a member.** See §1.1.
+   holder, FALSE for a member.** See §1.1. *(Since 2026-08-30 the member's own
+   tab bar is Ledger · My Card · Reimbursements · Budgets, and the queue itself
+   is readable by any team member — so the seat/member split this spec turns on
+   is now about what you can DO, not what you can see.)*
 2. "It shows all reimbursements just in a line… doesn't collapse anything." —
    **TRUE.** The manager queue is one flat, ungrouped list of up to 200 rows
    including `paid`/`rejected`/`canceled`. See §1.2.
@@ -287,7 +290,7 @@ goes out of date and only a human re-running the preview would notice.
 
 | Action | Gate | Where |
 |---|---|---|
-| Read the approval queue | `requireFinanceRole(viewer)` | `reimbursements.ts:2102` |
+| Read the approval queue | `requireBooksRead` — chapter membership, since 2026-08-30 (was `requireFinanceRole(viewer)`) | `reimbursements.ts` · `lib/booksAccess.ts` |
 | Approve / pre-approve / reject / send back | manager + SoD | `reimbursements.ts:2334-2501` |
 | Pay by ACH / mark paid | manager + disbursement SoD | `increasePayouts.ts:300`, `:435` |
 | Flag / un-flag a personal charge | payer **or** finance manager | `cards.ts:2745-2752`, `:2856-2862` |
@@ -415,7 +418,7 @@ The member screen (`index.tsx:211-363`) is already right and stays. Two changes:
 
 | Persona | Sees |
 |---|---|
-| No finance seat | Member screen only (today's behavior) |
+| No finance seat | Member screen, **plus the chapter's queue read-only** (2026-08-30: the books opened to every team member). No decision buttons — same read-only treatment as `viewer` below. |
 | `viewer` | Queue read-only: sections + counts, **no decision buttons**. Today `RequestCard` renders buttons that the server then refuses — surface the read-only state instead. |
 | `manager` | Full queue + decisions; a request they submitted renders with decisions disabled and the reason "You can't approve your own request" (mirror the server's `SOD_VIOLATION`, `reimbursements.ts` approve path) rather than letting them press it and read a toast |
 | ED/FM (central) | Same as manager, across any chapter's book via the existing scope machinery |

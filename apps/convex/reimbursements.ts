@@ -101,6 +101,7 @@ import {
   defaultFundId,
   listChapterFinanceManagerPersonIds,
 } from "./lib/finance";
+import { requireBooksRead } from "./lib/booksAccess";
 import { assertRoutingNumber, assertAccountNumber } from "./increase";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import { emailButtonRow, emailHeading, emailParagraph } from "./lib/emailShell";
@@ -2234,12 +2235,29 @@ export const linkBankAccount = action({
 /**
  * The approval queue for the caller's chapter. Optional `status` filter uses
  * the `by_chapter_and_status` index. NEVER returns the secret token.
+ *
+ * READABLE BY THE WHOLE TEAM since 2026-08-30 (founder decision — the books
+ * open to every member). Deciding on a request is untouched and still needs a
+ * finance MANAGER plus separation of duties (`loadForManage`); this is the
+ * list, not the verdict, and the manager UI's action affordances are gated
+ * separately from it.
+ *
+ * The payload was checked against that widening rather than assumed: it
+ * carries a name, an amount, a status, dates, and a receipts-state summary —
+ * no bank account, no `externalAccountId`, no last4, and never the secret
+ * token. It is therefore no more than the public ledger already prints of a
+ * paid reimbursement ("Reimbursement to <name>", with the amount), which is
+ * what makes it safe to show the person standing next to the claimant.
+ *
+ * The individual request (`get`) deliberately did NOT widen with it: that one
+ * opens receipts, line items, and the payout trail. A member reads their own
+ * through `myReimbursements`.
  */
 export const list = query({
   args: { status: v.optional(reimbursementStatusValidator) },
   handler: async (ctx, { status }) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceRole(ctx, chapterId, "viewer");
+    await requireBooksRead(ctx, chapterId);
 
     const requests = status
       ? await ctx.db

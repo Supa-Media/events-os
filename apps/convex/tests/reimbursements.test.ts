@@ -1199,13 +1199,30 @@ describe("in-app queue never leaks the token", () => {
     expect(pending.length).toBe(1);
   });
 
-  test("a non-viewer cannot read the queue", async () => {
+  // 2026-08-30: this asserted the opposite until the books opened to the team
+  // (founder — everyone reads, only seats write). The queue's payload was
+  // checked before widening: a name, an amount, a status, dates, a receipts
+  // summary — no bank account, no last4, never the token. It is no more than
+  // the public ledger already prints of a paid reimbursement.
+  test("a member with no finance role reads the queue", async () => {
     const t = newT();
     const s = await setupChapter(t);
     await setSlug(s, "nyc");
     await submitTwoLine(s, "nyc");
-    // Seed a roster row but grant no finance role.
+    // A roster row and no finance role at all.
     await seedPerson(s, { name: "Nobody", userId: s.userId });
+    const queue = await s.as.query(api.reimbursements.list, {});
+    expect(queue.length).toBe(1);
+    expect(queue[0]).not.toHaveProperty("token");
+  });
+
+  test("someone with no roster profile still cannot read the queue", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await setSlug(s, "nyc");
+    await submitTwoLine(s, "nyc");
+    // No `people` row for this user at all — membership is the gate, and this
+    // caller has none.
     await expect(
       s.as.query(api.reimbursements.list, {}),
     ).rejects.toBeInstanceOf(ConvexError);

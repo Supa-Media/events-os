@@ -73,37 +73,30 @@ import { MilestoneLadderModal } from "../../../components/finance/modals/Milesto
 type Seats = FunctionReturnType<typeof api.financeRoles.mySeats>;
 
 export default function FinancesScreen() {
-  const org = useQuery(api.org.nav);
   // The caller's REAL seats, central first. [] = member. Queried here (rather
-  // than in DashboardBody) so the no-seat redirect below can run BEFORE the
-  // tier gate — a plain-member caller with no finance seat must be routed to
-  // My Card, not shown "Finances is restricted" (that message is for staff
-  // below the finance tier, not a no-seat member who deep-links here).
+  // than in DashboardBody) so the no-seat redirect below runs before anything
+  // tries to render a dashboard whose every query would refuse them.
   const seats = useQuery(api.financeRoles.mySeats, {});
 
-  if (org === undefined || seats === undefined) return <Screen loading />;
+  if (seats === undefined) return <Screen loading />;
 
-  // No finance seat → send them to My Card, their actual entry point in the
-  // member tab bar, instead of an orphaned MemberView with no active tab here.
+  // No finance seat → the Ledger, which is this tab's landing for a member
+  // (2026-08-30). It used to be My Card, back when a member's Finances was
+  // only their own card and their own reimbursements; the books are theirs to
+  // read now, so the tab opens on the org's money and My Card sits one chip
+  // away. The dashboard below stays the seat holder's working summary — its
+  // drill-downs, chase queues and manager tiles are all writes a member would
+  // be refused.
   if (seats.length === 0) {
-    return <Redirect href="/finances/cards" />;
+    return <Redirect href="/finances/ledger" />;
   }
 
-  // In-screen guard: finance is admin-or-lead for now (mirrors the nav gate).
-  const tier = org.tier;
-  if (tier !== "admin" && tier !== "lead") {
-    return (
-      <Screen>
-        <Narrow>
-          <EmptyState
-            title="Finances is restricted"
-            message="Only chapter admins and leads can access finances."
-          />
-        </Narrow>
-      </Screen>
-    );
-  }
-
+  // NO TIER WALL. It used to read "Finances is restricted — only chapter
+  // admins and leads can access finances", which was the client half of the
+  // nav gate that hid this tab from every plain member. Both are gone: a
+  // caller who holds a finance seat is exactly who this dashboard is for,
+  // whatever tier they derive, and a caller who holds none was redirected a
+  // few lines up.
   return <DashboardBody seats={seats} />;
 }
 

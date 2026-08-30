@@ -3,7 +3,7 @@ document: Operating Manual
 entity: Global Echo Charitable Organization (d/b/a Public Worship)
 status: DRAFT — NOT ADOPTED
 version: 0.1.0-draft
-last-reviewed: 2026-08-15
+last-reviewed: 2026-08-30
 adopted: —
 review-cadence: quarterly
 owner: Executive Director
@@ -442,6 +442,12 @@ record.
 approved at publication, not a live view of the books. An edit made afterward
 cannot silently rewrite the public record.
 
+**An open month is not a private month.** Before a month is closed or
+published, every team member can already read it internally, in the public
+page's own shape (§ 10). Publishing decides what the WORLD sees and when; it
+was never what kept a month from the team. Nobody preparing a month should
+assume otherwise.
+
 **Corrections are published, not made quietly.** A mistake is fixed by
 publishing a further revision with a stated reason, with the prior revision
 still readable beside it. An organization that shows its corrections is more
@@ -803,15 +809,26 @@ separate ledgers on purpose.
 
 ## 10 · Data, privacy, and access
 
-- **Access follows the seat.** Grant it when someone takes a seat; revoke it the
-  day they leave it.
+- **Doing follows the seat; reading the books follows membership.** The power to
+  record, reconcile, approve, or publish is granted with a seat and revoked the
+  day someone leaves it. READING this organization's money is not: every team
+  member on a chapter's roster can open Finances and read that chapter's ledger,
+  its budgets and its reimbursement queue, in the same shape the public page
+  publishes (founder decision, 2026-08-30). Everyone on the team can be issued a
+  card, so everyone can see what the cards are doing. The resolver that decides
+  this is one file — `apps/convex/lib/booksAccess.ts` — so the day the answer
+  needs narrowing, it narrows in one place.
 - **Personal data minimum.** Collect what the work needs. Attendee, donor, and
   volunteer data is the Corporation's, held in its systems.
 - **Minors.** Never photograph, list, or publish an identifiable minor without a
   guardian's written consent.
-- **The public ledger omits people.** Donor identities, individual compensation
-  beyond what law requires, and anything that would endanger someone are never
-  published (Bylaws § 11.4).
+- **The ledger omits people — internally too.** Donor identities, individual
+  compensation beyond what law requires, the names of people at a meal, the
+  people the Corporation pays for work, and anything that would endanger
+  someone are never published (Bylaws § 11.4). The internal Ledger every team
+  member reads is built from that same redacted copy, not from a fuller one, so
+  those omissions are not a step taken on the way out of the building — they are
+  already true of what a teammate sees.
 - **Applications are confidential.** What someone writes on the `/team` form —
   their church, their capacity, why they want out of where they are — is read by
   the people running that hiring decision and nobody else. No public surface

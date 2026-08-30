@@ -1680,7 +1680,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Nobody can mark a charge repaid by hand — not even the Financial Manager.** A repayment settles when a payment this app started actually arrives, full stop. So if you paid someone back in cash, the app can't record that: run it through the app instead. And if the charge was never personal in the first place, that's a different fix — a manager un-flags it and it goes back to being Public Worship's spend, which is honest in a way \"mark it repaid\" never was.",
           "**You'll be reminded, kindly:** if a personal charge sits unpaid, a finance manager can send a reminder listing what you owe and a link to settle it. One email per person, never one per charge, and never twice in the same few days — and a charge whose bank transfer is already clearing is never chased, because you already did the right thing.",
           "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once the money has landed, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
-          "**Both directions live in one place:** Reimbursements is its own tab under Finances — for everyone, approvers included, not tucked behind Cards — and it shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently.",
+          "**Both directions live in one place:** Reimbursements is its own tab under Finances — for everyone, approvers included, not tucked behind Cards — and it shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently. You'll also see the chapter's other open requests there — who asked, how much, and where it got to. That is on purpose: the same claim shows up on the public ledger as \"Reimbursement to <name>\" once it's paid, so there was never a version of this the team couldn't see. Reading the queue is everyone's; DECIDING on a request stays with a finance manager, and never on their own.",
           "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",
         ],
       },
@@ -2657,6 +2657,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Published means frozen",
         text: "The public page does **not** read the live books. When a month is published, it is FROZEN — a copy is stored and that copy is what the world sees, forever. Editing a transaction next week changes our books and changes nothing public. That is the whole design: a live page would let an edit silently rewrite what we already said, and nobody outside could tell.",
+      },
+      {
+        kind: "rule",
+        title: "The team reads it first",
+        text: "You do not need a finance seat to read the books. **Finances \u2192 Ledger** shows any month of your chapter's book, and central's, in exactly the shape the public page uses \u2014 same lines, same redactions, same \"not counted\" marks. The difference is timing: you can open a month that is still being coded, weeks before anyone publishes it.\n\nSo the redaction rules on this page are not something that happens to the ledger on its way out of the building. They are already true of the copy your teammates read: no givers, no names at a meal, no contractor payees. And the second-order effect is the point \u2014 knowing the whole team can see what you spent, this month, is what keeps everyone honest long before a stranger ever loads the page.\n\nWhat reading does not give you is a say. The Ledger has nothing to press: coding a charge, reconciling, approving a budget and publishing a month all still need the seat that owns them.",
       },
       {
         kind: "bullets",
@@ -3847,9 +3852,10 @@ export const FINANCES_COURSES: Course[] = [
     level: "beginner",
     audience: "team",
     description:
-      "What every member needs: where the money comes from, using your " +
-      "card + the 7-day receipt rule, coding what you spent and why, and " +
-      "both directions of reimbursement. Gains a 'getting your budget " +
+      "What every member needs: where the money comes from, reading the " +
+      "org's books on the Ledger tab, using your card + the 7-day receipt " +
+      "rule, coding what you spent and why, and both directions of " +
+      "reimbursement. Gains a 'getting your budget " +
       "approved' module once budget approval (Phase 3) ships.",
     icon: "dollar-sign",
     moduleSlugs: [

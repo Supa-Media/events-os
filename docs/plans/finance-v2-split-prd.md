@@ -55,7 +55,21 @@ as editable constants, NOT hardcoded inline):
 | Chapter Director | chapter | Raises money (backers); approves chapter budgets; sees chapter dashboard. Playbook mirror: ED + Development |
 | Treasurer | chapter | Records & manages: Reconcile grid is their home; budgets, records, reimbursements. Playbook mirror: Financial Manager. **Never fundraises** |
 | Event/Music/project Leads | chapter or central | Budget *requesters*: submit plans for approval, spend under cap. See their own event/project Money tab — NOT the finance dashboard |
-| Member / cardholder | — | Card, receipts due, what-I-owe / what-I'm-owed. Nothing else |
+| Member / cardholder | — | Card, receipts due, what-I-owe / what-I'm-owed. **"Nothing else" was amended 2026-08-30** — see the note under this table |
+
+> **AMENDMENT — 2026-08-30 (founder).** The member row's "Nothing else" no
+> longer holds. Every team member now reads this organization's books: a
+> read-only **Ledger** tab (the public page's own snapshot and redactions, for
+> any month including open ones), budget line detail, and the chapter's
+> reimbursement queue, alongside the card and reimbursement surfaces this table
+> already named. Writing, approving and publishing are unchanged and still need
+> the seat that owns them. Founder, verbatim: "they can see the ledger too. They
+> can see the full thing because ... it's publicly set anyways, um, but they just
+> can't edit."
+>
+> This PRD is kept as the historical record of what WP-1.3 shipped and why; the
+> current design is `specs/member-finance-visibility-spec.md`, and the resolver
+> is `apps/convex/lib/booksAccess.ts`.
 
 **Raise → record → oversee across three different people** (playbook rule): Director raises,
 Treasurer records, central FM oversees. This is a mandated three-party separation — identity-based
@@ -165,6 +179,10 @@ A2+A3 (ACH destinations + paid→returned reversal — finish, review, merge).
 **WP-1.3 · Member view strip-down + bidirectional owe surface + copy sweep**
 - Members (no finance seat): tabs reduce to My Card · My Transactions (mini-reconcile: attach
   receipt, flag personal on OWN txns only) · Reimbursements (submit + "what I'm owed" + "what I owe").
+  *(As shipped, My Transactions moved off the bar to `/code`, and the bar became My Card ·
+  Reimbursements · Budgets. Since the 2026-08-30 amendment above it is **Ledger · My Card ·
+  Reimbursements · Budgets** — "strip-down" describes what this work package did, not where the
+  member view ended up.)*
 - Manager-initiated personal flag: ED/FM/Chapter Director/Treasurer can mark any chapter txn
   as personal-expense-needing-repayment → triggers the owe flow for that cardholder.
 - De-church copy sweep: "church card" → "Public Worship card", etc. (grep-driven, copy-only).
