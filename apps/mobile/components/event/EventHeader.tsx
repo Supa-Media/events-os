@@ -6,7 +6,6 @@ import {
   TextInput,
   Platform,
   Dimensions,
-  useWindowDimensions,
 } from "react-native";
 import {
   Card,
@@ -41,6 +40,7 @@ import {
   type PhasePace,
   type PhaseScores,
 } from "@events-os/shared";
+import { useIsPhone } from "../../lib/breakpoints";
 
 type RoleRow = {
   roleId: string;
@@ -153,8 +153,7 @@ export function EventHeader({
   // clustered top-right); mobile stacks them and turns the rings into a
   // full-width strip under a divider, so four evenly-spread rings read as one
   // left-to-right timeline instead of a cramped corner cluster.
-  const { width } = useWindowDimensions();
-  const compact = width < 760;
+  const compact = useIsPhone();
 
   const vitals = (
     <>

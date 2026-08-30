@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { View, Text, useWindowDimensions, Pressable } from "react-native";
+import { View, Text, Pressable } from "react-native";
 import { useRouter, Redirect } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
@@ -27,6 +27,7 @@ import { colors, spacing } from "../../../lib/theme";
 import { formatDateInZone } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { useChapterContext } from "../../../lib/ChapterContext";
+import { useIsPhone } from "../../../lib/breakpoints";
 import { TemplatesView } from "../../../components/template/TemplatesView";
 import { EventsCalendarView } from "../../../components/event/EventsCalendarView";
 import {
@@ -46,18 +47,12 @@ type Mode = "events" | "templates";
 /** Within the events mode, the flat list or the month calendar. */
 type ViewMode = "list" | "calendar";
 
-/**
- * Wide-viewport breakpoint. Mirrors AppShell's `DESKTOP` (760) — at/above it we
- * render the data table; below it the table's fixed columns overlap on narrow
- * screens, so we fall back to a readable card list.
- */
-const WIDE = 760;
-
 /** EVENTS — the landing screen. A sortable table of events, or its templates. */
 export default function EventsScreen() {
   const router = useRouter();
-  const { width } = useWindowDimensions();
-  const wide = width >= WIDE;
+  // At/above the app's desktop breakpoint we render the data table; below it
+  // the table's fixed columns overlap, so we fall back to a readable card list.
+  const wide = !useIsPhone();
   const org = useQuery(api.org.nav);
   // Read-only peek (WP-S follow-up): a central-seat holder browsing a
   // different chapter's events. `chapterId` is `undefined` for everyone else

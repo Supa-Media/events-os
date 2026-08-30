@@ -5,7 +5,6 @@ import {
   Pressable,
   Alert,
   Platform,
-  useWindowDimensions,
 } from "react-native";
 import { Stack, useRouter, useLocalSearchParams } from "expo-router";
 import { useQuery, useMutation } from "convex/react";
@@ -50,6 +49,7 @@ import {
   firstModuleMissingOwner,
   type ResolvedModule,
 } from "@events-os/shared";
+import { useIsPhone } from "../../../lib/breakpoints";
 
 /** A task row in the "Me view" My-tasks list. */
 type MyTask = {
@@ -75,8 +75,7 @@ export default function EventDetailScreen() {
   // Responsive split: at/above the app's desktop breakpoint we keep the
   // horizontal tab rail with the active section always visible; below it (and on
   // native phones) the sections become a vertical, drill-in plan.
-  const { width } = useWindowDimensions();
-  const isMobile = width < 760;
+  const isMobile = useIsPhone();
 
   // Personal "Me view" filter — filters the tabs (and the What's-next panel)
   // down to the modules and tasks the current user owns (api.events.myWork).

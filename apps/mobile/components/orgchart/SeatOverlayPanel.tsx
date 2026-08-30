@@ -3,6 +3,7 @@ import { Pressable, ScrollView, View } from "react-native";
 import Animated, { useAnimatedStyle, useSharedValue, withTiming } from "react-native-reanimated";
 import { Icon } from "../ui";
 import { colors } from "../../lib/theme";
+import { useMobileChrome } from "../ui/MobileChrome";
 
 /** Slide duration — quick enough to feel responsive, slow enough to read as
  *  motion rather than a snap. */
@@ -42,6 +43,7 @@ export function SeatOverlayPanel({
     progress.value = withTiming(open ? 1 : 0, { duration: DURATION });
   }, [open, progress]);
 
+  const chrome = useMobileChrome();
   const style = useAnimatedStyle(() => ({
     transform: [{ translateX: (1 - progress.value) * width }],
   }));
@@ -64,6 +66,9 @@ export function SeatOverlayPanel({
           shadowRadius: 20,
           shadowOffset: { width: -6, height: 0 },
           elevation: 10,
+          // The panel spans the full height OVER the canvas, so on a phone its
+          // last rows would sit under the shell's floating dock. 0 on desktop.
+          paddingBottom: chrome.bottom,
         },
         style,
       ]}

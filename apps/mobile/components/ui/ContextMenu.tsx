@@ -1,7 +1,9 @@
 import { Pressable, Text } from "react-native";
 import { Icon, type IconName } from "./Icon";
 import { Popover } from "./Popover";
+import { SheetRow } from "./BottomSheet";
 import { colors } from "../../lib/theme";
+import { useIsPhone } from "../../lib/breakpoints";
 
 export type ContextMenuAction = {
   label: string;
@@ -21,6 +23,10 @@ export type ContextMenuAnchor = {
  * A small anchored menu of actions, rendered in a {@link Popover}. Shared by the
  * role chips and the module rows/chips: right-click (web) or long-press (native)
  * an element to open it. `anchor === undefined` means closed.
+ *
+ * `Popover` becomes a bottom sheet on a phone, so the rows switch with it: a
+ * 28px pointer row inside a sheet would be both under the touch minimum and
+ * visually out of step with every other sheet in the app.
  */
 export function ContextMenu({
   anchor,
@@ -33,15 +39,26 @@ export function ContextMenu({
   width?: number;
   onClose: () => void;
 }) {
+  const phone = useIsPhone();
   return (
     <Popover visible={anchor !== undefined} anchor={anchor} width={width} onClose={onClose}>
-      {actions.map((action) => (
-        <ContextMenuRow
-          key={action.label}
-          action={action}
-          onClose={onClose}
-        />
-      ))}
+      {actions.map((action, i) =>
+        phone ? (
+          <SheetRow
+            key={action.label}
+            label={action.label}
+            icon={action.icon}
+            destructive={action.destructive}
+            first={i === 0}
+            onPress={() => {
+              onClose();
+              action.onPress();
+            }}
+          />
+        ) : (
+          <ContextMenuRow key={action.label} action={action} onClose={onClose} />
+        ),
+      )}
     </Popover>
   );
 }

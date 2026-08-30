@@ -2,6 +2,8 @@ import { ComponentRef, ReactNode, Ref } from "react";
 import { View, ActivityIndicator } from "react-native";
 import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
 import { colors } from "../../lib/theme";
+import { useIsPhone } from "../../lib/breakpoints";
+import { useMobileChrome } from "./MobileChrome";
 
 type Props = {
   children?: ReactNode;
@@ -49,6 +51,13 @@ export function Narrow({
  * Page content wrapper used inside the app shell. Scrolls vertically and centers
  * a comfortable max-width column on wide screens (the shell already owns the
  * cream background + sidebar). Padding is generous and consistent.
+ *
+ * On a phone it also reserves room for the shell's FLOATING chrome — the top
+ * buttons and the bottom dock hover over the page rather than boxing it in, so
+ * the page has to start below one and end above the other while still
+ * scrolling underneath both. Those numbers come from `useMobileChrome`, which
+ * the shell fills in; outside the shell (login, onboarding, the public
+ * share/pay routes) it reads zero and the page just pads itself normally.
  */
 export function Screen({
   children,
@@ -56,9 +65,19 @@ export function Screen({
   maxWidth = 1080,
   scrollRef,
 }: Props) {
+  const phone = useIsPhone();
+  const chrome = useMobileChrome();
+
   if (loading) {
     return (
-      <View className="flex-1 items-center justify-center bg-surface">
+      <View
+        // Padded by the chrome so the spinner lands in the middle of the
+        // VISIBLE page rather than the middle of the window, which on a phone
+        // sits noticeably low once the dock is accounted for. Both are 0
+        // outside the phone shell, where the class alone centers it.
+        style={{ paddingTop: chrome.top, paddingBottom: chrome.bottom }}
+        className="flex-1 items-center justify-center bg-surface"
+      >
         <ActivityIndicator color={colors.accent} />
       </View>
     );
@@ -73,10 +92,37 @@ export function Screen({
         bottomOffset={24}
         showsVerticalScrollIndicator={false}
       >
-        <View style={{ width: "100%", maxWidth }} className="px-6 py-7 sm:px-8 sm:py-8">
+        <View
+          style={{
+            width: "100%",
+            maxWidth,
+            // Phone only, and spread so the desktop branch passes NO padding
+            // keys at all: an inline `style` beats a NativeWind class, so a
+            // literal `paddingTop: 0` here would silently cancel the `py-7`
+            // below and flatten every desktop page against its top edge.
+            //
+            // `chrome.*` already carries the safe-area inset, so on a phone
+            // inside the shell this IS the page's whole vertical padding, not
+            // an addition to it. Outside the shell (login, onboarding, the
+            // public share/pay routes) it reads zero and the page falls back
+            // to plain phone padding.
+            ...(phone
+              ? {
+                  paddingTop: chrome.top + PHONE_PAD_TOP,
+                  paddingBottom: chrome.bottom + PHONE_PAD_BOTTOM,
+                }
+              : null),
+          }}
+          className={phone ? "px-4" : "px-6 py-7 sm:px-8 sm:py-8"}
+        >
           {children}
         </View>
       </KeyboardAwareScrollView>
     </View>
   );
 }
+
+/** Breathing room between the floating top chrome and the page's own title. */
+const PHONE_PAD_TOP = 16;
+/** Trailing room so the last row doesn't stop flush against the dock. */
+const PHONE_PAD_BOTTOM = 16;
