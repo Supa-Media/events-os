@@ -11,9 +11,12 @@
  *
  * Copying is web-first (`copyToClipboard`) with the native share sheet as the
  * native path — the same split `reimbursements/index.tsx#shareRequestLink`
- * uses, and for the same reason: `expo-clipboard` isn't reachable from this
- * workspace's registry, so native reports failure rather than pretending, and
- * we hand the OS share sheet instead of a silent no-op.
+ * uses. The original reason was that the clipboard module wasn't installed at
+ * all; #806 added it, but the split still earns its keep for a NARROWER
+ * reason: that module is `gated` (see `lib/clipboard.ts`), so on a binary
+ * built before it shipped `copyToClipboard` reports failure rather than
+ * pretending — and the share sheet is a real action rather than a silent
+ * no-op.
  *
  * When the link genuinely can't be built (see `lib/contractLink.ts` — a
  * chapter with no public slug, or a central desk), the card says so in words
