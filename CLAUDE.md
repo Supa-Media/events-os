@@ -132,15 +132,21 @@ missing, and every consumer handling that `null`. No static reference of any
 kind — not a type-only import, not even the module name inside a comment; the
 guardrail's scan is textual and will catch both.
 
-**And the other half: some modules cannot be gated at all.** `react-native`,
-`react-native-reanimated` + `react-native-worklets`, `react-native-screens`,
-`react-native-safe-area-context`, `react-native-gesture-handler`,
-`expo-router`, `react-native-css-interop` are structural — the app cannot
-start without them, so there is no fallback to write. When one of those is
-ADDED or takes a major upgrade (reanimated 3 → 4 pulling in the separate
-`react-native-worklets` module is the example that bit us), **no OTA can rescue
-a binary that predates it. Ship a native build before the next OTA goes out**,
-or every installed copy crashes on launch until someone reinstalls.
+**The question that actually matters is what the STARTUP GRAPH touches.** A
+module is dangerous when the entry graph reaches it, because that resolution
+happens before any error boundary exists. `__tests__/startupNativeImports.test.js`
+traces static imports from the route entries and fails if anything but a
+structural module is reachable — `react-native`, `expo-router`,
+`expo-constants`, `expo-status-bar`, `react-native-gesture-handler`,
+`react-native-safe-area-context`, `@expo/vector-icons`. Those genuinely have no
+fallback; everything else must resolve when its feature is used.
+
+That check exists because barrels hide this. `components/ui/index.ts`
+re-exports `FileViewer`, which pulled `react-native-reanimated` (and through it
+`react-native-worklets`) and `react-native-webview` — so a PDF viewer's
+pinch-zoom sat on the launch path of every screen, and no other guardrail
+could see it. If the check fails, make the import dynamic; do NOT widen the
+structural list.
 
 This rule exists because 2026-08-28 (#806) added `expo-clipboard` as `core`,
 statically imported from `lib/clipboard.ts` and reached through

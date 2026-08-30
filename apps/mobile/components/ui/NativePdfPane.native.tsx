@@ -30,7 +30,7 @@
  * network PDF into a WebView; confirm the iOS inline render on a real device.
  */
 import { Linking, Platform, Pressable, Text, View } from "react-native";
-import { WebView } from "react-native-webview";
+import { loadWebView } from "../../lib/webView";
 import { Icon } from "./Icon";
 import { colors } from "../../lib/theme";
 import type { NativePdfPaneProps } from "./NativePdfPane";
@@ -45,7 +45,12 @@ function originOf(uri: string): string {
 }
 
 export function NativePdfPane({ uri, filename }: NativePdfPaneProps) {
-  if (Platform.OS === "android") {
+  // `null` on a build whose native side has no web view — see `lib/webView.ts`.
+  // Falls through to the same "open it outside the app" pane Android uses, so
+  // the file is still reachable, just not inline.
+  const WebView = loadWebView();
+
+  if (Platform.OS === "android" || !WebView) {
     return (
       <View className="h-full w-full items-center justify-center gap-2 px-8">
         <Icon name="file-text" size={26} color={colors.faint} />

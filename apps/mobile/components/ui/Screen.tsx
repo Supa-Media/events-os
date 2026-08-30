@@ -1,6 +1,6 @@
-import { ComponentRef, ReactNode, Ref } from "react";
-import { View, ActivityIndicator } from "react-native";
-import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import { ReactNode, Ref } from "react";
+import { View, ActivityIndicator, ScrollView } from "react-native";
+import { KeyboardAwareScroll } from "./KeyboardAwareScroll";
 import { colors } from "../../lib/theme";
 import { useIsPhone } from "../../lib/breakpoints";
 import { useMobileChrome } from "./MobileChrome";
@@ -22,7 +22,7 @@ type Props = {
    * the handle keeps that knowledge where it lives instead of teaching
    * `Screen` about sections.
    */
-  scrollRef?: Ref<ComponentRef<typeof KeyboardAwareScrollView>>;
+  scrollRef?: Ref<ScrollView>;
 };
 
 /**
@@ -85,7 +85,7 @@ export function Screen({
 
   return (
     <View className="flex-1 bg-surface">
-      <KeyboardAwareScrollView
+      <KeyboardAwareScroll
         ref={scrollRef}
         contentContainerStyle={{ flexGrow: 1, alignItems: "center" }}
         keyboardShouldPersistTaps="handled"
@@ -117,7 +117,7 @@ export function Screen({
         >
           {children}
         </View>
-      </KeyboardAwareScrollView>
+      </KeyboardAwareScroll>
     </View>
   );
 }

@@ -1,7 +1,7 @@
 import { useEffect } from "react";
 import { View, Text } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import { KeyboardAwareScroll } from "../../components/ui/KeyboardAwareScroll";
 import { useLocalSearchParams, useRouter } from "expo-router";
 import { useConvexAuth } from "convex/react";
 import { Card, Button, TextField, Icon, ToastView } from "../../components/ui";
@@ -61,7 +61,7 @@ export default function LoginScreen() {
 
   return (
     <View className="flex-1 bg-surface">
-      <KeyboardAwareScrollView
+      <KeyboardAwareScroll
         bottomOffset={24}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
@@ -208,7 +208,7 @@ export default function LoginScreen() {
             ) : null}
           </Card>
         </View>
-      </KeyboardAwareScrollView>
+      </KeyboardAwareScroll>
     </View>
   );
 }

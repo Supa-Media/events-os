@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { View, Text, ActivityIndicator } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import { KeyboardAwareScroll } from "../ui/KeyboardAwareScroll";
 import { useQuery, useMutation } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -51,7 +51,7 @@ export function OnboardingScreen() {
 
   return (
     <View className="flex-1 bg-surface">
-      <KeyboardAwareScrollView
+      <KeyboardAwareScroll
         bottomOffset={24}
         keyboardShouldPersistTaps="handled"
         showsVerticalScrollIndicator={false}
@@ -164,7 +164,7 @@ export function OnboardingScreen() {
             </View>
           </Card>
         </View>
-      </KeyboardAwareScrollView>
+      </KeyboardAwareScroll>
     </View>
   );
 }

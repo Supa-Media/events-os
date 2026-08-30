@@ -3,8 +3,8 @@
  * (same hosting technique as `MarkdownEditor.native.tsx`, minus the RN<->WebView
  * message bridge — this is read-only, so a plain `source={{ html }}` is enough).
  */
-import { View } from "react-native";
-import { WebView } from "react-native-webview";
+import { Text, View } from "react-native";
+import { loadWebView } from "../../lib/webView";
 import type { EmailHtmlPreviewProps } from "./EmailHtmlPreview";
 
 /** What `height="auto"` means here: the web variant measures the document and
@@ -16,6 +16,25 @@ const NATIVE_AUTO_HEIGHT = 720;
 
 export function EmailHtmlPreview({ html, height = 560 }: EmailHtmlPreviewProps) {
   const boxHeight = height === "auto" ? NATIVE_AUTO_HEIGHT : height;
+  // `null` on a build with no web view native module (see `lib/webView.ts`).
+  // A preview is a convenience — the campaign is still editable and sendable
+  // without one — so this says so plainly rather than failing.
+  const WebView = loadWebView();
+
+  if (!WebView) {
+    return (
+      <View
+        className="items-center justify-center rounded-lg border border-border bg-sunken px-6"
+        style={{ height: boxHeight }}
+      >
+        <Text className="text-center text-sm text-muted">
+          Preview isn&apos;t available on this version of the app. Update to see
+          the rendered email here.
+        </Text>
+      </View>
+    );
+  }
+
   return (
     <View
       className="overflow-hidden rounded-lg border border-border bg-raised"

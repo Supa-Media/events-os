@@ -17,18 +17,18 @@
     "react-native-web",
     "react-native-safe-area-context",
     "react-native-screens",
-    "react-native-keyboard-controller",
     "@react-native-community/netinfo",
     "react-native-gesture-handler",
     "react-native-reanimated",
     "react-native-worklets",
-    "react-native-webview",
     "react-native-css-interop"
   ],
   "gated": [
     "expo-camera",
     "expo-clipboard",
     "expo-device",
-    "expo-notifications"
+    "expo-notifications",
+    "react-native-keyboard-controller",
+    "react-native-webview"
   ]
 }

@@ -53,7 +53,6 @@ import {
   View,
 } from "react-native";
 import { Gesture, GestureDetector } from "react-native-gesture-handler";
-import { runOnJS, useSharedValue } from "react-native-reanimated";
 import { receiptFileKind } from "@events-os/shared";
 import { Icon, type IconName } from "./Icon";
 import { colors } from "../../lib/theme";
@@ -331,8 +330,9 @@ function ToolbarButton({
  * `OrgChartCanvas.native.tsx`): founder, verbatim, on reviewing a receipt —
  * "even the ability to just pinch on my screen to be able to zoom into a
  * particular section." Drives the SAME `zoom` state the toolbar buttons and
- * wheel do — `runOnJS` because a plain `useState` setter isn't itself a
- * worklet — so nothing downstream needs to know which input moved it.
+ * wheel do, via `.runOnJS(true)` so the gesture stays on the JS thread and
+ * this file needs no reanimated — so nothing downstream needs to know which
+ * input moved it.
  * `GestureDetector` wraps the ScrollView pair rather than replacing them, so
  * one-finger scroll-to-pan keeps working through RN's own responder system;
  * a two-finger touch is what a pinch recognizer wins by default on both iOS
@@ -374,22 +374,31 @@ function ZoomPane({
     return () => node.removeEventListener("wheel", onWheel as EventListener);
   }, [zoom, onZoom]);
 
-  // `zoom` at the moment a pinch STARTS, read on the UI thread. A ref (not a
-  // shared value fed by `zoom` itself) because `onZoom` moves `zoom` through
-  // plain React state — this just needs the latest committed value at pinch
-  // start, not a continuously-synced UI-thread mirror of it.
-  const zoomAtPinchStart = useSharedValue(MIN_ZOOM);
+  // `zoom` at the moment a pinch STARTS. A plain ref: `onZoom` moves `zoom`
+  // through React state, so this only needs the latest committed value at
+  // pinch start.
+  //
+  // `.runOnJS(true)` keeps the whole gesture on the JS thread, which is what
+  // lets this file avoid `react-native-reanimated` entirely — and reanimated
+  // was the ONLY reason a native module reachable from `components/ui`'s
+  // barrel sat on the app's startup path (the barrel is imported by
+  // `(app)/_layout.tsx` for `AppShell`, so everything it re-exports is
+  // evaluated as the bundle loads). Nothing is lost by moving threads: every
+  // update already called `runOnJS(onZoom)` to reach React state, so the hop
+  // was happening on each frame regardless.
+  const zoomAtPinchStart = useRef(MIN_ZOOM);
   const zoomRef = useRef(zoom);
   useEffect(() => {
     zoomRef.current = zoom;
   }, [zoom]);
 
   const pinch = Gesture.Pinch()
+    .runOnJS(true)
     .onStart(() => {
-      zoomAtPinchStart.value = zoomRef.current;
+      zoomAtPinchStart.current = zoomRef.current;
     })
     .onUpdate((e) => {
-      runOnJS(onZoom)(clampZoom(zoomAtPinchStart.value * e.scale));
+      onZoom(clampZoom(zoomAtPinchStart.current * e.scale));
     });
 
   function handlePress() {

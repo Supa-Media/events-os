@@ -5,10 +5,10 @@ import Constants from "expo-constants";
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
-import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { SupaConvexProvider } from "@supa-media/core/providers";
 import { loadNotificationProvider } from "../lib/notificationProvider";
+import { loadKeyboardController } from "../lib/keyboardController";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
   useFonts,
@@ -61,10 +61,13 @@ export default function RootLayout() {
   // pass-through instead, so a missing feature module can never stop the app
   // from starting.
   const Notifications = loadNotificationProvider() ?? Fragment;
+  // Keyboard avoidance is an enhancement, gated the same way: without the
+  // native module a form still renders and scrolls.
+  const Keyboard = loadKeyboardController()?.KeyboardProvider ?? Fragment;
 
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
-      <KeyboardProvider>
+      <Keyboard>
         <SafeAreaProvider>
           {/* OUTER boundary — wraps the providers themselves.
               
@@ -104,7 +107,7 @@ export default function RootLayout() {
             </SupaConvexProvider>
           </ErrorBoundary>
         </SafeAreaProvider>
-      </KeyboardProvider>
+      </Keyboard>
     </GestureHandlerRootView>
   );
 }

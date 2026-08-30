@@ -33,7 +33,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
-import { KeyboardAwareScrollView } from "react-native-keyboard-controller";
+import { KeyboardAwareScroll } from "../../ui/KeyboardAwareScroll";
 import { Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 
@@ -107,14 +107,14 @@ export function Inspector({
               typed into — a bottom sheet is exactly where that bites. The
               provider is at the app root, and React context reaches through a
               Modal. */}
-          <KeyboardAwareScrollView
-            className={edge ? "flex-1" : "max-h-[520px]"}
+          <KeyboardAwareScroll
+            style={edge ? { flex: 1 } : { maxHeight: 520 }}
             contentContainerStyle={{ padding: 20 }}
             keyboardShouldPersistTaps="handled"
             bottomOffset={24}
           >
             {children}
-          </KeyboardAwareScrollView>
+          </KeyboardAwareScroll>
 
           {footer ? (
             <View className="flex-row flex-wrap items-center gap-2 border-t border-border px-5 py-3.5">

@@ -17,8 +17,19 @@
  * Same props as MarkdownEditor.web — see ./types.ts.
  */
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ActivityIndicator, Linking, Pressable, Text, View } from "react-native";
-import { WebView, type WebViewMessageEvent } from "react-native-webview";
+import {
+  ActivityIndicator,
+  Linking,
+  Pressable,
+  Text,
+  TextInput,
+  View,
+} from "react-native";
+import {
+  loadWebView,
+  type GatedWebViewInstance,
+  type GatedWebViewMessageEvent,
+} from "../../lib/webView";
 // expo-image-picker is Expo Go-safe (classified `core` in native-deps.json);
 // only used on native, where the WebView can't reach the OS clipboard/files.
 import * as ImagePicker from "expo-image-picker";
@@ -58,7 +69,7 @@ export function MarkdownEditor({
   minHeight = 480,
   uploadImage,
 }: MarkdownEditorProps) {
-  const webRef = useRef<WebView | null>(null);
+  const webRef = useRef<GatedWebViewInstance | null>(null);
   const readyRef = useRef(false);
   const [uploading, setUploading] = useState(false);
   // Read the latest uploadImage through a ref so the picker callback never goes
@@ -88,7 +99,7 @@ export function MarkdownEditor({
   }, [value, pushValue]);
 
   const onMessage = useCallback(
-    (e: WebViewMessageEvent) => {
+    (e: GatedWebViewMessageEvent) => {
       let msg: { type?: string; value?: string; url?: string };
       try {
         msg = JSON.parse(e.nativeEvent.data);
@@ -142,6 +153,30 @@ export function MarkdownEditor({
 
   // Show the control only when editing AND an upload path is wired (matches web).
   const showAddImage = editable && !!uploadImage;
+
+  // `null` on a build with no web view native module (see `lib/webView.ts`).
+  // The editor degrades to editing the Markdown SOURCE in a plain text field:
+  // less pleasant than the rich surface, but the document stays fully readable
+  // and writable, which a crash at launch would not be.
+  const WebView = loadWebView();
+  if (!WebView) {
+    return (
+      <View
+        className="overflow-hidden rounded-lg border border-border bg-surface"
+        style={{ height: minHeight }}
+      >
+        <TextInput
+          value={value}
+          onChangeText={editable ? onChange : undefined}
+          editable={editable}
+          placeholder={placeholder}
+          multiline
+          textAlignVertical="top"
+          className="flex-1 p-3 font-body text-base text-ink"
+        />
+      </View>
+    );
+  }
 
   return (
     <View
