@@ -281,3 +281,53 @@ describe("the surfaces that opened with the books", () => {
     ).rejects.toThrow(ConvexError);
   });
 });
+
+describe("budget detail: read yes, act no", () => {
+  test("a member reads line detail but is offered no write affordance", async () => {
+    const s = await setupChapter(newT());
+    const { as } = await addMember(s, "budgets@publicworship.life");
+    const budgetId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        label: "Sound gear",
+        amountCents: 50_000,
+        type: "one_time",
+        cadence: "per_instance",
+        year: 2026,
+        // Sitting in the one state whose buttons rendered off status alone.
+        approvalStatus: "submitted",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const detail = await as.query(api.budgetDetail.getBudgetDetail, { budgetId });
+    expect(detail).not.toBeNull();
+    expect(detail!.transactionTotalCount).toBe(0);
+    // The three flags the page renders its buttons from. All false: this is
+    // what stops a member being shown "Approve" and then refused on tap.
+    expect(detail!.canEdit).toBe(false);
+    expect(detail!.canSubmit).toBe(false);
+    expect(detail!.canDecide).toBe(false);
+  });
+
+  test("and approving it is refused at the mutation too", async () => {
+    const s = await setupChapter(newT());
+    const { as } = await addMember(s, "noapprove@publicworship.life");
+    const budgetId = await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        label: "Sound gear",
+        amountCents: 50_000,
+        type: "one_time",
+        cadence: "per_instance",
+        year: 2026,
+        approvalStatus: "submitted",
+        createdAt: Date.now(),
+      }),
+    );
+
+    await expect(
+      as.mutation(api.finances.approveBudget, { budgetId }),
+    ).rejects.toThrow(ConvexError);
+  });
+});

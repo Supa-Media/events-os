@@ -165,7 +165,12 @@ function BudgetDetailBody({ budgetId }: { budgetId: Id<"budgets"> | undefined })
 
       {/* ── Approval actions (Submit / Approve / Request changes) ──────────── */}
       <View className="mb-3">
-        <BudgetApprovalActions budgetId={detail.id} status={detail.approvalStatus} />
+        <BudgetApprovalActions
+          budgetId={detail.id}
+          status={detail.approvalStatus}
+          canSubmit={detail.canSubmit}
+          canDecide={detail.canDecide}
+        />
       </View>
 
       {/* ── Cap vs actual ────────────────────────────────────────────────────── */}

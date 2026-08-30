@@ -358,12 +358,17 @@ export async function hasBudgetGlance(ctx: QueryCtx, chapterId: Id<"chapters">):
 export async function requireBudgetGlance(ctx: QueryCtx, chapterId: Id<"chapters">): Promise<void>
 
 /** Who may see the LINE-LEVEL expenses behind those figures — merchant, who
- *  spent it, receipt state, coding state. TODAY: `financeRoleAtLeast(role,
- *  "viewer")` at the budget's own chapter, or central reach through the
- *  caller's home chapter — the identical gate `budgetDetail.getBudgetDetail`
- *  (budgetDetail.ts:150-166) and `dashboardCharts.budgetTransactions`
- *  (dashboardCharts.ts:794-805) already apply inline. Will graduate to
- *  `finance.view` (POWERS, powers.ts:186). */
+ *  spent it, receipt state, coding state.
+ *
+ *  SUPERSEDED 2026-08-30 (see Q1, resolved open). `budgetDetail.getBudgetDetail`
+ *  now calls `lib/booksAccess.ts#requireBooksRead` for the caller's OWN chapter
+ *  — chapter membership, no finance role — and keeps central reach for a
+ *  foreign or central book. `dashboardCharts.budgetTransactions` was NOT
+ *  changed with it, so the two gates this comment calls identical have
+ *  diverged: that query is only ever reached from the finance dashboard, which
+ *  is seat-holder-only, so nothing member-facing depends on it. Widen it if a
+ *  member-visible surface ever calls it; until then it is narrower than it
+ *  needs to be, which is the safe direction. */
 export async function hasBudgetSpendDetail(ctx: QueryCtx, budget: Doc<"budgets">): Promise<boolean>
 export async function requireBudgetSpendDetail(ctx: QueryCtx, budget: Doc<"budgets">): Promise<FinanceAccess>
 ```
@@ -613,15 +618,28 @@ is why items 1–2 are hand-listed above.
 ## 6. Risks and open questions for the founder
 
 **Q1 — Should a cardholder with no finance seat see line-level expenses?**
-This is the one real policy decision in the spec. `budgetsGlance` is
-*deliberately* the only ungated finance read (`finances.ts:5273-5280`) — it
-gives the whole team spend-vs-cap so nobody has to ask the FM before swiping.
-Line detail is different: it exposes *who* spent, *at what merchant*, and
-whether they've turned in a receipt. This spec defaults to **gated**
-(finance-viewer+), with an honest "needs finance access" line rather than a
-wall. Flipping it to open later is a one-line change in
-`lib/budgetsAccess.ts#hasBudgetSpendDetail` and nothing else — which is exactly
-why it's behind a named resolver. **Decision needed before P0 merges.**
+**RESOLVED: OPEN (founder, 2026-08-30.)** "They can see the ledger too. They can
+see the full thing because ... it's publicly set anyways, um, but they just
+can't edit."
+
+This was the one real policy decision in the spec, and it was answered as part
+of a wider one: the whole internal ledger opened to every team member, not just
+budget lines. What the spec worried about exposing — *who* spent, *at what
+merchant*, whether the receipt is in — is the same person-level detail the
+public ledger already publishes by line, so keeping it behind a lock the member
+could not act on was protecting nothing.
+
+Two notes for anyone reading this spec against the code:
+
+- The resolver is `apps/convex/lib/booksAccess.ts#requireBooksRead`, NOT the
+  `lib/budgetsAccess.ts#hasBudgetSpendDetail` this spec anticipated — that file
+  was never built. Same idea, wider subject: it answers "may this person read
+  this chapter's books", and `budgetDetail.getBudgetDetail` is one of four
+  surfaces that ask it.
+- `budgetsGlance` is no longer "the only ungated finance read"
+  (`publicLedger.teamStatement`, `budgetDetail.getBudgetDetail` and
+  `reimbursements.list` joined it), so that sentence's premise is retired
+  rather than merely amended.
 
 **Q2 — Lifetime or this-year?** Three surfaces currently disagree (G10). The
 budget detail page says lifetime; the dashboard and the Budgets tab say
@@ -655,8 +673,11 @@ chapter via `requireOwned` — so central rows genuinely cannot link out today
 (b) build a central-reach read path for event/project detail — a real piece of
 work touching a foundational primitive, not a budgets-tab change. Which?
 
-**Q6 — Risk: the Budgets tab is the one screen every volunteer sees.** It is
-in the *member* tab bar (`_layout.tsx:83-87`), so ~16 cardholders hit it. A
+**Q6 — Risk: Budgets is one of four screens every team member sees.** It is
+in the *member* tab bar (`_layout.tsx`'s `MEMBER_TABS` — Ledger · My Card ·
+Reimbursements · Budgets since 2026-08-30), so ~16 cardholders hit it.
+"Volunteer" is the wrong word for that population now: the Finances tab shows
+for every roster member EXCEPT the volunteer tier, whose lobby is Briefing. A
 rebuild that regresses its load time or its read-only-ness is a bigger blast
 radius than any other finance screen. Mitigation baked into the spec: queries
 mount only while a row is expanded, blocks A+B render for everyone, and no

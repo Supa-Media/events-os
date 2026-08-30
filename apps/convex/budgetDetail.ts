@@ -44,7 +44,14 @@ import {
   effectiveBudgetApprovalStatus,
 } from "@events-os/shared";
 import { getChapterIdOrNull } from "./lib/context";
-import { getFinanceRole, requireFinanceCentral, type FinanceAccess } from "./lib/finance";
+import {
+  getFinanceRole,
+  requireFinanceCentral,
+  isCentralEdOrFm,
+  type FinanceAccess,
+} from "./lib/finance";
+import { holdsApprovalSeatAt } from "./lib/seats";
+import { financeRoleAtLeast } from "@events-os/shared";
 import { requireBooksRead } from "./lib/booksAccess";
 import { resolveTitleForBudget } from "./lib/budgetTitleResolve";
 import { readSandbox } from "./financeSettings";
@@ -156,6 +163,21 @@ const budgetDetailResult = v.object({
   // own mutations re-gate regardless; this only decides whether the page shows
   // the "Edit" button at all.
   canEdit: v.boolean(),
+  /**
+   * Whether the caller may send this budget for review, and whether they may
+   * DECIDE on one that has been. Both mirror the mutations' own gates
+   * (`submitBudgetForApproval` = bookkeeper; `approveBudget` /
+   * `requestBudgetChanges` = a `finance.budgets.approve` seat at this chapter,
+   * else manager rank, else central ED/FM for a central budget).
+   *
+   * They exist because this page opened to every team member (2026-08-30) and
+   * `BudgetApprovalActions` rendered its buttons off the budget's STATUS alone
+   * — so a member opening a submitted budget would have been shown "Approve"
+   * and "Request changes" and then refused on tap. An affordance that always
+   * fails is worse than no affordance.
+   */
+  canSubmit: v.boolean(),
+  canDecide: v.boolean(),
 });
 
 export const getBudgetDetail = query({
@@ -205,6 +227,24 @@ export const getBudgetDetail = query({
         ? access.isCentral
         : budget.chapterId === ownChapterId
           ? access.isManager
+          : false;
+    // Same shape as `canEdit`: mirror the mutation, don't re-invent it.
+    const canSubmit =
+      level === "central"
+        ? access.isCentral
+        : budget.chapterId === ownChapterId
+          ? financeRoleAtLeast(access.role, "bookkeeper")
+          : false;
+    // Approving is NOT a rung of the graded ladder — a Chapter Director holds
+    // `finance.budgets.approve` without manager rank, which is the whole point
+    // of the separation. So this asks the seat first, exactly as
+    // `loadBudgetForApprovalDecision` does.
+    const canDecide =
+      level === "central"
+        ? await isCentralEdOrFm(ctx)
+        : budget.chapterId === ownChapterId && access.personId != null
+          ? (await holdsApprovalSeatAt(ctx, access.personId, ownChapterId)) ||
+            access.isManager
           : false;
 
     const refKind = effectiveRefKind(budget);
@@ -367,6 +407,8 @@ export const getBudgetDetail = query({
       transactions,
       transactionTotalCount: totalCount,
       canEdit,
+      canSubmit,
+      canDecide,
     };
   },
 });
