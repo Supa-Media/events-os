@@ -41,9 +41,13 @@ const path = require("path");
  * The native modules present in the baseline binary — the oldest build we
  * expect an OTA to reach. Sorted, and compared exactly.
  *
- * Last reviewed 2026-08-30 against the 1.0.0 build series. Everything here
- * came in with the supa-framework migration (bfe85b0, 2026-08-14), which is
- * when `apps/mobile/package.json` took its current shape.
+ * Last reviewed 2026-08-30. This repo's history begins 2026-08-14, so it
+ * cannot date anything older than that on its own — entries here are the
+ * modules judged structural (the app cannot start without them), not a
+ * verified inventory of any particular binary. Anything a build could
+ * plausibly run WITHOUT belongs in `gated` instead, and `expo-notifications`
+ * / `expo-device` moved there for exactly that reason: push is a feature, and
+ * a build lacking it must still start.
  */
 const BASELINE_CORE = [
   "@expo/metro-runtime",
@@ -51,11 +55,9 @@ const BASELINE_CORE = [
   "@react-native-community/netinfo",
   "expo",
   "expo-constants",
-  "expo-device",
   "expo-font",
   "expo-image-picker",
   "expo-linking",
-  "expo-notifications",
   "expo-router",
   "expo-secure-store",
   "expo-splash-screen",

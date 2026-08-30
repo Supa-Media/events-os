@@ -1,6 +1,6 @@
 import "../global.css";
 
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import Constants from "expo-constants";
 import { Slot } from "expo-router";
 import { StatusBar } from "expo-status-bar";
@@ -8,7 +8,7 @@ import { GestureHandlerRootView } from "react-native-gesture-handler";
 import { KeyboardProvider } from "react-native-keyboard-controller";
 import { SafeAreaProvider } from "react-native-safe-area-context";
 import { SupaConvexProvider } from "@supa-media/core/providers";
-import { NotificationProvider } from "@supa-media/notifications";
+import { loadNotificationProvider } from "../lib/notificationProvider";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import {
   useFonts,
@@ -56,6 +56,12 @@ export default function RootLayout() {
   }, []);
   const showApp = fontsLoaded || fontError != null || graceOver;
 
+  // Push is gated on the native module being in THIS build (see
+  // `lib/notificationProvider.ts`). On a build without it we render a
+  // pass-through instead, so a missing feature module can never stop the app
+  // from starting.
+  const Notifications = loadNotificationProvider() ?? Fragment;
+
   return (
     <GestureHandlerRootView style={{ flex: 1 }}>
       <KeyboardProvider>
@@ -86,7 +92,7 @@ export default function RootLayout() {
                 process.env.EXPO_PUBLIC_CONVEX_URL
               }
             >
-              <NotificationProvider>
+              <Notifications>
                 <StatusBar style="dark" />
                 {/* Catches render errors in any screen so a thrown exception
                     shows a recovery UI instead of a blank tree. Kept below the
@@ -94,7 +100,7 @@ export default function RootLayout() {
                     still has context, but above the route Slot so it wraps
                     every screen. */}
                 <ErrorBoundary>{showApp ? <Slot /> : null}</ErrorBoundary>
-              </NotificationProvider>
+              </Notifications>
             </SupaConvexProvider>
           </ErrorBoundary>
         </SafeAreaProvider>
