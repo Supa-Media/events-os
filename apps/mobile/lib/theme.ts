@@ -57,6 +57,7 @@ export const colors = {
   // structure
   border: "#EFE0DC", // hairline borders
   borderStrong: "#E4CFCB",
+  scrim: "rgba(33, 9, 9, 0.32)", // dim behind a bottom sheet / modal
 
   // brand accent
   accent: palette.brand500,

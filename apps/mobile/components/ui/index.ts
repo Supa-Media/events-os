@@ -31,6 +31,20 @@ export { RolePicker } from "./RolePicker";
 export { ServiceOptionsPicker } from "./ServiceOptionsPicker";
 export { ServiceCatalogManageModal } from "./ServiceCatalogManageModal";
 export { Popover } from "./Popover";
+export {
+  BottomSheet,
+  SheetGroup,
+  SheetRow,
+  SheetSectionLabel,
+} from "./BottomSheet";
+export {
+  MobileChromeProvider,
+  useMobileChrome,
+  chromeInsets,
+  type ChromeInsets,
+  type DockItem,
+  type NavSheetGroup,
+} from "./MobileChrome";
 export { InfoTooltip } from "./InfoTooltip";
 export { Calendar } from "./Calendar";
 // The ONE file viewer (photos, PDFs, emailed bodies — zoom, pan, paging) and

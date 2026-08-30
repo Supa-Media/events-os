@@ -1,6 +1,6 @@
 import { ReactNode, useState } from "react";
 import { View, Text, useWindowDimensions, Pressable } from "react-native";
-import { SafeAreaView } from "react-native-safe-area-context";
+import { SafeAreaView, useSafeAreaInsets } from "react-native-safe-area-context";
 import { usePathname, useRouter } from "expo-router";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { useQuery } from "convex/react";
@@ -10,8 +10,22 @@ import { SidebarNavItem } from "./SidebarNav";
 import { Avatar } from "./Avatar";
 import { Icon, type IconName } from "./Icon";
 import { Popover } from "./Popover";
+import { BottomSheet, SheetGroup, SheetRow, SheetSectionLabel } from "./BottomSheet";
+import {
+  ChromePill,
+  ChromePillButton,
+  FloatingTopBar,
+  MobileChromeProvider,
+  MobileDock,
+  NavSheet,
+  chromeInsets,
+  type DockItem,
+  type NavSheetGroup,
+} from "./MobileChrome";
 import { useAnchor } from "./useAnchor";
 import { colors } from "../../lib/theme";
+import { DESKTOP_WIDTH } from "../../lib/breakpoints";
+import { dockSelection } from "../../lib/mobileNav";
 import { useChapterContext } from "../../lib/ChapterContext";
 import { seatKeyOf, seatLabelOf } from "../../lib/financeSeats";
 
@@ -36,7 +50,7 @@ type NavEntry = {
 //
 // `group` is a subtle PARA (Tiago Forte) label the desktop Sidebar renders
 // above each cluster — see `groupForSidebar` below. It does NOT change this
-// array's order (BottomNav renders `NAV` verbatim, untouched by PARA) and it
+// array's order (the phone dock and nav sheet read `NAV` in order too) and it
 // is NOT access control, same as everything else here.
 //   P — project-oriented: what you're actively doing (Events/Briefing, Work).
 //   A — areas of ongoing responsibility: People, Songs, Inventory, Finances.
@@ -116,7 +130,8 @@ const PARA_ORDER: ParaGroup[] = ["P", "A", "R"];
  * preserving each item's relative order from `NAV` within its bucket (a
  * stable partition, not a resort) and dropping any group that ends up empty
  * (e.g. while `org.nav` is still loading and nothing has resolved visible
- * yet). BottomNav does NOT use this — it renders `nav` flat, untouched.
+ * yet). The phone's DOCK does not use this — it takes the leading few entries
+ * from `nav` flat; the nav SHEET does, via `navSheetGroups`.
  */
 function groupForSidebar(nav: NavEntry[]): { group: ParaGroup; items: NavEntry[] }[] {
   return PARA_ORDER.map((group) => ({
@@ -190,9 +205,6 @@ function isActive(pathname: string, path: string, alsoActiveOn?: string[]): bool
   return matches(path) || (alsoActiveOn ?? []).some(matches);
 }
 
-/** Desktop breakpoint — at/above this width we show the persistent sidebar. */
-const DESKTOP = 760;
-
 /**
  * The responsive app shell. On desktop it renders a persistent left sidebar
  * (brand mark, nav, chapter + user footer) beside the page content. Below the
@@ -201,7 +213,7 @@ const DESKTOP = 760;
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const { width } = useWindowDimensions();
-  const desktop = width >= DESKTOP;
+  const desktop = width >= DESKTOP_WIDTH;
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const pathname = usePathname();
   // Read-only peek (WP-S): a central-seat holder browsing a chapter they
@@ -237,19 +249,199 @@ export function AppShell({ children }: { children: ReactNode }) {
   }
 
   return (
-    <SafeAreaView className="flex-1 bg-surface" edges={["top"]}>
-      <MobileTopBar />
+    <MobileShell peeking={peeking} scoped={scoped} onExitPeek={exitPeek}>
+      {children}
+    </MobileShell>
+  );
+}
+
+/**
+ * The phone shell. Page content fills the window edge to edge and the
+ * navigation FLOATS over it: a pair of buttons at the top, a dock at the
+ * bottom. `Screen` reads `chromeInsets` out of `MobileChromeProvider` and pads
+ * itself by exactly what the chrome occupies, so a page starts below the top
+ * buttons and ends above the dock while still scrolling underneath both.
+ *
+ * The chrome is rendered AFTER `children` so it paints on top without needing
+ * to fight z-index against whatever a screen puts at its own root.
+ */
+function MobileShell({
+  children,
+  peeking,
+  scoped,
+  onExitPeek,
+}: {
+  children: ReactNode;
+  peeking: { chapterId: Id<"chapters">; chapterName: string } | null;
+  scoped: boolean;
+  onExitPeek: () => void;
+}) {
+  const router = useRouter();
+  const nav = useNav();
+  const pathname = usePathname();
+  const safe = useSafeAreaInsets();
+  // Same gate as the desktop sidebar footer: only a caller with more than one
+  // desk (or peek reach) gets a switcher. For everyone else the chapter is a
+  // fact, not a control, and it's named in the account sheet instead.
+  const { showSwitcher } = useChapterContext();
+  const [navOpen, setNavOpen] = useState(false);
+  const [accountOpen, setAccountOpen] = useState(false);
+  // The peek banner's height is MEASURED, not assumed: its copy runs to one or
+  // two lines depending on whether the current route actually re-scopes (see
+  // `PeekBanner`), and a hardcoded guess would either overlap the page's title
+  // or leave a gap above it.
+  const [peekHeight, setPeekHeight] = useState(0);
+
+  const items: DockItem[] = nav.map((n) => ({
+    label: n.label,
+    icon: n.icon,
+    path: n.path,
+    active: isActive(pathname, n.path, n.alsoActiveOn),
+  }));
+
+  // The dock shows the first few destinations in `NAV` order; the rest live in
+  // the sheet. See `dockSelection` for how the destination you're ON is kept
+  // visible without reordering anything else.
+  const dockItems = dockSelection(items);
+
+  const insets = chromeInsets(safe.top, safe.bottom);
+  // A peek banner is chrome too — it sits under the floating buttons, so the
+  // page has to start below BOTH.
+  const topInset = insets.top + (peeking ? peekHeight + PEEK_BANNER_GAP : 0);
+
+  return (
+    <View className="flex-1 bg-surface">
+      <MobileChromeProvider top={topInset} bottom={insets.bottom}>
+        {children}
+      </MobileChromeProvider>
+
+      <FloatingTopBar
+        onOpenNav={() => setNavOpen(true)}
+        right={
+          <ChromePill>
+            {showSwitcher ? <ContextPill compact /> : null}
+            <ChromePillButton
+              icon="user"
+              label="Account"
+              onPress={() => setAccountOpen(true)}
+            />
+          </ChromePill>
+        }
+      />
+
       {peeking ? (
-        <PeekBanner
-          chapterId={peeking.chapterId}
-          chapterName={peeking.chapterName}
-          onExit={exitPeek}
-          scoped={scoped}
-        />
+        <View
+          pointerEvents="box-none"
+          onLayout={(e) => setPeekHeight(e.nativeEvent.layout.height)}
+          style={{ top: insets.top }}
+          className="absolute inset-x-0 z-30 px-3"
+        >
+          <PeekBanner
+            chapterId={peeking.chapterId}
+            chapterName={peeking.chapterName}
+            onExit={onExitPeek}
+            scoped={scoped}
+            floating
+          />
+        </View>
       ) : null}
-      <View className="flex-1">{children}</View>
-      <BottomNav />
-    </SafeAreaView>
+
+      <MobileDock
+        items={dockItems}
+        onNavigate={(path) => router.navigate(path as any)}
+        onOpenMore={() => setNavOpen(true)}
+      />
+
+      <NavSheet
+        visible={navOpen}
+        onClose={() => setNavOpen(false)}
+        groups={navSheetGroups(nav, pathname)}
+        onNavigate={(path) => router.navigate(path as any)}
+      />
+      <AccountSheet visible={accountOpen} onClose={() => setAccountOpen(false)} />
+    </View>
+  );
+}
+
+/** Spelled-out PARA headings for the nav sheet. The desktop sidebar uses the
+ *  bare letter because it has a persistent column to hold the reader's place;
+ *  a sheet you open, scan, and dismiss has to say what the letter means. */
+const PARA_SHEET_LABELS: Record<ParaGroup, string> = {
+  P: "Projects",
+  A: "Areas",
+  R: "Resources",
+};
+
+/** The nav sheet's contents: every visible destination, in the same PARA
+ *  buckets the sidebar uses, so both navigations describe the app alike. */
+function navSheetGroups(nav: NavEntry[], pathname: string): NavSheetGroup[] {
+  return groupForSidebar(nav).map(({ group, items }) => ({
+    label: PARA_SHEET_LABELS[group],
+    items: items.map((n) => ({
+      label: n.label,
+      icon: n.icon,
+      path: n.path,
+      active: isActive(pathname, n.path, n.alsoActiveOn),
+    })),
+  }));
+}
+
+/** Breathing room between the floating peek banner and the page beneath it. */
+const PEEK_BANNER_GAP = 8;
+
+/**
+ * The account sheet behind the top-right person button — the phone's answer to
+ * the desktop sidebar footer. Which chapter you're at, then profile and sign
+ * out.
+ */
+function AccountSheet({
+  visible,
+  onClose,
+}: {
+  visible: boolean;
+  onClose: () => void;
+}) {
+  const { signOut } = useAuthActions();
+  const router = useRouter();
+  const org = useQuery(api.org.nav);
+  const summary = useQuery(api.dashboard.summary);
+  return (
+    <BottomSheet visible={visible} onClose={onClose}>
+      {org?.chapterName ? (
+        <>
+          <SheetSectionLabel label="Chapter" />
+          <SheetGroup>
+            <SheetRow
+              label={org.chapterName}
+              sublabel={summary ? `${summary.peopleCount} people` : undefined}
+              icon="home"
+              first
+              onPress={onClose}
+            />
+          </SheetGroup>
+        </>
+      ) : null}
+      <SheetGroup>
+        <SheetRow
+          label="Profile"
+          icon="user"
+          first
+          onPress={() => {
+            onClose();
+            router.navigate("/profile");
+          }}
+        />
+        <SheetRow
+          label="Sign out"
+          icon="log-out"
+          destructive
+          onPress={() => {
+            onClose();
+            signOut();
+          }}
+        />
+      </SheetGroup>
+    </BottomSheet>
   );
 }
 
@@ -308,14 +500,22 @@ function PeekBanner({
   chapterName,
   onExit,
   scoped,
+  floating = false,
 }: {
   chapterId: Id<"chapters">;
   chapterName: string;
   onExit: () => void;
   scoped: boolean;
+  /** Phone shell: render as a rounded, shadowed strip that floats over the
+   *  page rather than a full-bleed bar with a bottom rule. Same content and
+   *  same copy rules — only the frame changes. */
+  floating?: boolean;
 }) {
   const { chapterSeats, chooseSeat } = useChapterContext();
   const ownSeat = chapterSeats.find((s) => s.chapterId === chapterId);
+  const frame = floating
+    ? "rounded-md shadow-dock px-3 py-2"
+    : "border-b border-border px-4 py-2";
 
   if (ownSeat) {
     return (
@@ -323,7 +523,7 @@ function PeekBanner({
         onPress={() => chooseSeat(chapterId)}
         accessibilityRole="button"
         accessibilityLabel={`Switch to your seat at ${chapterName}`}
-        className="flex-row items-center gap-3 border-b border-border bg-warn-bg px-4 py-2 active:opacity-80 web:hover:opacity-90"
+        className={`flex-row items-center gap-3 bg-warn-bg active:opacity-80 web:hover:opacity-90 ${frame}`}
       >
         <Icon name="repeat" size={15} color={colors.warn} />
         <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
@@ -336,7 +536,7 @@ function PeekBanner({
   }
 
   return (
-    <View className="flex-row items-center gap-3 border-b border-border bg-warn-bg px-4 py-2">
+    <View className={`flex-row items-center gap-3 bg-warn-bg ${frame}`}>
       <Icon name="eye" size={15} color={colors.warn} />
       <Text className="flex-1 text-sm text-ink" numberOfLines={scoped ? 1 : 2}>
         <Text className="font-semibold">Viewing {chapterName}</Text>
@@ -526,81 +726,19 @@ function ChapterFooter() {
   );
 }
 
-function MobileTopBar() {
-  const router = useRouter();
-  const org = useQuery(api.org.nav);
-  const { showSwitcher } = useChapterContext();
-  return (
-    <View className="flex-row items-center gap-2 border-b border-border bg-raised px-4 py-3">
-      <View className="h-7 w-7 items-center justify-center rounded-md bg-accent">
-        <Icon name="calendar" size={15} color="#FFFFFF" />
-      </View>
-      <Text className="font-display text-lg text-ink">Chapter OS</Text>
-      <View className="flex-1" />
-      {/* Which chapter you're operating as — the sidebar footer's mobile twin.
-          Multi-context callers (WP-S) get the real interactive pill instead. */}
-      {showSwitcher ? (
-        <ContextPill />
-      ) : org?.chapterName ? (
-        <Text className="max-w-[40%] text-xs text-muted" numberOfLines={1}>
-          {org.chapterName}
-        </Text>
-      ) : null}
-      <Pressable
-        accessibilityRole="button"
-        accessibilityLabel="Profile"
-        hitSlop={8}
-        onPress={() => router.navigate("/profile")}
-        className="h-8 w-8 items-center justify-center rounded-md active:bg-sunken"
-      >
-        <Icon name="user" size={18} color={colors.muted} />
-      </Pressable>
-    </View>
-  );
-}
-
-function BottomNav() {
-  const router = useRouter();
-  const pathname = usePathname();
-  const nav = useNav();
-  return (
-    <SafeAreaView edges={["bottom"]} className="border-t border-border bg-raised">
-      <View className="flex-row">
-        {nav.map((n) => {
-          const active = isActive(pathname, n.path, n.alsoActiveOn);
-          return (
-            <Pressable
-              key={n.path}
-              accessibilityRole="tab"
-              accessibilityLabel={n.label}
-              accessibilityState={{ selected: active }}
-              onPress={() => router.navigate(n.path as any)}
-              className="flex-1 items-center gap-1 py-2.5"
-            >
-              <Icon name={n.icon} size={20} color={active ? colors.accent : colors.muted} />
-              <Text className={`text-2xs ${active ? "font-semibold text-accent" : "text-muted"}`}>
-                {n.label}
-              </Text>
-            </Pressable>
-          );
-        })}
-      </View>
-    </SafeAreaView>
-  );
-}
-
 // ── Context switcher (WP-S) ──────────────────────────────────────────────────
 /**
  * The app-wide context pill: which desk the caller is at, and (for a
  * central-seat holder) which chapter they can peek into read-only. Only
  * rendered when `showSwitcher` is true (a dual/multi real-seat holder, or
- * anyone with peek reach) — `ChapterFooter`/`MobileTopBar` fall back to the
- * plain, non-interactive chapter label otherwise.
+ * anyone with peek reach) — `ChapterFooter` falls back to a plain,
+ * non-interactive chapter label otherwise, and on the phone the top-right pill
+ * simply omits it (the account sheet still names the chapter).
  *
  * Absorbs the old finance-dashboard-local `SeatSwitcher`: this is now the ONE
  * place a caller picks their desk, app-wide, not just on the Finances screen.
  */
-function ContextPill() {
+function ContextPill({ compact = false }: { compact?: boolean }) {
   const { ref, anchor, visible, open, close } = useAnchor();
   const {
     context,
@@ -643,13 +781,20 @@ function ContextPill() {
         onPress={open}
         accessibilityRole="button"
         accessibilityLabel={a11yLabel}
-        className="flex-row items-center gap-1.5 rounded-md border border-border bg-raised px-2.5 py-1.5 active:bg-sunken web:hover:bg-sunken"
+        className={
+          compact
+            ? // Inside the phone's floating ChromePill, which already supplies
+              // the raised surface and shadow — a second border and background
+              // here would draw a box inside a box.
+              "h-8 flex-row items-center gap-1 rounded-pill px-2.5 active:bg-sunken web:hover:bg-sunken"
+            : "flex-row items-center gap-1.5 rounded-md border border-border bg-raised px-2.5 py-1.5 active:bg-sunken web:hover:bg-sunken"
+        }
       >
         {context.kind === "peek" ? (
           <Icon name="eye" size={13} color={colors.warn} />
         ) : null}
         <Text
-          className="max-w-[120px] text-sm font-semibold text-ink"
+          className={`text-sm font-semibold text-ink ${compact ? "max-w-[104px]" : "max-w-[120px]"}`}
           numberOfLines={1}
         >
           {deskName}

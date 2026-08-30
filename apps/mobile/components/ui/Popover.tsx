@@ -1,4 +1,6 @@
 import { Modal, View, Pressable, ScrollView, Dimensions } from "react-native";
+import { BottomSheet, SheetGroup } from "./BottomSheet";
+import { useIsPhone } from "../../lib/breakpoints";
 
 type Anchor = { x: number; y: number; width: number; height: number };
 
@@ -38,8 +40,30 @@ const EDGE_MARGIN = 8;
  * height. The scrollable max height is also clamped to the actual space
  * available above the anchor so a tall panel still can't overflow past the
  * top edge of the window.
+ *
+ * ON A PHONE none of that applies, and this renders a {@link BottomSheet}
+ * instead — same children, different surface. An anchored panel is a pointer
+ * idiom: it assumes a cursor that can aim at a short row and a window roomy
+ * enough for a panel to hang off its trigger. On a 390px screen the panel
+ * lands under the thumb that opened it, and half the app's menus are opened
+ * from a table cell near the bottom edge, where "flip above" covers the row
+ * you were looking at. Routing here means every one of the ~40 call sites
+ * gets the phone-native surface without each of them having to know about it.
  */
 export function Popover({ visible, onClose, anchor, width, children }: Props) {
+  const phone = useIsPhone();
+
+  // Hooks must run before the early return below, so this branch sits after
+  // `useIsPhone` and before `if (!visible)`. `BottomSheet` handles its own
+  // invisible case.
+  if (phone) {
+    return (
+      <BottomSheet visible={visible} onClose={onClose}>
+        <SheetGroup>{children}</SheetGroup>
+      </BottomSheet>
+    );
+  }
+
   if (!visible) return null;
 
   const window = Dimensions.get("window");

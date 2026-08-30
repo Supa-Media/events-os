@@ -805,7 +805,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
       { kind: "heading", text: "The app is organized PARA-inspired too" },
       {
         kind: "p",
-        text: "Chapter OS's own sidebar groups by that same logic, subtly: **Work** and **Events** are the Projects group — dated, with an end. **Songs**, **Inventory**, and **Finances** are Areas — standing responsibilities that don't have an end date. **Academy** and **Org Chart** are Resources — material you open to look something up in, not act on live. **Archive** is reserved for a future release; nothing lives there yet.",
+        text: "Chapter OS's own navigation groups by that same logic, subtly — the sidebar on a computer, and the same headings in the phone's navigation sheet: **Work** and **Events** are the Projects group — dated, with an end. **Songs**, **Inventory**, and **Finances** are Areas — standing responsibilities that don't have an end date. **Academy** and **Org Chart** are Resources — material you open to look something up in, not act on live. **Archive** is reserved for a future release; nothing lives there yet.",
       },
       {
         kind: "p",
@@ -838,7 +838,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
           "The four folders — Projects, Areas, Resources, Archive — are the whole system, applied consistently across every shared system, including now inside Chapter OS.",
       },
       {
-        prompt: "In Chapter OS's PARA-inspired sidebar, which group does Inventory belong to?",
+        prompt: "In Chapter OS's PARA-inspired navigation, which group does Inventory belong to?",
         options: [
           "Resources — it's material you look up for reference",
           "Projects — it has a defined end date",
@@ -850,7 +850,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
           "Areas hold standing responsibilities that just keep happening, unlike a Project (which has a start and an end) — Inventory, like Songs and Finances, never 'finishes.'",
       },
       {
-        prompt: "Which two sidebar groups in Chapter OS map to PARA's \"Projects\"?",
+        prompt: "Which two navigation groups in Chapter OS map to PARA's \"Projects\"?",
         options: [
           "Songs and Inventory",
           "Academy and Org Chart",

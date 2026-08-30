@@ -33,6 +33,9 @@ module.exports = {
         // structure
         border: "#EFE0DC",
         "border-strong": "#E4CFCB",
+        // Dim behind a bottom sheet / modal. Warm, not neutral black — a cold
+        // scrim over cream surfaces reads grey-green.
+        scrim: "rgba(33, 9, 9, 0.32)",
         // brand accent + scale
         accent: {
           DEFAULT: "#D23B3A",
@@ -80,6 +83,9 @@ module.exports = {
         card: "0 1px 2px rgba(33, 9, 9, 0.04), 0 1px 3px rgba(33, 9, 9, 0.03)",
         raised: "0 4px 16px rgba(33, 9, 9, 0.07)",
         pop: "0 8px 28px rgba(33, 9, 9, 0.12)",
+        // The phone's floating chrome (top buttons, bottom dock). Lifts a
+        // capsule off scrolling content without the hard edge a border gives.
+        dock: "0 2px 6px rgba(33, 9, 9, 0.06), 0 8px 24px rgba(33, 9, 9, 0.10)",
       },
       fontSize: {
         // tightened UI type scale
