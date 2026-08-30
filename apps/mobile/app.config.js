@@ -61,98 +61,98 @@ function assertConvexUrlForReleaseBuilds() {
 }
 
 /** @type {import('expo/config').ExpoConfig} */
-module.exports = ({ config }) => (
-  assertConvexUrlForReleaseBuilds(),
-  {
-  ...config,
-  name: "Chapter OS",
-  slug: "events-os",
-  version: "1.0.0",
-  scheme: "eventsos",
-  orientation: "portrait",
-  icon: "./assets/icon.png",
-  userInterfaceStyle: "automatic",
-  splash: {
-    image: "./assets/splash.png",
-    resizeMode: "contain",
-    backgroundColor: "#ffffff",
-  },
-  assetBundlePatterns: ["**/*"],
-  ios: {
-    supportsTablet: true,
-    bundleIdentifier: process.env.APP_ENV === "staging"
-      ? "com.eventsos.staging"
-      : "com.eventsos.mobile",
-    infoPlist: {
-      // Standard/exempt encryption only — skips the App Store export-compliance prompt.
-      ITSAppUsesNonExemptEncryption: false,
-    },
-  },
-  android: {
-    adaptiveIcon: {
-      foregroundImage: "./assets/adaptive-icon.png",
+module.exports = ({ config }) => {
+  assertConvexUrlForReleaseBuilds();
+  return {
+    ...config,
+    name: "Chapter OS",
+    slug: "events-os",
+    version: "1.0.0",
+    scheme: "eventsos",
+    orientation: "portrait",
+    icon: "./assets/icon.png",
+    userInterfaceStyle: "automatic",
+    splash: {
+      image: "./assets/splash.png",
+      resizeMode: "contain",
       backgroundColor: "#ffffff",
     },
-    package: process.env.APP_ENV === "staging"
-      ? "com.eventsos.staging"
-      : "com.eventsos.mobile",
-    intentFilters: [
-      {
-        action: "VIEW",
-        autoVerify: true,
-        data: [{ scheme: "eventsos" }],
-        category: ["DEFAULT", "BROWSABLE"],
+    assetBundlePatterns: ["**/*"],
+    ios: {
+      supportsTablet: true,
+      bundleIdentifier: process.env.APP_ENV === "staging"
+        ? "com.eventsos.staging"
+        : "com.eventsos.mobile",
+      infoPlist: {
+        // Standard/exempt encryption only — skips the App Store export-compliance prompt.
+        ITSAppUsesNonExemptEncryption: false,
       },
-    ],
-  },
-  web: {
-    // The PW mark (apps/landing/public/images/pw-mark.png), trimmed and
-    // squared — `expo export` turns it into the favicon.ico the web app
-    // serves at publicworship.life/os.
-    favicon: "./assets/favicon.png",
-  },
-  plugins: [
-    "expo-router",
-    [
-      "expo-image-picker",
-      {
-        photosPermission:
-          "Allow Chapter OS to access your photos so you can attach images.",
-      },
-    ],
-    [
-      "expo-camera",
-      {
-        cameraPermission:
-          "Allow Chapter OS to access your camera to scan ticket QR codes.",
-      },
-    ],
-  ],
-  extra: {
-    convexUrl: resolveConvexUrl(),
-    eas: {
-      projectId: "4d2f4932-3e26-433f-a8db-6da4571dff18",
     },
-    router: {
-      origin: false,
+    android: {
+      adaptiveIcon: {
+        foregroundImage: "./assets/adaptive-icon.png",
+        backgroundColor: "#ffffff",
+      },
+      package: process.env.APP_ENV === "staging"
+        ? "com.eventsos.staging"
+        : "com.eventsos.mobile",
+      intentFilters: [
+        {
+          action: "VIEW",
+          autoVerify: true,
+          data: [{ scheme: "eventsos" }],
+          category: ["DEFAULT", "BROWSABLE"],
+        },
+      ],
     },
-  },
-  experiments: {
-    // Web-only base path once the Cloudflare Worker fronts
-    // https://publicworship.life and proxies /os/* (prefix stripped) to this
-    // app's EAS Hosting origin — see docs/plans/url-consolidation.md. Lets
-    // expo-router's own internal navigation (<Link>/router.push) resolve
-    // correctly without per-call changes. Mirrors `APP_BASE_PATH` in
-    // `lib/appUrl.ts` (duplicated, not imported — this file is plain
-    // CommonJS, not run through the TS/Babel pipeline); keep both in sync.
-    baseUrl: "/os",
-  },
-  owner: "lilseyi",
-  runtimeVersion: {
-    policy: "appVersion",
-  },
-  updates: {
-    url: `https://u.expo.dev/4d2f4932-3e26-433f-a8db-6da4571dff18`,
-  },
-  }
-);
+    web: {
+      // The PW mark (apps/landing/public/images/pw-mark.png), trimmed and
+      // squared — `expo export` turns it into the favicon.ico the web app
+      // serves at publicworship.life/os.
+      favicon: "./assets/favicon.png",
+    },
+    plugins: [
+      "expo-router",
+      [
+        "expo-image-picker",
+        {
+          photosPermission:
+            "Allow Chapter OS to access your photos so you can attach images.",
+        },
+      ],
+      [
+        "expo-camera",
+        {
+          cameraPermission:
+            "Allow Chapter OS to access your camera to scan ticket QR codes.",
+        },
+      ],
+    ],
+    extra: {
+      convexUrl: resolveConvexUrl(),
+      eas: {
+        projectId: "4d2f4932-3e26-433f-a8db-6da4571dff18",
+      },
+      router: {
+        origin: false,
+      },
+    },
+    experiments: {
+      // Web-only base path once the Cloudflare Worker fronts
+      // https://publicworship.life and proxies /os/* (prefix stripped) to this
+      // app's EAS Hosting origin — see docs/plans/url-consolidation.md. Lets
+      // expo-router's own internal navigation (<Link>/router.push) resolve
+      // correctly without per-call changes. Mirrors `APP_BASE_PATH` in
+      // `lib/appUrl.ts` (duplicated, not imported — this file is plain
+      // CommonJS, not run through the TS/Babel pipeline); keep both in sync.
+      baseUrl: "/os",
+    },
+    owner: "lilseyi",
+    runtimeVersion: {
+      policy: "appVersion",
+    },
+    updates: {
+      url: `https://u.expo.dev/4d2f4932-3e26-433f-a8db-6da4571dff18`,
+    },
+  };
+};
