@@ -81,6 +81,7 @@ import {
   type OcrRoutingResult,
 } from "./receiptInbox";
 import { requireReceiptSuggestions } from "./lib/receiptSuggestionAccess";
+import { ownChargeActor } from "./lib/ownChargeAccess";
 import {
   AUTO_RETRY_FALLBACK_ATTEMPT,
   AUTO_RETRY_MAX_ATTEMPTS,
@@ -975,22 +976,51 @@ export const unarchiveReceipt = mutation({
 });
 
 // ── listForTransaction ───────────────────────────────────────────────────────
-/** Every receipt linked to one transaction (a txn detail panel's receipt
- *  strip). Bookkeeper+ in any scope the caller can read — a CENTRAL-owned
- *  transaction's receipts used to come back empty for everyone, since this
- *  compared the txn against the caller's home chapter alone. */
+/**
+ * Every receipt linked to one transaction (a txn detail panel's receipt
+ * strip). Bookkeeper+ in any scope the caller can read — a CENTRAL-owned
+ * transaction's receipts used to come back empty for everyone, since this
+ * compared the txn against the caller's home chapter alone.
+ *
+ * OR THE CHARGE'S OWN SPENDER, and that arm is not a convenience. This query
+ * is what the "Attached ✓" chip opens (`ReceiptCell` → `ReceiptViewerModal`),
+ * and that chip renders on the CARDHOLDER's own surfaces — `/code`'s list and
+ * the coding sheet — where the audience by definition has no finance seat.
+ * Tapping it therefore threw `FORBIDDEN` mid-render, which React does not
+ * treat as a failed read but as a failed COMPONENT: the throw unwound to the
+ * root `ErrorBoundary` and replaced the entire page with "Something went
+ * wrong — This action needs at least the Bookkeeper finance role."
+ *
+ * Reported 2026-08-31 by a cardholder trying to code one charge: *"it opens
+ * and then immediately changes to this."* She could not see the receipt on
+ * her own charge, and looking cost her the page.
+ *
+ * `ChargeRow` already carries the scar of the same trap one control to the
+ * left — `libraryPicker={false}`, added because every query behind the search
+ * picker is bookkeeper-gated and "a Convex query throws as soon as it mounts".
+ * The chip beside it was the same trap, unnoticed, because it renders only
+ * once a receipt exists.
+ *
+ * Seeing the proof you attached to your own spend is the weakest possible
+ * read, and the person the receipt is being chased FROM is the last person
+ * who should be refused it (`lib/ownChargeAccess.ts`).
+ */
 export const listForTransaction = query({
   args: { transactionId: v.id("transactions") },
   returns: v.array(receiptSummary),
   handler: async (ctx, { transactionId }) => {
     const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
     if (!chapterId) return [];
-    await requireFinanceRole(ctx, chapterId, "bookkeeper");
 
     const txn = await ctx.db.get(transactionId);
     if (!txn) return [];
-    const scopes = await readableTxnScopes(ctx, chapterId);
-    if (!scopes.includes(txn.chapterId as Id<"chapters"> | typeof CENTRAL)) return [];
+    // Ownership first — it is the cheaper question and the one that needs no
+    // grant. A non-owner still needs the rank, in a scope they can read.
+    if ((await ownChargeActor(ctx, txn, chapterId)) == null) {
+      await requireFinanceRole(ctx, chapterId, "bookkeeper");
+      const scopes = await readableTxnScopes(ctx, chapterId);
+      if (!scopes.includes(txn.chapterId as Id<"chapters"> | typeof CENTRAL)) return [];
+    }
 
     const links = await ctx.db
       .query("receiptLinks")

@@ -2347,6 +2347,19 @@ export function ReceiptCell({
           <ReceiptViewerModal
             transactionId={transactionId}
             onClose={() => setViewerOpen(false)}
+            // THE VIEWER'S ACTIONS FOLLOW THE PICKER'S SIGNAL. Detach,
+            // Replace and "attach an existing receipt" all call
+            // bookkeeper-gated mutations, so on a member surface they are
+            // buttons that can only fail — and `libraryPicker={false}` is
+            // already this cell's required, explicit "this host's audience
+            // has no finance seat" flag (see its prop doc, and the crash
+            // that made it required). One signal, one meaning, rather than a
+            // second optional flag whose default would make the next miss
+            // invisible in exactly the same way. An explicit `readOnly`
+            // still wins where a host knows better. Viewing is never gated
+            // here: a cardholder may always READ the receipts on their own
+            // charge (`receipts.listForTransaction`).
+            readOnly={readOnly ?? !libraryPicker}
           />
         ) : null}
       </>

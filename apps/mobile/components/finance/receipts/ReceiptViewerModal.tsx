@@ -30,9 +30,13 @@
  * own gate) hides every action below — viewing stays available, nothing here
  * ever renders a dead disabled button.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Alert, Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import {
+  useMutation,
+  useQueries,
+  type RequestForQueries,
+} from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
@@ -87,7 +91,33 @@ export function ReceiptViewerModal({
    *  action; the receipt list itself always renders. */
   readOnly?: boolean;
 }) {
-  const receipts = useQuery(api.receipts.listForTransaction, { transactionId });
+  // READ THROUGH `useQueries`, NEVER `useQuery`. `useQuery` THROWS a refusal
+  // during render, which React treats as a failed component rather than a
+  // failed read: it unwinds to the root `ErrorBoundary` and replaces the whole
+  // page. That is not hypothetical here — it is this component's own bug
+  // report (2026-08-31, a cardholder on `/code`: "it opens and then
+  // immediately changes to this", with a full-page "Something went wrong").
+  // The server side of that is fixed (`receipts.listForTransaction` now admits
+  // the charge's own spender), but the SHAPE of the failure is the part worth
+  // keeping fixed: this modal is opened from surfaces whose audience holds no
+  // finance seat, so a future gate it cannot satisfy must cost it its own
+  // contents and nothing more. Same idiom, same reason, as
+  // `receiptSuggestions.ts`.
+  const request = useMemo<RequestForQueries>(
+    () => ({
+      receipts: {
+        query: api.receipts.listForTransaction,
+        args: { transactionId },
+      },
+    }),
+    [transactionId],
+  );
+  const results = useQueries(request);
+  const raw = results.receipts;
+  const refused = raw instanceof Error;
+  const receipts = (Array.isArray(raw) ? raw : undefined) as
+    | ReceiptRow[]
+    | undefined;
   const unlinkReceipt = useMutation(api.receipts.unlinkReceipt);
   const linkReceipt = useMutation(api.receipts.linkReceipt);
   const submitUploadedReceipts = useMutation(api.receipts.submitUploadedReceipts);
@@ -240,7 +270,16 @@ export function ReceiptViewerModal({
           </View>
 
           <ScrollView className="max-h-[520px] px-5 py-4">
-            {receipts === undefined ? (
+            {refused ? (
+              // The modal's own contents, and nothing else — the page behind
+              // it survives. Said plainly rather than as an error code: from
+              // here the useful next step is asking the person who keeps the
+              // books, not retrying.
+              <Text className="py-6 text-center text-sm text-muted">
+                You don&apos;t have access to the receipt files on this
+                charge. Ask a bookkeeper if you need to see them.
+              </Text>
+            ) : receipts === undefined ? (
               <Text className="py-6 text-center text-sm text-muted">Loading…</Text>
             ) : receipts.length === 0 ? (
               <Text className="py-6 text-center text-sm text-muted">
