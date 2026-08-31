@@ -222,6 +222,67 @@ describe("canViewList", () => {
   });
 });
 
+// ── listForTransaction: the cardholder's own charge ──────────────────────────
+/**
+ * THE "ATTACHED ✓" CHIP IS A CARDHOLDER CONTROL. It renders on `/code`'s row
+ * and inside the coding sheet — surfaces whose entire audience holds no
+ * finance seat — and tapping it opens `ReceiptViewerModal`, which reads this
+ * query. Bookkeeper-gated, it threw mid-render, and a Convex query that
+ * throws during render is not a failed read but a failed COMPONENT: it
+ * unwound to the root `ErrorBoundary` and replaced the whole page.
+ *
+ * Reported 2026-08-31 by a cardholder trying to code one charge: "it opens
+ * and then immediately changes to this" — a full-page "Something went wrong /
+ * This action needs at least the Bookkeeper finance role."
+ *
+ * So: the charge's own spender may read the receipts on it, and nobody else
+ * gained anything.
+ */
+describe("listForTransaction — the charge's own spender", () => {
+  test("a cardholder with NO finance role reads the receipts on their own charge", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // A roster row carrying the caller's userId, and deliberately no grant.
+    const me = await seedPerson(s);
+    const txn = await seedTxn(s, { personId: me, hasReceipt: true });
+    const storageId = await storeBlobWithContent(s, "own-charge-receipt");
+    const receiptId = await run(s.t, (ctx) =>
+      createReceipt(ctx, { chapterId: s.chapterId, storageId, source: "upload" }),
+    );
+    await run(s.t, (ctx) =>
+      linkReceiptToTransaction(ctx, {
+        receiptId,
+        transactionId: txn,
+        source: "manual",
+      }),
+    );
+
+    const rows = await s.as.query(api.receipts.listForTransaction, {
+      transactionId: txn,
+    });
+    expect(rows.map((r) => r._id)).toEqual([receiptId]);
+  });
+
+  test("a member who is not the spender is still refused", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The caller has a roster row; the charge belongs to somebody else.
+    await seedPerson(s);
+    const someoneElse = await run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Someone Else",
+        createdAt: Date.now(),
+      }),
+    );
+    const txn = await seedTxn(s, { personId: someoneElse, hasReceipt: true });
+
+    await expect(
+      s.as.query(api.receipts.listForTransaction, { transactionId: txn }),
+    ).rejects.toThrow(ConvexError);
+  });
+});
+
 // ── listReceipts filters ─────────────────────────────────────────────────────
 describe("listReceipts", () => {
   test("unlinked/linked/all filters partition correctly, newest first", async () => {
