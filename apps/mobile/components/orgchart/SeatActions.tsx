@@ -82,10 +82,20 @@ function ProposeChangeModal({
   const propose = useMutation(api.seatProposals.propose);
   const convex = useConvex();
   // Scope-aware roster — the seat's `scope`, not the caller's own chapter
-  // (see this file's header doc comment).
-  const people = useQuery(api.seats.assignablePeople, { scope });
+  // (see this file's header doc comment). `search` is the picker's own box,
+  // handed back through its `onSearchChange`: the roster is capped, so the
+  // SERVER has to do the matching (see `convex/lib/peopleSearch.ts`).
+  const [personSearch, setPersonSearch] = useState("");
+  const people = useQuery(api.seats.assignablePeople, {
+    scope,
+    ...(personSearch ? { search: personSearch } : {}),
+  });
   const [action, setAction] = useState<"fill" | "vacate">("fill");
   const [subjectPersonId, setSubjectPersonId] = useState<Id<"people"> | null>(null);
+  // The picked person's NAME comes from the pick itself, not from a lookup in
+  // `people` — that array is now whatever the last search returned, so a
+  // lookup would blank the button label the moment the roster narrows.
+  const [subjectPersonName, setSubjectPersonName] = useState<string | null>(null);
   const [note, setNote] = useState("");
   const [pickerOpen, setPickerOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -94,6 +104,7 @@ function ProposeChangeModal({
     if (visible) {
       setAction("fill");
       setSubjectPersonId(null);
+      setSubjectPersonName(null);
       setNote("");
     }
   }, [visible]);
@@ -130,10 +141,7 @@ function ProposeChangeModal({
     }
   }
 
-  const chosenFillName = useMemo(
-    () => (people ?? []).find((p) => p.personId === subjectPersonId)?.name,
-    [people, subjectPersonId],
-  );
+  const chosenFillName = subjectPersonName ?? undefined;
   // `PersonPicker`'s pre-fetched-roster override shape (`_id`/`name`) — see
   // its `people` prop doc comment.
   const pickerPeople = useMemo(
@@ -167,6 +175,7 @@ function ProposeChangeModal({
                     onPress={() => {
                       setAction("fill");
                       setSubjectPersonId(null);
+                      setSubjectPersonName(null);
                     }}
                   />
                   <ActionTab
@@ -176,6 +185,7 @@ function ProposeChangeModal({
                     onPress={() => {
                       setAction("vacate");
                       setSubjectPersonId(null);
+                      setSubjectPersonName(null);
                     }}
                   />
                 </View>
@@ -249,8 +259,10 @@ function ProposeChangeModal({
         title="Propose filling with…"
         selectedId={subjectPersonId}
         people={pickerPeople}
-        onPick={(personId) => {
+        onSearchChange={setPersonSearch}
+        onPick={(personId, person) => {
           setSubjectPersonId(personId as Id<"people">);
+          setSubjectPersonName(person.name);
           setPickerOpen(false);
         }}
         onClose={() => setPickerOpen(false)}
@@ -308,8 +320,14 @@ function DirectAssignModal({
   const assignSeat = useMutation(api.seats.assignSeat);
   const unassignSeat = useMutation(api.seats.unassignSeat);
   // Scope-aware roster — the seat's `scope`, not the caller's own chapter
-  // (see this file's header doc comment).
-  const people = useQuery(api.seats.assignablePeople, { scope });
+  // (see this file's header doc comment). `search` is the picker's own box:
+  // the roster is capped, so matching happens SERVER-side (see
+  // `convex/lib/peopleSearch.ts`).
+  const [personSearch, setPersonSearch] = useState("");
+  const people = useQuery(api.seats.assignablePeople, {
+    scope,
+    ...(personSearch ? { search: personSearch } : {}),
+  });
   const pickerPeople = useMemo(
     () => people?.map((p) => ({ _id: p.personId, name: p.name })),
     [people],
@@ -318,8 +336,10 @@ function DirectAssignModal({
   const singleHolderReplace = maxHolders === 1 && holders.length > 0;
   const atCapacity = maxHolders > 1 && holders.length >= maxHolders;
 
-  function pick(personId: string) {
-    const personName = (people ?? []).find((p) => p.personId === personId)?.name ?? "This person";
+  // `personName` comes from the picked ROW, not a lookup in `people` — that
+  // array is whatever the last search returned, so a lookup would degrade the
+  // confirm copy to "This person" exactly when the user had searched.
+  function pick(personId: string, personName: string) {
     setPickerOpen(false);
     const commit = async () => {
       try {
@@ -438,7 +458,8 @@ function DirectAssignModal({
         visible={pickerOpen}
         title="Assign to…"
         people={pickerPeople}
-        onPick={(personId) => pick(personId)}
+        onSearchChange={setPersonSearch}
+        onPick={(personId, person) => pick(personId, person.name)}
         onClose={() => setPickerOpen(false)}
       />
     </>

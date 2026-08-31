@@ -18,7 +18,7 @@
  */
 import { internalQuery, mutation, query, type QueryCtx } from "./_generated/server";
 import { ConvexError, v, type Infer } from "convex/values";
-import { Doc, Id } from "./_generated/dataModel";
+import { Id } from "./_generated/dataModel";
 import { requireUserId } from "./lib/context";
 import {
   hasCampaignApprovalPower,
@@ -36,7 +36,7 @@ import {
   type AudienceFilters,
 } from "./lib/audienceResolve";
 import { listActiveChapters } from "./lib/chapters";
-import { normalizeEmail } from "./lib/access";
+import { parsePeopleSearch, searchChapterPeople } from "./lib/peopleSearch";
 import {
   AUDIENCE_SOURCES,
   audienceConditionValidator,
@@ -477,14 +477,29 @@ async function buildAudiencePreview(
 }
 
 /**
- * Hand-pick search (Phase 3): name/email PREFIX match across BOTH roster and
- * contacts (never `excludeContacts` — hand-picking is explicitly how a
- * contact becomes reachable, per the schema doc on `person_filters`), bounded
- * per active chapter like every other audience-resolution scan (never
- * `.collect()`). No search index exists on `people.name`/`email` today, so
- * this is an in-memory prefix filter over a bounded per-chapter read — the
- * same "small enough at this org's scale, documented bound" shape
- * `searchPeopleForAudience`'s siblings (`resolvePeople`, etc.) already use.
+ * Hand-pick search (Phase 3): match across BOTH roster and contacts (never
+ * `excludeContacts` — hand-picking is explicitly how a contact becomes
+ * reachable, per the schema doc on `person_filters`), bounded per active
+ * chapter like every other audience-resolution scan (never `.collect()`).
+ *
+ * Matching is `lib/peopleSearch.ts`'s shared predicate — the same one the
+ * People tab's grid and every people picker use, so "search for a person"
+ * means one thing across the product. Two things changed when this adopted
+ * it (2026-08-31):
+ *
+ *  - PREFIX became SUBSTRING (and gained pwEmail + digits-only phone), so
+ *    searching "smith" finds "Dana Smith". The old prefix rule was a
+ *    consequence of the hand-written filter, never a product decision.
+ *  - The read is now a name-ordered index WALK that filters as it goes
+ *    (`searchChapterPeople`), not a `.take(1000)` prefix of the chapter
+ *    followed by an in-memory filter. The old shape could not find a person
+ *    outside that first 1000 rows however exactly you typed their name — the
+ *    same class of bug that made the org-chart seat picker unable to find a
+ *    just-added person.
+ *
+ * Still no search index on `people.name`/`email`; the walk is bounded, and
+ * `SEARCH_RESULT_LIMIT` still caps what a hand-pick box needs ("enough to
+ * recognize the person you're looking for", not exhaustive results).
  */
 export const searchPeopleForAudience = query({
   args: {
@@ -504,6 +519,7 @@ export const searchPeopleForAudience = query({
     const q = search.trim().toLowerCase();
     if (!q) return [];
 
+    const terms = parsePeopleSearch(q);
     const chapterIds = chapterId ? [chapterId] : (await listActiveChapters(ctx)).map((c) => c._id);
     const results: {
       personId: Id<"people">;
@@ -514,16 +530,14 @@ export const searchPeopleForAudience = query({
 
     for (const cId of chapterIds) {
       if (results.length >= SEARCH_RESULT_LIMIT) break;
-      const rows: Doc<"people">[] = await ctx.db
-        .query("people")
-        .withIndex("by_chapter", (chapterQ) => chapterQ.eq("chapterId", cId))
-        .take(SEARCH_SCAN_PER_CHAPTER_LIMIT);
-      for (const p of rows) {
-        if (results.length >= SEARCH_RESULT_LIMIT) break;
-        if (p.isPlaceholder === true) continue;
-        const nameMatch = p.name.trim().toLowerCase().startsWith(q);
-        const emailMatch = normalizeEmail(p.email)?.startsWith(q) ?? false;
-        if (!nameMatch && !emailMatch) continue;
+      const matches = await searchChapterPeople(ctx, cId, {
+        terms,
+        // Contacts stay IN (see this query's doc) — only per-event
+        // placeholder stand-ins are never hand-pickable.
+        include: (p) => p.isPlaceholder !== true,
+        limit: SEARCH_RESULT_LIMIT - results.length,
+      });
+      for (const p of matches) {
         results.push({
           personId: p._id,
           name: p.name,
@@ -536,10 +550,11 @@ export const searchPeopleForAudience = query({
   },
 });
 
-/** Bounded scan-per-chapter and total result caps for `searchPeopleForAudience`
- *  — a hand-pick search box only ever needs "enough to recognize the person
- *  you're looking for," not exhaustive results. */
-const SEARCH_SCAN_PER_CHAPTER_LIMIT = 1000;
+/** Total result cap for `searchPeopleForAudience` — a hand-pick search box
+ *  only ever needs "enough to recognize the person you're looking for," not
+ *  exhaustive results. The per-chapter READ bound now lives in
+ *  `lib/peopleSearch.ts` (it bounds the walk, not a blind prefix of the
+ *  roster). */
 const SEARCH_RESULT_LIMIT = 20;
 
 const groupVerdictValidator = v.object({

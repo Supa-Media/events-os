@@ -30,6 +30,7 @@ import { recordPersonEmail } from "./lib/personEmails";
 import { assertServiceIdsInChapter, expandServiceIdsWithChildren } from "./lib/serviceCatalog";
 import { resolvePersonaForRoster, resolvePersonaForPage } from "./lib/people";
 import { requireGivingView, type GivingScope } from "./lib/givingAccess";
+import { parsePeopleSearch, personMatchesSearch } from "./lib/peopleSearch";
 // `mutation`/`internalMutation` come from the triggers-wrapped builders, NOT
 // `./_generated/server`, because this file writes `people` directly
 // (create/update/remove) — see `lib/peopleAggregate.ts`'s module doc.
@@ -176,8 +177,16 @@ export const list = query({
   args: {
     eventId: v.optional(v.id("events")),
     persona: v.optional(personaFilter),
+    /** Free-text search, applied SERVER-side (name / email / pwEmail / phone
+     *  — `lib/peopleSearch.ts`, the same semantics as `listPaginated`).
+     *  Omitted or blank returns the whole roster, exactly as before, so every
+     *  existing caller is unaffected. A picker that has a search box should
+     *  pass it rather than filtering the returned array: see
+     *  `lib/peopleSearch.ts`'s module doc for why client-side filtering of a
+     *  server-shaped roster is the wrong place for this. */
+    search: v.optional(v.string()),
   },
-  handler: async (ctx, { eventId, persona }) => {
+  handler: async (ctx, { eventId, persona, search }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
@@ -194,9 +203,13 @@ export const list = query({
     // consumes that event's copy. Inside a training sandbox the rule flips:
     // placeholders (+ the caller) are the ONLY people offered — sandbox mode
     // ignores `persona` (a training drill never classifies its sample bench).
-    const everyone = people.filter(
-      sandbox ?? ((p) => p.isPlaceholder !== true && p.isSamplePerson !== true),
-    );
+    // Search narrows BEFORE persona resolution — `resolvePersonaForRoster` is
+    // the expensive step here, and a searching picker only ever needs the
+    // handful of rows it is about to render.
+    const terms = parsePeopleSearch(search);
+    const everyone = people
+      .filter(sandbox ?? ((p) => p.isPlaceholder !== true && p.isSamplePerson !== true))
+      .filter((p) => personMatchesSearch(p, terms));
     const personaByPerson = sandbox
       ? null
       : await resolvePersonaForRoster(ctx, chapterId as Id<"chapters">, everyone);
@@ -389,8 +402,10 @@ export const listPaginated = query({
         : null;
     const giverIds = args.giversOnly ? await getGiverPersonIds(ctx, cId) : null;
 
-    const search = (args.search ?? "").trim().toLowerCase();
-    const searchDigits = search.replace(/\D/g, "");
+    // The grid's search and every picker's search are the SAME predicate
+    // (`lib/peopleSearch.ts`) — the People tab and a seat picker must never
+    // disagree about what a query matches.
+    const terms = parsePeopleSearch(args.search);
 
     // Every filter EXCEPT persona (which needs a derived value resolved
     // per-candidate below) — cheap field compares over an already-indexed,
@@ -402,17 +417,7 @@ export const listPaginated = query({
         return false;
       }
       if (giverIds && !giverIds.has(p._id)) return false;
-      if (search) {
-        const nameHit = p.name.toLowerCase().includes(search);
-        const emailHit =
-          (p.email?.toLowerCase().includes(search) ?? false) ||
-          (p.pwEmail?.toLowerCase().includes(search) ?? false);
-        const phoneHit =
-          searchDigits.length > 0 &&
-          !!p.phone &&
-          p.phone.replace(/\D/g, "").includes(searchDigits);
-        if (!nameHit && !emailHit && !phoneHit) return false;
-      }
+      if (!personMatchesSearch(p, terms)) return false;
       return true;
     }
 
@@ -578,14 +583,18 @@ export const namesByChapter = query({
  * `imageUrl`); placeholders + sample people are excluded like the roster list.
  */
 export const cardEligible = query({
-  args: {},
-  handler: async (ctx) => {
+  args: {
+    /** Free-text search, applied SERVER-side — see `list`'s `search` doc. */
+    search: v.optional(v.string()),
+  },
+  handler: async (ctx, { search }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
       .query("people")
       .withIndex("by_chapter", (q) => q.eq("chapterId", chapterId as Id<"chapters">))
       .collect();
+    const terms = parsePeopleSearch(search);
     const sorted = people
       .filter(
         (p) =>
@@ -595,7 +604,8 @@ export const cardEligible = query({
           // `lib/org.ts#excludeContacts`'s doc. Belt-and-suspenders: a
           // contact-only row practically never carries a `pwEmail` anyway.
           p.isContactOnly !== true &&
-          isCardEligible(p.pwEmail),
+          isCardEligible(p.pwEmail) &&
+          personMatchesSearch(p, terms),
       )
       .sort((a, b) => a.name.localeCompare(b.name));
     return await Promise.all(
@@ -615,8 +625,12 @@ export const cardEligible = query({
  * placeholder people instead — the sandbox's sample bench holds the roles.
  */
 export const teamMembers = query({
-  args: { eventId: v.optional(v.id("events")) },
-  handler: async (ctx, { eventId }) => {
+  args: {
+    eventId: v.optional(v.id("events")),
+    /** Free-text search, applied SERVER-side — see `list`'s `search` doc. */
+    search: v.optional(v.string()),
+  },
+  handler: async (ctx, { eventId, search }) => {
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return [];
     const people = await ctx.db
@@ -626,6 +640,7 @@ export const teamMembers = query({
     const sandbox = eventId
       ? await sandboxPeopleFilter(ctx, chapterId as Id<"chapters">, eventId)
       : null;
+    const terms = parsePeopleSearch(search);
     // No explicit `isContactOnly` check needed: a contact-only row is always
     // written with `isTeamMember: false` and no `userId` (see
     // `lib/rsvpPeople.ts`/`lib/givingDonors.ts`), so it already fails the
@@ -637,6 +652,7 @@ export const teamMembers = query({
             p.isSamplePerson !== true &&
             (p.isTeamMember === true || p.userId != null)),
       )
+      .filter((p) => personMatchesSearch(p, terms))
       .sort((a, b) => a.name.localeCompare(b.name));
   },
 });

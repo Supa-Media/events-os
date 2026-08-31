@@ -1462,3 +1462,141 @@ describe("seats.assignablePeople", () => {
     expect(people.map((pp) => pp.personId)).toEqual([p]);
   });
 });
+
+/**
+ * `seats.assignablePeople`'s SEARCH — the reported bug (2026-08-31): the seat
+ * picker could not find a person who had just been added.
+ *
+ * The roster read is capped, and the search box used to filter the capped
+ * RESULT on the client, so anyone outside the returned slice was unfindable
+ * no matter what you typed. These tests build a roster bigger than the cap
+ * and assert the newest / alphabetically-last person is still found — they
+ * fail against the old creation-order `.take(300)` + client filter.
+ */
+describe("seats.assignablePeople — server-side search", () => {
+  /** A roster large enough to exceed the old 300-per-chapter read cap, with
+   *  the person we care about inserted LAST and sorting LAST alphabetically —
+   *  the two ways the old truncation dropped somebody. */
+  async function bigChapterRoster(s: ChapterSetup, chapterId: Id<"chapters">) {
+    await run(s.t, async (ctx) => {
+      for (let i = 0; i < 320; i++) {
+        await ctx.db.insert("people", {
+          chapterId,
+          // Zero-padded so insertion order and name order agree, and every
+          // filler name sorts before the late arrival below.
+          name: `Filler ${String(i).padStart(3, "0")}`,
+          createdAt: Date.now(),
+        });
+      }
+    });
+    return run(s.t, (ctx) =>
+      ctx.db.insert("people", {
+        chapterId,
+        name: "Zadie Newcomer",
+        email: "zadie@publicworship.life",
+        phone: "(555) 867-5309",
+        createdAt: Date.now(),
+      }),
+    );
+  }
+
+  test("finds a person added after the roster already exceeded the read cap", async () => {
+    const s = await superuserSetup();
+    const newcomer = await bigChapterRoster(s, s.chapterId);
+
+    // The roster is past the old 300-row read cap, and the newcomer was
+    // inserted after it — the exact shape that used to drop them from the
+    // read entirely, so no amount of typing could surface them.
+    const unsearched = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+    });
+    expect(unsearched.length).toBeGreaterThan(300);
+
+    // Searched, the server walks the roster and returns just the match — not
+    // a truncated prefix that the client then has to filter.
+    const searched = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+      search: "zadie",
+    });
+    expect(searched.map((p) => p.personId)).toEqual([newcomer]);
+  });
+
+  test("matches email and digits-only phone, not just name", async () => {
+    const s = await superuserSetup();
+    const newcomer = await bigChapterRoster(s, s.chapterId);
+
+    const byEmail = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+      search: "zadie@publicworship",
+    });
+    expect(byEmail.map((p) => p.personId)).toEqual([newcomer]);
+
+    // Typed without punctuation — the stored number has plenty.
+    const byPhone = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+      search: "5558675309",
+    });
+    expect(byPhone.map((p) => p.personId)).toEqual([newcomer]);
+  });
+
+  test("search is a substring match, and is case-insensitive", async () => {
+    const s = await superuserSetup();
+    const dana = await makePerson(s, s.chapterId, "Dana Smith");
+    await makePerson(s, s.chapterId, "Rob Jones");
+
+    const hits = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+      search: "SMITH",
+    });
+    expect(hits.map((p) => p.personId)).toEqual([dana]);
+  });
+
+  test("search never widens the roster: placeholders, sample people and contacts stay out", async () => {
+    const s = await superuserSetup();
+    await makePlaceholderPerson(s, s.chapterId, "Hidden Placeholder");
+    await run(s.t, async (ctx) => {
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Hidden Sample",
+        isSamplePerson: true,
+        createdAt: Date.now(),
+      });
+      await ctx.db.insert("people", {
+        chapterId: s.chapterId,
+        name: "Hidden Contact",
+        isContactOnly: true,
+        createdAt: Date.now(),
+      });
+    });
+
+    const hits = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+      search: "Hidden",
+    });
+    expect(hits).toEqual([]);
+  });
+
+  test("a blank search behaves exactly like no search at all", async () => {
+    const s = await superuserSetup();
+    const a = await makePerson(s, s.chapterId, "Aaron Adams");
+    const b = await makePerson(s, s.chapterId, "Beth Brooks");
+
+    const blank = await s.as.query(api.seats.assignablePeople, {
+      scope: s.chapterId,
+      search: "   ",
+    });
+    expect(blank.map((p) => p.personId)).toEqual([a, b]);
+  });
+
+  test("central scope searches every chapter, not just the caller's own", async () => {
+    const s = await superuserSetup({ chapterName: "New York" });
+    const bostonId = await makeChapter(s, "Boston");
+    const bostonNewcomer = await bigChapterRoster(s, bostonId);
+
+    const hits = await s.as.query(api.seats.assignablePeople, {
+      scope: "central",
+      search: "Zadie",
+    });
+    expect(hits.map((p) => p.personId)).toEqual([bostonNewcomer]);
+  });
+});

@@ -53,6 +53,7 @@ import {
   canEditChart,
   type DefOverride,
 } from "./lib/seatStructure";
+import { parsePeopleSearch, searchChapterPeople } from "./lib/peopleSearch";
 
 const seatChartValidator = v.union(...SEAT_CHARTS.map((c) => v.literal(c)));
 // Imported from the schema rather than rebuilt here, so this file and the table
@@ -681,16 +682,36 @@ export const myDeskChapters = query({
   },
 });
 
-/** Bound on how many people a single (per-chapter, or central) scan of
- *  `assignablePeople` reads before slicing to the returned cap — generous
- *  headroom over any realistic chapter roster, mirroring `MAX_CHART_SEATS`'s
- *  convention. */
-const MAX_PEOPLE_SCAN_PER_CHAPTER = 300;
-
 /** Final cap on how many people `assignablePeople` hands back to the client —
- *  it feeds a picker UI, not an export, so this is capped well below the
- *  per-chapter scan bound above even for a large org. */
+ *  it feeds a picker UI, not an export. With `search` set this is a cap on
+ *  MATCHES (the picker only ever renders a screenful), not on how far the
+ *  roster was walked to find them: `lib/peopleSearch.ts` filters during the
+ *  index walk, so a match never depends on the person sitting inside some
+ *  prefix of the roster.
+ *
+ *  HISTORY: this used to be paired with a `MAX_PEOPLE_SCAN_PER_CHAPTER = 300`
+ *  creation-order `.take()`, and the picker searched the truncated result
+ *  CLIENT-side. A person added today therefore fell outside the window in
+ *  any sizeable chapter and the seat picker's search reported "No matches"
+ *  for someone who plainly existed (reported 2026-08-31). Search is
+ *  server-side now — see `lib/peopleSearch.ts`'s module doc. */
 const MAX_ASSIGNABLE_PEOPLE = 500;
+
+/** Per-chapter match cap for a CENTRAL-scope search: the fan-out reads every
+ *  chapter, so no single chapter may consume the whole returned budget. The
+ *  merged result is still capped at `MAX_ASSIGNABLE_PEOPLE`. */
+const MAX_ASSIGNABLE_PER_CHAPTER = 200;
+
+/** A seat candidate: a real roster member. Placeholders are per-event
+ *  stand-ins, sample people are Academy props, and a contact-only row (auto-
+ *  created from a donor gift, an import, or a public RSVP) was never a
+ *  volunteer/team member — see `lib/org.ts#excludeContacts`. Roster UX
+ *  (seat assignment), not identity matching. Mirrors `people.list`'s filter. */
+function isSeatCandidate(p: Doc<"people">): boolean {
+  return (
+    p.isPlaceholder !== true && p.isSamplePerson !== true && p.isContactOnly !== true
+  );
+}
 
 /**
  * The roster a seat-change picker (propose or direct-assign) may choose from,
@@ -713,23 +734,35 @@ const MAX_ASSIGNABLE_PEOPLE = 500;
 export const assignablePeople = query({
   args: {
     scope: v.union(v.id("chapters"), v.literal("central")),
+    /** The picker's search box, applied SERVER-side (name / email / pwEmail /
+     *  phone — `lib/peopleSearch.ts`). Omitted or blank returns the first
+     *  `MAX_ASSIGNABLE_PEOPLE` alphabetically, exactly as before. */
+    search: v.optional(v.string()),
   },
   returns: v.array(chartHolderValidator),
-  handler: async (ctx, { scope }) => {
+  handler: async (ctx, { scope, search }) => {
     await requireAccess(ctx);
 
-    let people: Doc<"people">[];
+    const terms = parsePeopleSearch(search);
+
+    let eligible: Doc<"people">[];
     if (scope === "central") {
       const chapters = await boundedChapters(ctx, "assignablePeople central scope");
       const perChapter = await Promise.all(
         chapters.map((c) =>
-          ctx.db
-            .query("people")
-            .withIndex("by_chapter", (q) => q.eq("chapterId", c._id))
-            .take(MAX_PEOPLE_SCAN_PER_CHAPTER),
+          searchChapterPeople(ctx, c._id, {
+            terms,
+            include: isSeatCandidate,
+            limit: MAX_ASSIGNABLE_PER_CHAPTER,
+          }),
         ),
       );
-      people = perChapter.flat();
+      // Each chapter walk is name-ordered on its own; merging needs one
+      // re-sort so the org-wide list is alphabetical end to end.
+      eligible = perChapter
+        .flat()
+        .sort((a, b) => a.name.localeCompare(b.name))
+        .slice(0, MAX_ASSIGNABLE_PEOPLE);
     } else {
       const chapter = await ctx.db.get(scope);
       if (!chapter) {
@@ -738,25 +771,17 @@ export const assignablePeople = query({
           message: "That chapter doesn't exist.",
         });
       }
-      people = await ctx.db
-        .query("people")
-        .withIndex("by_chapter", (q) => q.eq("chapterId", scope))
-        .take(MAX_PEOPLE_SCAN_PER_CHAPTER);
+      // The walk picks WHICH people in index order (raw string); the final
+      // sort is `localeCompare`, same as every other roster read in the app,
+      // so the picker's ordering doesn't change with this refactor.
+      eligible = (
+        await searchChapterPeople(ctx, scope, {
+          terms,
+          include: isSeatCandidate,
+          limit: MAX_ASSIGNABLE_PEOPLE,
+        })
+      ).sort((a, b) => a.name.localeCompare(b.name));
     }
-
-    const eligible = people
-      .filter(
-        (p) =>
-          p.isPlaceholder !== true &&
-          p.isSamplePerson !== true &&
-          // Roster UX (seat assignment), not identity matching — a
-          // contact-only row (auto-created from a donor gift, an import, or a
-          // public RSVP) was never a real volunteer/team member and must
-          // never be offered as a seat candidate. See `lib/org.ts#excludeContacts`.
-          p.isContactOnly !== true,
-      )
-      .sort((a, b) => a.name.localeCompare(b.name))
-      .slice(0, MAX_ASSIGNABLE_PEOPLE);
 
     return await Promise.all(
       eligible.map(async (p) => ({
