@@ -52,6 +52,7 @@ import {
 } from "./finance";
 import { getSeatDerivedCapabilities, holdsApprovalSeatAt } from "./seats";
 import { requireChapterId } from "./context";
+import { ownChargeActor } from "./ownChargeAccess";
 import { isSuperuser } from "./superuser";
 
 /**
@@ -96,10 +97,20 @@ function notFound(): ConvexError<{ code: string; message: string }> {
 }
 
 /** Scope+role resolution for the AUTHORING gate: the row's own person, or
- *  bookkeeper+ in the row's own book. Authoring is always chapter-local —
+ *  bookkeeper+ in the row's own book. Authoring is otherwise chapter-local —
  *  a coding is the spender's testimony, and nobody writes one in a book they
  *  don't stand in. (The REVIEW gate below deliberately reaches further; see
- *  its doc.) */
+ *  its doc.)
+ *
+ *  THE OWN-CHARGE ARM REACHES CENTRAL, and only it does. A chapter member
+ *  whose card draws on central's Increase account spends into the CENTRAL
+ *  book (`increaseCardSync.ts` — "your card determines whose account paid"),
+ *  so their charge is a central row with their `personId` on it. It is listed
+ *  to them as their own (`finances.personTransactions`), it is chased as
+ *  their own (`lib/codingReminders.ts`), and until this arm existed it was the
+ *  one charge they could not code: the central branch below required
+ *  bookkeeper rank of everyone, on the premise that "central issues no cards,
+ *  so a central row has no cardholder to be". See `lib/ownChargeAccess.ts`. */
 async function resolveAuthor(
   ctx: QueryCtx,
   transactionId: Id<"transactions">,
@@ -115,9 +126,19 @@ async function resolveAuthor(
         "Only the transaction's own person or a bookkeeper can code this transaction.",
     });
 
+  // ASKED FIRST, IN BOTH BOOKS. Ownership is the cheaper and the broader
+  // answer here (a cardholder needs no grant at all), and asking it before
+  // the role ladder is what keeps the central branch below from refusing the
+  // spender their own row.
+  const ownerPersonId = await ownChargeActor(ctx, txn, homeChapterId);
+
   if (txn.chapterId === CENTRAL) {
-    // Central-owned money is central-desk territory; central issues no cards,
-    // so a central row has no cardholder to be (same as the exception gates).
+    if (ownerPersonId != null) {
+      return { txn, scope: CENTRAL, actorPersonId: ownerPersonId };
+    }
+    // Everyone ELSE on a central row is the central desk: central-owned money
+    // that nobody spent on a card is central-desk territory, exactly as
+    // before (same as the exception gates).
     const access = await requireFinanceCentral(ctx, homeChapterId);
     if (!financeRoleAtLeast(access.role, "bookkeeper")) throw forbidden();
     return { txn, scope: CENTRAL, actorPersonId: access.personId };
@@ -125,8 +146,7 @@ async function resolveAuthor(
 
   const access = await getFinanceRole(ctx, homeChapterId);
   if (txn.chapterId !== homeChapterId) throw notFound();
-  const isOwnTxn = access.personId != null && access.personId === txn.personId;
-  if (!isOwnTxn && !financeRoleAtLeast(access.role, "bookkeeper")) {
+  if (ownerPersonId == null && !financeRoleAtLeast(access.role, "bookkeeper")) {
     throw forbidden();
   }
   return { txn, scope: txn.chapterId, actorPersonId: access.personId };

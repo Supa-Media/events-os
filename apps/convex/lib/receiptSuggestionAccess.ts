@@ -23,9 +23,11 @@
  * `finance.receipts.suggest` to `SEAT_CAPABILITIES`, list it on the seats that
  * should carry it, and change THIS function's body — no call site moves.
  *
- * Scope resolution mirrors `requireSubmitCoding`'s `resolve` byte for byte
- * (central-owned money is central-desk territory and issues no cards, so a
- * central row has no cardholder to be). Every refusal throws
+ * Scope resolution mirrors `requireSubmitCoding`'s `resolve` byte for byte,
+ * the own-charge arm included: central-owned money nobody spent on a card is
+ * central-desk territory, but a member's card CAN draw on central's own
+ * Increase account, and that charge's cardholder reaches their suggestions
+ * here like any other spender (`lib/ownChargeAccess.ts`). Every refusal throws
  * `ConvexError({ code, message })` so the app's AuthErrorBoundary surfaces it.
  */
 import { ConvexError } from "convex/values";
@@ -34,6 +36,7 @@ import type { QueryCtx } from "../_generated/server";
 import { CENTRAL, financeRoleAtLeast } from "@events-os/shared";
 import { getFinanceRole, requireFinanceCentral, type FinanceScope } from "./finance";
 import { requireChapterId } from "./context";
+import { ownChargeActor } from "./ownChargeAccess";
 
 /** The resolved right to see/confirm receipt suggestions on one transaction. */
 export interface ReceiptSuggestionAccess {
@@ -77,7 +80,27 @@ export async function requireReceiptSuggestions(
         "Only the transaction's own person or a bookkeeper can see receipt suggestions for this charge.",
     });
 
+  // Ownership first, in BOTH books — the same arm `requireSubmitCoding` grew
+  // for the same reason: a member's card can draw on central's own Increase
+  // account, so a central row DOES have a cardholder to be
+  // (`lib/ownChargeAccess.ts`). Without it, the person who emailed the receipt
+  // in was the one person who couldn't confirm it onto their own charge.
+  const ownerPersonId = await ownChargeActor(ctx, txn, homeChapterId);
+
   if (txn.chapterId === CENTRAL) {
+    if (ownerPersonId != null) {
+      // `isBookkeeper: false` is load-bearing, not a formality — it is what
+      // keeps `confirmSuggestedReceipt`'s ownership check running on this
+      // caller, so a cardholder still cannot consume somebody else's receipt
+      // that happened to land on the same-cent shortlist.
+      return {
+        txn,
+        scope: CENTRAL,
+        actorPersonId: ownerPersonId,
+        isOwnTxn: true,
+        isBookkeeper: false,
+      };
+    }
     const access = await requireFinanceCentral(ctx, homeChapterId);
     if (!financeRoleAtLeast(access.role, "bookkeeper")) throw forbidden();
     return {
@@ -91,7 +114,7 @@ export async function requireReceiptSuggestions(
 
   const access = await getFinanceRole(ctx, homeChapterId);
   if (txn.chapterId !== homeChapterId) throw notFound();
-  const isOwnTxn = access.personId != null && access.personId === txn.personId;
+  const isOwnTxn = ownerPersonId != null;
   const isBookkeeper = financeRoleAtLeast(access.role, "bookkeeper");
   if (!isOwnTxn && !isBookkeeper) throw forbidden();
   return {

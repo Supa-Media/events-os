@@ -488,7 +488,20 @@ describe("runFeeSync (mocked Stripe)", () => {
     const month = new Date(now).toISOString().slice(0, 7);
     const row = await feeRow(s, month);
     expect(row?.postedAt).toBeLessThanOrEqual(Date.now());
-    expect(row?.postedAt).toBeGreaterThan(now - 60_000);
+    // DATED TODAY, not the month's end — `monthEndPostedAt` takes the earlier
+    // of month-end-noon and now. "Within the last minute" said the same thing
+    // on 30 days out of 31 and quietly encoded "today is not the last of the
+    // month": run it on the 31st after 12:00 UTC and the row is correctly
+    // dated month-end noon, hours BEHIND `now`, and the assertion failed on a
+    // sweep that had done nothing wrong. The claim under test is "never in the
+    // future", so the floor is the start of today.
+    const d = new Date(now);
+    const startOfTodayUtc = Date.UTC(
+      d.getUTCFullYear(),
+      d.getUTCMonth(),
+      d.getUTCDate(),
+    );
+    expect(row?.postedAt).toBeGreaterThanOrEqual(startOfTodayUtc);
   });
 
   test("a dry run reads Stripe and writes nothing", async () => {
