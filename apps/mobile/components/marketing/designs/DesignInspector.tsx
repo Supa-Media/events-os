@@ -6,18 +6,22 @@
  * opened from drew a stored thumbnail — so the live frame in here is the only
  * one on the page, which is what makes a library of forty files load at all.
  *
- * ── Filing is a control, not a drag ─────────────────────────────────────────
+ * ── Filing is a control, not a drag — and it is now a checklist ─────────────
  * The approved mockup files a design by dragging its tile onto a folder in the
  * rail. That is a mouse. This app is one file serving phone, tablet and web, so
- * the move lives here as a picker instead — one press, identical on every
- * platform, and reachable by a screen reader. It saves instantly through
- * `moveDesignToFolder` (a one-argument mutation, precisely so filing a design
- * cannot also rewrite its title) rather than waiting for Save, because filing
- * twenty loose designs is the actual job and opening a form per file is the
- * friction that stops people doing it.
+ * filing lives here instead — one press, identical on every platform, and
+ * reachable by a screen reader.
+ *
+ * It is a CHECKLIST rather than a picker because a design can be in several
+ * folders at once now: the Easter poster is in "Flyers" and in "Easter 2026",
+ * and neither membership costs the other anything. Ticks save instantly through
+ * `setItemFolders` (which touches nothing but the filing, precisely so it
+ * cannot overwrite a title somebody edited in another tab) rather than waiting
+ * for Save, because filing twenty loose designs is the actual job and opening a
+ * form per file is the friction that stops people doing it.
  *
  * ── The rest of the form is unchanged from the tab it replaces ──────────────
- * Three-state images (pending / cleared / untouched), `folderId` sent only at
+ * Three-state images (pending / cleared / untouched), `folderIds` sent only at
  * birth, optional text omitted when empty. Those rules are the backend's
  * (`upsertDesign`'s keep-if-not-resent doc), and every one of them has an
  * incident behind it.
@@ -40,6 +44,7 @@ import {
   type DesignKind,
 } from "@events-os/shared";
 import { Button, CopyButton, Select, TextField } from "../../ui";
+import { FolderChecklist } from "./FolderChecklist";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { DesignEmbed } from "../DesignEmbed";
 import { Inspector, ReorderControls } from "./Inspector";
@@ -89,7 +94,7 @@ export function DesignInspector({
   /** The shelf's designs, for "move earlier / later" within what you can see. */
   group,
   /** Which shelf a new design lands on, as a folder id or "". */
-  defaultFolderId,
+  seedFolderIds,
   canEdit,
   run,
   onClose,
@@ -99,7 +104,8 @@ export function DesignInspector({
   folders: DesignFolder[];
   palette: BrandColor[];
   group: DesignAsset[];
-  defaultFolderId: string;
+  /** Folders a NEW design starts in — the one it was added from. */
+  seedFolderIds: string[];
   canEdit: boolean;
   run: ActionRunner["run"];
   onClose: () => void;
@@ -107,7 +113,7 @@ export function DesignInspector({
   const upsertDesign = useMutation(api.marketingDesigns.upsertDesign);
   const deleteDesign = useMutation(api.marketingDesigns.deleteDesign);
   const reorderDesigns = useMutation(api.marketingDesigns.reorderDesigns);
-  const moveDesignToFolder = useMutation(api.marketingDesigns.moveDesignToFolder);
+  const setItemFolders = useMutation(api.marketingDesigns.setItemFolders);
   const refreshCover = useAction(api.marketingDesigns.refreshCover);
   const [refreshingCover, setRefreshingCover] = useState(false);
 
@@ -117,12 +123,29 @@ export function DesignInspector({
           ...EMPTY,
           kind: design.kind,
           title: design.title,
-          folderId: design.folderId ?? "",
           url: design.url ?? "",
           notes: design.notes ?? "",
         }
-      : { ...EMPTY, folderId: defaultFolderId },
+      : EMPTY,
   );
+  const [folderIds, setFolderIds] = useState<string[]>(
+    design ? design.folderIds : seedFolderIds,
+  );
+
+  /** A new design files on save; an existing one files on the tick. */
+  function file(next: string[]) {
+    setFolderIds(next);
+    if (!design) return;
+    void run(
+      () =>
+        setItemFolders({
+          kind: "design",
+          itemId: design.id,
+          folderIds: next.map(asId),
+        }),
+      { errorTitle: "Couldn't file that design" },
+    );
+  }
 
   const url = draft.url.trim();
   const urlOk = url.length === 0 || isAllowedDesignUrl(url);
@@ -147,12 +170,10 @@ export function DesignInspector({
           ...(design ? { designId: asId(design.id) } : {}),
           kind: draft.kind,
           title: draft.title.trim(),
-          // Sent only at birth. An open panel holds the folder the design had
-          // when it was opened, so re-sending it would undo a move made from
-          // the "Filed under" picker while the form sat there.
-          ...(!design && draft.folderId
-            ? { folderId: asId(draft.folderId) }
-            : {}),
+          // Sent only at birth. An open panel holds the folders the design had
+          // when it was opened, so re-sending them would undo a filing made
+          // from the checklist while the form sat there.
+          ...(design ? {} : { folderIds: folderIds.map(asId) }),
           ...(url ? { url } : {}),
           ...(draft.notes.trim() ? { notes: draft.notes.trim() } : {}),
           // Sent only when the marketer actually touched the slot — see
@@ -189,7 +210,7 @@ export function DesignInspector({
       title={design ? design.title : "New design"}
       subtitle={
         design
-          ? `${DESIGN_KIND_LABELS[design.kind]} · ${folderLabel(design.folderId, folders)}`
+          ? `${DESIGN_KIND_LABELS[design.kind]} · ${filedUnder(design.folderIds, folders)}`
           : "A Canva or Figma link, or an upload"
       }
       onClose={onClose}
@@ -276,30 +297,6 @@ export function DesignInspector({
         <Text className="mb-4 text-base leading-6 text-muted">{design.notes}</Text>
       ) : null}
 
-      {/* Filing: instant, its own mutation, and the touch-reachable answer to
-          the mockup's drag-onto-a-folder. Only for an EXISTING design —
-          `upsertDesign` keeps the folder it wasn't sent, so offering this for a
-          new one would let someone pick a shelf and watch nothing happen; the
-          new-design form's own "Folder" field below does that job. */}
-      {canEdit && design ? (
-        <Select
-          label="Filed under"
-          value={design.folderId ?? ""}
-          options={folderOptions(folders)}
-          onChange={(folderId) =>
-            void run(
-              () =>
-                moveDesignToFolder({
-                  designId: asId(design.id),
-                  ...(folderId ? { folderId: asId(folderId) } : {}),
-                }),
-              { errorTitle: "Couldn't move that design" },
-            )
-          }
-          hint="Saves as soon as you pick — moving a design is its own action, so it can never overwrite a title somebody edited in another tab."
-        />
-      ) : null}
-
       {canEdit ? (
         <>
           {design && index >= 0 ? (
@@ -325,14 +322,16 @@ export function DesignInspector({
             maxLength={DESIGN_TITLE_MAX}
             hint="What someone would search for — “Instagram post template”."
           />
-          {design ? null : (
-            <Select
-              label="Folder"
-              value={draft.folderId}
-              options={folderOptions(folders)}
-              onChange={(folderId) => setDraft({ ...draft, folderId })}
-            />
-          )}
+          <FolderChecklist
+            folders={folders}
+            value={folderIds}
+            onChange={file}
+            hint={
+              design
+                ? "Saves as soon as you tick — filing is its own action, so it can never overwrite a title somebody edited in another tab."
+                : "Where it lands. A design can be in more than one folder — “Flyers” and “Easter 2026” both."
+            }
+          />
           <TextField
             label={draft.kind === "image" ? "Link (optional)" : "Link"}
             value={draft.url}
@@ -394,11 +393,19 @@ export function DesignInspector({
   );
 }
 
-/** "Logos", "Social / Reels covers", or "Unfiled" — the subtitle's second half. */
-function folderLabel(
-  folderId: string | null,
-  folders: DesignFolder[],
-): string {
-  const option = folderOptions(folders).find((o) => o.value === (folderId ?? ""));
-  return option?.label ?? "Unfiled";
+/**
+ * "Logos", "Flyers + 2 more", or "Unfiled" — the subtitle's second half.
+ *
+ * Names the first folder and counts the rest rather than listing all of them: a
+ * subtitle is one line, and "Flyers, Easter 2026, Print, Archive" pushes the
+ * kind of thing it is off the end of it. The full list is the checklist below,
+ * which is also where it is changed.
+ */
+function filedUnder(folderIds: string[], folders: DesignFolder[]): string {
+  const names = folderIds
+    .map((id) => folders.find((f) => f.id === id)?.name)
+    .filter((name): name is string => Boolean(name));
+  if (names.length === 0) return "Unfiled";
+  if (names.length === 1) return names[0];
+  return `${names[0]} + ${names.length - 1} more`;
 }

@@ -671,11 +671,16 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
+          "**Folders** are the shelves down the side, and everything lives on one. A folder holds any mix of things — a color, a typeface, and the posters made out of them — so \"Easter 2026\" can be the whole look for an event rather than three lists you have to cross-reference. Marketing names them.",
+          "**Design files** — the files themselves. Open one and the Canva or Figma file renders full size, one tap from the real, editable thing. Anything else (a Dropbox folder, a Drive file) is a labelled link.",
           "**Colors** — tap one to copy the hex. This is where the brand red lives now; nothing else in the Academy prints it, so there is only ever one answer to check.",
-          "**Faces** — each one shown as a specimen set in the face itself, grouped by what it's for, so \"what do I set a headline in?\" has one answer. If your device can't show a face, the card says so honestly and offers the download instead of showing you a lookalike. The designer curates the list, including having more than one face for a job.",
-          "**Design files** — a grid of the files themselves. Open one and the Canva or Figma file renders full size, one tap from the real, editable thing. Anything else (a Dropbox folder, a Drive file) is a labelled link.",
-          "**Folders** — the shelves down the side. Marketing names them — \"Instagram posts\", \"Event flyers\", whatever matches how they actually work — and you step into one to see what's on it.",
+          "**Faces** — each one shown as a specimen set in the face itself, so \"what do I set a headline in?\" has one answer. If your device can't show a face, the card says so honestly and offers the download instead of showing you a lookalike. The designer curates the list, including having more than one face for a job.",
         ],
+      },
+      {
+        kind: "rule",
+        title: "\"Colors\" is a folder, not a fixed part of the screen",
+        text: "The palette and the typefaces sit in two folders that have been PINNED — pinning is what gives a folder its own section on the page. Any folder can be pinned, so the look for a season or an event can sit up there next to them. And one thing can be in several folders at once: the brand red is in Colors and in the event folder that uses it, and taking it out of the event does nothing to the palette. Nothing is copied, so there is still only ever one red.",
       },
       {
         kind: "rule",
@@ -753,6 +758,19 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "Reading is deliberately open to everyone; changing it is the part that's gated, and that gate is the \"Manage the brand kit\" power — held by the marketing chain, the ED, and Chapter Directors. Nobody should have to ask permission to look right.",
       },
       {
+        prompt:
+          "You add the brand red to an \"Easter 2026\" folder. What happens to the Colors folder it was already in?",
+        options: [
+          "It leaves Colors — a thing can only be in one folder",
+          "Nothing. It is in both, and it is still one color",
+          "The red is copied, so there are now two of them",
+          "Colors is locked and cannot be changed",
+        ],
+        answerIndex: 1,
+        explanation:
+          "Folders hold things by reference, the way a playlist holds a song. Being in the event folder costs the palette nothing, and because nothing was copied there is still exactly one red to correct if it ever changes.",
+      },
+      {
         prompt: "Why does a design row link to the Canva file rather than to an exported image?",
         options: [
           "Images are too large to store",
@@ -788,18 +806,6 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Every draft has its own link that stays out of search and can be revoked on its own. Publishing something \"briefly\" puts it in feeds and caches you don't control.",
-      },
-      {
-        prompt: "What happens to the URL of a post that gets taken down?",
-        options: [
-          "It 404s",
-          "It redirects to the blog index",
-          "It keeps working and says the post was taken down",
-          "It stays live but hidden from the index",
-        ],
-        answerIndex: 2,
-        explanation:
-          "A link that was shared once is shared forever. An honest \"this was taken down\" beats a dead end, and the post leaves the index, the feed, and search either way.",
       },
     ],
   },

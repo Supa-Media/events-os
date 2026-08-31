@@ -102,6 +102,7 @@ import { addPostsLinkRow } from "./0081_add_posts_link_row";
 import { correctInterFontNote } from "./0082_correct_inter_font_note";
 import { captureDesignCovers } from "./0083_capture_design_covers";
 import { recaptureDesignCovers } from "./0084_recapture_design_covers";
+import { foldersAsPrimitive } from "./0085_folders_as_primitive";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -533,4 +534,10 @@ export const MIGRATIONS: Migration[] = [
   // Same body, same onlyIfBare safety, now that the pipeline can reach the
   // page. See the file.
   recaptureDesignCovers,
+  // 0085: folders become the primitive — every design's single `folderId`
+  // becomes a `folderIds` array, and the two hard-coded brand-kit sections
+  // become pinned folders holding the colors and faces they used to render, so
+  // the tab looks identical while everything in it is now filable. See the
+  // file.
+  foldersAsPrimitive,
 ];

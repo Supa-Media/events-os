@@ -1,22 +1,32 @@
 // No @types/jest / ambient globals configured for this package — import test
 // globals explicitly from @jest/globals (mirrors the sibling colocated tests).
 import { describe, expect, test } from "@jest/globals";
-import type { BrandColor, DesignAsset, DesignFolder } from "@events-os/shared";
+import type {
+  BrandColor,
+  BrandFont,
+  DesignAsset,
+  DesignFolder,
+} from "@events-os/shared";
 import {
   SHELF_ALL,
   SHELF_UNFILED,
   buildShelves,
+  countLabel,
   designMatches,
   designPreview,
   gridEmbeds,
   initialsFor,
+  isInFolder,
+  itemCount,
   folderOptions,
   isUnfiled,
   parentChoicesFor,
+  pinnedFolders,
   placeholderPaint,
   readableInkOn,
   relativeLuminance,
   resolveShelf,
+  shelfContents,
   shelfLabel,
   visibleColors,
   visibleDesigns,
@@ -27,21 +37,24 @@ function folder(
   id: string,
   name: string,
   parentId: string | null = null,
+  pinned = false,
 ): DesignFolder {
-  return { id, name, parentId, order: 0, designCount: 0 };
+  return { id, name, parentId, pinned, order: 0, itemCount: 0 };
 }
 
+/** `folderIds` takes a single id, a list, or null for unfiled — the tests read
+ *  better for it and every one of the three is a real state. */
 function design(
   id: string,
   title: string,
-  folderId: string | null,
+  folderIds: string | string[] | null,
   extra: Partial<DesignAsset> = {},
 ): DesignAsset {
   return {
     id,
     kind: "canva",
     title,
-    folderId,
+    folderIds: folderIds === null ? [] : ([] as string[]).concat(folderIds),
     url: "https://www.canva.com/design/abc/def/view",
     embedUrl: null,
     imageUrl: null,
@@ -51,6 +64,47 @@ function design(
     updatedAt: 0,
     ...extra,
   };
+}
+
+function color(
+  id: string,
+  name: string,
+  hex: string,
+  folderIds: string | string[] | null = null,
+): BrandColor {
+  return {
+    id,
+    name,
+    hex,
+    usage: null,
+    folderIds: folderIds === null ? [] : ([] as string[]).concat(folderIds),
+    order: 0,
+  };
+}
+
+function font(
+  id: string,
+  name: string,
+  folderIds: string | string[] | null = null,
+): BrandFont {
+  return {
+    id,
+    name,
+    role: "headline",
+    sourceUrl: null,
+    notes: null,
+    folderIds: folderIds === null ? [] : ([] as string[]).concat(folderIds),
+    order: 0,
+  };
+}
+
+/** The library as the screen holds it: three kinds of thing, one payload. */
+function items(
+  designs: DesignAsset[] = [],
+  colors: BrandColor[] = [],
+  fonts: BrandFont[] = [],
+) {
+  return { colors, fonts, designs };
 }
 
 const FOLDERS = [
@@ -69,32 +123,78 @@ const DESIGNS = [
   design("d5", "Orphan flyer", "f_gone"),
 ];
 
+const LIBRARY = items(DESIGNS);
+
+/** The folder model's own fixture: a pinned palette folder and an event folder
+ *  that BORROWS one of its colors — the arrangement the whole change exists
+ *  for. */
+const KIT_FOLDERS = [
+  folder("f_colors", "Colors", null, true),
+  folder("f_easter", "Easter 2026"),
+];
+const KIT = items(
+  [design("d_poster", "Easter poster", "f_easter")],
+  [color("c_red", "PW Red", "#891d1a", ["f_colors", "f_easter"])],
+  [font("t_times", "Times New Roman Condensed", "f_easter")],
+);
+
 describe("isUnfiled", () => {
   const known = new Set(FOLDERS.map((f) => f.id));
 
-  test("a design with no folder is unfiled", () => {
+  test("a design in no folder is unfiled", () => {
     expect(isUnfiled(design("x", "x", null), known)).toBe(true);
   });
 
-  test("a design pointing at a folder that no longer exists is unfiled, not lost", () => {
+  test("a design pointing only at a folder that no longer exists is unfiled, not lost", () => {
     expect(isUnfiled(design("x", "x", "f_gone"), known)).toBe(true);
   });
 
   test("a filed design is not unfiled", () => {
     expect(isUnfiled(design("x", "x", "f_logos"), known)).toBe(false);
   });
+
+  test("one live folder is enough — an item is only unfiled when every folder it names is gone", () => {
+    expect(isUnfiled(design("x", "x", ["f_gone", "f_logos"]), known)).toBe(false);
+  });
+
+  test("colors and faces are filed by exactly the same rule", () => {
+    expect(isUnfiled(color("c", "PW Red", "#891d1a"), known)).toBe(true);
+    expect(isUnfiled(color("c", "PW Red", "#891d1a", "f_logos"), known)).toBe(
+      false,
+    );
+    expect(isUnfiled(font("t", "Inter", "f_logos"), known)).toBe(false);
+  });
+});
+
+describe("isInFolder", () => {
+  test("membership is many-to-many — the same red is in two folders at once", () => {
+    const red = color("c_red", "PW Red", "#891d1a", ["f_colors", "f_easter"]);
+    expect(isInFolder(red, "f_colors")).toBe(true);
+    expect(isInFolder(red, "f_easter")).toBe(true);
+    expect(isInFolder(red, "f_logos")).toBe(false);
+  });
+});
+
+describe("pinnedFolders", () => {
+  test("only the pinned ones, in rail order", () => {
+    expect(pinnedFolders(KIT_FOLDERS).map((f) => f.id)).toEqual(["f_colors"]);
+  });
+
+  test("nothing pinned is not an error, just no sections", () => {
+    expect(pinnedFolders(FOLDERS)).toEqual([]);
+  });
 });
 
 describe("buildShelves", () => {
-  const shelves = buildShelves(FOLDERS, DESIGNS);
+  const shelves = buildShelves(FOLDERS, LIBRARY);
 
-  test("draws All files first and Unfiled last, always", () => {
+  test("draws Everything first and Unfiled last, always", () => {
     expect(shelves[0].id).toBe(SHELF_ALL);
     expect(shelves[shelves.length - 1].id).toBe(SHELF_UNFILED);
   });
 
   test("keeps Unfiled on the rail even when nothing is unfiled", () => {
-    const tidy = buildShelves(FOLDERS, [design("d1", "PW wordmark", "f_logos")]);
+    const tidy = buildShelves(FOLDERS, items([design("d1", "PW wordmark", "f_logos")]));
     const unfiled = tidy.find((s) => s.id === SHELF_UNFILED);
     expect(unfiled?.count).toBe(0);
   });
@@ -117,62 +217,116 @@ describe("buildShelves", () => {
     expect(shelves.find((s) => s.id === "f_reels")?.count).toBe(1);
   });
 
-  test("All files counts everything and Unfiled counts the orphans", () => {
+  test("Everything counts everything and Unfiled counts the orphans", () => {
     expect(shelves.find((s) => s.id === SHELF_ALL)?.count).toBe(5);
     expect(shelves.find((s) => s.id === SHELF_UNFILED)?.count).toBe(2);
   });
 
   test("an empty folder still gets a shelf, so it can ask for a first file", () => {
-    const withEmpty = buildShelves([...FOLDERS, folder("f_sign", "Signage")], DESIGNS);
+    const withEmpty = buildShelves(
+      [...FOLDERS, folder("f_sign", "Signage")],
+      LIBRARY,
+    );
     expect(withEmpty.find((s) => s.id === "f_sign")?.count).toBe(0);
+  });
+
+  test("a folder counts every KIND of thing in it, not just its files", () => {
+    const shelves = buildShelves(KIT_FOLDERS, KIT);
+    // A poster, the red, and the face it's set in.
+    expect(shelves.find((s) => s.id === "f_easter")?.count).toBe(3);
+    expect(shelves.find((s) => s.id === "f_colors")?.count).toBe(1);
+    expect(shelves.find((s) => s.id === SHELF_ALL)?.count).toBe(3);
+  });
+
+  test("a color in two folders is counted by both — and unfiled by neither", () => {
+    const shelves = buildShelves(KIT_FOLDERS, KIT);
+    expect(shelves.find((s) => s.id === SHELF_UNFILED)?.count).toBe(0);
+  });
+
+  test("an item in both a parent and its child is counted once", () => {
+    const shelves = buildShelves(
+      FOLDERS,
+      items([design("d", "Cover", ["f_social", "f_reels"])]),
+    );
+    expect(shelves.find((s) => s.id === "f_social")?.count).toBe(1);
+  });
+
+  test("carries the pin through, so the rail can mark it", () => {
+    const shelves = buildShelves(KIT_FOLDERS, KIT);
+    expect(shelves.find((s) => s.id === "f_colors")?.pinned).toBe(true);
+    expect(shelves.find((s) => s.id === "f_easter")?.pinned).toBe(false);
   });
 });
 
 describe("shelfLabel / resolveShelf", () => {
-  const shelves = buildShelves(FOLDERS, DESIGNS);
+  const shelves = buildShelves(FOLDERS, LIBRARY);
 
   test("names a shelf", () => {
     expect(shelfLabel("f_reels", shelves)).toBe("Reels covers");
     expect(shelfLabel(SHELF_UNFILED, shelves)).toBe("Unfiled");
   });
 
-  test("a shelf deleted underneath you falls back to All files", () => {
+  test("a shelf deleted underneath you falls back to Everything", () => {
     expect(resolveShelf("f_gone", shelves)).toBe(SHELF_ALL);
     expect(resolveShelf("f_logos", shelves)).toBe("f_logos");
   });
 });
 
-describe("visibleDesigns", () => {
-  test("All files shows everything", () => {
-    expect(visibleDesigns(DESIGNS, FOLDERS, SHELF_ALL, "")).toHaveLength(5);
+describe("shelfContents", () => {
+  const on = (shelf: string, query = "") =>
+    shelfContents(LIBRARY, FOLDERS, shelf, query).designs.map((d) => d.id);
+
+  test("Everything shows everything", () => {
+    expect(on(SHELF_ALL)).toHaveLength(5);
   });
 
   test("a folder shows its own files", () => {
-    expect(
-      visibleDesigns(DESIGNS, FOLDERS, "f_logos", "").map((d) => d.id),
-    ).toEqual(["d1"]);
+    expect(on("f_logos")).toEqual(["d1"]);
   });
 
   test("a parent folder shows its children's files too", () => {
-    expect(
-      visibleDesigns(DESIGNS, FOLDERS, "f_social", "").map((d) => d.id),
-    ).toEqual(["d2", "d3"]);
+    expect(on("f_social")).toEqual(["d2", "d3"]);
   });
 
   test("Unfiled collects loose designs and orphans", () => {
-    expect(
-      visibleDesigns(DESIGNS, FOLDERS, SHELF_UNFILED, "").map((d) => d.id),
-    ).toEqual(["d4", "d5"]);
+    expect(on(SHELF_UNFILED)).toEqual(["d4", "d5"]);
   });
 
   test("a search looks across the whole library, not just the open shelf", () => {
-    expect(
-      visibleDesigns(DESIGNS, FOLDERS, "f_logos", "reel").map((d) => d.id),
-    ).toEqual(["d3"]);
+    expect(on("f_logos", "reel")).toEqual(["d3"]);
   });
 
   test("an empty query is not a filter", () => {
-    expect(visibleDesigns(DESIGNS, FOLDERS, SHELF_ALL, "   ")).toHaveLength(5);
+    expect(on(SHELF_ALL, "   ")).toHaveLength(5);
+  });
+
+  test("a shelf returns every kind of thing in it, not just designs", () => {
+    const easter = shelfContents(KIT, KIT_FOLDERS, "f_easter", "");
+    expect(easter.designs.map((d) => d.id)).toEqual(["d_poster"]);
+    expect(easter.colors.map((c) => c.id)).toEqual(["c_red"]);
+    expect(easter.fonts.map((f) => f.id)).toEqual(["t_times"]);
+    expect(itemCount(easter)).toBe(3);
+  });
+
+  test("borrowing a color does not take it out of the folder it came from", () => {
+    const kit = shelfContents(KIT, KIT_FOLDERS, "f_colors", "");
+    expect(kit.colors.map((c) => c.id)).toEqual(["c_red"]);
+    expect(kit.designs).toEqual([]);
+  });
+
+  test("the search reaches colors and faces too, wherever they are filed", () => {
+    const hit = shelfContents(KIT, KIT_FOLDERS, "f_colors", "times");
+    expect(hit.fonts.map((f) => f.id)).toEqual(["t_times"]);
+  });
+});
+
+describe("countLabel", () => {
+  test("a plain total when nothing is narrowing it", () => {
+    expect(countLabel(4, 4)).toBe("4");
+  });
+
+  test("says so when something is", () => {
+    expect(countLabel(2, 4)).toBe("2 of 4");
   });
 });
 
@@ -194,10 +348,10 @@ describe("designMatches", () => {
   });
 });
 
-describe("visibleColors / visibleFonts", () => {
+describe("visibleColors / visibleFonts / visibleDesigns", () => {
   const palette: BrandColor[] = [
-    { id: "c1", name: "PW Red", hex: "#891d1a", usage: "Headlines", order: 0 },
-    { id: "c2", name: "Cream", hex: "#fff9ee", usage: null, order: 1 },
+    { ...color("c1", "PW Red", "#891d1a"), usage: "Headlines" },
+    color("c2", "Cream", "#fff9ee"),
   ];
 
   test("a pasted hex finds its swatch", () => {
@@ -220,6 +374,11 @@ describe("visibleColors / visibleFonts", () => {
     expect(visibleFonts(fonts, "newsletter")).toHaveLength(1);
     expect(visibleFonts(fonts, "condensed")).toHaveLength(1);
     expect(visibleFonts(fonts, "")).toHaveLength(2);
+  });
+
+  test("designs match on title, note, link and tool", () => {
+    expect(visibleDesigns(DESIGNS, "wordmark").map((d) => d.id)).toEqual(["d1"]);
+    expect(visibleDesigns(DESIGNS, "")).toHaveLength(5);
   });
 });
 
@@ -306,8 +465,8 @@ describe("readableInkOn", () => {
 
 describe("designPreview", () => {
   const palette: BrandColor[] = [
-    { id: "c1", name: "PW Red", hex: "#891d1a", usage: null, order: 0 },
-    { id: "c2", name: "Cream", hex: "#fff9ee", usage: null, order: 1 },
+    color("c1", "PW Red", "#891d1a"),
+    color("c2", "Cream", "#fff9ee"),
   ];
 
   test("prefers the hosted thumbnail — the picture chosen for this box", () => {

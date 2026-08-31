@@ -9,9 +9,29 @@
  *   FONTS    `BrandFont` — the faces and what each is for. Answers "what do I
  *            set a headline in?"
  *   FOLDERS  `DesignFolder` — the marketer's own filing ("Instagram posts",
- *            "Event flyers"). One level deep, deliberately (see below).
+ *            "Easter 2026"). One level deep, deliberately (see below).
  *   DESIGNS  `DesignAsset` — a Canva or Figma link, or an uploaded image.
  *            Answers "where's the template for this?"
+ *
+ * ── THE FOLDER IS THE PRIMITIVE, AND IT HOLDS ALL THREE ─────────────────────
+ * A folder is not a shelf for design FILES. It is a collection, and a color, a
+ * face and a design file may each be in one — which is what lets "Easter 2026"
+ * be a real thing: the red it uses, the face its posters are set in, and the
+ * posters, in one place. Colors and Faces are themselves nothing but folders
+ * that happen to be PINNED (`DesignFolder.pinned`), seeded that way by
+ * migration `0085` so the tab looks unchanged the day this lands.
+ *
+ * Membership is MANY-TO-MANY (`folderIds` on all three item types), and that is
+ * the load-bearing decision. A strict filing cabinet — one home per item — puts
+ * the org's red in exactly one of "Colors" and "Easter 2026", so either the
+ * pinned palette goes incomplete or the event folder can't name the color it
+ * uses. Neither is acceptable, and duplicating the row to dodge it would give
+ * the kit two `#891d1a`s that drift the first time somebody corrects one. So an
+ * item is IN a folder the way a song is in a playlist: added and removed, never
+ * moved, and unaffected by what any other folder does with it.
+ *
+ * An item in no folder at all is UNFILED. That is a real, visible state, not an
+ * error — the same argument the old `folderId: null` made.
  *
  * ── Reading this is ungated. That is the feature ────────────────────────────
  * `marketing.designs.edit` has no `view` sibling. The Academy's own brand
@@ -47,6 +67,9 @@ export interface BrandColor {
   hex: string;
   /** Where it's used, in a sentence. The half people actually need. */
   usage: string | null;
+  /** Every folder this color is in. Empty = unfiled. See the module doc on why
+   *  membership is many-to-many. */
+  folderIds: string[];
   order: number;
 }
 
@@ -109,6 +132,8 @@ export interface BrandFont {
   sourceUrl: string | null;
   /** Anything a person needs to know before using it. */
   notes: string | null;
+  /** Every folder this face is in. Empty = unfiled. */
+  folderIds: string[];
   order: number;
 }
 
@@ -118,19 +143,50 @@ export const BRAND_FONT_MAX_COUNT = 12;
 
 // ── Folders ──────────────────────────────────────────────────────────────────
 
-/** One shelf in the library. `parentId` null = a top-level folder. */
+/**
+ * One collection. `parentId` null = a top-level folder.
+ *
+ * `pinned` is the whole of the "give this folder its own section" feature: a
+ * pinned folder renders as a titled block of its own contents rather than
+ * waiting to be selected in the rail. Deliberately a plain flag on the ordinary
+ * folder row instead of a second "section" concept — the founder's framing was
+ * that folders are the primitive and a section is just a folder you promoted,
+ * and two kinds of section with different rules is exactly what that avoids.
+ */
 export interface DesignFolder {
   id: string;
   name: string;
   parentId: string | null;
+  /** Render this folder as its own section, above the library. */
+  pinned: boolean;
   order: number;
-  /** How many designs sit directly in it — so the list can say so without the
-   *  caller counting. */
-  designCount: number;
+  /** How many items of ANY kind — colors, faces and designs — are in it, so
+   *  the rail can say so without the caller counting. Direct membership only;
+   *  a parent's total (which includes its children's) is a display decision the
+   *  tab makes. */
+  itemCount: number;
 }
 
 export const DESIGN_FOLDER_NAME_MAX = 50;
 export const DESIGN_FOLDER_MAX_COUNT = 60;
+
+/**
+ * What kinds of thing live in a folder. The order is the order a folder's
+ * section draws them in: paint, then type, then the artwork made out of both.
+ */
+export const FOLDER_ITEM_KINDS = ["color", "font", "design"] as const;
+export type FolderItemKind = (typeof FOLDER_ITEM_KINDS)[number];
+
+/**
+ * How many folders one item may be in at once.
+ *
+ * Not a database limit — a guard against the failure mode many-to-many
+ * membership invites, where a color ends up in every folder because adding it
+ * costs nothing, and folder membership stops meaning anything. Eight is far
+ * above any honest use ("the red is in Colors, Easter, and the two campaigns
+ * running this month") and far below "all of them".
+ */
+export const ITEM_FOLDER_MAX = 8;
 
 // ── Designs ──────────────────────────────────────────────────────────────────
 
@@ -161,8 +217,8 @@ export interface DesignAsset {
   id: string;
   kind: DesignKind;
   title: string;
-  /** Which shelf. Null = loose, shown in "Unfiled". */
-  folderId: string | null;
+  /** Every folder this design is in. Empty = loose, shown in "Unfiled". */
+  folderIds: string[];
   /** Where it lives. Always present except on an `image` whose only content is
    *  the upload itself. */
   url: string | null;

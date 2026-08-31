@@ -7,71 +7,58 @@
  * one person's head, the templates were findable only by asking, and a
  * volunteer making a flyer at 11pm guessed.
  *
- * ── What the page is ────────────────────────────────────────────────────────
- * Three sections down one canvas — Design files, then Colors and Faces — and
- * each one OWNS everything you do to it:
+ * ── THE FOLDER IS THE PRIMITIVE ─────────────────────────────────────────────
+ * This screen used to be three fixed sections: Colors, Faces, Design files,
+ * each a different kind of thing with its own rules. It is now ONE idea. A
+ * folder holds anything — a color, a face, a Canva link — and a folder can be
+ * PINNED, which gives it its own section on the page.
  *
- *  1. Design files are a grid of LIVE previews on web, with the folders that
- *     file them, the density toggle that shapes them, and the button that adds
- *     one, all inside that section. (`DesignGrid`, `FolderRail`)
- *  2. Colors are a wall of swatches with "Add color" on their own header.
- *     (`SwatchWall`, `BrandKitSection`)
- *  3. Faces are specimens set in themselves — or an honest "this device doesn't
- *     have it" plus the download — in one wrapping wall like the other two,
- *     with "Add face" on their own header. (`SpecimenWall`)
+ * So "Colors" is not a section any more; it is a pinned folder that happens to
+ * hold four colors, and migration `0085` made it that way so the tab looks
+ * unchanged while everything about it became movable. The payoff is the thing
+ * that was impossible before: a folder called "Easter 2026" holding the red it
+ * uses, the face its posters are set in, and the posters — one place, one
+ * concept, no special cases.
  *
- * ── The files come first ────────────────────────────────────────────────────
- * The brand kit led the page for as long as this tab has existed, and it was
- * the wrong lead: the kit is two rows of reference that barely change, while
- * the library is the thing that grows, the thing a search is aimed at, and the
- * thing somebody opened this tab to get. Founder's call, and the right one —
- * a volunteer at 11pm wants the flyer template, and the red is what they need
- * one scroll later, once they are making something.
+ * Membership is many-to-many (`@events-os/shared` argues why): the red is in
+ * Colors AND in Easter at once, and removing it from the event does nothing to
+ * the palette.
  *
- * Editing lives in the viewer panel a tile opens, so no row anywhere carries a
- * pencil and a bin. (`Inspector`)
+ * ── What is on the page, in order ───────────────────────────────────────────
+ *  1. The search box — the one control that acts on everything, so the one
+ *     control that stays at the top.
+ *  2. THE LIBRARY — the folder rail, and the contents of whichever folder is
+ *     selected, drawn by `FolderBody`. Design files lead inside it, which is
+ *     the founder's call and holds at every level because the body owns it.
+ *  3. Every pinned folder, as its own section (`FolderSection`) — the same
+ *     renderer, so a pinned folder and a selected one are the same thing drawn
+ *     twice, never two different layouts.
  *
- * ── Why the page toolbar is only a search box now ───────────────────────────
- * The first cut of the workstation put a page-wide toolbar at the top holding
- * search, the grid/list toggle, "New folder" and "Add design" — and hung the
- * folder rail off the left edge of the WHOLE page, level with the colors. So
- * every control for the design files sat between one and three screens above
- * the design files, and the folder list was a column that had nothing to do
- * with the two sections it stood beside. The founder's read: "the design files
- * and folders are disjointed from the actual controls to handle and add to
- * them and change them."
+ * The library sits ABOVE the pinned sections deliberately: it is the working
+ * surface, and pinning is what saves you from navigating to a folder you want
+ * to see every day. Colors and Faces landing one scroll down is the same call
+ * the founder made when the kit led the page — "put Design files on the top".
  *
- * The rule the page now follows is the obvious one: a control lives in the
- * section it acts on. What stayed at the top is the one thing that genuinely
- * acts on the whole page — the search box, which matches colors, faces and
- * files at once — plus a three-pill census that jumps to each section, which
- * is what the old rail's top group was for.
+ * ── Every control lives in the section it acts on ───────────────────────────
+ * The library's density toggle and its Add menu are on the library's header;
+ * the folders and their New/settings controls are in the rail beside the grid;
+ * a pinned folder's Add and settings are on that folder's own header. The page
+ * toolbar is a search box and nothing else. That rule is what fixed the first
+ * cut of this screen, and the folder model has to keep it or it re-breaks it.
  *
  * ── Everyone can read it. That is the feature ───────────────────────────────
  * `marketingDesigns.library` is readable by anyone signed in and there is no
  * view power to hold. `canEdit` only decides whether the edit affordances
  * render; a volunteer with no marketing power at all gets the full library,
- * every copy button and every "Open in Canva" — no Add buttons, no folder
+ * every copy button and every "Open in Canva" — no Add menus, no folder
  * controls, and a viewer panel with no fields and no footer beyond a copy.
- * There is deliberately NO lock screen here, unlike `SiteView`: on that screen
- * there is nothing worth reading that the public page doesn't show better, and
- * on this one the reading IS the point.
- *
- * ── Filing, and the drag that isn't ─────────────────────────────────────────
- * The mockup files a design by dragging its tile onto a folder. This app is one
- * file serving phone, tablet and web, so filing is a picker in the viewer panel
- * instead — one press, identical everywhere, reachable by a screen reader, and
- * saving instantly through `moveDesignToFolder` (the narrow mutation, so a move
- * can never overwrite a title somebody edited in another tab). Same call
- * `LinksView` and the old brand kit made about drag-to-reorder, for the same
- * reason.
  *
  * ── Searching looks everywhere ──────────────────────────────────────────────
  * A query while standing in "Flyers" searches the whole library, colors and
- * faces included. Someone typing a filename is asking "where is this", and
- * answering "not on the shelf you happen to be standing on" is what makes
- * people re-upload a file they already have. `visibleDesigns` owns that rule
- * and a test pins it.
+ * faces included, and narrows the pinned sections too. Someone typing a
+ * filename is asking "where is this", and answering "not on the shelf you
+ * happen to be standing on" is what makes people re-upload a file they already
+ * have. `shelfContents` owns that rule and a test pins it.
  */
 import { useRef, useState } from "react";
 import {
@@ -85,12 +72,15 @@ import {
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import {
+  BRAND_COLOR_MAX_COUNT,
+  BRAND_FONT_MAX_COUNT,
   DESIGN_FOLDER_MAX_COUNT,
   DESIGN_MAX_COUNT,
   type BrandColor,
   type BrandFont,
   type DesignAsset,
   type DesignLibrary,
+  type FolderItemKind,
 } from "@events-os/shared";
 import {
   Button,
@@ -100,13 +90,13 @@ import {
   Screen,
   SectionHeader,
   ToastView,
-  type IconName,
 } from "../ui";
 import { colors } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
-import { BrandColorsSection, BrandFontsSection } from "./BrandKitSection";
 import { FolderRail } from "./designs/FolderRail";
-import { DesignGrid } from "./designs/DesignGrid";
+import { FolderBody } from "./designs/FolderBody";
+import { FolderSection } from "./designs/FolderSection";
+import { AddItemMenu } from "./designs/AddItemMenu";
 import { ColorInspector } from "./designs/ColorInspector";
 import { FontInspector } from "./designs/FontInspector";
 import { DesignInspector } from "./designs/DesignInspector";
@@ -116,22 +106,27 @@ import {
   buildShelves,
   countLabel,
   isVirtualShelf,
+  itemCount,
+  pinnedFolders,
   resolveShelf,
+  shelfContents,
   shelfLabel,
-  visibleColors,
-  visibleDesigns,
-  visibleFonts,
   type ShelfId,
 } from "./designs/library.shared";
 
-/** Below this the folder rail becomes a strip of chips above the grid. */
+/** Below this the folder rail becomes a strip of chips above the contents. */
 const FOLDER_COLUMN_MIN_WIDTH = 900;
 
-/** What the viewer panel is showing. `id: null` = a new one of that thing. */
+/**
+ * What the viewer panel is showing. `id: null` = a new one of that thing, and
+ * `seedFolders` is the folder it was added FROM — the shelf you are standing on
+ * is the answer to "where should this go" often enough that asking again is
+ * friction.
+ */
 type Inspect =
-  | { kind: "color"; id: string | null }
-  | { kind: "font"; id: string | null }
-  | { kind: "design"; id: string | null }
+  | { kind: "color"; id: string | null; seedFolders?: string[] }
+  | { kind: "font"; id: string | null; seedFolders?: string[] }
+  | { kind: "design"; id: string | null; seedFolders?: string[] }
   | { kind: "folder"; id: string | null };
 
 export function MarketingDesignsView() {
@@ -150,44 +145,55 @@ export function MarketingDesignsView() {
   const [view, setView] = useState<"grid" | "list">("grid");
   const [shelf, setShelf] = useState<ShelfId>(SHELF_ALL);
   const [inspect, setInspect] = useState<Inspect | null>(null);
-  /** A non-error outcome that still needs saying — today, where a deleted
-   *  folder's designs went. `useActionRunner` only surfaces failures, and this
-   *  is not one. Same pattern as `MailingListView`. */
+  /** A non-error outcome that still needs saying — today, what happened to the
+   *  contents of a deleted folder. `useActionRunner` only surfaces failures,
+   *  and this is not one. Same pattern as `MailingListView`. */
   const [notice, setNotice] = useState<string | null>(null);
 
-  // The census pills are a table of contents for one scrolling canvas, so they
-  // need the offsets of the three sections. Same arrangement `project/[id]`
-  // uses to jump to its money section: the scroller belongs to `Screen`, and
-  // which offset to scroll to is something only this page knows. Each section
-  // is a direct child of the page column, so its measured `y` is the offset.
   const scrollRef = useRef<ScrollView>(null);
-  const sectionY = useRef<Record<string, number>>({});
-  const measure = (key: string) => (event: {
-    nativeEvent: { layout: { y: number } };
-  }) => {
-    sectionY.current[key] = event.nativeEvent.layout.y;
-  };
-  const jumpTo = (key: string) => {
-    const y = sectionY.current[key];
-    if (y === undefined) return;
-    scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
-  };
 
   if (library === undefined) return <Screen loading />;
 
   const { colors: palette, fonts, folders, designs, canEdit } = library;
+  const all = { colors: palette, fonts, designs };
 
-  const shelves = buildShelves(folders, designs);
+  const shelves = buildShelves(folders, all);
   const activeShelf = resolveShelf(shelf, shelves);
-  const shown = visibleDesigns(designs, folders, activeShelf, query);
+  const shown = shelfContents(all, folders, activeShelf, query);
   const searching = query.trim().length > 0;
   const activeFolder = isVirtualShelf(activeShelf)
     ? null
     : (folders.find((f) => f.id === activeShelf) ?? null);
+  const shelfTotal =
+    shelves.find((s) => s.id === activeShelf)?.count ?? itemCount(all);
 
-  function openDesign(design: DesignAsset | null) {
-    setInspect({ kind: "design", id: design?.id ?? null });
+  /** Kinds that can't take another row anywhere in the library. The Add menu
+   *  drops them rather than offering a press the backend will refuse. */
+  const full: FolderItemKind[] = [
+    ...(palette.length >= BRAND_COLOR_MAX_COUNT ? (["color"] as const) : []),
+    ...(fonts.length >= BRAND_FONT_MAX_COUNT ? (["font"] as const) : []),
+    ...(designs.length >= DESIGN_MAX_COUNT ? (["design"] as const) : []),
+  ];
+
+  /** Open a blank inspector of `kind`, pre-filed into `folderId` when there is
+   *  one to inherit. */
+  function addTo(kind: FolderItemKind, folderId: string | null) {
+    const seedFolders = folderId ? [folderId] : [];
+    setInspect(
+      kind === "color"
+        ? { kind: "color", id: null, seedFolders }
+        : kind === "font"
+          ? { kind: "font", id: null, seedFolders }
+          : { kind: "design", id: null, seedFolders },
+    );
   }
+
+  const openColor = (color: BrandColor) =>
+    setInspect({ kind: "color", id: color.id });
+  const openFont = (font: BrandFont) =>
+    setInspect({ kind: "font", id: font.id });
+  const openDesign = (design: DesignAsset) =>
+    setInspect({ kind: "design", id: design.id });
 
   const permissionLine = canEdit
     ? "Anyone signed in can open the kit. You hold a marketing seat, so you can change it — everything editable lives in the panel a tile opens."
@@ -196,26 +202,17 @@ export function MarketingDesignsView() {
   return (
     <Screen maxWidth={1240} scrollRef={scrollRef}>
       <Text className="mt-1 max-w-2xl text-sm leading-5 text-muted">
-        Every design file, and the colors and faces they're made of — open to
-        everyone in the org.
+        Every design file, and the colors and faces they&apos;re made of — open
+        to everyone in the org.
         {canEdit
-          ? " You can edit all of it."
+          ? " Anything can go in a folder, and a folder can have its own section."
           : " Copy a hex or open a design; the marketing team keeps it up to date."}
       </Text>
 
       <SearchField query={query} setQuery={setQuery} />
 
-      <KitCensus
-        items={[
-          { key: "files", label: "Design files", icon: "image", count: designs.length },
-          { key: "colors", label: "Colors", icon: "droplet", count: palette.length },
-          { key: "fonts", label: "Faces", icon: "type", count: fonts.length },
-        ]}
-        onJump={jumpTo}
-      />
-
       {notice ? (
-        <Card padding="md" className="mb-4">
+        <Card padding="md" className="mb-4 mt-4">
           <Text className="text-sm text-ink">{notice}</Text>
           <View className="mt-2 flex-row">
             <Button
@@ -228,113 +225,107 @@ export function MarketingDesignsView() {
         </Card>
       ) : null}
 
-      <View onLayout={measure("files")} className="mt-1">
-        {/* Everything this section does to itself is on its own header: how
-            dense the tiles are, and adding one. Folders are the rail beside the
-            grid, carrying their own. */}
-        <SectionHeader
-          wrap
-          title="Design files"
-          count={countLabel(shown.length, designs.length)}
-          right={
-            <View className="flex-row items-center gap-2">
-              <View className="flex-row rounded-pill bg-sunken p-0.5">
-                <ViewToggle
-                  label="Grid"
-                  icon="grid"
-                  active={view === "grid"}
-                  onPress={() => setView("grid")}
-                />
-                <ViewToggle
-                  label="List"
-                  icon="list"
-                  active={view === "list"}
-                  onPress={() => setView("list")}
-                />
-              </View>
-              {canEdit ? (
-                <Button
-                  title="Add design"
-                  icon="plus"
-                  size="sm"
-                  disabled={designs.length >= DESIGN_MAX_COUNT}
-                  onPress={() => openDesign(null)}
-                />
-              ) : null}
+      {/* ── The library ──────────────────────────────────────────────────── */}
+      <SectionHeader
+        wrap
+        title="Library"
+        count={countLabel(itemCount(shown), shelfTotal)}
+        right={
+          <View className="flex-row items-center gap-2">
+            <View className="flex-row rounded-pill bg-sunken p-0.5">
+              <ViewToggle
+                label="Grid"
+                icon="grid"
+                active={view === "grid"}
+                onPress={() => setView("grid")}
+              />
+              <ViewToggle
+                label="List"
+                icon="list"
+                active={view === "list"}
+                onPress={() => setView("list")}
+              />
             </View>
+            {canEdit ? (
+              <AddItemMenu
+                onAdd={(kind) => addTo(kind, activeFolder?.id ?? null)}
+                full={full}
+              />
+            ) : null}
+          </View>
+        }
+      />
+
+      <View className={wide ? "flex-row items-start gap-6" : ""}>
+        <FolderRail
+          shelves={shelves}
+          activeShelf={activeShelf}
+          onSelect={setShelf}
+          narrow={!wide}
+          canEdit={canEdit}
+          canAddFolder={folders.length < DESIGN_FOLDER_MAX_COUNT}
+          onNewFolder={() => setInspect({ kind: "folder", id: null })}
+          onOpenFolder={(folderId) =>
+            setInspect({ kind: "folder", id: folderId })
           }
         />
 
-        <View className={wide ? "flex-row items-start gap-6" : ""}>
-          <FolderRail
-            shelves={shelves}
-            activeShelf={activeShelf}
-            onSelect={setShelf}
-            narrow={!wide}
-            canEdit={canEdit}
-            canAddFolder={folders.length < DESIGN_FOLDER_MAX_COUNT}
-            onNewFolder={() => setInspect({ kind: "folder", id: null })}
-            onOpenFolder={(folderId) =>
-              setInspect({ kind: "folder", id: folderId })
-            }
-          />
+        <View className="min-w-0 flex-1">
+          <View className="mb-3 flex-row items-center gap-1.5">
+            <Icon name="folder" size={13} color={colors.faint} />
+            <Text className="text-xs text-faint">
+              {searching
+                ? "Everything matching, across every folder"
+                : activeShelf === SHELF_ALL
+                  ? "Everything in the library"
+                  : `Folders / ${shelfLabel(activeShelf, shelves)}`}
+            </Text>
+          </View>
 
-          <View className="min-w-0 flex-1">
-            <View className="mb-3 flex-row items-center gap-1.5">
-              <Icon name="folder" size={13} color={colors.faint} />
-              <Text className="text-xs text-faint">
-                {searching
-                  ? "Everything matching, across every shelf"
-                  : activeShelf === SHELF_ALL
-                    ? "Everything in the library"
-                    : `Folders / ${shelfLabel(activeShelf, shelves)}`}
-              </Text>
-            </View>
-
-            {shown.length > 0 ? (
-              <DesignGrid
-                designs={shown}
-                palette={palette}
-                view={view}
-                onOpen={openDesign}
-              />
-            ) : (
+          <FolderBody
+            items={shown}
+            palette={palette}
+            view={view}
+            onOpenColor={openColor}
+            onOpenFont={openFont}
+            onOpenDesign={openDesign}
+            empty={
               <ShelfEmptyState
                 searching={searching}
                 shelfName={shelfLabel(activeShelf, shelves)}
                 everything={activeShelf === SHELF_ALL}
                 canEdit={canEdit}
-                onNewDesign={() => openDesign(null)}
+                onAdd={() => addTo("design", activeFolder?.id ?? null)}
               />
-            )}
-          </View>
+            }
+          />
         </View>
       </View>
 
-      <View onLayout={measure("colors")}>
-        <BrandColorsSection
-          palette={visibleColors(palette, query)}
-          total={palette.length}
+      {/* ── Pinned folders, each its own section ─────────────────────────── */}
+      {pinnedFolders(folders).map((folder) => (
+        <FolderSection
+          key={folder.id}
+          folder={folder}
+          items={shelfContents(all, folders, folder.id, query)}
+          // The shelf count, not `folder.itemCount`: a pinned parent folder
+          // draws its children's things too, so the total has to be of the set
+          // actually on screen or the label reads "5 of 3".
+          total={shelves.find((s) => s.id === folder.id)?.count ?? folder.itemCount}
+          palette={palette}
+          view={view}
           canEdit={canEdit}
-          onOpen={(color: BrandColor) =>
-            setInspect({ kind: "color", id: color.id })
-          }
-          onNew={() => setInspect({ kind: "color", id: null })}
+          full={full}
+          searching={searching}
+          onAdd={(kind) => addTo(kind, folder.id)}
+          onOpenFolder={() => setInspect({ kind: "folder", id: folder.id })}
+          onOpenColor={openColor}
+          onOpenFont={openFont}
+          onOpenDesign={openDesign}
         />
-      </View>
+      ))}
 
-      <View onLayout={measure("fonts")}>
-        <BrandFontsSection
-          fonts={visibleFonts(fonts, query)}
-          total={fonts.length}
-          canEdit={canEdit}
-          onOpen={(font: BrandFont) => setInspect({ kind: "font", id: font.id })}
-          onNew={() => setInspect({ kind: "font", id: null })}
-        />
-      </View>
-
-      {/* One line, one place, both widths — the old rail said this on a desk
-          and the page said it again under the grid on a phone. */}
+      {/* One line, one place, both widths. */}
       <Text className="mt-8 max-w-2xl border-t border-border pt-4 text-2xs leading-4 text-faint">
         {permissionLine}
       </Text>
@@ -343,6 +334,8 @@ export function MarketingDesignsView() {
         <ColorInspector
           color={inspect.id ? (palette.find((c) => c.id === inspect.id) ?? null) : null}
           palette={palette}
+          folders={folders}
+          seedFolderIds={inspect.seedFolders ?? []}
           canEdit={canEdit}
           run={run}
           onClose={() => setInspect(null)}
@@ -353,6 +346,8 @@ export function MarketingDesignsView() {
         <FontInspector
           font={inspect.id ? (fonts.find((f) => f.id === inspect.id) ?? null) : null}
           fonts={fonts}
+          folders={folders}
+          seedFolderIds={inspect.seedFolders ?? []}
           canEdit={canEdit}
           run={run}
           onClose={() => setInspect(null)}
@@ -365,11 +360,8 @@ export function MarketingDesignsView() {
           designs={designs}
           folders={folders}
           palette={palette}
-          group={shown}
-          // A design added while standing in a folder lands on that folder —
-          // the shelf you are looking at is the answer to "where should this
-          // go" often enough that asking again is friction.
-          defaultFolderId={activeFolder?.id ?? ""}
+          group={shown.designs}
+          seedFolderIds={inspect.seedFolders ?? []}
           canEdit={canEdit}
           run={run}
           onClose={() => setInspect(null)}
@@ -380,18 +372,18 @@ export function MarketingDesignsView() {
         <FolderInspector
           folder={inspect.id ? (folders.find((f) => f.id === inspect.id) ?? null) : null}
           folders={folders}
-          designCount={
+          itemCount={
             inspect.id
               ? (shelves.find((s) => s.id === inspect.id)?.count ?? 0)
               : 0
           }
           run={run}
           onClose={() => setInspect(null)}
-          onDeleted={(folderName, moved) => {
+          onDeleted={(folderName, released) => {
             setShelf(SHELF_ALL);
-            if (moved > 0) {
+            if (released > 0) {
               setNotice(
-                `Deleted “${folderName}”. ${moved} design${moved === 1 ? "" : "s"} moved to Unfiled — nothing was thrown away.`,
+                `Deleted “${folderName}”. ${released} thing${released === 1 ? "" : "s"} left it — nothing was thrown away, and anything that was only in there is now Unfiled.`,
               );
             }
           }}
@@ -403,12 +395,12 @@ export function MarketingDesignsView() {
   );
 }
 
-// ── The two page-wide controls ───────────────────────────────────────────────
+// ── The one page-wide control ────────────────────────────────────────────────
 
 /**
  * The search box — the one control that genuinely acts on the whole page, so
  * the one control that stays at the top of it. It matches colors, faces and
- * files at once.
+ * files at once, in every folder.
  *
  * Built here rather than with `TextField` because a labelled form row is the
  * wrong shape for a search slot — it would add a heading and 12px of margin to
@@ -446,47 +438,6 @@ function SearchField({
   );
 }
 
-/**
- * What's in the kit, and a way down to it.
- *
- * Replaces the old left rail's "Brand kit" group, which was navigation printed
- * beside the section it pointed at. Three pills under the search box: each one
- * says how many of that thing exist — the census a person opening the tab
- * actually wants — and jumps to its section. The counts are of the WHOLE kit,
- * not of what a search left standing; each section header carries the "2 of 4"
- * when something is narrowing it.
- */
-function KitCensus({
-  items,
-  onJump,
-}: {
-  items: { key: string; label: string; icon: IconName; count: number }[];
-  onJump: (key: string) => void;
-}) {
-  return (
-    <View className="mt-3 flex-row flex-wrap gap-2">
-      {items.map((item) => (
-        <Pressable
-          key={item.key}
-          onPress={() => onJump(item.key)}
-          accessibilityRole="button"
-          accessibilityLabel={`${item.count} ${item.label.toLowerCase()} — jump to them`}
-          className="flex-row items-center gap-2 rounded-pill border border-border bg-raised px-3 py-1.5 web:hover:border-border-strong"
-        >
-          <Icon name={item.icon} size={13} color={colors.muted} />
-          <Text className="text-sm text-muted">{item.label}</Text>
-          <Text
-            className="text-xs font-semibold text-ink"
-            style={{ fontVariant: ["tabular-nums"] }}
-          >
-            {item.count}
-          </Text>
-        </Pressable>
-      ))}
-    </View>
-  );
-}
-
 function ViewToggle({
   label,
   icon,
@@ -517,37 +468,37 @@ function ViewToggle({
 }
 
 /**
- * The state an empty shelf is in — and the mockup's point about it: "Signage —
- * 0 files" was reporting a number nobody asked about. An empty shelf asks for
- * its first file instead, and only a caller who could actually add one is
- * offered the button.
+ * The state an empty shelf is in — and the point about it: "Signage — 0 files"
+ * was reporting a number nobody asked about. An empty shelf asks for its first
+ * thing instead, and only a caller who could actually add one is offered the
+ * button.
  */
 function ShelfEmptyState({
   searching,
   shelfName,
   everything,
   canEdit,
-  onNewDesign,
+  onAdd,
 }: {
   searching: boolean;
   shelfName: string;
   everything: boolean;
   canEdit: boolean;
-  onNewDesign: () => void;
+  onAdd: () => void;
 }) {
   if (searching) {
     return (
       <EmptyState
         icon="search"
         title="Nothing matches that"
-        message="The search looks at every shelf, so this really is everything — try fewer words, or part of a link."
+        message="The search looks in every folder, so this really is everything — try fewer words, or part of a link."
       />
     );
   }
   return (
     <EmptyState
       icon="image"
-      title={everything ? "No design files yet" : `Nothing on ${shelfName} yet`}
+      title={everything ? "Nothing in the library yet" : `Nothing in ${shelfName} yet`}
       message={
         canEdit
           ? "Paste a Canva or Figma link and it lands here, previews right on its tile, and stays one tap from the editable file."
@@ -559,7 +510,7 @@ function ShelfEmptyState({
             title="Add the first design"
             icon="plus"
             size="sm"
-            onPress={onNewDesign}
+            onPress={onAdd}
           />
         ) : undefined
       }

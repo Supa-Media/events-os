@@ -51,6 +51,8 @@ import { internal } from "./_generated/api";
 import type { MutationCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
+  FOLDER_ITEM_KINDS,
+  ITEM_FOLDER_MAX,
   BRAND_COLOR_MAX_COUNT,
   BRAND_COLOR_NAME_MAX,
   BRAND_COLOR_USAGE_MAX,
@@ -85,6 +87,8 @@ import {
 } from "./lib/ogImage";
 import { requireUserId } from "./lib/context";
 import {
+  KIT_COLORS_FOLDER,
+  KIT_FACES_FOLDER,
   BRAND_COLOR_SEED,
   BRAND_FONT_SEED,
   DESIGN_FOLDER_SEED,
@@ -260,6 +264,87 @@ function nextOrder(rows: { order: number }[]): number {
   return rows.reduce((max, r) => Math.max(max, r.order), 0) + ORDER_STEP;
 }
 
+// ── Folder membership ────────────────────────────────────────────────────────
+
+/**
+ * The three tables whose rows can sit in a folder, keyed by the shared
+ * `FolderItemKind`. One map, so a new item kind is one line here and the four
+ * places that walk every kind (the counts, the delete, the membership write,
+ * the seed) all follow it — rather than four hand-written triples that drift.
+ */
+const ITEM_TABLES = {
+  color: "brandColors",
+  font: "brandFonts",
+  design: "designAssets",
+} as const satisfies Record<(typeof FOLDER_ITEM_KINDS)[number], string>;
+
+/** A row's membership as ids, tolerating the pre-`0085` rows that have none. */
+function membership(row: { folderIds?: Id<"designFolders">[] }): string[] {
+  return (row.folderIds ?? []).map(String);
+}
+
+/**
+ * Clean a submitted membership list: real folders only, no duplicates, capped.
+ *
+ * A folder id that no longer resolves is DROPPED rather than throwing. The
+ * picker is a checklist rendered from a library read that may be seconds stale,
+ * and refusing the whole save because one folder was deleted in another tab
+ * would lose the edit the person actually made. Everything else about the save
+ * is still exactly what they asked for.
+ */
+async function resolveFolderIds(
+  ctx: MutationCtx,
+  ids: Id<"designFolders">[] | undefined,
+): Promise<Id<"designFolders">[] | undefined> {
+  if (ids === undefined) return undefined;
+  const out: Id<"designFolders">[] = [];
+  const seen = new Set<string>();
+  for (const id of ids) {
+    const key = String(id);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    if (!(await ctx.db.get(id))) continue;
+    out.push(id);
+  }
+  if (out.length > ITEM_FOLDER_MAX) {
+    throw new ConvexError({
+      code: "TOO_MANY",
+      message: `One thing can be in at most ${ITEM_FOLDER_MAX} folders. Past that, being in a folder stops meaning anything.`,
+    });
+  }
+  return out;
+}
+
+/**
+ * Strip one folder from every item that is in it, returning how many rows were
+ * touched. The other half of `deleteFolder`'s contract — see its doc.
+ */
+async function releaseFolder(
+  ctx: MutationCtx,
+  folderId: Id<"designFolders">,
+  userId: Id<"users">,
+): Promise<number> {
+  const now = Date.now();
+  const key = String(folderId);
+  let released = 0;
+
+  const colors = await ctx.db.query("brandColors").take(BRAND_COLOR_MAX_COUNT);
+  const fonts = await ctx.db.query("brandFonts").take(BRAND_FONT_MAX_COUNT);
+  const designs = await ctx.db.query("designAssets").take(DESIGN_MAX_COUNT);
+
+  for (const row of [...colors, ...fonts, ...designs]) {
+    const ids = row.folderIds ?? [];
+    if (!ids.some((id) => String(id) === key)) continue;
+    await ctx.db.patch(row._id, {
+      folderIds: ids.filter((id) => String(id) !== key),
+      updatedAt: now,
+      updatedBy: userId,
+    });
+    released += 1;
+  }
+  return released;
+}
+
 // ── serialization ────────────────────────────────────────────────────────────
 
 function serializeColor(doc: Doc<"brandColors">): BrandColor {
@@ -268,6 +353,7 @@ function serializeColor(doc: Doc<"brandColors">): BrandColor {
     name: doc.name,
     hex: doc.hex,
     usage: doc.usage ?? null,
+    folderIds: membership(doc),
     order: doc.order,
   };
 }
@@ -279,20 +365,22 @@ function serializeFont(doc: Doc<"brandFonts">): BrandFont {
     role: doc.role,
     sourceUrl: doc.sourceUrl ?? null,
     notes: doc.notes ?? null,
+    folderIds: membership(doc),
     order: doc.order,
   };
 }
 
 function serializeFolder(
   doc: Doc<"designFolders">,
-  designCount: number,
+  itemCount: number,
 ): DesignFolder {
   return {
     id: String(doc._id),
     name: doc.name,
     parentId: doc.parentId ? String(doc.parentId) : null,
+    pinned: doc.pinned ?? false,
     order: doc.order,
-    designCount,
+    itemCount,
   };
 }
 
@@ -310,7 +398,7 @@ function serializeDesign(doc: Doc<"designAssets">): DesignAsset {
     id: String(doc._id),
     kind: doc.kind,
     title: doc.title,
-    folderId: doc.folderId ? String(doc.folderId) : null,
+    folderIds: membership(doc),
     url: doc.url ?? null,
     embedUrl: designEmbedUrl(doc.url),
     imageUrl: doc.imageUrl ?? null,
@@ -335,10 +423,10 @@ function serializeDesign(doc: Doc<"designAssets">): DesignAsset {
  * designs) — small enough that paging it would be more code than it saves, and
  * the tab wants all of it at once anyway to group designs under their folders.
  *
- * `designCount` is computed here from the designs already in hand rather than
- * stored on the folder row: a stored counter is a second source of truth, and
- * it goes wrong the first time a design moves by a path that forgets to
- * decrement it.
+ * `itemCount` is computed here from the rows already in hand rather than stored
+ * on the folder row: a stored counter is a second source of truth, and it goes
+ * wrong the first time something is filed by a path that forgets to increment
+ * it.
  */
 export const library = query({
   args: {},
@@ -363,11 +451,14 @@ export const library = query({
       .withIndex("by_order")
       .take(DESIGN_MAX_COUNT);
 
+    // A folder's count is every kind of thing in it, not just its files —
+    // "Easter 2026 · 6" means a color, a face and four posters, and a count
+    // that only saw the posters would make the folder look half empty.
     const counts = new Map<string, number>();
-    for (const design of designs) {
-      if (!design.folderId) continue;
-      const key = String(design.folderId);
-      counts.set(key, (counts.get(key) ?? 0) + 1);
+    for (const row of [...colors, ...fonts, ...designs]) {
+      for (const folderId of membership(row)) {
+        counts.set(folderId, (counts.get(folderId) ?? 0) + 1);
+      }
     }
 
     return {
@@ -399,6 +490,9 @@ export const upsertColor = mutation({
     name: v.string(),
     hex: v.string(),
     usage: v.optional(v.string()),
+    /** Which folders it belongs to. Keep-if-not-resent, like everything else
+     *  here; changing membership alone is `setItemFolders`. */
+    folderIds: v.optional(v.array(v.id("designFolders"))),
   },
   returns: v.id("brandColors"),
   handler: async (ctx, args) => {
@@ -434,10 +528,12 @@ export const upsertColor = mutation({
           message: "That color is no longer in the kit.",
         });
       }
+      const folderIds = await resolveFolderIds(ctx, args.folderIds);
       await ctx.db.patch(args.colorId, {
         name,
         hex,
         usage,
+        ...(folderIds ? { folderIds } : {}),
         updatedAt: now,
         updatedBy: userId,
       });
@@ -455,6 +551,7 @@ export const upsertColor = mutation({
       name,
       hex,
       usage,
+      folderIds: (await resolveFolderIds(ctx, args.folderIds)) ?? [],
       order: nextOrder(rows),
       createdAt: now,
       updatedAt: now,
@@ -511,6 +608,8 @@ export const upsertFont = mutation({
     role: fontRoleValidator,
     sourceUrl: v.optional(v.string()),
     notes: v.optional(v.string()),
+    /** Which folders it belongs to. Keep-if-not-resent. */
+    folderIds: v.optional(v.array(v.id("designFolders"))),
   },
   returns: v.id("brandFonts"),
   handler: async (ctx, args) => {
@@ -545,11 +644,13 @@ export const upsertFont = mutation({
           message: "That font is no longer in the kit.",
         });
       }
+      const folderIds = await resolveFolderIds(ctx, args.folderIds);
       await ctx.db.patch(args.fontId, {
         name,
         role: args.role,
         sourceUrl,
         notes,
+        ...(folderIds ? { folderIds } : {}),
         updatedAt: now,
         updatedBy: userId,
       });
@@ -568,6 +669,7 @@ export const upsertFont = mutation({
       role: args.role,
       sourceUrl,
       notes,
+      folderIds: (await resolveFolderIds(ctx, args.folderIds)) ?? [],
       order: nextOrder(rows),
       createdAt: now,
       updatedAt: now,
@@ -675,6 +777,9 @@ export const upsertFolder = mutation({
     parentId: v.optional(v.id("designFolders")),
     /** Move this folder back to the top level. See the mutation's doc. */
     clearParent: v.optional(v.boolean()),
+    /** Give this folder its own section on the tab. Keep-if-not-resent on an
+     *  update; `setFolderPinned` is the one-argument way to toggle it. */
+    pinned: v.optional(v.boolean()),
   },
   returns: v.id("designFolders"),
   handler: async (ctx, args) => {
@@ -706,6 +811,7 @@ export const upsertFolder = mutation({
       await ctx.db.patch(args.folderId, {
         name,
         parentId,
+        ...(args.pinned === undefined ? {} : { pinned: args.pinned }),
         updatedAt: now,
         updatedBy: userId,
       });
@@ -723,6 +829,7 @@ export const upsertFolder = mutation({
     return await ctx.db.insert("designFolders", {
       name,
       parentId: args.parentId,
+      pinned: args.pinned ?? false,
       order: nextOrder(rows),
       createdAt: now,
       updatedAt: now,
@@ -732,16 +839,22 @@ export const upsertFolder = mutation({
 });
 
 /**
- * Delete a folder, moving anything filed in it to Unfiled.
+ * Delete a folder. NOTHING IN IT IS DELETED — every color, face and design just
+ * stops being a member.
  *
- * DESIGNS ARE NEVER ORPHANED INVISIBLY. Deleting the row without touching its
- * designs would leave them pointing at a folder that no longer exists: `library`
- * would file them under a folder it cannot name, and to the marketer they would
- * simply be gone — which is the worst possible outcome for the one surface whose
- * entire job is "I know we made a flyer for this". So they move to Unfiled,
- * where they are still visible and re-filable, and the return value SAYS HOW
- * MANY moved so the tab can tell the human ("Deleted Flyers — 12 designs moved
- * to Unfiled") instead of leaving them to discover it.
+ * The many-to-many model makes this both safer and easier to get wrong. Safer,
+ * because a design in "Easter 2026" and "Flyers" loses one folder and is still
+ * filed under the other; deleting a collection never destroys what it collected.
+ * Easier to get wrong, because the membership lives on the ITEMS: deleting the
+ * folder row alone would leave every one of them carrying an id that resolves
+ * to nothing, and `library` would count them into a folder it can no longer
+ * name. So this walks all three item tables and strips the id.
+ *
+ * The return value says how many rows lost the folder, so the tab can tell the
+ * human ("Deleted Easter 2026 — 6 things left it; anything that was only in it
+ * is now Unfiled") rather than leaving them to discover it. That count is rows
+ * TOUCHED, not rows unfiled: most of them are still filed somewhere else, and
+ * claiming otherwise would be a lie in the reassuring direction.
  *
  * A folder with a sub-folder is refused rather than cascaded. A cascade here
  * would delete a shelf the person deleting may never have opened; making them
@@ -749,7 +862,7 @@ export const upsertFolder = mutation({
  */
 export const deleteFolder = mutation({
   args: { folderId: v.id("designFolders") },
-  returns: v.object({ movedDesigns: v.number() }),
+  returns: v.object({ releasedItems: v.number() }),
   handler: async (ctx, { folderId }) => {
     await requireDesignsEdit(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
@@ -757,7 +870,7 @@ export const deleteFolder = mutation({
     const existing = await ctx.db.get(folderId);
     // Idempotent, like the other deletes — a second call reports an honest zero
     // rather than throwing at somebody who double-tapped.
-    if (!existing) return { movedDesigns: 0 };
+    if (!existing) return { releasedItems: 0 };
 
     const children = await ctx.db
       .query("designFolders")
@@ -770,21 +883,9 @@ export const deleteFolder = mutation({
       });
     }
 
-    const designs = await ctx.db
-      .query("designAssets")
-      .withIndex("by_folder", (q) => q.eq("folderId", folderId))
-      .take(DESIGN_MAX_COUNT);
-    const now = Date.now();
-    for (const design of designs) {
-      await ctx.db.patch(design._id, {
-        folderId: undefined,
-        updatedAt: now,
-        updatedBy: userId,
-      });
-    }
-
+    const releasedItems = await releaseFolder(ctx, folderId, userId);
     await ctx.db.delete(folderId);
-    return { movedDesigns: designs.length };
+    return { releasedItems };
   },
 });
 
@@ -822,10 +923,10 @@ export const reorderFolders = mutation({
  * from inside the app. The editor posts its whole form on every save and cannot
  * carry the file bytes, so "not sent" can only ever mean "unchanged".
  *
- * `folderId` follows the same rule and for the same reason — omitting it keeps
- * the design where it is. Moving a design (or unfiling it) is
- * `moveDesignToFolder`, which is a one-argument mutation precisely so the drag
- * that moves a design cannot also rewrite its title.
+ * `folderIds` follows the same rule and for the same reason — omitting it keeps
+ * the design filed where it is. Changing only where something is filed is
+ * `setItemFolders`, a two-argument mutation precisely so re-filing cannot also
+ * rewrite a title somebody edited in another tab.
  *
  * ── What a row must have ────────────────────────────────────────────────────
  * A design has to be findable: an `image` needs an upload (or a link), and
@@ -845,7 +946,8 @@ export const upsertDesign = mutation({
     designId: v.optional(v.id("designAssets")),
     kind: designKindValidator,
     title: v.string(),
-    folderId: v.optional(v.id("designFolders")),
+    /** Which folders it belongs to. Keep-if-not-resent — see the doc above. */
+    folderIds: v.optional(v.array(v.id("designFolders"))),
     url: v.optional(v.string()),
     notes: v.optional(v.string()),
     imageStorage: v.optional(v.id("_storage")),
@@ -942,10 +1044,11 @@ export const upsertDesign = mutation({
     };
 
     if (args.designId && existing) {
+      const folderIds = await resolveFolderIds(ctx, args.folderIds);
       await ctx.db.patch(args.designId, {
         ...fields,
-        // Keep-if-not-resent — moving is `moveDesignToFolder`'s job.
-        folderId: args.folderId ?? existing.folderId,
+        // Keep-if-not-resent — re-filing alone is `setItemFolders`' job.
+        ...(folderIds ? { folderIds } : {}),
       });
       // AFTER the row is written, never before: if the patch failed we would
       // have deleted the blob a still-live row points at.
@@ -962,12 +1065,6 @@ export const upsertDesign = mutation({
       return args.designId;
     }
 
-    if (args.folderId && !(await ctx.db.get(args.folderId))) {
-      throw new ConvexError({
-        code: "NOT_FOUND",
-        message: "That folder no longer exists — pick another one.",
-      });
-    }
     const rows = await ctx.db.query("designAssets").take(DESIGN_MAX_COUNT);
     if (rows.length >= DESIGN_MAX_COUNT) {
       throw new ConvexError({
@@ -977,7 +1074,7 @@ export const upsertDesign = mutation({
     }
     const designId = await ctx.db.insert("designAssets", {
       ...fields,
-      folderId: args.folderId,
+      folderIds: (await resolveFolderIds(ctx, args.folderIds)) ?? [],
       order: nextOrder(rows),
       createdAt: now,
     });
@@ -1037,42 +1134,77 @@ export const reorderDesigns = mutation({
 });
 
 /**
- * File a design on a different shelf, or take it off all of them.
+ * Give a folder its own section on the tab, or take it back.
  *
- * Its own mutation rather than a field on `upsertDesign` because the caller is
- * a drag between folders, which knows the design and the destination and
- * nothing else. Making it post the whole form to move one card is how a drag
- * ends up overwriting a title somebody edited in another tab.
- *
- * An omitted `folderId` UNFILES — here, and only here, "not sent" means
- * "remove", because that is the entire argument the caller is making.
+ * Its own mutation rather than a field on `upsertFolder` for the reason every
+ * narrow mutation here exists: the caller is a switch that knows one folder and
+ * one boolean, and making it post the whole folder form to flip a flag is how a
+ * pin ends up renaming a folder somebody edited in another tab.
  */
-export const moveDesignToFolder = mutation({
-  args: {
-    designId: v.id("designAssets"),
-    /** Omit to unfile. */
-    folderId: v.optional(v.id("designFolders")),
-  },
+export const setFolderPinned = mutation({
+  args: { folderId: v.id("designFolders"), pinned: v.boolean() },
   returns: v.null(),
-  handler: async (ctx, { designId, folderId }) => {
+  handler: async (ctx, { folderId, pinned }) => {
     await requireDesignsEdit(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
 
-    const existing = await ctx.db.get(designId);
+    const existing = await ctx.db.get(folderId);
     if (!existing) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "That design is no longer in the library.",
+        message: "That folder no longer exists.",
       });
     }
-    if (folderId && !(await ctx.db.get(folderId))) {
+    await ctx.db.patch(folderId, {
+      pinned,
+      updatedAt: Date.now(),
+      updatedBy: userId,
+    });
+    return null;
+  },
+});
+
+/**
+ * Put one thing — a color, a face, or a design — in exactly this set of folders.
+ *
+ * ── Why one mutation for three tables ───────────────────────────────────────
+ * Because filing is one idea. The picker that calls this is the same checklist
+ * in all three inspectors, and three near-identical mutations would be three
+ * places to forget the cap, the dead-folder rule, or the audit stamp. `kind`
+ * picks the table through `ITEM_TABLES`, and `normalizeId` is what makes that
+ * safe: a string that is not an id for THAT table comes back null and is
+ * refused, so the argument cannot be used to reach a row in another one.
+ *
+ * ── Whole-list, not add/remove ──────────────────────────────────────────────
+ * The caller sends the complete membership it wants, and an empty array unfiles.
+ * A checklist knows its whole state, so sending it whole means two people
+ * ticking different boxes at once produce one of the two intended answers
+ * rather than a merge neither asked for. Same contract as `reorderColors` and
+ * the other whole-list mutations here.
+ */
+export const setItemFolders = mutation({
+  args: {
+    kind: v.union(...FOLDER_ITEM_KINDS.map((k) => v.literal(k))),
+    /** The row's id, as a string; checked against `kind`'s table below. */
+    itemId: v.string(),
+    /** The complete set of folders it should be in. Empty unfiles it. */
+    folderIds: v.array(v.id("designFolders")),
+  },
+  returns: v.null(),
+  handler: async (ctx, { kind, itemId, folderIds }) => {
+    await requireDesignsEdit(ctx);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+
+    const table = ITEM_TABLES[kind];
+    const id = ctx.db.normalizeId(table, itemId);
+    if (!id || !(await ctx.db.get(id))) {
       throw new ConvexError({
         code: "NOT_FOUND",
-        message: "That folder no longer exists — pick another one.",
+        message: "That's no longer in the library.",
       });
     }
-    await ctx.db.patch(designId, {
-      folderId,
+    await ctx.db.patch(id, {
+      folderIds: (await resolveFolderIds(ctx, folderIds)) ?? [],
       updatedAt: Date.now(),
       updatedBy: userId,
     });
@@ -1129,18 +1261,11 @@ export async function seedBrandKit(
     let fonts = 0;
     let folders = 0;
 
-    if (!(await ctx.db.query("brandColors").first())) {
-      for (const row of BRAND_COLOR_SEED) {
-        await ctx.db.insert("brandColors", { ...row, createdAt: now, updatedAt: now });
-        colors++;
-      }
-    }
-    if (!(await ctx.db.query("brandFonts").first())) {
-      for (const row of BRAND_FONT_SEED) {
-        await ctx.db.insert("brandFonts", { ...row, createdAt: now, updatedAt: now });
-        fonts++;
-      }
-    }
+    // FOLDERS FIRST, because the colors and faces below are filed into two of
+    // them. A fresh deployment must land in the same shape migration `0085`
+    // leaves an old one in: the palette inside a pinned "Colors" folder, the
+    // typefaces inside a pinned "Faces" one. Seeding them loose instead would
+    // make a new environment's Designs tab quietly different from production's.
     if (!(await ctx.db.query("designFolders").first())) {
       for (const row of DESIGN_FOLDER_SEED) {
         await ctx.db.insert("designFolders", {
@@ -1149,6 +1274,44 @@ export async function seedBrandKit(
           updatedAt: now,
         });
         folders++;
+      }
+    }
+
+    /** The seeded kit folder of that name, if this deployment has one. */
+    const kitFolder = async (name: string) => {
+      const rows = await ctx.db
+        .query("designFolders")
+        .take(DESIGN_FOLDER_MAX_COUNT);
+      return rows.find(
+        (f) => f.name.trim().toLowerCase() === name.toLowerCase(),
+      )?._id;
+    };
+
+    if (!(await ctx.db.query("brandColors").first())) {
+      // Missing folder = file them nowhere rather than refuse to seed: an
+      // unfiled palette is visible in the library and one press from a folder,
+      // while a kit that declined to seed is a tab that looks broken.
+      const folderId = await kitFolder(KIT_COLORS_FOLDER);
+      for (const row of BRAND_COLOR_SEED) {
+        await ctx.db.insert("brandColors", {
+          ...row,
+          folderIds: folderId ? [folderId] : [],
+          createdAt: now,
+          updatedAt: now,
+        });
+        colors++;
+      }
+    }
+    if (!(await ctx.db.query("brandFonts").first())) {
+      const folderId = await kitFolder(KIT_FACES_FOLDER);
+      for (const row of BRAND_FONT_SEED) {
+        await ctx.db.insert("brandFonts", {
+          ...row,
+          folderIds: folderId ? [folderId] : [],
+          createdAt: now,
+          updatedAt: now,
+        });
+        fonts++;
       }
     }
     return { colors, fonts, folders };

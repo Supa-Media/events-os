@@ -31,6 +31,17 @@
  * The gear OPENS the folder in the viewer panel, where every folder edit lives
  * (`FolderInspector`). Browsing stays browsing: only the shelf you already have
  * open shows a control, and only for someone who can actually edit it.
+ *
+ * ── A folder is a folder, whatever is in it ─────────────────────────────────
+ * The counts here are of every KIND of thing — "Easter 2026 · 6" is a color, a
+ * face and four posters. The rail deliberately does not break that down: the
+ * question it answers is "where is my stuff", and a row that read "1 color, 1
+ * face, 4 files" would answer a question nobody asked while making the folder
+ * you want harder to spot.
+ *
+ * A pinned folder carries a bookmark glyph, because it also draws itself as a
+ * section further down the page and a person who selects it should recognise
+ * what they are then looking at twice.
  */
 import { Pressable, ScrollView, Text, View } from "react-native";
 import { Button, Icon } from "../../ui";
@@ -125,6 +136,13 @@ export function FolderRail({
 }
 
 /** The label and the folder controls, identical in both shapes. */
+/** What a screen reader says for a row: the name, how much is in it, and
+ *  whether it has a section of its own. */
+function shelfLabel(shelf: Shelf): string {
+  const things = `${shelf.count} ${shelf.count === 1 ? "thing" : "things"}`;
+  return `${shelf.name}, ${things}${shelf.pinned ? ", pinned as its own section" : ""}`;
+}
+
 function RailHead({
   canEdit,
   canAddFolder,
@@ -196,7 +214,7 @@ function ShelfRow({
         onPress={onPress}
         accessibilityRole="button"
         accessibilityState={{ selected: active }}
-        accessibilityLabel={`${shelf.name}, ${shelf.count} ${shelf.count === 1 ? "file" : "files"}`}
+        accessibilityLabel={shelfLabel(shelf)}
         className={`min-w-0 flex-1 flex-row items-center gap-2 py-1.5 ${
           shelf.depth === 1 ? "pl-6" : "pl-2.5"
         } ${onSettings ? "pr-1" : "pr-2.5"}`}
@@ -207,6 +225,13 @@ function ShelfRow({
         >
           {shelf.name}
         </Text>
+        {shelf.pinned ? (
+          <Icon
+            name="bookmark"
+            size={11}
+            color={active ? colors.accent : colors.faint}
+          />
+        ) : null}
         <Text
           className={`text-2xs ${active ? "text-accent" : "text-faint"}`}
           style={{ fontVariant: ["tabular-nums"] }}
@@ -243,7 +268,7 @@ function ShelfChip({
       onPress={onPress}
       accessibilityRole="button"
       accessibilityState={{ selected: active }}
-      accessibilityLabel={`${shelf.name}, ${shelf.count} ${shelf.count === 1 ? "file" : "files"}`}
+      accessibilityLabel={shelfLabel(shelf)}
       className={`flex-row items-center gap-1.5 rounded-pill border px-3 py-1.5 ${
         active ? "border-accent bg-accent-soft" : "border-border bg-raised"
       }`}
@@ -253,6 +278,13 @@ function ShelfChip({
       >
         {shelf.depth === 1 ? `↳ ${shelf.name}` : shelf.name}
       </Text>
+      {shelf.pinned ? (
+        <Icon
+          name="bookmark"
+          size={11}
+          color={active ? colors.accent : colors.faint}
+        />
+      ) : null}
       <Text
         className={`text-2xs ${active ? "text-accent" : "text-faint"}`}
         style={{ fontVariant: ["tabular-nums"] }}
