@@ -8,17 +8,25 @@
  * volunteer making a flyer at 11pm guessed.
  *
  * ── What the page is ────────────────────────────────────────────────────────
- * Three sections down one canvas — Colors, Faces, Design files — and each one
- * OWNS everything you do to it:
+ * Three sections down one canvas — Design files, then Colors and Faces — and
+ * each one OWNS everything you do to it:
  *
- *  1. Colors are a wall of swatches with "Add color" on their own header.
- *     (`SwatchWall`, `BrandKitSection`)
- *  2. Faces are specimens set in themselves — or an honest "this device doesn't
- *     have it" plus the download — in one wrapping wall like the other two,
- *     with "Add face" on their own header. (`SpecimenWall`)
- *  3. Design files are a grid of LIVE previews on web, with the folders that
+ *  1. Design files are a grid of LIVE previews on web, with the folders that
  *     file them, the density toggle that shapes them, and the button that adds
  *     one, all inside that section. (`DesignGrid`, `FolderRail`)
+ *  2. Colors are a wall of swatches with "Add color" on their own header.
+ *     (`SwatchWall`, `BrandKitSection`)
+ *  3. Faces are specimens set in themselves — or an honest "this device doesn't
+ *     have it" plus the download — in one wrapping wall like the other two,
+ *     with "Add face" on their own header. (`SpecimenWall`)
+ *
+ * ── The files come first ────────────────────────────────────────────────────
+ * The brand kit led the page for as long as this tab has existed, and it was
+ * the wrong lead: the kit is two rows of reference that barely change, while
+ * the library is the thing that grows, the thing a search is aimed at, and the
+ * thing somebody opened this tab to get. Founder's call, and the right one —
+ * a volunteer at 11pm wants the flyer template, and the red is what they need
+ * one scroll later, once they are making something.
  *
  * Editing lives in the viewer panel a tile opens, so no row anywhere carries a
  * pencil and a bin. (`Inspector`)
@@ -188,8 +196,8 @@ export function MarketingDesignsView() {
   return (
     <Screen maxWidth={1240} scrollRef={scrollRef}>
       <Text className="mt-1 max-w-2xl text-sm leading-5 text-muted">
-        Our colors, our faces, and every design file — open to everyone in the
-        org.
+        Every design file, and the colors and faces they're made of — open to
+        everyone in the org.
         {canEdit
           ? " You can edit all of it."
           : " Copy a hex or open a design; the marketing team keeps it up to date."}
@@ -199,9 +207,9 @@ export function MarketingDesignsView() {
 
       <KitCensus
         items={[
+          { key: "files", label: "Design files", icon: "image", count: designs.length },
           { key: "colors", label: "Colors", icon: "droplet", count: palette.length },
           { key: "fonts", label: "Faces", icon: "type", count: fonts.length },
-          { key: "files", label: "Design files", icon: "image", count: designs.length },
         ]}
         onJump={jumpTo}
       />
@@ -220,32 +228,10 @@ export function MarketingDesignsView() {
         </Card>
       ) : null}
 
-      <View onLayout={measure("colors")}>
-        <BrandColorsSection
-          palette={visibleColors(palette, query)}
-          total={palette.length}
-          canEdit={canEdit}
-          onOpen={(color: BrandColor) =>
-            setInspect({ kind: "color", id: color.id })
-          }
-          onNew={() => setInspect({ kind: "color", id: null })}
-        />
-      </View>
-
-      <View onLayout={measure("fonts")}>
-        <BrandFontsSection
-          fonts={visibleFonts(fonts, query)}
-          total={fonts.length}
-          canEdit={canEdit}
-          onOpen={(font: BrandFont) => setInspect({ kind: "font", id: font.id })}
-          onNew={() => setInspect({ kind: "font", id: null })}
-        />
-      </View>
-
-      <View onLayout={measure("files")}>
+      <View onLayout={measure("files")} className="mt-1">
         {/* Everything this section does to itself is on its own header: how
-            dense the tiles are, and adding one. Folders are the rail below,
-            which carries its own. */}
+            dense the tiles are, and adding one. Folders are the rail beside the
+            grid, carrying their own. */}
         <SectionHeader
           wrap
           title="Design files"
@@ -323,6 +309,28 @@ export function MarketingDesignsView() {
             )}
           </View>
         </View>
+      </View>
+
+      <View onLayout={measure("colors")}>
+        <BrandColorsSection
+          palette={visibleColors(palette, query)}
+          total={palette.length}
+          canEdit={canEdit}
+          onOpen={(color: BrandColor) =>
+            setInspect({ kind: "color", id: color.id })
+          }
+          onNew={() => setInspect({ kind: "color", id: null })}
+        />
+      </View>
+
+      <View onLayout={measure("fonts")}>
+        <BrandFontsSection
+          fonts={visibleFonts(fonts, query)}
+          total={fonts.length}
+          canEdit={canEdit}
+          onOpen={(font: BrandFont) => setInspect({ kind: "font", id: font.id })}
+          onNew={() => setInspect({ kind: "font", id: null })}
+        />
       </View>
 
       {/* One line, one place, both widths — the old rail said this on a desk

@@ -22,10 +22,10 @@
  *
  * ── A design with no thumbnail is not a grey box ────────────────────────────
  * It gets a typographic tile painted from the ORG'S palette — the same colors
- * the swatch wall two sections up is showing — with the design's initials on
- * it. `designPreview` picks the paint deterministically so a tile doesn't
- * change color as the list reorders. A grey rectangle says "broken"; a red one
- * with "LT" on it says "this is ours and nobody has thumbnailed it yet".
+ * the swatch wall further down the page is showing — with the design's
+ * initials on it. `designPreview` picks the paint deterministically so a tile
+ * doesn't change color as the list reorders. A grey rectangle says "broken"; a
+ * red one with "LT" on it says "this is ours and nobody has thumbnailed it".
  *
  * ── Grid and list are the same rows ─────────────────────────────────────────
  * The toggle changes density, not content: the list is for a folder of forty

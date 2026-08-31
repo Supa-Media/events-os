@@ -370,7 +370,7 @@ export function initialsFor(title: string): string {
 /**
  * The placeholder's ground, chosen from the ORG'S OWN palette rather than from
  * a grey — a library of files nobody has thumbnailed should still look like the
- * brand, and the swatch wall two sections up is where these colors came from.
+ * brand, and the swatch wall further down the page is where these came from.
  *
  * Deterministic in the design's id, so a tile does not change color on every
  * render (or, worse, every time the list reorders).
