@@ -23,14 +23,17 @@
  * collapse behind "History (N)" so this never competes for space with the
  * form above it.
  */
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import { useQuery } from "convex/react";
+import { useQueries, type RequestForQueries } from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { FINANCE_AUDIT_ACTION_LABELS } from "@events-os/shared";
 import { Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
+
+type TrailRow = FunctionReturnType<typeof api.finances.financeAuditTrail>[number];
 
 /** Rows at/below this count render directly — a collapsed toggle for 1-3
  *  lines would just be an extra tap to see almost nothing. */
@@ -53,14 +56,34 @@ export function TransactionHistoryCompact({
   transactionId: Id<"transactions">;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const rows = useQuery(api.finances.financeAuditTrail, {
-    subjectType: "transaction",
-    subjectId: transactionId,
-  });
+  // READ THROUGH `useQueries`, NEVER `useQuery`. This component used to say
+  // "the query silently returns `[]` rather than throwing — see its own doc
+  // comment", and trusted it. It wasn't true: the gate degraded on scope but
+  // THREW on rank, and the handler's empty-log early return hid that from
+  // every fixture. On a charge with any history at all — one attached
+  // receipt is enough — a cardholder opening the coding sheet had this strip
+  // throw during render, unwind to the root `ErrorBoundary`, and take the
+  // whole page (2026-08-31).
+  //
+  // The server now degrades as documented. This reads through `useQueries`
+  // anyway, because the claim above is the kind that goes stale silently and
+  // a decoration must never be able to cost the page. Same idiom, same
+  // reason, as `receiptSuggestions.ts` and `ReceiptViewerModal`.
+  const request = useMemo<RequestForQueries>(
+    () => ({
+      trail: {
+        query: api.finances.financeAuditTrail,
+        args: { subjectType: "transaction" as const, subjectId: transactionId },
+      },
+    }),
+    [transactionId],
+  );
+  const results = useQueries(request);
+  const raw = results.trail;
+  const rows = Array.isArray(raw) ? (raw as TrailRow[]) : undefined;
 
-  // Loading, FORBIDDEN (the query silently returns `[]` rather than
-  // throwing — see its own doc comment), or genuinely no history yet: render
-  // nothing rather than an empty "History" heading with nothing under it.
+  // Loading, refused, or genuinely no history yet: render nothing rather than
+  // an empty "History" heading with nothing under it.
   if (rows === undefined || rows.length === 0) return null;
 
   const recent = rows.slice(0, DISPLAY_LIMIT);

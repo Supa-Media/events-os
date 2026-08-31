@@ -11522,6 +11522,17 @@ async function requireReconcileTxn(
  * caller's own and isn't central (mirrors `requireReconcileTxn`'s own
  * chapter-mismatch branch, but a read path degrades to "nothing to show"
  * rather than a hard error).
+ *
+ * IT THROWS ON RANK, and that half is easy to miss precisely because the doc
+ * above and the `null` returns advertise a degrading read. The rejection is
+ * deliberate — "rejected (FORBIDDEN), not shown an empty list"
+ * (`tests/financeAuditLog.test.ts`) — so the burden sits with the CALLER: a
+ * member-facing surface that mounts a query gated this way must read it
+ * through `useQueries` and degrade, never `useQuery`, which throws during
+ * render and takes the whole page with it. `TransactionHistoryCompact` did
+ * exactly that on 2026-08-31, on the one screen whose entire audience is
+ * people below this rank, and the coding sheet died the moment it opened on
+ * a charge that had any history at all.
  */
 async function requireFinanceSubjectRead(
   ctx: QueryCtx,
@@ -11618,6 +11629,11 @@ export const financeAuditTrail = query({
           : (await ctx.db.get(args.subjectId as Id<"budgets">))?.chapterId) ??
       rows[0].chapterId;
     if (ownerChapterId == null) return [];
+    // THROWS for a caller below bookkeeper, and that is deliberate — "rejected
+    // (FORBIDDEN), not shown an empty list", pinned by
+    // `tests/financeAuditLog.test.ts`. The `null` arm below is the SCOPE
+    // mismatch only. Anything member-facing that mounts this must read it
+    // through `useQueries` and degrade (see `TransactionHistoryCompact`).
     const scope = await requireFinanceSubjectRead(ctx, ownerChapterId, "bookkeeper");
     if (scope == null) return [];
     const getPerson = nameCache(ctx, "people");
