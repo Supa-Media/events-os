@@ -13,6 +13,7 @@ import {
   buildShelves,
   countLabel,
   designMatches,
+  folderContents,
   designPreview,
   gridEmbeds,
   initialsFor,
@@ -28,6 +29,7 @@ import {
   resolveShelf,
   shelfContents,
   shelfLabel,
+  unpinnedItems,
   visibleColors,
   visibleDesigns,
   visibleFonts,
@@ -317,6 +319,59 @@ describe("shelfContents", () => {
   test("the search reaches colors and faces too, wherever they are filed", () => {
     const hit = shelfContents(KIT, KIT_FOLDERS, "f_colors", "times");
     expect(hit.fonts.map((f) => f.id)).toEqual(["t_times"]);
+  });
+});
+
+describe("folderContents", () => {
+  test("a pinned section shows its OWN things, not the whole library", () => {
+    // The library's search escapes the shelf on purpose; a section must not,
+    // or every pinned heading answers the same query with the same cards.
+    const easter = folderContents(KIT, KIT_FOLDERS, "f_easter", "poster");
+    expect(easter.designs.map((d) => d.id)).toEqual(["d_poster"]);
+
+    const kit = folderContents(KIT, KIT_FOLDERS, "f_colors", "poster");
+    expect(kit.designs).toEqual([]);
+    expect(itemCount(kit)).toBe(0);
+  });
+
+  test("no query is no filter — just the folder", () => {
+    const easter = folderContents(KIT, KIT_FOLDERS, "f_easter", "");
+    expect(itemCount(easter)).toBe(3);
+  });
+
+  test("a parent section includes its children's things", () => {
+    expect(
+      folderContents(LIBRARY, FOLDERS, "f_social", "").designs.map((d) => d.id),
+    ).toEqual(["d2", "d3"]);
+  });
+});
+
+describe("unpinnedItems", () => {
+  test("drops what a pinned folder is already showing, so nothing is drawn twice", () => {
+    const rest = unpinnedItems(KIT, KIT_FOLDERS);
+    // The red is in the pinned Colors folder, so the library's own wall skips
+    // it — the pinned section below is where it is drawn.
+    expect(rest.colors).toEqual([]);
+    // The poster and the face are only in the unpinned event folder.
+    expect(rest.designs.map((d) => d.id)).toEqual(["d_poster"]);
+    expect(rest.fonts.map((f) => f.id)).toEqual(["t_times"]);
+  });
+
+  test("nothing pinned means nothing is hidden", () => {
+    expect(unpinnedItems(LIBRARY, FOLDERS)).toBe(LIBRARY);
+  });
+
+  test("an item in a pinned AND an unpinned folder is left to the pinned section", () => {
+    const folders = [
+      folder("f_pin", "Colors", null, true),
+      folder("f_open", "Easter 2026"),
+    ];
+    const items = {
+      colors: [color("c", "PW Red", "#891d1a", ["f_pin", "f_open"])],
+      fonts: [],
+      designs: [],
+    };
+    expect(unpinnedItems(items, folders).colors).toEqual([]);
   });
 });
 

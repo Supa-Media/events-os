@@ -11,6 +11,14 @@
  * `FolderBody`, and an event folder holding a red, a face and four posters
  * renders through exactly the same path.
  *
+ * ── It draws on the landing view only ───────────────────────────────────────
+ * `DesignsView` renders these while you are standing on "Everything" and takes
+ * them down the moment you select a folder or type a search — one specific
+ * question deserves one answer, not the same cards repeated under every pinned
+ * heading. That is also why the library's own wall skips anything a pinned
+ * section is already showing: between the two halves, every item is drawn
+ * exactly once.
+ *
  * ── Its controls belong to it ───────────────────────────────────────────────
  * Add-into-this-folder and the folder's own settings sit on this header, not in
  * a page toolbar — the rule the rest of this tab follows. The gear opens the
@@ -37,9 +45,9 @@ export function FolderSection({
   total,
   palette,
   view,
+  live,
   canEdit,
   full,
-  searching,
   onAdd,
   onOpenFolder,
   onOpenColor,
@@ -53,10 +61,11 @@ export function FolderSection({
   total: number;
   palette: BrandColor[];
   view: "grid" | "list";
+  /** The page's one live-embed budget — see `DesignsView`. */
+  live: Set<string>;
   canEdit: boolean;
   /** Item kinds at their library-wide cap. */
   full: FolderItemKind[];
-  searching: boolean;
   onAdd: (kind: FolderItemKind) => void;
   onOpenFolder: () => void;
   onOpenColor: (color: BrandColor) => void;
@@ -93,23 +102,18 @@ export function FolderSection({
         items={items}
         palette={palette}
         view={view}
+        live={live}
         onOpenColor={onOpenColor}
         onOpenFont={onOpenFont}
         onOpenDesign={onOpenDesign}
         empty={
           <EmptyState
-            icon={searching ? "search" : "folder"}
-            title={
-              searching
-                ? `Nothing in ${folder.name} matches that`
-                : `${folder.name} is empty`
-            }
+            icon="folder"
+            title={`${folder.name} is empty`}
             message={
-              searching
-                ? "The search looks at the whole library, so it may be somewhere else."
-                : canEdit
-                  ? "A folder holds anything — a color, a face, a Canva link. Add the first thing."
-                  : "The marketing team hasn't put anything here yet."
+              canEdit
+                ? "A folder holds anything — a color, a face, a Canva link. Add the first thing."
+                : "The marketing team hasn't put anything here yet."
             }
           />
         }

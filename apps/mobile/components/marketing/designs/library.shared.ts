@@ -299,6 +299,67 @@ export function shelfContents(
   };
 }
 
+/**
+ * What one FOLDER holds, narrowed by the search box.
+ *
+ * The sibling of `shelfContents`, and the difference between them is the whole
+ * reason both exist. The library's search deliberately escapes the shelf you
+ * are standing on, because a person typing a filename is asking "where is
+ * this". A pinned section is not standing anywhere — it IS a folder, drawn
+ * because somebody pinned it — so answering a search with the whole library
+ * would draw the same matches under "Colors", under "Faces" and under "Easter
+ * 2026", which says nothing and repeats itself three times.
+ *
+ * So here the query narrows WITHIN the folder, and a section with no matches
+ * says so rather than borrowing somebody else's.
+ */
+export function folderContents(
+  items: LibraryItems,
+  folders: DesignFolder[],
+  folderId: string,
+  query: string,
+): LibraryItems {
+  const shown = new Set([
+    folderId,
+    ...folders.filter((f) => f.parentId === folderId).map((f) => f.id),
+  ]);
+  const inFolder = (item: FiledItem) =>
+    item.folderIds.some((id) => shown.has(id));
+  return {
+    colors: visibleColors(items.colors, query).filter(inFolder),
+    fonts: visibleFonts(items.fonts, query).filter(inFolder),
+    designs: visibleDesigns(items.designs, query).filter(inFolder),
+  };
+}
+
+/**
+ * Everything NO pinned folder holds — what the library shows when it is showing
+ * "Everything".
+ *
+ * Without this the default page draws the whole palette twice: once in the
+ * library's own wall and once in the pinned "Colors" section below it. A person
+ * seeing their four colors listed twice on one screen reasonably concludes the
+ * app has lost track of them.
+ *
+ * The pinned sections are the page's other half, so between them every item is
+ * still drawn exactly once — which is the property that makes the split honest
+ * rather than a filter that hides things.
+ */
+export function unpinnedItems(
+  items: LibraryItems,
+  folders: DesignFolder[],
+): LibraryItems {
+  const pinned = new Set(pinnedFolders(folders).map((f) => f.id));
+  if (pinned.size === 0) return items;
+  const loose = (item: FiledItem) =>
+    !item.folderIds.some((id) => pinned.has(id));
+  return {
+    colors: items.colors.filter(loose),
+    fonts: items.fonts.filter(loose),
+    designs: items.designs.filter(loose),
+  };
+}
+
 /** How many things a `LibraryItems` holds, across every kind. */
 export function itemCount(items: LibraryItems): number {
   return items.colors.length + items.fonts.length + items.designs.length;

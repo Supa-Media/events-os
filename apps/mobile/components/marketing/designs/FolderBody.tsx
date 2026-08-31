@@ -43,7 +43,7 @@ import {
   type BrandFont,
   type DesignAsset,
 } from "@events-os/shared";
-import { DesignList, DesignTile, liveEmbedIds } from "./DesignGrid";
+import { DesignList, DesignTile } from "./DesignGrid";
 import { Swatch } from "./Swatch";
 import { SpecimenCard } from "./Specimen";
 import type { LibraryItems } from "./library.shared";
@@ -52,6 +52,7 @@ export function FolderBody({
   items,
   palette,
   view,
+  live,
   onOpenColor,
   onOpenFont,
   onOpenDesign,
@@ -61,6 +62,11 @@ export function FolderBody({
   /** The whole palette, for painting design placeholders — not what's shown. */
   palette: BrandColor[];
   view: "grid" | "list";
+  /** Which designs may carry a live frame. Decided ONCE for the page by
+   *  `DesignsView`, because `GRID_EMBED_MAX` is a budget for the whole DOM and
+   *  a body that decided for itself would multiply it by the number of
+   *  sections on the page. */
+  live: Set<string>;
   onOpenColor: (color: BrandColor) => void;
   onOpenFont: (font: BrandFont) => void;
   onOpenDesign: (design: DesignAsset) => void;
@@ -84,7 +90,6 @@ export function FolderBody({
   // In list view the designs leave the wall; everything else stays in it.
   const listed = view === "list" && items.designs.length > 0;
   const tiles = listed ? [] : items.designs;
-  const live = liveEmbedIds(tiles);
   const hasWall = tiles.length + items.colors.length + fonts.length > 0;
 
   return (

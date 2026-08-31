@@ -171,8 +171,11 @@ export const DESIGN_FOLDER_NAME_MAX = 50;
 export const DESIGN_FOLDER_MAX_COUNT = 60;
 
 /**
- * What kinds of thing live in a folder. The order is the order a folder's
- * section draws them in: paint, then type, then the artwork made out of both.
+ * What kinds of thing live in a folder.
+ *
+ * Order is arbitrary here and deliberately not load-bearing — a folder's
+ * section draws design files first (the founder's call: the files are what
+ * somebody opened the tab to get), and `FolderBody` owns that.
  */
 export const FOLDER_ITEM_KINDS = ["color", "font", "design"] as const;
 export type FolderItemKind = (typeof FOLDER_ITEM_KINDS)[number];

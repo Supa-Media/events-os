@@ -105,14 +105,17 @@ import {
   SHELF_ALL,
   buildShelves,
   countLabel,
+  folderContents,
   isVirtualShelf,
   itemCount,
   pinnedFolders,
   resolveShelf,
   shelfContents,
   shelfLabel,
+  unpinnedItems,
   type ShelfId,
 } from "./designs/library.shared";
+import { liveEmbedIds } from "./designs/DesignGrid";
 
 /** Below this the folder rail becomes a strip of chips above the contents. */
 const FOLDER_COLUMN_MIN_WIDTH = 900;
@@ -159,13 +162,45 @@ export function MarketingDesignsView() {
 
   const shelves = buildShelves(folders, all);
   const activeShelf = resolveShelf(shelf, shelves);
-  const shown = shelfContents(all, folders, activeShelf, query);
   const searching = query.trim().length > 0;
   const activeFolder = isVirtualShelf(activeShelf)
     ? null
     : (folders.find((f) => f.id === activeShelf) ?? null);
-  const shelfTotal =
-    shelves.find((s) => s.id === activeShelf)?.count ?? itemCount(all);
+
+  // The pinned sections are the landing view's other half, so they show while
+  // you are standing on "Everything" and step aside the moment you ask for
+  // something specific: a folder's own contents, or a search. Leaving them up
+  // would answer one question with the same cards three times.
+  const landing = activeShelf === SHELF_ALL && !searching;
+  const sections = landing
+    ? pinnedFolders(folders).map((folder) => ({
+        folder,
+        items: folderContents(all, folders, folder.id, query),
+      }))
+    : [];
+
+  // On the landing view the library shows what no pinned section is already
+  // showing, so the palette is drawn once on the page rather than twice.
+  const browsing = landing ? unpinnedItems(all, folders) : all;
+  const shown = shelfContents(browsing, folders, activeShelf, query);
+  const shelfTotal = landing
+    ? itemCount(browsing)
+    : searching
+      ? // A search escapes the shelf (`shelfContents`), so the total it is a
+        // fraction OF is the whole library, not the folder you happened to be
+        // standing in — otherwise a match count reads "5 of 1".
+        itemCount(all)
+      : (shelves.find((s) => s.id === activeShelf)?.count ?? itemCount(all));
+
+  // ONE live-embed budget for the page, not one per section. `GRID_EMBED_MAX`
+  // exists to stop the tab mounting hundreds of authenticated frames in one
+  // DOM, and a cap applied per section would multiply by the number of pinned
+  // folders. Ordered the way the page draws them, so the frames that load are
+  // the ones nearest the top.
+  const live = liveEmbedIds([
+    ...shown.designs,
+    ...sections.flatMap((section) => section.items.designs),
+  ]);
 
   /** Kinds that can't take another row anywhere in the library. The Add menu
    *  drops them rather than offering a press the backend will refuse. */
@@ -276,9 +311,11 @@ export function MarketingDesignsView() {
             <Text className="text-xs text-faint">
               {searching
                 ? "Everything matching, across every folder"
-                : activeShelf === SHELF_ALL
-                  ? "Everything in the library"
-                  : `Folders / ${shelfLabel(activeShelf, shelves)}`}
+                : activeShelf !== SHELF_ALL
+                  ? `Folders / ${shelfLabel(activeShelf, shelves)}`
+                  : sections.length > 0
+                    ? "Everything that isn't in a pinned section below"
+                    : "Everything in the library"}
             </Text>
           </View>
 
@@ -286,6 +323,7 @@ export function MarketingDesignsView() {
             items={shown}
             palette={palette}
             view={view}
+            live={live}
             onOpenColor={openColor}
             onOpenFont={openFont}
             onOpenDesign={openDesign}
@@ -303,20 +341,20 @@ export function MarketingDesignsView() {
       </View>
 
       {/* ── Pinned folders, each its own section ─────────────────────────── */}
-      {pinnedFolders(folders).map((folder) => (
+      {sections.map(({ folder, items }) => (
         <FolderSection
           key={folder.id}
           folder={folder}
-          items={shelfContents(all, folders, folder.id, query)}
+          items={items}
           // The shelf count, not `folder.itemCount`: a pinned parent folder
           // draws its children's things too, so the total has to be of the set
           // actually on screen or the label reads "5 of 3".
           total={shelves.find((s) => s.id === folder.id)?.count ?? folder.itemCount}
           palette={palette}
           view={view}
+          live={live}
           canEdit={canEdit}
           full={full}
-          searching={searching}
           onAdd={(kind) => addTo(kind, folder.id)}
           onOpenFolder={() => setInspect({ kind: "folder", id: folder.id })}
           onOpenColor={openColor}
