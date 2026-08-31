@@ -254,7 +254,7 @@ export function FinishChargeSheetBody({
    *  population, not just the caller's own — pass `false`. */
   ownCharge: boolean;
   /** `chargeTodo`'s own verdict on this row — the SAME facts that picked the
-   *  row's badge and its "Finish"/"View" button, so the sheet that opens
+   *  row's badge and its "Code it"/"View" button, so the sheet that opens
    *  never disagrees with what the row just said. Deliberately not
    *  re-derived from `txn` in here: two independent readings of "is this
    *  actionable" is exactly how the row and the sheet drifted apart before.
@@ -1183,7 +1183,7 @@ export function FinishChargeSheet({
             <View className="flex-1 pr-3">
               <Text className="font-display text-lg text-ink">
                 {actionable
-                  ? "Finish this charge"
+                  ? "Code this charge"
                   : ((todo && SUMMARY_TITLE[todo.kind]) ??
                     "This charge is squared away")}
               </Text>

@@ -121,15 +121,26 @@ export function ChargeRow({
           />
         </Cell>
         <Cell width={110} align="right">
-          {/* Actionable rows get the primary "Finish" — they're asking for
-              something. Everything else gets a quiet "View": `ghost`'s text
-              is brand-red (`text-accent`), so every settled/in-review row
-              used to render in the same alarmed color as a row that
-              genuinely needed you (#founder feedback: "it says receipt
-              attached, but then Open — what is it for?"). `muted` is the
-              same shape with neutral text instead. */}
+          {/* SAY THE VERB THE EMAIL SAID. This button read "Finish" —
+              which is what you press AFTER doing something, not the way IN
+              to doing it. The chase email's own button says "Code it →"
+              (`cards.ts`), the badge one cell to the left says "Needs
+              coding", and then the only control on the row asked you to
+              finish a thing you had not been shown how to start. A
+              cardholder's report, 2026-08-31: "i don't know if i have the
+              ability to code this transaction from my side, I cant select
+              anything except for uploading the receipt" — the receipt cell
+              was the only thing on the row that named what it did, so it
+              read as the only thing she was allowed to do.
+
+              Everything else gets a quiet "View": `ghost`'s text is
+              brand-red (`text-accent`), so every settled/in-review row used
+              to render in the same alarmed color as a row that genuinely
+              needed you (#founder feedback: "it says receipt attached, but
+              then Open — what is it for?"). `muted` is the same shape with
+              neutral text instead. */}
           <Button
-            title={todo.actionable ? "Finish" : "View"}
+            title={todo.actionable ? "Code it" : "View"}
             variant={todo.actionable ? "primary" : "muted"}
             size="sm"
             onPress={onOpen}
@@ -169,7 +180,7 @@ export function ChargeRow({
  * fixed at 110 + 185 + 130 + 110 = 535px before gaps and padding, inside a
  * `Table` that is `overflow-hidden` with no horizontal scroller — so on a
  * 390px viewport the "still needs" badge, the receipt control and the
- * primary Finish button were all painted past the right edge and clipped.
+ * primary action button were all painted past the right edge and clipped.
  *
  * That is the whole failure of `/code`, because `/code` is a link sent by
  * email and email is opened on a phone: the one page built for volunteers
@@ -224,9 +235,10 @@ export function ChargeCard({
         />
       </View>
 
-      {/* Full width, always reachable — the point of this component. */}
+      {/* Full width, always reachable — the point of this component. Same
+          verb as the row and the email that sent you here; see `ChargeRow`. */}
       <Button
-        title={todo.actionable ? "Finish this charge" : "View"}
+        title={todo.actionable ? "Code this charge" : "View"}
         variant={todo.actionable ? "primary" : "muted"}
         size="sm"
         className="w-full"

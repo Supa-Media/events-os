@@ -257,7 +257,7 @@ function MyCharges() {
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
   const { run, toast, dismiss } = useActionRunner();
   // Below this, the table's fixed cells (535px of them) overflow a phone and
-  // the Finish button is clipped off the right edge — see `ChargeCard`. This
+  // the primary action button is clipped off the right edge — see `ChargeCard`. This
   // page is opened from an email, so the phone IS the primary device.
   const narrow = useWindowDimensions().width < 640;
 
@@ -406,7 +406,7 @@ function MyCharges() {
         ) : narrow ? (
           // PHONE: stacked cards. The table below cannot fit here — its fixed
           // cells alone are 535px — and `Table` clips rather than scrolls, so
-          // the Finish button simply wasn't reachable on the device this
+          // the primary action button simply wasn't reachable on the device this
           // page's emailed link is opened on.
           <View>
             {visible.map((r) => (
