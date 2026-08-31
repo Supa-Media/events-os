@@ -7,36 +7,47 @@
  * one person's head, the templates were findable only by asking, and a
  * volunteer making a flyer at 11pm guessed.
  *
- * ── Why this screen was rebuilt ─────────────────────────────────────────────
- * The first cut answered all three questions and looked like a settings page
- * doing it: every element was a line of text with a pencil beside it. The
- * founder's read was exact — "what's the point of this page? it just looks like
- * an editor, but no viewer. I was expecting a work station where people can
- * view and edit elements here and folders and stuff." That is the right
- * complaint about the one room in the OS whose entire subject is what things
- * LOOK like. The approved redesign changes five things:
+ * ── What the page is ────────────────────────────────────────────────────────
+ * Three sections down one canvas — Colors, Faces, Design files — and each one
+ * OWNS everything you do to it:
  *
- *  1. Colors are a wall of swatches, not a table of hexes. (`SwatchWall`)
+ *  1. Colors are a wall of swatches with "Add color" on their own header.
+ *     (`SwatchWall`, `BrandKitSection`)
  *  2. Faces are specimens set in themselves — or an honest "this device doesn't
- *     have it" plus the download. (`SpecimenWall`, `designs/fontSpecimen.shared`)
- *  3. Files are a grid of LIVE previews on web — every Canva/Figma tile
- *     renders its real embed, per the founder's later call ("just render the
- *     iframe for all of them"); stills and stored thumbnails remain the
- *     fallback and the native answer. (`DesignGrid`, `DesignInspector`)
- *  4. Folders are navigated from a rail rather than scrolled past, and an empty
- *     shelf asks for its first file instead of reporting a zero. (`FolderRail`)
- *  5. Editing moved into the viewer panel, so the browse surface stays a browse
- *     surface. No row anywhere carries a pencil and a bin. (`Inspector`)
+ *     have it" plus the download — in one wrapping wall like the other two,
+ *     with "Add face" on their own header. (`SpecimenWall`)
+ *  3. Design files are a grid of LIVE previews on web, with the folders that
+ *     file them, the density toggle that shapes them, and the button that adds
+ *     one, all inside that section. (`DesignGrid`, `FolderRail`)
+ *
+ * Editing lives in the viewer panel a tile opens, so no row anywhere carries a
+ * pencil and a bin. (`Inspector`)
+ *
+ * ── Why the page toolbar is only a search box now ───────────────────────────
+ * The first cut of the workstation put a page-wide toolbar at the top holding
+ * search, the grid/list toggle, "New folder" and "Add design" — and hung the
+ * folder rail off the left edge of the WHOLE page, level with the colors. So
+ * every control for the design files sat between one and three screens above
+ * the design files, and the folder list was a column that had nothing to do
+ * with the two sections it stood beside. The founder's read: "the design files
+ * and folders are disjointed from the actual controls to handle and add to
+ * them and change them."
+ *
+ * The rule the page now follows is the obvious one: a control lives in the
+ * section it acts on. What stayed at the top is the one thing that genuinely
+ * acts on the whole page — the search box, which matches colors, faces and
+ * files at once — plus a three-pill census that jumps to each section, which
+ * is what the old rail's top group was for.
  *
  * ── Everyone can read it. That is the feature ───────────────────────────────
  * `marketingDesigns.library` is readable by anyone signed in and there is no
  * view power to hold. `canEdit` only decides whether the edit affordances
  * render; a volunteer with no marketing power at all gets the full library,
- * every copy button and every "Open in Canva" — no toolbar Add buttons, no
- * folder settings, and a viewer panel with no fields and no footer beyond a
- * copy. There is deliberately NO lock screen here, unlike `SiteView`: on that
- * screen there is nothing worth reading that the public page doesn't show
- * better, and on this one the reading IS the point.
+ * every copy button and every "Open in Canva" — no Add buttons, no folder
+ * controls, and a viewer panel with no fields and no footer beyond a copy.
+ * There is deliberately NO lock screen here, unlike `SiteView`: on that screen
+ * there is nothing worth reading that the public page doesn't show better, and
+ * on this one the reading IS the point.
  *
  * ── Filing, and the drag that isn't ─────────────────────────────────────────
  * The mockup files a design by dragging its tile onto a folder. This app is one
@@ -54,7 +65,7 @@
  * people re-upload a file they already have. `visibleDesigns` owns that rule
  * and a test pins it.
  */
-import { ComponentRef, useRef, useState } from "react";
+import { useRef, useState } from "react";
 import {
   Pressable,
   Text,
@@ -81,6 +92,7 @@ import {
   Screen,
   SectionHeader,
   ToastView,
+  type IconName,
 } from "../ui";
 import { colors } from "../../lib/theme";
 import { useActionRunner } from "../../lib/useActionToast";
@@ -94,6 +106,7 @@ import { FolderInspector } from "./designs/FolderInspector";
 import {
   SHELF_ALL,
   buildShelves,
+  countLabel,
   isVirtualShelf,
   resolveShelf,
   shelfLabel,
@@ -103,9 +116,8 @@ import {
   type ShelfId,
 } from "./designs/library.shared";
 
-/** Below this the rail becomes a strip of chips above the canvas. Matches the
- *  mockup's own breakpoint. */
-const RAIL_MIN_WIDTH = 900;
+/** Below this the folder rail becomes a strip of chips above the grid. */
+const FOLDER_COLUMN_MIN_WIDTH = 900;
 
 /** What the viewer panel is showing. `id: null` = a new one of that thing. */
 type Inspect =
@@ -124,7 +136,7 @@ export function MarketingDesignsView() {
     | undefined;
 
   const { run, toast, dismiss } = useActionRunner();
-  const wide = useWindowDimensions().width >= RAIL_MIN_WIDTH;
+  const wide = useWindowDimensions().width >= FOLDER_COLUMN_MIN_WIDTH;
 
   const [query, setQuery] = useState("");
   const [view, setView] = useState<"grid" | "list">("grid");
@@ -135,21 +147,22 @@ export function MarketingDesignsView() {
    *  is not one. Same pattern as `MailingListView`. */
   const [notice, setNotice] = useState<string | null>(null);
 
-  // The rail is a table of contents for one scrolling canvas, so it needs the
-  // offsets of the three sections. Same arrangement `project/[id]` uses to jump
-  // to its money section: the scroller belongs to `Screen`, and which offset to
-  // scroll to is something only this page knows.
+  // The census pills are a table of contents for one scrolling canvas, so they
+  // need the offsets of the three sections. Same arrangement `project/[id]`
+  // uses to jump to its money section: the scroller belongs to `Screen`, and
+  // which offset to scroll to is something only this page knows. Each section
+  // is a direct child of the page column, so its measured `y` is the offset.
   const scrollRef = useRef<ScrollView>(null);
-  const shellY = useRef(0);
-  const canvasY = useRef(0);
   const sectionY = useRef<Record<string, number>>({});
+  const measure = (key: string) => (event: {
+    nativeEvent: { layout: { y: number } };
+  }) => {
+    sectionY.current[key] = event.nativeEvent.layout.y;
+  };
   const jumpTo = (key: string) => {
     const y = sectionY.current[key];
     if (y === undefined) return;
-    scrollRef.current?.scrollTo({
-      y: Math.max(0, shellY.current + canvasY.current + y - 12),
-      animated: true,
-    });
+    scrollRef.current?.scrollTo({ y: Math.max(0, y - 12), animated: true });
   };
 
   if (library === undefined) return <Screen loading />;
@@ -168,6 +181,10 @@ export function MarketingDesignsView() {
     setInspect({ kind: "design", id: design?.id ?? null });
   }
 
+  const permissionLine = canEdit
+    ? "Anyone signed in can open the kit. You hold a marketing seat, so you can change it — everything editable lives in the panel a tile opens."
+    : "Anyone signed in can open the kit. Changing it needs a marketing seat.";
+
   return (
     <Screen maxWidth={1240} scrollRef={scrollRef}>
       <Text className="mt-1 max-w-2xl text-sm leading-5 text-muted">
@@ -178,16 +195,15 @@ export function MarketingDesignsView() {
           : " Copy a hex or open a design; the marketing team keeps it up to date."}
       </Text>
 
-      <Toolbar
-        query={query}
-        setQuery={setQuery}
-        view={view}
-        setView={setView}
-        canEdit={canEdit}
-        canAddFolder={folders.length < DESIGN_FOLDER_MAX_COUNT}
-        canAddDesign={designs.length < DESIGN_MAX_COUNT}
-        onNewFolder={() => setInspect({ kind: "folder", id: null })}
-        onNewDesign={() => openDesign(null)}
+      <SearchField query={query} setQuery={setQuery} />
+
+      <KitCensus
+        items={[
+          { key: "colors", label: "Colors", icon: "droplet", count: palette.length },
+          { key: "fonts", label: "Faces", icon: "type", count: fonts.length },
+          { key: "files", label: "Design files", icon: "image", count: designs.length },
+        ]}
+        onJump={jumpTo}
       />
 
       {notice ? (
@@ -204,105 +220,80 @@ export function MarketingDesignsView() {
         </Card>
       ) : null}
 
-      <View
-        onLayout={(e) => {
-          shellY.current = e.nativeEvent.layout.y;
-        }}
-        className={wide ? "flex-row items-start gap-6" : ""}
-      >
-        {/* On a desk the rail is a column beside the canvas. On a phone it
-            becomes a strip of chips, and it moves DOWN to sit directly above
-            the grid it filters — folder chips at the top of the page, above the
-            colors, would be navigation for a section you can't see yet. */}
-        {wide ? (
+      <View onLayout={measure("colors")}>
+        <BrandColorsSection
+          palette={visibleColors(palette, query)}
+          total={palette.length}
+          canEdit={canEdit}
+          onOpen={(color: BrandColor) =>
+            setInspect({ kind: "color", id: color.id })
+          }
+          onNew={() => setInspect({ kind: "color", id: null })}
+        />
+      </View>
+
+      <View onLayout={measure("fonts")}>
+        <BrandFontsSection
+          fonts={visibleFonts(fonts, query)}
+          total={fonts.length}
+          canEdit={canEdit}
+          onOpen={(font: BrandFont) => setInspect({ kind: "font", id: font.id })}
+          onNew={() => setInspect({ kind: "font", id: null })}
+        />
+      </View>
+
+      <View onLayout={measure("files")}>
+        {/* Everything this section does to itself is on its own header: how
+            dense the tiles are, and adding one. Folders are the rail below,
+            which carries its own. */}
+        <SectionHeader
+          wrap
+          title="Design files"
+          count={countLabel(shown.length, designs.length)}
+          right={
+            <View className="flex-row items-center gap-2">
+              <View className="flex-row rounded-pill bg-sunken p-0.5">
+                <ViewToggle
+                  label="Grid"
+                  icon="grid"
+                  active={view === "grid"}
+                  onPress={() => setView("grid")}
+                />
+                <ViewToggle
+                  label="List"
+                  icon="list"
+                  active={view === "list"}
+                  onPress={() => setView("list")}
+                />
+              </View>
+              {canEdit ? (
+                <Button
+                  title="Add design"
+                  icon="plus"
+                  size="sm"
+                  disabled={designs.length >= DESIGN_MAX_COUNT}
+                  onPress={() => openDesign(null)}
+                />
+              ) : null}
+            </View>
+          }
+        />
+
+        <View className={wide ? "flex-row items-start gap-6" : ""}>
           <FolderRail
             shelves={shelves}
             activeShelf={activeShelf}
             onSelect={setShelf}
-            narrow={false}
-            jumps={[
-              { key: "colors", label: "Colors", icon: "droplet", onPress: () => jumpTo("colors") },
-              { key: "fonts", label: "Faces", icon: "type", onPress: () => jumpTo("fonts") },
-              { key: "files", label: "Design files", icon: "image", onPress: () => jumpTo("files") },
-            ]}
-            footnote={
-              canEdit
-                ? "Anyone signed in can open the kit. You hold a marketing seat, so you can change it — everything editable lives in the panel a tile opens."
-                : "Anyone signed in can open the kit. Changing it needs a marketing seat."
+            narrow={!wide}
+            canEdit={canEdit}
+            canAddFolder={folders.length < DESIGN_FOLDER_MAX_COUNT}
+            onNewFolder={() => setInspect({ kind: "folder", id: null })}
+            onOpenFolder={(folderId) =>
+              setInspect({ kind: "folder", id: folderId })
             }
           />
-        ) : null}
 
-        <View
-          className="min-w-0 flex-1"
-          onLayout={(e) => {
-            canvasY.current = e.nativeEvent.layout.y;
-          }}
-        >
-          <View
-            onLayout={(e) => {
-              sectionY.current.colors = e.nativeEvent.layout.y;
-            }}
-          >
-            <BrandColorsSection
-              palette={visibleColors(palette, query)}
-              total={palette.length}
-              canEdit={canEdit}
-              onOpen={(color: BrandColor) =>
-                setInspect({ kind: "color", id: color.id })
-              }
-              onNew={() => setInspect({ kind: "color", id: null })}
-            />
-          </View>
-
-          <View
-            onLayout={(e) => {
-              sectionY.current.fonts = e.nativeEvent.layout.y;
-            }}
-          >
-            <BrandFontsSection
-              fonts={visibleFonts(fonts, query)}
-              total={fonts.length}
-              canEdit={canEdit}
-              onOpen={(font: BrandFont) =>
-                setInspect({ kind: "font", id: font.id })
-              }
-              onNew={() => setInspect({ kind: "font", id: null })}
-            />
-          </View>
-
-          <View
-            onLayout={(e) => {
-              sectionY.current.files = e.nativeEvent.layout.y;
-            }}
-          >
-            <SectionHeader
-              title="Design files"
-              count={shown.length}
-              right={
-                canEdit && activeFolder ? (
-                  <Button
-                    title="Folder settings"
-                    icon="settings"
-                    size="sm"
-                    variant="ghost"
-                    onPress={() =>
-                      setInspect({ kind: "folder", id: activeFolder.id })
-                    }
-                  />
-                ) : undefined
-              }
-            />
-
-            {wide ? null : (
-              <FolderRail
-                shelves={shelves}
-                activeShelf={activeShelf}
-                onSelect={setShelf}
-                narrow
-              />
-            )}
-
+          <View className="min-w-0 flex-1">
             <View className="mb-3 flex-row items-center gap-1.5">
               <Icon name="folder" size={13} color={colors.faint} />
               <Text className="text-xs text-faint">
@@ -330,20 +321,15 @@ export function MarketingDesignsView() {
                 onNewDesign={() => openDesign(null)}
               />
             )}
-
-            {/* The rail carries this line on a desk; on a phone the rail is a
-                strip of chips with no room for it, so it lands here. Who may
-                change the kit is worth saying on both. */}
-            {wide ? null : (
-              <Text className="mt-4 text-2xs leading-4 text-faint">
-                {canEdit
-                  ? "Anyone signed in can open the kit. You hold a marketing seat, so you can change it — everything editable lives in the panel a tile opens."
-                  : "Anyone signed in can open the kit. Changing it needs a marketing seat."}
-              </Text>
-            )}
           </View>
         </View>
       </View>
+
+      {/* One line, one place, both widths — the old rail said this on a desk
+          and the page said it again under the grid on a phone. */}
+      <Text className="mt-8 max-w-2xl border-t border-border pt-4 text-2xs leading-4 text-faint">
+        {permissionLine}
+      </Text>
 
       {inspect?.kind === "color" ? (
         <ColorInspector
@@ -409,94 +395,86 @@ export function MarketingDesignsView() {
   );
 }
 
-// ── The toolbar ──────────────────────────────────────────────────────────────
+// ── The two page-wide controls ───────────────────────────────────────────────
 
 /**
- * Search, density, and the two "add" affordances.
+ * The search box — the one control that genuinely acts on the whole page, so
+ * the one control that stays at the top of it. It matches colors, faces and
+ * files at once.
  *
- * The search box is built here rather than with `TextField` because a labelled
- * form row is the wrong shape in a toolbar — it would add a heading and 12px of
- * margin to a control whose whole job is to be a slot you type into.
+ * Built here rather than with `TextField` because a labelled form row is the
+ * wrong shape for a search slot — it would add a heading and 12px of margin to
+ * a control whose whole job is to be a box you type into.
  */
-function Toolbar({
+function SearchField({
   query,
   setQuery,
-  view,
-  setView,
-  canEdit,
-  canAddFolder,
-  canAddDesign,
-  onNewFolder,
-  onNewDesign,
 }: {
   query: string;
   setQuery: (next: string) => void;
-  view: "grid" | "list";
-  setView: (next: "grid" | "list") => void;
-  canEdit: boolean;
-  canAddFolder: boolean;
-  canAddDesign: boolean;
-  onNewFolder: () => void;
-  onNewDesign: () => void;
 }) {
   return (
-    <View className="mb-5 mt-4 flex-row flex-wrap items-center gap-2">
-      <View className="min-w-[180px] flex-1 flex-row items-center gap-2 rounded-pill border border-border bg-raised px-3.5 py-2">
-        <Icon name="search" size={14} color={colors.faint} />
-        <TextInput
-          value={query}
-          onChangeText={setQuery}
-          placeholder="Search the kit"
-          placeholderTextColor={colors.faint}
-          accessibilityLabel="Search the kit"
-          className="flex-1 text-sm text-ink"
-        />
-        {query.length > 0 ? (
-          <Pressable
-            onPress={() => setQuery("")}
-            hitSlop={8}
-            accessibilityRole="button"
-            accessibilityLabel="Clear the search"
-          >
-            <Icon name="x" size={14} color={colors.muted} />
-          </Pressable>
-        ) : null}
-      </View>
-
-      <View className="flex-row rounded-pill bg-sunken p-0.5">
-        <ViewToggle
-          label="Grid"
-          icon="grid"
-          active={view === "grid"}
-          onPress={() => setView("grid")}
-        />
-        <ViewToggle
-          label="List"
-          icon="list"
-          active={view === "list"}
-          onPress={() => setView("list")}
-        />
-      </View>
-
-      {canEdit ? (
-        <>
-          <Button
-            title="New folder"
-            icon="folder-plus"
-            size="sm"
-            variant="ghost"
-            disabled={!canAddFolder}
-            onPress={onNewFolder}
-          />
-          <Button
-            title="Add design"
-            icon="plus"
-            size="sm"
-            disabled={!canAddDesign}
-            onPress={onNewDesign}
-          />
-        </>
+    <View className="mt-4 flex-row items-center gap-2 rounded-pill border border-border bg-raised px-3.5 py-2">
+      <Icon name="search" size={14} color={colors.faint} />
+      <TextInput
+        value={query}
+        onChangeText={setQuery}
+        placeholder="Search the kit — colors, faces and files at once"
+        placeholderTextColor={colors.faint}
+        accessibilityLabel="Search the kit"
+        className="flex-1 text-sm text-ink"
+      />
+      {query.length > 0 ? (
+        <Pressable
+          onPress={() => setQuery("")}
+          hitSlop={8}
+          accessibilityRole="button"
+          accessibilityLabel="Clear the search"
+        >
+          <Icon name="x" size={14} color={colors.muted} />
+        </Pressable>
       ) : null}
+    </View>
+  );
+}
+
+/**
+ * What's in the kit, and a way down to it.
+ *
+ * Replaces the old left rail's "Brand kit" group, which was navigation printed
+ * beside the section it pointed at. Three pills under the search box: each one
+ * says how many of that thing exist — the census a person opening the tab
+ * actually wants — and jumps to its section. The counts are of the WHOLE kit,
+ * not of what a search left standing; each section header carries the "2 of 4"
+ * when something is narrowing it.
+ */
+function KitCensus({
+  items,
+  onJump,
+}: {
+  items: { key: string; label: string; icon: IconName; count: number }[];
+  onJump: (key: string) => void;
+}) {
+  return (
+    <View className="mt-3 flex-row flex-wrap gap-2">
+      {items.map((item) => (
+        <Pressable
+          key={item.key}
+          onPress={() => onJump(item.key)}
+          accessibilityRole="button"
+          accessibilityLabel={`${item.count} ${item.label.toLowerCase()} — jump to them`}
+          className="flex-row items-center gap-2 rounded-pill border border-border bg-raised px-3 py-1.5 web:hover:border-border-strong"
+        >
+          <Icon name={item.icon} size={13} color={colors.muted} />
+          <Text className="text-sm text-muted">{item.label}</Text>
+          <Text
+            className="text-xs font-semibold text-ink"
+            style={{ fontVariant: ["tabular-nums"] }}
+          >
+            {item.count}
+          </Text>
+        </Pressable>
+      ))}
     </View>
   );
 }

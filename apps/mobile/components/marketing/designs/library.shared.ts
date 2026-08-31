@@ -223,6 +223,14 @@ export function visibleFonts<T extends { name: string; notes: string | null }>(
   return fonts.filter((f) => contains(f.name, q) || contains(f.notes, q));
 }
 
+/**
+ * "4", or "2 of 4" while a search or a folder is narrowing a wall — so a
+ * filtered section never reads as a section that lost its rows.
+ */
+export function countLabel(shown: number, total: number): string {
+  return shown === total ? String(total) : `${shown} of ${total}`;
+}
+
 // ── Pickers ──────────────────────────────────────────────────────────────────
 
 /**

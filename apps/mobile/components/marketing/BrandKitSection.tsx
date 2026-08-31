@@ -26,23 +26,30 @@
  * to look right") — a brand kit behind a permission is a brand kit people work
  * around, which produces the exact inconsistency it exists to prevent.
  *
- * ── Faces are grouped, colors are not ──────────────────────────────────────
- * A color list is answered by scanning; a font list is answered by a question
- * ("what do I set a headline in?") that the role IS. So faces group under
- * `BRAND_FONT_ROLE_LABELS` and colors stay one ordered list — the order being
- * the team's own idea of primary-first, which is why it is reorderable at all
- * (from the panel now, not from the tile).
+ * ── One wall per section, in role order ─────────────────────────────────────
+ * Faces used to be one sub-heading per role with its own wall under it. With
+ * one face per role — which is the normal case — that drew a heading and a
+ * single card, over and over: colors and files flowed across the page and
+ * faces marched down it, for no reason a reader could see. The founder's read
+ * was exactly that: "colors and designs are side by side, but they are
+ * vertically stacked for faces."
+ *
+ * So faces are ONE wrapping wall like the other two, ordered by
+ * `BRAND_FONT_ROLES` so the roles still group, and each card keeps the role
+ * pill that the sub-heading was there to supply. Nothing is lost: the question
+ * a font list answers ("what do I set a headline in?") is answered on the card
+ * itself, and now four faces read as four faces instead of four sections.
  */
 import { Text, View } from "react-native";
 import {
   BRAND_COLOR_MAX_COUNT,
   BRAND_FONT_MAX_COUNT,
   BRAND_FONT_ROLES,
-  BRAND_FONT_ROLE_LABELS,
   type BrandColor,
   type BrandFont,
 } from "@events-os/shared";
 import { Button, Card, SectionHeader } from "../ui";
+import { countLabel } from "./designs/library.shared";
 import { SwatchWall } from "./designs/SwatchWall";
 import { SpecimenWall } from "./designs/SpecimenWall";
 
@@ -113,10 +120,11 @@ export function BrandFontsSection({
   onOpen: (font: BrandFont) => void;
   onNew: () => void;
 }) {
-  const groups = BRAND_FONT_ROLES.map((role) => ({
-    role,
-    rows: fonts.filter((f) => f.role === role),
-  })).filter((g) => g.rows.length > 0);
+  // Role order, one wall: the pill on each card names the role, so the wall
+  // still reads headlines-first without a heading breaking every row.
+  const ordered = BRAND_FONT_ROLES.flatMap((role) =>
+    fonts.filter((f) => f.role === role),
+  );
 
   return (
     <View>
@@ -136,7 +144,7 @@ export function BrandFontsSection({
           ) : undefined
         }
       />
-      {groups.length === 0 ? (
+      {ordered.length === 0 ? (
         <Card padding="md">
           <Text className="text-sm text-muted">
             {total === 0
@@ -148,25 +156,13 @@ export function BrandFontsSection({
         </Card>
       ) : (
         <>
-          {groups.map((group) => (
-            <View key={group.role} className="mb-4">
-              <Text className="mb-2 text-2xs font-bold uppercase tracking-wider text-muted">
-                {BRAND_FONT_ROLE_LABELS[group.role]}
-              </Text>
-              <SpecimenWall fonts={group.rows} onOpen={onOpen} />
-            </View>
-          ))}
-          <Text className="text-2xs text-faint">
-            Each card is set in the face it names, where this device has it.
+          <SpecimenWall fonts={ordered} onOpen={onOpen} />
+          <Text className="mt-2 text-2xs text-faint">
+            Each card is set in the face it names, where this device has it —
+            and says what it's for.
           </Text>
         </>
       )}
     </View>
   );
-}
-
-/** "4", or "2 of 4" while a search is narrowing the wall — so a filtered
- *  section never reads as a section that lost its rows. */
-function countLabel(shown: number, total: number): string {
-  return shown === total ? String(total) : `${shown} of ${total}`;
 }
