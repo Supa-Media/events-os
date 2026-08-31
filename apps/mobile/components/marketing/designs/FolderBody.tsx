@@ -7,20 +7,33 @@
  * pinned, so it has to draw exactly the way "Easter 2026" draws, or the two
  * would be different kinds of thing again.
  *
+ * ── ONE WALL, NOT A ROW PER KIND ────────────────────────────────────────────
+ * Every card — a design tile, a swatch, a specimen — goes into a single
+ * wrapping wall, in that order, and the line fills before it breaks.
+ *
+ * The first cut of this gave each kind its own labelled block. In a mixed
+ * folder holding one of each, that drew three rows of one card with the page
+ * empty to the right of every one of them, which is exactly what the founder
+ * saw: "PLEASE put these items side by side, I hate all the ugly unused empty
+ * space." A folder of three things should read as three things.
+ *
+ * The kinds keep their ORDER inside the wall — files, then paint, then type —
+ * so a folder still reads files-first, and the one-line count above it says
+ * what the labels used to. Nothing is lost but the whitespace.
+ *
  * ── Files, then paint, then type ────────────────────────────────────────────
- * The order is deliberate and it is the founder's: the design files lead. They
+ * That order is deliberate and it is the founder's: the design files lead. They
  * are what grows, what a search is aimed at, and what somebody opened the tab
  * to get; the color and the face are what you need one scroll later, once you
- * are making something. Holding that order INSIDE the folder body means it
- * holds everywhere at once — in the library, in the Colors section, and in a
- * mixed event folder.
+ * are making something. Holding it INSIDE the folder body means it holds
+ * everywhere at once — in the library, in the Colors section, and in a mixed
+ * event folder.
  *
- * ── Labels appear only when they carry information ──────────────────────────
- * A folder holding one kind of thing gets no sub-headings: a wall of swatches
- * under a heading that says "Colors", inside a section already called Colors,
- * is the page saying the same word three times. A MIXED folder gets them,
- * because there the label is the only thing that says where one kind ends and
- * the next begins.
+ * ── The list view is the one thing that can't join the wall ─────────────────
+ * A list row is full width, so it cannot sit beside a card. In list view the
+ * designs render as their own list and the colors and faces still share one
+ * wall underneath it — which is the densest honest arrangement of two shapes
+ * that genuinely don't mix.
  */
 import { ReactNode } from "react";
 import { Text, View } from "react-native";
@@ -30,9 +43,9 @@ import {
   type BrandFont,
   type DesignAsset,
 } from "@events-os/shared";
-import { DesignGrid } from "./DesignGrid";
-import { SwatchWall } from "./SwatchWall";
-import { SpecimenWall } from "./SpecimenWall";
+import { DesignList, DesignTile, liveEmbedIds } from "./DesignGrid";
+import { Swatch } from "./Swatch";
+import { SpecimenCard } from "./Specimen";
 import type { LibraryItems } from "./library.shared";
 
 export function FolderBody({
@@ -68,58 +81,87 @@ export function FolderBody({
     items.fonts.filter((f) => f.role === role),
   );
 
-  const labelled = kinds > 1;
+  // In list view the designs leave the wall; everything else stays in it.
+  const listed = view === "list" && items.designs.length > 0;
+  const tiles = listed ? [] : items.designs;
+  const live = liveEmbedIds(tiles);
+  const hasWall = tiles.length + items.colors.length + fonts.length > 0;
 
   return (
-    <View className="gap-5">
-      {items.designs.length > 0 ? (
-        <View>
-          {labelled ? <KindLabel label="Design files" count={items.designs.length} /> : null}
-          <DesignGrid
-            designs={items.designs}
-            palette={palette}
-            view={view}
-            onOpen={onOpenDesign}
-          />
+    <View className="gap-4">
+      {kinds > 1 ? <Breakdown items={items} /> : null}
+
+      {listed ? (
+        <DesignList
+          designs={items.designs}
+          palette={palette}
+          onOpen={onOpenDesign}
+        />
+      ) : null}
+
+      {hasWall ? (
+        // `items-start` so a short card keeps its own height instead of
+        // stretching to the tallest thing on its line.
+        <View className="flex-row flex-wrap items-start gap-3.5">
+          {tiles.map((design) => (
+            <DesignTile
+              key={design.id}
+              design={design}
+              palette={palette}
+              live={live.has(design.id)}
+              onOpen={onOpenDesign}
+            />
+          ))}
+          {items.colors.map((color) => (
+            <Swatch key={color.id} color={color} onOpen={onOpenColor} />
+          ))}
+          {fonts.map((font) => (
+            <SpecimenCard key={font.id} font={font} onOpen={onOpenFont} />
+          ))}
         </View>
       ) : null}
 
-      {items.colors.length > 0 ? (
-        <View>
-          {labelled ? <KindLabel label="Colors" count={items.colors.length} /> : null}
-          <SwatchWall palette={items.colors} onOpen={onOpenColor} />
-          <Text className="mt-2 text-2xs text-faint">
-            Press a swatch to copy its hex and open it.
-          </Text>
-        </View>
-      ) : null}
-
-      {fonts.length > 0 ? (
-        <View>
-          {labelled ? <KindLabel label="Faces" count={fonts.length} /> : null}
-          <SpecimenWall fonts={fonts} onOpen={onOpenFont} />
-          <Text className="mt-2 text-2xs text-faint">
-            Each card is set in the face it names, where this device has it —
-            and says what it&apos;s for.
-          </Text>
-        </View>
+      {caption(items.colors.length > 0, fonts.length > 0) ? (
+        <Text className="text-2xs leading-4 text-faint">
+          {caption(items.colors.length > 0, fonts.length > 0)}
+        </Text>
       ) : null}
     </View>
   );
 }
 
-function KindLabel({ label, count }: { label: string; count: number }) {
+/**
+ * "4 files · 1 color · 1 face" — what the per-kind headings used to say, in one
+ * line above the wall instead of three rows through it.
+ *
+ * Only drawn for a MIXED folder. In a folder of one kind the section header's
+ * own count already says it, and repeating it is the page saying the same
+ * number twice.
+ */
+function Breakdown({ items }: { items: LibraryItems }) {
+  const parts = [
+    plural(items.designs.length, "file"),
+    plural(items.colors.length, "color"),
+    plural(items.fonts.length, "face"),
+  ].filter((part): part is string => part !== null);
+
   return (
-    <View className="mb-2 flex-row items-baseline gap-2">
-      <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-        {label}
-      </Text>
-      <Text
-        className="text-2xs text-faint"
-        style={{ fontVariant: ["tabular-nums"] }}
-      >
-        {count}
-      </Text>
-    </View>
+    <Text className="text-2xs text-faint">{parts.join(" · ")}</Text>
   );
+}
+
+function plural(count: number, noun: string): string | null {
+  if (count === 0) return null;
+  return `${count} ${noun}${count === 1 ? "" : "s"}`;
+}
+
+/** The one line under the wall, saying only what it has cards for. */
+function caption(hasColors: boolean, hasFonts: boolean): string | null {
+  const lines = [
+    hasColors ? "Press a swatch to copy its hex." : null,
+    hasFonts
+      ? "Each face is set in itself, where this device has it — and says what it's for."
+      : null,
+  ].filter((line): line is string => line !== null);
+  return lines.length > 0 ? lines.join(" ") : null;
 }

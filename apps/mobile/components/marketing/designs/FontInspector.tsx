@@ -35,7 +35,7 @@ import { Inspector, ReorderControls } from "./Inspector";
 import { asId, neighbourFor, swappedIds } from "./ids";
 import { hasFontFamily } from "./fontProbe";
 import { resolveSpecimen } from "./fontSpecimen.shared";
-import { SpecimenSample } from "./SpecimenWall";
+import { SpecimenSample } from "./Specimen";
 
 const ROLE_OPTIONS = BRAND_FONT_ROLES.map((role) => ({
   value: role,

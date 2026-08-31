@@ -1,5 +1,5 @@
 /**
- * MARKETING · Designs — the faces, as specimens set in themselves.
+ * MARKETING · Designs — one face, as a specimen set in itself.
  *
  * A font row that isn't set in the font tells you nothing, which is what the
  * shipped tab was: a name, a note, and a "Get it" button. Each card here draws
@@ -16,6 +16,13 @@
  * Concretely, on most devices: Inter and SF Pro draw; Times New Roman Condensed
  * draws as Times New Roman with the substitution named; Barbra Condensed draws
  * nothing and points at the file.
+ *
+ * ── One card; `FolderBody` owns the wall ────────────────────────────────────
+ * Same change as `Swatch`, for the same reason: a folder holds every kind of
+ * thing, so one component lays out one wrapping wall of mixed cards rather than
+ * each kind drawing a row of its own with the page empty beside it. This card
+ * is wider than the other two because a specimen has to show a sentence set in
+ * the face — that is the content, not decoration.
  */
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -31,23 +38,7 @@ import {
   type Specimen,
 } from "./fontSpecimen.shared";
 
-export function SpecimenWall({
-  fonts,
-  onOpen,
-}: {
-  fonts: BrandFont[];
-  onOpen: (font: BrandFont) => void;
-}) {
-  return (
-    <View className="flex-row flex-wrap gap-3">
-      {fonts.map((font) => (
-        <SpecimenCard key={font.id} font={font} onOpen={onOpen} />
-      ))}
-    </View>
-  );
-}
-
-function SpecimenCard({
+export function SpecimenCard({
   font,
   onOpen,
 }: {
