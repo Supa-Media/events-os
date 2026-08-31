@@ -25,6 +25,22 @@
  * flag a charge on this member's behalf, so the source of truth can't be
  * session-local state anymore — see the query's doc comment).
  *
+ * THE WAY TO `/code`, WHICH THIS SCREEN DID NOT HAVE. A cardholder,
+ * 2026-08-31: *"from my finance dashboard theres no way for me to code it or
+ * access it, I only had access from an email reminder."* She was right. This
+ * list showed her own charges and offered exactly one verb — "Flag personal" —
+ * while the thing the app was emailing her about, coding them, had no door on
+ * any screen she could reach. `/code` lives outside `(app)` deliberately (no
+ * chrome, a link you can send), and the finance tab that holds the other
+ * coding surface vanishes for a member with no seat, so the ONLY entrance was
+ * an email. Lose the email, lose the ability.
+ *
+ * So each charge now says whether it still needs coding (`chargeTodo` — the
+ * same verdict `/code`'s own rows and the chase email use, never re-derived
+ * here) and offers the way in. The destination is `/code` rather than a sheet
+ * mounted here: one coding form, in one place, is the rule this repo already
+ * holds itself to (see `FinishChargeSheet`'s "ONE FORM, MANY FRAMES").
+ *
  * CARD VISUAL (owner report item 1): the red virtual-card art, reveal modal,
  * and billing address live in the shared `MyCardSection` — used here AND at
  * the top of `ManagerCardsView` (a manager is a cardholder too). This file
@@ -34,10 +50,15 @@
  */
 import { useMemo, useState } from "react";
 import { Text, View } from "react-native";
+import { useRouter } from "expo-router";
 import { useAction, useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { displayMerchantName, formatCents } from "@events-os/shared";
+import {
+  DEFAULT_CODING_REQUIRED_SINCE_MS,
+  displayMerchantName,
+  formatCents,
+} from "@events-os/shared";
 import {
   Badge,
   Button,
@@ -53,12 +74,17 @@ import { CardPhilosophy } from "./CardPhilosophy";
 import { OwedBanner } from "./OwedBanner";
 import { MyCardSection } from "./MyCardSection";
 import { shortDate, type MyRepayment } from "./helpers";
+import { chargeTodo, type MyTxnRow } from "../myTransactions/chargeTodo";
 
 export function MemberCardsView() {
   const myCard = useQuery(api.cards.myCard, {});
   const cards = myCard?.cards;
   const lastCanceled = myCard?.lastCanceled;
   const txns = useQuery(api.finances.personTransactions, {});
+  // Member-safe (no finance seat needed), same as the two above — it is what
+  // `/code` reads to know which charges the coding policy actually covers.
+  const policy = useQuery(api.transactionCodings.policy, {});
+  const router = useRouter();
   const myRepayments = useQuery(api.cards.myPersonalRepayments, {});
   const myRequest = useQuery(api.cards.myCardRequest, {});
   // The org-wide card-prerequisite course + whether the caller has finished it
@@ -205,6 +231,29 @@ export function MemberCardsView() {
   // expose the card link, so we offer the action on outflows and let the backend
   // reject a non-card charge (surfaced via the toast).
   const charges = (txns ?? []).filter((t) => t.flow === "outflow");
+  // What each charge still owes, by the SAME reading `/code`'s rows and the
+  // chase email use — `chargeTodo`, given the org's policy date. Re-deriving
+  // "does this need coding" here is exactly how two screens start disagreeing
+  // about the same charge.
+  const codingSince = policy?.sinceMs ?? DEFAULT_CODING_REQUIRED_SINCE_MS;
+  const needsCoding = new Set(
+    charges
+      .filter((t) =>
+        chargeTodo(
+          {
+            postedAt: t.postedAt,
+            flow: t.flow,
+            status: t.status,
+            isPersonal: t.isPersonal,
+            hasReceipt: t.hasReceipt,
+            hasApprovedException: t.hasApprovedException,
+            codingStatus: (t as MyTxnRow).codingState,
+          },
+          codingSince,
+        ).actionable,
+      )
+      .map((t) => t.id),
+  );
 
   return (
     <View>
@@ -227,11 +276,33 @@ export function MemberCardsView() {
           bottom margin, so no extra `mt` here. */}
       <OwedBanner />
 
-      {/* My card charges — flag personal / pay back. */}
+      {/* My card charges — code / flag personal / pay back. */}
       <SectionHeader
         title="My charges"
         count={charges.length || undefined}
       />
+
+      {/* THE DOOR, said once at the top as well as per row. A cardholder who
+          has let a few pile up should not have to find the right row first —
+          and `?filter=uncoded` is the same pre-filtered destination the chase
+          email's own button uses, so arriving from either place shows the
+          same list. */}
+      {needsCoding.size > 0 ? (
+        <View className="mb-3 flex-row items-center gap-3 rounded-lg border border-accent/40 bg-accent/5 px-3 py-2.5">
+          <Icon name="edit-3" size={15} color={colors.accent} />
+          <Text className="flex-1 text-xs text-ink">
+            {needsCoding.size === 1
+              ? "1 charge still needs coding — what it bought, and the receipt that proves it."
+              : `${needsCoding.size} charges still need coding — what they bought, and the receipts that prove them.`}
+          </Text>
+          <Button
+            title={needsCoding.size === 1 ? "Code it" : "Code them"}
+            size="sm"
+            icon="arrow-right"
+            onPress={() => router.push("/code?filter=uncoded" as never)}
+          />
+        </View>
+      ) : null}
       {txns === undefined ? (
         <EmptyState title="Loading charges…" />
       ) : charges.length === 0 ? (
@@ -265,6 +336,9 @@ export function MemberCardsView() {
                     <Text className="text-xs text-faint" numberOfLines={1}>
                       {shortDate(t.postedAt)}
                     </Text>
+                    {needsCoding.has(t.id) ? (
+                      <Badge label="Needs coding" tone="warn" />
+                    ) : null}
                   </View>
                 </View>
 
@@ -275,7 +349,18 @@ export function MemberCardsView() {
                   −{formatCents(t.amountCents)}
                 </Text>
 
-                <View className="w-[168px] items-end">
+                <View className="w-[168px] items-end gap-1.5">
+                  {/* CODING FIRST when it's owed: it is the thing with a
+                      deadline and an email chasing it, and "Flag personal"
+                      was never an answer to "this needs coding". */}
+                  {needsCoding.has(t.id) ? (
+                    <Button
+                      title="Code it"
+                      size="sm"
+                      icon="edit-3"
+                      onPress={() => router.push("/code?filter=uncoded" as never)}
+                    />
+                  ) : null}
                   {rep && rep.status === "paid" ? (
                     <Badge label="Repaid" tone="info" icon="check" />
                   ) : rep && initiated[t.id] ? (
