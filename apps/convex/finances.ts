@@ -152,6 +152,7 @@ import {
   type TransferDirection,
 } from "./lib/transferPair";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
+import { ownChargeActor } from "./lib/ownChargeAccess";
 import { codingForTransaction, codingPolicy } from "./lib/transactionCoding";
 import {
   chargeOutstanding,
@@ -12269,19 +12270,27 @@ export const attachReceipt = mutation({
         message: "Transaction not found in your chapter.",
       });
     }
+    // THE OWN-CHARGE ARM, ASKED FIRST AND IN BOTH BOOKS. Central had none —
+    // "no cardholder 'own txn' path, central issues no cards" — which stopped
+    // being true when `increaseCardSync.ts` started scoping a member's card to
+    // the central Increase ACCOUNT it draws on. That left a cardholder shown
+    // their own central-book charge on `/code`, chased for its receipt by
+    // `lib/codingReminders.ts`, and refused when they went to attach one. See
+    // `lib/ownChargeAccess.ts`.
+    const ownerPersonId = await ownChargeActor(ctx, txn, chapterId);
     if (txn.chapterId === CENTRAL) {
-      // A central-owned txn's receipt is central-desk territory (no cardholder
-      // "own txn" path — central issues no cards). Gate on central reach AND
-      // the bookkeeper rank (requireFinanceCentral alone only checks reach,
-      // not role — see requireReconcileTxn for the same fix) — UNLESS the
-      // caller has event edit rights on the event this (possibly central-
-      // moved) budget still belongs to (owner decision, 2026-07-17 — see
-      // `requireTxnNoteReceiptCategoryAccess`'s own doc comment; kept as a
-      // parallel inline check here since `attachReceipt`'s own-txn carve-out
-      // doesn't compose with that helper's `requireReconcileTxn`-first shape).
+      // A central-owned txn NOBODY spent on a card is central-desk territory.
+      // Gate on central reach AND the bookkeeper rank (requireFinanceCentral
+      // alone only checks reach, not role — see requireReconcileTxn for the
+      // same fix) — UNLESS the caller has event edit rights on the event this
+      // (possibly central-moved) budget still belongs to (owner decision,
+      // 2026-07-17 — see `requireTxnNoteReceiptCategoryAccess`'s own doc
+      // comment; kept as a parallel inline check here since `attachReceipt`'s
+      // own-txn carve-out doesn't compose with that helper's
+      // `requireReconcileTxn`-first shape).
       const access = await getFinanceRole(ctx, chapterId);
       const isBookkeeperCentral = access.isCentral && financeRoleAtLeast(access.role, "bookkeeper");
-      if (!isBookkeeperCentral) {
+      if (ownerPersonId == null && !isBookkeeperCentral) {
         const event = await eventForTxn(ctx, txn);
         if (!event || !(await callerHasEventEditRights(ctx, event))) {
           throw new ConvexError({
@@ -12298,8 +12307,7 @@ export const attachReceipt = mutation({
         });
       }
       const access = await getFinanceRole(ctx, chapterId);
-      const isOwnTxn = access.personId != null && access.personId === txn.personId;
-      if (!isOwnTxn && !financeRoleAtLeast(access.role, "bookkeeper")) {
+      if (ownerPersonId == null && !financeRoleAtLeast(access.role, "bookkeeper")) {
         const event = await eventForTxn(ctx, txn);
         if (!event || !(await callerHasEventEditRights(ctx, event))) {
           throw new ConvexError({

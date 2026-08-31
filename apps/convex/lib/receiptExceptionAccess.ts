@@ -9,7 +9,9 @@
  *    receipt for this, and here's what it was for". Open today to the
  *    transaction's OWN person (a cardholder attesting their own cash tip
  *    shouldn't need a finance grant, exactly like `finances.attachReceipt`'s
- *    own-txn carve-out) or to bookkeeper+ on any row in scope. Will graduate
+ *    own-txn carve-out) — in EITHER book, central included, since a member's
+ *    card can draw on central's account (`lib/ownChargeAccess.ts`) — or to
+ *    bookkeeper+ on any row in scope. Will graduate
  *    to a `finance.receiptException.attest` capability if it ever needs
  *    narrowing — the body changes, no call site does.
  *
@@ -20,9 +22,10 @@
  *    `finance.receiptException.approve` if approving exceptions ever needs to
  *    be grantable separately from the rest of finance management.
  *
- * Scope resolution is `requireReconcileTxn`'s, byte for byte: a central-owned
- * transaction needs central reach at the rank, a chapter-owned one needs the
- * caller's own chapter at the rank. Nothing here invents new scoping.
+ * Scope resolution is `requireReconcileTxn`'s, byte for byte, for everyone but
+ * the charge's own spender: a central-owned transaction needs central reach at
+ * the rank, a chapter-owned one needs the caller's own chapter at the rank.
+ * Nothing here invents new scoping.
  *
  * Every refusal throws `ConvexError({ code, message })` (never a plain
  * `Error`) so the app's AuthErrorBoundary can surface it, matching the finance
@@ -38,6 +41,7 @@ import {
   type FinanceScope,
 } from "./finance";
 import { requireChapterId } from "./context";
+import { ownChargeActor } from "./ownChargeAccess";
 
 /** The resolved right to act on one transaction's receipt exceptions. */
 export interface ReceiptExceptionAccess {
@@ -72,10 +76,23 @@ async function resolve(
   const forbidden = () =>
     new ConvexError({ code: "FORBIDDEN", message: forbiddenMessage });
 
+  // THE OWN-CHARGE ARM, ASKED FIRST AND IN BOTH BOOKS — `allowOwnTxn` still
+  // decides whether it counts, so the APPROVE gate is untouched by it.
+  // Central used to have no such arm at all, on the premise that "central
+  // issues no cards, so a central row has no cardholder to be". A member
+  // whose card draws on central's Increase account spends into the central
+  // book (`increaseCardSync.ts`), so that premise was false and the person
+  // the receipt is being chased from could not attest that there isn't one.
+  // See `lib/ownChargeAccess.ts`.
+  const ownerPersonId = allowOwnTxn
+    ? await ownChargeActor(ctx, txn, homeChapterId)
+    : null;
+
   if (txn.chapterId === CENTRAL) {
-    // Central-owned money is central-desk territory. There is no own-txn
-    // carve-out here for the same reason `attachReceipt` has none: central
-    // issues no cards, so a central row has no cardholder to be.
+    if (ownerPersonId != null) {
+      return { txn, scope: CENTRAL, actorPersonId: ownerPersonId };
+    }
+    // Central-owned money nobody spent on a card is central-desk territory.
     const access = await requireFinanceCentral(ctx, homeChapterId);
     if (!financeRoleAtLeast(access.role, min)) throw forbidden();
     return { txn, scope: CENTRAL, actorPersonId: access.personId };
@@ -83,9 +100,7 @@ async function resolve(
 
   const access = await getFinanceRole(ctx, homeChapterId);
   if (txn.chapterId !== homeChapterId) throw notFound();
-  const isOwnTxn =
-    access.personId != null && access.personId === txn.personId;
-  if (!(allowOwnTxn && isOwnTxn) && !financeRoleAtLeast(access.role, min)) {
+  if (ownerPersonId == null && !financeRoleAtLeast(access.role, min)) {
     throw forbidden();
   }
   return { txn, scope: txn.chapterId, actorPersonId: access.personId };
