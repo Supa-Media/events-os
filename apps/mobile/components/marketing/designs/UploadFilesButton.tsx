@@ -101,9 +101,23 @@ export function UploadFilesButton({
               headers: { "Content-Type": file.contentType },
               body: file.blob,
             });
-            const { storageId } = await res.json();
+            // Checked, unlike the single-file picker's copy: one dead POST in
+            // a batch of forty would otherwise put an `undefined` storage id in
+            // the mutation's arguments and fail as a validator error naming
+            // nothing somebody could act on.
+            if (!res.ok) {
+              throw new Error(
+                `“${file.name}” didn't upload (${res.status}). Nothing was added — try that batch again.`,
+              );
+            }
+            const { storageId } = (await res.json()) as { storageId?: string };
+            if (!storageId) {
+              throw new Error(
+                `“${file.name}” didn't upload. Nothing was added — try that batch again.`,
+              );
+            }
             uploaded.push({
-              storageId: storageId as string,
+              storageId,
               name: file.name,
               contentType: file.contentType,
             });
