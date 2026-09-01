@@ -11,6 +11,19 @@
  * sections or courses anywhere else. See `../index` for how this assembles
  * into the full curriculum/catalog.
  *
+ * REMOVED (2026-09-01): `finance-transfers-and-payouts` ("Transfers and
+ * payouts"). The doc-comment history below still refers to it in several
+ * places — those entries are kept as the record of edits that really
+ * happened, but the section itself is gone and the `treasurer` course drops
+ * from four modules to three.
+ *
+ * Worth knowing what left with it: the payout-is-not-a-transfer rule was
+ * taught ONLY here. `finance-reconcile-grid` lists Transfers and Payouts as
+ * filter rows but never says why marking one as the other is wrong — that a
+ * payout is already-earned revenue arriving, so calling it a transfer
+ * double-counts it. That section existed because the founder hit the bug in
+ * real bookkeeping. If it is ever reinstated, that trap is the reason.
+ *
  * F-6 touch-up (giving-platform PRD §8): `finance-tiers-and-skim` no longer
  * lets "backer count" stand as an unexplained given — it now teaches WHERE
  * the number comes from (derived live from ACTIVE pledges on the Giving
@@ -1849,97 +1862,6 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 35 · Treasurer: transfers & payouts ────────────────────────────────────
-  // Its own section rather than more blocks on `finance-reconcile-grid`: this
-  // is a money RULE with a trap in it (a payout is not a transfer), and the
-  // founder hit the underlying bug in real bookkeeping. Reconcile's own
-  // section keeps the how-to surface (the two new filter rows); this one
-  // teaches why the two markings are different and must stay different.
-  {
-    slug: "finance-transfers-and-payouts",
-    title: "Transfers and payouts",
-    subtitle: "Money moving vs. money arriving — and why they're not the same",
-    minutes: 2,
-    blocks: [
-      {
-        kind: "p",
-        text: "The bank reports a transfer twice, once on each side, and nothing can tell a transfer from a purchase by the amount alone. Marking the PAIR takes both legs out of spend, so the same dollars aren't counted twice. Excluding it would hide the row instead of explaining it — and would only ever fix one of the two sides.",
-      },
-      {
-        kind: "rule",
-        title: "A payout is money arriving, not money moving",
-        text: "The org counts revenue where it was earned: donations, ticket sales, in-person sales, course registrations. A processor's payout deposit is that money physically arriving. **Mark as payout** tells the books exactly that, so the deposit stays honest and nothing is counted twice. Marking it a transfer would claim it moved between our own accounts.",
-      },
-      {
-        kind: "rule",
-        title: "Mark both legs, always",
-        text: "A transfer is a pair by definition. Marking only the side that left would leave the arriving side sitting there as income with no source — swapping one wrong number for another.",
-      },
-      {
-        kind: "rule",
-        title: "Marked means documented",
-        text: "Nobody bought anything on either leg, so no receipt could exist. The bank statement line IS the record, and the column says so rather than nagging for an upload. That makes marking the one move in Reconcile that takes a row out of the documentation chase. So mark a pair because it really is money between our own accounts, never because the row is awkward.",
-      },
-      {
-        kind: "reveal",
-        prompt:
-          "Could you just exclude a transfer instead of marking it?",
-        answer:
-          "No. Excluding hides the row rather than explaining it, and it only ever fixes one of the two sides the bank reported. Marking the pair explains both. Every marking is logged with who did it, and any of them can be undone.",
-      },
-    ],
-    quiz: [
-      {
-        prompt: "A $1,000 row reading \"PUBLIC WORSHIP | Transfer\" is sitting in Needs budget. What do you do?",
-        options: [
-          "Mark it Excluded with a reason",
-          "Link it to whichever budget is closest",
-          "Select it AND the matching $1,000 deposit, then Mark as transfer",
-          "Leave it — transfers sort themselves out at year end",
-        ],
-        answerIndex: 2,
-        explanation:
-          "The bank reports a transfer twice, and nothing can tell a transfer from a purchase by the amount alone. Marking the PAIR takes both legs out of spend so the same dollars aren't counted twice. Excluding it would hide the row instead of explaining it — and would only ever fix one of the two sides.",
-      },
-      {
-        prompt: "A Givebutter payout lands in your bank account. How should it be marked?",
-        options: [
-          "As a transfer — the donations were already recorded elsewhere",
-          "As a payout — the label that says it's already-counted revenue arriving",
-          "As Excluded, to avoid double-counting the gifts",
-          "It doesn't need marking at all",
-        ],
-        answerIndex: 1,
-        explanation:
-          "The org counts its revenue where it was earned — donations, ticket sales, in-person sales and course registrations — and the payout deposit is that money physically arriving. \"Mark as payout\" tells the books exactly that, so the deposit stays honest and nothing is counted twice. Marking it a transfer would claim it moved between our own accounts; excluding it would hide the settlement record.",
-      },
-      {
-        prompt: "Why does the app refuse to mark a transfer from just one row?",
-        options: [
-          "To slow you down so you double-check the amount",
-          "Because the other leg would be left as unexplained money in your books",
-          "It's a technical limitation of the bank feed",
-          "It doesn't — one row is enough",
-        ],
-        answerIndex: 1,
-        explanation:
-          "A transfer is a pair by definition. Marking only the side that left would leave the arriving side sitting there as income with no source — swapping one wrong number for another.",
-      },
-      {
-        prompt: "You mark a pair of rows as an internal transfer. What does the Documentation column say about them afterwards?",
-        options: [
-          "Needs documentation, until you attach a bank statement to each leg",
-          "Bank record only — a marked transfer owes nothing, and neither does a marked payout",
-          "Only the outgoing leg still owes something",
-          "Nothing at all — marked rows leave the grid",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Nobody bought anything on either leg, so there is no receipt that could exist — the bank statement line IS the record, and the column says exactly that instead of nagging for an upload. It also means marking is the one move in Reconcile that takes a row out of the documentation chase, so mark a pair because it really is money between our own accounts, never because the row is awkward. Every marking is logged with who did it, and any of them can be undone.",
-      },
-    ],
-  },
-
   // ── 36 · Treasurer: chasing receipts ───────────────────────────────────────
   {
     slug: "finance-chasing-receipts",
@@ -3328,7 +3250,6 @@ export const FINANCES_COURSES: Course[] = [
     icon: "check-square",
     moduleSlugs: [
       "finance-reconcile-grid",
-      "finance-transfers-and-payouts",
       "finance-chasing-receipts",
       "finance-monthly-close",
     ],
