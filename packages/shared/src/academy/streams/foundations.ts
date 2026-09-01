@@ -24,19 +24,16 @@
  * here: who holds a seat changes, so every lesson that touches the org chart
  * points the reader to the live Org Chart tab instead of naming names.
  *
- * `foundations-data-export` (`packages/shared/src/dataExport.ts`, the
- * `data.export` capability) moved here from the Development stream
- * (`streams/development.ts`'s `donor-stewardship` course, as `dev-data-export`)
- * because the founder grant (2026-07-31) lands SIX seats — executive_director,
- * financial_manager, development_director, expansion_director,
- * marketing_director, chapter_director — and `how-we-work` is the one course
- * every one of those six role paths (`packages/shared/src/academyPaths.ts`)
- * actually shares, alongside `welcome-to-public-worship` and
- * `finances-for-everyone`. `donor-stewardship` reached only one of the six.
- * Reframed for a whole-team audience: most readers won't hold the power (and
- * that's normal, the same seat-gated pattern as everything else here), so the
- * lesson teaches what the power IS and that export never widens reach, rather
- * than the desk-level "what you get to export" mechanics the original taught.
+ * There is deliberately NO data-export lesson in this stream. One existed as
+ * `foundations-data-export` ("Taking data out of the app"), moved here from
+ * the Development stream on 2026-07-31 because the `data.export` grant lands
+ * six seats and `how-we-work` is the one substantive course all six role
+ * paths share. It was removed on 2026-09-01: carrying a director-level
+ * power's lesson on every teammate's path cost more attention than it earned,
+ * since most readers never hold `data.export` at all. The feature itself is
+ * unchanged (`packages/shared/src/dataExport.ts`) — only the lesson is gone.
+ * If it is ever reinstated, scope it to the seats that hold the power rather
+ * than to the shared foundations path.
  *
  * Owned exclusively by this file for content authoring — do not add
  * Foundations sections or courses anywhere else. See `../index` for how
@@ -876,102 +873,6 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
   },
 
-  // ── 7.5 · Taking data out of the app ─────────────────────────────────────
-  {
-    slug: "foundations-data-export",
-    title: "Taking data out of the app",
-    subtitle: "A seat-granted power, and the honesty rules that come with it",
-    minutes: 4,
-    blocks: [
-      {
-        kind: "p",
-        text: "The last lesson taught you where information lives inside Chapter OS. This one teaches how it can leave the building entirely. The Export screen turns any dataset the app knows about — People, Events, Work, Finances, and more — into a flat spreadsheet file someone downloads to their own laptop.",
-      },
-      {
-        kind: "rule",
-        title: "\"data.export\" is its own power, seat-granted like any other",
-        text: "Being allowed to look at a screen and being allowed to walk the WHOLE table out of the building are different risks, so exporting is gated by its own capability, `data.export`, separate from whatever else a seat can already see. Out of the box it's granted to six seats: the Executive Director, Development Director, Marketing Director, and Expansion Director centrally, the Financial Manager, and the Chapter Director for their own chapter. If you don't hold one of those seats, you'll never see an Export screen at all — that's normal, not a bug, the same seat-gated pattern every other power in Chapter OS follows (see \"Chapters and central\").",
-      },
-      {
-        kind: "rule",
-        title: "Export never widens reach",
-        text: "Holding `data.export` doesn't hand you columns you couldn't already see. A Marketing Director who can export, but doesn't hold `giving.view`, still gets a People file with no dollar figures in it — those columns are silently dropped, and the job that produced the file records exactly which ones and why. You only ever get to take out what you could already look up on screen.",
-      },
-      {
-        kind: "rule",
-        title: "The most sensitive file the app makes — so it expires",
-        text: "A finished export is every name, email, phone number, and history for a whole chapter, flattened into one file, sitting on someone's laptop. That's why a download link only stays live for 7 days before the file itself is purged — a stale link forwarded in an old chat thread stops working on its own. Purging the FILE never deletes the RECORD of the export: who requested it, when, and how many rows, stays on the books forever. Every export is logged against your name.",
-      },
-      {
-        kind: "rule",
-        title: "Check consent and suppression before you mail an exported list",
-        text: "Inside the app, Campaigns checks marketing opt-outs and email suppression automatically before any send goes out. A raw spreadsheet that leaves the app does NOT carry that enforcement with it — the moment a list is exported, YOU are the suppression check. Before anyone mails an exported list, check its consent and suppression columns first; skipping that step is how someone who unsubscribed gets emailed anyway.",
-      },
-      {
-        kind: "reveal",
-        prompt:
-          "A teammate without giving-desk access asks you to help send an email using a list a director exported last week. What do you check before hitting send?",
-        answer:
-          "At least two things: that the file's consent/suppression columns show who's actually allowed to be mailed (someone who unsubscribed doesn't get emailed just because they're still a row in the file), and that you're working from a still-valid copy — the download link is only good for 7 days. Outside the app, nothing enforces suppression for you automatically; that check is now yours.",
-      },
-      {
-        kind: "tip",
-        text: "**Most people never see the Export screen, and that's fine.** Holding `data.export` is a director-level power, not something every teammate needs — if your work never requires pulling a whole dataset out of the app, you simply won't encounter it. What every teammate SHOULD know is what happens on the other end: if a file with your information in it exists, it's traceable to exactly who pulled it and when.",
-      },
-    ],
-    quiz: [
-      {
-        prompt: "What is `data.export`?",
-        options: [
-          "A feature every signed-in teammate can use",
-          "Its own seat-granted power, separate from whatever a seat can already see on screen — held out of the box by six director-level seats",
-          "Something automatically included with any View-level desk access",
-          "A power only the Executive Director can ever hold",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Seeing a grid on screen and walking the whole table out of the building are different risks, so export is its own capability — most teammates simply won't hold it, and that's expected.",
-      },
-      {
-        prompt:
-          "A Marketing Director holds `data.export` but not `giving.view`, and exports People with its giving-summary columns ticked. What lands in the file?",
-        options: [
-          "The request is rejected outright",
-          "The full file, giving columns included — `data.export` overrides other gates",
-          "The People file with the giving-summary columns silently dropped, recorded on the job as an omitted section",
-          "A blank file",
-        ],
-        answerIndex: 2,
-        explanation:
-          "Export never widens reach — a section the caller couldn't already see comes out narrower, but that narrowing is always recorded, never invisible.",
-      },
-      {
-        prompt: "Why do export download links stop working after 7 days?",
-        options: [
-          "They don't — links stay valid forever",
-          "Because an export is the densest personal data the app produces, so the file is deliberately short-lived — though the record of who requested it stays on the books forever",
-          "To force people to re-request the same file every week",
-          "Links actually expire after 30 days, not 7",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Short-lived files, permanent audit row: the file gets purged, but the record of the extraction — who, when, how many rows — never does.",
-      },
-      {
-        prompt: "Before mailing a list someone exported from Chapter OS, what should you do?",
-        options: [
-          "Nothing — Campaigns' suppression rules travel with the file automatically",
-          "Check its consent and suppression columns yourself — outside the app, YOU are the suppression check, since a raw file doesn't enforce it for you",
-          "Re-import the file back into the app first",
-          "Only check consent if the list is over 1,000 rows",
-        ],
-        answerIndex: 1,
-        explanation:
-          "Campaigns enforces suppression automatically INSIDE the app; a file that has left the app carries no such enforcement, which is exactly why the export's consent/admin columns exist.",
-      },
-    ],
-  },
-
   // ── 8 · Spending like it's not yours ────────────────────────────────────────
   {
     slug: "foundations-spending",
@@ -1178,14 +1079,13 @@ export const FOUNDATIONS_COURSES: Course[] = [
     audience: "team",
     description:
       "The everyday culture: how we communicate, why showing up matters, " +
-      "where information actually lives (and how it can leave, honestly), " +
-      "and the posture behind every dollar you spend.",
+      "where information actually lives, and the posture behind every " +
+      "dollar you spend.",
     icon: "layers",
     moduleSlugs: [
       "foundations-communication",
       "foundations-showing-up",
       "foundations-where-things-live",
-      "foundations-data-export",
       "foundations-spending",
       "foundations-owning-your-yes",
     ],

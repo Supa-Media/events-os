@@ -41,15 +41,13 @@
  * The data-export feature (`packages/shared/src/dataExport.ts`,
  * `apps/convex/dataExports.ts`, `apps/mobile/app/(app)/exports.tsx`) is
  * general-purpose — it exports People, Events, Work, and Finance datasets
- * too, not just giving ones. The founder grant (2026-07-31) that turns on
- * the `data.export` capability lands SIX seats (`SEAT_CAPABILITIES` in
- * `packages/shared/src/seats.ts`), but only one of those six —
- * `development_director` — has a role path that ever reaches this stream, so
- * its lesson does NOT live here. It lives as `foundations-data-export` in
- * `streams/foundations.ts`'s "how-we-work" course instead: the one course
- * every one of the six role paths (`packages/shared/src/academyPaths.ts`)
- * actually shares, alongside `welcome-to-public-worship` and
- * `finances-for-everyone`.
+ * too, not just giving ones — and it has NO Academy lesson anywhere as of
+ * 2026-09-01. One lived briefly in `streams/foundations.ts` as
+ * `foundations-data-export`; it was removed because it rode the shared
+ * `how-we-work` course onto every teammate's path to teach a power only six
+ * director-level seats hold. Do not add it back to this stream on that
+ * account: `development_director` is one of the six, but a lesson here would
+ * reach only that one. Scope any replacement to the seats themselves.
  *
  * Owned exclusively by this file for content authoring — do not add
  * Development sections or courses anywhere else. See `../index` for how this

@@ -103,6 +103,7 @@ import { correctInterFontNote } from "./0082_correct_inter_font_note";
 import { captureDesignCovers } from "./0083_capture_design_covers";
 import { recaptureDesignCovers } from "./0084_recapture_design_covers";
 import { foldersAsPrimitive } from "./0085_folders_as_primitive";
+import { reawardAfterDataExportRemoval } from "./0086_reaward_after_data_export_removal";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -540,4 +541,10 @@ export const MIGRATIONS: Migration[] = [
   // the tab looks identical while everything in it is now filable. See the
   // file.
   foldersAsPrimitive,
+  // 0086: `foundations-data-export` was deleted from the `how-we-work` course,
+  // shrinking it from six required modules to five. Badges are awarded inline
+  // when the last required module passes, so people who'd finished the other
+  // five newly qualify with no event left to fire. Same body as 0028 — the
+  // re-award pass a shrunk course needs. See the file.
+  reawardAfterDataExportRemoval,
 ];

@@ -873,6 +873,19 @@
  * Folding them into the desk lesson would have meant dropping mailing-list
  * consent questions to stay inside the five-question cap, and those are the
  * ones that protect the org from a self-inflicted wound. Total: 102 sections.
+ *
+ * REMOVED (2026-09-01): `foundations-data-export` ("Taking data out of the
+ * app") is deleted outright — the first section this curriculum has dropped
+ * rather than moved. The 2026-07-31 move recorded above solved the wrong
+ * half of the problem: putting the lesson on `how-we-work` did reach all six
+ * seats that hold `data.export`, but `how-we-work` is on EVERY role path, so
+ * the fix taught a director-level power to every teammate in the org to
+ * explain a screen most of them can never open. Owner decision: the reach
+ * that made the placement correct is what made it not worth its slot.
+ * `how-we-work` drops back to five modules; every section after it shifts one
+ * place in curriculum order (derived from array position, so no hand-editing).
+ * The export FEATURE is untouched — only the lesson is gone. Total: 116
+ * sections (115 required).
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -886,7 +899,6 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "foundations-communication",
   "foundations-showing-up",
   "foundations-where-things-live",
-  "foundations-data-export",
   "foundations-spending",
   "foundations-owning-your-yes",
   "what-is-events-os",
@@ -1066,14 +1078,6 @@ const EXPECTED_SECTIONS: {
     slug: "foundations-where-things-live",
     title: "Where things live",
     minutes: 3,
-    quizLength: 4,
-    optional: false,
-    capstoneKind: null,
-  },
-  {
-    slug: "foundations-data-export",
-    title: "Taking data out of the app",
-    minutes: 4,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1473,7 +1477,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-stewardship",
     title: "Where the money comes from",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1481,7 +1485,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-three-tracks",
     title: "Green, yellow, red",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1489,7 +1493,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-card-and-receipts",
     title: "Your card and the 7-day rule",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1497,7 +1501,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-receipt-exceptions",
     title: "When there's genuinely no receipt",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1505,7 +1509,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-coding-your-charges",
     title: "Coding your charges",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1513,7 +1517,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1521,7 +1525,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-paying-a-contractor",
     title: "Paying a contractor",
-    minutes: 7,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1529,7 +1533,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-contractor-tax-and-privacy",
     title: "The W-9, and what publishes",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1537,7 +1541,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1545,7 +1549,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-transfers-and-payouts",
     title: "Transfers and payouts",
-    minutes: 3,
+    minutes: 2,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1553,7 +1557,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-chasing-receipts",
     title: "Chasing receipts",
-    minutes: 3,
+    minutes: 2,
     // 4 → 5: the Missing-receipt vs Undocumented question, the treasurer's
     // half of receipt exceptions (`docs/plans/receipt-exceptions.md`).
     quizLength: 5,
@@ -1571,7 +1575,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-publishing-the-books",
     title: "Publishing the books",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1587,7 +1591,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-approving-budgets",
     title: "Approving budgets",
-    minutes: 3,
+    minutes: 2,
     // 4 since 2026-08-09: the four approval seats now approve CODINGS too,
     // with different reach per seat, and that's the part people get wrong.
     quizLength: 4,
@@ -1597,7 +1601,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-tiers-and-skim",
     title: "Tiers, the covenant, and the skim",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1605,7 +1609,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-cross-chapter-audit",
     title: "Auditing every chapter",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1624,7 +1628,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-accounts-and-cards-admin",
     title: "Accounts, cards, and the City Launch Fund",
-    minutes: 3,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1973,7 +1977,7 @@ const EXPECTED_COURSES: {
   {
     slug: "how-we-work",
     themeKey: "foundations",
-    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-data-export", "foundations-spending", "foundations-owning-your-yes"],
+    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-spending", "foundations-owning-your-yes"],
   },
   {
     slug: "chapter-os-fundamentals",
