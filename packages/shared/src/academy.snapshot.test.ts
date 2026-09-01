@@ -1541,7 +1541,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-reconcile-grid",
     title: "Running Reconcile",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
