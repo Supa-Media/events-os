@@ -3038,6 +3038,75 @@ describe("submission notice to finance approvers (sendReimbursementSubmittedEmai
     expect(payload?.recipients).toEqual([]);
   });
 
+  // The real-world configuration this notice exists for (founder, 2026-09-01:
+  // "Kansi the treasurer for the nyc chapter and financial manager of
+  // central, she should be getting emails whenever people request
+  // reimbursements"). Two seats, two scopes, one inbox — pinned end to end so
+  // neither the seat→capability mapping nor the chapter/central union can
+  // regress without a failing test.
+  describe("a treasurer at one chapter who is ALSO central's financial manager", () => {
+    async function seatKansi(s: ChapterSetup): Promise<Id<"people">> {
+      const kansi = await seedPerson(s, {
+        name: "Kansi Udochukwu",
+        pwEmail: "kansi@publicworship.life",
+      });
+      await assignSeatDirect(s, kansi, "treasurer", s.chapterId);
+      await assignSeatDirect(s, kansi, "financial_manager", "central");
+      return kansi;
+    }
+
+    test("gets exactly ONE email for a request in her own chapter", async () => {
+      vi.useFakeTimers();
+      try {
+        const s = await seatSetup();
+        await setSlug(s, "nyc");
+        await seatKansi(s);
+        process.env.RESEND_API_KEY = "test_key";
+        const resendCalls = mockIncreaseAndResend();
+
+        await submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" });
+        await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        // BOTH her seats qualify her here (treasurer at nyc, FM at central).
+        // The dedupe has to collapse that to one send, not mail her twice.
+        expect(resendCalls.map((c) => c.to)).toEqual([
+          "kansi@publicworship.life",
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    test("also gets the email for a request in a chapter she is NOT the treasurer of", async () => {
+      vi.useFakeTimers();
+      try {
+        const s = await seatSetup();
+        await setSlug(s, "nyc");
+        await seatKansi(s);
+        // A second chapter, where her ONLY qualifying seat is central's FM —
+        // the "central reaches every chapter" half of the union.
+        const boston = await setupChapter(s.t, {
+          chapterName: "Boston",
+          email: "boston.lead@publicworship.life",
+        });
+        await setSlug(boston, "boston");
+        process.env.RESEND_API_KEY = "test_key";
+        const resendCalls = mockIncreaseAndResend();
+
+        await submitTwoLine(boston, "boston", {
+          payeeEmail: "dana@example.com",
+        });
+        await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+        expect(resendCalls.map((c) => c.to)).toEqual([
+          "kansi@publicworship.life",
+        ]);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+  });
+
   test("degrades without RESEND_API_KEY (no throw, even with a real recipient)", async () => {
     vi.useFakeTimers();
     try {
