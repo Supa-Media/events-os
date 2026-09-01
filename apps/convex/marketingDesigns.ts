@@ -66,7 +66,11 @@ import {
   DESIGN_MAX_COUNT,
   DESIGN_NOTES_MAX,
   DESIGN_TITLE_MAX,
+  DESIGN_UPLOAD_BATCH_MAX,
   designEmbedUrl,
+  designKindForContentType,
+  designTitleFromFileName,
+  isUploadKind,
   isAllowedDesignUrl,
   isBrandHex,
   normalizeBrandHex,
@@ -1015,11 +1019,17 @@ export const upsertDesign = mutation({
           }
         : { storage: existing?.thumbnailStorage, url: existing?.thumbnailUrl };
 
-    if (args.kind === "image") {
+    if (isUploadKind(args.kind)) {
+      // An `image` or a `video` IS its upload — the file is the row. Either is
+      // allowed to be a link instead (an image hosted elsewhere, a clip on
+      // Vimeo), but a row with neither is a title in a grid.
       if (!image.storage && !url) {
         throw new ConvexError({
           code: "INCOMPLETE",
-          message: "An image design needs the picture itself — upload a file, or add a link to it.",
+          message:
+            args.kind === "video"
+              ? "A video needs the clip itself — upload a file, or add a link to it."
+              : "An image design needs the picture itself — upload a file, or add a link to it.",
         });
       }
     } else if (!url) {
@@ -1087,6 +1097,133 @@ export const upsertDesign = mutation({
       });
     }
     return designId;
+  },
+});
+
+/**
+ * Add a PILE of uploaded files as designs, in one transaction.
+ *
+ * The marketing lead's ask, in her words: "is there a way we can create a
+ * library where we can upload multiple images/vid content ex: WWS or Field
+ * Day". A folder already was that library; what it cost was one form per file,
+ * which is why an event's photos stayed in a camera roll. This is the same
+ * folder with the form taken off the front of it — every file becomes an
+ * ordinary design row, titled from its filename and filed where it was dropped,
+ * and everything that already works on a design (search, the folder checklist,
+ * pinning, reorder, delete) works on it the moment it lands.
+ *
+ * ── Why a mutation of its own rather than `upsertDesign` in a loop ──────────
+ * ONE transaction. Forty separate calls can half-fail, and a folder holding
+ * eleven of the twenty photos somebody dropped — with no way to tell which nine
+ * are missing — is worse than a refusal. Here every file lands or none does,
+ * the library-wide cap is checked once against the WHOLE batch rather than
+ * forty times against a moving number, and the rows come out in the order they
+ * were picked instead of racing each other for `order`.
+ *
+ * ── The blob is uploaded before this runs ───────────────────────────────────
+ * So a batch this refuses (a bad type, no room left) leaves its blobs behind in
+ * storage with nothing pointing at them. That is why the type rule lives in
+ * `@events-os/shared` — the picker filters to exactly what
+ * `designKindForContentType` accepts, so the refusal is a client-side dialog
+ * filter in every honest case, and this check is the backstop rather than the
+ * gate.
+ *
+ * ── What it does NOT do ─────────────────────────────────────────────────────
+ * No thumbnails, no cover capture, no notes. An uploaded photo IS its own
+ * preview (`imageUrl`), and a video gets the play affordance and whatever
+ * poster somebody uploads later from the inspector. Generating video posters
+ * server-side would mean decoding video in a Convex action, which is a project,
+ * not a line.
+ */
+export const addUploads = mutation({
+  args: {
+    files: v.array(
+      v.object({
+        storageId: v.id("_storage"),
+        /** The original filename — where the title comes from. */
+        name: v.optional(v.string()),
+        /** The browser's / picker's MIME type. Decides image vs video. */
+        contentType: v.optional(v.string()),
+      }),
+    ),
+    /** Where the batch lands. Absent or empty = Unfiled, which is a real state
+     *  rather than an error (see the shared module). */
+    folderIds: v.optional(v.array(v.id("designFolders"))),
+  },
+  returns: v.array(v.id("designAssets")),
+  handler: async (ctx, args) => {
+    await requireDesignsEdit(ctx);
+    const userId = (await requireUserId(ctx)) as Id<"users">;
+
+    if (args.files.length === 0) {
+      throw new ConvexError({
+        code: "INCOMPLETE",
+        message: "No files came through — pick the photos or clips again.",
+      });
+    }
+    if (args.files.length > DESIGN_UPLOAD_BATCH_MAX) {
+      throw new ConvexError({
+        code: "TOO_MANY",
+        message: `That's ${args.files.length} files at once — add up to ${DESIGN_UPLOAD_BATCH_MAX} per upload, and repeat for the rest.`,
+      });
+    }
+
+    const rows = await ctx.db.query("designAssets").take(DESIGN_MAX_COUNT);
+    const room = DESIGN_MAX_COUNT - rows.length;
+    if (args.files.length > room) {
+      throw new ConvexError({
+        code: "TOO_MANY",
+        message:
+          room > 0
+            ? `The library holds at most ${DESIGN_MAX_COUNT} designs and has room for ${room} more — delete something retired, or upload fewer.`
+            : `The library holds at most ${DESIGN_MAX_COUNT} designs. Delete something retired before adding another.`,
+      });
+    }
+
+    const folderIds = (await resolveFolderIds(ctx, args.folderIds)) ?? [];
+
+    // Resolve every upload BEFORE inserting anything: a batch that turns out to
+    // hold one dead storage id should fail whole, not leave a folder holding
+    // the files that happened to come first.
+    const resolved: { kind: "image" | "video"; title: string; storageId: Id<"_storage">; url: string }[] = [];
+    for (const file of args.files) {
+      const kind = designKindForContentType(file.contentType);
+      if (!kind) {
+        throw new ConvexError({
+          code: "UNSUPPORTED_TYPE",
+          message: `The library holds photos and video${file.name ? ` — “${file.name}” is neither` : ", and one of those files is neither"}. Add anything else as a link.`,
+        });
+      }
+      const title = clean(designTitleFromFileName(file.name)) ?? "Untitled upload";
+      requireWithin(title, DESIGN_TITLE_MAX, "The title");
+      resolved.push({
+        kind,
+        title,
+        storageId: file.storageId,
+        url: await resolveUpload(ctx, file.storageId),
+      });
+    }
+
+    const now = Date.now();
+    let order = nextOrder(rows);
+    const ids: Id<"designAssets">[] = [];
+    for (const file of resolved) {
+      ids.push(
+        await ctx.db.insert("designAssets", {
+          kind: file.kind,
+          title: file.title,
+          folderIds,
+          imageStorage: file.storageId,
+          imageUrl: file.url,
+          order,
+          createdAt: now,
+          updatedAt: now,
+          updatedBy: userId,
+        }),
+      );
+      order += ORDER_STEP;
+    }
+    return ids;
   },
 });
 

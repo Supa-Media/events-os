@@ -720,6 +720,16 @@ volunteer making a flyer needs the hex code and the logo at the moment they are
 making it, and a brand kit behind a permission is a brand kit people work
 around — which is the exact inconsistency it exists to prevent.
 
+**The library holds an event's photos and video, not only its templates.** A
+folder is where Field Day or WWS media lands — uploaded in bulk, and readable
+by anyone signed in exactly like the rest of the kit. Two things follow from
+that openness, and neither is optional. §10's minors rule binds BEFORE an
+upload rather than after it: never upload an identifiable minor without a
+guardian's written consent. And anything that would identify an adult who did
+not agree to be on an org-wide surface does not go in either. A media folder is
+not a private drive — treat it as visible to everyone on the roster, because it
+is.
+
 One brand, org-wide. A chapter does not get its own colors — there is exactly
 one kit and no per-chapter copy of it. That is a statement about the BRAND, not
 about who may change it, and the two were briefly conflated: the power was

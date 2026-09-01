@@ -17,12 +17,19 @@
  *    once in `marketingSite.ts#upsertLink`.
  *  · `embedUrl` is derived, so a Canva link embeds and a Dropbox link honestly
  *    doesn't.
+ *  · A BULK UPLOAD is all-or-nothing: a batch that hits a dead storage id or a
+ *    file type the library won't hold lands nothing, because half a folder of
+ *    an event's photos is worse than a refusal.
  *  · The seed is idempotent, carries the newsletter's real red, and carries
  *    BOTH sides of the font conflict.
  */
 import { describe, expect, test, vi } from "vitest";
 import { api, internal } from "../_generated/api";
-import { PUBLIC_WORSHIP_THEME, SEAT_DEFS } from "@events-os/shared";
+import {
+  DESIGN_UPLOAD_BATCH_MAX,
+  PUBLIC_WORSHIP_THEME,
+  SEAT_DEFS,
+} from "@events-os/shared";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
 
@@ -815,6 +822,153 @@ describe("designs", () => {
     expect(url).toBeNull();
     // And a second delete is a no-op, not a throw.
     await s.as.mutation(api.marketingDesigns.deleteDesign, { designId });
+  });
+});
+
+describe("uploading a folder's worth of photos and clips at once", () => {
+  /** The ask this exists for, in the marketing lead's words: "is there a way we
+   *  can create a library where we can upload multiple images/vid content ex:
+   *  WWS or Field Day". */
+  test("a batch lands as ordinary designs, filed and in the order picked", async () => {
+    const s = await setupEditor();
+    const folderId = await s.as.mutation(api.marketingDesigns.upsertFolder, {
+      name: "Field Day",
+    });
+    const files = [
+      { storageId: await storeBlob(s.t), name: "field-day_01.jpg", contentType: "image/jpeg" },
+      { storageId: await storeBlob(s.t), name: "field-day_02.png", contentType: "image/png" },
+      { storageId: await storeBlob(s.t), name: "tug of war.mov", contentType: "video/quicktime" },
+    ];
+    const ids = await s.as.mutation(api.marketingDesigns.addUploads, {
+      files,
+      folderIds: [folderId],
+    });
+    expect(ids).toHaveLength(3);
+
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.designs.map((d) => d.title)).toEqual([
+      "field-day 01",
+      "field-day 02",
+      "tug of war",
+    ]);
+    // A video is its own kind — every consumer has to branch, because a clip
+    // handed to an <Image> is a blank box.
+    expect(lib.designs.map((d) => d.kind)).toEqual(["image", "image", "video"]);
+    // Each row IS its file, and each is filed where it was dropped.
+    for (const design of lib.designs) {
+      expect(design.imageUrl).toBeTruthy();
+      expect(design.thumbnailUrl).toBeNull();
+      expect(design.folderIds).toEqual([folderId]);
+    }
+    // And the folder counts them, so the rail says so without anyone counting.
+    expect(lib.folders.find((f) => f.id === folderId)?.itemCount).toBe(3);
+  });
+
+  test("no folder is Unfiled, which is a state and not an error", async () => {
+    const s = await setupEditor();
+    await s.as.mutation(api.marketingDesigns.addUploads, {
+      files: [
+        { storageId: await storeBlob(s.t), name: "IMG_2481.HEIC", contentType: "image/heic" },
+      ],
+    });
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.designs[0].folderIds).toEqual([]);
+    expect(lib.designs[0].title).toBe("IMG 2481");
+  });
+
+  test("one bad file takes the whole batch down — never half a folder", async () => {
+    const s = await setupEditor();
+    const dead = await storeBlob(s.t);
+    await run(s.t, (ctx) => ctx.storage.delete(dead));
+
+    await expect(
+      s.as.mutation(api.marketingDesigns.addUploads, {
+        files: [
+          { storageId: await storeBlob(s.t), name: "good.jpg", contentType: "image/jpeg" },
+          { storageId: dead, name: "gone.jpg", contentType: "image/jpeg" },
+        ],
+      }),
+    ).rejects.toThrow(/upload couldn't be found/i);
+
+    // Eleven of twenty photos, with no way to tell which nine are missing, is
+    // worse than a refusal.
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.designs).toHaveLength(0);
+  });
+
+  test("the library holds photos and video — a PDF is a link, and is refused here", async () => {
+    const s = await setupEditor();
+    await expect(
+      s.as.mutation(api.marketingDesigns.addUploads, {
+        files: [
+          {
+            storageId: await storeBlob(s.t),
+            name: "spring-flyer.pdf",
+            contentType: "application/pdf",
+          },
+        ],
+      }),
+    ).rejects.toThrow(/photos and video/i);
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.designs).toHaveLength(0);
+  });
+
+  test("one press is bounded, and says how to add the rest", async () => {
+    const s = await setupEditor();
+    const storageId = await storeBlob(s.t);
+    // The bound is checked before anything is resolved, so one id repeated is
+    // the honest fixture for "somebody selected their whole camera roll".
+    const files = Array.from({ length: DESIGN_UPLOAD_BATCH_MAX + 1 }, (_, i) => ({
+      storageId,
+      name: `roll-${i}.jpg`,
+      contentType: "image/jpeg",
+    }));
+    await expect(
+      s.as.mutation(api.marketingDesigns.addUploads, { files }),
+    ).rejects.toThrow(new RegExp(`up to ${DESIGN_UPLOAD_BATCH_MAX} per upload`, "i"));
+  });
+
+  test("adding to the library is a marketing power, in bulk too", async () => {
+    const t = newT();
+    const s = await setupChapter(t); // signed in, no seat at all
+    await expect(
+      s.as.mutation(api.marketingDesigns.addUploads, {
+        files: [
+          { storageId: await storeBlob(s.t), name: "wws.jpg", contentType: "image/jpeg" },
+        ],
+      }),
+    ).rejects.toThrow();
+  });
+
+  test("a video keeps its own kind through an edit, and its clip through a rename", async () => {
+    const s = await setupEditor();
+    const [designId] = await s.as.mutation(api.marketingDesigns.addUploads, {
+      files: [
+        { storageId: await storeBlob(s.t), name: "field-day-reel.mp4", contentType: "video/mp4" },
+      ],
+    });
+    const before = await s.as.query(api.marketingDesigns.library, {});
+    await s.as.mutation(api.marketingDesigns.upsertDesign, {
+      designId,
+      kind: "video",
+      title: "Field Day reel (final)",
+    });
+    const after = await s.as.query(api.marketingDesigns.library, {});
+    expect(after.designs[0].title).toBe("Field Day reel (final)");
+    expect(after.designs[0].kind).toBe("video");
+    // Keep-if-not-resent, the rule an image already had — the form carries no
+    // bytes, so "not sent" can only mean "unchanged".
+    expect(after.designs[0].imageUrl).toBe(before.designs[0].imageUrl);
+  });
+
+  test("a video with neither a file nor a link is refused", async () => {
+    const s = await setupEditor();
+    await expect(
+      s.as.mutation(api.marketingDesigns.upsertDesign, {
+        kind: "video",
+        title: "Nothing here",
+      }),
+    ).rejects.toThrow(/needs the clip itself/i);
   });
 });
 

@@ -1,5 +1,5 @@
 /**
- * One image slot on a design — upload, preview, remove.
+ * One file slot on a design — upload, preview, remove.
  *
  * The same shape as `CardImagePicker` (web file input, native
  * `expo-image-picker`, deferred save) and deliberately a separate component
@@ -31,10 +31,27 @@ const FILE_LABELS = {
     title: "Artwork",
     help: "The finished image itself. This is what an uploaded design IS.",
   },
+  clip: {
+    title: "Video file",
+    help: "The clip itself. It plays in this panel on the web app; on a phone it opens in the system player.",
+  },
   thumbnail: {
     title: "Thumbnail",
     help: "The tile the library shows in the grid — the reason nine files aren't nine live Canva frames. Always an upload we host: a Canva CDN preview URL expires and leaves a grey box.",
   },
+} as const;
+
+/**
+ * What each slot will accept, and what a picker on a phone should offer.
+ *
+ * A video slot takes video and NOTHING else, because the row's `kind` is what
+ * tells every consumer how to render the bytes — a JPEG in a `video` row draws
+ * a play badge over a picture that never plays.
+ */
+const FILE_MEDIA = {
+  artwork: { accept: "image/*", native: "Images" },
+  clip: { accept: "video/*", native: "Videos" },
+  thumbnail: { accept: "image/*", native: "Images" },
 } as const;
 
 export function DesignFilePicker({
@@ -45,7 +62,7 @@ export function DesignFilePicker({
   onCleared,
   run,
 }: {
-  kind: "artwork" | "thumbnail";
+  kind: "artwork" | "clip" | "thumbnail";
   /** What the design shows today, or null when the slot is empty. */
   current: string | null;
   /** A storage id chosen in this session but not yet saved. */
@@ -59,6 +76,7 @@ export function DesignFilePicker({
   );
   const [uploading, setUploading] = useState(false);
   const labels = FILE_LABELS[kind];
+  const media = FILE_MEDIA[kind];
 
   async function uploadBlob(blob: Blob, contentType: string) {
     setUploading(true);
@@ -74,7 +92,12 @@ export function DesignFilePicker({
           const { storageId } = await res.json();
           onPicked(storageId as string);
         },
-        { errorTitle: "Couldn't upload that image" },
+        {
+          errorTitle:
+            kind === "clip"
+              ? "Couldn't upload that video"
+              : "Couldn't upload that image",
+        },
       );
     } finally {
       setUploading(false);
@@ -84,27 +107,31 @@ export function DesignFilePicker({
   function pickWeb() {
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "image/*";
+    input.accept = media.accept;
     input.onchange = () => {
       const file = input.files?.[0];
-      if (file) void uploadBlob(file, file.type || "image/jpeg");
+      if (file) void uploadBlob(file, file.type || fallbackType(kind));
     };
     input.click();
   }
 
   async function pickNative() {
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ImagePicker.MediaTypeOptions[media.native],
       quality: 0.9,
     });
     if (result.canceled || !result.assets?.length) return;
     const asset = result.assets[0];
     const resp = await fetch(asset.uri);
     const blob = await resp.blob();
-    await uploadBlob(blob, asset.mimeType || blob.type || "image/jpeg");
+    await uploadBlob(blob, asset.mimeType || blob.type || fallbackType(kind));
   }
 
   const has = Boolean(pending || current);
+  // A clip's `current` is an mp4, not a still — an `<Image>` pointed at one
+  // draws a blank box, so the slot says it has a file instead of pretending to
+  // show it. (`designPreview` refuses the same fallback for the same reason.)
+  const thumbable = kind !== "clip";
 
   return (
     <View className="mb-3">
@@ -117,12 +144,16 @@ export function DesignFilePicker({
           <View className="h-14 w-14 items-center justify-center rounded-md border border-border bg-surface">
             <Text className="text-2xs text-muted">New</Text>
           </View>
-        ) : current ? (
+        ) : current && thumbable ? (
           <Image
             source={{ uri: current }}
             className="h-14 w-14 rounded-md border border-border"
             resizeMode="contain"
           />
+        ) : current ? (
+          <View className="h-14 w-14 items-center justify-center rounded-md border border-border bg-surface">
+            <Text className="text-2xs text-muted">Saved</Text>
+          </View>
         ) : null}
         {uploading ? <ActivityIndicator size="small" /> : null}
         <Button
@@ -146,4 +177,9 @@ export function DesignFilePicker({
       ) : null}
     </View>
   );
+}
+
+/** What to send when neither the browser nor the picker names a type. */
+function fallbackType(kind: "artwork" | "clip" | "thumbnail"): string {
+  return kind === "clip" ? "video/mp4" : "image/jpeg";
 }

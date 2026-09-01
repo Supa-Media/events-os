@@ -174,7 +174,13 @@ export const designFolders = defineTable({
 
 /**
  * One design: a Canva or Figma file, a link to somewhere else, or an uploaded
- * image.
+ * image or video.
+ *
+ * A folder full of these IS the event media library the marketing desk asked
+ * for ("a library where we can upload multiple images/vid content ex: WWS or
+ * Field Day") — `marketingDesigns.ts#addUploads` writes a batch of them in one
+ * transaction, and nothing about a bulk-uploaded photo differs from a design
+ * somebody added by hand.
  *
  * ── `url` is the EDIT/SHARE link, never a CDN preview ───────────────────────
  * The Canva CDN trap, written down because it already cost this repo real
@@ -186,8 +192,14 @@ export const designFolders = defineTable({
  * every existing row at once.
  *
  * ── Two image slots, both ours ──────────────────────────────────────────────
- * `imageStorage` is the artwork itself and only means anything on `kind:
- * "image"`. `thumbnailStorage` is the preview card for ANY kind — including a
+ * `imageStorage` is the upload itself and only means anything on an upload kind
+ * (`image` or `video` — see `isUploadKind`): the artwork on one, the playable
+ * file on the other. One column rather than a second `videoStorage` because
+ * every rule that governs it — resolve-or-refuse, keep-if-not-resent, hard
+ * delete on replace — is the same rule for both, and a second column would be a
+ * second place to forget one of them. What the bytes ARE is `kind`'s job to
+ * say, and consumers must branch on it: a video handed to an `<Image>` is a
+ * blank box. `thumbnailStorage` is the preview card for ANY kind — including a
  * Canva link, which otherwise renders as a title and nothing else. Both are
  * uploads we host, never a third party's URL, for the CDN reason above. Each
  * carries its resolved `*Url` alongside the storage id (the `emailImages`
@@ -212,12 +224,13 @@ export const designAssets = defineTable({
    * this line. Nothing reads it.
    */
   folderId: v.optional(v.id("designFolders")),
-  /** The stable share/edit link. Absent only on an `image` whose entire content
-   *  is the upload. */
+  /** The stable share/edit link. Absent only on an `image` or `video` whose
+   *  entire content is the upload. */
   url: v.optional(v.string()),
   notes: v.optional(v.string()),
-  /** The uploaded artwork (`kind: "image"`), plus its resolved public URL —
-   *  cached together, see this file's doc. */
+  /** The upload itself on an upload kind — artwork on `image`, the clip on
+   *  `video` — plus its resolved public URL, cached together (this file's
+   *  doc). */
   imageStorage: v.optional(v.id("_storage")),
   imageUrl: v.optional(v.string()),
   /** The hosted preview card, for any kind. Always an upload. */

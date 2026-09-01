@@ -34,6 +34,18 @@
  *    and keeps the file a single `.tsx` rather than the three-file split
  *    `NativePdfPane` needs.
  *
+ * ── An uploaded VIDEO plays here, on web ────────────────────────────────────
+ * A clip we host is not a third-party canvas — it is a file at a URL we handed
+ * out — so the web branch renders a real `<video controls>` with the design's
+ * thumbnail as its poster. No player library and no native module: react-native
+ * -web puts the tag in the DOM the same way it does the `<iframe>` above.
+ *
+ * Native gets the poster and "Open video", the same shape as the Canva branch
+ * and for a plainer reason: an in-app player would mean a native dependency
+ * (`expo-video`) that every binary already in the field lacks, and this repo's
+ * rule for those is `gated` — absent until a build carries it. The system
+ * player the URL opens in is better than the one we would ship anyway.
+ *
  * ── A null `embedUrl` must never become a frame ─────────────────────────────
  * `designEmbedUrl` returns null for anything it doesn't recognise, expressly so
  * that callers fall back rather than render a broken box (its own doc says so).
@@ -67,6 +79,7 @@ function openLabel(kind: DesignKind): string {
   if (kind === "canva" || kind === "figma") {
     return `Open in ${DESIGN_KIND_LABELS[kind]}`;
   }
+  if (kind === "video") return "Open video";
   return kind === "image" ? "Open full size" : "Open link";
 }
 
@@ -81,13 +94,32 @@ export function DesignEmbed({
   // Narrowed into a const rather than tested inline so the JSX below hands the
   // iframe a `string`, not a `string | null` with a non-null assertion.
   const frame = Platform.OS === "web" ? embedUrl : null;
-  const still = imageUrl ?? thumbnailUrl;
+  // Same narrowing, same reason — and only on web, where there is a player.
+  const clip = kind === "video" && Platform.OS === "web" ? imageUrl : null;
+  // A video's `imageUrl` is the clip itself, which is not a still: on every
+  // surface that draws a picture, only its uploaded poster will do.
+  const still = kind === "video" ? thumbnailUrl : (imageUrl ?? thumbnailUrl);
   // An `image` design's own artwork is the thing to open when it has no URL.
   const target = url ?? imageUrl;
 
   return (
     <View className="mt-2">
-      {frame ? (
+      {clip ? (
+        <View
+          className="w-full overflow-hidden rounded-lg border border-border bg-sunken"
+          style={{ aspectRatio: 16 / 9 }}
+        >
+          {/* RN-web renders this video tag directly in the DOM. */}
+          <video
+            src={clip}
+            poster={thumbnailUrl ?? undefined}
+            controls
+            preload="metadata"
+            aria-label={title}
+            style={{ width: "100%", height: "100%", backgroundColor: "black" }}
+          />
+        </View>
+      ) : frame ? (
         <View
           className="w-full overflow-hidden rounded-lg border border-border bg-sunken"
           style={{ aspectRatio: 16 / 9 }}

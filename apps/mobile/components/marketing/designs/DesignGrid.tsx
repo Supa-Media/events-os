@@ -27,6 +27,13 @@
  * doesn't change color as the list reorders. A grey rectangle says "broken"; a
  * red one with "LT" on it says "this is ours and nobody has thumbnailed it".
  *
+ * ── A video says so before you click it ─────────────────────────────────────
+ * An uploaded clip draws its poster if somebody uploaded one and the brand
+ * placeholder otherwise (`designPreview` refuses to hand an mp4 to an
+ * `<Image>`), with a play badge over whichever it is. The badge is the tile's
+ * whole promise: a folder of Field Day photos with four clips in it should be
+ * scannable without opening anything.
+ *
  * ── Grid and list are the same rows ─────────────────────────────────────────
  * The toggle changes density, not content: the list is for a folder of forty
  * near-identical story overlays where the title is the distinguishing feature,
@@ -48,6 +55,8 @@ import {
   type BrandColor,
   type DesignAsset,
 } from "@events-os/shared";
+import { Icon } from "../../ui";
+import { colors } from "../../../lib/theme";
 import { designPreview, gridEmbeds, type DesignPreview } from "./library.shared";
 
 export function DesignList({
@@ -137,6 +146,7 @@ export function DesignTile({
             />
           </View>
         ) : null}
+        {design.kind === "video" ? <PlayBadge /> : null}
         <View className="absolute left-2 top-2 rounded-pill bg-raised/95 px-2 py-0.5">
           <Text className="text-2xs font-semibold text-ink">
             {DESIGN_KIND_LABELS[design.kind]}
@@ -180,6 +190,7 @@ function DesignRow({
     >
       <View className="h-[50px] w-10 overflow-hidden rounded-sm">
         <Preview preview={preview} title={design.title} initialsSize={15} />
+        {design.kind === "video" ? <PlayBadge small /> : null}
       </View>
       <View className="min-w-0 flex-1">
         <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
@@ -195,6 +206,30 @@ function DesignRow({
         {DESIGN_KIND_LABELS[design.kind]}
       </Text>
     </Pressable>
+  );
+}
+
+/**
+ * The "this one plays" mark, centred over whatever the picture box drew.
+ *
+ * Drawn rather than written because it has to read at 40px in a list row as
+ * well as at tile size, and because a play triangle is the one icon nobody has
+ * to learn. `pointerEvents: none` so the tile underneath keeps the press.
+ */
+function PlayBadge({ small = false }: { small?: boolean }) {
+  return (
+    <View
+      className="absolute bottom-0 left-0 right-0 top-0 items-center justify-center"
+      style={{ pointerEvents: "none" }}
+    >
+      <View
+        className={`items-center justify-center rounded-full bg-ink/60 ${
+          small ? "h-5 w-5" : "h-11 w-11"
+        }`}
+      >
+        <Icon name="play" size={small ? 10 : 20} color={colors.accentText} />
+      </View>
+    </View>
   );
 }
 

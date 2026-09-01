@@ -39,6 +39,14 @@
  * to see every day. Colors and Faces landing one scroll down is the same call
  * the founder made when the kit led the page — "put Design files on the top".
  *
+ * ── A folder of an event's photos and clips is just a folder ────────────────
+ * "Is there a way we can create a library where we can upload multiple images/
+ * vid content ex: WWS or Field Day" — the marketing lead, and the answer is the
+ * Upload button on every folder's own header. It drops a batch of files
+ * straight into that folder as ordinary designs (`addUploads`), so an event's
+ * media is searched, filed, pinned and reordered by everything this tab already
+ * does, instead of being a second kind of thing with its own rules.
+ *
  * ── Every control lives in the section it acts on ───────────────────────────
  * The library's density toggle and its Add menu are on the library's header;
  * the folders and their New/settings controls are in the rail beside the grid;
@@ -97,6 +105,7 @@ import { FolderRail } from "./designs/FolderRail";
 import { FolderBody } from "./designs/FolderBody";
 import { FolderSection } from "./designs/FolderSection";
 import { AddItemMenu } from "./designs/AddItemMenu";
+import { UploadFilesButton } from "./designs/UploadFilesButton";
 import { ColorInspector } from "./designs/ColorInspector";
 import { FontInspector } from "./designs/FontInspector";
 import { DesignInspector } from "./designs/DesignInspector";
@@ -210,6 +219,20 @@ export function MarketingDesignsView() {
     ...(designs.length >= DESIGN_MAX_COUNT ? (["design"] as const) : []),
   ];
 
+  /** How many more designs the library can hold — what a bulk upload is
+   *  allowed to add in one press, and why the button can say "Library full"
+   *  instead of collecting files the mutation would refuse. */
+  const room = Math.max(0, DESIGN_MAX_COUNT - designs.length);
+
+  /** Say what a batch upload did. A toast only surfaces failures, and "twelve
+   *  photos landed in Field Day" is the confirmation somebody who just watched
+   *  a progress counter is owed. */
+  function uploaded(count: number, folderName: string | null) {
+    setNotice(
+      `Added ${count} file${count === 1 ? "" : "s"}${folderName ? ` to “${folderName}”` : " — they're Unfiled until you file them"}.`,
+    );
+  }
+
   /** Open a blank inspector of `kind`, pre-filed into `folderId` when there is
    *  one to inherit. */
   function addTo(kind: FolderItemKind, folderId: string | null) {
@@ -282,10 +305,18 @@ export function MarketingDesignsView() {
               />
             </View>
             {canEdit ? (
-              <AddItemMenu
-                onAdd={(kind) => addTo(kind, activeFolder?.id ?? null)}
-                full={full}
-              />
+              <>
+                <UploadFilesButton
+                  folderId={activeFolder?.id ?? null}
+                  room={room}
+                  run={run}
+                  onUploaded={(count) => uploaded(count, activeFolder?.name ?? null)}
+                />
+                <AddItemMenu
+                  onAdd={(kind) => addTo(kind, activeFolder?.id ?? null)}
+                  full={full}
+                />
+              </>
             ) : null}
           </View>
         }
@@ -355,6 +386,9 @@ export function MarketingDesignsView() {
           live={live}
           canEdit={canEdit}
           full={full}
+          room={room}
+          run={run}
+          onUploaded={(count) => uploaded(count, folder.name)}
           onAdd={(kind) => addTo(kind, folder.id)}
           onOpenFolder={() => setInspect({ kind: "folder", id: folder.id })}
           onOpenColor={openColor}
@@ -539,7 +573,7 @@ function ShelfEmptyState({
       title={everything ? "Nothing in the library yet" : `Nothing in ${shelfName} yet`}
       message={
         canEdit
-          ? "Paste a Canva or Figma link and it lands here, previews right on its tile, and stays one tap from the editable file."
+          ? "Paste a Canva or Figma link and it lands here, previews right on its tile, and stays one tap from the editable file. Or press Upload and drop a whole event's photos and clips in at once."
           : "The marketing team hasn't put anything here yet."
       }
       action={
