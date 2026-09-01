@@ -22,6 +22,7 @@
 import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
+import { easternParts } from "@events-os/shared";
 import type { Id } from "../_generated/dataModel";
 
 /** Eastern-noon on a day — period bucketing is Eastern, so noon keeps the day
@@ -391,9 +392,12 @@ describe("budgetGlance.expenses", () => {
   test("a recurring bucket's drawer shows THIS month, matching its card", async () => {
     const t = newT();
     const s = await setupChapter(t);
-    const now = new Date();
-    const year = now.getFullYear();
-    const month = now.getMonth() + 1;
+    // EASTERN, not the runner's clock — `budgetGlance.expenses` picks its
+    // window with `easternParts`, so a test that asks `Date` seeds its "this
+    // month" charge into next month for the four hours between 00:00 UTC and
+    // 00:00 Eastern on the 1st, and then asserts the previous month's charge
+    // shouldn't count while the code correctly counts it.
+    const { year, month } = easternParts(Date.now());
     const budgetId = await seedBudget(s, {
       amountCents: 50_000,
       year,

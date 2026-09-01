@@ -27,6 +27,7 @@
 import { describe, expect, test } from "vitest";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
+import { easternParts } from "@events-os/shared";
 import type { Id } from "../_generated/dataModel";
 
 /** Eastern-noon on a day — period bucketing is Eastern, so noon keeps the day
@@ -38,8 +39,13 @@ function tsOn(year: number, month: number, day: number): number {
 }
 
 const NOW = new Date();
-const THIS_YEAR = NOW.getFullYear();
-const THIS_MONTH = NOW.getMonth() + 1;
+// EASTERN, not the runner's clock. `budgetGlance` decides which month a
+// recurring bucket's window covers with `easternParts`, and a test that asks
+// `Date` instead disagrees with it for the four hours between 00:00 UTC and
+// 00:00 Eastern on the 1st of every month — which is a red main once a month,
+// for nobody's change. See the sibling fix in `budgetGlanceExpenses.test.ts`.
+const THIS_YEAR = easternParts(NOW.getTime()).year;
+const THIS_MONTH = easternParts(NOW.getTime()).month;
 const LAST_YEAR = THIS_YEAR - 1;
 
 async function seedFinanceViewer(s: ChapterSetup): Promise<void> {
