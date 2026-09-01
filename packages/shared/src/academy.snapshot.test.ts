@@ -886,6 +886,13 @@
  * place in curriculum order (derived from array position, so no hand-editing).
  * The export FEATURE is untouched — only the lesson is gone. Total: 116
  * sections (115 required).
+ *
+ * REMOVED (2026-09-01): `finance-transfers-and-payouts` ("Transfers and
+ * payouts"), the second section this curriculum has dropped outright. The
+ * `treasurer` course goes from four modules to three. The payout-is-not-a-
+ * transfer rule was taught only here — Reconcile lists both as filter rows
+ * but never says why confusing them double-counts revenue. Total: 115
+ * sections (114 required).
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -961,7 +968,6 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "finance-paying-a-contractor",
   "finance-contractor-tax-and-privacy",
   "finance-reconcile-grid",
-  "finance-transfers-and-payouts",
   "finance-chasing-receipts",
   "finance-monthly-close",
   // 2026-08-11: the public finances page. Publishing is the step after the
@@ -1547,14 +1553,6 @@ const EXPECTED_SECTIONS: {
     capstoneKind: null,
   },
   {
-    slug: "finance-transfers-and-payouts",
-    title: "Transfers and payouts",
-    minutes: 2,
-    quizLength: 4,
-    optional: false,
-    capstoneKind: null,
-  },
-  {
     slug: "finance-chasing-receipts",
     title: "Chasing receipts",
     minutes: 2,
@@ -2109,7 +2107,6 @@ const EXPECTED_COURSES: {
     themeKey: "finances",
     moduleSlugs: [
       "finance-reconcile-grid",
-      "finance-transfers-and-payouts",
       "finance-chasing-receipts",
       "finance-monthly-close",
     ],

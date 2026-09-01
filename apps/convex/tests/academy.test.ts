@@ -197,6 +197,10 @@ describe("curriculum content", () => {
     // exceptions carry new vocabulary (reason axis, attestation,
     // evidence-vs-receipt, the second approver) and change a money rule. See
     // `docs/plans/receipt-exceptions.md`.)
+    // − 1 (finance-transfers-and-payouts, 2026-09-01, removed from the
+    // treasurer course, which drops to three modules. It carried the
+    // payout-is-not-a-transfer rule and nothing else teaches it; see the
+    // tombstone at the top of `streams/finances.ts`.)
     // − 1 (foundations-data-export, 2026-09-01, removed from the how-we-work
     // course. It taught `data.export`, a power only six director-level seats
     // hold, but how-we-work is on every role path — so it was shown to every
@@ -301,12 +305,12 @@ describe("curriculum content", () => {
     // purpose (a volunteer making a flyer needs the hex code), and writing a
     // post is a different permission from publishing one — because a headline
     // is a sentence and a post is an argument published under the org's name.)
-    expect(ACADEMY_SECTION_COUNT).toBe(116);
+    expect(ACADEMY_SECTION_COUNT).toBe(115);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 116 }, (_v, i) => i + 1),
+      Array.from({ length: 115 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(115);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(114);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

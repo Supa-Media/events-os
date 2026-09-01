@@ -104,6 +104,7 @@ import { captureDesignCovers } from "./0083_capture_design_covers";
 import { recaptureDesignCovers } from "./0084_recapture_design_covers";
 import { foldersAsPrimitive } from "./0085_folders_as_primitive";
 import { reawardAfterDataExportRemoval } from "./0086_reaward_after_data_export_removal";
+import { reawardAfterTransfersRemoval } from "./0087_reaward_after_transfers_removal";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -547,4 +548,10 @@ export const MIGRATIONS: Migration[] = [
   // five newly qualify with no event left to fire. Same body as 0028 — the
   // re-award pass a shrunk course needs. See the file.
   reawardAfterDataExportRemoval,
+  // 0087: `finance-transfers-and-payouts` was deleted from the `treasurer`
+  // course, shrinking it from four required modules to three. Same re-award
+  // pass as 0086 one deploy earlier, for the same reason: badges are awarded
+  // inline when the last required module passes, so people who had finished
+  // the other three newly qualify with no event left to fire. See the file.
+  reawardAfterTransfersRemoval,
 ];
