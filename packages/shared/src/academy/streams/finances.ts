@@ -871,6 +871,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "That is true no matter which tool tracks the charge or which process is in place this year. The posture underneath doesn't change. If you spent it on the mission, prove it — quickly, not eventually.",
       },
       {
+        kind: "rule",
+        title: "The card is mission-only",
+        text: "No exceptions, not even for a good deal. If a personal item lands on it by accident, flag it right away rather than leaving it for someone else to find. And if you would rather just cover something yourself, route it instead: donate, then pay with the card. That keeps the expense on the books instead of an untrackable personal favour, and it may be deductible.",
+      },
+      {
         kind: "reveal",
         prompt:
           "A single donor offers $5,000 in one gift. Does your chapter's tier move?",
@@ -1093,6 +1098,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Emailing a receipt CAPTURES it — the half worth doing at the counter, often before the charge has posted. It doesn't decide which charge the receipt belongs to. You do that in one tap at **/code**: your own page for receipts, coding and flagging your own charges. No finance seat is needed, and the link works even if you have never opened the rest of the app.",
       },
       {
+        kind: "rule",
+        title: "The lock is a mechanism, not the rule",
+        text: "It works by Public Worship being asked to approve each purchase as it happens, which only cards we issue can do. On an older linked card it simply never fires. Every other consequence is unchanged — including the charge becoming money you owe back once it has gone long enough without an account of it.",
+      },
+      {
         kind: "reveal",
         prompt:
           "You emailed the receipt from the checkout line on day one. On day eight your card locks. Why?",
@@ -1195,6 +1205,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "Asking to be let off isn't being let off",
         text: "A PENDING exception stops nothing — not the reminder timeline, not the card auto-lock. Only an approved one stands in for a receipt. It does let you submit the charge's coding, because filing the attestation is the part that's yours. The charge still isn't closed until someone approves it.",
+      },
+      {
+        kind: "rule",
+        title: "You cannot approve your own exception",
+        text: "Separation of duties again — the same rule that governs reimbursements, budgets and campaigns. Without it everyone would simply except their own charges and the receipt policy would mean nothing. Under $75 a manager may approve their own: a two-name ceremony on a parking meter buys nothing. And a receipt always outranks an attestation. Attach one and the app supersedes the exception by itself.",
       },
       {
         kind: "reveal",
@@ -1944,7 +1959,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The chase is two controls, not a screen",
-        text: "There is no Chase Receipts page and no menu entry for one. Put **State → Owes a receipt or coding** on top of **Group by → Person**. That pairing is the chase, with each cardholder's Chase button in their own band. That is where your actual attention goes.",
+        text: "There is no Chase Receipts page and no menu entry for one. Put **State → Owes a receipt or coding** on top of **Group by → Person**. That pairing is the chase, with each cardholder's Chase button in their own band. The chase acts on the view you are standing in: your filters, your search, and any rows you have ticked. Ticked rows are the narrowest thing on screen, so they win. There is one chase per cardholder per 24 hours, so narrow it before you press.",
       },
       {
         kind: "rule",
@@ -2404,7 +2419,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "A monthly cost is a fixed base plus the team",
-        text: "The fixed base — film, event food, equipment transport, storage, software — doesn't move with team size. The per-teammate part does: $20 a month each, which is the monthly team meal. So a six-person team on a $570 base costs $570 + 6 × $20 = $690.",
+        text: "The fixed base — film, event food, equipment transport, storage, software — doesn't move with team size. The per-teammate part does: $20 a month each, which is the monthly team meal. So a six-person team on a $570 base costs $570 + 6 × $20 = $690. Every teammate carries a real recurring cost, so growing the team is good but deliberate: the floor moves, and the raising has to move with it.",
       },
       {
         kind: "reveal",
@@ -2497,8 +2512,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "Paid-from never moves; charged-to does",
+        text: "Pay for New York's venue on a Public Worship card and Central really did pay. Its statement has to keep matching, so paid-from stays put. Charged-to is what the budget measures, so the cost lands on New York's plan. The gap between them is a receivable, shown in Inter-chapter balances and settled overnight by the reconciliation engine.",
+      },
+      {
+        kind: "rule",
         title: "Report up",
-        text: "The central Financial Manager should be able to open your chapter's numbers and trust them without a conversation. That trust is this system's north-star metric.",
+        text: "Categories are org-wide: Supplies means Supplies in every book. Funds are the opposite on purpose — a fund is a chapter's own restricted money, so it stays chapter-owned. You are an auditor who can verify any chapter's numbers, never a gate purchases wait behind. The central Financial Manager should be able to open your chapter's numbers and trust them without a conversation.",
       },
       {
         kind: "reveal",
@@ -2687,6 +2707,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "rule",
         title: "A cardholder freezes their own card",
         text: "It is self-serve, instant, and reversible by them alone. That is the fastest real protection available. They should also tell their Treasurer or the Financial Manager — but the freeze doesn't wait for a manager to respond.",
+      },
+      {
+        kind: "rule",
+        title: "What shipped, and what the training gate does",
+        text: "A cardholder freezes and unfreezes their own card instantly. A Financial Manager or Treasurer can permanently cancel one. Any member can submit a card request, at most one open at a time, for you to approve or deny. A required Academy course gates ISSUANCE, not the request: someone can request now, finish the course, then be approved. The cards admin flags an untrained cardholder as \"Needs training\", and the requirement is off by default.",
       },
       {
         kind: "reveal",
