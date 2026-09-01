@@ -471,12 +471,19 @@ export type DesignPreview =
  *
  * Note this is the opposite order to `DesignEmbed`'s still, which prefers the
  * full artwork because it is filling a viewer rather than a 4:5 tile.
+ *
+ * A `video` NEVER falls back to its own file. `imageUrl` on a video is an mp4,
+ * and an mp4 handed to an `<Image>` is a silent blank box — the exact grey
+ * rectangle the placeholder exists to prevent. A clip with no poster uploaded
+ * draws initials in the brand's paint, with the tile's play badge over it, and
+ * that reads as "a video nobody thumbnailed" rather than as "broken".
  */
 export function designPreview(
-  design: Pick<DesignAsset, "id" | "title" | "thumbnailUrl" | "imageUrl">,
+  design: Pick<DesignAsset, "id" | "title" | "kind" | "thumbnailUrl" | "imageUrl">,
   palette: BrandColor[],
 ): DesignPreview {
-  const uri = design.thumbnailUrl ?? design.imageUrl;
+  const uri =
+    design.thumbnailUrl ?? (design.kind === "video" ? null : design.imageUrl);
   if (uri) return { kind: "image", uri };
   const background = placeholderPaint(design.id, palette);
   return {

@@ -543,6 +543,32 @@ describe("designPreview", () => {
     expect(preview).toEqual({ kind: "image", uri: "https://files/art.png" });
   });
 
+  test("a video never falls back to its own file — an mp4 is not a still", () => {
+    // `imageUrl` on a video is the clip. Handing it to an <Image> draws the
+    // silent blank box the placeholder exists to prevent, so a clip with no
+    // poster uploaded gets initials and the tile's play badge instead.
+    const preview = designPreview(
+      design("d", "Field Day reel", null, {
+        kind: "video",
+        imageUrl: "https://files/reel.mp4",
+      }),
+      palette,
+    );
+    expect(preview.kind).toBe("placeholder");
+
+    // Its uploaded poster, when there is one, is exactly what it draws.
+    expect(
+      designPreview(
+        design("d", "Field Day reel", null, {
+          kind: "video",
+          imageUrl: "https://files/reel.mp4",
+          thumbnailUrl: "https://files/poster.png",
+        }),
+        palette,
+      ),
+    ).toEqual({ kind: "image", uri: "https://files/poster.png" });
+  });
+
   test("with neither, it draws initials in the brand's own palette", () => {
     const preview = designPreview(design("d1", "Eden banner", null), palette);
     expect(preview.kind).toBe("placeholder");

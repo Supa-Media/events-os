@@ -38,6 +38,7 @@ import {
   DESIGN_URL_MAX,
   designEmbedUrl,
   isAllowedDesignUrl,
+  isUploadKind,
   type BrandColor,
   type DesignAsset,
   type DesignFolder,
@@ -152,9 +153,9 @@ export function DesignInspector({
   const hasArtwork = Boolean(
     draft.imagePending || (!draft.imageCleared && design?.imageUrl),
   );
-  // An `image` design can be nothing but an upload; every other kind is a
+  // An `image` or a `video` can be nothing but an upload; every other kind is a
   // pointer at something, so a URL is the whole row.
-  const needsUrl = draft.kind !== "image";
+  const needsUrl = !isUploadKind(draft.kind);
   const usable =
     Boolean(draft.title.trim()) &&
     urlOk &&
@@ -211,7 +212,7 @@ export function DesignInspector({
       subtitle={
         design
           ? `${DESIGN_KIND_LABELS[design.kind]} · ${filedUnder(design.folderIds, folders)}`
-          : "A Canva or Figma link, or an upload"
+          : "A Canva or Figma link, or an uploaded photo or clip"
       }
       onClose={onClose}
       // A read-only caller still gets "copy the link" — copying is reading.
@@ -229,7 +230,7 @@ export function DesignInspector({
                   disabled={!usable}
                   onPress={save}
                 />
-                {design?.url && design.kind !== "image" ? (
+                {design?.url && !isUploadKind(design.kind) ? (
                   // Re-capture the tile's picture from the design's own page —
                   // for when the art changed in Canva and the grid still shows
                   // the old cover. The automatic capture only fills a blank;
@@ -313,7 +314,7 @@ export function DesignInspector({
             value={draft.kind}
             options={KIND_OPTIONS}
             onChange={(kind) => setDraft({ ...draft, kind: kind as DesignKind })}
-            hint="Canva and Figma files preview here in the panel. A link is anything else — Drive, Dropbox, Notion."
+            hint="Canva and Figma files preview here in the panel. An image or a video is a file we host — the web app plays a clip right here. A link is anything else — Drive, Dropbox, Notion."
           />
           <TextField
             label="Title"
@@ -333,7 +334,7 @@ export function DesignInspector({
             }
           />
           <TextField
-            label={draft.kind === "image" ? "Link (optional)" : "Link"}
+            label={isUploadKind(draft.kind) ? "Link (optional)" : "Link"}
             value={draft.url}
             onChangeText={(next) => setDraft({ ...draft, url: next })}
             maxLength={DESIGN_URL_MAX}
@@ -360,9 +361,9 @@ export function DesignInspector({
             maxLength={DESIGN_NOTES_MAX}
             hint="What it's for, in a line."
           />
-          {draft.kind === "image" ? (
+          {isUploadKind(draft.kind) ? (
             <DesignFilePicker
-              kind="artwork"
+              kind={draft.kind === "video" ? "clip" : "artwork"}
               current={draft.imageCleared ? null : (design?.imageUrl ?? null)}
               pending={draft.imagePending}
               onPicked={(id) =>
@@ -374,6 +375,10 @@ export function DesignInspector({
               run={run}
             />
           ) : null}
+          {/* On a video this slot is the POSTER — the frame the grid draws and
+              the player shows before you press play. Nothing generates one
+              server-side: decoding video in a Convex action is a project, not a
+              line, so a clip without one gets the brand placeholder. */}
           <DesignFilePicker
             kind="thumbnail"
             current={draft.thumbCleared ? null : (design?.thumbnailUrl ?? null)}

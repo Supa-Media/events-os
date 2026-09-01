@@ -36,8 +36,10 @@ import {
 import { Button, EmptyState, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { AddItemMenu } from "./AddItemMenu";
+import { UploadFilesButton } from "./UploadFilesButton";
 import { FolderBody } from "./FolderBody";
 import { countLabel, itemCount, type LibraryItems } from "./library.shared";
+import type { ActionRunner } from "../../../lib/useActionToast";
 
 export function FolderSection({
   folder,
@@ -48,6 +50,9 @@ export function FolderSection({
   live,
   canEdit,
   full,
+  room,
+  run,
+  onUploaded,
   onAdd,
   onOpenFolder,
   onOpenColor,
@@ -66,6 +71,11 @@ export function FolderSection({
   canEdit: boolean;
   /** Item kinds at their library-wide cap. */
   full: FolderItemKind[];
+  /** How many more designs the library can hold — the bulk upload's headroom. */
+  room: number;
+  run: ActionRunner["run"];
+  /** How many files a batch upload landed in THIS folder. */
+  onUploaded: (count: number) => void;
   onAdd: (kind: FolderItemKind) => void;
   onOpenFolder: () => void;
   onOpenColor: (color: BrandColor) => void;
@@ -93,6 +103,12 @@ export function FolderSection({
               variant="ghost"
               onPress={onOpenFolder}
             />
+            <UploadFilesButton
+              folderId={folder.id}
+              room={room}
+              run={run}
+              onUploaded={onUploaded}
+            />
             <AddItemMenu onAdd={onAdd} full={full} />
           </View>
         ) : null}
@@ -112,7 +128,7 @@ export function FolderSection({
             title={`${folder.name} is empty`}
             message={
               canEdit
-                ? "A folder holds anything — a color, a face, a Canva link. Add the first thing."
+                ? "A folder holds anything — a color, a face, a Canva link, an event's photos and clips. Add the first thing."
                 : "The marketing team hasn't put anything here yet."
             }
           />

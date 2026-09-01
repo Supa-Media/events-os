@@ -204,8 +204,13 @@ export const ITEM_FOLDER_MAX = 8;
  *  `link` — anything else with a URL: a Dropbox folder, a Google Drive file, a
  *      Notion page. No embed; a link and a label.
  *  `image` — an upload we host. The finished artwork, not the source file.
+ *  `video` — an upload we host that is PLAYED rather than looked at: the clip
+ *      from Field Day, the reel cut for Instagram. Its own kind rather than an
+ *      `image` with a video in it because every consumer has to branch — a
+ *      video file handed to an `<Image>` is a blank box, and a tile has to say
+ *      "this one plays" before somebody clicks it.
  */
-export const DESIGN_KINDS = ["canva", "figma", "link", "image"] as const;
+export const DESIGN_KINDS = ["canva", "figma", "link", "image", "video"] as const;
 export type DesignKind = (typeof DESIGN_KINDS)[number];
 
 export const DESIGN_KIND_LABELS: Record<DesignKind, string> = {
@@ -213,7 +218,21 @@ export const DESIGN_KIND_LABELS: Record<DesignKind, string> = {
   figma: "Figma",
   link: "Link",
   image: "Image",
+  video: "Video",
 };
+
+/**
+ * The two kinds whose whole content is a file we host — what a bulk upload can
+ * produce, and the kinds that may exist with no URL at all.
+ */
+export const DESIGN_UPLOAD_KINDS = ["image", "video"] as const;
+export type DesignUploadKind = (typeof DESIGN_UPLOAD_KINDS)[number];
+
+/** Whether a design is one of those. Written once so the Convex mutation, the
+ *  inspector's "does this need a link?" test, and the tiles all agree. */
+export function isUploadKind(kind: DesignKind): kind is DesignUploadKind {
+  return kind === "image" || kind === "video";
+}
 
 /** One design in the library. */
 export interface DesignAsset {
@@ -222,14 +241,15 @@ export interface DesignAsset {
   title: string;
   /** Every folder this design is in. Empty = loose, shown in "Unfiled". */
   folderIds: string[];
-  /** Where it lives. Always present except on an `image` whose only content is
-   *  the upload itself. */
+  /** Where it lives. Always present except on an `image` or `video` whose only
+   *  content is the upload itself. */
   url: string | null;
   /** The embeddable form of `url`, or null when it isn't embeddable — computed
    *  by `designEmbedUrl`, never stored, so fixing the embed rule fixes every
    *  existing row. */
   embedUrl: string | null;
-  /** A servable URL for the uploaded artwork (`image` kind). */
+  /** A servable URL for the upload itself — the artwork on an `image`, the
+   *  playable file on a `video`. Null on every other kind. */
   imageUrl: string | null;
   /** A servable URL for the hosted thumbnail, for any kind. Always an upload —
    *  see the Canva CDN note in this module's doc. */
@@ -244,6 +264,84 @@ export const DESIGN_TITLE_MAX = 80;
 export const DESIGN_NOTES_MAX = 300;
 export const DESIGN_URL_MAX = 800;
 export const DESIGN_MAX_COUNT = 500;
+
+// ── Uploading a pile of files at once ────────────────────────────────────────
+
+/**
+ * A LIBRARY OF PHOTOS AND CLIPS, not one design at a time.
+ *
+ * The ask, in the marketing lead's words: "is there a way we can create a
+ * library where we can upload multiple images/vid content ex: WWS or Field
+ * Day". A folder already IS that library — what was missing is that adding to
+ * it cost one form per file, which is the friction that keeps two hundred Field
+ * Day photos in somebody's camera roll instead of in the org's hands.
+ *
+ * So a bulk upload skips the form entirely: every file becomes a design of its
+ * own, titled from its filename, filed into the folder it was dropped on, and
+ * editable afterwards like any other row. No second concept, no "album" table —
+ * a folder of photos is a folder, and the search box, the checklist and the
+ * pinning it already has all keep working on it.
+ *
+ * `DESIGN_UPLOAD_BATCH_MAX` bounds ONE press, not the library: the whole batch
+ * lands in a single Convex mutation (so a half-failed upload leaves no half a
+ * folder), and a transaction that inserts an unbounded number of rows is a
+ * transaction that eventually fails on the size of itself. Forty is a phone's
+ * worth of an event; a thousand-photo shoot is several presses, which is the
+ * honest shape of the thing.
+ *
+ * The library-wide `DESIGN_MAX_COUNT` still applies and is now genuinely
+ * reachable — `library` reads every row in one query, so the fix when 500 bites
+ * is paging that query, never a bigger constant.
+ */
+export const DESIGN_UPLOAD_BATCH_MAX = 40;
+
+/** What a file picker should offer. Same list `designKindForContentType`
+ *  accepts, so the dialog can't hand back something the mutation refuses. */
+export const DESIGN_UPLOAD_ACCEPT = "image/*,video/*";
+
+/**
+ * Which kind of design an uploaded file becomes, or `null` when the library
+ * won't hold it.
+ *
+ * The MIME type decides, not the extension: the browser and `expo-image-picker`
+ * both hand one over, and a name is the one part of a file a person can rename
+ * into a lie. Anything that isn't an image or a video is refused outright
+ * rather than filed as an `image` — a PDF in an `<Image>` is a blank tile, and
+ * a blank tile that claims to be artwork is the failure mode this whole module
+ * keeps writing rules against.
+ */
+export function designKindForContentType(
+  contentType: string | null | undefined,
+): DesignUploadKind | null {
+  const type = contentType?.trim().toLowerCase() ?? "";
+  if (type.startsWith("image/")) return "image";
+  if (type.startsWith("video/")) return "video";
+  return null;
+}
+
+/**
+ * The title a bulk-uploaded file starts life with — its filename, tidied.
+ *
+ * `field-day_01.JPG` → `field-day 01`. Deliberately not clever about it: the
+ * point is that a marketer scanning forty new tiles can tell which photo is
+ * which, and the filename is the only thing we know that distinguishes them.
+ * Underscores become spaces because a camera writes them where a person would
+ * type one; hyphens are left alone because they are usually load-bearing
+ * ("2026-08", "field-day"). Renaming one afterwards is a title field like any
+ * other design's.
+ *
+ * Falls back to "Untitled upload" rather than "" because a design with no title
+ * is one `upsertDesign` would refuse and a grid would draw as a nameless box.
+ */
+export function designTitleFromFileName(name: string | null | undefined): string {
+  const base = ((name ?? "").split(/[/\\]/).at(-1) ?? "")
+    .replace(/\.[^.]+$/, "")
+    .replace(/[_]+/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  if (base.length === 0) return "Untitled upload";
+  return base.slice(0, DESIGN_TITLE_MAX);
+}
 
 // ── Embeds ───────────────────────────────────────────────────────────────────
 
