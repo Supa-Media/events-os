@@ -1477,7 +1477,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-stewardship",
     title: "Where the money comes from",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1493,7 +1493,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-card-and-receipts",
     title: "Your card and the 7-day rule",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1501,7 +1501,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-receipt-exceptions",
     title: "When there's genuinely no receipt",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1549,7 +1549,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-transfers-and-payouts",
     title: "Transfers and payouts",
-    minutes: 3,
+    minutes: 2,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1557,7 +1557,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-chasing-receipts",
     title: "Chasing receipts",
-    minutes: 3,
+    minutes: 2,
     // 4 → 5: the Missing-receipt vs Undocumented question, the treasurer's
     // half of receipt exceptions (`docs/plans/receipt-exceptions.md`).
     quizLength: 5,
@@ -1591,7 +1591,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-approving-budgets",
     title: "Approving budgets",
-    minutes: 3,
+    minutes: 2,
     // 4 since 2026-08-09: the four approval seats now approve CODINGS too,
     // with different reach per seat, and that's the part people get wrong.
     quizLength: 4,
@@ -1601,7 +1601,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-tiers-and-skim",
     title: "Tiers, the covenant, and the skim",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1609,7 +1609,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-cross-chapter-audit",
     title: "Auditing every chapter",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1628,7 +1628,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-accounts-and-cards-admin",
     title: "Accounts, cards, and the City Launch Fund",
-    minutes: 3,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
