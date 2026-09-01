@@ -367,6 +367,7 @@ const REGISTRY_NAMES = [
   "0083_capture_design_covers",
   "0084_recapture_design_covers",
   "0085_folders_as_primitive",
+  "0086_reaward_after_data_export_removal",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
