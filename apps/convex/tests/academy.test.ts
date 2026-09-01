@@ -197,11 +197,11 @@ describe("curriculum content", () => {
     // exceptions carry new vocabulary (reason axis, attestation,
     // evidence-vs-receipt, the second approver) and change a money rule. See
     // `docs/plans/receipt-exceptions.md`.)
-    // + 1 (foundations-data-export, slotted into the how-we-work course after
-    // foundations-where-things-live — required, not a capstone. It lives in
-    // FOUNDATIONS rather than the development stream on purpose: `data.export`
-    // is held by six seats across finance/development/marketing/chapter, and
-    // how-we-work is the only substantive course on all six role paths.)
+    // − 1 (foundations-data-export, 2026-09-01, removed from the how-we-work
+    // course. It taught `data.export`, a power only six director-level seats
+    // hold, but how-we-work is on every role path — so it was shown to every
+    // teammate to explain a screen most of them can never open. The feature
+    // is unchanged; only the lesson is gone.)
     // + 1 (finance-coding-your-charges, inserted into the finances-for-everyone
     // course after finance-receipt-exceptions — required, not a capstone. The
     // cardholder's half of transaction coding: the what/why/who record a
@@ -301,12 +301,12 @@ describe("curriculum content", () => {
     // purpose (a volunteer making a flyer needs the hex code), and writing a
     // post is a different permission from publishing one — because a headline
     // is a sentence and a post is an argument published under the org's name.)
-    expect(ACADEMY_SECTION_COUNT).toBe(117);
+    expect(ACADEMY_SECTION_COUNT).toBe(116);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 117 }, (_v, i) => i + 1),
+      Array.from({ length: 116 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(116);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(115);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");

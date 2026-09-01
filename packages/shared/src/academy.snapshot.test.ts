@@ -873,6 +873,19 @@
  * Folding them into the desk lesson would have meant dropping mailing-list
  * consent questions to stay inside the five-question cap, and those are the
  * ones that protect the org from a self-inflicted wound. Total: 102 sections.
+ *
+ * REMOVED (2026-09-01): `foundations-data-export` ("Taking data out of the
+ * app") is deleted outright — the first section this curriculum has dropped
+ * rather than moved. The 2026-07-31 move recorded above solved the wrong
+ * half of the problem: putting the lesson on `how-we-work` did reach all six
+ * seats that hold `data.export`, but `how-we-work` is on EVERY role path, so
+ * the fix taught a director-level power to every teammate in the org to
+ * explain a screen most of them can never open. Owner decision: the reach
+ * that made the placement correct is what made it not worth its slot.
+ * `how-we-work` drops back to five modules; every section after it shifts one
+ * place in curriculum order (derived from array position, so no hand-editing).
+ * The export FEATURE is untouched — only the lesson is gone. Total: 116
+ * sections (115 required).
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -886,7 +899,6 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "foundations-communication",
   "foundations-showing-up",
   "foundations-where-things-live",
-  "foundations-data-export",
   "foundations-spending",
   "foundations-owning-your-yes",
   "what-is-events-os",
@@ -1066,14 +1078,6 @@ const EXPECTED_SECTIONS: {
     slug: "foundations-where-things-live",
     title: "Where things live",
     minutes: 3,
-    quizLength: 4,
-    optional: false,
-    capstoneKind: null,
-  },
-  {
-    slug: "foundations-data-export",
-    title: "Taking data out of the app",
-    minutes: 4,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1973,7 +1977,7 @@ const EXPECTED_COURSES: {
   {
     slug: "how-we-work",
     themeKey: "foundations",
-    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-data-export", "foundations-spending", "foundations-owning-your-yes"],
+    moduleSlugs: ["foundations-communication", "foundations-showing-up", "foundations-where-things-live", "foundations-spending", "foundations-owning-your-yes"],
   },
   {
     slug: "chapter-os-fundamentals",
