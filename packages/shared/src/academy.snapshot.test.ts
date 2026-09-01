@@ -1485,7 +1485,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-three-tracks",
     title: "Green, yellow, red",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1533,7 +1533,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-contractor-tax-and-privacy",
     title: "The W-9, and what publishes",
-    minutes: 4,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1575,7 +1575,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-publishing-the-books",
     title: "Publishing the books",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

@@ -984,123 +984,42 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-three-tracks",
     title: "Green, yellow, red",
     subtitle: "The thirty seconds before you tap the card",
-    minutes: 4,
+    minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "Almost every money problem a chapter has starts in the same place: someone spent first and worked out the details afterwards. Not dishonestly — they were at a store, the event was Saturday, it seemed obviously fine. The fix isn't more paperwork afterwards. It's about thirty seconds of thinking before.",
-      },
-      {
-        kind: "heading",
-        text: "Three questions, in order",
-      },
-      {
-        kind: "bullets",
-        items: [
-          "**Which budget does this come out of?** Not \"the chapter's money\" — a specific, named, approved budget. Event budgets are named after the event template they came from (\"Genesis\"), with a year or a month added only when there's more than one to tell apart, so the name you say out loud is the name you'll find on the Budgets tab. If you can't name one, you've already found your answer: this isn't green.",
-          "**Is there enough left in it?** Not what the budget started at — what's left after everything already charged to it. Open Finances → Budgets and look; the app knows, and you don't need a finance role to see it. The tab shows **one year at a time** — this year by default, with arrows to step back to a previous one, so a budget you can't find is almost always on another year's page rather than gone. Tap any budget to drop it open: the individual charges behind that number, who made each one, what's been coded where, and a link straight through to the event or project it belongs to. If the number surprises you, the answer to why is one tap away — don't guess, and don't ask around. For a standing bucket that resets every month or quarter (operating expenses, equipment), dropping it open also gives you the year window by window — every month or quarter so far side by side, plus a faded estimate of where the year lands if spending keeps up. Faded bars are a forecast from the months that have already finished, not money anyone has spent.",
-          "**The headline is the whole year, and standing budgets count at their full-year amount.** The strip at the top of the tab — budgeted, spent, left — covers *every* budget on the page, the one-off events and the standing buckets together. To make that a real number, a bucket's cap is converted to what it commits for the year first: a $500-a-month operating budget counts as **$6,000**, a $400-a-quarter fund as **$1,600**. So the top figure will always be bigger than the per-window number on the card below, and that's the conversion, not a discrepancy. **Spend is never converted** — it's what actually left the account so far this year, so the faded forecast bars on a bucket's chart are deliberately left out of it. Read the top strip as \"what we committed for the year, and how much of it is gone\"; read a card as \"how this one bucket is doing right now\".",
-          "**Which track is this on — green, yellow, or red?** The rest of this lesson.",
-        ],
+        text: "Three questions, in order. Which budget does this come out of? Is there room in it? Then, and only then, which track are you on? The first two are facts you can look up in the app. The third is the judgment those facts feed.",
       },
       {
         kind: "table",
-        headers: ["Track", "What it means", "What you do"],
+        headers: ["Track", "What it means"],
         rows: [
-          [
-            "🟢 **Green**",
-            "An approved budget covers it, there's room, and it's the ordinary kind of thing that budget is for",
-            "Spend. Tell the budget's owner it's landing on their budget.",
-          ],
-          [
-            "🟡 **Yellow**",
-            "Real mission spending, but something is off-pattern — no budget quite covers it, the room is thin, it's unusually large, or it's a category that budget has never carried",
-            "Get a yes BEFORE you spend. Not after.",
-          ],
-          [
-            "🔴 **Red**",
-            "Spending Public Worship should not be making at all",
-            "Don't. No budget and no approval turns a red purchase green.",
-          ],
+          ["Green", "An approved budget, with room in it. Spend — then tell the budget's owner."],
+          ["Yellow", "No budget, or no room left. Get a yes BEFORE you spend."],
+          ["Red", "Spending the org shouldn't be making at all. No budget makes it green."],
         ],
       },
       {
         kind: "rule",
-        title: "Yellow means ask first — that's the entire rule",
-        text: "A yellow purchase made without asking doesn't become green because it turned out fine, and asking afterwards isn't asking. The whole value of the yellow track is that the conversation happens while the answer can still be no. Approval after the fact is just a report, and it puts the person you're telling in the position of either rubber-stamping something they'd have questioned or making you eat the cost — which is a bad position to put a teammate in, and the reason this rule exists at all.",
-      },
-      {
-        kind: "heading",
-        text: "What exactly is red",
-      },
-      {
-        kind: "p",
-        text: "Red isn't \"expensive\" and it isn't \"unbudgeted\" — a $4,000 sound system can be green and a $12 purchase can be red. Red is about the KIND of spending, which is why no approval fixes it. Concretely:",
-      },
-      {
-        kind: "bullets",
-        items: [
-          "**Anything personal.** Groceries, your own clothes, a gift for your own family — even on a trip you're on for Public Worship, even when you intend to pay it back.",
-          "**Anything you'd be uncomfortable a backer seeing the receipt for.** This is the honest test, and it catches things no list can enumerate. Somebody gave $50 a month for the mission; would you want to show them this line?",
-          "**Anything that uses Public Worship's name or money for private benefit.** Booking through the org to get a discount for yourself, putting a friend's invoice through as a vendor, spending to do someone a favor.",
-          "**Anything you'd rather nobody found out about.** If the plan involves the charge not being noticed, or a description that's technically true but designed not to raise questions, that IS the red flag. There is no version of this that's fine.",
-        ],
+        title: "Yellow means before, not after",
+        text: "Asking afterwards isn't asking. It hands someone a decision that has already been made. That forces them either to rubber-stamp it or to make you pay for it.",
       },
       {
         kind: "rule",
-        title: "A red charge becomes yours",
-        text: "This isn't a warning about a hypothetical process. A charge judged red in coding review gets sent back as a **personal charge** — money you owe Public Worship, repaid out of your own pocket, recorded under your name. It happens at the review step, not at some tribunal, and the person doing the review is a teammate who has to look at a line and decide whether the org is comfortable standing behind it. Nobody enjoys that conversation. Not having it is worth thirty seconds of thought at the counter.",
+        title: "Red is a kind of spending, not a size",
+        text: "A large purchase with an approved budget is green. An unbudgeted one is yellow and needs a yes. Red is spending the org shouldn't make at all — which is why no budget and no approval turns it green.",
       },
       {
-        kind: "heading",
-        text: "Who you ask, and what you're actually asking",
-      },
-      {
-        kind: "p",
-        text: "Every event and project has **one person who owns its budget** — the person who planned it and got it approved. That's who a purchase against that budget goes through. But notice what green actually asks of you: not a formal approval, just a heads-up. \"I'm about to buy the speakers — can I put that on the Worship With Strangers budget?\" Most of the time the answer is yes and it takes ten seconds.",
-      },
-      {
-        kind: "p",
-        text: "That ten seconds is doing real work, though. The owner is the only person who knows what else is still coming out of that budget, and plenty of purchases could legitimately land in two places — general operating or this specific event. Which one it lands on changes whether either has room later. Guessing silently is how a budget that looked fine all month is suddenly over at close, with no single purchase to blame.",
-      },
-      {
-        kind: "scenario",
-        prompt:
-          "You're running errands for Saturday's event. The approved event budget has $300 left. At the store you grab $80 of supplies that are clearly on the plan — and you notice the extension cords the chapter has needed for months, another $45. Same trip, same card. What do you do?",
-        options: [
-          {
-            text: "Buy both — it's all chapter spending and the budget has room",
-            feedback:
-              "The $80 is green. The cords aren't — they're not what this event's budget was approved for, they're a chapter-wide purchase riding along because you happened to be standing there. That's textbook yellow: real, sensible, mission spending that belongs to a different pot. Buy the supplies, then text whoever owns general operating about the cords.",
-          },
-          {
-            text: "Buy the $80 of supplies; ask about the cords before buying them",
-            correct: true,
-            feedback:
-              "Right on both halves. The supplies are green — approved budget, room in it, exactly the kind of thing it's for. The cords are yellow, not because $45 is a lot but because they belong to a different budget than the one you're standing in. One message settles it, and it takes less time than the return trip would.",
-          },
-          {
-            text: "Buy neither until someone approves the whole trip",
-            feedback:
-              "Too cautious, and it doesn't scale — if green spending needed approval, having budgets approved in advance would mean nothing. The supplies are exactly what that budget was approved for. Go ahead.",
-          },
-          {
-            text: "Buy both, then split them correctly in coding afterwards",
-            feedback:
-              "Coding it correctly afterwards is necessary but it isn't the same thing. Whoever owns general operating still hasn't been told $45 left their budget, and they find out at close — which is exactly the surprise this rule exists to prevent. Coding records a decision; it doesn't make it.",
-          },
-        ],
+        kind: "rule",
+        title: "Green still needs a heads-up",
+        text: "Green doesn't need permission; that is what an approved budget means. It does need a word to the budget's owner. They are the only person tracking everything else still to come out of that budget, and a purchase that arrives silently is one they can't plan around.",
       },
       {
         kind: "reveal",
         prompt:
-          "You're travelling for Public Worship and buy a $9 airport sandwich on the card. Green, yellow, or red?",
+          "You put a red purchase on the card anyway, and you kept the receipt. What happens to it?",
         answer:
-          "Green, in almost every chapter — eating on a trip you're on for the mission is ordinary travel spending, and travel budgets exist for exactly this. What would make it red isn't the amount: it's buying a second sandwich for tomorrow, or picking up something for home in the same transaction. The line isn't cost, it's whether the money was spent on the mission or on you.",
-      },
-      {
-        kind: "tip",
-        text: "**When you genuinely can't tell, it's yellow.** \"I couldn't decide, so I asked\" is a completely respectable outcome and costs one message. \"I couldn't decide, so I bought it\" is how a charge ends up in review with no good answer available. Uncertainty is itself the signal — a green purchase doesn't feel uncertain.",
+          "It comes back to you as a personal charge, recorded under your name and repaid out of your own pocket. The receipt doesn't help. Proving you made the purchase was never the question.",
       },
     ],
     quiz: [
@@ -1761,66 +1680,38 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-contractor-tax-and-privacy",
     title: "The W-9, and what publishes",
     subtitle: "The most sensitive file we hold, and the one line the world reads",
-    minutes: 4,
+    minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "Because a contractor payment is income to the person receiving it, we collect a tax form before we pay: a **W-9** from a US person or US business, a **W-8BEN** from a foreign individual, a **W-8BEN-E** from a foreign entity. It's uploaded as a file — nobody types a Social Security or tax ID number into this app, and nothing reads one out of the document.\n\n**We only ask once.** Someone we've paid before doesn't fill the whole form again: their next payment shows them what we already hold — \"a W-9 you gave us in March, an account ending 6789\" — and asks them to confirm both are still right. They confirm; we never assume. They handed those details over for one job having read a disclosure about that job, and quietly reusing them for the next one is a different act. It is also the only way anyone finds out a bank account has closed, which is how money reaches the wrong place.\n\nWhat never carries over is the **agreement**. Every payment is signed fresh, at version one, with its own amount and its own description. Autofill is for who they are, never for what was agreed.",
+        text: "A contractor payment is income to the person receiving it, so we collect a tax form before we pay. A **W-9** from a US person or business. A **W-8BEN** from a foreign individual, a **W-8BEN-E** from a foreign entity.",
       },
       {
         kind: "rule",
-        title: "That file has an SSN on it. Treat it like it does.",
-        text: "A completed W-9 carries a Social Security or Employer Identification Number, which makes it the most sensitive thing this application holds — more sensitive than any dollar figure in the books.\n\nSo three rules sit on top of it. Only **finance managers and treasurers** can open it; everyone else sees that a form is on file and nothing more. **Every single view is logged** before the file opens — who looked, at whose form, and when — because the gate is a role rather than a named person, and the log is what makes \"the treasurer can see W-9s\" answerable instead of anonymous. And it is **destroyed four years after the last payment it covers**, automatically.\n\nNote the wording: the *last* payment, not the first. A returning contractor's form is reused rather than re-collected, so one form can substantiate several years of work — and the clock restarts each time it is used, so we never destroy the evidence behind a payment still inside its own window. A form nobody was ever paid against goes much sooner: nothing was reported to anyone, so there is nothing to substantiate and no reason to keep it. That last one is the only rule that actually protects anybody in the long run: a number we no longer hold is a number that can't leak.",
-      },
-      {
-        kind: "tip",
-        text: "**A W-8 stops the payment, on purpose.** A W-8BEN or W-8BEN-E means the payee is not a US person, and payments abroad can carry withholding obligations that this app does not compute. So approval is BLOCKED and the payment is handed to a human to handle off-platform — deliberately louder than paying it at zero withholding and finding out in April.\n\n**And a W-8 expires, where a W-9 doesn't.** A W-9 has no expiry date at all: it stays good until the facts on it change — a new legal name, a new tax ID, a different kind of business — and only the person who signed it knows that, which is why we ask them rather than run a timer. A W-8 is the opposite: it lapses at the end of the third year after it was signed. That's why we ask a W-8 filer when they signed it, and why an expired one stops counting as \"on file\" and can't be reused.",
-      },
-      {
-        kind: "rule",
-        title: "The work publishes. The person doesn't.",
-        text: "When the payment settles it becomes a row in the books like any other spend, and that row goes on the public ledger when the month is published. What a stranger reads is: **the description of the work, the amount, the date, and the category**.\n\nWhat they never read is the contractor. The counterparty on that row is the fixed words **\"Contractor payment\"** — not a name, not a business name, not initials. Their email, their tax form and their bank details are never published in any form.\n\nThat's a deliberate choice about someone's livelihood, and it's the conservative direction of a one-way door: we can decide to publish names later, but we can never un-publish one. It also runs the other way from a reimbursement, which publishes as \"Reimbursement to <name>\" — that's a member being made whole, and members carry the org's spending in public. This is a person's income.",
+        title: "The work publishes; the person does not",
+        text: "A reader can audit what the money bought. The counterparty is the fixed words \"Contractor payment\" — the name, email, tax form and bank details are never published in any form. This runs opposite to a reimbursement, which publishes as \"Reimbursement to <name>\": that is a member being made whole, this is someone's income.",
       },
       {
         kind: "rule",
         title: "The description publishes verbatim, and forever",
-        text: "The sentence describing the work is the one field that goes public word for word — no editor rewrites it, and a published month is FROZEN, so it can only ever be amended in public, never taken down.\n\nWhich means it must not contain personal details. \"Two-camera video for the March worship night\" is a description. \"Video for the March night, call Jane at 555-0142 or come by 12 Elm St\" is a permanent public disclosure of somebody's phone number and address.\n\nThe app checks — the same check on the contractor's own page, on the staff form, and on the server, so no door into it is the easy one — and it refuses the shapes it can recognize: email addresses, phone numbers, street addresses, long digit runs that could be an account or tax number. It is crude on purpose. It catches the accidental paste; it can't catch \"ring me at my house on Elm\", and it isn't pretending to. Reading the sentence as a stranger would is still your job, and a treasurer can soften a description before the month publishes — after that, only an amendment.",
+        text: "It is the one field that publishes word for word. A published month is frozen and can only be amended in public. The checker refuses emails, phone numbers, street addresses and long digit runs wherever the text is typed. It is deliberately crude: it stops the accidental paste, not a determined one.",
       },
       {
-        kind: "bullets",
-        items: [
-          "**We never store their bank details.** The routing and account numbers go straight to the bank and are never written down here — all we keep is the **last four digits** and an opaque reference. So when someone asks you to read back the account on file, the honest answer is that we can't, and that's the feature.",
-          "**One agreement, one payment.** A payment can be approved for LESS than was agreed (with the contractor told), never for more, and there's a ceiling on a single payment as a typo guard — a bigger engagement is split into milestones, each its own agreement.",
-          "**Every decision is on the record.** Sending the link, sending it back, approving, rejecting, cancelling and every view of the tax form all append to the same audit trail the rest of finance writes to. It's append-only: the record of what was decided doesn't get tidied up later.",
-        ],
+        kind: "rule",
+        title: "Every look at a W-9 is logged",
+        text: "The gate is a role, not a named individual, so the log is what makes the access answerable: who looked, at whose form, when. The form is destroyed four years after the LAST payment it covers. No tax ID is ever typed into a field — the form is a file, and nothing parses it.",
       },
       {
-        kind: "scenario",
+        kind: "rule",
+        title: "We don't hold the bank digits",
+        text: "Raw account numbers are never persisted. They are validated, handed to the bank once, and what comes back is a reference and the last four. So \"we can't tell you, we don't have it\" is the true answer, and it is the point rather than a limitation.",
+      },
+      {
+        kind: "reveal",
         prompt:
-          "A sound engineer in Lagos has done the mix. He uploads a W-8BEN, his bank details are in, and the work was excellent. You go to approve it.",
-        options: [
-          {
-            text: "Approval is blocked — a W-8 means he isn't a US person, so it goes to a human to handle outside the app",
-            correct: true,
-            feedback:
-              "Right. Foreign payments can carry withholding that this system doesn't compute, so it refuses rather than quietly paying at 0% and creating a problem nobody sees until tax time. Nothing is wrong with him or the work — it's a case the software declines to guess at.",
-          },
-          {
-            text: "Approve it and note in the description that he's overseas",
-            feedback:
-              "Two problems: the approval is refused anyway, and the description is the field that publishes verbatim and permanently — it is the last place to record something about a person.",
-          },
-          {
-            text: "Ask him to file a W-9 instead so the payment can go through",
-            feedback:
-              "A W-9 is for US persons. Asking a foreign contractor to file one to unblock a screen is asking him to certify something untrue.",
-          },
-          {
-            text: "Reject the payment — we can't pay people abroad",
-            feedback:
-              "We can; it just isn't a decision this flow makes on its own. Rejecting tells him no when the real answer is 'handled another way'.",
-          },
-        ],
+          "A foreign contractor fills in a W-9 by mistake. Why does the flow refuse to pay rather than just proceed?",
+        answer:
+          "Withholding isn't something a form field can decide. A W-9 is for US persons and entities; a foreign payee needs a W-8BEN or a W-8BEN-E. Paying at zero withholding and finding out at tax time is the worse ending, so the app declines to guess.",
       },
     ],
     quiz: [
@@ -2349,68 +2240,38 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-publishing-the-books",
     title: "Publishing the books",
     subtitle: "What we say in public, and how we correct it",
-    minutes: 5,
+    minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "Once a month is closed, it goes on publicworship.life — not a summary, every transaction. What we bought, who we bought it from, what it was for, and whether we can produce the receipt. A giver reading \"$3.9M staff cost\" feels like a drop in a bucket. A giver reading \"$47.83, Costco, water and cups for the setup team at a Worship With Strangers night\" can see their own $5 in it.",
-      },
-      {
-        kind: "p",
-        text: "You watch it happen from Transactions. Set **Group by → Month** and every band tells you where that month stands: Draft, In review, Published (with the revision that's live), or Amending. **Preview** on the band opens the actual public page for that month, exactly as a stranger would see it, without publishing anything.\n\nBoth buttons are there whatever else you have set, because the band names its own subject: filter the grid and it reads \"12 of 318 charges · -$4,102 of -$88,201\" — what your filter left, and then the month. Publish always means the month. (It used to hide the buttons whenever you had filtered, on the reasoning that a band saying \"12 charges\" next to a Publish button was describing something other than what the button did. That was true, and naming both figures is the honest fix rather than taking the button away.)\n\n**Publish** on the band opens the publish console's flow over the grid: the month's figures, every disclosure that will publish beside them, and the button that hands it to a second person. It is the console's own screen in a panel, not a quicker version of it — publishing is not a way of looking at a month, it is an irreversible act with a second person in it, and none of what surrounds it is paperwork in front of the button. It IS the button. So nothing is skipped by publishing from here: the same refusal if you try to approve what you prepared, the same demand for an amendment reason on a correction, the same refusal of a month whose snapshot came back incomplete.\n\nTwo places still send you to the console screen itself (**Finances → the publishability card**, or the band on **All books**): it lists every month of one book at once, and a book has to be named before one of its months can go public. The flow you meet there is the same flow.",
+        text: "Publishing takes a month's books and freezes a copy. That copy is what the world sees. It is the property that stops an after-the-fact edit from silently rewriting what we already said — which is why fixing the ledger is only half of making a correction.",
       },
       {
         kind: "rule",
-        title: "Published means frozen",
-        text: "The public page does **not** read the live books. When a month is published, it is FROZEN — a copy is stored and that copy is what the world sees, forever. Editing a transaction next week changes our books and changes nothing public. That is the whole design: a live page would let an edit silently rewrite what we already said, and nobody outside could tell.",
+        title: "We publish gaps rather than around them",
+        text: "A month with unexplained rows still publishes, with the blanks showing. Blocking would mean publishing nothing for a year. Hiding those rows, or letting them look documented, would be a claim we cannot back. The only thing refused outright is an incomplete ledger presented as complete.",
       },
       {
         kind: "rule",
-        title: "The team reads it first",
-        text: "You do not need a finance seat to read the books. **Finances \u2192 Ledger** shows any month of your chapter's book, and central's, in exactly the shape the public page uses \u2014 same lines, same redactions, same \"not counted\" marks. The difference is timing: you can open a month that is still being coded, weeks before anyone publishes it.\n\nSo the redaction rules on this page are not something that happens to the ledger on its way out of the building. They are already true of the copy your teammates read: no givers, no names at a meal, no contractor payees. And the second-order effect is the point \u2014 knowing the whole team can see what you spent, this month, is what keeps everyone honest long before a stranger ever loads the page.\n\nWhat reading does not give you is a say. The Ledger has nothing to press: coding a charge, reconciling, approving a budget and publishing a month all still need the seat that owns them.",
-      },
-      {
-        kind: "bullets",
-        items: [
-          "**One person prepares, a different person publishes.** Preparing needs a finance manager seat; publishing needs the separate *Publish finances* power on the seat chart. The system refuses a self-approval and records which way every month went.",
-          "**Everything publishes — but not everything counts.** Internal transfers and the bank deposits carrying gifts you already counted are shown, marked \"not counted.\" Hiding them would leave gaps; counting them would count the same dollar twice.",
-          "**An intentionally excluded row does not publish.** Excluding a duplicate or a bank error is us saying it was never a transaction. Publishing it as one would be the opposite of clarifying.",
-          "**No names, ever.** Not givers, not the people at a meal, and not the people we PAY for work. A meal publishes as \"12 people — 5 team members, 7 community members.\" A contractor payment publishes the work, the amount, the date and the category, with the counterparty reading \"Contractor payment\" — never who was paid (see *Paying a contractor*). That answers who the money was for without publishing a person, and some of the people we feed are minors.",
-        ],
+        title: "Publishing is its own seat power",
+        text: "It is separate from reconciling, because its audience is outside the org and a published number cannot be un-seen. The Executive Director and Financial Manager carry it centrally; a Chapter Director carries it for their own book. Notably not the Treasurer, who prepares it. It refuses a self-approval wherever you publish from.",
       },
       {
         kind: "rule",
-        title: "We publish our gaps, not around them",
-        text: "A month with three receiptless rows publishes with a note saying there are three receiptless rows. Rows rebuilt from old spreadsheets are marked **Rebuilt** rather than presented as though we watched them happen. Waiting for a perfect month would mean publishing nothing for a year; presenting an incomplete month as complete is the one thing the system refuses outright, because it is the only failure a reader cannot detect for themselves.",
-      },
-      {
-        kind: "tip",
-        text: "**Corrections are the feature, not the embarrassment.** A published month can never be taken down — only amended. You start a correction, say what changed and why, and it publishes as revision 2 with the earlier version still readable beside it. An organization that shows its corrections is more believable than one that has never appeared to make any.",
-      },
-      {
-        kind: "p",
-        text: "The page also rolls a whole YEAR up — pick a year and \"All months\" — and that rollup is nothing but the published months added together. It is never published on its own, it never fills in a month nobody closed, and it says on its face how many of the twelve it is built from. So the fastest way to make the year look complete is to close the months.",
+        title: "A year is the months added up",
+        text: "A year is never published on its own. It never estimates, and never fills in a month nobody closed. It states how many of the twelve it covers — so the way to make the year complete is to close the months.",
       },
       {
         kind: "rule",
-        title: "Budgets publish too",
-        text: "Every budget money came out of appears with what it was allowed and what it actually used — including the ones that went over, which are the rows people read first. Two consequences worth planning around: spend with no budget attached publishes as **\"Not attached to a budget\"** rather than being hidden, and a budget's name is public the moment its first charge is. Name budgets like a stranger will read them, because one will.",
+        title: "Names are internal forever",
+        text: "Members and guests never consented to a public financial record, and some are minors. The ledger publishes the headcount and the affiliation mix, which answer the accountability question without publishing a person.",
       },
       {
         kind: "reveal",
         prompt:
-          "You publish August. In September you notice a Costco charge was entered as $47.83 when the receipt says $52.10. What do you do?",
-        answer: "Fix the transaction in Reconcile, then start a correction on August: pick \"Amount corrected\" and write the sentence that explains it. Send it for review; the publisher approves it and August republishes as revision 2. The public page shows the corrected figure, a dated correction notice, and your explanation. What you must NOT do is assume fixing the ledger fixed the page — it doesn't, by design.",
-      },
-      {
-        kind: "try_ready",
-        criteria: [
-          "The month is closed — every charge Closed, receipts chased, queue clear",
-          "You have read the preview's disclosure lines and can defend each one out loud",
-          "The \"Who gets paid\" grid is still true — one tile per POSITION we have, a badge for how many people hold it, and \"Volunteer\" underneath, so if anyone is now paid, that position's figure goes in before you publish",
-          "Someone other than you is available to review and publish it",
-          "Any correction you are making has a sentence a stranger could understand",
-        ],
+          "You spot a wrong figure in a month you published last week. You fix the transaction, and the ledger is now right. Are you done?",
+        answer:
+          "No. The published copy is frozen, so the world is still reading the old number. Correcting it means amending in public, with a reason. The fix and the disclosure are two halves of one act.",
       },
     ],
     quiz: [
