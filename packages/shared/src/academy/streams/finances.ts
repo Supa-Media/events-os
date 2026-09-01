@@ -1448,147 +1448,33 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-coding-your-charges",
     title: "Coding your charges",
     subtitle: "What it was, why it served the work, and who was there",
-    minutes: 5,
+    minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "A receipt proves you paid $312.40 to a bus company. It doesn't say why Public Worship should have. That gap is fine while the books are ours alone — and useless the moment we publish them, which is exactly what we're about to do with every transaction we make. So from **September 1, 2026**, every card charge carries a second thing alongside its receipt: a **coding**.",
+        text: "A coding is the reason for a charge, written by the person who made it. \"Bus to NY\" is what the bank already told us. \"Travel to NY to film the Eden event\" is a reason. Travel adds a route — city level is enough — because where the money went is part of what the record has to say.",
       },
       {
         kind: "rule",
-        title: "You write it, someone else approves it",
-        text: "A coding answers three questions about a charge: **what it was**, **why it served the org's work**, and **who was involved**. You write it — you're the only person who actually knows — and a different person approves it, the same separation of duties that governs exceptions, reimbursements, and budgets.\n\nIt's a first-class record with its own review, not a note field. If a reviewer sends it back, it comes with a note saying exactly what would make it approvable (\"receipt must show the exact amount\"), and you fix it and resubmit. Nobody guesses on your behalf, and nobody signs off on their own.\n\nOne thing a coding is NOT: a place to confess. If a charge wasn't Public Worship's — you grabbed the wrong card, it was a ride home — don't explain that in the business purpose. That sentence publishes, and the charge still counts as our spending. Use **It was personal — I'll pay it back**, offered right under the purpose field: the charge stops owing a coding, stops counting as ours, and moves to what you owe back.",
-      },
-      {
-        kind: "rule",
-        title: "Write the purpose for the public, not for the bookkeeper",
-        text: "The business purpose is the sentence a stranger reads on Public Worship's public ledger, under our name, forever. So write it for them.\n\n**\"Bus to NY\"** is what the bank already told us. **\"Travel to NY to film the Eden event\"** is a reason. The test: could someone who wasn't there tell what happened and why it was worth backers' money?",
-      },
-      {
-        kind: "rule",
-        title: "Pick your category — the proof questions follow it",
-        text: "You already pick a **category** on every charge (Food & Meals, Transportation, Travel & Lodging, and so on) — that's what the budget rollups read. The coding sheet now reads it too: your category quietly picks which of the four proof-question branches below applies, so a **Transportation** charge lands straight on the route questions without a second decision, and a **Food & Meals** charge lands on the headcount question.\n\nThat's a QUESTION SET, not an answer — it decides which fields the sheet shows you, never what goes in them. It's also correctable, always: the branch shows as a small, editable control right there on the sheet, and picking a different one yourself sticks — a later category change won't quietly swap it back. A category with no obvious branch (Supplies, Office & Admin, and most others) simply leaves it unpicked, exactly like coding a charge always has.",
-      },
-      {
-        kind: "table",
-        headers: ["If the branch is…", "What it asks for on top of the purpose"],
-        rows: [
-          [
-            "**General**",
-            "Nothing extra — the purpose carries the whole record. Most charges are this.",
-          ],
-          [
-            "**Travel**",
-            "A route: where from, where to. City level is enough (\"Kansas City → New York\"), plus who travelled. This is also where a **Transportation** category charge lands — fares, gas, parking, tolls are getting-somewhere spending, same branch, same questions. \"Travel\" and \"Transportation\" aren't two different things; they're the coding branch and the category that defaults to it.",
-          ],
-          [
-            "**Overnight stay (lodging)**",
-            "One place — **where you stayed** (city level is enough; nobody \"travelled from\" a hotel, so there's no second field to fill) — **plus an itemized receipt, at any amount**. This is the one place a bank-record-only exception is refused outright; the IRS wants the itemized folio for lodging, full stop. A Travel & Lodging charge defaults to the Travel branch, not this one — an overnight stay is one tap away on the sheet whenever the trip actually included a room.",
-          ],
-          [
-            "**A meal**",
-            "A headcount, always. 15 people or fewer: every attendee named, with how they relate to the org. More than 15: the headcount plus an identifiable group.",
-          ],
-        ],
-      },
-      {
-        kind: "rule",
-        title: "Meals count people, not dollars",
-        text: "The threshold is **15 heads**, and it has nothing to do with the amount. A $40 pizza order for 16 volunteers gets a headcount and a group description. A $400 dinner for 4 gets four names.\n\nNames come with a relationship — **team · volunteer · community member · contractor · guest** — because \"who was there\" without \"who they are to us\" doesn't answer anything. Above 15, the group description has to be *identifiable*: \"volunteers writing and producing the album\" is a real answer. \"Some people\" is not, and it's the answer a reviewer will send straight back.",
+        title: "Purpose and proof are one record",
+        text: "What the money was for and how it can be proved travel together, so a coding won't submit on a charge with neither a receipt nor an exception. The exception lives in the same sheet, and FILING one is enough to submit. Approving it is somebody else's work, and waiting on them would strand the charge in your queue. It does still have to be approved before the charge can close.",
       },
       {
         kind: "rule",
         title: "Names never publish",
-        text: "We ask for names, and then we don't print them. Ever. The public ledger shows the shape of the room — **\"meal · 5 volunteers, 3 community members, 2 contractors\"** — and the names stay inside the app.\n\nThat isn't a hedge. Volunteers, community members and guests never agreed to appear in a public financial record, and some of them are minors. Publishing our own spending is a decision we made about ourselves; it isn't a decision we get to make about the people who showed up to help us.",
+        text: "A meal asks who was there — every name, up to 15 people; above that a headcount and an identifiable group. None of those names reach the public ledger. Volunteers, community members and guests never consented to a public financial record, and some are minors. So the ledger prints the shape of the room: \"5 volunteers, 3 community members, 2 contractors\".",
       },
       {
         kind: "rule",
-        title: "One act, not two errands",
-        text: "A charge's documentation and its coding are one record: **the app won't take a coding on a charge that has neither a receipt attached nor a filed reason there isn't one.** What the money was for and how it can be proved get answered in the same sheet, in the same sitting — no more finishing half of a charge and leaving the other half to a reminder.\n\nIf there genuinely is no receipt, you already know the honest path from the last lesson: pick a reason, explain it, attach up to five photos of proof. FILING it is enough to submit your coding — approving it is somebody else's work, and making you wait on them would strand the charge in your queue for something you can't do. Approval is still what the charge needs before it can be closed, so nothing gets published on the strength of a claim nobody weighed. (The only exception to the exception is lodging, above.)\n\nTwo deadlines still hang off that one act, and it's worth knowing which is which: a missing RECEIPT is what locks your card at day 7, and a charge nobody substantiated is what becomes money you owe back at day 60.",
+        title: "Sixty days, then it is wages",
+        text: "The 60-day safe harbor is the accountable plan's substantiation window. Past it, unsubstantiated spending is legally wages to the spender. Converting it into a repayment you can settle is the kinder of those two endings — and coding it in week one avoids both.",
       },
       {
-        kind: "p",
-        text: "Which is less work than it sounds, because the receipt is usually already here. A card charge posts about a day after you swipe, so the moment to deal with the paper slip is at the counter — photograph it and email or text it in right then, before a coding sheet for that charge even exists. It waits in your receipts library, and when you open the charge to code it the app offers it: *is this the one?* One tap attaches it. That tap is deliberately yours rather than the system's — you're the only one looking at the charge and the receipt at the same moment, which is exactly the moment to answer the question.",
-      },
-      {
-        kind: "rule",
-        title: "No AI ever writes your words — but your own words follow you",
-        text: "Your category can pick which QUESTIONS the sheet asks (the rule above) — it never answers them. And no machine ever composes an answer: **an AI's plausible sentence about a charge it didn't witness is worth nothing to a backer, an auditor, or you.** What we publish has to be the testimony of a person who was actually there.\n\nThere is exactly one way a field starts filled in, and it isn't a machine writing: when a charge is a **reimbursement payout**, the coding form starts from what the claimant already wrote on their request — their purpose, and on a single-line request the route, headcount, or place too. That's a real person's real words about this exact expense, moved one screen over so nobody retypes them. The form says so (\"started from the claimant's own words on the request\"), everything stays editable, and nothing submits itself — you still read it, fix it, and own the submission.",
-      },
-      {
-        kind: "table",
-        headers: ["Day", "What happens"],
-        rows: [
-          [
-            "Day of charge",
-            "The charge lands on your own page at /code, uncoded. Code it here and none of the rest of this table ever happens.",
-          ],
-          [
-            "Day 1–3",
-            "**One digest email** — \"you have 3 charges to code\" — not one nag per charge.",
-          ],
-          [
-            "Day 3+",
-            "The reminder escalates, and your open charges become visible to your Treasurer.",
-          ],
-          [
-            "Day 7",
-            "A charge still missing its **receipt** locks your card automatically — the same 7-day rule you already know, unchanged. Coding doesn't lock the card; it has its own deadline below. In practice coding early clears this row too, since a submitted coding always carries its documentation.",
-          ],
-          [
-            "Day 60",
-            "A charge still unsubstantiated **auto-converts to a personal repayment**. You pay it back.",
-          ],
-        ],
-      },
-      {
-        kind: "rule",
-        title: "Why day 60 has teeth",
-        text: "This isn't an escalating punishment someone invented to make a point. Public Worship pays expenses under what the IRS calls an **accountable plan**, and one of its conditions is that spending gets substantiated within a reasonable period — 60 days is the safe harbor.\n\nPast it, spending nobody substantiated doesn't stay a loose end: it legally becomes **taxable income to the person who spent it**. Converting it to a repayment you can settle is the kinder of the two endings. Coding it in week one avoids both.",
-      },
-      {
-        kind: "try_status",
-        title: "A charge waiting on its coding",
-        options: [
-          { value: "uncoded", label: "Uncoded", color: "gray" },
-          { value: "submitted", label: "Submitted for review", color: "amber" },
-          { value: "approved", label: "Approved", color: "green" },
-        ],
-        terminal: "approved",
-        caption:
-          "Changes requested is the real fourth state — a reviewer's note lands back in your court, and the charge is open until you fix it and resubmit. Submitted is your part done; the clock is measured against APPROVED.",
-      },
-      {
-        kind: "scenario",
+        kind: "reveal",
         prompt:
-          "Two charges, same week: $38 of pizza for 16 volunteers at an album work session, and a $410 dinner with 4 people — you, a videographer you contract, and two community members considering joining. How do you code the attendees?",
-        options: [
-          {
-            text: "Name everyone on both — you know who was in both rooms",
-            feedback:
-              "Overkill on the pizza, and not what the record wants: above 15 heads it asks for a headcount and an identifiable group instead.",
-          },
-          {
-            text: "Headcount plus \"volunteers writing and producing the album\" for the pizza; four names with their relationships for the dinner",
-            correct: true,
-            feedback:
-              "Right. The threshold is 15 HEADS, not dollars — the cheap charge gets the headcount, the expensive one gets names. And the dinner's names carry relationships: contractor, community member, community member, team.",
-          },
-          {
-            text: "Headcount for the pizza; headcount for the dinner too, since it's the bigger amount",
-            feedback:
-              "Backwards — dollars never move this line. Four people is enumerable, so four names and their relationships is what the record asks for.",
-          },
-          {
-            text: "Names for the pizza since it's a small charge; a group description for the $410 dinner",
-            feedback:
-              "That's the dollar instinct, inverted. It's a headcount rule: 16 people is over the line no matter how little it cost, and 4 people is under it no matter how much.",
-          },
-        ],
-      },
-      {
-        kind: "tip",
-        text: "**Reimbursements work the same way.** You code each LINE as you submit it — same purpose, same route on travel, same attendees on meals — and a reviewer can send it back with a note to fix and resubmit rather than rejecting it outright. One habit, both directions. And the policy starts at charges posted **on or after September 1, 2026**: you are not on the hook for reconstructing last spring from memory. That history is a separate, deliberate cleanup, and it will publish flagged for what it is.",
+          "You code a Transportation charge and the sheet asks where you travelled from and to. Did the category answer anything for you?",
+        answer:
+          "No. A category picks the QUESTION SET — that is why Transportation lands on travel's route questions without a second decision — but it never answers one. The purpose, the route, who was there all stay blank until you type them, and you can correct the branch if the category guessed wrong.",
       },
     ],
     quiz: [
@@ -1665,118 +1551,36 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
     subtitle: "Two directions: what you're owed, what you owe",
-    minutes: 5,
+    minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "Two situations here, and a third one lesson over. You paid out of pocket for something mission-related? Submit a reimbursement request. A personal charge landed on your Public Worship card by mistake? Flag it — that starts you owing the money back, not the other way around.\n\nThe third is the one people file in the wrong place: paying someone for WORK, where nothing has been spent yet and there is no receipt to give back. That is a **contractor payment**, it is reportable income to the person paid, and it has its own flow and its own lesson — *Paying a contractor*. If you find yourself about to reimburse somebody for their own time, stop: that is the other flow.",
+        text: "Two situations. You paid out of pocket for mission work — submit a **reimbursement request**. A personal charge hit your card — **flag it**, which starts you owing money back. Paying someone for WORK is neither: that is a contractor payment, with its own lesson.",
       },
       {
         kind: "bullets",
         items: [
-          "**Reimbursement — Public Worship owes you:** submit the request in-app with a short note on WHY it was needed, plus a transaction date, a receipt, and a full coding on every line — none of that is optional, the app blocks submission until all of it is there. Your full bank details (routing + account, not just a last-4) are captured up front too, so the moment someone approves it, the ACH payout fires automatically from the chapter's Increase account — no one has to separately go send it (unless that account isn't set up yet for the chapter, in which case the Treasurer pays it manually instead). It then moves through submitted → approved → paying → paid, with a detour back to you if a reviewer sends it back for a fix. Someone else — never you — has to approve it.",
-          "**You'll be told when it's approved — and approved is not paid:** the moment a reviewer approves your request, an email goes out saying so and naming the amount. It goes to the address you put ON THE REQUEST, not to wherever your account lives, because plenty of claimants have no account at all. Read the amount before you celebrate: a reviewer can approve SOME of your lines and not others, so when the approved figure differs from what you submitted the email names both, and your Treasurer can tell you which lines didn't make it and why. What that email will never tell you is that the money has already moved — approved and paid are two different states, and sending the payout is the step after. If nothing has landed within a week or so, contact your Treasurer; that's the right person to ask, and asking is welcome.",
-          "**And a second email when the money actually goes:** you hear from us twice about one request — once when it's approved, and again when it's PAID, which is the one people actually wait for. That second email names the date the money left and, where we know it, how: an ACH transfer out of the chapter's account (the money has genuinely gone, though most banks take a business day or two to post it) or a payment your Treasurer sent by hand and recorded here, where the timing is whatever they used. The figure in it is the money that MOVED — and on a partial approval that is the approved amount, not what you submitted, because a reimbursement is paid in ONE lump and there is no such thing as a second instalment. The rest of a partly-approved claim is not coming, and the email says so rather than letting you wait for it. \"Paid\" is our record that a payment was sent, which is not the same fact as money in your account: if it doesn't turn up, tell your Treasurer — they can see exactly what was sent. And if a bank transfer bounces days later (it happens), the request re-opens and you'll get a fresh paid email when the retry lands — a second one is a real second payment, never a duplicate.",
-          "**A reimbursed purchase spends the budget, same as a card swipe:** once it's paid, it counts against whatever budget and category it's coded to — a $300 team meal you fronted eats $300 of Food & Meals either way. So code it as carefully as you'd code a card charge: the \"what's this for?\" and the per-line category are what decide which bucket it lands in, not paperwork.",
-          "**Personal-charge flag — you owe Public Worship:** flag your own charge as personal at /code, or a manager flags it for you from the Book (its \"Personal (unpaid)\" filter is the Treasurer's worklist for exactly this). It opens an owed balance, tracked the same way, just pointed the other direction — and it's a FLAG, not a status: the same charge can be Closed AND an unpaid personal expense at the same time.",
-          "**Pay it back, one charge at a time if you like:** Reimbursements → *Review & pay* opens your own repayments page, listing every flagged charge with its merchant, date and amount. Tick the ones you're ready to settle — you do NOT have to pay them all at once, because \"that one really was a company expense, I'll sort it out with the Treasurer\" and \"yes, that one's mine\" are different answers and deserve different buttons. Then pay the selection. The flag only clears to \"repaid\" once the money has actually ARRIVED — closing the tab without finishing leaves the charge exactly as owed as before, and nobody can mark it repaid by hand.",
-          "**Card or bank transfer — you choose, and you cover the fee:** the payment processor's cut is added on top so Public Worship gets the full amount back instead of losing three cents on the dollar to fix your mistake. Because it's YOUR money covering it, you pick the rail: card is instant and costs about 2.9% + 30¢, a bank transfer costs 0.8% capped at $5.00 and takes about four business days. On a $248 charge that's roughly $7.72 against $2.00. Both figures are on screen before you commit. The fee is charged once per PAYMENT, not per charge — so settling four charges in one go costs less than paying for them one at a time across four evenings.",
-          "**A bank transfer is not instant, and the app says so:** once you authorise it the charge moves to *Clearing* — still owed, but no longer payable, so you can't accidentally pay for it twice while the bank moves the money. If your bank refuses the debit, it comes back as owed with a note saying the attempt failed. Only when the money lands does the charge clear.",
-          "**The moment it lands, you get a receipt:** \"thanks for paying this off — here's your receipt,\" naming the total, the date it settled, and one line per charge it covered — pay off three flagged charges in one go and you get ONE email itemizing all three, never three separate ones. Paid by card or bank transfer through Stripe? The email also links Stripe's own hosted receipt. Paid by bank debit through the org's own bank (no Stripe charge behind it)? The email is still a complete receipt on its own — it just doesn't carry that extra link. Either way it's evidence you can keep or forward if anyone ever asks whether you paid it back — never donation language, and never a claim that it's tax-deductible, because it isn't either of those things.",
-          "**Lost it, or it settled before this existed? A manager can (re)send it.** Every settled row on the Personal charges screen carries its own **Send receipt** button — it says **Resend receipt** once one has actually been delivered, so the row is honest about whether you ever got one. Nothing about the automatic send changes: it still goes out on its own the moment a payment lands, exactly once. This is a second, manual door to the SAME email for the times that isn't enough — you misplaced it, or the charge settled before the button existed at all. It's genuinely on-demand — press it minutes or days apart and both go through — but two presses on top of each other are refused with a plain \"try again in a moment,\" a brief brake against a double-tap or a stuck loop, never a silent nothing.",
-          "**Nobody can mark a charge repaid by hand — not even the Financial Manager.** A repayment settles when a payment this app started actually arrives, full stop. So if you paid someone back in cash, the app can't record that: run it through the app instead. And if the charge was never personal in the first place, that's a different fix — a manager un-flags it and it goes back to being Public Worship's spend, which is honest in a way \"mark it repaid\" never was.",
-          "**You'll be reminded, kindly:** if a personal charge sits unpaid, a finance manager can send a reminder listing what you owe and a link to settle it. One email per person, never one per charge, and never twice in the same few days — and a charge whose bank transfer is already clearing is never chased, because you already did the right thing.",
-          "**Flagged something by mistake?** Un-flag it — but only before it's been repaid. Once the money has landed, that's a settled transaction; fixing an error at that point is a manual correction, not a toggle.",
-          "**Both directions live in one place:** Reimbursements is its own tab under Finances — for everyone, approvers included, not tucked behind Cards — and it shows \"Public Worship owes you\" and \"you owe Public Worship\" side by side, so nothing nets out silently. You'll also see the chapter's other open requests there — who asked, how much, and where it got to. That is on purpose: the same claim shows up on the public ledger as \"Reimbursement to <name>\" once it's paid, so there was never a version of this the team couldn't see. Reading the queue is everyone's; DECIDING on a request stays with a finance manager, and never on their own.",
-          "**Don't recognize a charge at all?** That's different from a personal charge you remember making — flagging it \"personal\" says YOU made it. If a charge on the Public Worship card is a genuine mystery, freeze the card yourself right away (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager immediately so they can look into it. Don't guess by flagging an unrecognized charge as personal.",
+          "**Submitting.** Every line carries its own receipt, date and coding. None of it is optional — the app blocks submission until each line is complete. Bank details are captured up front, so approval fires the payout automatically.",
+          "**Approved is not paid.** The email names the decision and the amount, never that the money moved. A reviewer can approve some lines and not others; where the figures differ it names both — and the smaller one is the whole payment, not a first instalment.",
+          "**A second email goes when the money actually leaves**, naming the date. That is the one to wait for. If nothing lands within a week, ask your Treasurer.",
         ],
       },
       {
         kind: "rule",
-        title: "Every line answers for itself",
-        text: "One request routinely mixes a $38 fare, a hotel night and a team dinner — three kinds of spending that owe three different answers. So the substantiation is per LINE, not per request: a category, the expense type, a real business purpose, the route on travel, the people at a meal.\n\nSame questions, same rules as the coding you write on your own card charges — the 15-head names threshold, and the category-picks-the-branch rule too (see *Coding your charges*) — and now on BOTH surfaces: logged in or not, each line opens with a category picker, and it defaults the expense-type branch the same way, correctable with one more tap. What differs is what the pick MEANS: your card-charge coding's category is the real one — the app already knows which category the charge is under. A reimbursement line's category is a SUGGESTION — you're telling us where you think it belongs before anyone's reviewed it, and the finance manager who approves the request can recode it if you guessed wrong. Nothing about that is a privacy loophole: category names are already public on the ledger, so seeing the list before you submit doesn't tell you anything the ledger wouldn't already. Either way, you answer everything line by line, at submission, before anyone has seen the request, and the same checker runs in the in-app form, the accountless emailed link, and the server, so no door into this is easier than another.\n\nReceipts stay hard here too: one per line, and **no exception path**. A card charge already happened, and some real spending genuinely never produces a receipt. A reimbursement is a claim you're choosing to make — so \"no receipt\" is a reason not to claim it, not a form to file.",
+        title: "Sent back is a revision, not a rejection",
+        text: "Rejected is terminal. **Sent back** is a loop: fix the line and resubmit, keeping your original submission date, so a question never costs your place in the queue. A revision may change the SUBSTANTIATION only — a wrong amount is a reject and a fresh request.",
       },
       {
         kind: "rule",
-        title: "Sent back is not rejected",
-        text: "A reviewer who spots a thin purpose, or a receipt that doesn't show the exact amount, used to have two moves: approve it anyway, or reject it. Rejected is terminal and reads as \"you lost your money\" — so questions quietly turned into approvals.\n\nNow there's a third: **send it back with a note**, and the note is required (\"receipt must show exact amount\"). You get an email, fix the substantiation, resubmit — and it returns to review carrying its ORIGINAL submission date, so being asked a question never costs you your place in the queue.\n\nTwo limits, both deliberate. A revision may change the **substantiation only** — never the amounts, never the lines; a wrong amount is a reject and a fresh request, because a resubmission must never quietly move a number a reviewer already looked at. And while it sits with you it isn't payable, though you can still cancel it and the reviewer can still reject it outright.",
+        title: "Flagging says YOU made the charge",
+        text: "You can flag your own transactions, not just managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status: a row can be Closed AND an unpaid personal expense at once. So a charge you genuinely don't recognize is not a flag. Freeze the card yourself, then tell your Treasurer.",
       },
       {
-        kind: "rule",
-        title: "Approver ≠ you, always",
-        text: "Separation of duties means the person who submits a reimbursement is never the person who approves it — even a Treasurer can't approve their own request. It's the same rule for everyone, including the Executive Director. In practice, your chapter's Treasurer approves most requests; if the Treasurer is the one requesting, it's the central Financial Manager who approves instead — their reach covers every chapter, which is exactly the failsafe for \"the approver and the requester would otherwise be the same person.\"",
-      },
-      {
-        kind: "tip",
-        text: "**Something time-sensitive?** There's no in-app \"urgent\" flag or fast lane — a request sits in the same queue whether it's due in an hour or next month. Submitting already emails every approver who could act on it (your chapter's Treasurer(s) and the central Financial Manager(s)), so nobody is checking the queue on faith. If it's genuinely urgent, treat that email as your baseline, not your whole plan: reach the person who'd actually approve it directly — a call or a text — and ask them to look now. That's what turns \"they'll see it eventually\" into \"they saw it today.\"",
-      },
-      {
-        kind: "try_status",
-        title: "A reimbursement request",
-        options: [
-          { value: "submitted", label: "Submitted", color: "gray" },
-          { value: "approved", label: "Approved", color: "amber" },
-          { value: "paid", label: "Paid", color: "green" },
-        ],
-        terminal: "paid",
-        caption:
-          "Changes requested is the state that isn't on this line: it hands the request back to YOU with a note, keeps its original submission date, and rejoins at Submitted the moment you resubmit. Rejected and canceled are endings — those land in your History, not stuck in the middle.",
-      },
-      {
-        kind: "scenario",
+        kind: "reveal",
         prompt:
-          "You're at the store buying event supplies. The Public Worship card is declined — or you realize you left it at home. What's the move?",
-        options: [
-          {
-            text: "Buy it on your own card and quietly let it go — it's not worth the paperwork",
-            feedback:
-              "That's the exact pattern this system exists to avoid: a small personal cover that never gets tracked. Submit a reimbursement request instead.",
-          },
-          {
-            text: "Pay with your own card, then submit a reimbursement request for it",
-            correct: true,
-            feedback:
-              "Right. Paying out of pocket happens — the fix is tracking it, not hiding it. Submit the reimbursement with your receipt, the transaction date, and why it was needed, and it moves through the normal approve → paid flow.",
-          },
-          {
-            text: "Skip the purchase entirely and try again another day",
-            feedback:
-              "Sometimes that's fine, but if the team genuinely needs the supplies now, pay and request reimbursement — don't stall the event over a card hiccup.",
-          },
-          {
-            text: "Ask a teammate to \"just cover it\" as a personal favor and move on",
-            feedback:
-              "Same problem, just handed to someone else — an untracked personal favor instead of a tracked reimbursement.",
-          },
-        ],
-      },
-      {
-        kind: "scenario",
-        prompt:
-          "A teammate says, \"Don't worry about the reimbursement, I'll just cover the team dinner myself.\" What's actually the better move?",
-        options: [
-          {
-            text: "Let them — it's generous, and it saves everyone the reimbursement paperwork",
-            feedback:
-              "Generous, yes — but it takes the expense off the books entirely. A dozen of these a year and nobody can say what the team actually spent.",
-          },
-          {
-            text: "Have them donate the cost to Public Worship, then let Public Worship pay for the dinner on the Public Worship card",
-            correct: true,
-            feedback:
-              "Same generosity, routed correctly: a real, trackable gift instead of an invisible personal favor — and it may be deductible depending on applicable tax rules and the nature of the contribution.",
-          },
-          {
-            text: "Tell them personal generosity toward the team isn't allowed",
-            feedback:
-              "The generosity is welcome — it just needs to go through a donation, not a silent personal cover.",
-          },
-          {
-            text: "Have them submit a reimbursement made out to a charity instead",
-            feedback:
-              "That's not how it works — the clean path is a straightforward donation to Public Worship, which then pays the actual expense.",
-          },
-        ],
+          "Someone repaid a personal charge months ago, before the receipt button existed, and now needs proof they paid. What can a manager do?",
+        answer:
+          "Send the receipt again. A settled row's button never expires after one use. It is the same receipt email, not a new record — which is what makes it work for a debt settled long before the button existed. Pressing it twice is refused rather than mailing the payer twice.",
       },
     ],
     quiz: [
@@ -1853,97 +1657,34 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "finance-paying-a-contractor",
     title: "Paying a contractor",
-    subtitle: "Not a reimbursement — an agreement, and income",
-    minutes: 7,
+    subtitle: "Buying work is not giving money back",
+    minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "Sooner or later somebody does work for us that isn't volunteering: a photographer shoots the night, an engineer mixes the record, a designer builds the flyer. There's nothing to reimburse — they haven't spent our money, they've spent their hours — and there's no invoice portal to pay them through. That's a **contractor payment**, and it is its own flow with its own front door.",
+        text: "A reimbursement gives back money someone ALREADY SPENT: the receipt substantiates it, and it is not income. A contractor payment buys WORK. Nothing was spent, so the AGREEMENT substantiates it, and the money IS reportable income — which is why a tax form is collected first. \"They have no receipt for their time\" is not a receipt problem. It means you are in the wrong flow.",
       },
       {
         kind: "rule",
-        title: "A reimbursement is not a payment for work",
-        text: "Get this one wrong and everything downstream is wrong, so it's worth being blunt about it.\n\nA **reimbursement** gives back money a person ALREADY SPENT out of their own pocket on our behalf. The receipt is what substantiates it, and the money is not income to them — they're being made whole, not paid.\n\nA **contractor payment** buys WORK. Nothing has been spent, so there is no receipt and never will be: the **agreement** is the substantiation — what the work was, when, for how much. And the money IS reportable income to the person receiving it, which is why we collect a tax form before we pay and why they can't just send us a receipt instead.\n\nSo \"they don't have a receipt, can I reimburse them anyway?\" for somebody's own time isn't a receipt problem. It's the wrong flow, and the honest answer is a contractor agreement.",
-      },
-      {
-        kind: "bullets",
-        items: [
-          "**Two ways in, one queue.** Either staff pre-fills the agreement and sends it out, or a blank request arrives asking to be approved. Both land in the same review queue at **Needs review**, and from there they take the identical route — a treasurer works one list, not two.",
-          "**Agreement sent (you pre-fill it):** you write the terms — the service, the date, the amount, and the coding that says which budget pays for it — and send the contractor a private link. They fill in their half: who they are, their tax form, and their bank details, and then they accept. The terms are FROZEN to them: read-only on their page, and the server ignores those fields if anything tries to send them anyway. What they agreed to is what you wrote.",
-          "**Payment requested (they fill it in blank):** somebody asks to be paid, terms and all. Nothing about it is pre-approved, and it arrives **UNCODED** — no budget, no event, no project. Approving is refused outright until a human says where it belongs, because a request's own claim about which budget should pay it is a starting point for that conversation, not evidence. Their explanation is kept as a note, not as your coding.",
-          "**A private link, not a login.** A contractor has no account and doesn't get one. Their link is the whole authority, it opens exactly their one agreement, and it can't reach the chapter, the queue, the coding, or any other person. Cancel a payment and the link stops accepting anything — it shows them where the payment stands and nothing more.",
-          "**Approved is not paid, here too.** Approval makes the payout legal; the money going is the step after, and the contractor gets an email at each — one saying it's approved, one saying it's been sent.",
-        ],
-      },
-      {
-        kind: "try_status",
-        title: "A contractor payment",
-        options: [
-          { value: "draft", label: "Draft", color: "gray" },
-          { value: "sent", label: "Awaiting contractor", color: "blue" },
-          { value: "submitted", label: "Needs review", color: "gray" },
-          { value: "approved", label: "Approved", color: "amber" },
-          { value: "paid", label: "Paid", color: "green" },
-        ],
-        terminal: "paid",
-        caption:
-          "Draft and Awaiting contractor only exist on the pre-filled path — a blank request is born at Needs review, because the person asking has already said everything they have to say. Changes requested isn't on this line either: it hands the agreement BACK to the contractor with a required note and makes their link editable again. Rejected and Canceled are endings.",
+        title: "A self-serve request arrives uncoded",
+        text: "Both entry points share one queue and one route from Needs review on. The difference is that a request the contractor raised carries no coding. What the requester says the money is for starts that conversation; it is not evidence for it. The server refuses to release money until somebody with the books in front of them says which budget pays.",
       },
       {
         kind: "rule",
-        title: "Whoever wrote the terms never approves them",
-        text: "Separation of duties on this flow has a third party the reimbursement flow doesn't have: the person who WROTE the agreement. So three things are checked, any one of which stops you:\n\n· you are the payee on the roster, or\n· your own sign-in email is the payee's email, or\n· **you composed this agreement.**\n\nThat third one is the whole point of pre-filling. One person who can both decide the org owes somebody $1,800 and decide the money should go is a single point of failure with a bank account attached. In practice: a chapter Treasurer writes the agreement, and the central Financial Manager approves it — the same failsafe reimbursements use when the Treasurer is the claimant.\n\nAnd it is checked TWICE — once when someone approves, and again at the moment the payout is released. Approving and paying can be different acts by different people minutes apart, and a control that only ran at the first one wouldn't be a control.",
+        title: "You cannot approve your own agreement",
+        text: "Rank isn't the control here; separation of duties is. Three signals get checked: are you the payee on the roster, is your sign-in email the payee's, and did you write this agreement. The third stops whoever set the amount from also releasing the money. The check runs again when the payout goes, because approving and paying can be two different acts.",
       },
       {
         kind: "rule",
-        title: "Changing the terms unsigns the agreement",
-        text: "The **amount**, the **description of the work**, and the **service date** are the agreed terms — the things the contractor actually said yes to. Edit any of them after they've accepted and their acceptance is VOIDED: the agreement goes back to *Awaiting contractor*, they're emailed to review and accept again, and nothing is payable until they do.\n\nThat isn't friction for its own sake. The alternative is holding somebody's signature against terms they never saw, which is the single worst thing this feature could do, so it isn't reachable at all — not by a form, not by an admin.\n\nChanging only the CODING — which budget, category or fund pays for it — voids nothing. The contractor never agreed to which line of our books they come out of, and re-asking for a signature because a bookkeeper moved a category would just teach people to click through acceptance without reading it.",
+        title: "Changing an agreed term voids the acceptance",
+        text: "Amount, description and service date are the terms the contractor said yes to. Change one and the acceptance is voided: the payment reverts to **Awaiting contractor** and he is asked to accept again. Nothing is payable in between. Coding is different — he never agreed to which budget line pays him, so re-coding voids nothing.",
       },
       {
-        kind: "rule",
-        title: "Whose books is this coming out of?",
-        text: "Every agreement belongs to a **scope** — a chapter, or **central**. Whichever desk you compose at is the one that pays, and that single choice settles three things at once: who reviews and approves it, which bank account the money actually leaves, and which set of books the spend lands in.\n\nThey move together on purpose. If a payout left a chapter's account while the expense posted against central's budget, that chapter's bank balance and its ledger would disagree from then on, and nothing downstream would ever reconcile.\n\nSo: **the books follow the budget, not the person composing.** Work paid for by a central budget has to be composed at the Central desk. Pick a central budget while you're standing in a chapter and you'll be told to switch desks rather than have it quietly re-filed for you — moving an agreement between scopes changes who's allowed to approve it, and that isn't the app's call to make.\n\nOne thing the contractor never sees: the word *Central*. That's our internal name for a set of books. Their agreement comes from **Public Worship**.",
-      },
-      {
-        kind: "rule",
-        title: "An agreement can pay in parts",
-        text: "Plenty of real deals aren't one payment: half up front and half on delivery, a deposit and two dated instalments, a payment per milestone. So an agreement can carry a **payment schedule** — and it is one agreement, one signature, one tax form, one approval, with the agreed total split into payments that go out separately.\n\nThree things to hold on to.\n\n**The payments have to add up to the agreed amount, exactly.** Not at most — exactly. A schedule that adds up to less looks finished on screen and quietly short-changes somebody who signed for the full number.\n\n**A schedule is a TERM, like the amount.** The contractor sees it on their page before they sign, and adding or re-cutting one after they've accepted voids that acceptance and asks them again — the same rule as changing the amount, for the same reason.\n\n**Nothing pays itself.** A date arriving makes a payment show as *due*; it never sends it. Every payment is released by a person, and the app records who released it and when. A milestone payment doesn't even mark itself due — no clock can know whether the record was delivered.",
-      },
-      {
-        kind: "tip",
-        text: "**Look at the schedule before you ask \"have we paid them?\"** The agreement's page shows what's gone out, what's left, and which payment is which — so \"we're halfway\" is something you read rather than something you work out. If a payment is never going to be sent, cancel that one with a reason; the agreed total and the amount actually paid are then allowed to differ, and the record can say why.",
-      },
-      {
-        kind: "tip",
-        text: "**A waiting contractor is somebody's rent.** Submitting emails every treasurer and central finance manager who could act on it. If nobody has decided after **3 days** they're nudged, and after **7** it escalates to the central Financial Manager by name, so \"nobody looked at it\" has an owner. Nothing is ever auto-cancelled, however long it sits — killing a person's payment because our queue went unattended would punish them for our delay.",
-      },
-      {
-        kind: "scenario",
+        kind: "reveal",
         prompt:
-          "A videographer accepted a $1,200 agreement last week. She emails: the shoot ran two hours long, can we make it $1,400? Everyone agrees that's fair. What do you do?",
-        options: [
-          {
-            text: "Edit the agreement to $1,400 — which voids her acceptance, sends it back to her, and asks her to accept the new terms",
-            correct: true,
-            feedback:
-              "Right. The amount is an agreed term, so changing it re-opens the agreement rather than quietly editing a signed one. She gets an email, accepts $1,400, and it comes back to the queue. One record, one signature, one number — and it's the number she agreed to.",
-          },
-          {
-            text: "Approve the original $1,200 and send her the extra $200 separately so the signed agreement stays clean",
-            feedback:
-              "Now there's $200 leaving the building with no agreement behind it, no coding, and nothing on her tax form's side of the story. The signed record staying 'clean' is exactly what makes the second payment dirty.",
-          },
-          {
-            text: "Approve $1,400 — the approval screen lets you set the amount",
-            feedback:
-              "It lets you approve LESS than was agreed, never more. Approving more would be paying against terms nobody accepted, so it's refused and tells you to change the terms instead.",
-          },
-          {
-            text: "Ask her to submit a reimbursement request for the extra two hours",
-            feedback:
-              "Her time isn't money she spent, so there's nothing to reimburse and no receipt she could ever produce. That's the confusion this whole lesson exists to prevent.",
-          },
-        ],
+          "A $4,000 agreement pays $2,000 on signing and $2,000 on delivery. The deposit goes out. What state is the agreement in?",
+        answer:
+          "Approved, not Paid. Paid is an ENDING: nothing more happens to an agreement that reaches it. So a deposit must not stamp it, or the balance would be stranded and the contractor owed money the app no longer thinks it owes. It closes only once the whole schedule is settled.",
       },
     ],
     quiz: [

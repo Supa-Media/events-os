@@ -1509,7 +1509,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-coding-your-charges",
     title: "Coding your charges",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1517,7 +1517,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-reimbursements-and-flags",
     title: "Reimbursement, and flagging a charge",
-    minutes: 5,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1525,7 +1525,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-paying-a-contractor",
     title: "Paying a contractor",
-    minutes: 7,
+    minutes: 2,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
