@@ -25,6 +25,7 @@ import { internalAction, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
+import { personSendAddress } from "./lib/personEmails";
 import { sendEmail, emailShell } from "./ticketingEmails";
 import {
   EMAIL_CLS,
@@ -69,8 +70,12 @@ export const getBudgetDecisionContext = internalQuery({
     }
     if (!budget.submittedByPersonId) return null;
     const submitter = await ctx.db.get(budget.submittedByPersonId);
-    const email = submitter?.email;
-    if (!submitter || !email) return null;
+    if (!submitter) return null;
+    // The submitter of a budget is core team, so their send address is the one
+    // `personSendAddress` picks (pwEmail / a verified `personEmails` row),
+    // never the personal `person.email` this used to read.
+    const email = await personSendAddress(ctx, submitter);
+    if (!email) return null;
 
     const { name: budgetName } = await resolveBudgetRef(
       budget,

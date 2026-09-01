@@ -165,6 +165,7 @@ import { requireCodingChase } from "./lib/chaseAccess";
 import { reconcileFilterValidator } from "./lib/reconcileArgs";
 import { holdsApprovalSeatAt } from "./lib/seats";
 import { listActiveChapters } from "./lib/chapters";
+import { personSendAddress } from "./lib/personEmails";
 import {
   RECONCILE_FILTER_KEYS,
   TRANSACTION_CODING_STATUSES,
@@ -7709,8 +7710,8 @@ export const submitBudgetForApproval = mutation({
  * `"finance_manager"` at central) — unioned + deduped by person, mirroring
  * the "seat widens, never replaces the stored side" philosophy elsewhere in
  * finance auth (`lib/finance.ts`'s B10 doc). A scope with no
- * seated/titled holder (or a holder with no `email` on file) simply
- * contributes no row — best-effort, matches `sendReimbursementReminders`'s
+ * seated/titled holder (or a holder `personSendAddress` can't find any
+ * address for) simply contributes no row — best-effort, matches `sendReimbursementReminders`'s
  * philosophy (never blocks the submit itself).
  */
 export const getBudgetSubmissionContext = internalQuery({
@@ -7761,7 +7762,14 @@ export const getBudgetSubmissionContext = internalQuery({
     const approvers: { email: string; name: string }[] = [];
     for (const personId of personIds) {
       const p = await ctx.db.get(personId);
-      if (p?.email) approvers.push({ email: p.email, name: p.name });
+      if (!p) continue;
+      // `personSendAddress`, not `p.email`: a budget approver is core team
+      // (chapter director / treasurer / ED / financial manager) and works out
+      // of their `pwEmail`. Reading the personal address here is what made
+      // approver notices land in an inbox nobody checks — see
+      // `lib/personEmails.ts#personSendAddress`.
+      const email = await personSendAddress(ctx, p);
+      if (email) approvers.push({ email, name: p.name });
     }
     return {
       budgetName,

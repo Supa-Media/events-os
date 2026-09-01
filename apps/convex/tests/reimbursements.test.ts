@@ -102,6 +102,10 @@ async function seedPerson(
   opts: {
     name: string;
     email?: string;
+    /** The Public Worship (core-team) address — what an approver actually
+     *  reads. Separate field from the personal `email`; see
+     *  `schema/people.ts`. */
+    pwEmail?: string;
     phone?: string;
     userId?: Id<"users">;
     isTeamMember?: boolean;
@@ -112,6 +116,7 @@ async function seedPerson(
       chapterId: s.chapterId,
       name: opts.name,
       email: opts.email,
+      pwEmail: opts.pwEmail,
       phone: opts.phone,
       userId: opts.userId,
       isTeamMember: opts.isTeamMember ?? false,
@@ -2908,6 +2913,129 @@ describe("submission notice to finance approvers (sendReimbursementSubmittedEmai
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  // The 2026-09-01 report: the org's Financial Manager could see a
+  // reimbursement waiting on her in the app and was getting every other email
+  // the product sends, but never this one — it had been addressed to
+  // `person.email` (a personal address) instead of the Public Worship inbox
+  // she actually works out of. These four pin every tier of
+  // `lib/personEmails.ts#resolveSendAddress` for an APPROVER.
+  test("mails an approver at their PW address when that's the only one on file", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      const manager = await seedPerson(s, {
+        name: "Kay Manager",
+        pwEmail: "kay@publicworship.life",
+      });
+      await grantRole(s, manager, "manager");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(resendCalls.map((c) => c.to)).toEqual(["kay@publicworship.life"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("prefers the PW address over a personal one when the approver has both", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      const manager = await seedPerson(s, {
+        name: "Kay Manager",
+        email: "kay.personal@gmail.com",
+        pwEmail: "kay@publicworship.life",
+      });
+      await grantRole(s, manager, "manager");
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      // One send, to the inbox she works out of — not the personal address.
+      expect(resendCalls.map((c) => c.to)).toEqual(["kay@publicworship.life"]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("mails an approver whose only address is a verified personEmails row", async () => {
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await setSlug(s, "nyc");
+      const manager = await seedPerson(s, { name: "Ledger Only" });
+      await grantRole(s, manager, "manager");
+      await run(s.t, (ctx) =>
+        ctx.db.insert("personEmails", {
+          personId: manager,
+          email: "ledger@publicworship.life",
+          source: "pw",
+          verified: true,
+          addedAt: Date.now(),
+        }),
+      );
+      process.env.RESEND_API_KEY = "test_key";
+      const resendCalls = mockIncreaseAndResend();
+
+      await submitTwoLine(s, "nyc", { payeeEmail: "dana@example.com" });
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+
+      expect(resendCalls.map((c) => c.to)).toEqual([
+        "ledger@publicworship.life",
+      ]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  test("the SoD email exclusion follows the resolved send address, not person.email", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    // The claimant IS the manager, reached at her PW address. The exclusion
+    // has to compare the address we'd actually send to — otherwise resolving
+    // `pwEmail` here would quietly hand a manager her own request to review.
+    const manager = await seedPerson(s, {
+      name: "Kay Manager",
+      email: "kay.personal@gmail.com",
+      pwEmail: "kay@publicworship.life",
+    });
+    await grantRole(s, manager, "manager");
+    const unrelatedRequester = await seedPerson(s, { name: "Someone Else" });
+
+    const now = Date.now();
+    const reimbursementId = await run(s.t, (ctx) =>
+      ctx.db.insert("reimbursementRequests", {
+        chapterId: s.chapterId,
+        token: "test-token-pw",
+        status: "submitted",
+        payeeName: "Kay Manager",
+        payeeEmail: "kay@publicworship.life",
+        personId: unrelatedRequester,
+        totalCents: 1000,
+        purpose: "Testing the resolved-address exclusion",
+        submittedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+
+    const payload = await t.query(
+      internal.reimbursements.getReimbursementSubmittedEmailPayload,
+      { reimbursementId },
+    );
+    expect(payload?.recipients).toEqual([]);
   });
 
   test("degrades without RESEND_API_KEY (no throw, even with a real recipient)", async () => {

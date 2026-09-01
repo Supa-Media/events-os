@@ -39,6 +39,7 @@ import { internalAction, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import { escapeHtml } from "./lib/html";
 import { appUrl, siteUrl } from "./lib/siteUrl";
+import { personSendAddress } from "./lib/personEmails";
 import {
   formatFromAddress,
   resolveResendSettings,
@@ -90,13 +91,25 @@ export const getReviewContacts = internalQuery({
     const reviewerPerson = campaign.reviewerPersonId
       ? await ctx.db.get(campaign.reviewerPersonId)
       : null;
+    // `personSendAddress` (pwEmail / verified `personEmails` row / personal
+    // email, in that order), not the raw `person.email` this used to read —
+    // both of these people are core team, and core team reads its Public
+    // Worship inbox. See `lib/personEmails.ts#personSendAddress`.
+    const submitterEmail = submitterPerson
+      ? await personSendAddress(ctx, submitterPerson)
+      : null;
+    const reviewerEmail = reviewerPerson
+      ? await personSendAddress(ctx, reviewerPerson)
+      : null;
     return {
-      submitter: submitterPerson?.email
-        ? { name: submitterPerson.name, email: submitterPerson.email }
-        : null,
-      reviewer: reviewerPerson?.email
-        ? { name: reviewerPerson.name, email: reviewerPerson.email }
-        : null,
+      submitter:
+        submitterPerson && submitterEmail
+          ? { name: submitterPerson.name, email: submitterEmail }
+          : null,
+      reviewer:
+        reviewerPerson && reviewerEmail
+          ? { name: reviewerPerson.name, email: reviewerEmail }
+          : null,
     };
   },
 });
