@@ -36,6 +36,24 @@ import { BRAND_FONT_ROLES, DESIGN_KINDS } from "@events-os/shared";
  * `published` flag on any of these tables — a half-finished brand color is not
  * a thing, and a design nobody should use yet simply isn't added yet.
  *
+ * ── A folder holds colors and faces too, and holds them by reference ────────
+ * `brandColors.folderIds`, `brandFonts.folderIds` and `designAssets.folderIds`
+ * are arrays because membership is many-to-many: the org's red is in "Colors"
+ * AND in "Easter 2026" at the same time, and removing it from the event does
+ * nothing to the palette. `@events-os/shared`'s `marketingDesigns.ts` module
+ * doc argues that decision; this is where it is stored.
+ *
+ * The arrays are OPTIONAL in the validator and read as `[]` — Convex validates
+ * the schema against rows that already exist, so a field added to a live table
+ * has to tolerate the rows that predate it until migration `0085` fills them
+ * in. `folderIds: undefined` and `folderIds: []` mean the same thing (unfiled)
+ * everywhere above this layer.
+ *
+ * No index on them. A Convex index cannot look inside an array, and it would
+ * not earn its keep if it could: the tab reads the whole library in one query
+ * (every table here is bounded by a `*_MAX_COUNT`), so membership is answered
+ * in memory against rows already in hand.
+ *
  * ── One level of folder nesting only ────────────────────────────────────────
  * `designFolders.parentId` copies `serviceOptions`' rule verbatim, including
  * the reason it cannot be a schema constraint: a row may point at a parent, but
@@ -75,6 +93,8 @@ export const brandColors = defineTable({
   /** `#rrggbb`, lowercased — see `normalizeBrandHex`. */
   hex: v.string(),
   usage: v.optional(v.string()),
+  /** Every folder this color is in; absent = unfiled. See this file's doc. */
+  folderIds: v.optional(v.array(v.id("designFolders"))),
   /** Ascending display order. Sparse by design (the seed spaces rows 100
    *  apart) so a reorder rewrites the moved rows, not every row after them. */
   order: v.number(),
@@ -103,6 +123,8 @@ export const brandFonts = defineTable({
   role: fontRoleValidator,
   sourceUrl: v.optional(v.string()),
   notes: v.optional(v.string()),
+  /** Every folder this face is in; absent = unfiled. */
+  folderIds: v.optional(v.array(v.id("designFolders"))),
   /** Ascending display order — sparse, like `brandColors.order`. */
   order: v.number(),
   createdAt: v.number(),
@@ -132,6 +154,15 @@ export const designFolders = defineTable({
   /** Absent = top-level. Present = a sub-shelf; such a row may not itself be a
    *  parent (enforced in `marketingDesigns.ts#upsertFolder`). */
   parentId: v.optional(v.id("designFolders")),
+  /**
+   * Render this folder as its own section on the tab, instead of waiting to be
+   * selected in the rail. Absent reads as false.
+   *
+   * "Colors" and "Faces" are pinned folders and nothing more — migration `0085`
+   * creates them and files the existing palette and typefaces into them, which
+   * is what makes the tab look identical the day the folder model lands.
+   */
+  pinned: v.optional(v.boolean()),
   /** Ascending display order — sparse, like `brandColors.order`. */
   order: v.number(),
   createdAt: v.number(),
@@ -166,8 +197,20 @@ export const designFolders = defineTable({
 export const designAssets = defineTable({
   kind: designKindValidator,
   title: v.string(),
-  /** Absent = unfiled. The tab shows those in their own "Unfiled" group rather
-   *  than hiding them — a design with no shelf is still findable. */
+  /** Every folder this design is in; absent or empty = unfiled. The tab shows
+   *  those in their own "Unfiled" group rather than hiding them — a design with
+   *  no folder is still findable. */
+  folderIds: v.optional(v.array(v.id("designFolders"))),
+  /**
+   * DEAD FIELD, kept only so a deploy can land before its migration runs.
+   *
+   * The single-folder predecessor of `folderIds`. Migration `0085` copies each
+   * row's value into the array and then clears this one, so no row should carry
+   * it any more; it stays declared because Convex validates the schema against
+   * EXISTING documents, and a deploy that dropped the field while production
+   * rows still had it would be rejected. Once `0085` has run everywhere, delete
+   * this line. Nothing reads it.
+   */
   folderId: v.optional(v.id("designFolders")),
   /** The stable share/edit link. Absent only on an `image` whose entire content
    *  is the upload. */
@@ -186,6 +229,4 @@ export const designAssets = defineTable({
   createdAt: v.number(),
   updatedAt: v.number(),
   updatedBy: v.optional(v.id("users")),
-})
-  .index("by_order", ["order"])
-  .index("by_folder", ["folderId", "order"]);
+}).index("by_order", ["order"]);

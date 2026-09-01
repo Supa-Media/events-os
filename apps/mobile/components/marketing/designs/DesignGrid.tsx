@@ -22,16 +22,24 @@
  *
  * ── A design with no thumbnail is not a grey box ────────────────────────────
  * It gets a typographic tile painted from the ORG'S palette — the same colors
- * the swatch wall two sections up is showing — with the design's initials on
- * it. `designPreview` picks the paint deterministically so a tile doesn't
- * change color as the list reorders. A grey rectangle says "broken"; a red one
- * with "LT" on it says "this is ours and nobody has thumbnailed it yet".
+ * the swatch wall further down the page is showing — with the design's
+ * initials on it. `designPreview` picks the paint deterministically so a tile
+ * doesn't change color as the list reorders. A grey rectangle says "broken"; a
+ * red one with "LT" on it says "this is ours and nobody has thumbnailed it".
  *
  * ── Grid and list are the same rows ─────────────────────────────────────────
  * The toggle changes density, not content: the list is for a folder of forty
  * near-identical story overlays where the title is the distinguishing feature,
  * the grid is for everything else. The list's 40px stamp stays a still on
  * every platform — an embed the width of a thumb tells you nothing.
+ *
+ * ── A tile, and a list. The grid itself moved out ───────────────────────────
+ * This file used to lay out the grid as well. It doesn't any more: a folder
+ * holds files AND colors AND faces, and a component per kind each drawing its
+ * own row left a mixed folder as three one-card rows with the page empty beside
+ * them. `FolderBody` now owns one wrapping wall for every kind of card, so what
+ * ships from here is the TILE. The list stays whole, because a list of rows is
+ * a different shape that mixes with nothing.
  */
 import { useState } from "react";
 import { Image, Platform, Pressable, Text, View } from "react-native";
@@ -42,46 +50,24 @@ import {
 } from "@events-os/shared";
 import { designPreview, gridEmbeds, type DesignPreview } from "./library.shared";
 
-export function DesignGrid({
+export function DesignList({
   designs,
   palette,
-  view,
   onOpen,
 }: {
   designs: DesignAsset[];
   /** The brand kit, for painting the placeholders. */
   palette: BrandColor[];
-  view: "grid" | "list";
   onOpen: (design: DesignAsset) => void;
 }) {
-  if (view === "list") {
-    return (
-      <View className="overflow-hidden rounded-lg border border-border bg-raised">
-        {designs.map((design, index) => (
-          <DesignRow
-            key={design.id}
-            design={design}
-            palette={palette}
-            first={index === 0}
-            onOpen={onOpen}
-          />
-        ))}
-      </View>
-    );
-  }
-
-  // Which tiles carry a live frame — web only; native tiles stay stills.
-  const live =
-    Platform.OS === "web" ? gridEmbeds(designs) : new Set<string>();
-
   return (
-    <View className="flex-row flex-wrap gap-3.5">
-      {designs.map((design) => (
-        <DesignTile
+    <View className="overflow-hidden rounded-lg border border-border bg-raised">
+      {designs.map((design, index) => (
+        <DesignRow
           key={design.id}
           design={design}
           palette={palette}
-          live={live.has(design.id)}
+          first={index === 0}
           onOpen={onOpen}
         />
       ))}
@@ -89,7 +75,17 @@ export function DesignGrid({
   );
 }
 
-function DesignTile({
+/**
+ * Which tiles carry a live frame — web only; native tiles stay stills, for the
+ * reason `DesignEmbed`'s native branch gives. Exported because the wall that
+ * draws the tiles lives in `FolderBody` now, and the cap is a property of the
+ * SHELF rather than of any one tile.
+ */
+export function liveEmbedIds(designs: DesignAsset[]): Set<string> {
+  return Platform.OS === "web" ? gridEmbeds(designs) : new Set<string>();
+}
+
+export function DesignTile({
   design,
   palette,
   live,

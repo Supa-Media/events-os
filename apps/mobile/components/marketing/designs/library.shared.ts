@@ -10,10 +10,28 @@
  *
  * The same split `pdfPages.shared.ts` uses, for the same reason.
  */
-import type { BrandColor, DesignAsset, DesignFolder } from "@events-os/shared";
+import type {
+  BrandColor,
+  BrandFont,
+  DesignAsset,
+  DesignFolder,
+} from "@events-os/shared";
 import { colors as theme } from "../../../lib/theme";
 
-// ── Shelves ──────────────────────────────────────────────────────────────────
+// ── Shelves ─────────────────────────────────────────────────────────────────
+
+/**
+ * Everything a folder can hold. The tab reads its whole library in one query,
+ * so membership is answered here, in memory, against rows already in hand.
+ */
+export type LibraryItems = {
+  colors: BrandColor[];
+  fonts: BrandFont[];
+  designs: DesignAsset[];
+};
+
+/** Anything that can be in a folder, from the outside: an id and its filing. */
+type FiledItem = { id: string; folderIds: string[] };
 
 /**
  * The rail is a list of SHELVES, not a list of folders: two of them are views
@@ -32,109 +50,143 @@ export type Shelf = {
   name: string;
   /** 1 = a sub-folder, drawn indented under its parent. */
   depth: 0 | 1;
-  /** How many designs the shelf shows — including, for "All files", every one. */
+  /** How many things of any kind the shelf shows — including, for
+   *  "Everything", every one. */
   count: number;
   /** The real folder behind it, or null for the two views. */
   folderId: string | null;
+  /** Whether this folder also renders as its own section on the page. */
+  pinned: boolean;
 };
 
-/** Whether a shelf is a real folder (renameable, deletable) or one of the two
- *  views the rail always shows. */
+/** Whether a shelf is a real folder (renameable, deletable, pinnable) or one of
+ *  the two views the rail always shows. */
 export function isVirtualShelf(shelfId: ShelfId): boolean {
   return shelfId === SHELF_ALL || shelfId === SHELF_UNFILED;
 }
 
-/**
- * A design is UNFILED when it has no folder — and also when it points at a
- * folder this payload doesn't contain, so a design orphaned by a folder deleted
- * in another tab shows up somewhere rather than nowhere. A row that renders
- * nowhere is a row people re-create.
- */
-export function isUnfiled(
-  design: Pick<DesignAsset, "folderId">,
-  knownFolderIds: Set<string>,
-): boolean {
-  return design.folderId === null || !knownFolderIds.has(design.folderId);
+/** Every item in the library, of every kind, as filed rows. */
+function allItems(items: LibraryItems): FiledItem[] {
+  return [...items.colors, ...items.fonts, ...items.designs];
 }
 
 /**
- * The rail, in the order it is drawn: All files, every top-level folder with
+ * An item is UNFILED when it is in no folder — and also when every folder it
+ * names is missing from this payload, so something orphaned by a folder deleted
+ * in another tab shows up somewhere rather than nowhere. A row that renders
+ * nowhere is a row people re-create.
+ */
+export function isUnfiled(item: FiledItem, knownFolderIds: Set<string>): boolean {
+  return !item.folderIds.some((id) => knownFolderIds.has(id));
+}
+
+/** Whether an item is filed directly in this folder. */
+export function isInFolder(item: FiledItem, folderId: string): boolean {
+  return item.folderIds.includes(folderId);
+}
+
+/**
+ * The rail, in the order it is drawn: Everything, every top-level folder with
  * its children beneath it, then Unfiled.
  *
- * Unfiled is ALWAYS present, even at zero, because it is where a design lands
- * when its folder is deleted — a shelf that appears only once something is on
- * it is a shelf nobody knows exists. Empty named folders are present too: the
- * mockup's argument is that an empty shelf should ask for its first file rather
- * than report a zero, and it cannot ask if it isn't drawn.
+ * Unfiled is ALWAYS present, even at zero, because it is where something lands
+ * when the last folder holding it is deleted — a shelf that appears only once
+ * something is on it is a shelf nobody knows exists. Empty named folders are
+ * present too: an empty shelf should ask for its first file rather than report
+ * a zero, and it cannot ask if it isn't drawn.
+ *
+ * Counts are of EVERY kind — a colour, a face and four posters is a folder of
+ * six. A count that only saw the posters would make "Easter 2026" look half
+ * empty, which is the reading the whole folder model exists to fix.
  */
 export function buildShelves(
   folders: DesignFolder[],
-  designs: DesignAsset[],
+  items: LibraryItems,
 ): Shelf[] {
   const known = new Set(folders.map((f) => f.id));
+  const rows = allItems(items);
+
   const directCount = new Map<string, number>();
   let unfiled = 0;
-  for (const design of designs) {
-    if (isUnfiled(design, known)) {
-      unfiled += 1;
-      continue;
+  for (const item of rows) {
+    if (isUnfiled(item, known)) unfiled += 1;
+    for (const folderId of item.folderIds) {
+      if (!known.has(folderId)) continue;
+      directCount.set(folderId, (directCount.get(folderId) ?? 0) + 1);
     }
-    const key = design.folderId as string;
-    directCount.set(key, (directCount.get(key) ?? 0) + 1);
   }
 
   const childrenOf = (id: string) => folders.filter((f) => f.parentId === id);
   // A parent's count includes what is on its children's shelves: tapping
   // "Instagram posts" shows everything under it, so the number beside it has to
-  // be the number you will then see.
-  const shelfCount = (folder: DesignFolder): number =>
-    (directCount.get(folder.id) ?? 0) +
-    childrenOf(folder.id).reduce((n, c) => n + (directCount.get(c.id) ?? 0), 0);
+  // be the number you will then see. An item in BOTH a parent and its child is
+  // counted once, because it is shown once.
+  const shelfCount = (folder: DesignFolder): number => {
+    const ids = new Set([folder.id, ...childrenOf(folder.id).map((c) => c.id)]);
+    return rows.filter((item) => item.folderIds.some((id) => ids.has(id)))
+      .length;
+  };
 
-  const rows: Shelf[] = [
+  const shelves: Shelf[] = [
     {
       id: SHELF_ALL,
-      name: "All files",
+      name: "Everything",
       depth: 0,
-      count: designs.length,
+      count: rows.length,
       folderId: null,
+      pinned: false,
     },
   ];
   for (const top of folders.filter((f) => f.parentId === null)) {
-    rows.push({
+    shelves.push({
       id: top.id,
       name: top.name,
       depth: 0,
       count: shelfCount(top),
       folderId: top.id,
+      pinned: top.pinned,
     });
     for (const child of childrenOf(top.id)) {
-      rows.push({
+      shelves.push({
         id: child.id,
         name: child.name,
         depth: 1,
         count: directCount.get(child.id) ?? 0,
         folderId: child.id,
+        pinned: child.pinned,
       });
     }
   }
-  rows.push({
+  shelves.push({
     id: SHELF_UNFILED,
     name: "Unfiled",
     depth: 0,
     count: unfiled,
     folderId: null,
+    pinned: false,
   });
-  return rows;
+  return shelves;
+}
+
+/**
+ * The folders that render as their own section, in rail order.
+ *
+ * Pinning is the entire "give this folder its own section" feature, and it is a
+ * flag on an ordinary folder rather than a second kind of object — so "Colors"
+ * and "Faces" are pinned folders, and an event folder somebody pins behaves
+ * exactly like them.
+ */
+export function pinnedFolders(folders: DesignFolder[]): DesignFolder[] {
+  return folders.filter((f) => f.pinned);
 }
 
 /** The shelf's own name, for the breadcrumb and the panel's subtitle. */
 export function shelfLabel(shelfId: ShelfId, shelves: Shelf[]): string {
-  return shelves.find((s) => s.id === shelfId)?.name ?? "All files";
+  return shelves.find((s) => s.id === shelfId)?.name ?? "Everything";
 }
 
 /**
- * A shelf that no longer exists falls back to All files rather than showing an
+ * A shelf that no longer exists falls back to Everything rather than showing an
  * empty grid — what happens when the folder you were standing in is deleted
  * from another tab.
  */
@@ -165,41 +217,6 @@ export function designMatches(design: DesignAsset, query: string): boolean {
   );
 }
 
-/**
- * What the grid shows: the chosen shelf, narrowed by the search box.
- *
- * SEARCH LOOKS EVERYWHERE. A query while standing in "Flyers" searches the
- * whole library, not that folder — someone typing a filename is asking "where
- * is this", and answering "not on the shelf you happen to be standing on" is
- * the behaviour that makes people re-upload a file they already have.
- */
-export function visibleDesigns(
-  designs: DesignAsset[],
-  folders: DesignFolder[],
-  shelfId: ShelfId,
-  query: string,
-): DesignAsset[] {
-  const q = normalizeQuery(query);
-  if (q) return designs.filter((design) => designMatches(design, q));
-  if (shelfId === SHELF_ALL) return designs;
-
-  const known = new Set(folders.map((f) => f.id));
-  if (shelfId === SHELF_UNFILED) {
-    return designs.filter((design) => isUnfiled(design, known));
-  }
-
-  // A parent shelf shows what is on it AND what is on its children — the
-  // counts in the rail say so, and a folder that hides its own sub-folder's
-  // files is a folder people stop trusting.
-  const shown = new Set([
-    shelfId,
-    ...folders.filter((f) => f.parentId === shelfId).map((f) => f.id),
-  ]);
-  return designs.filter(
-    (design) => design.folderId !== null && shown.has(design.folderId),
-  );
-}
-
 /** Colors matching the search box — by name or by hex, so pasting `#891d1a`
  *  finds the swatch it belongs to. */
 export function visibleColors(
@@ -221,6 +238,139 @@ export function visibleFonts<T extends { name: string; notes: string | null }>(
   const q = normalizeQuery(query);
   if (!q) return fonts;
   return fonts.filter((f) => contains(f.name, q) || contains(f.notes, q));
+}
+
+/** Designs matching the search box. */
+export function visibleDesigns(
+  designs: DesignAsset[],
+  query: string,
+): DesignAsset[] {
+  const q = normalizeQuery(query);
+  if (!q) return designs;
+  return designs.filter((design) => designMatches(design, q));
+}
+
+/**
+ * Everything on one shelf, of every kind, narrowed by the search box.
+ *
+ * SEARCH LOOKS EVERYWHERE. A query while standing in "Flyers" searches the
+ * whole library, not that folder — someone typing a filename is asking "where
+ * is this", and answering "not on the shelf you happen to be standing on" is
+ * the behaviour that makes people re-upload a file they already have.
+ *
+ * A parent shelf shows what is on it AND what is on its children — the counts
+ * in the rail say so, and a folder that hides its own sub-folder's files is a
+ * folder people stop trusting.
+ */
+export function shelfContents(
+  items: LibraryItems,
+  folders: DesignFolder[],
+  shelfId: ShelfId,
+  query: string,
+): LibraryItems {
+  const searched: LibraryItems = {
+    colors: visibleColors(items.colors, query),
+    fonts: visibleFonts(items.fonts, query),
+    designs: visibleDesigns(items.designs, query),
+  };
+  if (normalizeQuery(query)) return searched;
+  if (shelfId === SHELF_ALL) return searched;
+
+  if (shelfId === SHELF_UNFILED) {
+    const known = new Set(folders.map((f) => f.id));
+    const loose = (item: FiledItem) => isUnfiled(item, known);
+    return {
+      colors: searched.colors.filter(loose),
+      fonts: searched.fonts.filter(loose),
+      designs: searched.designs.filter(loose),
+    };
+  }
+
+  const shown = new Set([
+    shelfId,
+    ...folders.filter((f) => f.parentId === shelfId).map((f) => f.id),
+  ]);
+  const inShelf = (item: FiledItem) =>
+    item.folderIds.some((id) => shown.has(id));
+  return {
+    colors: searched.colors.filter(inShelf),
+    fonts: searched.fonts.filter(inShelf),
+    designs: searched.designs.filter(inShelf),
+  };
+}
+
+/**
+ * What one FOLDER holds, narrowed by the search box.
+ *
+ * The sibling of `shelfContents`, and the difference between them is the whole
+ * reason both exist. The library's search deliberately escapes the shelf you
+ * are standing on, because a person typing a filename is asking "where is
+ * this". A pinned section is not standing anywhere — it IS a folder, drawn
+ * because somebody pinned it — so answering a search with the whole library
+ * would draw the same matches under "Colors", under "Faces" and under "Easter
+ * 2026", which says nothing and repeats itself three times.
+ *
+ * So here the query narrows WITHIN the folder, and a section with no matches
+ * says so rather than borrowing somebody else's.
+ */
+export function folderContents(
+  items: LibraryItems,
+  folders: DesignFolder[],
+  folderId: string,
+  query: string,
+): LibraryItems {
+  const shown = new Set([
+    folderId,
+    ...folders.filter((f) => f.parentId === folderId).map((f) => f.id),
+  ]);
+  const inFolder = (item: FiledItem) =>
+    item.folderIds.some((id) => shown.has(id));
+  return {
+    colors: visibleColors(items.colors, query).filter(inFolder),
+    fonts: visibleFonts(items.fonts, query).filter(inFolder),
+    designs: visibleDesigns(items.designs, query).filter(inFolder),
+  };
+}
+
+/**
+ * Everything NO pinned folder holds — what the library shows when it is showing
+ * "Everything".
+ *
+ * Without this the default page draws the whole palette twice: once in the
+ * library's own wall and once in the pinned "Colors" section below it. A person
+ * seeing their four colors listed twice on one screen reasonably concludes the
+ * app has lost track of them.
+ *
+ * The pinned sections are the page's other half, so between them every item is
+ * still drawn exactly once — which is the property that makes the split honest
+ * rather than a filter that hides things.
+ */
+export function unpinnedItems(
+  items: LibraryItems,
+  folders: DesignFolder[],
+): LibraryItems {
+  const pinned = new Set(pinnedFolders(folders).map((f) => f.id));
+  if (pinned.size === 0) return items;
+  const loose = (item: FiledItem) =>
+    !item.folderIds.some((id) => pinned.has(id));
+  return {
+    colors: items.colors.filter(loose),
+    fonts: items.fonts.filter(loose),
+    designs: items.designs.filter(loose),
+  };
+}
+
+/** How many things a `LibraryItems` holds, across every kind. */
+export function itemCount(items: LibraryItems): number {
+  return items.colors.length + items.fonts.length + items.designs.length;
+}
+
+/**
+ * "4", or "2 of 4" while a search or a folder is narrowing a wall — so a
+ * filtered section never reads as a section that lost its rows.
+ */
+export function countLabel(shown: number, total: number): string {
+  return shown === total ? String(total) : `${shown} of ${total}`;
 }
 
 // ── Pickers ──────────────────────────────────────────────────────────────────
@@ -362,7 +512,7 @@ export function initialsFor(title: string): string {
 /**
  * The placeholder's ground, chosen from the ORG'S OWN palette rather than from
  * a grey — a library of files nobody has thumbnailed should still look like the
- * brand, and the swatch wall two sections up is where these colors came from.
+ * brand, and the swatch wall further down the page is where these came from.
  *
  * Deterministic in the design's id, so a tile does not change color on every
  * render (or, worse, every time the list reorders).

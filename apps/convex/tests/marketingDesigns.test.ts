@@ -450,7 +450,7 @@ describe("folders nest exactly one level", () => {
 });
 
 describe("deleting a folder", () => {
-  test("moves its designs to Unfiled and says how many", async () => {
+  test("releases everything in it and says how many — nothing is deleted", async () => {
     const s = await setupEditor();
     const folder = await s.as.mutation(api.marketingDesigns.upsertFolder, {
       name: "Flyers",
@@ -459,23 +459,53 @@ describe("deleting a folder", () => {
       await s.as.mutation(api.marketingDesigns.upsertDesign, {
         kind: "canva",
         title,
-        folderId: folder,
+        folderIds: [folder],
         url: "https://www.canva.com/design/DAF123/abc/view",
       });
     }
+    // A color in the same folder — a folder holds any kind of thing now, and
+    // the delete has to walk all three tables or it leaves dangling ids.
+    await s.as.mutation(api.marketingDesigns.upsertColor, {
+      name: "Flyer red",
+      hex: "#891d1a",
+      folderIds: [folder],
+    });
     let lib = await s.as.query(api.marketingDesigns.library, {});
-    expect(lib.folders.find((f) => f.id === folder)?.designCount).toBe(2);
+    expect(lib.folders.find((f) => f.id === folder)?.itemCount).toBe(3);
 
     const result = await s.as.mutation(api.marketingDesigns.deleteFolder, {
       folderId: folder,
     });
-    expect(result).toEqual({ movedDesigns: 2 });
+    expect(result).toEqual({ releasedItems: 3 });
 
-    // Still there, still findable — the designs outlive the shelf.
+    // Still there, still findable — what was in it outlives it.
     lib = await s.as.query(api.marketingDesigns.library, {});
     expect(lib.folders).toHaveLength(0);
     expect(lib.designs).toHaveLength(2);
-    expect(lib.designs.every((d) => d.folderId === null)).toBe(true);
+    expect(lib.colors).toHaveLength(1);
+    expect(lib.designs.every((d) => d.folderIds.length === 0)).toBe(true);
+    expect(lib.colors[0].folderIds).toEqual([]);
+  });
+
+  test("a thing filed in two folders keeps the other one", async () => {
+    const s = await setupEditor();
+    const kit = await s.as.mutation(api.marketingDesigns.upsertFolder, {
+      name: "Colors",
+      pinned: true,
+    });
+    const event = await s.as.mutation(api.marketingDesigns.upsertFolder, {
+      name: "Easter 2026",
+    });
+    await s.as.mutation(api.marketingDesigns.upsertColor, {
+      name: "PW Red",
+      hex: "#891d1a",
+      folderIds: [kit, event],
+    });
+
+    await s.as.mutation(api.marketingDesigns.deleteFolder, { folderId: event });
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    // Deleting the event does not take the org's red out of the palette.
+    expect(lib.colors[0].folderIds).toEqual([kit]);
   });
 
   test("is refused while a sub-folder is still inside it", async () => {
@@ -629,7 +659,7 @@ describe("designs", () => {
     }
   });
 
-  test("moveDesignToFolder files and unfiles; omitting the folder unfiles", async () => {
+  test("setItemFolders files and unfiles; an empty list unfiles", async () => {
     const s = await setupEditor();
     const folder = await s.as.mutation(api.marketingDesigns.upsertFolder, {
       name: "Banners",
@@ -640,21 +670,98 @@ describe("designs", () => {
       url: "https://www.figma.com/design/abc/Stage",
     });
 
-    await s.as.mutation(api.marketingDesigns.moveDesignToFolder, {
-      designId,
-      folderId: folder,
+    await s.as.mutation(api.marketingDesigns.setItemFolders, {
+      kind: "design",
+      itemId: designId,
+      folderIds: [folder],
     });
     let lib = await s.as.query(api.marketingDesigns.library, {});
-    expect(lib.designs[0].folderId).toBe(folder);
-    expect(lib.folders[0].designCount).toBe(1);
+    expect(lib.designs[0].folderIds).toEqual([folder]);
+    expect(lib.folders[0].itemCount).toBe(1);
 
-    await s.as.mutation(api.marketingDesigns.moveDesignToFolder, { designId });
+    await s.as.mutation(api.marketingDesigns.setItemFolders, {
+      kind: "design",
+      itemId: designId,
+      folderIds: [],
+    });
     lib = await s.as.query(api.marketingDesigns.library, {});
-    expect(lib.designs[0].folderId).toBeNull();
-    expect(lib.folders[0].designCount).toBe(0);
+    expect(lib.designs[0].folderIds).toEqual([]);
+    expect(lib.folders[0].itemCount).toBe(0);
   });
 
-  test("editing a design does not move it — that's moveDesignToFolder's job", async () => {
+  test("setItemFolders files a color and a face by the same call", async () => {
+    const s = await setupEditor();
+    const folder = await s.as.mutation(api.marketingDesigns.upsertFolder, {
+      name: "Easter 2026",
+    });
+    const colorId = await s.as.mutation(api.marketingDesigns.upsertColor, {
+      name: "PW Red",
+      hex: "#891d1a",
+    });
+    const fontId = await s.as.mutation(api.marketingDesigns.upsertFont, {
+      name: "Inter",
+      role: "body",
+    });
+
+    for (const [kind, itemId] of [
+      ["color", colorId],
+      ["font", fontId],
+    ] as const) {
+      await s.as.mutation(api.marketingDesigns.setItemFolders, {
+        kind,
+        itemId,
+        folderIds: [folder],
+      });
+    }
+
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.colors[0].folderIds).toEqual([folder]);
+    expect(lib.fonts[0].folderIds).toEqual([folder]);
+    // One folder, three kinds of thing — the whole point of the model.
+    expect(lib.folders[0].itemCount).toBe(2);
+  });
+
+  test("setItemFolders refuses an id from another table", async () => {
+    const s = await setupEditor();
+    const colorId = await s.as.mutation(api.marketingDesigns.upsertColor, {
+      name: "PW Red",
+      hex: "#891d1a",
+    });
+    await expect(
+      s.as.mutation(api.marketingDesigns.setItemFolders, {
+        kind: "design",
+        itemId: colorId,
+        folderIds: [],
+      }),
+    ).rejects.toThrow(/no longer in the library/i);
+  });
+
+  test("a deleted folder is dropped from a submitted list rather than losing the save", async () => {
+    const s = await setupEditor();
+    const live = await s.as.mutation(api.marketingDesigns.upsertFolder, {
+      name: "Flyers",
+    });
+    const doomed = await s.as.mutation(api.marketingDesigns.upsertFolder, {
+      name: "Gone",
+    });
+    const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
+      kind: "link",
+      title: "Poster",
+      url: "https://example.com/poster",
+    });
+    await s.as.mutation(api.marketingDesigns.deleteFolder, { folderId: doomed });
+
+    // The panel was rendered before the delete and still offers both.
+    await s.as.mutation(api.marketingDesigns.setItemFolders, {
+      kind: "design",
+      itemId: designId,
+      folderIds: [live, doomed],
+    });
+    const lib = await s.as.query(api.marketingDesigns.library, {});
+    expect(lib.designs[0].folderIds).toEqual([live]);
+  });
+
+  test("editing a design does not re-file it — that's setItemFolders' job", async () => {
     const s = await setupEditor();
     const folder = await s.as.mutation(api.marketingDesigns.upsertFolder, {
       name: "Signage",
@@ -662,7 +769,7 @@ describe("designs", () => {
     const designId = await s.as.mutation(api.marketingDesigns.upsertDesign, {
       kind: "canva",
       title: "Door sign",
-      folderId: folder,
+      folderIds: [folder],
       url: "https://www.canva.com/design/DAF999/xyz/view",
     });
     await s.as.mutation(api.marketingDesigns.upsertDesign, {
@@ -672,7 +779,7 @@ describe("designs", () => {
       url: "https://www.canva.com/design/DAF999/xyz/view",
     });
     const lib = await s.as.query(api.marketingDesigns.library, {});
-    expect(lib.designs[0].folderId).toBe(folder);
+    expect(lib.designs[0].folderIds).toEqual([folder]);
   });
 
   test("designs reorder as a whole list", async () => {
@@ -715,7 +822,7 @@ describe("the seed", () => {
   test("carries the newsletter's real colors and is idempotent", async () => {
     const t = newT();
     const first = await t.mutation(internal.marketingDesigns.seedBrandKitIfEmpty, {});
-    expect(first).toEqual({ colors: 4, fonts: 4, folders: 5 });
+    expect(first).toEqual({ colors: 4, fonts: 4, folders: 7 });
 
     const second = await t.mutation(internal.marketingDesigns.seedBrandKitIfEmpty, {});
     expect(second).toEqual({ colors: 0, fonts: 0, folders: 0 });
@@ -759,6 +866,11 @@ describe("the seed", () => {
     const s = await setupChapter(t);
     const lib = await s.as.query(api.marketingDesigns.library, {});
     expect(lib.folders.map((f) => f.name)).toEqual([
+      // The brand kit is two pinned folders now, ahead of the marketer's own
+      // shelves — the shape migration 0085 leaves an existing deployment in,
+      // so a fresh one cannot start out different.
+      "Colors",
+      "Faces",
       "Logos",
       "Flyers",
       "Banners",
@@ -766,7 +878,20 @@ describe("the seed", () => {
       "Signage",
     ]);
     expect(lib.folders.every((f) => f.parentId === null)).toBe(true);
-    expect(lib.folders.every((f) => f.designCount === 0)).toBe(true);
+    expect(lib.folders.filter((f) => f.pinned).map((f) => f.name)).toEqual([
+      "Colors",
+      "Faces",
+    ]);
+    // The seeded palette and faces land INSIDE them, so the tab has its two
+    // sections on a brand-new deployment without a section ever being
+    // hard-coded.
+    expect(lib.folders.find((f) => f.name === "Colors")?.itemCount).toBe(4);
+    expect(lib.folders.find((f) => f.name === "Faces")?.itemCount).toBe(4);
+    expect(
+      lib.folders
+        .filter((f) => !f.pinned)
+        .every((f) => f.itemCount === 0),
+    ).toBe(true);
   });
 
   test("leaves a table that already has rows completely alone", async () => {

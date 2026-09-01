@@ -9,6 +9,11 @@
  * The preview goes through the same `SpecimenSample` the wall uses, against the
  * same probe, so the panel and the tile can never disagree about whether a face
  * is showable.
+ *
+ * The folder checklist at the bottom is the same one every item type gets: a
+ * face lives in "Faces", and in the event folder whose posters are set in it.
+ * See `ColorInspector` for why an existing row files on the tick rather than on
+ * Save.
  */
 import { useState } from "react";
 import { Linking, Text, View } from "react-native";
@@ -21,14 +26,16 @@ import {
   BRAND_FONT_ROLE_LABELS,
   type BrandFont,
   type BrandFontRole,
+  type DesignFolder,
 } from "@events-os/shared";
 import { Button, Select, TextField } from "../../ui";
+import { FolderChecklist } from "./FolderChecklist";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { Inspector, ReorderControls } from "./Inspector";
 import { asId, neighbourFor, swappedIds } from "./ids";
 import { hasFontFamily } from "./fontProbe";
 import { resolveSpecimen } from "./fontSpecimen.shared";
-import { SpecimenSample } from "./SpecimenWall";
+import { SpecimenSample } from "./Specimen";
 
 const ROLE_OPTIONS = BRAND_FONT_ROLES.map((role) => ({
   value: role,
@@ -45,6 +52,8 @@ const EMPTY = {
 export function FontInspector({
   font,
   fonts,
+  folders,
+  seedFolderIds,
   canEdit,
   run,
   onClose,
@@ -52,6 +61,10 @@ export function FontInspector({
   font: BrandFont | null;
   /** Every face — reordering sends the whole flat list. */
   fonts: BrandFont[];
+  /** Every folder, for the filing checklist. */
+  folders: DesignFolder[];
+  /** Folders a NEW face starts in — the one it was added from. */
+  seedFolderIds: string[];
   canEdit: boolean;
   run: ActionRunner["run"];
   onClose: () => void;
@@ -59,6 +72,7 @@ export function FontInspector({
   const upsertFont = useMutation(api.marketingDesigns.upsertFont);
   const deleteFont = useMutation(api.marketingDesigns.deleteFont);
   const reorderFonts = useMutation(api.marketingDesigns.reorderFonts);
+  const setItemFolders = useMutation(api.marketingDesigns.setItemFolders);
 
   const [draft, setDraft] = useState(
     font
@@ -70,6 +84,25 @@ export function FontInspector({
         }
       : EMPTY,
   );
+
+  const [folderIds, setFolderIds] = useState<string[]>(
+    font ? font.folderIds : seedFolderIds,
+  );
+
+  /** A new face files on save; an existing one files on the tick. */
+  function file(next: string[]) {
+    setFolderIds(next);
+    if (!font) return;
+    void run(
+      () =>
+        setItemFolders({
+          kind: "font",
+          itemId: font.id,
+          folderIds: next.map(asId),
+        }),
+      { errorTitle: "Couldn't file that face" },
+    );
+  }
 
   // Follows the NAME being typed, so adding a face tells you immediately
   // whether this device can show it — which is the moment the "where to get
@@ -86,6 +119,8 @@ export function FontInspector({
           role: draft.role,
           ...(draft.sourceUrl.trim() ? { sourceUrl: draft.sourceUrl.trim() } : {}),
           ...(draft.notes.trim() ? { notes: draft.notes.trim() } : {}),
+          // Create only — see `ColorInspector`'s note.
+          ...(font ? {} : { folderIds: folderIds.map(asId) }),
         }),
       { errorTitle: "Couldn't save that face", onSuccess: onClose },
     );
@@ -210,6 +245,12 @@ export function FontInspector({
             multiline
             numberOfLines={3}
             hint="Anything to know before using it — weights we own, tracking, what not to do with it."
+          />
+          <FolderChecklist
+            folders={folders}
+            value={folderIds}
+            onChange={file}
+            hint="Faces, and any event or campaign folder whose work is set in it."
           />
         </>
       ) : null}

@@ -366,6 +366,7 @@ const REGISTRY_NAMES = [
   "0082_correct_inter_font_note",
   "0083_capture_design_covers",
   "0084_recapture_design_covers",
+  "0085_folders_as_primitive",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

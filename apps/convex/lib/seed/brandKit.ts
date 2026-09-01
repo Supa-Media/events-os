@@ -133,7 +133,22 @@ export const BRAND_FONT_SEED = [
  * nobody asked for. The one level of nesting the schema allows is there for the
  * marketer to use when they actually need it.
  */
+/**
+ * The two folders the brand kit itself lives in.
+ *
+ * They are PINNED, which is the only thing that makes them look like the
+ * "Colors" and "Faces" sections the tab used to hard-code — and they are
+ * otherwise ordinary folders, renameable and deletable like any other. Named
+ * here as constants because `seedBrandKit` files the seeded colors and faces
+ * into them by name, and migration `0085` matches the same two names on a
+ * deployment that was seeded before folders were the primitive.
+ */
+export const KIT_COLORS_FOLDER = "Colors";
+export const KIT_FACES_FOLDER = "Faces";
+
 export const DESIGN_FOLDER_SEED = [
+  { name: KIT_COLORS_FOLDER, order: 10, pinned: true },
+  { name: KIT_FACES_FOLDER, order: 20, pinned: true },
   { name: "Logos", order: 100 },
   { name: "Flyers", order: 200 },
   { name: "Banners", order: 300 },

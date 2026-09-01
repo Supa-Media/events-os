@@ -1,5 +1,5 @@
 /**
- * MARKETING · Designs — the colors, as a wall of paint.
+ * MARKETING · Designs — one color, as a card of the paint itself.
  *
  * Nobody reads `#891d1a` and pictures a color. The shipped tab was a table of
  * hex codes with a 36px chip beside each one; this is the inverse — the swatch
@@ -12,10 +12,19 @@
  * "Copied" when the system clipboard actually took it. The panel that opens is
  * still where the hex is legible and selectable if the copy is unavailable.
  *
- * ── Tiles are a fixed width, not a computed column count ────────────────────
- * `flex-wrap` with a fixed tile width reflows correctly on every platform
- * without measuring the window — which matters because this file renders inside
- * a rail-and-canvas split whose available width is not the window's.
+ * ── One card, and somebody else owns the wall ───────────────────────────────
+ * This used to export a `SwatchWall` that laid its own swatches out. It doesn't
+ * any more, because a folder holds colors AND faces AND files, and three
+ * components each drawing their own row turned a mixed folder into three
+ * one-card rows with the page empty to the right of each. `FolderBody` now owns
+ * a single wrapping wall and puts every kind of card into it, so they flow
+ * together and fill the line.
+ *
+ * The card keeps its FIXED WIDTH, matching the design tile's, so a wall of
+ * mixed cards lines up instead of looking hand-placed. A fixed width also
+ * reflows correctly on every platform without measuring the window — which
+ * matters because this renders inside a rail-and-canvas split whose available
+ * width is not the window's.
  */
 import { useState } from "react";
 import { Pressable, Text, View } from "react-native";
@@ -23,23 +32,7 @@ import type { BrandColor } from "@events-os/shared";
 import { copyToClipboard } from "../../../lib/clipboard";
 import { readableInkOn } from "./library.shared";
 
-export function SwatchWall({
-  palette,
-  onOpen,
-}: {
-  palette: BrandColor[];
-  onOpen: (color: BrandColor) => void;
-}) {
-  return (
-    <View className="flex-row flex-wrap gap-3">
-      {palette.map((color) => (
-        <Swatch key={color.id} color={color} onOpen={onOpen} />
-      ))}
-    </View>
-  );
-}
-
-function Swatch({
+export function Swatch({
   color,
   onOpen,
 }: {
@@ -64,7 +57,7 @@ function Swatch({
       onHoverOut={() => setHovered(false)}
       accessibilityRole="button"
       accessibilityLabel={`${color.name}, ${color.hex}. Copy and open.`}
-      className={`w-[164px] overflow-hidden rounded-lg border bg-raised ${
+      className={`w-[178px] overflow-hidden rounded-lg border bg-raised ${
         hovered ? "border-border-strong shadow-raised" : "border-border shadow-card"
       }`}
     >

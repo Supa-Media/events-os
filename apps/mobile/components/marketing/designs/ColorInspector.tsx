@@ -8,6 +8,14 @@
  * The read-only case is not a degraded one: a volunteer gets the paint, the
  * code, the copy button and the sentence, and no footer at all. That is the
  * whole point of the kit being ungated.
+ *
+ * ── Filing, since a color can be in folders now ─────────────────────────────
+ * The checklist below the fields is where a color joins "Colors", "Easter
+ * 2026", or both — the same control the face and the design inspectors use. For
+ * a color that already exists it saves on every tick through `setItemFolders`,
+ * without waiting for Save: filing is not an edit to the row's text, and making
+ * somebody press Save to move a swatch is how a form overwrites a name a
+ * colleague changed in another tab.
  */
 import { useState } from "react";
 import { Text, View } from "react-native";
@@ -19,8 +27,10 @@ import {
   isBrandHex,
   normalizeBrandHex,
   type BrandColor,
+  type DesignFolder,
 } from "@events-os/shared";
 import { Button, CopyButton, TextField } from "../../ui";
+import { FolderChecklist } from "./FolderChecklist";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { Inspector, ReorderControls } from "./Inspector";
 import { asId, neighbourFor, swappedIds } from "./ids";
@@ -31,6 +41,8 @@ const EMPTY = { name: "", hex: "", usage: "" };
 export function ColorInspector({
   color,
   palette,
+  folders,
+  seedFolderIds,
   canEdit,
   run,
   onClose,
@@ -39,6 +51,10 @@ export function ColorInspector({
   color: BrandColor | null;
   /** The whole palette — reordering sends the entire list. */
   palette: BrandColor[];
+  /** Every folder, for the filing checklist. */
+  folders: DesignFolder[];
+  /** Folders a NEW color starts in — the one it was added from. */
+  seedFolderIds: string[];
   canEdit: boolean;
   run: ActionRunner["run"];
   onClose: () => void;
@@ -46,12 +62,31 @@ export function ColorInspector({
   const upsertColor = useMutation(api.marketingDesigns.upsertColor);
   const deleteColor = useMutation(api.marketingDesigns.deleteColor);
   const reorderColors = useMutation(api.marketingDesigns.reorderColors);
+  const setItemFolders = useMutation(api.marketingDesigns.setItemFolders);
 
   const [draft, setDraft] = useState(
     color
       ? { name: color.name, hex: color.hex, usage: color.usage ?? "" }
       : EMPTY,
   );
+  const [folderIds, setFolderIds] = useState<string[]>(
+    color ? color.folderIds : seedFolderIds,
+  );
+
+  /** A new color files on save; an existing one files on the tick. */
+  function file(next: string[]) {
+    setFolderIds(next);
+    if (!color) return;
+    void run(
+      () =>
+        setItemFolders({
+          kind: "color",
+          itemId: color.id,
+          folderIds: next.map(asId),
+        }),
+      { errorTitle: "Couldn't file that color" },
+    );
+  }
 
   // The hex is checked with the shared `isBrandHex` as you type rather than on
   // save: the rule (`#rgb` or `#rrggbb`, nothing else) is unusual enough that
@@ -73,6 +108,10 @@ export function ColorInspector({
           // backend treats a scalar it wasn't sent as cleared, so omitting an
           // emptied box is what clears it.
           ...(draft.usage.trim() ? { usage: draft.usage.trim() } : {}),
+          // Only on CREATE: an existing color's folders are already saved,
+          // tick by tick, and resending them here would let a stale panel
+          // undo a filing somebody made while it was open.
+          ...(color ? {} : { folderIds: folderIds.map(asId) }),
         }),
       { errorTitle: "Couldn't save that color", onSuccess: onClose },
     );
@@ -191,6 +230,12 @@ export function ColorInspector({
             multiline
             numberOfLines={3}
             hint="The half people actually need — “headlines and the donate button”."
+          />
+          <FolderChecklist
+            folders={folders}
+            value={folderIds}
+            onChange={file}
+            hint="A color can be in as many as it belongs in — the palette, and every event that uses it."
           />
         </>
       ) : null}
