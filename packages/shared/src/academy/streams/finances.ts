@@ -2528,10 +2528,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Everything closed:** every charge has a receipt, a category and a budget link, and has been marked Closed — the closed count in the Transactions header climbs toward the whole month.",
+          "**Everything closed:** every charge has a receipt, a category and a budget link, and has been marked Closed. The closed count in the Transactions header climbs toward the whole month.",
           "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on — the submission email is a nudge, not a substitute for actually clearing the queue.",
-          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready (it's a separate flag, not a status), so it's easy to close a month while real debts sit uncollected — check the Personal (unpaid) pill directly and nudge anyone who still owes. When someone's paid you back, confirm it on Cards → \"Personal to repay\" with \"Mark repaid\", or the debt stays open on the books no matter what landed in the account.",
-          "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation — that trust IS the north-star metric this whole system is built around.",
+          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready — it's a flag, not a status. So it's easy to close a month while real debts sit uncollected. Check the pill directly and nudge anyone who still owes. When someone pays you back, confirm it on Cards → \"Personal to repay\" with \"Mark repaid\". Otherwise the debt stays open on the books, whatever landed in the account.",
+          "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation. That trust is this system's north-star metric.",
         ],
       },
       {
@@ -2748,7 +2748,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The playbook splits money into three separate jobs, held by three different humans: the Chapter Director **raises** it (backers), the Treasurer **records** it (Reconcile, receipts, budgets), and the central Financial Manager **oversees** it (audit, cross-chapter trust). As Chapter Director, your finance job is raising and approving — not bookkeeping.",
+        text: "The playbook splits money into three jobs, held by three different humans. The Chapter Director **raises** it from backers. The Treasurer **records** it in Reconcile — receipts, budgets. The central Financial Manager **oversees** it: audit, cross-chapter trust. As Chapter Director, your finance job is raising and approving — not bookkeeping.",
       },
       {
         kind: "table",
@@ -3178,12 +3178,12 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "You watch patterns, not individual charges",
-        text: "One missing receipt is normal life. The same cardholder hitting escalation every month is the thing worth a real conversation — the queue is there so you notice the pattern, not so you personally chase every stray charge.",
+        text: "One missing receipt is normal life. The same cardholder hitting escalation every month is worth a real conversation. The queue exists so you notice the pattern, not so you chase every stray charge.",
       },
       {
         kind: "rule",
         title: "A full receipts library is not a documented month",
-        text: "Receipts that arrive by email or text are CAPTURED, not filed. They wait in the Receipts library until a human confirms which charge each one belongs to — which the cardholder does in one tap when the app offers the match while they code the charge. So the two numbers you'd expect to move together don't: receipts in, and charges documented. The second is the one that governs the lock, this queue, and the close.\n\nWe gave up the automatic match deliberately. Guessing was right most of the time, and the times it was wrong were invisible — a receipt quietly stuck to the wrong charge reads as finished, which is worse than one that isn't attached at all. A chapter where receipts pour in and the queue keeps growing isn't a broken pipeline; it's a habit that hasn't landed yet, and that's exactly the kind of pattern this view exists to show you.",
+        text: "Receipts that arrive by email or text are CAPTURED, not filed. They wait in the Receipts library until a human confirms which charge each belongs to. The cardholder does that in one tap, when the app offers the match while they code the charge. So the two numbers you'd expect to move together don't: receipts in, and charges documented. The second is the one that governs the lock, this queue, and the close.\n\nWe gave up the automatic match deliberately. Guessing was right most of the time, and wrong invisibly. A receipt stuck to the wrong charge reads as finished, which is worse than one that isn't attached at all. A chapter where the queue keeps growing doesn't have a broken pipeline. It has a habit that hasn't landed yet, which is the pattern this view exists to show you.",
       },
       {
         kind: "try_status",
@@ -3379,14 +3379,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "One system, one set of rules",
-        text: "Central spending follows the same invariants as chapter spending: actuals come only from explicitly-linked transactions, an over-cap budget gets a loud warning, and approval follows the mirror-image of a chapter's SoD — you approve central budgets, and the Financial Manager approves if you were the one who submitted it.",
+        text: "Central spending follows the same invariants as chapter spending. Actuals come only from explicitly-linked transactions, and an over-cap budget gets a loud warning. Approval mirrors a chapter's separation of duties: you approve central budgets, and the Financial Manager approves the ones you submitted.",
       },
       {
         kind: "reveal",
         prompt:
           "Why does central use the exact same budget tables and rules as a chapter, instead of its own separate system?",
         answer:
-          "Because \"central\" is just another scope in the same model (a sentinel string, not a parallel structure) — every rule, report, and rollup that works for a chapter works for central automatically, with nothing built twice.",
+          "Because \"central\" is just another scope in the same model — a sentinel string, not a parallel structure. Every rule, report and rollup that works for a chapter works for central automatically, with nothing built twice.",
       },
     ],
     quiz: [
@@ -3438,7 +3438,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Seats get assigned from the **Org Chart** tab: a superuser can assign a holder directly, and anyone else proposes a change for the seat's holder (or the seat above it) to confirm — a two-party handoff, not a unilateral edit. Executive Director and Financial Manager sit at central; Chapter Director and Treasurer sit per chapter. Each is one holder per seat — assigning a new Executive Director replaces the old one, it doesn't add a second. Editing the chart's STRUCTURE itself (adding, moving, or removing seats) is separate and narrower: only the Executive Director or a superuser can do that.",
+        text: "Seats get assigned from the **Org Chart** tab. A superuser can assign a holder directly. Anyone else proposes a change for the seat's holder, or the seat above it, to confirm — a two-party handoff, not a unilateral edit. Executive Director and Financial Manager sit at central; Chapter Director and Treasurer sit per chapter. Each is one holder per seat — assigning a new Executive Director replaces the old one, it doesn't add a second. Editing the chart's STRUCTURE itself (adding, moving, or removing seats) is separate and narrower: only the Executive Director or a superuser can do that.",
       },
       {
         kind: "table",
@@ -3451,7 +3451,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Today, some people genuinely hold two real seats at once — you might be Executive Director AND a Chapter Director. That's not a bug or a special permission: if you hold seats at both central and a chapter, you get an honest **seat switcher** (\"which desk are you at?\") that lists exactly your real seats. Someone with one seat never sees a switcher at all.",
+        text: "Today, some people genuinely hold two real seats at once — you might be Executive Director AND a Chapter Director. That is not a bug or a special permission. Hold seats at both central and a chapter and you get an honest **seat switcher** — \"which desk are you at?\" — listing exactly your real seats. Someone with one seat never sees a switcher at all.",
       },
       {
         kind: "rule",
@@ -3522,7 +3522,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Two money flows tie the whole network together: the 15% skim moving UP from every chapter into the City Launch Fund, and a one-time launch grant moving DOWN from central to seed a brand-new city. The fund itself is real today — it's central's own account. Both flows move as a deliberate, human-recorded transfer, not an automatic pipe — and that's a choice, not a gap.",
+        text: "Two money flows tie the network together. The 15% skim moves UP from every chapter into the City Launch Fund. A one-time launch grant moves DOWN from central to seed a new city. The fund itself is real today — it's central's own account. Both flows move as a deliberate, human-recorded transfer, not an automatic pipe — and that's a choice, not a gap.",
       },
       {
         kind: "table",
@@ -3535,11 +3535,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The fund exists; a human moves the money into and out of it",
-        text: "The City Launch Fund's balance is a real number in a real central account you can see today. Central's bookkeeper records every skim contribution and every launch grant as a manual transfer — same real ledger entry either way, just typed in rather than run by a cron job.",
+        text: "The City Launch Fund's balance is a real number in a real central account you can see today. Central's bookkeeper records every skim contribution and every launch grant as a manual transfer. Same ledger entry either way, just typed in rather than run by a cron job.",
       },
       {
         kind: "tip",
-        text: "**Why manual, on purpose:** with one chapter and a small backer base, an automated monthly transfer (and the account wiring, approval flow, and failure handling it requires) is complexity the network doesn't need yet. Every transfer — a skim contribution, a launch grant, or anything else that moves money between a chapter and central — goes through ONE mutation today, with a note saying what it's for. If the network grows enough that this becomes a real burden, automating it is a well-understood, revisitable decision — not a broken promise.",
+        text: "**Why manual, on purpose:** with one chapter and a small backer base, an automated monthly transfer is complexity the network doesn't need yet. So is the wiring, approval flow and failure handling it would require. Every transfer between a chapter and central goes through ONE mutation today, with a note saying what it's for. If the network grows enough that this becomes a real burden, automating it is a well-understood, revisitable decision — not a broken promise.",
       },
       {
         kind: "reveal",
@@ -3609,13 +3609,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "An event or project doesn't automatically get a budget — plenty are pure work-tracking, no dollars involved. A budget only exists once real money enters the picture: type a planned amount in when you create it and a Draft budget is created right then, or tap **Add budget** on the event or project's own page later, once there's actually something to plan. Either way, nothing is approved yet — a budget is a plan until someone deliberately moves it forward.",
+        text: "An event or project doesn't automatically get a budget — plenty are pure work-tracking, no dollars involved. A budget only exists once real money enters the picture. Type a planned amount when you create the event and a Draft budget is created right then. Or tap **Add budget** on its page later, once there's something to plan. Either way, nothing is approved yet — a budget is a plan until someone deliberately moves it forward.",
       },
       {
         kind: "bullets",
         items: [
           "**Draft** — the amount and line items are yours to edit freely. Nobody outside your own head has weighed in yet, and nothing you type here spends anything.",
-          "**Send for review** — a deliberate tap, never an autosave. The moment you send it, the budget is Awaiting approval, visible to whoever can act on it — and they get an email too, not just a badge in the app.",
+          "**Send for review** — a deliberate tap, never an autosave. The moment you send it, the budget is Awaiting approval and visible to whoever can act on it. They get an email too, not just a badge in the app.",
           "**Approve or Request changes** — the approver either clears it (Approved) or kicks it back with a reason (Changes requested), which reopens it for editing and a fresh send. Either decision emails the submitter back, so a Changes requested reason doesn't just sit waiting to be noticed.",
           "**Who approves what** — a chapter budget's approver is its Treasurer or Chapter Director; a central budget's is the Executive Director or Financial Manager.",
         ],
@@ -3627,7 +3627,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "**Raising the cap sends it back to Draft — but nobody's told.** Bump an APPROVED budget's amount and it drops straight back to Draft the moment you save the higher number — NOT Awaiting approval, and NOT auto-submitted. The OLD approved figure keeps working as the real spending cap the whole time, so nothing silently expands — but the increase itself is invisible to every approver until YOU deliberately hit Send for review again. Skip that tap and the raise is never reviewed, and no approver is ever notified. Decreasing an amount, or reshuffling its line items, never triggers any of this.",
+        text: "**Raising the cap sends it back to Draft — but nobody's told.** Bump an APPROVED budget's amount and it drops back to Draft the moment you save. Not Awaiting approval, and not auto-submitted. The OLD approved figure stays the real spending cap, so nothing silently expands. But the increase is invisible to every approver until YOU hit Send for review again. Skip that tap and the raise is never reviewed, and no approver is ever notified. Decreasing an amount, or reshuffling its line items, never triggers any of this.",
       },
       {
         kind: "reveal",
@@ -3711,27 +3711,27 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Attribution in this system is explicit-only, everywhere: a transaction counts toward a budget the moment a person deliberately links it there. Nothing is coded automatically; no charge quietly lands on the nearest-looking budget just because the dates or amounts happen to line up.",
+        text: "Attribution is explicit-only. A transaction counts toward a budget the moment a person deliberately links it there. Nothing is coded automatically. No charge lands on the nearest-looking budget because the dates happen to line up.",
       },
       {
         kind: "bullets",
         items: [
-          "**Unattributed is the honest name for \"not yet claimed.\"** Every charge without an explicit link sits in the Needs Budget bucket, in plain sight on the dashboard — a number the whole chapter works to drive to zero, never one to quietly bury.",
-          "**Only an approved budget can take a charge.** The \"For\" picker — grouped Events / Projects / Recurring — only ever offers budgets that have actually cleared review (the budget lifecycle, previous lesson). A Draft or Awaiting-approval budget can't receive a link yet, on purpose.",
-          "**Nothing codes a charge but a person.** The \"For\" picker ranks the likely homes for a charge so the right one is usually first, but ranking is only ordering — a link exists because someone chose it.",
+          "**Unattributed is the honest name for \"not yet claimed.\"** Every charge without an explicit link sits in the Needs Budget bucket, in plain sight on the dashboard. It is a number the chapter drives to zero, never one to bury.",
+          "**Only an approved budget can take a charge.** The \"For\" picker is grouped Events / Projects / Recurring. It offers only budgets that have cleared review. A Draft or Awaiting-approval budget can't receive a link yet, on purpose.",
+          "**Nothing codes a charge but a person.** The picker ranks the likely homes so the right one is usually first. Ranking is only ordering — a link exists because someone chose it.",
         ],
       },
       {
         kind: "rule",
         title: "Every dollar belongs to a chapter or to central — never both",
-        text: "A budget's level is a real chapter, or the literal \"central\" scope — never null, never a mix of the two. A chapter's own dashboard never surfaces central's money alongside its own, and central's rollup never quietly absorbs a chapter's.",
+        text: "A budget's level is a real chapter, or the literal \"central\" scope. Never null, never a mix. A chapter's dashboard never surfaces central's money alongside its own, and central's rollup never absorbs a chapter's.",
       },
       {
         kind: "reveal",
         prompt:
           "You're logging a charge for a brand-new event that doesn't have an approved budget yet. What happens in the \"For\" picker?",
         answer:
-          "Nothing — that event's budget won't appear in the picker at all until it clears review. The charge sits in Needs Budget in the meantime; open the event's own page, use Add budget (or its existing Draft), and send it for review. Once it's approved, the same charge attributes cleanly.",
+          "Nothing — that event's budget won't appear until it clears review. The charge waits in Needs Budget. Open the event's page, use Add budget, and send it for review. Once approved, the same charge attributes cleanly.",
       },
     ],
     quiz: [
