@@ -1,7 +1,14 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { CENTRAL, DEFAULT_CODING_REQUIRED_SINCE_MS, DAY_MS } from "@events-os/shared";
-import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
+import {
+  newT,
+  run,
+  seedApprovedBudget,
+  setupChapter,
+  storeBlob,
+  type ChapterSetup,
+} from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
@@ -97,11 +104,24 @@ async function seedTxn(
     postedAt?: number;
     receiptStorageId?: Id<"_storage">;
     documented?: boolean;
+    /** Pass `false` for a row deliberately left unattributed — the state
+     *  `approve`'s budget gate exists for, and the state the "carries the
+     *  budget Reconcile already set" test needs a control for. */
+    budgeted?: boolean;
   } = {},
 ): Promise<Id<"transactions">> {
   const receiptStorageId =
     opts.receiptStorageId ??
     (opts.documented === false ? undefined : await storeBlob(s.t));
+  // BUDGETED by default: `transactionCodings.approve` refuses spend that owes
+  // a budget and hasn't got one (`finances.needsBudget`, founder 2026-09-02).
+  // That gate has its own suite (`codingReviseUnderReview.test.ts`); here it is a
+  // precondition of reaching what these tests are about, exactly like the
+  // receipt above.
+  const budgetId =
+    opts.budgeted === false
+      ? undefined
+      : await seedApprovedBudget(s.t, s.chapterId);
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: s.chapterId,
@@ -112,6 +132,7 @@ async function seedTxn(
       merchantName: "Peter Pan Bus Lines",
       status: "unreviewed",
       receiptStorageId,
+      budgetId,
       createdAt: Date.now(),
     }),
   );
@@ -288,7 +309,7 @@ describe("a coding carries its own documentation", () => {
     );
     const attributed = await seedTxn(s);
     await run(s.t, (ctx) => ctx.db.patch(attributed, { budgetId }));
-    const unattributed = await seedTxn(s);
+    const unattributed = await seedTxn(s, { budgeted: false });
 
     expect(
       (

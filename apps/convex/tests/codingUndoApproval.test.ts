@@ -8,6 +8,7 @@ import {
 import {
   newT,
   run,
+  seedApprovedBudget,
   setupChapter,
   storeBlob,
   type ChapterSetup,
@@ -63,6 +64,12 @@ async function asManager(s: ChapterSetup): Promise<Id<"people">> {
 
 async function seedTxn(s: ChapterSetup): Promise<Id<"transactions">> {
   const receiptStorageId = await storeBlob(s.t);
+  // BUDGETED by default: `transactionCodings.approve` refuses spend that owes
+  // a budget and hasn't got one (`finances.needsBudget`, founder 2026-09-02).
+  // That gate has its own suite (`codingReviseUnderReview.test.ts`); here it is a
+  // precondition of reaching what these tests are about, exactly like the
+  // receipt above.
+  const budgetId = await seedApprovedBudget(s.t, s.chapterId);
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: s.chapterId,
@@ -73,6 +80,7 @@ async function seedTxn(s: ChapterSetup): Promise<Id<"transactions">> {
       merchantName: "Peter Pan Bus Lines",
       status: "unreviewed",
       receiptStorageId,
+      budgetId,
       createdAt: Date.now(),
     }),
   );

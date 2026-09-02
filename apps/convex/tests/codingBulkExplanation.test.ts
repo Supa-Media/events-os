@@ -1,7 +1,14 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
 import { DEFAULT_CODING_REQUIRED_SINCE_MS, DAY_MS } from "@events-os/shared";
-import { newT, run, setupChapter, storeBlob, type ChapterSetup } from "./setup.helpers";
+import {
+  newT,
+  run,
+  seedApprovedBudget,
+  setupChapter,
+  storeBlob,
+  type ChapterSetup,
+} from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 
@@ -60,6 +67,12 @@ async function seedTxn(
 ): Promise<Id<"transactions">> {
   const receiptStorageId =
     opts.documented === false ? undefined : await storeBlob(s.t);
+  // BUDGETED by default: `transactionCodings.approve` refuses spend that owes
+  // a budget and hasn't got one (`finances.needsBudget`, founder 2026-09-02).
+  // That gate has its own suite (`codingReviseUnderReview.test.ts`); here it is a
+  // precondition of reaching what these tests are about, exactly like the
+  // receipt above.
+  const budgetId = await seedApprovedBudget(s.t, s.chapterId);
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: s.chapterId,
@@ -70,6 +83,7 @@ async function seedTxn(
       merchantName: opts.merchantName ?? "MTA*NYCT PAYGO",
       status: "unreviewed",
       receiptStorageId,
+      budgetId,
       createdAt: Date.now(),
     }),
   );

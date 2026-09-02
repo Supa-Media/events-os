@@ -3039,6 +3039,23 @@ export const transactionCodings = defineTable({
   // The reviewer's latest send-back note ("receipt must show exact amount") —
   // required on `changes_requested`, cleared on approval.
   reviewNote: v.optional(v.string()),
+  // ── AMENDED DURING REVIEW, NOT REAUTHORED ────────────────────────────────
+  // Who last CORRECTED this coding's structured facts from the review record
+  // (`transactionCodings.reviseUnderReview`), and when. A reviewer fixing a
+  // mis-typed expense type or a missing route must not become the row's
+  // AUTHOR — `codedBy*` above is whose testimony this is, and rewriting it
+  // would both misstate that and hand the corrector a separation-of-duties
+  // pass on their own approval. So the correction is stamped HERE, beside the
+  // authorship it deliberately leaves alone, and the review record renders it
+  // ("Amended during review by …") so the next reader can see the sentence
+  // they are approving is not verbatim what was submitted.
+  //
+  // `businessPurpose` is NOT reachable from that path — the author's own
+  // words stay the author's own words, and the reviewer's channel for the
+  // published wording is `publicPurpose` below.
+  revisedByPersonId: v.optional(v.id("people")),
+  revisedByUserId: v.optional(v.id("users")),
+  revisedAt: v.optional(v.number()),
   // Mirrors `budgets.approvalParty` (owner addendum 2026-07-17, extended to
   // codings 2026-08-11: "as super admin, I need the ability to just approve
   // my own coding things"): while the owner is solo-operating, a SUPERUSER

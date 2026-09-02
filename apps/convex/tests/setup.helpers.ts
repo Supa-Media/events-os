@@ -133,3 +133,38 @@ export async function setupChapter(
   const as = t.withIdentity({ subject: `${userId}|session`, issuer: "test" });
   return { as, userId, chapterId, email, t };
 }
+
+/**
+ * An APPROVED recurring budget in `book`, and the id to hang a charge off.
+ *
+ * Exists because `transactionCodings.approve` refuses a charge that owes a
+ * budget and hasn't got one (founder, 2026-09-02: "we shouldn't be letting
+ * things go through without a budget" — `finances.needsBudget`). Every suite
+ * that seeds a spend row and then approves its coding needs one, and a suite
+ * about WHO MAY APPROVE should not each grow its own budget-shaped fixture and
+ * its own idea of what makes a budget attributable.
+ *
+ * `approvalStatus: "approved"` is the load-bearing field —
+ * `finances.isAttributableBudget` is what any attribution write checks. The
+ * rest is the minimum a `budgets` row needs to validate.
+ */
+export async function seedApprovedBudget(
+  t: TestConvex,
+  book: Id<"chapters"> | "central",
+  opts: { label?: string; year?: number } = {},
+): Promise<Id<"budgets">> {
+  return run(t, (ctx) =>
+    ctx.db.insert("budgets", {
+      chapterId: book,
+      amountCents: 500_000,
+      label: opts.label ?? "Operating",
+      type: "recurring",
+      // No `refKind` — a recurring operating budget hangs off no event or
+      // project (`BUDGET_REF_KINDS` is event/project only).
+      cadence: "yearly",
+      year: opts.year ?? 2026,
+      approvalStatus: "approved",
+      createdAt: Date.now(),
+    }),
+  );
+}

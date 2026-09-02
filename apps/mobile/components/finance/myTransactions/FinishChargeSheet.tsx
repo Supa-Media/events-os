@@ -295,6 +295,11 @@ export function FinishChargeSheetBody({
     transactionId: Id<"transactions">;
     coding: NonNullable<CodingData["coding"]>;
     canReview: boolean;
+    /** This charge owes a budget and hasn't got one (`finances.needsBudget`)
+     *  — the gate `transactionCodings.approve` refuses on. Passed through so
+     *  the host's Approve affordance can say so BEFORE the tap; the budget
+     *  picker that fixes it is in the form this slot sits inside. */
+    budgetRequired: boolean;
     runAction: (fn: () => Promise<unknown>, errorTitle: string) => Promise<unknown>;
   }) => React.ReactNode;
 }) {
@@ -912,6 +917,7 @@ export function FinishChargeSheetBody({
                       transactionId,
                       coding,
                       canReview: data?.canReview ?? false,
+                      budgetRequired: data?.budgetRequired ?? false,
                       runAction: guard,
                     })
                   : null}

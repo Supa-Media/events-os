@@ -1026,8 +1026,14 @@ export function budgetDisplayName(b: Doc<"budgets">): string {
  * category-only editor) so all three attribution-change paths log identically.
  * A no-op "change" (before === after, e.g. re-picking the same category) is
  * skipped — nothing actually changed.
+ *
+ * EXPORTED for `transactionCodings.reviseUnderReview` — the reviewer fixing a
+ * charge's budget/category from the review record writes the same two columns
+ * these three do, so it must leave the same two audit rows. A fourth private
+ * copy of "how a recode reads in the trail" is precisely the drift this
+ * helper was extracted to stop.
  */
-async function logRecodeAudit(
+export async function logRecodeAudit(
   ctx: MutationCtx,
   params: {
     txn: Doc<"transactions">;

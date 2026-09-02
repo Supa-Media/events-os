@@ -513,6 +513,45 @@ Reviewers (and bookkeepers doing historical cleanup) can also author codings
 directly from the grid — the same editor, launched from Reconcile. Approval
 still requires a second person when the author is the reviewer.
 
+#### Correct it, don't bounce it — and no approval without a budget (shipped 2026-09-02)
+
+Founder, on the review record: *"got to make sure the treasurer/financial
+manager can edit details like the budget category for example, we shouldn't be
+letting things go through without a budget, also allow them to edit any other
+details they want instead of sending back and forth."*
+
+Two halves that only work as a pair:
+
+- **`transactionCodings.approve` refuses `finances.needsBudget`** — the same
+  predicate behind the Reconcile "Needs budget" facet and the Unattributed
+  tile, so a charge it refuses is one those two surfaces already point at, and
+  the rows with no budget to have (fee, personal, transfer, inflow, refunded)
+  are carved out by construction rather than by a second list.
+- **`transactionCodings.reviseUnderReview`** — whoever may DECIDE a coding may
+  correct it in place: `budgetId`, `categoryId`, and the structured §274(d)
+  facts. Gated by `requireReviseUnderReview` (today: the deciding power, named
+  separately so narrowing it later is one function body), refused on your own
+  coding under the same SoD rule and the same solo-operator relaxation, and
+  refused on an approved coding (reopening one is still `requestChanges`).
+
+The gate alone would strand a reviewer on a row they can see is wrong and
+cannot fix; the editor alone would leave the wrong answer approvable. Both are
+necessary because the cardholder's own form tells them to leave the budget
+blank when unsure — a guess is worse than a blank, and the finance team is who
+knows the answer. That instruction is unchanged and is now more true.
+
+**Two things the correction path cannot do, by construction.** It has no
+`businessPurpose` argument: the author's sentence is the substantiation of
+record and the reviewer's channel for the PUBLISHED wording is
+`setPublicPurpose`, which stores the rewrite beside the original (see "Known
+hole" below — this is that decision, still standing). And it never writes
+`codedBy*`: a reviewer who fixes a route does not become the author, which is
+both the honest record and what keeps their own later approval a real second
+pair of eyes. What it DOES write is `revisedBy*`/`revisedAt`, rendered on the
+record as "Amended in review by …", plus a `coding_amend` audit row per field
+that moved — attendee lists rendered as counts and affiliations, never names,
+because the trail has no redaction pass.
+
 ### C. Reimbursements get the same fields
 
 `reimbursementLineItems` gains the same structured block: `expenseType`,

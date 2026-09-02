@@ -75,6 +75,11 @@ export interface ReviewQueueRow {
   postedAt: number;
   documentation: "receipt" | "exception_approved" | "exception_pending" | "none";
   canReview: boolean;
+  /** This charge owes a budget and hasn't got one — `approve` refuses it
+   *  (founder, 2026-09-02: "we shouldn't be letting things go through without
+   *  a budget"). The row says so and opens the record, where the reviewer can
+   *  now set it themselves, instead of offering a button that throws. */
+  budgetRequired: boolean;
   coding: {
     expenseType: string;
     expenseTypeLabel: string;
@@ -223,10 +228,18 @@ function QueueRow({
           </View>
           {row.canReview ? (
             <View className="mt-1.5 flex-row flex-wrap justify-end gap-1.5">
+              {/* NO BUDGET, NO APPROVE — and the reason, next to the button
+                  it disables. The server refuses this row (`BUDGET_REQUIRED`)
+                  and it would have been a toast AFTER the tap; saying it here
+                  costs nothing and points at the fix, which as of this change
+                  is one tap away on this same row rather than a send-back.
+                  Send back stays live: a missing budget is not the only thing
+                  that can be wrong with a coding. */}
               <Button
                 title="Approve"
                 size="sm"
                 loading={busy}
+                disabled={row.budgetRequired}
                 onPress={() =>
                   void run(() =>
                     approve({
@@ -253,6 +266,11 @@ function QueueRow({
               Yours — another reviewer decides it
             </Text>
           )}
+          {row.canReview && row.budgetRequired ? (
+            <Text className="mt-1 text-right text-2xs text-warn">
+              Needs a budget — open the record to set it
+            </Text>
+          ) : null}
         </Cell>
       </Row>
 

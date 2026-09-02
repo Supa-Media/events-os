@@ -33,7 +33,26 @@
  * and deciding are one continuous motion down the same column rather than two
  * button sets in two places arguing about which is real.
  *
- * The ONE decision this surface does own is the receipt EXCEPTION — approve or
+ * ── CORRECTING IS HERE, THOUGH (2026-09-02) ──────────────────────────────────
+ * Founder, on this exact screen, looking at a merch invoice reading "Not
+ * attributed to a budget": *"got to make sure the treasurer/financial manager
+ * can edit details like the budget category for example, we shouldn't be
+ * letting things go through without a budget, also allow them to edit any
+ * other details they want instead of sending back and forth."*
+ *
+ * Every fact in blocks 2 and 3 was read-only, so a reviewer who could SEE that
+ * the budget was missing had one way to fix it: send the whole coding back to
+ * the cardholder over a field the coding form itself tells the cardholder to
+ * leave blank. `ReviseUnderReview` (see its own doc) is the other way — the
+ * same field set the author fills, in review mode, writing through
+ * `transactionCodings.reviseUnderReview`. Two things it deliberately does not
+ * touch: the author's `businessPurpose` (their testimony; the reviewer's
+ * channel for the PUBLISHED wording is "Edit what publishes" on the row), and
+ * authorship itself — a reviewer who fixes a route does not become the author,
+ * which is both honest and what keeps their own later approval legal under
+ * separation of duties.
+ *
+ * The other decision this surface owns is the receipt EXCEPTION — approve or
  * reject the request to document a charge without a receipt. It is a different
  * power with a different reach (`requireApproveReceiptException`: Finance
  * manager, in the row's OWN book — a central reviewer of a chapter's coding
@@ -61,6 +80,7 @@ import {
   type BadgeTone,
 } from "../../ui";
 import { colors } from "../../../lib/theme";
+import { ReviseUnderReview } from "./ReviseUnderReview";
 import type { RunAction } from "./ReviewQueue";
 
 const EXCEPTION_STATUS_TONE: Record<string, BadgeTone> = {
@@ -491,6 +511,16 @@ export function ReviewRecord({
     url: string;
     contentType: string | null;
   } | null>(null);
+  // ONE panel, opened deliberately. Not always-open: this is a queue somebody
+  // scans down, and most rows need reading, not editing — a form unfolded on
+  // every row would bury the receipt that is the actual job. The exception is
+  // the row that CANNOT be approved as it stands (`budgetRequired`), which
+  // opens the panel for them, because on that row the edit IS the job.
+  //
+  // `null` means "however the row itself says", which is what makes Cancel
+  // work on a budget-required row: a plain boolean defaulting to the flag
+  // would leave the panel open after Cancel and read as a dead button.
+  const [revising, setRevising] = useState<boolean | null>(null);
 
   if (record === undefined) {
     return (
@@ -501,6 +531,8 @@ export function ReviewRecord({
   }
 
   const { charge, coding, receipts, exceptions, namesRedacted } = record;
+  const canRevise = record.canRevise;
+  const showRevise = canRevise && (revising ?? charge.budgetRequired);
   const pendingException =
     exceptions.find((e) => e.status === "pending") ?? null;
   const approvedException =
@@ -709,6 +741,44 @@ export function ReviewRecord({
 
       {/* ── 3. THE CHARGE ─────────────────────────────────────────────── */}
       <Block title="The charge">
+        {/* THE CORRECTION PASS. Sits between the facts and the trail on
+            purpose: it is the answer to whatever the facts below just showed
+            was wrong, and putting it under the trail would mean scrolling
+            past the decision history to fix a budget. */}
+        {showRevise ? (
+          <ReviseUnderReview
+            transactionId={transactionId}
+            coding={
+              coding ?? {
+                // Unreachable while a coding exists, which `canRevise`
+                // already requires — spelled out rather than force-unwrapped
+                // so a future change to that flag fails visibly.
+                expenseType: "general",
+                businessPurpose: "",
+                travelFrom: null,
+                travelTo: null,
+                headcount: null,
+                attendees: null,
+                groupDescription: null,
+              }
+            }
+            categoryId={charge.categoryId}
+            budgetId={charge.budgetId}
+            budgetRequired={charge.budgetRequired}
+            runAction={runAction}
+            onDone={() => setRevising(false)}
+          />
+        ) : canRevise ? (
+          <View className="flex-row">
+            <Button
+              title="Correct these details"
+              size="sm"
+              variant="secondary"
+              icon="edit-3"
+              onPress={() => setRevising(true)}
+            />
+          </View>
+        ) : null}
         <View className="flex-row flex-wrap gap-x-6 gap-y-2.5">
           <Fact label="Merchant" value={charge.merchantName} />
           <Fact
@@ -732,7 +802,11 @@ export function ReviewRecord({
           <Fact
             label="Budget"
             value={charge.budgetName}
-            missing="Not attributed to a budget"
+            missing={
+              charge.budgetRequired
+                ? "None — this can't be approved until one is set"
+                : "Not attributed to a budget"
+            }
           />
         </View>
       </Block>
@@ -752,6 +826,18 @@ export function ReviewRecord({
               <Fact
                 label="Decided"
                 value={`${coding.decidedByName ?? "—"} · ${when(coding.decidedAt)}`}
+              />
+            ) : null}
+            {/* A reviewer corrected this after it was submitted. Shown BESIDE
+                "Coded by", never instead of it: the author is still the
+                author, and the next person to read this record is owed the
+                fact that it isn't verbatim what was submitted. The sentence
+                is never what changed — `reviseUnderReview` cannot reach
+                `businessPurpose`. */}
+            {coding.revisedAt != null ? (
+              <Fact
+                label="Amended in review"
+                value={`${coding.revisedByName ?? "a reviewer"} · ${when(coding.revisedAt)}`}
               />
             ) : null}
           </View>
