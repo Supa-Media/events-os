@@ -74,8 +74,10 @@ import { hasApproveReceiptException } from "./lib/receiptExceptionAccess";
 import {
   hasCodingNamesView,
   hasReviewCoding,
+  hasReviseUnderReview,
   maySelfDecideCoding,
   requireReviewCoding,
+  requireReviseUnderReview,
   requireSubmitCoding,
   requireViewCoding,
 } from "./lib/transactionCodingAccess";
@@ -85,6 +87,7 @@ import {
   codingWriteFieldsFrom,
   decideCoding,
   normalizeCodingFields,
+  reviseCodingUnderReview,
   submitCoding,
   undoCodingApproval,
   type CodingWriteFields,
@@ -97,7 +100,10 @@ import {
   assertBudgetAttributable,
   budgetDisplayName,
   isAttributableBudget,
+  logRecodeAudit,
+  needsBudget,
 } from "./finances";
+import { requireBudgetCategory } from "./lib/budgetCategoryAccess";
 import { gatherForPickerCandidates } from "./lib/forPickerCandidates";
 import { viewerPerson } from "./lib/org";
 
@@ -165,6 +171,16 @@ const codingRow = v.object({
   decidedByName: v.union(v.string(), v.null()),
   decidedAt: v.union(v.number(), v.null()),
   reviewNote: v.union(v.string(), v.null()),
+  /** WHO CORRECTED THIS DURING REVIEW, if anyone — a reviewer fixing the
+   *  expense type, route, headcount or attendee list from the review record
+   *  rather than sending the whole coding back
+   *  (`reviseUnderReview`). Surfaced beside `codedByName`, never instead of
+   *  it: the author is still the author, and a reader deciding whether to
+   *  approve is owed the fact that what they are reading is not verbatim what
+   *  was submitted. `businessPurpose` is unreachable from that path, so this
+   *  never means the sentence changed. */
+  revisedByName: v.union(v.string(), v.null()),
+  revisedAt: v.union(v.number(), v.null()),
   /** Present iff this row was PORTED from a reimbursement request's own
    *  approved line (`lib/transactionCoding.ts#materializePortedReimbursementCoding`)
    *  rather than authored on this surface — the UI's cue for "the claimant's
@@ -419,6 +435,8 @@ async function projectCoding(
     decidedByName: await name(row.decidedByPersonId),
     decidedAt: row.decidedAt ?? null,
     reviewNote: row.reviewNote ?? null,
+    revisedByName: await name(row.revisedByPersonId),
+    revisedAt: row.revisedAt ?? null,
     portedFromReimbursementId: row.portedFromReimbursementId ?? null,
   };
 }
@@ -499,6 +517,15 @@ export const getForTransaction = query({
      *  asks me" — the form's picker started at "Not sure yet" because nothing
      *  carried this answer in, so work done in Reconcile looked ignored. */
     currentBudgetId: v.union(v.id("budgets"), v.null()),
+    /** True iff this charge OWES a budget and hasn't got one
+     *  (`finances.needsBudget`) — the gate `approve` refuses on (founder,
+     *  2026-09-02: "we shouldn't be letting things go through without a
+     *  budget"). Sent so every review surface can say so BEFORE the tap: the
+     *  workbench panel's confirm beat reads it the same way the review
+     *  record's own does. `currentBudgetId` alone can't answer it — a
+     *  transfer leg, a fee or a personal charge has no budget and owes
+     *  none. */
+    budgetRequired: v.boolean(),
     /** "What the claimant already wrote" — see `reimbursementCodingContext`'s
      *  own doc (Finding 1, UX audit 2026-08-12). `null` unless this txn is a
      *  reimbursement payout. */
@@ -591,6 +618,7 @@ export const getForTransaction = query({
       categoryName: category?.name ?? null,
       ...(category?.expenseType ? { categoryExpenseTypeHint: category.expenseType } : {}),
       currentBudgetId: txn.budgetId ?? null,
+      budgetRequired: needsBudget(txn),
       reimbursementContext,
       priorCoding,
     };
@@ -1047,12 +1075,32 @@ export const submitBulk = mutation({
  * exceptions): a coding is somebody's testimony about their own spending, and
  * the reviewer must be a different person than the author — including when a
  * manager coded on a cardholder's behalf.
+ *
+ * ## AND A BUDGET, every time (founder, 2026-09-02)
+ *
+ * *"We shouldn't be letting things go through without a budget."* Approval is
+ * where that has to bite, and only approval: the CARDHOLDER'S picker still
+ * says "not sure? leave it — the finance team will set it", which is the right
+ * instruction to a spender and would become a lie if the gate sat on submit.
+ * The reviewer IS the finance team, and as of this change they can set the
+ * budget from the review record itself (`reviseUnderReview`) — so the refusal
+ * below always names a fix the person reading it can perform, which is the
+ * only kind of gate worth adding.
+ *
+ * The population is `finances.needsBudget`, not "budgetId == null" — reusing
+ * the predicate the Reconcile "Needs budget" facet and the Unattributed tile
+ * already count, so a charge this refuses is a charge those two surfaces are
+ * already pointing at. It carves out exactly what has no budget to have: an
+ * inflow, a transfer leg, an excluded or personal row, a refunded charge, and
+ * a non-discretionary processor/bank fee. A reviewer who thinks a charge
+ * belongs in one of those buckets says so in Reconcile; that is a different
+ * (and equally audited) assertion than "this budget paid for it".
  */
 export const approve = mutation({
   args: { transactionId: v.id("transactions") },
   returns: v.null(),
   handler: async (ctx, args) => {
-    const { scope, actorPersonId } = await requireReviewCoding(
+    const { txn, scope, actorPersonId } = await requireReviewCoding(
       ctx,
       args.transactionId,
     );
@@ -1061,6 +1109,13 @@ export const approve = mutation({
       throw new ConvexError({
         code: "NOT_FOUND",
         message: "This transaction has no coding to approve.",
+      });
+    }
+    if (needsBudget(txn)) {
+      throw new ConvexError({
+        code: "BUDGET_REQUIRED",
+        message:
+          "Attribute this charge to a budget before approving it — an approved coding with no budget publishes as spend that nothing paid for. You can set the budget yourself right here; you don't have to send the coding back for it.",
       });
     }
     // Self-decision: allowed ONLY through the solo-operator relaxation
@@ -1312,7 +1367,31 @@ export const requestChanges = mutation({
  * copy next to the choices, not a filter over them.
  */
 export const budgetOptions = query({
-  args: {},
+  args: {
+    /**
+     * WHOSE BOOK'S BUDGETS — the row being attributed, when the caller is not
+     * standing in its book.
+     *
+     * Omitted (the author's own coding form, unchanged): the caller's own
+     * chapter plus central, which is exactly the set a cardholder may
+     * attribute their own charge to.
+     *
+     * Supplied (the reviewer's record): the set `assertBudgetAttributable`
+     * will actually accept for THAT transaction. A central Financial Manager
+     * may decide a New York coding and does not stand in New York, so the
+     * unscoped list would have offered them their own chapter's budgets —
+     * every one of which the write gate then refuses — and hidden New York's,
+     * which are the only correct answers. Read under `requireViewCoding`, the
+     * same gate that let them open the record at all.
+     *
+     * A CENTRAL row deliberately still resolves against the CALLER's chapter:
+     * a central charge may be attributed to central's own budgets or, through
+     * the cross-book power, to the chapter whose spend central fronted — and
+     * that chapter is the caller's. Same rule the write gate applies on each
+     * branch, asked the same way.
+     */
+    transactionId: v.optional(v.id("transactions")),
+  },
   returns: v.object({
     events: v.array(v.object({ budgetId: v.id("budgets"), label: v.string() })),
     projects: v.array(
@@ -1326,10 +1405,15 @@ export const budgetOptions = query({
       }),
     ),
   }),
-  handler: async (ctx) => {
+  handler: async (ctx, args) => {
     const empty = { events: [], projects: [], recurring: [] };
-    const chapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
-    if (!chapterId) return empty;
+    const homeChapterId = (await getChapterIdOrNull(ctx)) as Id<"chapters"> | null;
+    if (!homeChapterId) return empty;
+    let chapterId = homeChapterId;
+    if (args.transactionId) {
+      const { txn } = await requireViewCoding(ctx, args.transactionId);
+      if (txn.chapterId !== CENTRAL) chapterId = txn.chapterId as Id<"chapters">;
+    }
     const { candidates } = await gatherForPickerCandidates(
       ctx,
       chapterId,
@@ -1475,6 +1559,254 @@ export const setPublicPurpose = mutation({
   },
 });
 
+/**
+ * THE AMENDABLE FIELDS, AS THE TRAIL READS THEM — one entry per thing a
+ * reviewer can change, rendered to a human-readable string so `before`/`after`
+ * on a `coding_amend` row say what actually moved.
+ *
+ * Attendee and traveler lists render as COUNTS plus affiliations, never as
+ * names: the audit trail is read on internal surfaces by people who may not
+ * hold names-view on the row (`hasCodingNamesView`), and a name copied into
+ * an audit string would escape that gate permanently — the trail has no
+ * redaction pass. "3 people (2 volunteers, 1 community member)" is the same
+ * information the public ledger prints and is enough to see that the list
+ * changed.
+ */
+const AMENDABLE_FIELDS: [string, (f: CodingWriteFields) => string][] = [
+  ["expenseType", (f) => EXPENSE_TYPE_LABELS[f.expenseType]],
+  [
+    "route",
+    (f) =>
+      f.travelFrom || f.travelTo
+        ? `${f.travelFrom ?? "—"} → ${f.travelTo ?? "—"}`
+        : "None",
+  ],
+  ["headcount", (f) => (f.headcount != null ? String(f.headcount) : "None")],
+  ["attendees", (f) => peopleSummary(f.attendees)],
+  ["travelers", (f) => peopleSummary(f.travelers)],
+  ["groupDescription", (f) => f.groupDescription ?? "None"],
+];
+
+/** A people list as a count plus its affiliation breakdown — see
+ *  `AMENDABLE_FIELDS` for why never as names. */
+function peopleSummary(
+  people: CodingWriteFields["attendees"] | undefined,
+): string {
+  if (!people || people.length === 0) return "Nobody named";
+  const breakdown = Object.entries(attendeeAffiliationBreakdown(people))
+    .map(([affiliation, count]) => `${count} ${affiliation}`)
+    .join(", ");
+  return `${people.length} named (${breakdown})`;
+}
+
+/**
+ * FIX IT HERE, DON'T SEND IT BACK — the reviewer's correction pass over one
+ * submitted coding.
+ *
+ * Founder, 2026-09-02, looking at a $17.97 merch invoice sitting in the queue
+ * with "Not attributed to a budget" on it: *"got to make sure the
+ * treasurer/financial manager can edit details like the budget category for
+ * example, we shouldn't be letting things go through without a budget, also
+ * allow them to edit any other details they want instead of sending back and
+ * forth."*
+ *
+ * ## The problem it closes
+ *
+ * The review record showed the budget and category as READ-ONLY facts, and
+ * the row offered two buttons: Approve, or Send back. So a reviewer who could
+ * see the budget was missing — the one person in the org who actually knows
+ * which budget it is — had exactly one way to fix it: bounce the whole coding
+ * to the cardholder with a note asking them to guess at a question the coding
+ * form itself tells them to leave blank ("Not sure? Leave it — the finance
+ * team will set it"). A round trip, one to three days, to set a field the
+ * author was never the right person to set. In practice the other option won:
+ * approve it anyway, and the charge publishes as spend attributed to nothing.
+ *
+ * ## What a reviewer may change, and what they may never
+ *
+ * ATTRIBUTION — `budgetId`, `categoryId`. Bookkeeping judgment, not
+ * testimony; the treasurer is more qualified than the cardholder, and these
+ * are the same two columns the Reconcile "For" picker writes, through the
+ * same `assertBudgetAttributable` guard, logged with the same
+ * `logRecodeAudit` rows. Nothing about which budget may take which charge is
+ * relaxed because a reviewer is the one asking.
+ *
+ * STRUCTURED §274(d) FACTS — expense type, route, headcount, attendees, group
+ * description. Correctable, and stamped: `revisedBy*`/`revisedAt` land on the
+ * row and the record renders "Amended during review by …", because the next
+ * reader is entitled to know that what they are approving is not verbatim
+ * what was submitted. Validated by the same `normalizeCodingFields` the
+ * author's own submit runs, so a correction can never leave a record the
+ * author could not have submitted.
+ *
+ * THE AUTHOR'S SENTENCE — never. `businessPurpose` is absent from this
+ * argument list by construction. It is the substantiation of record for an
+ * IRS accountable plan, and what actually happened has to survive whoever
+ * reads it afterwards. The reviewer's channel for the PUBLISHED wording is
+ * `setPublicPurpose`, which stores the rewrite beside the original instead of
+ * over it — redaction, not falsification (see that mutation's own doc, and
+ * `schema/finances.ts`'s `publicPurpose` comment). If a reviewer believes the
+ * sentence itself is wrong rather than merely unpublishable, the honest move
+ * is still `requestChanges`: only the author can restate what they meant.
+ *
+ * ## Separation of duties still applies
+ *
+ * Correcting is part of deciding, so it is gated by
+ * `requireReviseUnderReview` (today: the deciding power) and refused on your
+ * own coding, with the same solo-operator relaxation `approve` and
+ * `setPublicPurpose` take. Otherwise "I can't approve my own, but I can
+ * rewrite what mine says before somebody else does" would be a way around it.
+ *
+ * Note what the write path does NOT do: it never touches `codedBy*`. A
+ * reviewer who fixes a route does not become the author of the testimony —
+ * which is both the honest record AND what keeps their own subsequent
+ * approval legal under the SoD compare. See
+ * `lib/transactionCoding.ts#reviseCodingUnderReview`.
+ */
+export const reviseUnderReview = mutation({
+  args: {
+    transactionId: v.id("transactions"),
+    /** `undefined` leaves the attribution alone; `null` clears it. The
+     *  cardholder's own `submit` deliberately cannot clear (a resubmission
+     *  must not silently detach what a bookkeeper attached) — a REVIEWER can,
+     *  because "this budget is the wrong one and I don't yet know the right
+     *  one" is a real state and the alternative is leaving a wrong answer on
+     *  the record. Clearing it does not make the row approvable: the budget
+     *  gate on `approve` reads the same column. */
+    budgetId: v.optional(v.union(v.id("budgets"), v.null())),
+    categoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
+    /** The WHOLE structured answer, or nothing at all. Same contract as
+     *  `submit`: the client renders the complete field set, so an omitted
+     *  field means "not part of this answer" and clears — a charge retyped
+     *  from travel to general must not keep a stale route. Omitting the
+     *  object entirely touches no coding field, which is the common case
+     *  (a reviewer setting only the budget). */
+    coding: v.optional(
+      v.object({
+        expenseType: expenseTypeValidator,
+        travelFrom: v.optional(v.string()),
+        travelTo: v.optional(v.string()),
+        travelers: v.optional(v.array(attendeeValidator)),
+        headcount: v.optional(v.number()),
+        attendees: v.optional(v.array(attendeeValidator)),
+        groupDescription: v.optional(v.string()),
+      }),
+    ),
+  },
+  returns: v.null(),
+  handler: async (ctx, args) => {
+    const { txn, scope, actorPersonId } = await requireReviseUnderReview(
+      ctx,
+      args.transactionId,
+    );
+    const coding = await codingForTransaction(ctx, args.transactionId);
+    if (!coding) {
+      throw new ConvexError({
+        code: "NOT_FOUND",
+        message: "This transaction has no coding to correct.",
+      });
+    }
+    if (
+      actorPersonId != null &&
+      actorPersonId === coding.codedByPersonId &&
+      !(await maySelfDecideCoding(ctx))
+    ) {
+      assertSeparationOfDuties(actorPersonId, coding.codedByPersonId);
+    }
+
+    // ── ATTRIBUTION ────────────────────────────────────────────────────────
+    // Validated before ANY write, so a call that names a good budget and a
+    // bad category leaves neither half applied.
+    const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    if (args.budgetId) {
+      await assertBudgetAttributable(ctx, scope, homeChapterId, args.budgetId);
+    }
+    if (args.categoryId) {
+      // Existence only — the label is the ORG's one taxonomy and no longer
+      // belongs to a chapter (`lib/budgetCategoryAccess.ts`). Deliberately
+      // NOT `requireActiveBudgetCategory`: the coding paths let a historical
+      // charge keep a retired label, and a reviewer re-picking the one
+      // already on the row must not be refused because it was retired since.
+      await requireBudgetCategory(ctx, args.categoryId);
+    }
+    if (args.budgetId !== undefined || args.categoryId !== undefined) {
+      await ctx.db.patch(args.transactionId, {
+        ...(args.budgetId !== undefined
+          ? { budgetId: args.budgetId ?? undefined }
+          : {}),
+        ...(args.categoryId !== undefined
+          ? { categoryId: args.categoryId ?? undefined }
+          : {}),
+      });
+      // The SAME two `recode` rows the Reconcile "For" picker writes — a
+      // budget set from the review record and one set from the grid have to
+      // read identically in the trail, because they are the same assertion.
+      await logRecodeAudit(ctx, {
+        txn,
+        scope,
+        actorPersonId,
+        categoryChanged: args.categoryId !== undefined,
+        budgetChanged: args.budgetId !== undefined,
+        beforeCategoryId: txn.categoryId ?? null,
+        afterCategoryId:
+          args.categoryId === undefined
+            ? (txn.categoryId ?? null)
+            : args.categoryId,
+        beforeBudgetId: txn.budgetId ?? null,
+        afterBudgetId:
+          args.budgetId === undefined ? (txn.budgetId ?? null) : args.budgetId,
+      });
+    }
+
+    // ── THE STRUCTURED FACTS ───────────────────────────────────────────────
+    if (args.coding) {
+      const { namesMaxHeadcount } = await codingPolicy(ctx);
+      const userId = (await requireUserId(ctx)) as Id<"users">;
+      const before = codingWriteFieldsFrom(coding);
+      const changed = await reviseCodingUnderReview(ctx, {
+        coding,
+        txn,
+        // The author's own sentence, carried through untouched — this is the
+        // one place it appears in this handler, and it comes from the STORED
+        // row, never from the caller.
+        fields: { ...args.coding, businessPurpose: coding.businessPurpose },
+        namesMaxHeadcount,
+        revisedByPersonId: actorPersonId,
+        revisedByUserId: userId,
+      });
+      // A no-op wrote nothing and stamped nothing (see
+      // `reviseCodingUnderReview`) — and it is the COMMON shape here: setting
+      // only the budget still posts the unchanged field set back. Nothing
+      // changed, so nothing is logged.
+      if (!changed) return null;
+      const after = codingWriteFieldsFrom(
+        (await ctx.db.get(coding._id)) as Doc<"transactionCodings">,
+      );
+      // One audit row per FIELD that actually moved, so the trail reads as
+      // "the treasurer retyped this as lodging", not "something changed".
+      for (const [field, read] of AMENDABLE_FIELDS) {
+        const wasValue = read(before);
+        const nowValue = read(after);
+        if (wasValue === nowValue) continue;
+        await logFinanceAudit(ctx, {
+          chapterId: scope,
+          subjectType: "transaction",
+          subjectId: args.transactionId,
+          action: "coding_amend",
+          actorPersonId,
+          field,
+          before: wasValue,
+          after: nowValue,
+          reason:
+            "Corrected during review; the author's own wording is unchanged",
+          amountCents: txn.amountCents,
+        });
+      }
+    }
+    return null;
+  },
+});
+
 // ── The Coding tab's two queues ──────────────────────────────────────────────
 //
 // One screen, two audiences, both first-class (owner, 2026-08-09):
@@ -1518,6 +1850,11 @@ const reviewQueueRow = v.object({
    *  wrote one of the codings in their own queue should still see it sitting
    *  there waiting on somebody else. */
   canReview: v.boolean(),
+  /** True iff this charge owes a budget and hasn't got one
+   *  (`finances.needsBudget`) — the gate `approve` refuses on. The row shows
+   *  it INSTEAD of an Approve button that would throw, and points at the
+   *  record where the reviewer can now set it themselves. */
+  budgetRequired: v.boolean(),
 });
 
 /**
@@ -1640,6 +1977,7 @@ export const reviewQueue = query({
         coding: await projectCoding(ctx, coding, hasAuthority),
         documentation,
         canReview,
+        budgetRequired: needsBudget(txn),
       });
     }
     return {
@@ -1713,6 +2051,19 @@ export const reviewRecord = query({
       cardholderName: v.union(v.string(), v.null()),
       categoryName: v.union(v.string(), v.null()),
       budgetName: v.union(v.string(), v.null()),
+      /** The ids behind the two names above — what the reviewer's own
+       *  pickers preselect. Sent alongside the names rather than instead of
+       *  them: a budget that was deleted out from under the row still has an
+       *  id here and no name, and the record has to be able to say so. */
+      categoryId: v.union(v.id("budgetCategories"), v.null()),
+      budgetId: v.union(v.id("budgets"), v.null()),
+      /** True iff this charge OWES a budget and hasn't got one — the exact
+       *  `finances.needsBudget` predicate `approve` refuses on, so the record
+       *  can say why the button won't work before it is pressed rather than
+       *  after. False on the rows that genuinely have no budget to have (an
+       *  inflow, a transfer leg, an excluded or personal row, a refunded
+       *  charge, a non-discretionary fee). */
+      budgetRequired: v.boolean(),
     }),
     /** The coding, whole — every field the author answered, names included
      *  for a caller who holds names-view. `null` only if the row was deleted
@@ -1752,6 +2103,15 @@ export const reviewRecord = query({
      *  questions `approve` asks, so the record never offers a decision the
      *  server would refuse. */
     canReview: v.boolean(),
+    /** True iff this caller may CORRECT the record in place rather than
+     *  sending it back (`reviseUnderReview`) — authority AND separation of
+     *  duties AND a coding still awaiting review, the same three the mutation
+     *  asks. Deliberately a separate flag from `canReview` even though the
+     *  two agree today: they are two powers (see
+     *  `lib/transactionCodingAccess.ts#requireReviseUnderReview`), and a UI
+     *  that reads one for the other is exactly what makes splitting them
+     *  later a fifty-call-site change. */
+    canRevise: v.boolean(),
   }),
   handler: async (ctx, args) => {
     const { txn, actorPersonId } = await requireViewCoding(
@@ -1850,6 +2210,9 @@ export const reviewRecord = query({
         cardholderName: cardholder?.name ?? null,
         categoryName: category?.name ?? null,
         budgetName: budget ? budgetDisplayName(budget) : null,
+        categoryId: txn.categoryId ?? null,
+        budgetId: txn.budgetId ?? null,
+        budgetRequired: needsBudget(txn),
       },
       coding: row ? await projectCoding(ctx, row, canSeeNames) : null,
       // True only when there was something to withhold — a coding with no
@@ -1866,6 +2229,18 @@ export const reviewRecord = query({
         args.transactionId,
       ),
       canReview,
+      // The same three conditions `reviseUnderReview` enforces, in its order.
+      // Note it does NOT reuse `canReview`: that flag additionally requires
+      // the coding be `submitted` for a DECISION, which happens to be the
+      // same requirement here — but writing it out is what keeps the two
+      // honest if either power moves.
+      canRevise:
+        row != null &&
+        row.status === "submitted" &&
+        (await hasReviseUnderReview(ctx, args.transactionId)) &&
+        (actorPersonId == null ||
+          actorPersonId !== row.codedByPersonId ||
+          (await maySelfDecideCoding(ctx))),
     };
   },
 });

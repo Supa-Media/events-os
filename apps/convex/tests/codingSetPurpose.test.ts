@@ -4,6 +4,7 @@ import { DEFAULT_CODING_REQUIRED_SINCE_MS, DAY_MS } from "@events-os/shared";
 import {
   newT,
   run,
+  seedApprovedBudget,
   setupChapter,
   storeBlob,
   type ChapterSetup,
@@ -104,6 +105,12 @@ async function seedTxn(
   opts: { personId?: Id<"people"> } = {},
 ): Promise<Id<"transactions">> {
   const receiptStorageId = await storeBlob(s.t);
+  // BUDGETED by default: `transactionCodings.approve` refuses spend that owes
+  // a budget and hasn't got one (`finances.needsBudget`, founder 2026-09-02).
+  // That gate has its own suite (`codingReviseUnderReview.test.ts`); here it is a
+  // precondition of reaching what these tests are about, exactly like the
+  // receipt above.
+  const budgetId = await seedApprovedBudget(s.t, s.chapterId);
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: s.chapterId,
@@ -114,6 +121,7 @@ async function seedTxn(
       merchantName: "SWEETGREEN",
       status: "unreviewed",
       receiptStorageId,
+      budgetId,
       ...(opts.personId ? { personId: opts.personId } : {}),
       createdAt: Date.now(),
     }),

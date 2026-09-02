@@ -212,6 +212,50 @@ export function normalizeCodingFields(
 }
 
 /**
+ * THE OTHER HALF OF THE LODGING RULE. `lib/receiptExceptions.ts` refuses a
+ * `bank_record_only` exception on a charge already coded `lodging` — but the
+ * two facts arrive in either order, and nothing stopped the cheaper sequence:
+ * file the bank-record exception on an uncoded charge (where the guard reads
+ * no `expenseType` and passes), let it auto-approve under the small-dollar
+ * threshold, and only then code it as lodging. The rule would be enforced or
+ * not depending purely on which button someone pressed first, which is not a
+ * rule.
+ *
+ * So typing a charge as lodging is refused while a bank-record exception
+ * stands on it. Withdrawing the exception is one tap and is the honest move:
+ * the folio either exists or a different reason is the true one.
+ *
+ * Extracted from `submitCoding` when `reviseCodingUnderReview` arrived, for
+ * the identical reason the rule exists at all: a REVIEWER retyping a charge
+ * to `lodging` from the review record reaches the same column by a different
+ * button, and a guard that lived inside one write path would have been
+ * enforced or not depending on who did the typing.
+ */
+async function assertLodgingFolioAvailable(
+  ctx: MutationCtx,
+  transactionId: Id<"transactions">,
+  expenseType: ExpenseType,
+): Promise<void> {
+  if (expenseType !== "lodging") return;
+  const exceptions = await ctx.db
+    .query("receiptExceptions")
+    .withIndex("by_transaction", (q) => q.eq("transactionId", transactionId))
+    .collect();
+  const bankRecord = exceptions.find(
+    (e) =>
+      e.reason === "bank_record_only" &&
+      (e.status === "approved" || e.status === "pending"),
+  );
+  if (bankRecord) {
+    throw new ConvexError({
+      code: "LODGING_RECEIPT_REQUIRED",
+      message:
+        "This charge is documented by a bank record only, which the IRS doesn't accept for lodging at any amount — a statement line can't show what the stay covered. Withdraw that receipt exception and attach the hotel's itemized folio, or code this as something other than lodging if that's what it really was.",
+    });
+  }
+}
+
+/**
  * Submit (or resubmit) the coding on one transaction — upsert into the
  * at-most-one row, status → `submitted`, denorm in lock-step.
  *
@@ -289,36 +333,7 @@ export async function submitCoding(
     }
   }
 
-  // THE OTHER HALF OF THE LODGING RULE. `lib/receiptExceptions.ts` refuses a
-  // `bank_record_only` exception on a charge already coded `lodging` — but
-  // the two facts arrive in either order, and nothing stopped the cheaper
-  // sequence: file the bank-record exception on an uncoded charge (where the
-  // guard reads no `expenseType` and passes), let it auto-approve under the
-  // small-dollar threshold, and only then code it as lodging. The rule would
-  // be enforced or not depending purely on which button someone pressed
-  // first, which is not a rule.
-  //
-  // So typing a charge as lodging is refused while a bank-record exception
-  // stands on it. Withdrawing the exception is one tap and is the honest
-  // move: the folio either exists or a different reason is the true one.
-  if (fields.expenseType === "lodging") {
-    const exceptions = await ctx.db
-      .query("receiptExceptions")
-      .withIndex("by_transaction", (q) => q.eq("transactionId", args.txn._id))
-      .collect();
-    const bankRecord = exceptions.find(
-      (e) =>
-        e.reason === "bank_record_only" &&
-        (e.status === "approved" || e.status === "pending"),
-    );
-    if (bankRecord) {
-      throw new ConvexError({
-        code: "LODGING_RECEIPT_REQUIRED",
-        message:
-          "This charge is documented by a bank record only, which the IRS doesn't accept for lodging at any amount — a statement line can't show what the stay covered. Withdraw that receipt exception and attach the hotel's itemized folio, or code this as something other than lodging if that's what it really was.",
-      });
-    }
-  }
+  await assertLodgingFolioAvailable(ctx, args.txn._id, fields.expenseType);
   const existing = await codingForTransaction(ctx, args.txn._id);
   const now = Date.now();
   if (existing) {
@@ -358,6 +373,124 @@ export async function submitCoding(
   });
   await ctx.db.patch(args.txn._id, { codingState: "submitted" });
   return { codingId, resubmission: false };
+}
+
+/** Deep value equality over a coding's field set, key-order-independent. The
+ *  two sides come from different places — one read off a stored document, one
+ *  built by `normalizeCodingFields` — so a plain `JSON.stringify` compare
+ *  would report an attendee list as "changed" purely because the stored
+ *  object happens to serialize `name` before `personId`. */
+function sameCodingFields(a: CodingWriteFields, b: CodingWriteFields): boolean {
+  const canonical = (value: unknown): unknown => {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (value && typeof value === "object") {
+      return Object.entries(value as Record<string, unknown>)
+        .filter(([, v]) => v !== undefined)
+        .sort(([x], [y]) => (x < y ? -1 : x > y ? 1 : 0))
+        .map(([k, v]) => [k, canonical(v)]);
+    }
+    return value;
+  };
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
+/**
+ * CORRECT A SUBMITTED CODING IN PLACE — the reviewer's "fix it rather than
+ * bounce it" write (`transactionCodings.reviseUnderReview`).
+ *
+ * ## Why this is not `submitCoding`
+ *
+ * `submitCoding` stamps `codedByPersonId`/`codedByUserId` with the caller and
+ * `db.replace`s the row. Routing a reviewer's correction through it would do
+ * three wrong things at once: rewrite WHOSE testimony this is (the author's
+ * name would be replaced by the person checking their work), hand that
+ * reviewer a separation-of-duties pass on their own subsequent approval —
+ * because the SoD compare would then find their own id on both sides and, for
+ * anyone but a superuser, refuse the approval outright, stranding the row —
+ * and silently drop the `publicPurpose` redaction, `reviewerRemindedAt` and
+ * the `portedFrom*` provenance that `replace` does not carry.
+ *
+ * So this is a PATCH of exactly the fields a reviewer may touch, and it says
+ * so by construction: `businessPurpose` is not in the argument list at all.
+ * The author's sentence is the substantiation of record for an accountable
+ * plan; the reviewer's channel for the PUBLISHED wording is `publicPurpose`
+ * (`transactionCodings.setPublicPurpose`), which stores the rewrite beside the
+ * original rather than over it. Do not "simplify" the two into one editable
+ * string — that is the exact falsification the schema's own comment forbids.
+ *
+ * `undefined` on a type-irrelevant field is a DELETION in Convex's patch
+ * semantics, which is what makes retyping honest: a charge retyped from
+ * `travel` to `general` loses its route rather than keeping a stale one, the
+ * same guarantee `submitCoding`'s `replace` gives. That is why the whole
+ * normalized field set is written every time rather than only what changed.
+ *
+ * ## What it refuses
+ *
+ * An APPROVED coding. That row is the record, and amending it is a decision
+ * with its own audited path — a reviewer reopens it (`requestChanges`), which
+ * tells the author. A `changes_requested` row is refused for the mirror
+ * reason: it is back with its author, mid-conversation, and a reviewer
+ * editing underneath them would answer their own send-back.
+ *
+ * A NO-OP writes nothing and stamps nothing, and returns `false`. The review
+ * record renders "Amended during review by …" off that stamp, and a reviewer
+ * who opens the panel to set a BUDGET (the common case — the whole reason the
+ * panel exists) posts the unchanged field set back with it. Stamping that
+ * would put a claim on the record that nobody made, on most of the rows that
+ * ever go through here.
+ */
+export async function reviseCodingUnderReview(
+  ctx: MutationCtx,
+  args: {
+    coding: Doc<"transactionCodings">;
+    txn: Doc<"transactions">;
+    /** The merged field set — the stored coding read back through
+     *  `codingWriteFieldsFrom`, with the reviewer's corrections applied over
+     *  it. Validated by the SAME `normalizeCodingFields` the author's own
+     *  submit runs, so a correction can never leave a record the author
+     *  could not have submitted. */
+    fields: CodingWriteFields;
+    namesMaxHeadcount: number;
+    revisedByPersonId: Id<"people"> | null;
+    revisedByUserId: Id<"users">;
+  },
+  /** True iff anything actually changed — see the no-op note above. */
+): Promise<boolean> {
+  if (args.coding.status !== "submitted") {
+    throw new ConvexError({
+      code: "NOT_SUBMITTED",
+      message:
+        args.coding.status === "approved"
+          ? "This coding is already approved, so it is the record. Send it back if it needs to change — reopening an approved coding is itself an audited decision."
+          : "This coding is back with its author. Wait for them to resubmit rather than editing it underneath them.",
+    });
+  }
+  const fields = normalizeCodingFields(args.fields, args.namesMaxHeadcount);
+  // Compared against the STORED row read back through the same projection the
+  // caller built its input from, so "unchanged" means the same thing on both
+  // sides. Validation still runs first: a correction that would leave the
+  // record incomplete is refused whether or not it changes anything.
+  const before = codingWriteFieldsFrom(args.coding);
+  if (sameCodingFields(before, fields)) return false;
+  await assertLodgingFolioAvailable(ctx, args.txn._id, fields.expenseType);
+  await ctx.db.patch(args.coding._id, {
+    expenseType: fields.expenseType,
+    // Every type-specific field written every time — present ones set, absent
+    // ones cleared. See the doc above on why `undefined` is load-bearing here.
+    travelFrom: fields.travelFrom,
+    travelTo: fields.travelTo,
+    travelers: fields.travelers,
+    headcount: fields.headcount,
+    attendees: fields.attendees,
+    groupDescription: fields.groupDescription,
+    updatedAt: Date.now(),
+    ...(args.revisedByPersonId
+      ? { revisedByPersonId: args.revisedByPersonId }
+      : {}),
+    revisedByUserId: args.revisedByUserId,
+    revisedAt: Date.now(),
+  });
+  return true;
 }
 
 /**

@@ -637,15 +637,38 @@ export function ExpenseTypeChips({
  * escape slot), the budget picker, and the travel/meal type-driven extras.
  * Renders NOTHING until `form.expenseType` is set (the chip row above is what
  * sets it) — same gate `TransactionCodingModal` always applied.
+ *
+ * TWO AUDIENCES, ONE FIELD SET (`mode`). The author writes their own
+ * testimony; a REVIEWER correcting the same record from the review queue
+ * (`ReviewRecord`'s revise panel) is answering the same §274(d) questions
+ * about the same charge and must not get a second, drifting copy of them. The
+ * two things that genuinely differ are stated as `mode`, and nothing else:
+ *
+ *  1. THE PURPOSE IS READ-ONLY IN REVIEW. `businessPurpose` is the author's
+ *     own words and the substantiation of record — a reviewer's channel for
+ *     the PUBLISHED wording is `setPublicPurpose`, which stores the rewrite
+ *     beside the original (`PublicPurposeEditor`, already on the queue row).
+ *     The server refuses the other thing by construction
+ *     (`transactionCodings.reviseUnderReview` has no `businessPurpose`
+ *     argument), so an editable box here would be a field that silently
+ *     doesn't save.
+ *  2. THE BUDGET COPY INVERTS. "Not sure? Leave it — the finance team will
+ *     set it" is right for a cardholder and false to the face of the person
+ *     who IS the finance team; for them the honest line is that the charge
+ *     cannot be approved without one.
  */
 export function CodingFieldSet({
   form,
   minPurposeLength,
   personalChargeSlot,
   transactionId,
+  mode = "author",
 }: {
   form: CodingFormState;
   minPurposeLength: number;
+  /** Who is filling this in — see the module doc above for the two
+   *  differences. Defaults to `"author"`, which is every existing host. */
+  mode?: "author" | "review";
   /** The personal-charge escape hatch, rendered right under the purpose field
    *  — see `TransactionCodingModal`'s original doc on why it lives there.
    *  Omitted by hosts with no such affordance (e.g. a reviewer coding on
@@ -660,7 +683,17 @@ export function CodingFieldSet({
   transactionId: Id<"transactions">;
 }) {
   const { expenseType } = form;
-  const budgetOptions = useQuery(api.transactionCodings.budgetOptions, {});
+  const reviewing = mode === "review";
+  // SCOPED TO THE ROW'S OWN BOOK when a reviewer is asking. A central
+  // Financial Manager deciding a New York charge does not stand in New York,
+  // so the unscoped list would offer them their own chapter's budgets — every
+  // one of which the write gate then refuses — and hide New York's, which are
+  // the only correct answers. The author path stays unscoped: a cardholder
+  // always stands in the book they are coding in.
+  const budgetOptions = useQuery(
+    api.transactionCodings.budgetOptions,
+    reviewing ? { transactionId } : {},
+  );
   const budgetItems = useMemo(() => {
     const o = budgetOptions;
     if (!o) return [];
@@ -689,57 +722,23 @@ export function CodingFieldSet({
 
   if (expenseType == null) return null;
 
-  return (
+  const typeFields = (
     <>
-      <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
-        What was it for?
-      </Text>
-      <TextField
-        value={form.businessPurpose}
-        onChangeText={form.setBusinessPurpose}
-        placeholder={
-          expenseType === "meal"
-            ? "e.g. Meal for volunteers writing and producing the album"
-            : 'e.g. Travel to NY to film the Eden event — say what, for which event or project, and why'
-        }
-        multiline
-        numberOfLines={3}
-      />
-      <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
-        <Icon name="globe" size={13} color={colors.muted} />
-        {/* FINDING 7 (UX audit, 2026-08-12): "This sentence publishes" led
-            with the consequence before the reason, which lands cold. Lead
-            with the why — a public page this connects to — in one short
-            sentence, then the consequence. */}
-        <Text className="flex-1 text-2xs text-muted">
-          <Text className="font-semibold text-ink">
-            Public Worship publishes every transaction at
-            publicworship.life/finances
-          </Text>{" "}
-          — this sentence is what that page prints, word for word, so write
-          it for a stranger reading it next year. &quot;Travel to NY to film
-          the Eden event&quot;, not &quot;bus to NY&quot;. In your own words,
-          at least {minPurposeLength} characters.
-        </Text>
-      </View>
-
-      <View className="mt-1.5 flex-row items-start gap-2">
-        <Icon name="user-x" size={12} color={colors.muted} />
-        <Text className="flex-1 text-2xs text-muted">
-          <Text className="font-semibold text-ink">Keep people out of it.</Text>{" "}
-          No names, addresses, phone numbers or anything else that identifies
-          someone
-          {expenseType === "meal"
-            ? " — put who was there in the attendee list below, where names stay internal and only the breakdown (“5 volunteers, 3 community members”) is ever published."
-            : expenseType === "travel"
-              ? " — the route publishes at city level, so “to LIRR in Rosedale” is fine and “to Michael’s place” is not."
-              : expenseType === "lodging"
-                ? " — the place publishes at city level, so “Chicago” is fine and “Michael’s place” is not."
-                : " — describe the work, not the person."}
-        </Text>
-      </View>
-
-      {personalChargeSlot}
+      {/* NOTHING TO ATTRIBUTE TO. The picker below renders only when the book
+          has at least one approved budget; for an author that silence is
+          correct (there is no question to ask), but a reviewer whose Approve
+          button is disabled for want of a budget would be left with no
+          picker and no reason. */}
+      {reviewing && budgetItems.length <= 1 ? (
+        <View className="mt-4 flex-row items-start gap-2">
+          <Icon name="alert-triangle" size={12} color={colors.warn} />
+          <Text className="flex-1 text-2xs text-muted">
+            This charge&apos;s book has no approved budget to attribute it to
+            yet. Create one and get it approved on the Budgets tab — a budget
+            still in draft or awaiting approval can&apos;t take a charge.
+          </Text>
+        </View>
+      ) : null}
 
       {budgetItems.length > 1 ? (
         <View className="mt-4">
@@ -749,14 +748,16 @@ export function CodingFieldSet({
               into "which of these three?" with nothing framing it as the
               last step. */}
           <Text className="mb-1.5 text-2xs text-muted">
-            Last one — which budget pays for it.
+            {reviewing
+              ? "Which budget pays for it — yours to set."
+              : "Last one — which budget pays for it."}
           </Text>
           <Select
             label="Which budget did this come out of?"
             value={form.budgetId || ""}
             options={budgetItems}
             onChange={form.setBudgetId}
-            placeholder="Not sure yet"
+            placeholder={reviewing ? "None yet" : "Not sure yet"}
             searchable
           />
           <View className="mt-1.5 gap-0.5">
@@ -765,9 +766,16 @@ export function CodingFieldSet({
                 {line}
               </Text>
             ))}
+            {/* THE ONE LINE THAT INVERTS BY AUDIENCE. Telling a cardholder to
+                leave it blank is right — a guess is worse than a blank, and
+                the finance team really does set it. Telling the FINANCE TEAM
+                the same thing would point them at themselves, and as of the
+                budget gate on approval it would also be false: leaving it
+                blank is the one thing that stops them approving. */}
             <Text className="text-2xs text-muted">
-              Not sure? Leave it — the finance team will set it, and a guess is
-              worse than a blank.
+              {reviewing
+                ? "A charge can't be approved without one — this is the step, and you don't have to send the coding back to take it."
+                : "Not sure? Leave it — the finance team will set it, and a guess is worse than a blank."}
             </Text>
           </View>
         </View>
@@ -880,6 +888,93 @@ export function CodingFieldSet({
           ) : null}
         </View>
       ) : null}
+    </>
+  );
+
+  // THE AUTHOR'S SENTENCE, SHOWN AND NOT EDITABLE — see the module doc. It is
+  // rendered rather than omitted because it is the thing every other field on
+  // this form is describing: a reviewer retyping a charge as lodging is doing
+  // it BECAUSE of what the sentence says.
+  if (reviewing) {
+    return (
+      <>
+        <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
+          What they said it was for
+        </Text>
+        <View className="rounded-md border border-border bg-raised px-3 py-2.5">
+          <Text className="text-sm text-ink">{form.businessPurpose}</Text>
+        </View>
+        <View className="mt-1.5 flex-row items-start gap-2">
+          <Icon name="lock" size={12} color={colors.muted} />
+          <Text className="flex-1 text-2xs text-muted">
+            <Text className="font-semibold text-ink">
+              Their words stay their words.
+            </Text>{" "}
+            This is the substantiation of record and nobody else edits it. To
+            change what PUBLISHES — to strip a name, say — use &quot;Edit what
+            publishes&quot; on the row; the original is kept alongside it. If
+            the sentence itself is wrong, only its author can restate it, so
+            send the coding back.
+          </Text>
+        </View>
+        {typeFields}
+      </>
+    );
+  }
+
+  return (
+    <>
+      <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
+        What was it for?
+      </Text>
+      <TextField
+        value={form.businessPurpose}
+        onChangeText={form.setBusinessPurpose}
+        placeholder={
+          expenseType === "meal"
+            ? "e.g. Meal for volunteers writing and producing the album"
+            : 'e.g. Travel to NY to film the Eden event — say what, for which event or project, and why'
+        }
+        multiline
+        numberOfLines={3}
+      />
+      <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
+        <Icon name="globe" size={13} color={colors.muted} />
+        {/* FINDING 7 (UX audit, 2026-08-12): "This sentence publishes" led
+            with the consequence before the reason, which lands cold. Lead
+            with the why — a public page this connects to — in one short
+            sentence, then the consequence. */}
+        <Text className="flex-1 text-2xs text-muted">
+          <Text className="font-semibold text-ink">
+            Public Worship publishes every transaction at
+            publicworship.life/finances
+          </Text>{" "}
+          — this sentence is what that page prints, word for word, so write
+          it for a stranger reading it next year. &quot;Travel to NY to film
+          the Eden event&quot;, not &quot;bus to NY&quot;. In your own words,
+          at least {minPurposeLength} characters.
+        </Text>
+      </View>
+
+      <View className="mt-1.5 flex-row items-start gap-2">
+        <Icon name="user-x" size={12} color={colors.muted} />
+        <Text className="flex-1 text-2xs text-muted">
+          <Text className="font-semibold text-ink">Keep people out of it.</Text>{" "}
+          No names, addresses, phone numbers or anything else that identifies
+          someone
+          {expenseType === "meal"
+            ? " — put who was there in the attendee list below, where names stay internal and only the breakdown (“5 volunteers, 3 community members”) is ever published."
+            : expenseType === "travel"
+              ? " — the route publishes at city level, so “to LIRR in Rosedale” is fine and “to Michael’s place” is not."
+              : expenseType === "lodging"
+                ? " — the place publishes at city level, so “Chicago” is fine and “Michael’s place” is not."
+                : " — describe the work, not the person."}
+        </Text>
+      </View>
+
+      {personalChargeSlot}
+
+      {typeFields}
     </>
   );
 }
@@ -1186,14 +1281,20 @@ function NameSuggestionChips({
  *  field problems, matching the server's own throw order. */
 export function CodingProblemsList({
   problems,
+  title = "Still needed before you can submit",
 }: {
   problems: { code: string; message: string }[];
+  /** Overridable because the same list gates two different acts: an author
+   *  SUBMITS, a reviewer correcting the record SAVES. The problems are
+   *  identical — `codingFieldProblems` is shared, deliberately — so only the
+   *  verb moves. */
+  title?: string;
 }) {
   if (problems.length === 0) return null;
   return (
     <View className="mt-4 gap-1.5 rounded-md border border-border bg-sunken px-3 py-2">
       <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
-        Still needed before you can submit
+        {title}
       </Text>
       {problems.map((p) => (
         <View key={p.code} className="flex-row items-start gap-2">

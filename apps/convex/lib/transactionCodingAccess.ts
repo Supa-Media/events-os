@@ -20,6 +20,18 @@
  *    somebody's testimony; the second name is the point). Graduates to
  *    `finance.coding.review`.
  *
+ *  - REVISE UNDER REVIEW (`requireReviseUnderReview`) — FIX the record instead
+ *    of bouncing it. Founder, 2026-09-02, on the review record: *"got to make
+ *    sure the treasurer/financial manager can edit details like the budget
+ *    category… allow them to edit any other details they want instead of
+ *    sending back and forth."* Today it is exactly the DECIDING power, and
+ *    deliberately so — correcting which budget a charge lands in is the
+ *    reviewer's own bookkeeping judgment, not the cardholder's, so whoever may
+ *    approve may correct on the way. Graduates to `finance.coding.revise` the
+ *    day the org wants a seat that decides without amending (or amends without
+ *    deciding). Separation of duties rides along at the CALL SITE, exactly as
+ *    it does for `setPublicPurpose` — see that mutation's doc.
+ *
  *  - VIEW (`requireViewCoding`) — read the record. Either of the two above:
  *    whoever may author on the row, OR whoever may decide it. The review arm
  *    is what lets a central reviewer READ a coding in a book they don't
@@ -307,6 +319,60 @@ export async function requireReviewCoding(
     message:
       "Approving a coding needs the Treasurer, Chapter Director, Financial Manager, or Executive Director seat.",
   });
+}
+
+/**
+ * Assert the caller may CORRECT a submitted coding's attribution and
+ * structured facts from the review record — the treasurer's/FM's "fix it here
+ * rather than send it back" power.
+ *
+ * ## Why it is its own name when its body is one line
+ *
+ * The house rule (CLAUDE.md, "Gate It Behind a Power, Even When It's Open
+ * Today"): a capability that might one day need narrowing gets a named
+ * resolver from the start, so adding the real gate is one body to change
+ * rather than every call site. Amending somebody else's record is exactly
+ * such a capability — "may decide" and "may amend" are the same answer today
+ * and are not obviously the same answer forever. A Chapter Director approving
+ * their book's codings is a plausible seat to hold the first and not the
+ * second, and if that day comes this function's body becomes a capability
+ * read and nothing else moves.
+ *
+ * ## Why the body is the DECIDING power and not the AUTHORING one
+ *
+ * `requireSubmitCoding` is chapter-local by construction — it asks whether you
+ * may write testimony in this book. That is the wrong question here: a central
+ * Financial Manager may decide a New York coding and cannot author one, so
+ * gating the correction on authorship would leave the exact person the founder
+ * named unable to set the budget on the exact row they are approving. Whoever
+ * may decide may correct.
+ *
+ * Note what this does NOT reach, in either direction: `businessPurpose` (the
+ * author's own testimony — see `transactionCodings.reviseUnderReview`), and an
+ * already-APPROVED coding (reopening one is `requestChanges`, an audited
+ * decision of its own).
+ */
+export async function requireReviseUnderReview(
+  ctx: QueryCtx,
+  transactionId: Id<"transactions">,
+): Promise<TransactionCodingAccess> {
+  return requireReviewCoding(ctx, transactionId);
+}
+
+/** True iff the caller may correct a submitted coding from the review record.
+ *  Read-only probe for the UI (the mutation still calls the `require` form) —
+ *  it answers AUTHORITY only, so a caller who holds it may still be refused by
+ *  separation of duties on their own coding, exactly as `hasReviewCoding` is. */
+export async function hasReviseUnderReview(
+  ctx: QueryCtx,
+  transactionId: Id<"transactions">,
+): Promise<boolean> {
+  try {
+    await requireReviseUnderReview(ctx, transactionId);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** How far this caller's REVIEW authority reaches — the answer the Coding

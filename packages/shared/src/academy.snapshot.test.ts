@@ -893,6 +893,20 @@
  * transfer rule was taught only here — Reconcile lists both as filter rows
  * but never says why confusing them double-counts revenue. Total: 115
  * sections (114 required).
+ *
+ * 2026-09-02 — a coding can no longer be APPROVED without a budget, and the
+ * reviewer can now set one (and correct the rest of the record) in place
+ * rather than sending the coding back. Content-only on ONE section,
+ * `finance-one-home-per-dollar`, which is where explicit-only attribution is
+ * already taught and which sits on both the Treasurer and Chapter Director
+ * paths through `chapter-money-model` — the two seats that do this reviewing:
+ * one rule block and one quiz question, so `quizLength` moves 4 → 5 and
+ * nothing else in the tables below does. NOT added to
+ * `finance-reconcile-grid`, the other candidate, which is at both the 5-quiz
+ * cap and the prose-block cap; NOT added to `finance-coding-your-charges`,
+ * because the CARDHOLDER's instruction is unchanged — leave the budget blank
+ * if you aren't sure, the finance team will set it — and that is now more
+ * true rather than less.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -1667,7 +1681,7 @@ const EXPECTED_SECTIONS: {
     slug: "finance-one-home-per-dollar",
     title: "One home per dollar",
     minutes: 3,
-    quizLength: 4,
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

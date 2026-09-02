@@ -3078,6 +3078,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "A budget's level is a real chapter, or the literal \"central\" scope. Never null, never a mix. A chapter's dashboard never surfaces central's money alongside its own, and central's rollup never absorbs a chapter's.",
       },
       {
+        kind: "rule",
+        title: "A coding can't be approved without a budget",
+        text: "Approving publishes the charge, so it can't publish as spend nothing paid for. Reviewing a coding with no budget, you set the budget yourself on the record — the cardholder was told to leave it to you — then approve. Correcting is not sending back, and it does not make you the author.",
+      },
+      {
         kind: "reveal",
         prompt:
           "You're logging a charge for a brand-new event that doesn't have an approved budget yet. What happens in the \"For\" picker?",
@@ -3121,6 +3126,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "The picker and the write-side attribution check share one gate: a budget has to clear review before a charge can call it home.",
+      },
+      {
+        prompt:
+          "A coding is waiting on you and the charge has no budget. The Approve button won't work. What's the move?",
+        options: [
+          "Send it back with a note asking the cardholder which budget it was",
+          "Set the budget yourself on the record, then approve — correcting is part of reviewing",
+          "Approve it anyway and fix the budget in Reconcile afterwards",
+          "Leave it in the queue until somebody attributes it",
+        ],
+        answerIndex: 1,
+        explanation:
+          "The cardholder's own form tells them to leave the budget blank if they aren't sure, because a guess is worse than a blank and the finance team knows the answer. Bouncing the coding back over it asks them for something they were told not to give, and costs days. So the record is editable by whoever may decide it: set the budget (and the category, and anything else that's wrong), then approve. Two things the correction deliberately doesn't do — it never touches the sentence the author wrote, which is the substantiation of record, and it never makes you the author, which is what keeps your own approval a genuine second pair of eyes.",
       },
       {
         prompt: "Can a chapter's dashboard show central's money mixed in with its own?",

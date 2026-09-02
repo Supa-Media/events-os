@@ -388,6 +388,19 @@ export const FINANCE_AUDIT_ACTIONS = [
   // records who wrote the public version and when. `before`/`after` carry the
   // two published strings, so the trail reads as a revision history.
   "coding_redact", // transactionCodings.setPublicPurpose
+  // A REVIEWER corrected a submitted coding's attribution or structured facts
+  // from the review record instead of sending it back
+  // (`transactionCodings.reviseUnderReview`). Its own action, never
+  // `coding_submit`: that word means the AUTHOR put their testimony on the
+  // record, and a reviewer's correction is somebody else's hand on somebody
+  // else's words — the whole reason it has to be legible in the trail. The
+  // author's `businessPurpose` is unreachable from that path, so this action
+  // can never mean the published sentence was rewritten (that is
+  // `coding_redact`) nor that authorship moved (it never does).
+  // `field` names what changed — "budget", "category", "expenseType",
+  // "route", "attendees" — and `before`/`after` carry the two readable
+  // values, one row per field.
+  "coding_amend", // transactionCodings.reviseUnderReview
   "merchant_rename", // finances.renameMerchant / clearMerchantRename (display name only — the provider's own string is never touched)
   // SALES (subjectType "sale"). A sale's money is never editable — gross and fee
   // come from the processor and stay there. What a human can settle is the two
@@ -420,6 +433,7 @@ export const FINANCE_AUDIT_ACTION_LABELS: Record<FinanceAuditAction, string> = {
   coding_submit: "Coding submitted",
   coding_decide: "Coding decided",
   coding_redact: "Published wording edited",
+  coding_amend: "Coding amended in review",
   merchant_rename: "Merchant renamed",
   sale_items_set: "Sale items set",
   sale_event_set: "Sale event set",

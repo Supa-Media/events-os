@@ -127,6 +127,7 @@ function ReviewActions({
   transactionId,
   coding,
   canReview,
+  budgetRequired,
   runAction,
   onApproved,
 }: {
@@ -138,6 +139,13 @@ function ReviewActions({
     publicPurposeAt: number | null;
   };
   canReview: boolean;
+  /** This charge owes a budget and hasn't got one — `approve` refuses it
+   *  (founder, 2026-09-02: "we shouldn't be letting things go through without
+   *  a budget"). Said here rather than left to the server's error toast,
+   *  because the picker that fixes it is in the form directly below this
+   *  block: the reviewer is one scroll from the answer, and a disabled button
+   *  that names its reason points them at it. */
+  budgetRequired: boolean;
   runAction: (fn: () => Promise<unknown>, errorTitle: string) => Promise<unknown>;
   /** Fired once the approval has actually landed — the panel arms its undo. */
   onApproved: () => void;
@@ -215,6 +223,7 @@ function ReviewActions({
               <Button
                 title="Approve"
                 size="sm"
+                disabled={budgetRequired}
                 onPress={() => {
                   setConfirming(true);
                   setSendingBack(false);
@@ -233,6 +242,13 @@ function ReviewActions({
               />
             ) : null}
           </View>
+          {budgetRequired ? (
+            <Text className="mt-1.5 text-2xs text-warn">
+              This charge has no budget yet, so it can&apos;t be approved — set
+              &quot;Which budget did this come out of?&quot; below, then
+              approve. You don&apos;t have to send the coding back for it.
+            </Text>
+          ) : null}
           {sendingBack ? (
             <View className="mt-2 gap-2 rounded-md border border-border bg-raised px-3 py-2.5">
               <TextField
@@ -584,11 +600,18 @@ export function CodingWorkbenchPanel({
             todo={todo}
             categoryOptions={categoryOptions}
             ownCharge={ownCharge}
-            renderReview={({ transactionId: tid, coding, canReview, runAction }) => (
+            renderReview={({
+              transactionId: tid,
+              coding,
+              canReview,
+              budgetRequired,
+              runAction,
+            }) => (
               <ReviewActions
                 transactionId={tid}
                 coding={coding}
                 canReview={canReview}
+                budgetRequired={budgetRequired}
                 runAction={runAction}
                 onApproved={() => {
                   setPendingUndo({

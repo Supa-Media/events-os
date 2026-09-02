@@ -4,6 +4,7 @@ import { DEFAULT_CODING_REQUIRED_SINCE_MS, DAY_MS } from "@events-os/shared";
 import {
   newT,
   run,
+  seedApprovedBudget,
   setupChapter,
   storeBlob,
   type ChapterSetup,
@@ -151,12 +152,17 @@ async function assignSeatDirect(
 }
 
 /** A receipted outflow charge in `book` — receipted because a coding can't be
- *  submitted on a charge that can't prove itself. */
+ *  submitted on a charge that can't prove itself, and BUDGETED because
+ *  `approve` refuses spend that owes a budget and hasn't got one
+ *  (`finances.needsBudget`). Neither is what these tests are about; both are
+ *  preconditions for reaching the authority question they ARE about. The
+ *  budget gate has its own suite (`codingReviseUnderReview.test.ts`). */
 async function seedTxn(
   s: ChapterSetup,
   book: Id<"chapters"> | "central",
 ): Promise<Id<"transactions">> {
   const receiptStorageId = await storeBlob(s.t);
+  const budgetId = await seedApprovedBudget(s.t, book);
   return await run(s.t, (ctx) =>
     ctx.db.insert("transactions", {
       chapterId: book,
@@ -167,6 +173,7 @@ async function seedTxn(
       merchantName: "Peter Pan Bus Lines",
       status: "unreviewed",
       receiptStorageId,
+      budgetId,
       createdAt: Date.now(),
     }),
   );

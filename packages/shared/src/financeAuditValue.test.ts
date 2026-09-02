@@ -133,6 +133,7 @@ describe("financeAuditValueKind — every action classified on purpose", () => {
     "budget_amount_change", // formatted dollars
     "budget_delete", // "Name ($X)"
     "coding_redact", // two published sentences
+    "coding_amend", // a budget/category name, a route, an expense type
     "merchant_rename", // merchant strings
     "sale_items_set", // a composed basket ("2 × PW Tee + Popcorn")
     "sale_event_set", // an event's name

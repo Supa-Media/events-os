@@ -249,6 +249,7 @@ export function financeAuditValueKind(
     // FREE TEXT, deliberately. `recode` (a category/budget NAME), `correction`
     // (an amount, a date, a merchant string, a description), `note_edit`,
     // `merchant_rename`, `coding_redact` (two published sentences),
+    // `coding_amend` (a budget or category name, a route, an expense type),
     // `manual_create`, `budget_amount_change`, `budget_delete`,
     // `sale_items_set` (a composed basket), `sale_event_set` (an event's name).
     // See the header for why keying an entity's own name would be worse than

@@ -429,8 +429,26 @@ rolls up by team, template, or event.
 
 ### 4.6 Closing the month, and publishing it
 
-Monthly close: every transaction coded with a purpose, every receipt filed,
-accounts reconciled, exceptions explained.
+Monthly close: every transaction coded with a purpose, attributed to a budget,
+every receipt filed, accounts reconciled, exceptions explained.
+
+**No coding is approved without a budget.** Approving a coding is what puts the
+charge and its sentence on the public record, and spend attributed to nothing is
+not something the organization is willing to publish. The software refuses the
+approval. It carves out only what genuinely has no budget to have — a
+non-discretionary processor or bank fee, a personal charge, a transfer between
+our own accounts, an inflow, a charge refunded in full.
+
+**The reviewer corrects the record rather than returning it.** The cardholder is
+told to leave the budget blank if they are not sure, because a guess is worse
+than a blank and the finance team is who knows the answer. So whoever may
+approve a coding may also set its budget and category and fix its structured
+facts in place, and the correction is recorded against their name. Two limits
+are absolute: the reviewer never rewrites the **purpose the spender wrote** —
+that sentence is the substantiation of record, and the reviewer's separate power
+is to rewrite the version that PUBLISHES, with the original kept beside it — and
+the correction never moves authorship, so the second pair of eyes stays a second
+pair of eyes.
 
 The chapter **Treasurer prepares** the month; the **Chapter Director publishes**
 it. At central, the **Financial Manager** prepares and the **Executive
@@ -467,6 +485,7 @@ involved, and the software enforces it where it can.
 | Releasing one payment of a contractor schedule | Whoever judges the milestone met | Treasurer or Financial Manager — never the payee; recorded by name against that payment |
 | Contractor payment from **central** funds | Staff or the contractor | **Central** finance only — a chapter finance role carries no authority over central's money, by design |
 | Partnership agreement | The development desk composes it | **The partner signs it** — there is no staff-side way to mark an agreement signed |
+| Transaction coding | The cardholder (their own testimony) | Treasurer or Chapter Director in their own chapter; Financial Manager or Executive Director anywhere — never the author |
 | Chapter budget | Treasurer | Chapter Director |
 | Central / annual budget | Financial Manager | Executive Director; annual budget adopted by the Board |
 | Monthly ledger publication | Treasurer (chapter) / Financial Manager (central) | Chapter Director / Executive Director |
