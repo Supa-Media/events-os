@@ -1,8 +1,8 @@
 import { Slot, usePathname, useRouter } from "expo-router";
-import { ScrollView, View } from "react-native";
+import { View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { Pill } from "../../../components/ui";
+import { DeskShell } from "../../../components/ui";
 import { SandboxModeBanner } from "../../../components/finance/SandboxModeBanner";
 import { ScopeBadge } from "../../../components/finance/ScopeBadge";
 
@@ -183,20 +183,20 @@ const REIMBURSEMENT_SATELLITES = [
   "/finances/personal-charges",
 ] as const;
 
-function isTabActive(pathname: string, tab: Tab): boolean {
-  if (tab.path === "/finances/reconcile") {
+function isTabActive(pathname: string, path: string): boolean {
+  if (path === "/finances/reconcile") {
     return (
-      isActive(pathname, tab.path) ||
+      isActive(pathname, path) ||
       BOOK_SATELLITES.some((p) => isActive(pathname, p))
     );
   }
-  if (tab.path === "/finances/reimbursements") {
+  if (path === "/finances/reimbursements") {
     return (
-      isActive(pathname, tab.path) ||
+      isActive(pathname, path) ||
       REIMBURSEMENT_SATELLITES.some((p) => isActive(pathname, p))
     );
   }
-  return isActive(pathname, tab.path);
+  return isActive(pathname, path);
 }
 
 export default function FinancesLayout() {
@@ -224,41 +224,33 @@ export default function FinancesLayout() {
           : SEAT_TABS;
 
   return (
-    <View className="flex-1">
-      {/* Deployment-wide sandbox-mode banner (shows on every finance tab when
-          on) — seat-gated: it's only relevant to finance seat holders, and
-          mounting it for the no-seat member persona is the same crash class
-          this banner itself was the trigger for (see [hotfix]). */}
-      {seats !== undefined && seats.length > 0 && <SandboxModeBanner />}
-      <View className="border-b border-border bg-raised px-4 py-2.5">
-        <ScrollView
-          horizontal
-          showsHorizontalScrollIndicator={false}
-          contentContainerStyle={{ gap: 8 }}
-        >
-          {tabs.map((t) => (
-            <Pill
-              key={t.path}
-              label={t.label}
-              selected={isTabActive(pathname, t)}
-              onPress={() => router.navigate(t.path as never)}
-            />
-          ))}
-        </ScrollView>
-      </View>
-      {/* Founder directive: finance scope must be unmistakable, even from a
-          bare screenshot of just this content column — see `ScopeBadge`'s
-          doc for the three distinct treatments (Central / chapter desk /
-          peek). Lives here (not inside a screen) so every finance tab, not
-          just the Dashboard, carries it. Its own horizontal inset matches
-          `Screen`'s content padding without touching the Slot wrapper below
-          (every screen manages its own padding via `Screen`/`Narrow`). */}
-      <View className="px-4 pt-3 sm:px-6">
-        <ScopeBadge />
-      </View>
-      <View className="flex-1">
-        <Slot />
-      </View>
-    </View>
+    <DeskShell
+      tabs={tabs}
+      isActive={(path) => isTabActive(pathname, path)}
+      onNavigate={(path) => router.navigate(path as never)}
+      beforeTabs={
+        // Deployment-wide sandbox-mode banner (shows on every finance tab
+        // when on) — seat-gated: it's only relevant to finance seat
+        // holders, and mounting it for the no-seat member persona is the
+        // same crash class this banner itself was the trigger for (see
+        // [hotfix]).
+        seats !== undefined && seats.length > 0 ? <SandboxModeBanner /> : null
+      }
+      afterTabs={
+        // Founder directive: finance scope must be unmistakable, even from
+        // a bare screenshot of just this content column — see
+        // `ScopeBadge`'s doc for the three distinct treatments (Central /
+        // chapter desk / peek). Lives here (not inside a screen) so every
+        // finance tab, not just the Dashboard, carries it. Its own
+        // horizontal inset matches `Screen`'s content padding without
+        // touching the Slot wrapper below (every screen manages its own
+        // padding via `Screen`/`Narrow`).
+        <View className="px-4 pt-3 sm:px-6">
+          <ScopeBadge />
+        </View>
+      }
+    >
+      <Slot />
+    </DeskShell>
   );
 }
