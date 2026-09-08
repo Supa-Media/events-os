@@ -39,7 +39,17 @@ export async function verifyGoogleChatAuthorization(
   const pem = parsed.header.kid ? certs[parsed.header.kid] : undefined;
   if (!pem) return false;
   if (!verifyRs256(parsed.signingInput, parsed.signature, pem)) return false;
-  if (parsed.payload.aud !== audience) return false;
+  if (!audienceMatches(parsed.payload.aud, audience)) {
+    console.warn("[googleChatLinkPreview] token audience mismatch", {
+      expectedAudiences: audiences(audience),
+      tokenAudience: parsed.payload.aud,
+      issuer: parsed.payload.iss,
+      email: parsed.payload.email,
+      emailVerified: parsed.payload.email_verified,
+      keyId: parsed.header.kid,
+    });
+    return false;
+  }
 
   if (parsed.payload.iss === CHAT_SERVICE_ACCOUNT) return true;
   const issuerOk =
@@ -50,6 +60,17 @@ export async function verifyGoogleChatAuthorization(
     parsed.payload.email === CHAT_SERVICE_ACCOUNT &&
     parsed.payload.email_verified === true
   );
+}
+
+function audiences(audience: string): string[] {
+  return audience
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean);
+}
+
+function audienceMatches(tokenAudience: string | undefined, audience: string): boolean {
+  return typeof tokenAudience === "string" && audiences(audience).includes(tokenAudience);
 }
 
 function bearerToken(authorization: string | null): string | null {

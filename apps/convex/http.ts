@@ -103,6 +103,7 @@ import {
   adaptForEventEnvelope,
   buildNoPreviewResponse,
   buildOgPreviewResponse,
+  buildUrlPreviewFallbackResponse,
   extractChatUserEmail,
   extractMatchedUrl,
   type LinkPreviewResponse,
@@ -238,15 +239,20 @@ http.route({
     const endpointUrl =
       process.env.GOOGLE_CHAT_AUDIENCE ??
       new URL("/google-chat", req.url).toString();
+    const authAudience = [
+      endpointUrl,
+      process.env.GOOGLE_CHAT_PROJECT_NUMBER,
+    ].filter(Boolean).join(",");
     console.info("[googleChatLinkPreview] request", {
       audience: endpointUrl,
+      hasProjectNumberAudience: Boolean(process.env.GOOGLE_CHAT_PROJECT_NUMBER),
       userAgent: req.headers.get("user-agent"),
       contentType: req.headers.get("content-type"),
       hasAuthorization: req.headers.has("authorization"),
     });
     const verified = await ctx.runAction(verifyGoogleChatBearer, {
       authorization: req.headers.get("authorization"),
-      audience: endpointUrl,
+      audience: authAudience,
     });
     if (!verified) {
       console.warn("[googleChatLinkPreview] unauthorized", {
@@ -294,7 +300,9 @@ http.route({
       return json(adaptForEventEnvelope(buildOgPreviewResponse(og), event));
     } catch (err) {
       console.error("[googleChatLinkPreview] failed", err);
-      return json(buildNoPreviewResponse());
+      return json(
+        adaptForEventEnvelope(buildUrlPreviewFallbackResponse(matchedUrl), event),
+      );
     }
   }),
 });

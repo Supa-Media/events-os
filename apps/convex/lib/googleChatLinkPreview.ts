@@ -112,6 +112,19 @@ export function buildOgPreviewResponse(og: OgMetadata): LinkPreviewResponse {
   });
 }
 
+export function buildUrlPreviewFallbackResponse(rawUrl: string): LinkPreviewResponse {
+  const url = safeUrl(rawUrl);
+  const hostname = url?.hostname.replace(/^www\./, "") ?? "Link";
+  return buildCardResponse({
+    cardId: "url-preview",
+    title: hostname,
+    subtitle: "Link preview",
+    body: url?.href ?? rawUrl,
+    buttonText: "Open link",
+    buttonUrl: url?.href ?? rawUrl,
+  });
+}
+
 export function buildCardResponse({
   cardId,
   title,
