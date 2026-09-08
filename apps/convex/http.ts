@@ -22,7 +22,8 @@
  * webhooks — whose signature verification (`verifyStripeSignature`,
  * `verifyIncreaseSignature`, `validateTwilioSignature`) happens exactly here.
  */
-import { httpRouter } from "convex/server";
+import { httpRouter, makeFunctionReference } from "convex/server";
+import type { FunctionReference } from "convex/server";
 import { httpAction } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { api, internal } from "./_generated/api";
@@ -98,6 +99,15 @@ import {
   validateTwilioSignature,
   verifyTwilioSignature,
 } from "./lib/twilio";
+import {
+  adaptForEventEnvelope,
+  buildNoPreviewResponse,
+  buildOgPreviewResponse,
+  extractChatUserEmail,
+  extractMatchedUrl,
+  type LinkPreviewResponse,
+  type OgMetadata,
+} from "./lib/googleChatLinkPreview";
 import { verifyResendWebhookSignature } from "./lib/resend";
 import {
   renderUnsubscribeConfirm,
@@ -114,6 +124,37 @@ import { isReceiptInboxAddress } from "./receiptInbox";
 import { resolveTwilioReceiptsWebhookUrl } from "./smsReceipts";
 
 const http = httpRouter();
+
+function internalFunctionReference<
+  Type extends "query" | "mutation" | "action",
+  Args extends Record<string, unknown>,
+  Return,
+>(name: string): FunctionReference<Type, "internal", Args, Return> {
+  return makeFunctionReference<Type, Args, Return>(name) as unknown as FunctionReference<
+    Type,
+    "internal",
+    Args,
+    Return
+  >;
+}
+
+const verifyGoogleChatBearer = internalFunctionReference<
+  "action",
+  { authorization: string | null; audience: string },
+  boolean
+>("googleChatVerify:verifyGoogleChatBearer");
+
+const nativePreviewForUrl = internalFunctionReference<
+  "query",
+  { url: string; userEmail: string | null },
+  LinkPreviewResponse | null
+>("googleChatLinkPreviews:nativePreviewForUrl");
+
+const fetchOgMetadata = internalFunctionReference<
+  "action",
+  { url: string },
+  OgMetadata
+>("googleChatLinkPreviewFetch:fetchOgMetadata");
 
 // Auth routes (handles OTP verification callbacks)
 auth.addHttpRoutes(http);
@@ -165,6 +206,13 @@ function html(body: string, status = 200): Response {
   });
 }
 
+function json(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json; charset=utf-8" },
+  });
+}
+
 /** An empty TwiML `<Response/>` — Twilio expects TwiML (or a 2xx no-body) back
  *  from an inbound-message webhook; an empty `<Response/>` tells it "received,
  *  no auto-reply" without Twilio itself sending anything. */
@@ -174,6 +222,54 @@ function emptyTwiml(status = 200): Response {
     headers: { "Content-Type": "text/xml" },
   });
 }
+
+// ── Google Chat link previews: POST /google-chat ─────────────────────────────
+//
+// Google Chat invokes this HTTP action for MESSAGE interactions when a posted
+// URL matches the app's configured link-preview patterns. Requests are accepted
+// only after Google's bearer token verifies for this exact endpoint. Chapter OS
+// links use a narrow native read model; external links fall back to a
+// SSRF-hardened Open Graph fetcher in a Node action.
+
+http.route({
+  path: "/google-chat",
+  method: "POST",
+  handler: httpAction(async (ctx, req) => {
+    const endpointUrl =
+      process.env.GOOGLE_CHAT_AUDIENCE ??
+      new URL("/google-chat", req.url).toString();
+    const verified = await ctx.runAction(verifyGoogleChatBearer, {
+      authorization: req.headers.get("authorization"),
+      audience: endpointUrl,
+    });
+    if (!verified) return json({ error: "unauthorized" }, 401);
+
+    let event: unknown;
+    try {
+      event = await req.json();
+    } catch {
+      return json(buildNoPreviewResponse(), 400);
+    }
+
+    const matchedUrl = extractMatchedUrl(event);
+    if (!matchedUrl) return json(buildNoPreviewResponse());
+
+    const userEmail = extractChatUserEmail(event);
+    try {
+      const native = await ctx.runQuery(nativePreviewForUrl, {
+        url: matchedUrl,
+        userEmail,
+      });
+      if (native) return json(adaptForEventEnvelope(native, event));
+
+      const og = await ctx.runAction(fetchOgMetadata, { url: matchedUrl });
+      return json(adaptForEventEnvelope(buildOgPreviewResponse(og), event));
+    } catch (err) {
+      console.error("[googleChatLinkPreview] failed", err);
+      return json(buildNoPreviewResponse());
+    }
+  }),
+});
 
 // ── Public RSVP pages: /rsvp/<slug>[/cover|/calendar.ics] ───────────────────
 // The guest-facing event page — renamed to the "RSVP page" (Events-director

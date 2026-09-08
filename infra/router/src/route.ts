@@ -149,6 +149,9 @@ function isConvexPath(pathname: string): boolean {
   // Same exact-path + prefix pair as /give and /finances: `/blog` is the
   // index, `/blog/...` a post, the feed, or the sitemap.
   if (pathname === "/blog") return true;
+  // Google Chat link previews call one shared interaction endpoint. Keep it
+  // on the branded apex while still serving it from Convex HTTP actions.
+  if (pathname === "/google-chat") return true;
   return CONVEX_PREFIXES.some((prefix) => pathname.startsWith(prefix));
 }
 
@@ -172,6 +175,13 @@ export function route(url: URL): RouteDecision {
 
   if (hostname === RSVP_HOST) {
     return { kind: "redirect", location: `https://${APEX}${pathname}${search}` };
+  }
+
+  // Google Chat is configured as part of the OS, so its branded interaction
+  // endpoint lives under /os even though the Convex HTTP action itself is
+  // registered at /google-chat.
+  if (pathname === `${OS_PREFIX}/google-chat`) {
+    return { kind: "proxy", target: `${CONVEX_ORIGIN}/google-chat${search}` };
   }
 
   // Apex (and any other/unexpected host, e.g. a workers.dev preview URL):
