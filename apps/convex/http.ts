@@ -238,21 +238,39 @@ http.route({
     const endpointUrl =
       process.env.GOOGLE_CHAT_AUDIENCE ??
       new URL("/google-chat", req.url).toString();
+    console.info("[googleChatLinkPreview] request", {
+      audience: endpointUrl,
+      userAgent: req.headers.get("user-agent"),
+      contentType: req.headers.get("content-type"),
+      hasAuthorization: req.headers.has("authorization"),
+    });
     const verified = await ctx.runAction(verifyGoogleChatBearer, {
       authorization: req.headers.get("authorization"),
       audience: endpointUrl,
     });
-    if (!verified) return json({ error: "unauthorized" }, 401);
+    if (!verified) {
+      console.warn("[googleChatLinkPreview] unauthorized", {
+        audience: endpointUrl,
+        userAgent: req.headers.get("user-agent"),
+      });
+      return json({ error: "unauthorized" }, 401);
+    }
 
     let event: unknown;
     try {
       event = await req.json();
     } catch {
+      console.warn("[googleChatLinkPreview] invalid json");
       return json(buildNoPreviewResponse(), 400);
     }
 
     const matchedUrl = extractMatchedUrl(event);
-    if (!matchedUrl) return json(buildNoPreviewResponse());
+    if (!matchedUrl) {
+      console.warn("[googleChatLinkPreview] no matched url", {
+        shape: eventShape(event),
+      });
+      return json(buildNoPreviewResponse());
+    }
 
     const userEmail = extractChatUserEmail(event);
     try {
@@ -260,9 +278,19 @@ http.route({
         url: matchedUrl,
         userEmail,
       });
-      if (native) return json(adaptForEventEnvelope(native, event));
+      if (native) {
+        console.info("[googleChatLinkPreview] native preview", {
+          host: safeHostname(matchedUrl),
+          envelope: eventEnvelope(event),
+        });
+        return json(adaptForEventEnvelope(native, event));
+      }
 
       const og = await ctx.runAction(fetchOgMetadata, { url: matchedUrl });
+      console.info("[googleChatLinkPreview] og preview", {
+        host: safeHostname(matchedUrl),
+        envelope: eventEnvelope(event),
+      });
       return json(adaptForEventEnvelope(buildOgPreviewResponse(og), event));
     } catch (err) {
       console.error("[googleChatLinkPreview] failed", err);
@@ -270,6 +298,28 @@ http.route({
     }
   }),
 });
+
+function safeHostname(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl).hostname;
+  } catch {
+    return null;
+  }
+}
+
+function eventEnvelope(event: unknown): "workspace_addon" | "chat_app" {
+  return event != null &&
+    typeof event === "object" &&
+    "chat" in event &&
+    event.chat != null
+    ? "workspace_addon"
+    : "chat_app";
+}
+
+function eventShape(event: unknown): string[] {
+  if (event == null || typeof event !== "object") return [];
+  return Object.keys(event).slice(0, 10);
+}
 
 // ── Public RSVP pages: /rsvp/<slug>[/cover|/calendar.ics] ───────────────────
 // The guest-facing event page — renamed to the "RSVP page" (Events-director
