@@ -10,7 +10,7 @@ const USER_AGENT =
   "PublicWorshipChapterOSLinkPreview/1.0 (+https://publicworship.life)";
 const TIMEOUT_MS = 4_000;
 const MAX_REDIRECTS = 4;
-const MAX_BYTES = 256 * 1024;
+const MAX_BYTES = 768 * 1024;
 
 export const fetchOgMetadata = internalAction({
   args: { url: v.string() },
@@ -177,18 +177,27 @@ async function readCappedText(
   const reader = response.body.getReader();
   const chunks: Uint8Array[] = [];
   let total = 0;
+  const decoder = new TextDecoder();
+  let preview = "";
   while (true) {
     const { done, value } = await reader.read();
     if (done) break;
     if (!value) continue;
     total += value.byteLength;
+    preview += decoder.decode(value, { stream: true });
+    if (preview.toLowerCase().includes("</head>")) {
+      await reader.cancel();
+      chunks.push(value);
+      return preview;
+    }
     if (total > maxBytes) {
       await reader.cancel();
       throw new Error("Response body too large");
     }
     chunks.push(value);
   }
-  return new TextDecoder().decode(concat(chunks, total));
+  preview += decoder.decode();
+  return preview || new TextDecoder().decode(concat(chunks, total));
 }
 
 function concat(chunks: Uint8Array[], total: number): Uint8Array {

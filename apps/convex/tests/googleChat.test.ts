@@ -239,6 +239,21 @@ describe("Google Chat link preview helpers", () => {
     });
   });
 
+  test("parses Open Graph metadata before a large page body", async () => {
+    const hugeBody = "x".repeat(900 * 1024);
+    const metadata = parseOgMetadata(
+      `
+        <html><head>
+          <meta property="og:title" content="A Spotify Track">
+          <meta property="og:image" content="https://i.scdn.co/image/cover">
+        </head><body>${hugeBody}</body></html>
+      `,
+      "https://open.spotify.com/track/1",
+    );
+    expect(metadata.image).toBe("https://i.scdn.co/image/cover");
+    expect(metadata.title).toBe("A Spotify Track");
+  });
+
   test("rejects non-http URL schemes before fetching", () => {
     expect(() => requireSafeUrl("file:///etc/passwd")).toThrow(
       "Only http and https URLs can be previewed",
