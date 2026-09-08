@@ -105,6 +105,7 @@ export function buildOgPreviewResponse(og: OgMetadata): LinkPreviewResponse {
     cardId: "og-preview",
     title: og.title,
     subtitle: og.siteName,
+    imageUrl: googleChatImageUrl(og.image),
     body: og.description,
     buttonText: "Open link",
     buttonUrl: og.url,
@@ -122,6 +123,15 @@ export function buildUrlPreviewFallbackResponse(rawUrl: string): LinkPreviewResp
     buttonText: "Open link",
     buttonUrl: url?.href ?? rawUrl,
   });
+}
+
+function googleChatImageUrl(imageUrl: string): string | undefined {
+  try {
+    const url = new URL(imageUrl);
+    return url.protocol === "https:" ? url.toString() : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export function buildCardResponse({

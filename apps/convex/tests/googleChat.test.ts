@@ -197,6 +197,12 @@ describe("Google Chat link preview helpers", () => {
     });
     expect(response.cardsV2[0].card.sections[0].widgets).toEqual(
       expect.arrayContaining([
+        {
+          image: {
+            imageUrl: "https://i.scdn.co/image/abc",
+            altText: "Track title",
+          },
+        },
         { textParagraph: { text: "A song description" } },
         {
           buttonList: {
