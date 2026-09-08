@@ -105,7 +105,6 @@ export function buildOgPreviewResponse(og: OgMetadata): LinkPreviewResponse {
     cardId: "og-preview",
     title: og.title,
     subtitle: og.siteName,
-    imageUrl: og.image || undefined,
     body: og.description,
     buttonText: "Open link",
     buttonUrl: og.url,
