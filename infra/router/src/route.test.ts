@@ -83,6 +83,8 @@ describe("route: Convex prefixes -> proxy unchanged", () => {
     // The backer portal: one exact path (the page) plus its posts under /api/.
     ["/backer", `${CONVEX_ORIGIN}/backer`],
     ["/api/backer/verify", `${CONVEX_ORIGIN}/api/backer/verify`],
+    ["/google-chat", `${CONVEX_ORIGIN}/google-chat`],
+    ["/os/google-chat", `${CONVEX_ORIGIN}/google-chat`],
     ["/stripe/webhook", `${CONVEX_ORIGIN}/stripe/webhook`],
     ["/increase/webhook", `${CONVEX_ORIGIN}/increase/webhook`],
   ])("%s proxies to %s", (path, expectedTarget) => {
