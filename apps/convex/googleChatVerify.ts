@@ -25,20 +25,48 @@ export async function verifyGoogleChatAuthorization(
   audience: string,
 ): Promise<boolean> {
   const bearer = bearerToken(authorization);
-  if (!bearer || !audience) return false;
+  if (!bearer || !audience) {
+    console.warn("[googleChatLinkPreview] token missing", {
+      hasBearer: Boolean(bearer),
+      hasAudience: Boolean(audience),
+    });
+    return false;
+  }
   const parsed = parseJwt(bearer);
-  if (!parsed) return false;
+  if (!parsed) {
+    console.warn("[googleChatLinkPreview] token parse failed");
+    return false;
+  }
   const certsUrl =
     parsed.payload.iss === CHAT_SERVICE_ACCOUNT
       ? CHAT_JWT_CERTS
       : GOOGLE_ID_TOKEN_CERTS;
-  if (!isCurrentToken(parsed.payload)) return false;
+  if (!isCurrentToken(parsed.payload)) {
+    console.warn("[googleChatLinkPreview] token time invalid", tokenLog(parsed));
+    return false;
+  }
   const certsResponse = await fetch(certsUrl);
-  if (!certsResponse.ok) return false;
+  if (!certsResponse.ok) {
+    console.warn("[googleChatLinkPreview] token cert fetch failed", {
+      ...tokenLog(parsed),
+      certsUrl,
+      status: certsResponse.status,
+    });
+    return false;
+  }
   const certs = (await certsResponse.json()) as Record<string, string>;
   const pem = parsed.header.kid ? certs[parsed.header.kid] : undefined;
-  if (!pem) return false;
-  if (!verifyRs256(parsed.signingInput, parsed.signature, pem)) return false;
+  if (!pem) {
+    console.warn("[googleChatLinkPreview] token key not found", {
+      ...tokenLog(parsed),
+      certKeyCount: Object.keys(certs).length,
+    });
+    return false;
+  }
+  if (!verifyRs256(parsed.signingInput, parsed.signature, pem)) {
+    console.warn("[googleChatLinkPreview] token signature invalid", tokenLog(parsed));
+    return false;
+  }
   if (!audienceMatches(parsed.payload.aud, audience)) {
     console.warn("[googleChatLinkPreview] token audience mismatch", {
       expectedAudiences: audiences(audience),
@@ -55,11 +83,41 @@ export async function verifyGoogleChatAuthorization(
   const issuerOk =
     parsed.payload.iss === "accounts.google.com" ||
     parsed.payload.iss === "https://accounts.google.com";
-  return (
+  const issuerAndEmailOk =
     issuerOk &&
     parsed.payload.email === CHAT_SERVICE_ACCOUNT &&
-    parsed.payload.email_verified === true
-  );
+    parsed.payload.email_verified === true;
+  if (!issuerAndEmailOk) {
+    console.warn("[googleChatLinkPreview] token issuer/email invalid", {
+      ...tokenLog(parsed),
+      issuerOk,
+    });
+  }
+  return issuerAndEmailOk;
+}
+
+function tokenLog(parsed: {
+  header: { kid?: string };
+  payload: {
+    aud?: string;
+    iss?: string;
+    email?: string;
+    email_verified?: boolean;
+    exp?: number;
+    iat?: number;
+    nbf?: number;
+  };
+}): Record<string, unknown> {
+  return {
+    tokenAudience: parsed.payload.aud,
+    issuer: parsed.payload.iss,
+    email: parsed.payload.email,
+    emailVerified: parsed.payload.email_verified,
+    keyId: parsed.header.kid,
+    exp: parsed.payload.exp,
+    iat: parsed.payload.iat,
+    nbf: parsed.payload.nbf,
+  };
 }
 
 function audiences(audience: string): string[] {
