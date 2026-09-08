@@ -5,6 +5,8 @@ import { internalAction } from "./_generated/server";
 import { v } from "convex/values";
 
 const CHAT_SERVICE_ACCOUNT = "chat@system.gserviceaccount.com";
+const GSUITE_ADDONS_SERVICE_ACCOUNT_RE =
+  /^service-(\d+)@gcp-sa-gsuiteaddons\.iam\.gserviceaccount\.com$/;
 const GOOGLE_ID_TOKEN_CERTS = "https://www.googleapis.com/oauth2/v1/certs";
 const CHAT_JWT_CERTS =
   "https://www.googleapis.com/service_accounts/v1/metadata/x509/" +
@@ -83,9 +85,13 @@ export async function verifyGoogleChatAuthorization(
   const issuerOk =
     parsed.payload.iss === "accounts.google.com" ||
     parsed.payload.iss === "https://accounts.google.com";
+  const serviceAccountOk = googleServiceAccountMatchesAudience(
+    parsed.payload.email,
+    audience,
+  );
   const issuerAndEmailOk =
     issuerOk &&
-    parsed.payload.email === CHAT_SERVICE_ACCOUNT &&
+    (parsed.payload.email === CHAT_SERVICE_ACCOUNT || serviceAccountOk) &&
     parsed.payload.email_verified === true;
   if (!issuerAndEmailOk) {
     console.warn("[googleChatLinkPreview] token issuer/email invalid", {
@@ -94,6 +100,16 @@ export async function verifyGoogleChatAuthorization(
     });
   }
   return issuerAndEmailOk;
+}
+
+function googleServiceAccountMatchesAudience(
+  email: string | undefined,
+  audience: string,
+): boolean {
+  if (typeof email !== "string") return false;
+  const match = GSUITE_ADDONS_SERVICE_ACCOUNT_RE.exec(email);
+  if (!match) return false;
+  return audiences(audience).includes(match[1] ?? "");
 }
 
 function tokenLog(parsed: {
