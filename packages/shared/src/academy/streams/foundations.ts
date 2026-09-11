@@ -201,6 +201,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Everyone can see the whole chart.** The Org Chart tab shows both the central chart and every chapter's chart — it's not leadership-only information.",
           "**Vacancy is normal, and visible.** An empty seat shows up as empty on the chart. It doesn't get hidden, and it doesn't get silently auto-filled.",
+          "**A seat's duties are on the chart too.** Tap a seat to read the recurring work it carries. Managers and chapter admins can add one, reword it, or change its cadence right there — it's the same catalog as Work → Duties, read from the seat's side rather than the person's.",
         ],
       },
       { kind: "heading", text: "Building toward a board" },

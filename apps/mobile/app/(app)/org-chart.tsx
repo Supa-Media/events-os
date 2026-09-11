@@ -31,6 +31,16 @@
  * own "the whole team may see the whole org" stance — see `seats.ts`'s file
  * doc), so the nav entry is ungated, same as Academy.
  *
+ * COLLAPSE lives HERE rather than in `OrgTree`, because every interesting
+ * collapse verb is a statement about the whole chart, not about one box:
+ * "collapse all", "expand all", and "collapse everything EXCEPT this branch"
+ * (the panel's Focus action) all need to know every key in the tree. The
+ * screen owns the set of folded keys and hands it down; `OrgTree` renders it.
+ * The set is cleared on every scope switch for the same reason the selection
+ * is — a different scope is a different tree, and keys from the old one would
+ * silently fold boxes in the new one (or, worse, fold nothing while the
+ * toolbar insists something is collapsed).
+ *
  * Fetches `seats.chart({})` — the FULL payload — exactly ONCE. Every scope
  * pill (Central / a chapter / Full tree) is then built CLIENT-SIDE from that
  * same result (`treeUtils.buildChartTree` / `buildFullTree`), so switching
@@ -53,8 +63,10 @@ import { AddSeatModal, StructureEditBanner } from "../../components/orgchart/Str
 import {
   buildChartTree,
   buildFullTree,
+  collapsibleKeys,
   computeReportsTo,
   findNodeByKey,
+  pathToKey,
   subtreeSlugs,
   type ChartBuild,
   type FullChart,
@@ -85,6 +97,11 @@ export default function OrgChartScreen() {
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
   const [editMode, setEditMode] = useState(false);
   const [addSeatTarget, setAddSeatTarget] = useState<TreeNode | null>(null);
+  // Boxes whose reports are folded away. Keys, not nodes — same reason the
+  // selection is a key: the tree is rebuilt from the live query every render.
+  const [collapsedKeys, setCollapsedKeys] = useState<ReadonlySet<string>>(
+    () => new Set<string>(),
+  );
 
   // ── "Can this caller edit the chart's STRUCTURE?" ──────────────────────
   // `seats.chart` doesn't carry per-seat capabilities (only `seatDetail`
@@ -123,6 +140,7 @@ export default function OrgChartScreen() {
   const handleScopeChange = (next: ScopeChoice) => {
     setScopeChoice(next);
     setSelectedKey(null);
+    setCollapsedKeys(new Set<string>());
   };
 
   const { root, orphans }: ChartBuild = useMemo(() => {
@@ -137,6 +155,34 @@ export default function OrgChartScreen() {
     () => findNodeByKey(root, orphans, selectedKey),
     [root, orphans, selectedKey],
   );
+
+  const toggleCollapse = useCallback((node: TreeNode) => {
+    setCollapsedKeys((prev) => {
+      const next = new Set(prev);
+      if (!next.delete(node.key)) next.add(node.key);
+      return next;
+    });
+  }, []);
+
+  // "Collapse all" deliberately leaves the ROOT open: folding it too would
+  // leave a single box floating in the canvas, which reads as a broken chart
+  // rather than a folded one. Root + its direct reports, each declaring how
+  // many seats it's hiding, is the view people actually want from the button.
+  const collapseAll = useCallback(() => {
+    setCollapsedKeys(new Set(collapsibleKeys(root).filter((k) => k !== root?.key)));
+  }, [root]);
+
+  const expandAll = useCallback(() => setCollapsedKeys(new Set<string>()), []);
+
+  // "Collapse everything else" — fold every branch that isn't on the way to
+  // the selected seat. Its ancestors stay open (or it couldn't be seen at
+  // all) and so does the seat itself (so its own reports stay visible); every
+  // other collapsible box folds, siblings along the spine included.
+  const focusSelected = useCallback(() => {
+    if (!selectedKey) return;
+    const spine = new Set(pathToKey(root, selectedKey));
+    setCollapsedKeys(new Set(collapsibleKeys(root).filter((k) => !spine.has(k))));
+  }, [root, selectedKey]);
 
   // The overlay panel keeps rendering its LAST non-null selection while it
   // slides shut (`SeatOverlayPanel` only hides once the animation finishes)
@@ -229,6 +275,8 @@ export default function OrgChartScreen() {
               selectedKey={selected?.key ?? null}
               onSelect={(node) => setSelectedKey(node.key)}
               onAddSeat={editMode ? (node) => setAddSeatTarget(node) : undefined}
+              collapsedKeys={collapsedKeys}
+              onToggleCollapse={toggleCollapse}
             />
           </OrgChartCanvas>
         ) : (
@@ -268,6 +316,9 @@ export default function OrgChartScreen() {
           onToggleEditMode={() => setEditMode((e) => !e)}
           meName={meName}
           mySeatTitles={mySeatTitles}
+          anyCollapsed={collapsedKeys.size > 0}
+          onCollapseAll={collapseAll}
+          onExpandAll={expandAll}
         />
         {editMode ? (
           <View className="mx-3">
@@ -297,6 +348,7 @@ export default function OrgChartScreen() {
           editMode={editMode}
           chartSeatOptions={chartSeatOptions}
           onSeatRemoved={closePanel}
+          onFocusBranch={selected && selected.children.length > 0 ? focusSelected : undefined}
         />
       </SeatOverlayPanel>
 

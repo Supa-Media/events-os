@@ -3,11 +3,7 @@ import { useQuery } from "convex/react";
 import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import {
-  getRolePath,
-  RESPONSIBILITY_CADENCE_LABELS,
-  SEAT_ROOT,
-} from "@events-os/shared";
+import { getRolePath, SEAT_ROOT } from "@events-os/shared";
 import {
   Avatar,
   Badge,
@@ -20,6 +16,7 @@ import {
 } from "../ui";
 import { colors } from "../../lib/theme";
 import { SeatActionsPanel } from "./SeatActions";
+import { SeatDuties } from "./SeatDuties";
 import { RenameSeatControl, StructureEditActions } from "./StructureEditor";
 import { PowersEditor } from "./PowersEditor";
 import {
@@ -42,7 +39,16 @@ import {
  * to this seat in Work → Duties (title + cadence) — NOT `detail.duties`
  * (`seatDefs.duties`), which is a seeded TEMPLATE string list the owner calls
  * "fake duties". That field stays in the schema (still editable nowhere —
- * see `StructureEditor.tsx`'s doc comment) but is never rendered here.
+ * see `StructureEditor.tsx`'s doc comment) but is never rendered here. The
+ * real ones are EDITABLE IN PLACE (add / rename / re-cadence / take off the
+ * seat) for a caller the backend says may write them — see `SeatDuties`.
+ *
+ * The header also carries FOCUS (`onFocusBranch`) — "collapse everything
+ * else", the fastest way to read one branch of a wide chart. It lives here
+ * rather than in the toolbar because it's a verb about the SELECTED seat, and
+ * the panel is where the selected seat's verbs are; the screen owns what it
+ * actually does to the tree. Omitted for a seat with no reports (folding
+ * everything around a leaf hides the branch it sits in).
  *
  * Adds two OPTIONAL interactive layers on top of that same read-only view:
  *  - `SeatActionsPanel` (propose a change / assign directly) for any
@@ -63,6 +69,7 @@ export function SeatDetailPanel({
   editMode = false,
   chartSeatOptions = [],
   onSeatRemoved,
+  onFocusBranch,
 }: {
   selected: TreeNode | null;
   scopeName: string;
@@ -79,6 +86,9 @@ export function SeatDetailPanel({
   /** Called after a successful `removeSeat` so the screen can clear the
    *  now-nonexistent selection. */
   onSeatRemoved?: () => void;
+  /** Collapse every branch except this seat's. Omitted when the seat has no
+   *  reports, or by a caller with no collapse state of its own. */
+  onFocusBranch?: () => void;
 }) {
   // Hooks run unconditionally, before the early returns below (rules of
   // hooks) — `"skip"` while there's no seat selected yet, same pattern
@@ -131,8 +141,17 @@ export function SeatDetailPanel({
         {scopeName} · {holderCountLabel}
       </Text>
       <View className="mt-1 flex-row items-center gap-2">
-        <Text className="font-display text-2xl text-ink">{detail.title}</Text>
+        <Text className="flex-1 font-display text-2xl text-ink">{detail.title}</Text>
         {editMode ? <RenameSeatControl slug={detail.slug} title={detail.title} /> : null}
+        {onFocusBranch ? (
+          <Button
+            title="Focus"
+            variant="secondary"
+            size="sm"
+            icon="crosshair"
+            onPress={onFocusBranch}
+          />
+        ) : null}
       </View>
       {detail.derived ? (
         <Text className="mt-1 text-xs italic text-faint">
@@ -232,28 +251,12 @@ export function SeatDetailPanel({
         </>
       ) : null}
 
-      <SectionHeader title="Duties" />
-      {duties === undefined ? (
-        <View className="items-start py-2">
-          <ActivityIndicator size="small" color={colors.accent} />
-        </View>
-      ) : duties.length === 0 ? (
-        <Text className="text-sm text-muted">
-          No duties mapped yet — attach them in Work → Duties.
-        </Text>
-      ) : (
-        <View className="gap-1.5">
-          {duties.map((d) => (
-            <View key={d.id} className="flex-row items-start justify-between gap-2">
-              <View className="flex-row items-start gap-2">
-                <Text className="mt-0.5 text-sm text-muted">·</Text>
-                <Text className="flex-1 text-sm text-ink">{d.title}</Text>
-              </View>
-              <Text className="text-xs text-muted">{RESPONSIBILITY_CADENCE_LABELS[d.cadence]}</Text>
-            </View>
-          ))}
-        </View>
-      )}
+      <SeatDuties
+        seatDefId={detail.defId}
+        seatTitle={detail.title}
+        duties={duties}
+        derived={detail.derived}
+      />
 
       {/* EXPANDED, not the stored array: seats store the minimal set (an
           approver carries only `email.campaigns.approve`), so listing what is

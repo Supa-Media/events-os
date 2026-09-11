@@ -1,7 +1,7 @@
 import { Text, View } from "react-native";
 import { colors } from "../../lib/theme";
 import { SeatBox, SEAT_BOX_WIDTH } from "./SeatBox";
-import { subtreeDepth, type TreeNode } from "./treeUtils";
+import { descendantCount, subtreeDepth, type TreeNode } from "./treeUtils";
 
 /**
  * The tree content: root box top-center, its FIRST level of reports laid out
@@ -14,6 +14,15 @@ import { subtreeDepth, type TreeNode } from "./treeUtils";
  * which owns navigating a tree that can be much wider than the screen,
  * especially the Expansion Director branch in the Full tree view once every
  * chapter's subtree is grafted underneath it.
+ *
+ * COLLAPSE is the other half of navigating that width: `collapsedKeys` names
+ * the boxes whose reports are folded away, and every level here treats such a
+ * box as a leaf — its children aren't rendered, and `subtreeDepth` is asked
+ * the same question so the column narrows to match instead of staying padded
+ * for seats nobody can see. The set is the SCREEN's state, not this tree's,
+ * because "collapse everything except this branch" is a statement about the
+ * whole chart (see `org-chart.tsx`). Orphans in the Unplaced strip are a flat
+ * list with no children, so they never collapse.
  */
 export function OrgTree({
   root,
@@ -21,6 +30,8 @@ export function OrgTree({
   selectedKey,
   onSelect,
   onAddSeat,
+  collapsedKeys = EMPTY_KEYS,
+  onToggleCollapse,
 }: {
   root: TreeNode;
   orphans: TreeNode[];
@@ -28,10 +39,21 @@ export function OrgTree({
   onSelect: (node: TreeNode) => void;
   /** Present only in structure-edit mode — see `SeatBox`'s "+" affix. */
   onAddSeat?: (node: TreeNode) => void;
+  /** Keys whose reports are folded away. Omit for a fully expanded chart. */
+  collapsedKeys?: ReadonlySet<string>;
+  /** Omit to render a chart with no collapse affordance at all. */
+  onToggleCollapse?: (node: TreeNode) => void;
 }) {
   return (
     <View style={{ paddingHorizontal: 24, paddingVertical: 24 }}>
-      <RootLevel root={root} selectedKey={selectedKey} onSelect={onSelect} onAddSeat={onAddSeat} />
+      <RootLevel
+        root={root}
+        selectedKey={selectedKey}
+        onSelect={onSelect}
+        onAddSeat={onAddSeat}
+        collapsedKeys={collapsedKeys}
+        onToggleCollapse={onToggleCollapse}
+      />
       {orphans.length > 0 ? (
         <View style={{ marginTop: 24 }}>
           <UnplacedStrip
@@ -88,6 +110,10 @@ function UnplacedStrip({
   );
 }
 
+/** Module-level so an omitted `collapsedKeys` prop is referentially stable
+ *  (a fresh `new Set()` default would be a new object every render). */
+const EMPTY_KEYS: ReadonlySet<string> = new Set<string>();
+
 const STEM = 18; // vertical connector segment length (root→bar, bar→box)
 const RAIL_X = 10; // rail x-position within the connector gutter
 const ELBOW_STUB = 14; // horizontal stub length, rail → box
@@ -102,13 +128,17 @@ function RootLevel({
   selectedKey,
   onSelect,
   onAddSeat,
+  collapsedKeys,
+  onToggleCollapse,
 }: {
   root: TreeNode;
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
   onAddSeat?: (node: TreeNode) => void;
+  collapsedKeys: ReadonlySet<string>;
+  onToggleCollapse?: (node: TreeNode) => void;
 }) {
-  const firstLevel = root.children;
+  const firstLevel = collapsedKeys.has(root.key) ? [] : root.children;
   return (
     <View style={{ alignItems: "center" }}>
       <SeatBox
@@ -116,6 +146,7 @@ function RootLevel({
         selected={root.key === selectedKey}
         onPress={() => onSelect(root)}
         onAddSeat={onAddSeat}
+        {...collapseProps(root, collapsedKeys, onToggleCollapse)}
       />
 
       {firstLevel.length > 0 ? (
@@ -128,7 +159,7 @@ function RootLevel({
               // (not measured) so the T-bar can be sized deterministically in
               // the same pass, and set explicitly on the column so its
               // rendered width can never drift from what the bar assumes.
-              const width = SEAT_BOX_WIDTH + subtreeDepth(child) * GUTTER;
+              const width = SEAT_BOX_WIDTH + subtreeDepth(child, collapsedKeys) * GUTTER;
               return (
                 <View key={child.key} style={{ alignItems: "flex-start", width }}>
                   <FirstLevelConnector
@@ -142,14 +173,17 @@ function RootLevel({
                     selected={child.key === selectedKey}
                     onPress={() => onSelect(child)}
                     onAddSeat={onAddSeat}
+                    {...collapseProps(child, collapsedKeys, onToggleCollapse)}
                   />
-                  {child.children.length > 0 ? (
+                  {child.children.length > 0 && !collapsedKeys.has(child.key) ? (
                     <View style={{ marginTop: 8 }}>
                       <VerticalChildren
                         nodes={child.children}
                         selectedKey={selectedKey}
                         onSelect={onSelect}
                         onAddSeat={onAddSeat}
+                        collapsedKeys={collapsedKeys}
+                        onToggleCollapse={onToggleCollapse}
                       />
                     </View>
                   ) : null}
@@ -232,11 +266,15 @@ function VerticalChildren({
   selectedKey,
   onSelect,
   onAddSeat,
+  collapsedKeys,
+  onToggleCollapse,
 }: {
   nodes: TreeNode[];
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
   onAddSeat?: (node: TreeNode) => void;
+  collapsedKeys: ReadonlySet<string>;
+  onToggleCollapse?: (node: TreeNode) => void;
 }) {
   return (
     <View>
@@ -248,6 +286,8 @@ function VerticalChildren({
           selectedKey={selectedKey}
           onSelect={onSelect}
           onAddSeat={onAddSeat}
+          collapsedKeys={collapsedKeys}
+          onToggleCollapse={onToggleCollapse}
         />
       ))}
     </View>
@@ -266,12 +306,16 @@ function VerticalRow({
   selectedKey,
   onSelect,
   onAddSeat,
+  collapsedKeys,
+  onToggleCollapse,
 }: {
   node: TreeNode;
   isLast: boolean;
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
   onAddSeat?: (node: TreeNode) => void;
+  collapsedKeys: ReadonlySet<string>;
+  onToggleCollapse?: (node: TreeNode) => void;
 }) {
   return (
     <View style={{ flexDirection: "row" }}>
@@ -304,20 +348,40 @@ function VerticalRow({
           selected={node.key === selectedKey}
           onPress={() => onSelect(node)}
           onAddSeat={onAddSeat}
+          {...collapseProps(node, collapsedKeys, onToggleCollapse)}
         />
-        {node.children.length > 0 ? (
+        {node.children.length > 0 && !collapsedKeys.has(node.key) ? (
           <View style={{ marginTop: 4 }}>
             <VerticalChildren
               nodes={node.children}
               selectedKey={selectedKey}
               onSelect={onSelect}
               onAddSeat={onAddSeat}
+              collapsedKeys={collapsedKeys}
+              onToggleCollapse={onToggleCollapse}
             />
           </View>
         ) : null}
       </View>
     </View>
   );
+}
+
+/** The collapse half of a `SeatBox`'s props, in one place so all three render
+ *  sites agree: a LEAF (or a chart with no collapse handler at all) gets no
+ *  chevron, and a collapsed box gets the count of everything it's hiding. */
+function collapseProps(
+  node: TreeNode,
+  collapsedKeys: ReadonlySet<string>,
+  onToggleCollapse?: (node: TreeNode) => void,
+) {
+  if (!onToggleCollapse || node.children.length === 0) return {};
+  const collapsed = collapsedKeys.has(node.key);
+  return {
+    collapsed,
+    hiddenCount: collapsed ? descendantCount(node) : 0,
+    onToggleCollapse: () => onToggleCollapse(node),
+  };
 }
 
 /** The small eyebrow label above a chapter's root box when its whole subtree

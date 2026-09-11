@@ -7,9 +7,12 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   buildChartTree,
   buildFullTree,
+  collapsibleKeys,
   computeReportsTo,
+  descendantCount,
   findNodeByKey,
   findOrphanSeats,
+  pathToKey,
   subtreeDepth,
   subtreeSlugs,
   type ChartHolder,
@@ -220,6 +223,97 @@ describe("subtreeDepth", () => {
     const b = root?.children.find((c) => c.seat.slug === "b");
     expect(subtreeDepth(a as TreeNode)).toBe(2); // a -> a1 -> a1x
     expect(subtreeDepth(b as TreeNode)).toBe(0); // leaf
+  });
+});
+
+// ── collapse helpers ─────────────────────────────────────────────────────────
+
+describe("subtreeDepth with a collapsed set", () => {
+  test("a collapsed node is a leaf as far as layout is concerned", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    const a = root?.children.find((c) => c.seat.slug === "a") as TreeNode;
+    expect(subtreeDepth(a, new Set(["central:a"]))).toBe(0);
+  });
+
+  test("collapsing a node MIDWAY down shortens the branch below it", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    const a = root?.children.find((c) => c.seat.slug === "a") as TreeNode;
+    // a -> a1 -> a1x is depth 2; folding a1 leaves just a -> a1.
+    expect(subtreeDepth(a, new Set(["central:a1"]))).toBe(1);
+  });
+
+  test("an empty set is the full tree (and no index leaks in from .map)", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    const a = root?.children.find((c) => c.seat.slug === "a") as TreeNode;
+    expect(subtreeDepth(a, new Set())).toBe(subtreeDepth(a));
+  });
+});
+
+describe("descendantCount", () => {
+  test("counts every descendant, not just direct reports", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    const a = root?.children.find((c) => c.seat.slug === "a") as TreeNode;
+    expect(descendantCount(a)).toBe(2); // a1 + a1x
+    expect(descendantCount(root as TreeNode)).toBe(5); // a, b, c, a1, a1x
+  });
+
+  test("0 for a leaf", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    const b = root?.children.find((c) => c.seat.slug === "b") as TreeNode;
+    expect(descendantCount(b)).toBe(0);
+  });
+});
+
+describe("collapsibleKeys", () => {
+  test("every node WITH children, root included — never a leaf", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    expect(collapsibleKeys(root).sort()).toEqual([
+      "central:a",
+      "central:a1",
+      "central:root-seat",
+    ]);
+  });
+
+  test("empty for a null tree", () => {
+    expect(collapsibleKeys(null)).toEqual([]);
+  });
+});
+
+describe("pathToKey", () => {
+  test("returns the spine from the root down to the key, inclusive", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    expect(pathToKey(root, "central:a1x")).toEqual([
+      "central:root-seat",
+      "central:a",
+      "central:a1",
+      "central:a1x",
+    ]);
+  });
+
+  test("the root's own path is just itself", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    expect(pathToKey(root, "central:root-seat")).toEqual(["central:root-seat"]);
+  });
+
+  test("empty for a key that isn't in this tree, or a null key", () => {
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    expect(pathToKey(root, "central:nope")).toEqual([]);
+    expect(pathToKey(root, null)).toEqual([]);
+    expect(pathToKey(null, "central:a")).toEqual([]);
+  });
+
+  test("focusing a branch folds every collapsible key off its spine", () => {
+    // The screen's "collapse everything else" derivation, asserted end to end:
+    // `a1`'s spine stays open, `root-seat`'s other branches don't matter (they
+    // are leaves), and nothing on the spine is folded.
+    const { root } = buildChartTree(wellFormedSeats(), "central");
+    const spine = new Set(pathToKey(root, "central:a1"));
+    const folded = collapsibleKeys(root).filter((k) => !spine.has(k));
+    expect(folded).toEqual([]); // every collapsible node IS on a1's spine
+    const foldedFromB = collapsibleKeys(root).filter(
+      (k) => !new Set(pathToKey(root, "central:b")).has(k),
+    );
+    expect(foldedFromB.sort()).toEqual(["central:a", "central:a1"]);
   });
 });
 
