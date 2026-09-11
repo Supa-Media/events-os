@@ -195,7 +195,19 @@ function DutyRow({
   }
 
   return (
-    <View className="flex-row items-start gap-2">
+    // EVERY LEVEL OF THIS ROW IS WIDTH-CONSTRAINED, which is what makes a long
+    // duty WRAP inside the panel instead of running off its right edge. The
+    // shipped row nested the title in a `flex-row` with no `flex-1`, so that
+    // View sized itself to the title's full intrinsic width and overflowed —
+    // "Analyze workload balance and recruit to handle…" ran under the panel's
+    // edge and was simply unreadable. A `flex-1` on a child of an
+    // unconstrained parent cannot fix that; the CHAIN has to be constrained,
+    // so the row, the pressable inside it, and the title column each carry
+    // one. `minWidth: 0` is the web half of the same rule: a flex item's
+    // automatic minimum size is its content, and without this the title
+    // column refuses to shrink below the longest word-run no matter what
+    // flex says.
+    <View className="flex-row items-start gap-2" style={{ minWidth: 0 }}>
       {/* The whole row is the edit target for a writable duty — with a pencil
           on it, since a line of text that happens to be tappable is not an
           affordance anyone finds. A read-only row is a plain, inert row. */}
@@ -204,11 +216,11 @@ function DutyRow({
         onPress={() => setEditing(true)}
         accessibilityRole={duty.canEdit ? "button" : undefined}
         accessibilityLabel={duty.canEdit ? `Edit duty ${duty.title}` : undefined}
-        style={duty.canEdit ? ({ cursor: "pointer" } as any) : undefined}
+        style={[{ minWidth: 0 }, duty.canEdit ? { cursor: "pointer" } : null] as any}
         className="flex-1 flex-row items-start gap-2"
       >
         <Text className="mt-0.5 text-sm text-muted">·</Text>
-        <View className="flex-1">
+        <View className="flex-1" style={{ minWidth: 0 }}>
           <Text className="text-sm text-ink">{duty.title}</Text>
           {duty.authoredByChapterName ? (
             <Text className="text-2xs italic text-faint">
@@ -216,17 +228,23 @@ function DutyRow({
             </Text>
           ) : null}
         </View>
-        <Text className="mt-0.5 text-xs text-muted">
+        {/* The cadence keeps its own width (it's two words at most) and never
+            wraps to a vertical stack of letters when the title is long. */}
+        <Text
+          className="mt-0.5 text-xs text-muted"
+          numberOfLines={1}
+          style={{ flexShrink: 0 }}
+        >
           {RESPONSIBILITY_CADENCE_LABELS[duty.cadence]}
         </Text>
         {duty.canEdit ? (
-          <View className="mt-0.5">
+          <View className="mt-0.5" style={{ flexShrink: 0 }}>
             <Icon name="edit-2" size={11} color={colors.faint} />
           </View>
         ) : null}
       </Pressable>
       {duty.canEdit ? (
-        <View className="mt-0.5">
+        <View className="mt-0.5" style={{ flexShrink: 0 }}>
           {saving ? (
             <ActivityIndicator size="small" color={colors.accent} />
           ) : (
@@ -266,7 +284,13 @@ function DutyForm({
 }) {
   const [title, setTitle] = useState(initialTitle);
   const [cadence, setCadence] = useState<ResponsibilityCadence>(initialCadence);
-  const trimmed = title.trim();
+  // Duty titles are sentences ("Analyze workload balance and recruit to
+  // handle the imbalance"), so the box WRAPS rather than scrolling a single
+  // line sideways past what you can read — the same reason the row above it
+  // wraps. A title is still one line of text, though, so any newline the box
+  // now makes typeable (or a paste brings in) collapses back to a space on
+  // the way out.
+  const clean = title.replace(/\s+/g, " ").trim();
 
   return (
     <View className="gap-2 rounded-md border border-border bg-sunken p-2.5">
@@ -274,12 +298,12 @@ function DutyForm({
         value={title}
         onChangeText={setTitle}
         autoFocus
+        multiline
+        textAlignVertical="top"
         placeholder="What has to happen, and how often"
         placeholderTextColor={colors.faint}
-        onSubmitEditing={() => {
-          if (trimmed) onSubmit(trimmed, cadence);
-        }}
         className="rounded-md border border-border-strong bg-raised px-2.5 py-2 text-sm text-ink"
+        style={{ minHeight: 52 }}
       />
       <View className="flex-row flex-wrap gap-1.5">
         {RESPONSIBILITY_CADENCES.map((c) => (
@@ -297,8 +321,8 @@ function DutyForm({
           title={submitLabel}
           size="sm"
           loading={saving}
-          disabled={trimmed.length === 0}
-          onPress={() => onSubmit(trimmed, cadence)}
+          disabled={clean.length === 0}
+          onPress={() => onSubmit(clean, cadence)}
         />
         <Button title="Cancel" variant="ghost" size="sm" onPress={onCancel} />
       </View>
