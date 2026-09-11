@@ -9,8 +9,15 @@ import type { FullChart } from "./treeUtils";
 
 /**
  * The slim floating chrome docked over the top of the full-bleed canvas: a
- * small page title, the scope pills, "who am I" context line, the "Edit
- * structure" toggle (when authorized), and a proposals-inbox indicator.
+ * small page title, the scope pills, "who am I" context line, the collapse
+ * control, the "Edit structure" toggle (when authorized), and a
+ * proposals-inbox indicator.
+ *
+ * The collapse control is ONE button with two states rather than a pair,
+ * because "collapse all" and "expand all" are never both useful: with the
+ * chart fully open the only move is to fold it, and with anything folded the
+ * only move people reach for is to get everything back. `anyCollapsed` (the
+ * screen's state, see `org-chart.tsx`) decides which one it currently is.
  *
  * The proposals inbox itself is UNCHANGED (`ProposalsInbox`, as merged) — it
  * just moves from "always inline above the tree" to "behind an indicator
@@ -28,6 +35,9 @@ export function OrgChartToolbar({
   onToggleEditMode,
   meName,
   mySeatTitles,
+  anyCollapsed,
+  onCollapseAll,
+  onExpandAll,
 }: {
   chart: FullChart;
   scopeChoice: ScopeChoice;
@@ -37,6 +47,10 @@ export function OrgChartToolbar({
   onToggleEditMode: () => void;
   meName: string | null;
   mySeatTitles: string[];
+  /** Is anything in the chart currently folded? Flips the collapse button. */
+  anyCollapsed: boolean;
+  onCollapseAll: () => void;
+  onExpandAll: () => void;
 }) {
   const pending = useQuery(api.seatProposals.pendingProposals, {});
   const pendingCount = pending?.length ?? 0;
@@ -55,7 +69,14 @@ export function OrgChartToolbar({
           ) : null}
         </View>
 
-        <View className="flex-row items-center gap-2">
+        <View className="flex-row flex-wrap items-center justify-end gap-2">
+          <Button
+            title={anyCollapsed ? "Expand all" : "Collapse all"}
+            variant="secondary"
+            size="sm"
+            icon={anyCollapsed ? "maximize-2" : "minimize-2"}
+            onPress={anyCollapsed ? onExpandAll : onCollapseAll}
+          />
           <View ref={ref}>
             <ProposalsIndicatorButton count={pendingCount} onPress={open} />
           </View>

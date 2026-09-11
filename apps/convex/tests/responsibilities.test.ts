@@ -588,7 +588,14 @@ describe("responsibilities × seats", () => {
       seatDefId: seatId,
     });
     expect(result).toEqual([
-      { id: dutyId, title: "Do the thing", cadence: "weekly" },
+      {
+        id: dutyId,
+        title: "Do the thing",
+        cadence: "weekly",
+        // NY authored it, and this caller may manage NY's catalog.
+        authoredByChapterName: null,
+        canEdit: true,
+      },
     ]);
 
     // Owner decision: "the expectation... at one place is gonna be the same
@@ -596,11 +603,22 @@ describe("responsibilities × seats", () => {
     // this seat itself, but browsing the SAME (shared, global) seat def from
     // Austin's own chart still surfaces NY's duty — a seat-mapped duty is an
     // ORG-WIDE expectation, not scoped to whichever chapter authored it.
+    // WRITABILITY does not travel with it: the row stays NY's to edit (see
+    // `requireOwned`), which is what the org chart's seat panel reads to
+    // decide whether to render an inline editor.
     expect(
       await s2.as.query(api.responsibilities.dutiesForSeat, {
         seatDefId: seatId,
       }),
-    ).toEqual(result);
+    ).toEqual([
+      {
+        id: dutyId,
+        title: "Do the thing",
+        cadence: "weekly",
+        authoredByChapterName: "New York",
+        canEdit: false,
+      },
+    ]);
   });
 
   test("dutiesForSeat reaches ACROSS chapters for a CENTRAL seat — a chapter-A duty is visible browsing from chapter B", async () => {
@@ -629,17 +647,135 @@ describe("responsibilities × seats", () => {
       seatDefId: centralSeatId,
     });
     expect(fromAustin).toEqual([
-      { id: dutyId, title: "Chair the board meeting", cadence: "monthly" },
+      {
+        id: dutyId,
+        title: "Chair the board meeting",
+        cadence: "monthly",
+        authoredByChapterName: "New York",
+        canEdit: false,
+      },
     ]);
-    // …and it still resolves from NY's own view too.
+    // …and it still resolves from NY's own view too — where, as its author,
+    // NY may also edit it.
     const fromNY = await s.as.query(api.responsibilities.dutiesForSeat, {
       seatDefId: centralSeatId,
     });
-    expect(fromNY).toEqual(fromAustin);
+    expect(fromNY).toEqual([
+      {
+        id: dutyId,
+        title: "Chair the board meeting",
+        cadence: "monthly",
+        authoredByChapterName: null,
+        canEdit: true,
+      },
+    ]);
 
     // This behavior is unchanged by the org-wide fix (central occupancy was
     // always chapter-independent) — a CHAPTER-chart seat now behaves the SAME
     // way, per the test above this one, rather than staying chapter-scoped.
+  });
+
+  test("dutiesForSeat's canEdit follows the WRITE gate, not visibility — a plain member reads the duty but can't edit it", async () => {
+    // The org chart's seat panel renders its inline duty editors off this
+    // flag; a member who sees an editor the server would 403 is the bug it
+    // exists to prevent. Same question `lib/dutiesAccess.ts` answers for
+    // every duty mutation.
+    const s = await setupChapter(newT());
+    const { cara } = await seedChain(s);
+    const asCara = await addUser(s, "cara@publicworship.life", { personId: cara });
+    const seatId = await insertSeat(s, {
+      slug: "z",
+      title: "Z Seat",
+      chart: "chapter",
+    });
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Own the thing",
+      cadence: "weekly",
+      assigneeSeatIds: [seatId],
+    })) as Id<"responsibilities">;
+
+    // Cara (a member with no reports) SEES it — reads stay transparent…
+    const asMember = await asCara.query(api.responsibilities.dutiesForSeat, {
+      seatDefId: seatId,
+    });
+    expect(asMember).toEqual([
+      {
+        id: dutyId,
+        title: "Own the thing",
+        cadence: "weekly",
+        // Her own chapter authored it — provenance is clean; the GATE is
+        // what makes it read-only for her.
+        authoredByChapterName: null,
+        canEdit: false,
+      },
+    ]);
+    expect(await asCara.query(api.responsibilities.canManage, {})).toBe(false);
+
+    // …and the flag is honest: the write really is refused.
+    await expect(
+      asCara.mutation(api.responsibilities.update, {
+        responsibilityId: dutyId,
+        title: "Renamed by a member",
+      }),
+    ).rejects.toThrow(ConvexError);
+
+    // The admin who authored it gets both halves.
+    expect(await s.as.query(api.responsibilities.canManage, {})).toBe(true);
+  });
+
+  test("a duty added from a seat panel lands mapped to that seat, editable, and detaches without deleting the definition", async () => {
+    // The org chart's seat panel drives exactly this sequence: `create` with
+    // the seat pre-mapped, `update` to re-title/re-cadence, `removeSeat` to
+    // take it off the seat. Nothing bespoke — pinned here so the panel's
+    // flow keeps working if any of the three change.
+    const s = await setupChapter(newT());
+    const seatId = await insertSeat(s, {
+      slug: "w",
+      title: "W Seat",
+      chart: "chapter",
+    });
+
+    const dutyId = (await s.as.mutation(api.responsibilities.create, {
+      title: "Send the weekly note",
+      cadence: "weekly",
+      assigneeSeatIds: [seatId],
+    })) as Id<"responsibilities">;
+    expect(
+      await s.as.query(api.responsibilities.dutiesForSeat, { seatDefId: seatId }),
+    ).toEqual([
+      {
+        id: dutyId,
+        title: "Send the weekly note",
+        cadence: "weekly",
+        authoredByChapterName: null,
+        canEdit: true,
+      },
+    ]);
+
+    await s.as.mutation(api.responsibilities.update, {
+      responsibilityId: dutyId,
+      title: "Send the monthly note",
+      cadence: "monthly",
+    });
+    const [edited] = await s.as.query(api.responsibilities.dutiesForSeat, {
+      seatDefId: seatId,
+    });
+    expect(edited.title).toBe("Send the monthly note");
+    expect(edited.cadence).toBe("monthly");
+
+    // Taking it OFF the seat leaves the definition alive in the catalog —
+    // the panel's confirmation promises exactly that.
+    await s.as.mutation(api.responsibilities.removeSeat, {
+      responsibilityId: dutyId,
+      seatDefId: seatId,
+    });
+    expect(
+      await s.as.query(api.responsibilities.dutiesForSeat, { seatDefId: seatId }),
+    ).toEqual([]);
+    const catalog = await s.as.query(api.responsibilities.list);
+    expect(catalog.find((r) => r._id === dutyId)?.title).toBe(
+      "Send the monthly note",
+    );
   });
 
   test("addSeat / removeSeat edit one seat membership, race-safely — mirrors addAssignee/removeAssignee", async () => {
@@ -869,9 +1005,25 @@ describe("responsibilities × seats", () => {
       { seatDefId: chapterDirectorId },
     );
     expect(nyDutiesForSeat).toEqual([
-      { id: dutyId, title: "Run the chapter day-to-day", cadence: "ad_hoc" },
+      {
+        id: dutyId,
+        title: "Run the chapter day-to-day",
+        cadence: "ad_hoc",
+        authoredByChapterName: null,
+        canEdit: true,
+      },
     ]);
-    expect(austinDutiesForSeat).toEqual(nyDutiesForSeat);
+    // Same duty from Austin — visible, with its provenance, but not Austin's
+    // to write.
+    expect(austinDutiesForSeat).toEqual([
+      {
+        id: dutyId,
+        title: "Run the chapter day-to-day",
+        cadence: "ad_hoc",
+        authoredByChapterName: "New York",
+        canEdit: false,
+      },
+    ]);
 
     // REAL PATH #2 — list: Austin's OWN duty catalog includes NY's
     // seat-mapped duty (owner decision: one role, same expectations

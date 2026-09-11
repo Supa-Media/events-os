@@ -18,10 +18,8 @@ import {
   requireOwned,
   getChapterIdOrNull,
 } from "./lib/context";
-import {
-  requireManagerOrAdmin,
-  canViewChapterWork,
-} from "./lib/org";
+import { canViewChapterWork } from "./lib/org";
+import { canManageDuties, requireManageDuties } from "./lib/dutiesAccess";
 import { makeShareId } from "./lib/platformGuides";
 
 /** Bounded scan for the "oldest non-contact person" doc-author fallback below
@@ -116,9 +114,12 @@ async function requireSeatDefs(
   }
 }
 
-// Editing responsibilities is for managers and admins (requireManagerOrAdmin):
-// these rows feed the check-in accountability loop, so the person being held
-// to a duty must not be able to quietly delete or unassign it before their 1:1.
+// Editing responsibilities goes through ONE named gate — `requireManageDuties`
+// (`lib/dutiesAccess.ts`), today "manager or admin". Nothing below checks
+// manager-ness inline, so the day that becomes a grantable `duties.manage`
+// power only that resolver's body changes. Why it's gated at all: these rows
+// feed the check-in accountability loop, so the person being held to a duty
+// must not be able to quietly delete or unassign it before their 1:1.
 
 /** Bound on the cross-chapter scan every org-wide seat-mapped-duty path does
  *  (`orgWideCatalog`, `dutiesForSeat`) — every `responsibilities` row across
@@ -297,7 +298,7 @@ export const create = mutation({
   handler: async (ctx, args) => {
     const chapterId = await requireChapterId(ctx);
     const userId = await requireUserId(ctx);
-    await requireManagerOrAdmin(ctx, chapterId as Id<"chapters">);
+    await requireManageDuties(ctx, chapterId as Id<"chapters">);
     for (const personId of args.assigneePersonIds ?? []) {
       await requireOwned(ctx, "people", personId, "Assignee");
     }
@@ -359,7 +360,7 @@ export const update = mutation({
       responsibilityId,
       "Responsibility",
     );
-    await requireManagerOrAdmin(ctx, row.chapterId);
+    await requireManageDuties(ctx, row.chapterId);
     if (Array.isArray(patch.assigneePersonIds)) {
       for (const personId of patch.assigneePersonIds) {
         await requireOwned(ctx, "people", personId, "Assignee");
@@ -439,7 +440,7 @@ export const addAssignee = mutation({
       responsibilityId,
       "Responsibility",
     );
-    await requireManagerOrAdmin(ctx, row.chapterId);
+    await requireManageDuties(ctx, row.chapterId);
     await requireOwned(ctx, "people", personId, "Assignee");
     const current = row.assigneePersonIds ?? [];
     if (!current.includes(personId)) {
@@ -471,7 +472,7 @@ export const removeAssignee = mutation({
       responsibilityId,
       "Responsibility",
     );
-    await requireManagerOrAdmin(ctx, row.chapterId);
+    await requireManageDuties(ctx, row.chapterId);
     const current = row.assigneePersonIds ?? [];
     if (current.includes(personId)) {
       const next = current.filter((id) => id !== personId);
@@ -505,7 +506,7 @@ export const addSeat = mutation({
       responsibilityId,
       "Responsibility",
     );
-    await requireManagerOrAdmin(ctx, row.chapterId);
+    await requireManageDuties(ctx, row.chapterId);
     await requireSeatDefs(ctx, [seatDefId]);
     const current = row.assigneeSeatIds ?? [];
     if (!current.includes(seatDefId)) {
@@ -539,7 +540,7 @@ export const removeSeat = mutation({
       responsibilityId,
       "Responsibility",
     );
-    await requireManagerOrAdmin(ctx, row.chapterId);
+    await requireManageDuties(ctx, row.chapterId);
     const current = row.assigneeSeatIds ?? [];
     if (current.includes(seatDefId)) {
       const next = current.filter((id) => id !== seatDefId);
@@ -562,7 +563,7 @@ export const remove = mutation({
       responsibilityId,
       "Responsibility",
     );
-    await requireManagerOrAdmin(ctx, row.chapterId);
+    await requireManageDuties(ctx, row.chapterId);
     await ctx.db.delete(responsibilityId);
     return responsibilityId;
   },
@@ -678,6 +679,27 @@ export const chapterSeatHoldings = query({
 });
 
 /**
+ * May the caller shape the duty catalog at all — the question an EDITING
+ * SURFACE asks before it renders an "add a duty" affordance, resolved through
+ * the same `lib/dutiesAccess.ts` gate every duty mutation calls, so the
+ * affordance and the write can never disagree.
+ *
+ * `dutiesForSeat`'s per-row `canEdit` answers the narrower "may I write THIS
+ * row?" (which also turns on authorship). This is the catalog-wide half: a
+ * duty CREATED here is authored in the caller's own chapter, so authorship
+ * never blocks a create.
+ */
+export const canManage = query({
+  args: {},
+  returns: v.boolean(),
+  handler: async (ctx) => {
+    const chapterId = await getChapterIdOrNull(ctx);
+    if (!chapterId) return false;
+    return await canManageDuties(ctx, chapterId as Id<"chapters">);
+  },
+});
+
+/**
  * The duties attached to one seat (`assigneeSeatIds` contains it).
  *
  * Per `orgWideCatalog`'s owner-decision doc: a seat-mapped duty is an
@@ -693,9 +715,21 @@ export const chapterSeatHoldings = query({
  * always did. Gated the same as every other seat/duty read — org-transparent
  * to any signed-in roster member, not just the authoring chapter's.
  *
- * The org-chart UI (a later PR) is expected to call this while browsing a
- * seat's panel, central or chapter. Simple summary shape — no How-To doc
- * join, no holder resolution; that's `list`'s job.
+ * The org-chart UI calls this while browsing a seat's panel, central or
+ * chapter, and EDITS duties in place there. Simple summary shape — no How-To
+ * doc join, no holder resolution; that's `list`'s job.
+ *
+ * Each row carries the two facts an in-place editor needs, so the panel never
+ * has to guess which rows it may write (and never renders an editor whose
+ * write would then 403):
+ *  - `authoredByChapterName` — `null` when the CALLER'S OWN chapter authored
+ *    the duty, else the authoring chapter's name. Same provenance field
+ *    `list` returns for the Duties grid, same reason: a seat-mapped duty is
+ *    org-wide, but `update`/`removeSeat`/`remove` all gate on `requireOwned`,
+ *    authoring-chapter-only.
+ *  - `canEdit` — the AND of that ownership and `canManageDuties` (the boolean
+ *    twin of the gate every duty mutation calls), i.e. exactly "would a write
+ *    to this row from this caller succeed?".
  */
 export const dutiesForSeat = query({
   args: { seatDefId: v.id("seatDefs") },
@@ -705,6 +739,11 @@ export const dutiesForSeat = query({
       title: v.string(),
       cadence,
       description: v.optional(v.string()),
+      /** The authoring chapter's name, or `null` when the caller's own
+       *  chapter authored it. See this query's doc comment. */
+      authoredByChapterName: v.union(v.string(), v.null()),
+      /** Would a write to this row from this caller succeed? */
+      canEdit: v.boolean(),
     }),
   ),
   handler: async (ctx, { seatDefId }) => {
@@ -721,14 +760,35 @@ export const dutiesForSeat = query({
     if (seat.derived === true) return [];
 
     const rows = await scanAllResponsibilities(ctx, "responsibilities.dutiesForSeat");
+    const mine = rows.filter((r) => (r.assigneeSeatIds ?? []).includes(seatDefId));
 
-    return rows
-      .filter((r) => (r.assigneeSeatIds ?? []).includes(seatDefId))
-      .map((r) => ({
+    // One gate resolution for the whole result (it's the same question for
+    // every row — the caller's own chapter), then per-row ownership on top.
+    const mayManage = await canManageDuties(ctx, chapterId as Id<"chapters">);
+    const foreignChapterIds = Array.from(
+      new Set(mine.filter((r) => r.chapterId !== chapterId).map((r) => r.chapterId)),
+    );
+    const foreignChapters = await Promise.all(
+      foreignChapterIds.map((id) => ctx.db.get(id)),
+    );
+    const chapterNameById = new Map(
+      foreignChapters
+        .filter((c): c is NonNullable<typeof c> => c !== null)
+        .map((c) => [c._id, c.name]),
+    );
+
+    return mine.map((r) => {
+      const own = r.chapterId === chapterId;
+      return {
         id: r._id,
         title: r.title,
         cadence: r.cadence,
         description: r.description,
-      }));
+        authoredByChapterName: own
+          ? null
+          : (chapterNameById.get(r.chapterId) ?? "another chapter"),
+        canEdit: own && mayManage,
+      };
+    });
   },
 });

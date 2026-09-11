@@ -200,10 +200,59 @@ export function buildFullTree(chart: FullChart): ChartBuild {
  *  1 + the deepest child. Used by `OrgTree`'s first-level connector to
  *  compute a column's true rendered width (`SEAT_BOX_WIDTH` plus one
  *  indent-gutter per nested level below it) instead of assuming every
- *  first-level column is the same fixed width. */
-export function subtreeDepth(node: TreeNode): number {
+ *  first-level column is the same fixed width.
+ *
+ *  `collapsed` (the keys whose children the chart is currently hiding) makes
+ *  this the depth of what is actually RENDERED: a collapsed node is a leaf as
+ *  far as layout is concerned, so collapsing a deep branch narrows its column
+ *  instead of leaving it padded for descendants nobody can see. Pass the same
+ *  set `OrgTree` renders with, or omit it for the full tree. */
+export function subtreeDepth(
+  node: TreeNode,
+  collapsed?: ReadonlySet<string>,
+): number {
+  if (collapsed?.has(node.key)) return 0;
   if (node.children.length === 0) return 0;
-  return 1 + Math.max(...node.children.map(subtreeDepth));
+  return 1 + Math.max(...node.children.map((c) => subtreeDepth(c, collapsed)));
+}
+
+/** How many seats hang below `node` in total (every descendant, not just its
+ *  direct reports) — the "+N" a collapsed box shows, so folding a branch away
+ *  still says how much is folded. */
+export function descendantCount(node: TreeNode): number {
+  return node.children.reduce((sum, c) => sum + 1 + descendantCount(c), 0);
+}
+
+/** Every key in the tree that HAS children — i.e. everything "Collapse all"
+ *  can fold. A leaf has nothing to hide, so collapsing it would be a toggle
+ *  with no visible effect. */
+export function collapsibleKeys(root: TreeNode | null): string[] {
+  const keys: string[] = [];
+  function walk(node: TreeNode): void {
+    if (node.children.length === 0) return;
+    keys.push(node.key);
+    for (const child of node.children) walk(child);
+  }
+  if (root) walk(root);
+  return keys;
+}
+
+/** The keys from the tree root down to `key` INCLUSIVE, or `[]` when the key
+ *  isn't in this tree. The spine "collapse everything else" must keep open:
+ *  every ancestor of the focused seat (so it stays reachable) plus the seat
+ *  itself (so its own reports stay visible). */
+export function pathToKey(root: TreeNode | null, key: string | null): string[] {
+  if (!root || !key) return [];
+  function walk(node: TreeNode, trail: string[]): string[] | null {
+    const here = [...trail, node.key];
+    if (node.key === key) return here;
+    for (const child of node.children) {
+      const found = walk(child, here);
+      if (found) return found;
+    }
+    return null;
+  }
+  return walk(root, []) ?? [];
 }
 
 /**
