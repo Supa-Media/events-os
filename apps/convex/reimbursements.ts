@@ -87,6 +87,7 @@ import {
   type ExpenseType,
 } from "@events-os/shared";
 import { normalizeEmail, getUserEmail } from "./lib/access";
+import { personAddresses } from "./lib/personEmails";
 import {
   requireChapterId,
   requireInChapter,
@@ -2959,6 +2960,10 @@ export const sendReimbursementReminders = internalAction({
  * the claimant is never told to review their own request. Deduped by
  * normalized email (a person could otherwise appear once per qualifying
  * grant/seat, or two roster rows could share one inbox).
+ *
+ * Each approver's address is `lib/personEmails.ts#personAddresses`, the same
+ * resolution campaign sends use — NOT `person.email`, which is the personal
+ * address a core-team member doesn't work out of.
  */
 export const getReimbursementSubmittedEmailPayload = internalQuery({
   args: { reimbursementId: v.id("reimbursementRequests") },
@@ -2979,13 +2984,20 @@ export const getReimbursementSubmittedEmailPayload = internalQuery({
     for (const personId of approverIds) {
       const person = await ctx.db.get(personId);
       if (!person || person.isPlaceholder === true) continue;
-      const email = normalizeEmail(person.email);
+      // `send`, never `person.email`: an approver is core team, and core team
+      // works out of `pwEmail` — see `personAddresses`' doc for the failure
+      // reading the personal address cost us.
+      const { send, all } = await personAddresses(ctx, person);
+      const email = normalizeEmail(send);
       if (!email) continue;
       // Mirrors `assertApprovalSoD`'s second signal: an email match catches
       // "the manager IS the claimant" even when the roster link above missed
       // it (e.g. a public-form submission whose best-effort person-match
-      // landed on a different row than the manager's own).
-      if (requesterEmail && email === requesterEmail) continue;
+      // landed on a different row than the manager's own). Matched against
+      // EVERY address the approver is known by, not just the one we'd mail —
+      // a manager who filed from her personal address is still the claimant
+      // when the notice would go to her PW inbox.
+      if (requesterEmail && all.has(requesterEmail)) continue;
       if (seenEmails.has(email)) continue;
       seenEmails.add(email);
       recipients.push(email);

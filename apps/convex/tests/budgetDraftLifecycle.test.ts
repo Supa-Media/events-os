@@ -78,7 +78,14 @@ async function grantRole(
 
 async function addMember(
   s: ChapterSetup,
-  opts: { email: string; name: string },
+  opts: {
+    email: string;
+    name: string;
+    /** Put the address on `pwEmail` (the core-team inbox) instead of the
+     *  personal `email` — how a real Public Worship seat holder's roster row
+     *  looks. */
+    pwOnly?: boolean;
+  },
 ): Promise<{
   as: ReturnType<TestConvex["withIdentity"]>;
   userId: Id<"users">;
@@ -98,7 +105,8 @@ async function addMember(
     ctx.db.insert("people", {
       chapterId: s.chapterId,
       name: opts.name,
-      email: opts.email,
+      email: opts.pwOnly ? undefined : opts.email,
+      pwEmail: opts.pwOnly ? opts.email : undefined,
       userId,
       isTeamMember: true,
       createdAt: Date.now(),
@@ -256,6 +264,39 @@ describe("send → submitted + notifies the scope's approvers (WP-wave4 item 3)"
       if (prevResendKey === undefined) delete process.env.RESEND_API_KEY;
       else process.env.RESEND_API_KEY = prevResendKey;
     }
+  });
+
+  test("chapter: an approver whose address lives on pwEmail is still resolved", async () => {
+    // The 2026-09-01 gap: approver notices were addressed from
+    // `person.email` (the PERSONAL address), so a seat holder who works out
+    // of her Public Worship inbox got nothing — while every campaign send,
+    // which goes through `resolveSendAddress`, reached her fine.
+    const s = await seatSetup();
+    const manager = await seedSelfPerson(s, "Manager");
+    await grantRole(s, manager, "manager", "chapter");
+
+    const treasurer = await addMember(s, {
+      email: "kay@publicworship.life",
+      name: "Kay",
+      pwOnly: true,
+    });
+    await assignSeatDirect(s, treasurer.personId, "treasurer", s.chapterId);
+
+    const budgetId = await s.as.mutation(api.finances.createBudget, {
+      amountCents: 60000,
+      type: "recurring",
+      cadence: "monthly",
+      year: 2026,
+      label: "Winter Retreat",
+    });
+    await s.as.mutation(api.finances.submitBudgetForApproval, { budgetId });
+
+    const submission = await s.t.query(internal.finances.getBudgetSubmissionContext, {
+      budgetId,
+    });
+    expect(submission?.approvers.map((a) => a.email)).toEqual([
+      "kay@publicworship.life",
+    ]);
   });
 
   test("chapter: the legacy specializedRoles TITLE path resolves the same two approvers (union, not a replacement)", async () => {

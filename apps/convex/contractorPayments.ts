@@ -97,6 +97,7 @@ import {
   type ExternalAccountFunding,
 } from "@events-os/shared";
 import { normalizeEmail, getUserEmail } from "./lib/access";
+import { personSendAddress } from "./lib/personEmails";
 import { requireChapterId, requireInChapter } from "./lib/context";
 import { requireBudgetCategory } from "./lib/budgetCategoryAccess";
 import { assertRoutingNumber, assertAccountNumber } from "./increase";
@@ -1686,7 +1687,9 @@ export const reviewerRecipients = internalQuery({
       if (row.createdByPersonId && personId === row.createdByPersonId) continue;
       const person = await ctx.db.get(personId);
       if (!person || person.isPlaceholder === true) continue;
-      const email = normalizeEmail(person.email);
+      // Same rule as `reimbursements.ts`'s approver notice: a treasurer's
+      // send address is `personSendAddress`, not their personal `email`.
+      const email = normalizeEmail(await personSendAddress(ctx, person));
       if (!email || seen.has(email)) continue;
       seen.add(email);
       emails.push(email);
