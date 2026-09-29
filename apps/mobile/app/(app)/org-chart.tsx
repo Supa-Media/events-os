@@ -109,7 +109,10 @@ export default function OrgChartScreen() {
   // invisible `seatDetail` probe per seat the caller holds
   // (`mySeatAssignments`, almost always 0-2 rows) and aggregates whether ANY
   // of them carries `org.editChart`. Superuser always passes (the same
-  // backstop `requireChartEditor` grants server-side) — skip probing then.
+  // backstop `requireChartEditor` grants server-side). The assignments load
+  // for a superuser too: they're also the "You: <name> — <seat>" line, and
+  // skipping them made the ED (who is a superuser) read as seatless on their
+  // own chart.
   //
   // `editCapFlags` must mirror the LIVE probe set, not just accumulate: a
   // probe reports `undefined` on unmount (its seat assignment disappeared —
@@ -118,7 +121,7 @@ export default function OrgChartScreen() {
   // structure" and every edit affordance would keep showing for a caller who
   // no longer holds `org.editChart` on anything, only to have every mutation
   // rejected server-side.
-  const mySeatAssignments = useQuery(api.seats.mySeatAssignments, isSuperuser ? "skip" : {});
+  const mySeatAssignments = useQuery(api.seats.mySeatAssignments, {});
   const [editCapFlags, setEditCapFlags] = useState<Record<string, boolean>>({});
   const reportEditCap = useCallback((key: string, hasEditChart: boolean | undefined) => {
     setEditCapFlags((prev) => {
@@ -322,21 +325,24 @@ export default function OrgChartScreen() {
         />
         {editMode ? (
           <View className="mx-3">
-            <StructureEditBanner />
+            <StructureEditBanner
+              editingAs={editingAsTitles(mySeatAssignments ?? [], editCapFlags)}
+              isSuperuser={isSuperuser}
+            />
           </View>
         ) : null}
       </View>
 
-      {!isSuperuser
-        ? (mySeatAssignments ?? []).map((a) => (
-            <EditChartCapabilityProbe
-              key={a.assignmentId}
-              defId={a.seatDefId}
-              scope={a.scope}
-              onResult={reportEditCap}
-            />
-          ))
-        : null}
+      {/* Probes run for a superuser too: `canEditStructure` doesn't need them
+          then, but the edit banner does, to name the seat the caller edits as. */}
+      {(mySeatAssignments ?? []).map((a) => (
+        <EditChartCapabilityProbe
+          key={a.assignmentId}
+          defId={a.seatDefId}
+          scope={a.scope}
+          onResult={reportEditCap}
+        />
+      ))}
 
       <SeatOverlayPanel open={panelOpen} width={panelWidth} onClose={closePanel}>
         <SeatDetailPanel
@@ -361,4 +367,17 @@ export default function OrgChartScreen() {
       />
     </View>
   );
+}
+
+/** The titles of the caller's seats that carry `org.chart.edit` — what the
+ *  edit banner names as the reason they may edit ("You're editing as
+ *  Executive Director"). Reads the same probe flags `canEditStructure` does. */
+function editingAsTitles(
+  assignments: ReadonlyArray<{ seatDefId: string; scope: string; title: string }>,
+  editCapFlags: Record<string, boolean>,
+): string[] {
+  const titles = assignments
+    .filter((a) => editCapFlags[`${a.scope}:${a.seatDefId}`])
+    .map((a) => a.title);
+  return [...new Set(titles)];
 }

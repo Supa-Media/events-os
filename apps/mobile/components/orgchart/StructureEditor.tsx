@@ -31,17 +31,32 @@ import { capabilityLabel } from "./treeUtils";
 
 // ── Amber "editing" banner ───────────────────────────────────────────────────
 
-export function StructureEditBanner() {
+/**
+ * `editingAs` names the caller's seats that carry the edit power, so the
+ * banner says WHY they may edit ("You're editing as Executive Director")
+ * instead of describing the power in the third person as if they lacked it.
+ */
+export function StructureEditBanner({
+  editingAs,
+  isSuperuser,
+}: {
+  editingAs: string[];
+  isSuperuser: boolean;
+}) {
+  const basis =
+    editingAs.length > 0
+      ? `You're editing as ${editingAs.join(", ")}.`
+      : isSuperuser
+        ? "You're editing as a superuser."
+        : "You hold the \"Edit the org chart\" power.";
   return (
     <View className="mb-4 flex-row items-start gap-3 rounded-lg border border-warn bg-warn-bg px-4 py-3">
       <Icon name="alert-triangle" size={16} color={colors.warn} />
       <Text className="flex-1 text-sm text-ink">
-        <Text className="font-bold">Structure editing</Text> — requires the
-        &quot;Edit the org chart&quot; power (held by the Executive Director
-        today). Adding, renaming, moving, and removing seats here changes the
-        org chart immediately for everyone, and is logged. Changes that would
-        remove your own powers are blocked (a Board above the ED comes
-        later).
+        <Text className="font-bold">Editing the org chart.</Text> {basis} Adding,
+        renaming, moving, and removing seats changes the chart immediately for
+        everyone, and is logged. Changes that would remove your own powers are
+        blocked.
       </Text>
     </View>
   );
