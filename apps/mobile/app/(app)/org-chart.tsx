@@ -1,8 +1,10 @@
 /**
  * ORG CHART — a full-bleed, Figma-like canvas over the org's seat taxonomy
- * (`seats.ts`), plus its INTERACTION layer: two-party proposals, superuser
- * direct assignment, and (for an `org.editChart` holder / superuser)
- * structure editing.
+ * (`seats.ts`), plus its INTERACTION layer: two-party proposals, direct
+ * seat filling (`org.seats.edit`), and structure and power editing
+ * (`org.chart.edit`). There is no edit MODE: an editor sees the "+" under
+ * each box and the editing controls in each seat-panel tab all the time, and
+ * a non-editor sees the same chart without them.
  *
  * LAYOUT (this file + `OrgChartCanvas`/`SeatOverlayPanel`/`OrgChartToolbar`):
  * the tree fills the entire content area — no card border/box — pannable
@@ -11,13 +13,12 @@
  * detail panel sliding in as an overlay from the right when a seat is
  * selected. See each of those files' own doc comments for the platform
  * gesture split. The READ-ONLY rendering itself (`OrgTree`/`SeatBox`) and
- * every interaction (`SeatDetailPanel`/`SeatActions`/`ProposalsInbox`/
- * `StructureEditor`) are UNCHANGED from the shipped tab — only the container
- * they sit in was rebuilt.
+ * every interaction (`SeatDetailPanel` and its tabs, `ProposalsInbox`,
+ * `StructureEditor`'s Add seat, `PowersDirectory`) live in their own files.
  *
  * PANEL-VS-CHROME OVERLAP (PR #206 review point 1): `SeatOverlayPanel` is a
  * full-height strip pinned to the right edge, and both the toolbar's
- * right-aligned controls ("Edit structure", the proposals indicator) and the
+ * right-aligned controls (Powers, the proposals indicator) and the
  * canvas's corner `CanvasControls` (zoom/Fit) would otherwise land underneath
  * it whenever a seat is selected — plain DOM/RN stacking order (not z-index
  * alone) put the panel, rendered last, on top of and covering both. Rather
@@ -59,7 +60,8 @@ import { OrgTree } from "../../components/orgchart/OrgTree";
 import { SeatOverlayPanel } from "../../components/orgchart/SeatOverlayPanel";
 import type { ScopeChoice } from "../../components/orgchart/ScopePills";
 import { SeatDetailPanel } from "../../components/orgchart/SeatDetailPanel";
-import { AddSeatModal, StructureEditBanner } from "../../components/orgchart/StructureEditor";
+import { AddSeatModal } from "../../components/orgchart/StructureEditor";
+import { PowersDirectory } from "../../components/orgchart/PowersDirectory";
 import {
   buildChartTree,
   buildFullTree,
@@ -67,7 +69,6 @@ import {
   computeReportsTo,
   findNodeByKey,
   pathToKey,
-  subtreeSlugs,
   type ChartBuild,
   type FullChart,
   type TreeNode,
@@ -95,7 +96,7 @@ export default function OrgChartScreen() {
   // a holder change elsewhere while the panel is open shows up here too
   // instead of the panel showing a stale snapshot captured at click time.
   const [selectedKey, setSelectedKey] = useState<string | null>(null);
-  const [editMode, setEditMode] = useState(false);
+  const [directoryOpen, setDirectoryOpen] = useState(false);
   const [addSeatTarget, setAddSeatTarget] = useState<TreeNode | null>(null);
   // Boxes whose reports are folded away. Keys, not nodes — same reason the
   // selection is a key: the tree is rebuilt from the live query every render.
@@ -213,26 +214,16 @@ export default function OrgChartScreen() {
     return chart.chapters.find((c) => c.chapterId === displaySelected.scope)?.chapterName ?? "Chapter";
   }, [chart, displaySelected]);
 
-  // Every OTHER seat in the SAME chart as the selected seat — reparent
-  // candidates for the structure editor's "Move" picker. The chapter chart
-  // is one shared definition stamped onto every chapter (see `seats.ts`'s
-  // file doc), so ANY chapter's seat list enumerates the same slugs/titles —
-  // this uses the selected seat's OWN chapter when it's chapter-scoped.
-  //
-  // Excludes the selected seat's own subtree (itself + every descendant):
-  // reparenting a seat under one of its own descendants is always a cycle —
-  // the backend correctly rejects it, but there's no reason to present those
-  // as clickable options and force the editor into a guaranteed error.
-  const chartSeatOptions = useMemo(() => {
+  // Every seat in the SAME chart as the selected seat — the panel's
+  // "Reports to" picker and History tab read titles from it. The chapter
+  // chart is one shared definition stamped onto every chapter, so ANY
+  // chapter's list enumerates the same seats; this uses the selected seat's
+  // own chapter.
+  const chartSeats = useMemo(() => {
     if (!chart || !displaySelected) return [];
-    const seats =
-      displaySelected.scope === "central"
-        ? chart.central
-        : (chart.chapters.find((c) => c.chapterId === displaySelected.scope)?.seats ?? []);
-    const excluded = subtreeSlugs(seats, displaySelected.seat.slug);
-    return seats
-      .filter((s) => !s.derived && !excluded.has(s.slug))
-      .map((s) => ({ slug: s.slug, title: s.title }));
+    return displaySelected.scope === "central"
+      ? chart.central
+      : (chart.chapters.find((c) => c.chapterId === displaySelected.scope)?.seats ?? []);
   }, [chart, displaySelected]);
 
   const closePanel = useCallback(() => setSelectedKey(null), []);
@@ -277,7 +268,7 @@ export default function OrgChartScreen() {
               orphans={orphans}
               selectedKey={selected?.key ?? null}
               onSelect={(node) => setSelectedKey(node.key)}
-              onAddSeat={editMode ? (node) => setAddSeatTarget(node) : undefined}
+              onAddSeat={canEditStructure ? (node) => setAddSeatTarget(node) : undefined}
               collapsedKeys={collapsedKeys}
               onToggleCollapse={toggleCollapse}
             />
@@ -289,12 +280,11 @@ export default function OrgChartScreen() {
         )}
       </View>
 
-      {/* Floating chrome — toolbar + (in edit mode) the structure-edit
-          banner — docked over the top of the canvas. `box-none` lets clicks
+      {/* Floating chrome — the toolbar — docked over the top of the canvas. `box-none` lets clicks
           on the empty space around them reach the canvas underneath.
           While the seat panel is open, its right edge is inset by
           `panelWidth` so the WHOLE toolbar card (title, scope pills, and
-          crucially the "Edit structure"/proposals buttons on its right edge)
+          crucially the Powers/proposals buttons on its right edge)
           sits entirely to the left of the panel's strip — no overlap at all,
           rather than relying on z-index to win a fight over the same pixels.
           See PR #206 review point 1. */}
@@ -315,26 +305,18 @@ export default function OrgChartScreen() {
           scopeChoice={scopeChoice}
           onScopeChange={handleScopeChange}
           canEditStructure={canEditStructure}
-          editMode={editMode}
-          onToggleEditMode={() => setEditMode((e) => !e)}
+          editingAs={editingAsTitles(mySeatAssignments ?? [], editCapFlags)}
+          onOpenPowers={() => setDirectoryOpen(true)}
           meName={meName}
           mySeatTitles={mySeatTitles}
           anyCollapsed={collapsedKeys.size > 0}
           onCollapseAll={collapseAll}
           onExpandAll={expandAll}
         />
-        {editMode ? (
-          <View className="mx-3">
-            <StructureEditBanner
-              editingAs={editingAsTitles(mySeatAssignments ?? [], editCapFlags)}
-              isSuperuser={isSuperuser}
-            />
-          </View>
-        ) : null}
       </View>
 
       {/* Probes run for a superuser too: `canEditStructure` doesn't need them
-          then, but the edit banner does, to name the seat the caller edits as. */}
+          then, but the toolbar does, to name the seat the caller edits as. */}
       {(mySeatAssignments ?? []).map((a) => (
         <EditChartCapabilityProbe
           key={a.assignmentId}
@@ -350,9 +332,7 @@ export default function OrgChartScreen() {
           scopeName={scopeName}
           detail={detail}
           reportsTo={reportsTo}
-          isSuperuser={isSuperuser}
-          editMode={editMode}
-          chartSeatOptions={chartSeatOptions}
+          chartSeats={chartSeats}
           onSeatRemoved={closePanel}
           onFocusBranch={selected && selected.children.length > 0 ? focusSelected : undefined}
         />
@@ -365,12 +345,18 @@ export default function OrgChartScreen() {
         parentTitle={addSeatTarget?.seat.title ?? null}
         onClose={() => setAddSeatTarget(null)}
       />
+
+      <PowersDirectory
+        visible={directoryOpen}
+        canEdit={canEditStructure}
+        onClose={() => setDirectoryOpen(false)}
+      />
     </View>
   );
 }
 
 /** The titles of the caller's seats that carry `org.chart.edit` — what the
- *  edit banner names as the reason they may edit ("You're editing as
+ *  toolbar names as the reason they may edit ("You can edit the chart as
  *  Executive Director"). Reads the same probe flags `canEditStructure` does. */
 function editingAsTitles(
   assignments: ReadonlyArray<{ seatDefId: string; scope: string; title: string }>,

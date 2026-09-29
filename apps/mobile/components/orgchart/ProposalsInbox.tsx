@@ -23,7 +23,7 @@ import { colors } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 import { confirmAction } from "../event/ticketing/helpers";
 
-type Proposal = NonNullable<ReturnType<typeof useQuery<typeof api.seatProposals.pendingProposals>>>[number];
+export type Proposal = NonNullable<ReturnType<typeof useQuery<typeof api.seatProposals.pendingProposals>>>[number];
 
 export function ProposalsInbox() {
   const pending = useQuery(api.seatProposals.pendingProposals, {});
@@ -47,7 +47,7 @@ export function ProposalsInbox() {
   );
 }
 
-function ProposalCard({ proposal, isMine }: { proposal: Proposal; isMine: boolean }) {
+export function ProposalCard({ proposal, isMine }: { proposal: Proposal; isMine: boolean }) {
   const approve = useMutation(api.seatProposals.approve);
   const decline = useMutation(api.seatProposals.decline);
   const cancel = useMutation(api.seatProposals.cancel);

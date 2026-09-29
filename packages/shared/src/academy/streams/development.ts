@@ -208,7 +208,7 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Who can open the Giving desk is a per-role power",
-        text: "Access to the Giving desk isn't wired to a job title in code — it's a POWER the Executive Director assigns to a seat, right from the org chart. Each seat can be set to None, View (see donors, history, and dashboards), or Manage (also record gifts, edit donors, and import). Out of the box the Development Director and Executive Director can Manage; the Development associates (Partnership & Fundraising), the Financial Manager and Expansion Director (central), and the Chapter Director and Treasurer (their own chapter) can View. The ED can retune any seat at any time — so if you can't see the desk and think you should, that's an org-chart power to grant, not a bug.",
+        text: "Access to the Giving desk isn't wired to a job title in code — it's a POWER the Executive Director assigns to a seat, right from the org chart. In a seat's Powers tab, the ED can give it See donors & giving (donors, history, and dashboards) or Manage donors & gifts (also record gifts, edit donors, and import), or neither. Out of the box the Development Director and Executive Director can Manage; the Development associates (Partnership & Fundraising), the Financial Manager and Expansion Director (central), and the Chapter Director and Treasurer (their own chapter) can View. The ED can retune any seat at any time — so if you can't see the desk and think you should, that's an org-chart power to grant, not a bug.",
       },
       {
         kind: "reveal",
@@ -266,13 +266,13 @@ export const DEVELOPMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "Who decides which roles can open the Giving desk?",
         options: [
           "It's hardcoded to the Development Director and can never change",
-          "The Executive Director — giving access is a per-seat power (None / View / Manage) assigned from the org chart",
+          "The Executive Director — giving access is a per-seat power (see, or manage) assigned from the org chart",
           "Every signed-in member can always see it",
           "Only a superuser, by editing the database directly",
         ],
         answerIndex: 1,
         explanation:
-          "Giving access is an assignable power on each org-chart seat, not a fixed title — the ED sets a seat to None, View, or Manage and can change it at any time.",
+          "Giving access is an assignable power on each org-chart seat, not a fixed title — the ED gives a seat see or manage access, or neither, and can change it at any time.",
       },
     ],
   },

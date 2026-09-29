@@ -288,6 +288,9 @@ describe("legacy migration", () => {
       "marketing.blog.publish",
       "marketing.list.view",
       "marketing.list.edit",
+      // Filling seats directly was superuser-only before 2026-09-29 — a bare
+      // `requireSuperuser`, never a stored string — so nothing maps to it.
+      "org.seats.edit",
     ]);
   });
 
@@ -620,8 +623,13 @@ describe("areas are earned, not reserved", () => {
     //  - `blog.edit` / `blog.publish` split because a post is published under
     //    the org's name and is quotable forever — the `ledger.publish` case,
     //    not the `site.edit` one.
+    //
+    // Raised to 26 on 2026-09-29 for `org.seats.edit`. Asked again: could
+    // filling seats live inside `org.chart.edit`? No — a Chapter Director
+    // should be able to staff seats without being able to delete or re-power
+    // them, so it needed its own string. `org.chart.edit` implies it.
     // Kept tight on purpose so the NEXT power trips this again.
-    expect(POWERS.length).toBeLessThanOrEqual(25);
+    expect(POWERS.length).toBeLessThanOrEqual(26);
   });
 });
 
@@ -638,5 +646,15 @@ describe("type guard", () => {
     expect(grantsPower(stored, "finance.view")).toBe(true);
     const asPower: Power = "finance.view";
     expect(grantsPower(stored, asPower)).toBe(true);
+  });
+});
+
+describe("org.seats.edit", () => {
+  test("editing the chart implies filling its seats", () => {
+    expect(expandPowers(["org.chart.edit"]).has("org.seats.edit")).toBe(true);
+  });
+
+  test("filling seats never reaches editing the chart", () => {
+    expect(expandPowers(["org.seats.edit"]).has("org.chart.edit")).toBe(false);
   });
 });

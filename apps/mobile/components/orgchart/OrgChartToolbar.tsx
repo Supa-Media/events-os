@@ -9,9 +9,14 @@ import type { FullChart } from "./treeUtils";
 
 /**
  * The slim floating chrome docked over the top of the full-bleed canvas: a
- * small page title, the scope pills, "who am I" context line, the collapse
- * control, the "Edit structure" toggle (when authorized), and a
- * proposals-inbox indicator.
+ * small page title, the scope pills, "who am I" context line (which, for a
+ * chart editor, also says they can edit and as which seat), the collapse
+ * control, the Powers directory, and a proposals-inbox indicator.
+ *
+ * There is no "Edit structure" toggle any more. Editing is always on for
+ * someone allowed to edit, so the line that says so replaces the old amber
+ * banner, which described the edit power in the third person even to the
+ * Executive Director who held it.
  *
  * The collapse control is ONE button with two states rather than a pair,
  * because "collapse all" and "expand all" are never both useful: with the
@@ -31,8 +36,8 @@ export function OrgChartToolbar({
   scopeChoice,
   onScopeChange,
   canEditStructure,
-  editMode,
-  onToggleEditMode,
+  editingAs,
+  onOpenPowers,
   meName,
   mySeatTitles,
   anyCollapsed,
@@ -43,8 +48,10 @@ export function OrgChartToolbar({
   scopeChoice: ScopeChoice;
   onScopeChange: (v: ScopeChoice) => void;
   canEditStructure: boolean;
-  editMode: boolean;
-  onToggleEditMode: () => void;
+  /** Titles of the caller's seats that carry the edit power. Empty for a
+   *  superuser editing without such a seat. */
+  editingAs: string[];
+  onOpenPowers: () => void;
   meName: string | null;
   mySeatTitles: string[];
   /** Is anything in the chart currently folded? Flips the collapse button. */
@@ -67,6 +74,16 @@ export function OrgChartToolbar({
               {mySeatTitles.length > 0 ? ` — ${mySeatTitles.join(", ")}` : null}
             </Text>
           ) : null}
+          {canEditStructure ? (
+            <View className="flex-row items-center gap-1.5">
+              <Icon name="check-circle" size={13} color={colors.success} />
+              <Text className="flex-1 text-xs text-muted" numberOfLines={2}>
+                You can edit the chart
+                {editingAs.length > 0 ? ` as ${editingAs.join(", ")}` : " as a superuser"}. Changes
+                save as you make them and are logged.
+              </Text>
+            </View>
+          ) : null}
         </View>
 
         <View className="flex-row flex-wrap items-center justify-end gap-2">
@@ -80,15 +97,7 @@ export function OrgChartToolbar({
           <View ref={ref}>
             <ProposalsIndicatorButton count={pendingCount} onPress={open} />
           </View>
-          {canEditStructure ? (
-            <Button
-              title={editMode ? "Done editing" : "Edit structure"}
-              variant={editMode ? "primary" : "secondary"}
-              size="sm"
-              icon={editMode ? "check" : "edit-2"}
-              onPress={onToggleEditMode}
-            />
-          ) : null}
+          <Button title="Powers" variant="secondary" size="sm" icon="shield" onPress={onOpenPowers} />
         </View>
       </View>
 

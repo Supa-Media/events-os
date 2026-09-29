@@ -25,7 +25,7 @@ const MAX_PERSON_ASSIGNMENTS = 200;
 /** The caller's own (non-placeholder) roster rows, across every chapter —
  *  mirrors `seats.ts`'s `mySeatAssignments` user→people walk. Usually 0 or 1
  *  row; more than one only for a person on more than one chapter's roster. */
-async function callerPersonIds(
+export async function callerPersonIds(
   ctx: QueryCtx | MutationCtx,
   userId: Id<"users">,
 ): Promise<Id<"people">[]> {
@@ -174,4 +174,27 @@ export async function assertNoSelfLockout(
       });
     }
   }
+}
+
+/** Insert one `seatStructureLog` row — every structure mutation, and every
+ *  power edit (`seats.setSeatDomainPowers`, logged as `updateSeat`).
+ *  `before`/`after` are small, mutation-specific snapshots, never the full
+ *  def. */
+export async function writeAuditLog(
+  ctx: MutationCtx,
+  editor: ChartEditor,
+  mutationKind: Doc<"seatStructureLog">["mutation"],
+  slug: string,
+  before: unknown,
+  after: unknown,
+): Promise<void> {
+  await ctx.db.insert("seatStructureLog", {
+    editorUserId: editor.userId,
+    editorPersonId: editor.editorPersonId,
+    mutation: mutationKind,
+    slug,
+    before,
+    after,
+    createdAt: Date.now(),
+  });
 }

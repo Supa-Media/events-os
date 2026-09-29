@@ -233,6 +233,7 @@ export const POWERS = [
   "marketing.list.edit",
   // ── org ───────────────────────────────────────────────────────────────────
   "org.chart.edit",
+  "org.seats.edit",
   // ── data ──────────────────────────────────────────────────────────────────
   "data.export",
 ] as const;
@@ -620,6 +621,25 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
     action: "edit",
     label: "Edit the org chart",
     description: "Add, move, rename, and re-power seats on the org chart.",
+    /** Whoever can reshape the chart can already re-power any seat, including
+     *  one they hold, so filling seats directly adds no reach. Declared rather
+     *  than stored so the ED seat needs no data migration. */
+    implies: ["org.seats.edit"],
+  },
+  /** Staffing without restructuring: put a person in a seat, or take them
+   *  out, immediately instead of through a two-party proposal. Its own power
+   *  (not superuser-only, as `seats.assignSeat` used to be) so it can be
+   *  handed to, say, a Chapter Director without also handing them the chart.
+   *  Like `org.chart.edit`, it reaches every scope from any seat that holds
+   *  it. */
+  "org.seats.edit": {
+    id: "org.seats.edit",
+    domain: "org",
+    area: "seats",
+    action: "edit",
+    label: "Fill seats",
+    description:
+      "Put people in seats and take them out directly, without a proposal.",
   },
 
   // ── data ──────────────────────────────────────────────────────────────────
@@ -859,7 +879,7 @@ export const POWER_DOMAIN_DEFS: Record<PowerDomain, PowerDomainDef> = {
   org: {
     id: "org",
     label: "Organization",
-    description: "The org chart itself.",
+    description: "The org chart itself, and who sits in it.",
   },
   data: {
     id: "data",

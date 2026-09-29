@@ -963,6 +963,15 @@ describe("seatStructure.structureLog", () => {
     expect((log[0]!.after as { title?: string }).title).toBe("T3");
     expect((log[1]!.after as { title?: string }).title).toBe("T2");
   });
+
+  test("narrows to one seat with `slug`", async () => {
+    const s = await edSetup();
+    await s.as.mutation(api.seatStructure.renameSeat, { slug: "treasurer", title: "T1" });
+    await s.as.mutation(api.seatStructure.renameSeat, { slug: "music_lead", title: "M1" });
+
+    const log = await s.as.query(api.seatStructure.structureLog, { slug: "treasurer" });
+    expect(log.map((r) => r.slug)).toEqual(["treasurer"]);
+  });
 });
 
 // ── Shared def: a chapter-chart edit applies to every chapter at once ───────

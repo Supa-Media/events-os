@@ -1,73 +1,47 @@
-import { ActivityIndicator, Text, View } from "react-native";
-import { useQuery } from "convex/react";
-import { useRouter } from "expo-router";
-import { api } from "@events-os/convex/_generated/api";
-import type { Id } from "@events-os/convex/_generated/dataModel";
-import { getRolePath, SEAT_ROOT } from "@events-os/shared";
-import {
-  Avatar,
-  Badge,
-  Button,
-  Card,
-  EmptyState,
-  Icon,
-  type IconName,
-  SectionHeader,
-} from "../ui";
-import { colors } from "../../lib/theme";
-import { SeatActionsPanel } from "./SeatActions";
-import { SeatDuties } from "./SeatDuties";
-import { RenameSeatControl, StructureEditActions } from "./StructureEditor";
-import { PowersEditor } from "./PowersEditor";
-import {
-  avatarNameFor,
-  capabilityLabel,
-  displayPowers,
-  type ReportsTo,
-  type SeatDetail,
-  type TreeNode,
-} from "./treeUtils";
-
 /**
- * The seat detail panel — right side on wide screens, full-width below the
- * tree on narrow (the caller decides layout; this just renders the content
- * column). Shows scope + holder-count, the seat title, who holds it, its
- * duties, its powers (capabilities translated to plain language), and who it
- * reports to (computed client-side in `treeUtils.computeReportsTo`).
+ * The seat panel — slides over the chart when a box is selected. A header
+ * (scope, the seat's name, Focus) over five tabs:
+ *
+ *   Overview  reports-to, seat size, training, remove   `SeatOverviewTab`
+ *   Powers    what the seat can do + the picker          `SeatPowersTab`
+ *   People    holders, open spots, proposals             `SeatPeopleTab`
+ *   Duties    the real duties from Work → Duties         `SeatDuties`
+ *   History   the structure log for this seat            `SeatHistoryTab`
+ *
+ * This replaced one long scroll that mixed all of those with a separate
+ * "Edit structure" mode, which was the only place rename/move/remove lived.
+ * There is no mode now: each tab shows its own controls to whoever the
+ * backend says may use them — `seatDetail.canEditPowers` (superuser or
+ * `org.chart.edit`) for structure and powers, `canFillSeats` for holders,
+ * and the duty rows' own `canEdit` for duties. History is only offered to
+ * chart editors, because only they may read the log.
  *
  * DUTIES come from `responsibilities.dutiesForSeat` — the REAL duties mapped
- * to this seat in Work → Duties (title + cadence) — NOT `detail.duties`
- * (`seatDefs.duties`), which is a seeded TEMPLATE string list the owner calls
- * "fake duties". That field stays in the schema (still editable nowhere —
- * see `StructureEditor.tsx`'s doc comment) but is never rendered here. The
- * real ones are EDITABLE IN PLACE (add / rename / re-cadence / take off the
- * seat) for a caller the backend says may write them — see `SeatDuties`.
- *
- * The header also carries FOCUS (`onFocusBranch`) — "collapse everything
- * else", the fastest way to read one branch of a wide chart. It lives here
- * rather than in the toolbar because it's a verb about the SELECTED seat, and
- * the panel is where the selected seat's verbs are; the screen owns what it
- * actually does to the tree. Omitted for a seat with no reports (folding
- * everything around a leaf hides the branch it sits in).
- *
- * Adds two OPTIONAL interactive layers on top of that same read-only view:
- *  - `SeatActionsPanel` (propose a change / assign directly) for any
- *    non-derived seat.
- *  - `StructureEditActions` + an inline rename control, shown only when
- *    `editMode` is true (the screen only sets it true for an eligible
- *    editor — see `org-chart.tsx`).
- * A caller that omits `isSuperuser`/`editMode`/`chartSeatOptions` gets back
- * EXACTLY the shipped read-only panel — no behavior change for anyone who
- * doesn't pass them.
+ * to this seat — never `detail.duties`, the seeded template strings the owner
+ * calls "fake duties".
  */
+import { useEffect, useState } from "react";
+import { ActivityIndicator, Pressable, Text, TextInput, View } from "react-native";
+import { useMutation, useQuery } from "convex/react";
+import { api } from "@events-os/convex/_generated/api";
+import { Button, Card, EmptyState } from "../ui";
+import { colors } from "../../lib/theme";
+import { alertError } from "../../lib/errors";
+import { SeatDuties } from "./SeatDuties";
+import { SeatHistoryTab } from "./SeatHistoryTab";
+import { SeatOverviewTab } from "./SeatOverviewTab";
+import { SeatPeopleTab } from "./SeatPeopleTab";
+import { SeatPowersTab } from "./SeatPowersTab";
+import { displayPowers, type ReportsTo, type SeatDetail, type SeatNode, type TreeNode } from "./treeUtils";
+
+type Tab = "overview" | "powers" | "people" | "duties" | "history";
+
 export function SeatDetailPanel({
   selected,
   scopeName,
   detail,
   reportsTo,
-  isSuperuser = false,
-  editMode = false,
-  chartSeatOptions = [],
+  chartSeats,
   onSeatRemoved,
   onFocusBranch,
 }: {
@@ -75,14 +49,8 @@ export function SeatDetailPanel({
   scopeName: string;
   detail: SeatDetail | null | undefined;
   reportsTo: ReportsTo;
-  /** Enables the "Assign directly" action for a superuser caller. */
-  isSuperuser?: boolean;
-  /** True only when the caller passed the `org.editChart` gate — see
-   *  `org-chart.tsx`'s `canEditStructure`. */
-  editMode?: boolean;
-  /** Every OTHER seat in the SAME chart as the selected seat — reparent
-   *  candidates for `StructureEditActions`' "Move" picker. */
-  chartSeatOptions?: { slug: string; title: string }[];
+  /** Every seat in the selected seat's chart. */
+  chartSeats: readonly SeatNode[];
   /** Called after a successful `removeSeat` so the screen can clear the
    *  now-nonexistent selection. */
   onSeatRemoved?: () => void;
@@ -90,14 +58,18 @@ export function SeatDetailPanel({
    *  reports, or by a caller with no collapse state of its own. */
   onFocusBranch?: () => void;
 }) {
-  // Hooks run unconditionally, before the early returns below (rules of
-  // hooks) — `"skip"` while there's no seat selected yet, same pattern
-  // `org-chart.tsx` uses for `seats.seatDetail` itself.
+  // Kept across seat switches on purpose: someone working through powers
+  // seat by seat wants to stay on Powers.
+  const [tab, setTab] = useState<Tab>("overview");
   const duties = useQuery(
     api.responsibilities.dutiesForSeat,
     selected ? { seatDefId: selected.seat.defId } : "skip",
   );
-  const router = useRouter();
+
+  const canEdit = detail?.canEditPowers === true;
+  useEffect(() => {
+    if (tab === "history" && detail && !canEdit) setTab("overview");
+  }, [tab, detail, canEdit]);
 
   if (!selected) {
     return (
@@ -108,7 +80,6 @@ export function SeatDetailPanel({
       />
     );
   }
-
   if (detail === undefined) {
     return (
       <Card>
@@ -118,39 +89,36 @@ export function SeatDetailPanel({
       </Card>
     );
   }
-
   if (detail === null) {
     return <EmptyState icon="alert-circle" title="Seat not found" />;
   }
 
-  const holderCountLabel =
+  const holderCount =
     detail.holders.length === 0
       ? "Vacant"
       : detail.holders.length === 1
         ? "One holder"
-        : "Multiple holders";
+        : `${detail.holders.length} holders`;
+  const powerCount = displayPowers(detail.capabilities, detail.chart).length;
+  const titleOf = (slug: string) => chartSeats.find((s) => s.slug === slug)?.title ?? "another seat";
 
-  // The role path for this seat, if any — org-chart seats are always
-  // `kind: "seat"` (never event hats), so the lookup is unambiguous. The
-  // derived-only rollup seat (`chapter_directors`) has none; guard for it.
-  const rolePath = getRolePath("seat", detail.slug);
+  const tabs: { id: Tab; label: string; count?: number }[] = [
+    { id: "overview", label: "Overview" },
+    { id: "powers", label: "Powers", count: powerCount },
+    { id: "people", label: "People", count: detail.holders.length },
+    { id: "duties", label: "Duties", count: duties?.length },
+    ...(canEdit ? [{ id: "history" as const, label: "History" }] : []),
+  ];
 
   return (
     <Card>
       <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-        {scopeName} · {holderCountLabel}
+        {scopeName} · {holderCount}
       </Text>
       <View className="mt-1 flex-row items-center gap-2">
-        <Text className="flex-1 font-display text-2xl text-ink">{detail.title}</Text>
-        {editMode ? <RenameSeatControl slug={detail.slug} title={detail.title} /> : null}
+        <SeatTitle slug={detail.slug} title={detail.title} editable={canEdit && !detail.derived} />
         {onFocusBranch ? (
-          <Button
-            title="Focus"
-            variant="secondary"
-            size="sm"
-            icon="crosshair"
-            onPress={onFocusBranch}
-          />
+          <Button title="Focus" variant="secondary" size="sm" icon="crosshair" onPress={onFocusBranch} />
         ) : null}
       </View>
       {detail.derived ? (
@@ -159,206 +127,116 @@ export function SeatDetailPanel({
         </Text>
       ) : null}
 
-      {!detail.derived ? (
-        <SeatActionsPanel
-          seatDefId={detail.defId}
-          scope={selected.scope}
-          seatTitle={detail.title}
-          maxHolders={detail.maxHolders}
-          holders={detail.holders}
-          isSuperuser={isSuperuser}
-        />
-      ) : null}
-
-      {editMode && !detail.derived ? (
-        <StructureEditActions
-          slug={detail.slug}
-          seatTitle={detail.title}
-          chart={detail.chart}
-          maxHolders={detail.maxHolders}
-          capabilities={detail.capabilities}
-          parentSlug={selected.seat.parentSlug}
-          siblingSeats={chartSeatOptions}
-          onRemoved={() => onSeatRemoved?.()}
-        />
-      ) : null}
-
-      <SectionHeader title="Held by" />
-      {detail.holders.length === 0 ? (
-        <Text className="text-sm italic text-faint">Vacant</Text>
-      ) : (
-        <View className="gap-2.5">
-          {detail.holders.map((h) => (
-            <View key={h.personId} className="flex-row items-center gap-2.5">
-              <Avatar name={avatarNameFor(h.name)} uri={h.imageUrl} size={28} />
-              <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-                {h.name}
+      <View className="-mx-1 mt-3 flex-row flex-wrap border-b border-border">
+        {tabs.map((t) => {
+          const on = t.id === tab;
+          return (
+            <Pressable
+              key={t.id}
+              onPress={() => setTab(t.id)}
+              accessibilityRole="tab"
+              accessibilityState={{ selected: on }}
+              className={`-mb-px border-b-2 px-2 py-2 ${on ? "border-accent" : "border-transparent"}`}
+            >
+              <Text className={`text-sm ${on ? "font-semibold text-ink" : "text-muted"}`}>
+                {t.label}
+                {t.count ? <Text className="text-xs text-faint"> {t.count}</Text> : null}
               </Text>
-            </View>
-          ))}
-        </View>
-      )}
+            </Pressable>
+          );
+        })}
+      </View>
 
-      {rolePath ? (
-        <>
-          <SectionHeader title="Training" />
-          <View className="gap-2.5">
-            {/* Path identity — icon + title + course count, mirroring the
-                role-path detail page's header treatment. */}
-            <View className="flex-row items-center gap-2.5">
-              <View className="h-8 w-8 items-center justify-center rounded-lg bg-accent-soft">
-                <Icon name={rolePath.icon as IconName} size={16} color={colors.accent} />
-              </View>
-              <View className="flex-1">
-                <Text className="text-sm font-semibold text-ink" numberOfLines={1}>
-                  {rolePath.title}
-                </Text>
-                <Text className="text-xs text-muted">
-                  {rolePath.courseSlugs.length === 0
-                    ? "Courses on the way"
-                    : `${rolePath.courseSlugs.length} ${
-                        rolePath.courseSlugs.length === 1 ? "course" : "courses"
-                      }`}
-                </Text>
-              </View>
-            </View>
-
-            {/* Per-holder progress on THIS path's courses. Only holders (and
-                only when the path has real courses) — one `personBadges` query
-                per holder, which is fine at typical seat holder counts of 1. */}
-            {rolePath.courseSlugs.length > 0 && detail.holders.length > 0 ? (
-              <View className="gap-2">
-                {detail.holders.map((h) => (
-                  <HolderPathProgress
-                    key={h.personId}
-                    personId={h.personId}
-                    name={h.name}
-                    imageUrl={h.imageUrl}
-                    courseSlugs={rolePath.courseSlugs}
-                  />
-                ))}
-              </View>
-            ) : null}
-
-            <Button
-              title="View the path →"
-              variant="secondary"
-              size="sm"
-              onPress={() => router.push(`/academy/path/${detail.slug}?kind=seat`)}
-              className="mt-0.5 self-start"
-            />
-          </View>
-        </>
-      ) : null}
-
-      <SeatDuties
-        seatDefId={detail.defId}
-        seatTitle={detail.title}
-        duties={duties}
-        derived={detail.derived}
-      />
-
-      {/* EXPANDED, not the stored array: seats store the minimal set (an
-          approver carries only `email.campaigns.approve`), so listing what is
-          stored would under-report what the seat can actually do. See
-          `displayPowers`. */}
-      <SectionHeader title="Powers" />
-      {displayPowers(detail.capabilities, detail.chart).length === 0 ? (
-        <Text className="text-sm text-muted">No special powers — standard member access.</Text>
-      ) : (
-        <View className="flex-row flex-wrap gap-1.5">
-          {displayPowers(detail.capabilities, detail.chart).map((c) => (
-            <Badge key={c} label={capabilityLabel(c)} tone="accent" />
-          ))}
-        </View>
-      )}
-
-      {/* The Powers EDITOR, for a caller allowed to edit powers
-          (`canEditPowers`: superuser or an `org.chart.edit` holder — the same
-          gate `setSeatDomainPowers` enforces server-side). Not shown for a
-          derived seat, whose holders (and so its powers' reach) are computed.
-
-          This replaced two bespoke desk controls (Giving and Emails). They
-          were the only powers editable from this panel, which meant finance,
-          org-chart, export and door-check-in powers had no editor outside the
-          separate "Edit structure" mode — see `PowersEditor`'s doc. */}
-      {detail.canEditPowers && !detail.derived ? (
-        <PowersEditor
-          seatDefId={detail.defId}
-          capabilities={detail.capabilities}
-          chart={detail.chart}
-        />
-      ) : null}
-
-      <SectionHeader title="Reports to" />
-      {reportsTo === null ? (
-        <Text className="text-sm text-muted">
-          {selected.scope === "central" && selected.seat.parentSlug === SEAT_ROOT
-            ? "Top of the org chart."
-            : "Nothing further up — every seat above is either vacant or held by the same person."}
-        </Text>
-      ) : (
-        <View className="gap-1">
-          <Text className="text-sm font-semibold text-ink">
-            {reportsTo.seatTitle}
-            <Text className="font-normal text-muted"> · {reportsTo.scopeLabel}</Text>
-          </Text>
-          <View className="mt-1 gap-2">
-            {reportsTo.holders.map((h) => (
-              <View key={h.personId} className="flex-row items-center gap-2">
-                <Avatar name={avatarNameFor(h.name)} uri={h.imageUrl} size={22} />
-                <Text className="text-sm text-ink">{h.name}</Text>
-              </View>
-            ))}
-          </View>
-        </View>
-      )}
+      <View className="pt-4">
+        {tab === "overview" ? (
+          <SeatOverviewTab
+            seat={selected.seat}
+            scope={selected.scope}
+            maxHolders={detail.maxHolders}
+            holders={detail.holders}
+            derived={detail.derived}
+            canEdit={canEdit}
+            reportsTo={reportsTo}
+            chartSeats={chartSeats}
+            onRemoved={() => onSeatRemoved?.()}
+          />
+        ) : tab === "powers" ? (
+          <SeatPowersTab
+            seatDefId={detail.defId}
+            seatTitle={detail.title}
+            chart={detail.chart}
+            capabilities={detail.capabilities}
+            canEdit={canEdit && !detail.derived}
+          />
+        ) : tab === "people" ? (
+          <SeatPeopleTab
+            seatDefId={detail.defId}
+            scope={selected.scope}
+            seatTitle={detail.title}
+            maxHolders={detail.maxHolders}
+            holders={detail.holders}
+            derived={detail.derived}
+            canFill={detail.canFillSeats}
+          />
+        ) : tab === "duties" ? (
+          <SeatDuties
+            seatDefId={detail.defId}
+            seatTitle={detail.title}
+            duties={duties}
+            derived={detail.derived}
+          />
+        ) : (
+          <SeatHistoryTab slug={detail.slug} titleOf={titleOf} />
+        )}
+      </View>
     </Card>
   );
 }
 
-/**
- * One holder's progress on a role path, scoped to that path's courses. Reads
- * `academy.personBadges` (fully-EARNED course badges only — there is no
- * per-module progress query for another person) and shows how many of the
- * path's own courses they've completed. One query per holder; holder counts
- * are low per seat (usually 1), so this stays cheap. Row layout matches the
- * "Held by" list above (Avatar + name).
- */
-function HolderPathProgress({
-  personId,
-  name,
-  imageUrl,
-  courseSlugs,
-}: {
-  personId: Id<"people">;
-  name: string;
-  imageUrl: string | null;
-  courseSlugs: string[];
-}) {
-  const badges = useQuery(api.academy.personBadges, { personId });
-  const total = courseSlugs.length;
-  const earned =
-    badges === undefined
-      ? undefined
-      : courseSlugs.filter((slug) => badges.some((b) => b.courseSlug === slug)).length;
-  const complete = earned !== undefined && total > 0 && earned === total;
+/** The seat's name. For a chart editor it IS the rename control: tap it,
+ *  type, and it saves on Enter or when focus leaves. No pencil, no mode. */
+function SeatTitle({ slug, title, editable }: { slug: string; title: string; editable: boolean }) {
+  const rename = useMutation(api.seatStructure.renameSeat);
+  const [value, setValue] = useState(title);
+  const [focused, setFocused] = useState(false);
+
+  useEffect(() => {
+    if (!focused) setValue(title);
+  }, [title, focused]);
+
+  if (!editable) {
+    return <Text className="flex-1 font-display text-2xl text-ink">{title}</Text>;
+  }
+
+  async function save() {
+    const next = value.trim();
+    if (!next || next === title) {
+      setValue(title);
+      return;
+    }
+    try {
+      await rename({ slug, title: next });
+    } catch (err) {
+      setValue(title);
+      alertError(err);
+    }
+  }
 
   return (
-    <View className="flex-row items-center gap-2.5">
-      <Avatar name={avatarNameFor(name)} uri={imageUrl} size={28} />
-      <Text className="flex-1 text-sm text-ink" numberOfLines={1}>
-        {name}
-      </Text>
-      {badges === undefined ? (
-        <ActivityIndicator size="small" color={colors.accent} />
-      ) : (
-        <Badge
-          label={`${earned}/${total} courses`}
-          tone={complete ? "success" : "neutral"}
-          icon={complete ? "award" : undefined}
-        />
-      )}
-    </View>
+    <TextInput
+      value={value}
+      onChangeText={setValue}
+      onFocus={() => setFocused(true)}
+      onBlur={() => {
+        setFocused(false);
+        void save();
+      }}
+      onSubmitEditing={() => void save()}
+      returnKeyType="done"
+      accessibilityLabel="Seat name"
+      className={`flex-1 rounded-md border px-1.5 py-0.5 font-display text-2xl text-ink ${
+        focused ? "border-accent bg-surface" : "border-transparent web:hover:border-border-strong"
+      }`}
+    />
   );
 }
