@@ -27,7 +27,7 @@ const CHEVRON_INSET = 15;
  * detail panel; one person legitimately appears in several boxes (pre-split
  * reality), so this never tries to dedupe holders across boxes.
  *
- * In structure-edit mode (`onAddSeat` provided), a small "+" affix appears
+ * For a chart editor (`onAddSeat` provided), a small "+" affix appears
  * bottom-right — the per-parent "add a seat under this one" affordance —
  * without disturbing the box's own tap target for selection.
  *
@@ -55,7 +55,7 @@ export function SeatBox({
   node: TreeNode;
   selected: boolean;
   onPress: () => void;
-  /** Present only in structure-edit mode — renders the "+" affix. */
+  /** Present only for a chart editor — renders the "+" affix. */
   onAddSeat?: (node: TreeNode) => void;
   /** True when this box's reports are folded away. */
   collapsed?: boolean;

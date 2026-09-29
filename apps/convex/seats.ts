@@ -41,7 +41,8 @@ import {
 } from "@events-os/shared";
 import type { SeatCapability } from "@events-os/shared";
 import { requireAccess, requireUserId } from "./lib/context";
-import { isSuperuser, requireSuperuser } from "./lib/superuser";
+import { requireSuperuser } from "./lib/superuser";
+import { hasSeatFillPower, requireSeatFillPower } from "./lib/seatAssignAccess";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
 import {
   assignSpecializedRoleImpl,
@@ -51,6 +52,7 @@ import {
   requireChartEditor,
   assertNoSelfLockout,
   canEditChart,
+  writeAuditLog,
   type DefOverride,
 } from "./lib/seatStructure";
 import { parsePeopleSearch, searchChapterPeople } from "./lib/peopleSearch";
@@ -404,6 +406,10 @@ export const seatDetail = query({
       // org-chart UI can show the giving-power editor without duplicating the
       // gate logic client-side — see `lib/seatStructure.ts#canEditChart`.
       canEditPowers: v.boolean(),
+      // True iff the caller may change this seat's holders DIRECTLY
+      // (`lib/seatAssignAccess.ts` — superuser or `org.seats.edit`). Everyone
+      // else changes holders through a proposal.
+      canFillSeats: v.boolean(),
       holders: v.array(
         v.object({
           personId: v.id("people"),
@@ -411,9 +417,9 @@ export const seatDetail = query({
           imageUrl: v.union(v.string(), v.null()),
           createdAt: v.number(),
           grantedBy: v.union(v.id("users"), v.null()),
-          // Only present for a superuser caller (the only caller who can
-          // actually ACT on it — `unassignSeat` is superuser-gated too). A
-          // non-superuser gets holder rows with this field simply absent,
+          // Only present for a caller who can fill seats directly (the only
+          // caller who can ACT on it — `unassignSeat` is gated the same way).
+          // Anyone else gets holder rows with this field simply absent,
           // never a leaked id they can't use. See `assignmentId` on
           // `DetailedHolder` for why this is populated even for a derived
           // seat's rolled-up holders.
@@ -462,12 +468,11 @@ export const seatDetail = query({
         })()
       : detailedHoldersForScope(ctx, scope, defId);
 
-    // Gate `assignmentId` to a superuser caller ONLY — mirrors the
-    // `requireSuperuser` gate on `unassignSeat` itself, the one mutation this
-    // id is for. `isSuperuser` never throws (unlike `requireSuperuser`), so a
-    // non-superuser caller still gets the rest of `seatDetail` back normally,
-    // just without an id they couldn't act on anyway.
-    const callerIsSuperuser = await isSuperuser(ctx);
+    // Gate `assignmentId` to a caller who can fill seats — mirrors the gate
+    // on `unassignSeat` itself, the one mutation this id is for. The check
+    // never throws, so anyone else still gets the rest of `seatDetail`, just
+    // without an id they couldn't act on anyway.
+    const canFillSeats = await hasSeatFillPower(ctx);
     const canEditPowers = await canEditChart(ctx);
     const resolvedHolders = await holders;
 
@@ -481,13 +486,14 @@ export const seatDetail = query({
       maxHolders: def.maxHolders,
       derived: isDerived,
       canEditPowers,
+      canFillSeats,
       holders: resolvedHolders.map((h) => ({
         personId: h.personId,
         name: h.name,
         imageUrl: h.imageUrl,
         createdAt: h.createdAt,
         grantedBy: h.grantedBy,
-        ...(callerIsSuperuser ? { assignmentId: h.assignmentId } : {}),
+        ...(canFillSeats ? { assignmentId: h.assignmentId } : {}),
       })),
       createdAt: def.createdAt,
       updatedAt: def.updatedAt,
@@ -573,6 +579,53 @@ export const mySeatAssignments = query({
 const specializedTitleValidator = v.union(
   ...SPECIALIZED_ROLE_TITLES.map((t) => v.literal(t)),
 );
+
+/** Bound on seat definitions read by `powersDirectory` — both charts together
+ *  are a few dozen rows; this is headroom, not an expected size. */
+const MAX_POWER_DIRECTORY_DEFS = 500;
+
+/**
+ * Every seat definition with its STORED powers — the org chart's powers
+ * picker ("also held by…") and the Powers directory ("who can do this?")
+ * both read this. `seats.chart` deliberately omits capabilities per node (it
+ * repeats the chapter chart once per chapter), so this is the one place the
+ * whole chart's powers come back in a single read. Org-transparent like
+ * `chart`/`seatDetail`: `requireAccess` only. Derived seats are left out —
+ * their powers are computed, never granted.
+ */
+export const powersDirectory = query({
+  args: {},
+  returns: v.array(
+    v.object({
+      defId: v.id("seatDefs"),
+      slug: v.string(),
+      title: v.string(),
+      chart: seatChartValidator,
+      capabilities: v.array(seatCapabilityValidator),
+    }),
+  ),
+  handler: async (ctx) => {
+    await requireAccess(ctx);
+    const out = [];
+    for (const chart of ["central", "chapter"] as const) {
+      const defs = await ctx.db
+        .query("seatDefs")
+        .withIndex("by_chart", (q) => q.eq("chart", chart))
+        .take(MAX_POWER_DIRECTORY_DEFS);
+      for (const d of defs) {
+        if (d.derived === true) continue;
+        out.push({
+          defId: d._id,
+          slug: d.slug,
+          title: d.title,
+          chart: d.chart,
+          capabilities: d.capabilities,
+        });
+      }
+    }
+    return out;
+  },
+});
 
 /**
  * The distinct desk SCOPES (WP-S switcher fix) the caller holds ANY org-chart
@@ -1085,8 +1138,9 @@ export async function assignSeatImpl(
 }
 
 /**
- * Assign a person to a seat, at a scope. Super-admin only — thin wrapper
- * around `assignSeatImpl` (see its doc comment for the full validation this
+ * Assign a person to a seat, at a scope, skipping the proposal flow. Gated on
+ * `requireSeatFillPower` (superuser or `org.seats.edit`) — thin wrapper around
+ * `assignSeatImpl` (see its doc comment for the full validation this
  * enforces).
  */
 export const assignSeat = mutation({
@@ -1097,7 +1151,7 @@ export const assignSeat = mutation({
   },
   returns: v.id("seatAssignments"),
   handler: async (ctx, { seatDefId, scope, personId }) => {
-    await requireSuperuser(ctx);
+    await requireSeatFillPower(ctx);
     const userId = (await requireUserId(ctx)) as Id<"users">;
     return await assignSeatImpl(ctx, userId, { seatDefId, scope, personId });
   },
@@ -1135,14 +1189,14 @@ export async function unassignSeatImpl(
 }
 
 /**
- * Unassign a seat holder. Super-admin only — thin wrapper around
- * `unassignSeatImpl`.
+ * Unassign a seat holder, skipping the proposal flow. Gated like
+ * `assignSeat` — thin wrapper around `unassignSeatImpl`.
  */
 export const unassignSeat = mutation({
   args: { assignmentId: v.id("seatAssignments") },
   returns: v.null(),
   handler: async (ctx, { assignmentId }) => {
-    await requireSuperuser(ctx);
+    await requireSeatFillPower(ctx);
     return await unassignSeatImpl(ctx, assignmentId);
   },
 });
@@ -1235,6 +1289,12 @@ async function setDomainPowersImpl(
   await assertNoSelfLockout(ctx, editor, overrides);
 
   await ctx.db.patch(def._id, { capabilities: next, updatedAt: Date.now() });
+  const before = migrateLegacyPowers(def.capabilities);
+  if ([...before].sort().join() !== [...next].sort().join()) {
+    // Logged like `seatStructure.updateSeat`'s capabilities change, so the
+    // seat's History tab shows power edits made from the picker too.
+    await writeAuditLog(ctx, editor, "updateSeat", def.slug, { capabilities: before }, { capabilities: next });
+  }
   return next;
 }
 

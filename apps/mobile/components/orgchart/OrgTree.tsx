@@ -37,7 +37,7 @@ export function OrgTree({
   orphans: TreeNode[];
   selectedKey: string | null;
   onSelect: (node: TreeNode) => void;
-  /** Present only in structure-edit mode — see `SeatBox`'s "+" affix. */
+  /** Present only for a chart editor — see `SeatBox`'s "+" affix. */
   onAddSeat?: (node: TreeNode) => void;
   /** Keys whose reports are folded away. Omit for a fully expanded chart. */
   collapsedKeys?: ReadonlySet<string>;

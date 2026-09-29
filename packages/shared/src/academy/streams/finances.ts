@@ -2789,7 +2789,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Seats get assigned from the **Org Chart** tab. A superuser can assign a holder directly. Anyone else proposes a change for the seat's holder, or the seat above it, to confirm — a two-party handoff, not a unilateral edit. Executive Director and Financial Manager sit at central; Chapter Director and Treasurer sit per chapter. Each is one holder per seat — assigning a new Executive Director replaces the old one, it doesn't add a second. Editing the chart's STRUCTURE itself (adding, moving, or removing seats) is separate and narrower: only the Executive Director or a superuser can do that.",
+        text: "Seats get assigned from the **Org Chart** tab: open a seat and go to its People tab. Anyone holding the Fill seats power (the Executive Director today) can add or remove a holder directly. Anyone else proposes a change for the seat's holder, or the seat above it, to confirm — a two-party handoff, not a unilateral edit. Executive Director and Financial Manager sit at central; Chapter Director and Treasurer sit per chapter. Each is one holder per seat — assigning a new Executive Director replaces the old one, it doesn't add a second. Editing the chart's STRUCTURE itself (adding, moving, or removing seats) is separate and narrower: only the Executive Director or a superuser can do that.",
       },
       {
         kind: "table",

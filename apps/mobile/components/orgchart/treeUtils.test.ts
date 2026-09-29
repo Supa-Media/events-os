@@ -13,6 +13,7 @@ import {
   findNodeByKey,
   findOrphanSeats,
   pathToKey,
+  seatOutline,
   subtreeDepth,
   subtreeSlugs,
   type ChartHolder,
@@ -444,5 +445,24 @@ describe("computeReportsTo", () => {
     ];
     const chart: FullChart = { kind: "full", central, chapters: [] };
     expect(computeReportsTo(central[0], "central", chart)).toBeNull();
+  });
+});
+
+describe("seatOutline", () => {
+  test("lists seats depth-first in sort order, with their depth", () => {
+    const seats = wellFormedSeats().reverse();
+    expect(seatOutline(seats).map(({ seat: s, depth }) => `${s.slug}:${depth}`)).toEqual([
+      "root-seat:0",
+      "a:1",
+      "a1:2",
+      "a1x:3",
+      "b:1",
+      "c:1",
+    ]);
+  });
+
+  test("leaves out derived seats", () => {
+    const seats = [...wellFormedSeats(), seat({ slug: "d", parentSlug: "root-seat", derived: true })];
+    expect(seatOutline(seats).some(({ seat: s }) => s.slug === "d")).toBe(false);
   });
 });

@@ -219,7 +219,8 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `marketing.blog.publish` | Put a post on the public blog, and take one down |
 | `marketing.list.view` | Read the email and SMS mailing lists at the holder's scope, and who has opted out |
 | `marketing.list.edit` | Add someone to the mailing list, and take someone off it when they ask |
-| `org.chart.edit` | Edit the org chart — seats, holders, and their powers |
+| `org.chart.edit` | Edit the org chart — add, rename, move, and remove seats, and set their powers. Implies `org.seats.edit` |
+| `org.seats.edit` | Fill seats — put people in seats and take them out directly, without a two-party proposal |
 | `data.export` | Export records the holder can already see, as a file |
 
 <!-- /powers-table -->

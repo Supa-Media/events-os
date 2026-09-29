@@ -18,10 +18,7 @@ import {
   POWER_DEFS,
   POWER_DOMAINS,
   SEAT_ROOT,
-  isPower,
   powersAtScope,
-  powerDescription,
-  powerLabel,
   type Power,
 } from "@events-os/shared";
 
@@ -138,6 +135,31 @@ export function subtreeSlugs(seats: SeatNode[], rootSlug: string, depth = 0): Se
 /** A built chart: the tree rooted at the chart's root seat, plus any
  *  `findOrphanSeats` couldn't place — rendered by the caller as a flat
  *  "Unplaced" strip instead of being silently dropped (see `OrgTree`). */
+/** The chart's seats in tree order (depth-first by sort order), each with its
+ *  depth. Used by the "Reports to" picker. */
+export function seatOutline(seats: readonly SeatNode[]): { seat: SeatNode; depth: number }[] {
+  const children = new Map<string, SeatNode[]>();
+  for (const s of seats) {
+    if (s.derived) continue;
+    const list = children.get(s.parentSlug) ?? [];
+    list.push(s);
+    children.set(s.parentSlug, list);
+  }
+  for (const list of children.values()) list.sort((a, b) => a.sortOrder - b.sortOrder);
+  const out: { seat: SeatNode; depth: number }[] = [];
+  const seen = new Set<string>();
+  const walk = (parent: string, depth: number) => {
+    for (const s of children.get(parent) ?? []) {
+      if (seen.has(s.slug)) continue; // defensive: a cycle never renders twice
+      seen.add(s.slug);
+      out.push({ seat: s, depth });
+      walk(s.slug, depth + 1);
+    }
+  };
+  walk(SEAT_ROOT, 0);
+  return out;
+}
+
 export type ChartBuild = {
   root: TreeNode | null;
   orphans: TreeNode[];
@@ -366,29 +388,6 @@ export function computeReportsTo(
 }
 
 // ── Capabilities → plain language ───────────────────────────────────────────
-/**
- * Plain-language gloss for a power id, for the "Powers" chips on the seat
- * detail panel.
- *
- * Reads the registry (`POWER_DEFS`), which is TOTAL over the power vocabulary
- * — so, unlike the hand-maintained partial map this replaced, a raw id can no
- * longer reach the screen. That map was missing four entries by the end
- * (`data.export`, `finance.publish`, `finance.viewer`, `events.checkin`), and
- * its fallback was to render the id verbatim, so the panel showed a literal
- * "data.export" chip sitting next to plain-English ones.
- *
- * The fallback here is for a STALE stored string only (a row not yet touched
- * by `0062`), and it says so rather than pretending the id is a label.
- */
-export function capabilityLabel(id: string): string {
-  return isPower(id) ? powerLabel(id) : `Unrecognized power (${id})`;
-}
-
-/** The one-line explanation under a power chip, or `null` for a stale id. */
-export function capabilityDescription(id: string): string | null {
-  return isPower(id) ? powerDescription(id) : null;
-}
-
 /**
  * The powers to SHOW for a seat: everything its stored list actually grants,
  * expanded through the implication rules and sorted by domain so the chips

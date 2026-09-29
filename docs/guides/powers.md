@@ -158,7 +158,8 @@ any more, and a missed rung is no longer possible.
 | `hiring.view` | Read the Hiring desk — applications, rubric reviews, trials |
 | `hiring.edit` | Run the pipeline: move a candidate, file a review, start a trial |
 | `hiring.approve` | Make the call — place, not-now, or decline, and send the outcome |
-| `org.chart.edit` | Add, move, rename, and re-power seats |
+| `org.chart.edit` | Add, move, rename, and re-power seats (implies `org.seats.edit`) |
+| `org.seats.edit` | Put people in seats and take them out without a proposal |
 | `data.export` | Bulk-export a dataset you can already see |
 
 Hiring's three rungs are the clearest live example of why an `approve` action
@@ -172,26 +173,41 @@ be handed out broadly without inventing a power at the moment it's needed.
 
 ## Editing powers
 
-Every power on a seat is editable from the org chart: open a seat, and the
-**Powers** section renders each domain from the registry. A domain with a
-ladder (Giving, Emails, Hiring) offers a segmented control — **None / View /
-Manage** for Giving and Emails, **None / View / Run the pipeline / Make the
-call** for Hiring; a
-domain of independent powers (Finance, Events, Organization, Data) offers
-toggles.
+Every power is edited in one place: the **powers picker**. Open a seat, go to
+its **Powers** tab, and choose **Add or change powers**. The same picker opens
+from **Add seat**, and the toolbar's **Powers** button opens a directory that
+works the other way round: pick a power, see every seat that holds it, and give
+it to another seat or take it away.
 
-Three things the editor does deliberately:
+In the picker every power is a switch on one searchable list, filtered by area
+(Finance, Giving, Emails, Events, Hiring, Marketing, Organization, Data). Each
+row says which other seats already hold that power.
 
-- **Derived powers are shown, not hidden** — and can't be toggled. A seat
-  storing `finance.edit` really does grant `finance.cards.edit`, and hiding
-  that would misrepresent the seat; but offering a switch that does nothing
-  would be worse. They read as included, naming the power that grants them.
-- **One domain is written at a time** (`seats.setSeatDomainPowers`). Editing
-  Finance can't strip an email power by omission, so a stale client or a
-  partial render can never silently drop a power the editor never saw.
+Four things it does deliberately:
+
+- **Included powers are shown, not hidden**, and their switch is locked on. A
+  seat storing `finance.edit` really does grant `finance.cards.edit`, and
+  hiding that would misrepresent the seat; offering a switch that does nothing
+  would be worse. They read "Included with …", naming the power that grants
+  them. This is also how ladders (Emails, Giving, Hiring) read now: turning on
+  the top rung shows the rungs beneath it as included.
+- **Changes save together.** Nothing is written until **Save changes**, and
+  the footer lists what is being added and removed.
+- **One domain is written at a time** (`seats.setSeatDomainPowers`, once per
+  changed domain). Editing Finance can't strip an email power by omission, so
+  a stale client can never silently drop a power the editor never saw. Every
+  write lands in the seat's **History** tab.
 - **A chapter seat never lists a central-only power.** There are no
   chapter-level bank accounts, so `finance.accounts.view` isn't offered there.
 
 Gated on `org.chart.edit`, with the same self-lockout guard the structure
 editor uses: you cannot strip a power off your own seat and silently lose it.
 Ask another chart editor instead.
+
+## Filling seats
+
+`org.seats.edit` ("Fill seats") lets its holder change who sits in a seat
+directly from the seat's **People** tab: add, replace, or remove a holder with
+no proposal. `org.chart.edit` implies it, so the Executive Director has it.
+Anyone else changes holders with **Propose a change**, which someone above the
+seat approves. Before 2026-09-29 direct assignment was superuser-only.

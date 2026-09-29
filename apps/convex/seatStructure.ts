@@ -42,7 +42,7 @@ import {
 import {
   requireChartEditor,
   assertNoSelfLockout,
-  type ChartEditor,
+  writeAuditLog,
   type DefOverride,
 } from "./lib/seatStructure";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
@@ -309,26 +309,6 @@ async function generateUniqueSlug(
   return candidate;
 }
 
-/** Insert one `seatStructureLog` row. `before`/`after` are small, mutation-
- *  specific snapshots — never the full def. */
-async function writeAuditLog(
-  ctx: MutationCtx,
-  editor: ChartEditor,
-  mutationKind: Doc<"seatStructureLog">["mutation"],
-  slug: string,
-  before: unknown,
-  after: unknown,
-): Promise<void> {
-  await ctx.db.insert("seatStructureLog", {
-    editorUserId: editor.userId,
-    editorPersonId: editor.editorPersonId,
-    mutation: mutationKind,
-    slug,
-    before,
-    after,
-    createdAt: Date.now(),
-  });
-}
 
 /** Validate a `maxHolders` value's shape (integer, `1..MULTI_HOLDER_CAP`). */
 function assertValidMaxHolders(maxHolders: number): void {
@@ -696,14 +676,19 @@ export const removeSeat = mutation({
 // ── Queries ──────────────────────────────────────────────────────────────────
 
 /** The most recent structure-editing audit log rows, newest first. Gated the
- *  same as every write above — reading the log requires edit power too. */
+ *  same as every write above — reading the log requires edit power too.
+ *  `slug` narrows to one seat (the seat panel's History tab); the scan is
+ *  still bounded by `limit`, so a seat's history is its share of the most
+ *  recent `limit` edits. */
 export const structureLog = query({
-  args: { limit: v.optional(v.number()) },
+  args: { limit: v.optional(v.number()), slug: v.optional(v.string()) },
   returns: v.array(
     v.object({
       logId: v.id("seatStructureLog"),
       editorUserId: v.id("users"),
       editorPersonId: v.union(v.id("people"), v.null()),
+      /** The editor's roster name, or `null` for a superuser with no roster row. */
+      editorName: v.union(v.string(), v.null()),
       mutation: mutationKindValidator,
       slug: v.string(),
       before: v.optional(v.any()),
@@ -711,18 +696,25 @@ export const structureLog = query({
       createdAt: v.number(),
     }),
   ),
-  handler: async (ctx, { limit }) => {
+  handler: async (ctx, { limit, slug }) => {
     await requireChartEditor(ctx);
     const bound = Math.min(Math.max(limit ?? 50, 1), 500);
-    const rows = await ctx.db
+    const scanned = await ctx.db
       .query("seatStructureLog")
       .withIndex("by_createdAt")
       .order("desc")
       .take(bound);
+    const rows = slug === undefined ? scanned : scanned.filter((r) => r.slug === slug);
+    const names = new Map<string, string | null>();
+    for (const r of rows) {
+      if (!r.editorPersonId || names.has(r.editorPersonId)) continue;
+      names.set(r.editorPersonId, (await ctx.db.get(r.editorPersonId))?.name ?? null);
+    }
     return rows.map((r) => ({
       logId: r._id,
       editorUserId: r.editorUserId,
       editorPersonId: r.editorPersonId ?? null,
+      editorName: r.editorPersonId ? (names.get(r.editorPersonId) ?? null) : null,
       mutation: r.mutation,
       slug: r.slug,
       before: r.before,
