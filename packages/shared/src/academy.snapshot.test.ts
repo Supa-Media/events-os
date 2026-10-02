@@ -907,6 +907,11 @@
  * because the CARDHOLDER's instruction is unchanged — leave the budget blank
  * if you aren't sure, the finance team will set it — and that is now more
  * true rather than less.
+ *
+ * Goals (2026-10-02) APPENDED one required Works-theme section,
+ * `works-goals-and-work` (3 min, 3-quiz), in its own `goals` course after the
+ * Development courses (see `academy/streams/goals.ts`). Appended so nothing
+ * renumbers.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -1034,6 +1039,7 @@ const EXPECTED_SECTION_SLUGS: string[] = [
   "dev-partner-portal",
   "dev-city-launch-economics",
   "dev-prospect-cities-and-map",
+  "works-goals-and-work",
 ];
 
 // Per-section fields that must not drift: title, minutes, quiz length,
@@ -1973,6 +1979,14 @@ const EXPECTED_SECTIONS: {
     optional: false,
     capstoneKind: null,
   },
+  {
+    slug: "works-goals-and-work",
+    title: "Goals and the work behind them",
+    minutes: 3,
+    quizLength: 3,
+    optional: false,
+    capstoneKind: null,
+  },
 ];
 
 // Course catalog: slug + themeKey + ordered moduleSlugs.
@@ -2223,6 +2237,11 @@ const EXPECTED_COURSES: {
     slug: "the-city-launch-story",
     themeKey: "development",
     moduleSlugs: ["dev-city-launch-economics", "dev-prospect-cities-and-map"],
+  },
+  {
+    slug: "goals",
+    themeKey: "works",
+    moduleSlugs: ["works-goals-and-work"],
   },
 ];
 

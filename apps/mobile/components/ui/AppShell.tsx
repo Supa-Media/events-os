@@ -113,6 +113,10 @@ const NAV: NavEntry[] = [
     group: "A",
     alsoActiveOn: ["/people/volunteers"],
   },
+  // Goals — the year plan (objectives + key results). Whole-org reading, so
+  // shown to every member like Work; placed after the desks so it never takes
+  // a phone dock slot from Events/People/Work (the dock is NAV's prefix).
+  { label: "Goals", icon: "target", path: "/goals", group: "P" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy", group: "R" },
   // Org Chart — read-only, org-transparent (mirrors `seats.chart`'s "the whole
@@ -183,6 +187,8 @@ function useNav(): NavEntry[] {
         // Work: everyone except volunteer — but keep the teamView nuance so a
         // caller with no roster row isn't shown an empty Work tab.
         return tier != null && tier !== "volunteer" && org?.teamView != null;
+      case "/goals":
+        return tier != null && tier !== "volunteer";
       case "/song-library":
       case "/academy":
       case "/org-chart":

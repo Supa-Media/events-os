@@ -34,6 +34,10 @@ export const projects = defineTable({
   // after `foldProjectStatusNotes` migrated them into a comment.
   // What's currently in the way, if anything.
   blocker: v.optional(v.string()),
+  // The ONE key result this project moves, if any (goals.ts). A project is
+  // the work; the key result is the score it moves. Set via
+  // `projectGoals.setKeyResult`.
+  keyResultId: v.optional(v.id("goalKeyResults")),
   createdBy: v.id("users"),
   createdAt: v.number(),
   updatedAt: v.number(),
@@ -41,7 +45,8 @@ export const projects = defineTable({
   .index("by_chapter", ["chapterId"])
   .index("by_owner", ["ownerPersonId"])
   .index("by_parent", ["parentProjectId"])
-  .index("by_event", ["eventId"]);
+  .index("by_event", ["eventId"])
+  .index("by_keyResultId", ["keyResultId"]);
 
 /**
  * Project comment — one update in a project's running history. Anyone who can
