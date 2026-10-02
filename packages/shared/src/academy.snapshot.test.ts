@@ -908,10 +908,10 @@
  * if you aren't sure, the finance team will set it — and that is now more
  * true rather than less.
  *
- * Goals (2026-10-02) APPENDED one optional Works-theme section,
+ * Goals (2026-10-02) APPENDED one required Works-theme section,
  * `works-goals-and-work` (3 min, 3-quiz), in its own `goals` course after the
  * Development courses (see `academy/streams/goals.ts`). Appended so nothing
- * renumbers; optional so it reopens nobody's completed Academy.
+ * renumbers.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -1984,7 +1984,7 @@ const EXPECTED_SECTIONS: {
     title: "Goals and the work behind them",
     minutes: 3,
     quizLength: 3,
-    optional: true,
+    optional: false,
     capstoneKind: null,
   },
 ];

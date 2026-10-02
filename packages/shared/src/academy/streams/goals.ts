@@ -4,9 +4,6 @@
  * file because `works.ts` is at the size limit; it belongs to the Works theme
  * and is appended to the curriculum after Development so no existing section
  * renumbers.
- *
- * Marked optional for now so adding it doesn't reopen anyone's completed
- * Academy. Make it required once the plan is in use.
  */
 
 import type { AcademySection, Course } from "../types";
@@ -17,7 +14,6 @@ export const GOALS_SECTIONS: Omit<AcademySection, "order">[] = [
     title: "Goals and the work behind them",
     subtitle: "The year plan keeps score; projects, events and duties do the work",
     minutes: 3,
-    optional: true,
     blocks: [
       {
         kind: "p",

@@ -305,12 +305,16 @@ describe("curriculum content", () => {
     // purpose (a volunteer making a flyer needs the hex code), and writing a
     // post is a different permission from publishing one — because a headline
     // is a sentence and a post is an argument published under the org's name.)
-    expect(ACADEMY_SECTION_COUNT).toBe(115);
+    // + 1 (works-goals-and-work, 2026-10-02, appended last in its own `goals`
+    // course under the Works theme — required, not a capstone. The Goals
+    // page's one rule: a key result is the score and never holds tasks; the
+    // work lives in a project, event, template row, duty or seat.)
+    expect(ACADEMY_SECTION_COUNT).toBe(116);
     expect(ACADEMY_SECTIONS.map((s) => s.order)).toEqual(
-      Array.from({ length: 115 }, (_v, i) => i + 1),
+      Array.from({ length: 116 }, (_v, i) => i + 1),
     );
     // The optional bonus is excluded from the trained denominator.
-    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(114);
+    expect(ACADEMY_REQUIRED_SECTION_COUNT).toBe(115);
     expect(ACADEMY_CAPSTONE_SECTIONS).toHaveLength(6);
     // The suite leans on this order — pin it.
     expect(CAPSTONE_JOIN.capstone!.kind).toBe("join_event");
