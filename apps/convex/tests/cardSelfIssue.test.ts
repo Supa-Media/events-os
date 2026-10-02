@@ -16,7 +16,8 @@ import type { Id } from "../_generated/dataModel";
 
 async function seedMe(
   s: ChapterSetup,
-  pwEmail: string | undefined = "me@publicworship.life",
+  // `null` seeds someone with no `@publicworship.life` email.
+  pwEmail: string | null = "me@publicworship.life",
 ): Promise<Id<"people">> {
   return await run(s.t, (ctx) =>
     ctx.db.insert("people", {
@@ -24,7 +25,7 @@ async function seedMe(
       name: "Carolyn",
       userId: s.userId,
       isTeamMember: true,
-      pwEmail,
+      pwEmail: pwEmail ?? undefined,
       createdAt: Date.now(),
     }),
   );
@@ -101,7 +102,7 @@ describe("createMyCard", () => {
 
   test("still refuses someone without a @publicworship.life email", async () => {
     const s = await setupChapter(newT());
-    const me = await seedMe(s, undefined);
+    const me = await seedMe(s, null);
 
     expect(await errorCode(s.as.action(api.cards.createMyCard, {}))).toBe(
       "NOT_CARD_ELIGIBLE",
