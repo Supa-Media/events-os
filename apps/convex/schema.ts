@@ -183,6 +183,14 @@ import { identityDecisions } from "./schema/identity";
 import { exportJobs } from "./schema/dataExports";
 import { blogReactions, blogReads } from "./schema/blog";
 import { blogPosts } from "./schema/marketingBlog";
+import {
+  goalPlans,
+  goalTargets,
+  goalObjectives,
+  goalKeyResults,
+  goalUpdates,
+  orgTeams,
+} from "./schema/goals";
 
 /**
  * Database schema for Chapter OS.
@@ -269,6 +277,16 @@ const schema = defineSchema({
   projectComments,
   projectUpdates,
   projectEmailTokens,
+
+  // Goals (2026-10-02) — year plans: mission, targets, objectives, key results
+  // and their updates, plus the teams that own them. Org-wide, all editable
+  // in the app; see schema/goals.ts + goals.ts.
+  goalPlans,
+  goalTargets,
+  goalObjectives,
+  goalKeyResults,
+  goalUpdates,
+  orgTeams,
 
   // Paid places on a project — the class/cohort registration fee. The FOURTH
   // revenue stream (gifts, ticket orders, sales, registrations); see

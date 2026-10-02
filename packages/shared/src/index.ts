@@ -2338,3 +2338,4 @@ export * from "./marketingDesigns";
 // no crawler can see is not a post.
 export * from "./blogMarkdown";
 export * from "./marketingBlog";
+export * from "./goals";

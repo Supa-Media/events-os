@@ -52,6 +52,7 @@ import {
   DEVELOPMENT_SECTIONS,
   DEVELOPMENT_THEME,
 } from "./streams/development";
+import { GOALS_COURSES, GOALS_SECTIONS } from "./streams/goals";
 import type {
   AcademySection,
   AcademyThemeKey,
@@ -79,6 +80,8 @@ const SECTIONS_IN_ORDER: Omit<AcademySection, "order">[] = [
   ...MUSIC_SECTIONS,
   ...MARKETING_SECTIONS,
   ...DEVELOPMENT_SECTIONS,
+  // Goals (2026-10-02): appended last so no existing section renumbers.
+  ...GOALS_SECTIONS,
 ];
 
 /**
@@ -158,6 +161,7 @@ export const ACADEMY_COURSES: Course[] = [
   ...MUSIC_COURSES,
   ...MARKETING_COURSES,
   ...DEVELOPMENT_COURSES,
+  ...GOALS_COURSES,
 ];
 
 /** Look up a course by slug, or undefined. */

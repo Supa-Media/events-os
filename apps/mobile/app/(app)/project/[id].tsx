@@ -31,6 +31,7 @@ import {
   type ProjectDoc,
 } from "../../../components/team/ProjectCard";
 import { ScopeToggle } from "../../../components/team/ScopeToggle";
+import { ProjectGoalPicker } from "../../../components/goals/ProjectGoalPicker";
 import { MoneyView } from "../../../components/money/MoneyView";
 import { colors, spacing } from "../../../lib/theme";
 import { formatDate, formatDateTime } from "../../../lib/format";
@@ -191,6 +192,9 @@ export default function ProjectScreen() {
           defaultExpanded
           canManage={detail.canManage}
         />
+
+        {/* Goal — the one key result this project moves (Goals page). */}
+        <ProjectGoalPicker projectId={projectId} keyResultId={detail.keyResultId} />
 
         {/* Money — what's this project costing? Planned vs actual by
             category, assembled from the v2 budget + its planned lines +
