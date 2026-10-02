@@ -2642,7 +2642,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "What shipped, and what the training gate does",
-        text: "A cardholder freezes and unfreezes their own card instantly. A Financial Manager or Treasurer can permanently cancel one. Any member without a Public Worship-issued card creates their own from My Card in one tap, with no request to approve, and that includes someone whose only card is an older linked (Relay) card. You can still issue a card to someone directly from Cardholders. A required Academy course gates every issuance, self-serve or yours: until it is finished, \"Create my card\" stays disabled. The cards admin flags an untrained cardholder as \"Needs training\", and the requirement is off by default.",
+        text: "A cardholder freezes and unfreezes their own card instantly. A Financial Manager or Treasurer can permanently cancel one. Any member without a Public Worship-issued card creates their own from My Card in one tap, with no request to approve. That includes someone whose only card is an older linked (Relay) card. You can still issue a card to someone directly from Cardholders. A required Academy course gates every issuance, self-serve or yours: until it is finished, \"Create my card\" stays disabled. The cards admin flags an untrained cardholder as \"Needs training\", and the requirement is off by default.",
       },
       {
         kind: "reveal",
