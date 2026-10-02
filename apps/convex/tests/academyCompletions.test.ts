@@ -132,6 +132,7 @@ describe("academy course completions", () => {
       "finances-for-everyone",
       "financial-manager",
       "giving-fundamentals",
+      "goals",
       "growing-the-team",
       "how-we-work",
       "leading-a-project",
