@@ -23,7 +23,7 @@
  * (Relay) card gets the existing quiet note instead of the visual block —
  * a Relay card has no Increase object behind it, so none of the art/reveal/
  * billing-address/freeze machinery applies. The way off it is the member
- * view's request flow (`CardRequestPanel`) or a manager's "Issue card".
+ * view's "Create my card" (`CreateCardPanel`) or a manager's "Issue card".
  */
 import { useEffect, useState } from "react";
 import { Alert, Text, View } from "react-native";

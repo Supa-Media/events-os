@@ -272,6 +272,15 @@
  * still apply, which is everything else. Its swapped-in question tests exactly
  * that distinction: the lock is one enforcement mechanism, not the rule.
  *
+ * Self-serve cards (founder call, 2026-10-02 — "it shouldn't be request a
+ * card it should just create a card when someone doesn't have an increase
+ * card even if they have a relay card"): a member now creates their own card
+ * from My Card (`cards.createMyCard`), with no request/approval, and a
+ * Relay-only holder gets the same button. `finance-accounts-and-cards-admin`'s
+ * "What shipped" rule and its two request-flow quiz questions were rewritten
+ * in place to teach that (and that the training gate now disables the button
+ * rather than holding a request). Minutes and quiz length unchanged.
+ *
  * Reimbursement-prefill touch-up (owner directive, 2026-08-12 — "auto
  * populate with request purpose notes that we already have… remove a copy
  * and paste step"): a reimbursement payout's PRISTINE coding form now starts
@@ -2633,7 +2642,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "What shipped, and what the training gate does",
-        text: "A cardholder freezes and unfreezes their own card instantly. A Financial Manager or Treasurer can permanently cancel one. Any member can submit a card request, at most one open at a time, for you to approve or deny. A required Academy course gates ISSUANCE, not the request: someone can request now, finish the course, then be approved. The cards admin flags an untrained cardholder as \"Needs training\", and the requirement is off by default.",
+        text: "A cardholder freezes and unfreezes their own card instantly. A Financial Manager or Treasurer can permanently cancel one. Any member without a Public Worship-issued card creates their own from My Card in one tap, with no request to approve, and that includes someone whose only card is an older linked (Relay) card. You can still issue a card to someone directly from Cardholders. A required Academy course gates every issuance, self-serve or yours: until it is finished, \"Create my card\" stays disabled. The cards admin flags an untrained cardholder as \"Needs training\", and the requirement is off by default.",
       },
       {
         kind: "reveal",
@@ -2681,7 +2690,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "The cardholder freezes it themselves instantly — it's self-serve and reversible by them alone. That's the fastest real protection. They should also tell their Treasurer or FM, but the freeze action doesn't need to wait for a manager to respond.",
       },
       {
-        prompt: "Are self-serve freeze, card cancel/close, and a member request-a-card flow live today?",
+        prompt: "Are self-serve freeze, card cancel/close, and members creating their own card live today?",
         options: [
           "Yes, all three are live",
           "Not yet — they're near-term (WP-C.1) additions; the only shipped control today is a manager's lock/unlock",
@@ -2690,20 +2699,20 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "All three shipped together in WP-C.1: a cardholder can self-serve freeze/unfreeze their own card instantly (reversible), an FM or Treasurer can permanently cancel/close a card, and any member can submit a card request (with at most one open request at a time) for you to approve or deny.",
+          "All three are live: a cardholder can self-serve freeze/unfreeze their own card instantly (reversible), an FM or Treasurer can permanently cancel/close a card, and any member without a Public Worship-issued card creates their own from My Card, with no approval step.",
       },
       {
         prompt:
-          "Central finance has set a required Academy course before a card can be issued. A member who hasn't finished it requests a card. What happens?",
+          "Central finance has set a required Academy course before a card can be issued. A member who hasn't finished it opens My Card to create their own. What happens?",
         options: [
-          "Their request is blocked — they can't even submit it until they finish",
-          "The request goes through; you just can't issue/approve the card until they complete the course, and they show as 'Needs training' until then",
-          "The card is issued anyway — the requirement only applies to direct issuance",
+          "The card is created anyway — the requirement only applies when a manager issues it",
+          "\"Create my card\" stays disabled and points them to the course; once they finish it, they create the card themselves",
+          "A request is sent to you to approve",
           "Their existing card is locked until they finish",
         ],
         answerIndex: 1,
         explanation:
-          "The prerequisite gates ISSUANCE, not the request. A member can request now, finish the course, and then be approved — and the cards admin flags an untrained cardholder as 'Needs training' so you can see who's ready. The requirement is off by default and set on the Accounts screen.",
+          "The prerequisite gates EVERY issuance, self-serve or yours. My Card names the course and keeps the button disabled until it's done, then the member creates the card in one tap — and the cards admin flags an untrained cardholder as 'Needs training'. The requirement is off by default and set on the Accounts screen.",
       },
     ],
   },

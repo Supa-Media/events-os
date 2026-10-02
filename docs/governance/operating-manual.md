@@ -324,8 +324,8 @@ audit finding.
 
 **Do not personally cover things.** Paying out of pocket to be helpful moves the
 organization's spending off its books. If something must be bought and you have
-no card, ask; if you want to give, give — but give as a donation, not as an
-invisible subsidy.
+no card, create your own from **Finances → My Card**; if you want to give,
+give — but give as a donation, not as an invisible subsidy.
 
 ### 4.3 Reimbursements
 

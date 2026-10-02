@@ -4,7 +4,7 @@
  * freeze/unfreeze, reveal, and billing address (the two hard controls shown
  * READ-ONLY — a member can't change their own cap/validity, that's a manager
  * action) live in the shared `MyCardSection`. This file adds what's specific
- * to the member perspective: the "no card yet" request flow, the shared
+ * to the member perspective: the "no card yet" create flow, the shared
  * "You owe" banner (`OwedBanner`), and the ability to flag one of their
  * charges (from `api.finances.personTransactions`) as a personal expense and
  * pay it back.
@@ -45,7 +45,7 @@
  * and billing address live in the shared `MyCardSection` — used here AND at
  * the top of `ManagerCardsView` (a manager is a cardholder too). This file
  * keeps only what's specific to the member perspective: the "no card yet"
- * request flow (`CardRequestPanel`, also offered to a Relay-only holder), the
+ * create flow (`CreateCardPanel`, also offered to a Relay-only holder), the
  * shared "You owe" banner, and
  * the per-charge flag/pay-back list.
  */
@@ -73,7 +73,7 @@ import { useActionRunner } from "../../../lib/useActionToast";
 import { CardPhilosophy } from "./CardPhilosophy";
 import { OwedBanner } from "./OwedBanner";
 import { MyCardSection } from "./MyCardSection";
-import { CardRequestPanel } from "./CardRequestPanel";
+import { CreateCardPanel } from "./CreateCardPanel";
 import { shortDate, type MyRepayment } from "./helpers";
 import { chargeTodo, type MyTxnRow } from "../myTransactions/chargeTodo";
 
@@ -141,9 +141,9 @@ export function MemberCardsView() {
   }
 
   // Truly no card at all (neither Increase nor Relay) — the existing
-  // request-a-card flow. A holder with ONLY a Relay card falls through
+  // create-a-card flow. A holder with ONLY a Relay card falls through
   // instead: their Relay charges still need coding here, so they get the
-  // full screen plus the same request flow under the card note (see the
+  // full screen plus the same create flow under the card note (see the
   // `onlyLegacyCard` branch further down).
   if (!card && !onlyLegacyCard) {
     return (
@@ -154,13 +154,13 @@ export function MemberCardsView() {
         {lastCanceled ? (
           <View className="mb-3 rounded-md border border-border bg-sunken px-3 py-2">
             <Text className="text-xs text-muted">
-              Your previous card was canceled — request a replacement below.
+              Your previous card was canceled — create a new one below.
             </Text>
           </View>
         ) : null}
-        <CardRequestPanel
+        <CreateCardPanel
           emptyTitle="No card yet"
-          emptyMessage="You don't have a card on this chapter's account. Every team member gets their own — request one below, or ask a finance manager to issue it directly."
+          emptyMessage="You don't have a card on this chapter's account. Every team member gets their own — create yours below."
         />
         <SectionHeader title="How cards work" />
         <CardPhilosophy />
@@ -212,13 +212,13 @@ export function MemberCardsView() {
       <MyCardSection />
 
       {/* Relay-only holder: the Relay cards are being retired (and were frozen
-          2026-10-02), so offer the same request flow as a member with no card
-          — `requestCard` ignores Relay cards for exactly this case. */}
+          2026-10-02), so offer the same create flow as a member with no card
+          — `beginIssueCard`'s dedup ignores Relay cards for exactly this case. */}
       {onlyLegacyCard ? (
         <View className="mb-4">
-          <CardRequestPanel
+          <CreateCardPanel
             emptyTitle="Get your Increase card"
-            emptyMessage="Relay cards are being replaced by Increase cards. Request yours below and a finance manager will issue it."
+            emptyMessage="Relay cards are being replaced by Increase cards. Create yours below — it's ready to use right away."
           />
         </View>
       ) : null}
