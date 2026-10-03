@@ -4,7 +4,7 @@
  * freeze/unfreeze, reveal, and billing address (the two hard controls shown
  * READ-ONLY — a member can't change their own cap/validity, that's a manager
  * action) live in the shared `MyCardSection`. This file adds what's specific
- * to the member perspective: the "no card yet" request flow, the shared
+ * to the member perspective: the "no card yet" create flow, the shared
  * "You owe" banner (`OwedBanner`), and the ability to flag one of their
  * charges (from `api.finances.personTransactions`) as a personal expense and
  * pay it back.
@@ -45,7 +45,8 @@
  * and billing address live in the shared `MyCardSection` — used here AND at
  * the top of `ManagerCardsView` (a manager is a cardholder too). This file
  * keeps only what's specific to the member perspective: the "no card yet"
- * request flow (`lastCanceled`/`myRequest`), the shared "You owe" banner, and
+ * create flow (`CreateCardPanel`, also offered to a Relay-only holder), the
+ * shared "You owe" banner, and
  * the per-charge flag/pay-back list.
  */
 import { useMemo, useState } from "react";
@@ -65,7 +66,6 @@ import {
   EmptyState,
   Icon,
   SectionHeader,
-  TextField,
   ToastView,
 } from "../../ui";
 import { colors } from "../../../lib/theme";
@@ -73,6 +73,7 @@ import { useActionRunner } from "../../../lib/useActionToast";
 import { CardPhilosophy } from "./CardPhilosophy";
 import { OwedBanner } from "./OwedBanner";
 import { MyCardSection } from "./MyCardSection";
+import { CreateCardPanel } from "./CreateCardPanel";
 import { shortDate, type MyRepayment } from "./helpers";
 import { chargeTodo, type MyTxnRow } from "../myTransactions/chargeTodo";
 
@@ -86,20 +87,11 @@ export function MemberCardsView() {
   const policy = useQuery(api.transactionCodings.policy, {});
   const router = useRouter();
   const myRepayments = useQuery(api.cards.myPersonalRepayments, {});
-  const myRequest = useQuery(api.cards.myCardRequest, {});
-  // The org-wide card-prerequisite course + whether the caller has finished it
-  // (null when there's no gate). When a prerequisite is set and unmet, the
-  // no-card flow tells the member exactly what to complete to get a card.
-  const prerequisite = useQuery(api.cards.cardPrerequisiteStatus, {});
   const flag = useMutation(api.cards.flagPersonalCharge);
   // A member may only INITIATE a repayment (choose a method + kick it off) — the
   // offsetting credit is posted by a manager confirming receipt, never here.
   const initiateRepayment = useAction(api.cards.initiateRepayment);
-  const requestCard = useMutation(api.cards.requestCard);
   const { run, toast, dismiss } = useActionRunner();
-
-  const [requestNote, setRequestNote] = useState("");
-  const [requesting, setRequesting] = useState(false);
 
   // Transaction ids the member has already kicked off a SINGLE-row repayment
   // for (so that row shows the pending state rather than "Pay back" again).
@@ -144,24 +136,15 @@ export function MemberCardsView() {
     if (res) setInitiated((m) => ({ ...m, [transactionId]: true }));
   }
 
-  async function handleRequestCard() {
-    setRequesting(true);
-    await run(
-      () => requestCard({ note: requestNote.trim() || undefined }),
-      { errorTitle: "Couldn't submit request" },
-    );
-    setRequesting(false);
-    setRequestNote("");
-  }
-
   if (myCard === undefined) {
     return <EmptyState title="Loading your card…" />;
   }
 
   // Truly no card at all (neither Increase nor Relay) — the existing
-  // request-a-card flow. A holder with ONLY a Relay card falls through
-  // instead: they DO have a card, so the request flow doesn't apply — see
-  // the `onlyLegacyCard` branch further down.
+  // create-a-card flow. A holder with ONLY a Relay card falls through
+  // instead: their Relay charges still need coding here, so they get the
+  // full screen plus the same create flow under the card note (see the
+  // `onlyLegacyCard` branch further down).
   if (!card && !onlyLegacyCard) {
     return (
       <View>
@@ -171,55 +154,14 @@ export function MemberCardsView() {
         {lastCanceled ? (
           <View className="mb-3 rounded-md border border-border bg-sunken px-3 py-2">
             <Text className="text-xs text-muted">
-              Your previous card was canceled — request a replacement below.
+              Your previous card was canceled — create a new one below.
             </Text>
           </View>
         ) : null}
-        {prerequisite && !prerequisite.met ? (
-          <View className="mb-3 flex-row items-center gap-2 rounded-md border border-warn bg-warn-bg px-3 py-2">
-            <Icon name="book-open" size={14} color={colors.warn} />
-            <Text className="flex-1 text-xs text-warn">
-              Complete{" "}
-              <Text className="font-semibold">{prerequisite.title}</Text> in the
-              Academy to get a card.
-            </Text>
-          </View>
-        ) : null}
-        {myRequest?.status === "requested" ? (
-          <EmptyState
-            icon="clock"
-            title="Request pending"
-            message="Your card request is waiting on a finance manager to approve it."
-          />
-        ) : (
-          <View className="gap-3">
-            <EmptyState
-              icon="credit-card"
-              title="No card yet"
-              message="You don't have a card on this chapter's account. Every team member gets their own — request one below, or ask a finance manager to issue it directly."
-            />
-            {myRequest?.status === "denied" ? (
-              <View className="rounded-md border border-warn bg-warn-bg px-3 py-2">
-                <Text className="text-xs text-warn">
-                  Your last request was denied. You can request again below.
-                </Text>
-              </View>
-            ) : null}
-            <TextField
-              label="Note (optional)"
-              hint="Why you need a card — helps the finance manager decide."
-              value={requestNote}
-              onChangeText={setRequestNote}
-              placeholder="e.g. New hire, needs supplies budget"
-            />
-            <Button
-              title="Request a card"
-              icon="send"
-              onPress={handleRequestCard}
-              loading={requesting}
-            />
-          </View>
-        )}
+        <CreateCardPanel
+          emptyTitle="No card yet"
+          emptyMessage="You don't have a card on this chapter's account. Every team member gets their own — create yours below."
+        />
         <SectionHeader title="How cards work" />
         <CardPhilosophy />
         <ToastView toast={toast} onDismiss={dismiss} />
@@ -268,6 +210,18 @@ export function MemberCardsView() {
       {/* Card art + summary (art/reveal/billing-address/quiet-note) — shared
           with the top of `ManagerCardsView` (owner report item 1). */}
       <MyCardSection />
+
+      {/* Relay-only holder: the Relay cards are being retired (and were frozen
+          2026-10-02), so offer the same create flow as a member with no card
+          — `beginIssueCard`'s dedup ignores Relay cards for exactly this case. */}
+      {onlyLegacyCard ? (
+        <View className="mb-4">
+          <CreateCardPanel
+            emptyTitle="Get your Increase card"
+            emptyMessage="Relay cards are being replaced by Increase cards. Create yours below — it's ready to use right away."
+          />
+        </View>
+      ) : null}
 
       {/* Shared "You owe Public Worship" banner — see `OwedBanner`'s doc
           comment. The member starts the repayment by their own card or bank;

@@ -22,7 +22,8 @@
  * nothing is the correct empty state there. A holder with ONLY a legacy
  * (Relay) card gets the existing quiet note instead of the visual block —
  * a Relay card has no Increase object behind it, so none of the art/reveal/
- * billing-address/freeze machinery applies.
+ * billing-address/freeze machinery applies. The way off it is the member
+ * view's "Create my card" (`CreateCardPanel`) or a manager's "Issue card".
  */
 import { useEffect, useState } from "react";
 import { Alert, Text, View } from "react-native";
@@ -174,8 +175,8 @@ export function MyCardSection({ heading }: { heading?: string } = {}) {
         {heading ? <SectionHeader title={heading} /> : null}
         <View className="mb-4 rounded-md border border-border bg-sunken px-3 py-2">
           <Text className="text-xs text-muted">
-            Your card is a legacy Relay card — ask a finance manager if you have
-            questions about it.
+            Your card is a legacy Relay card. Relay cards are being replaced by
+            Increase cards.
           </Text>
         </View>
       </View>

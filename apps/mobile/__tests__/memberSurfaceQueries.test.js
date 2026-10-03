@@ -61,6 +61,7 @@ const MEMBER_SURFACE = [
   "components/finance/receipts/ReceiptViewerModal.tsx",
   "components/finance/modals/ReceiptExceptionModal.tsx",
   "components/finance/cards/MemberCardsView.tsx",
+  "components/finance/cards/CreateCardPanel.tsx",
 ];
 
 describe("member coding surface", () => {

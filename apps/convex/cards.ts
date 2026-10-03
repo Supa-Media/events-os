@@ -134,6 +134,7 @@ import {
   scopeVisibleToChapter,
 } from "./lib/finance";
 import { viewerPerson } from "./lib/org";
+import { requireSelfIssueCard } from "./lib/cardSelfIssueAccess";
 import {
   increaseEnvForObjectId,
   assertRoutingNumber,
@@ -661,6 +662,10 @@ export const beginIssueCard = internalMutation({
     monthlyCapCents: v.optional(v.number()),
     validFrom: v.optional(v.number()),
     validUntil: v.optional(v.number()),
+    // `createMyCard`'s path: the caller issues THEIR OWN card, gated by
+    // `requireSelfIssueCard` instead of the manager gate. Every other check
+    // below (eligibility, prerequisite, dedup) applies unchanged.
+    selfIssue: v.optional(v.boolean()),
   },
   returns: v.union(
     v.object({ kind: v.literal("existing"), card: cardSummaryValidator }),
@@ -675,7 +680,11 @@ export const beginIssueCard = internalMutation({
   ),
   handler: async (ctx, args): Promise<IssueCardResult> => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    await requireFinanceManager(ctx, chapterId);
+    if (args.selfIssue) {
+      await requireSelfIssueCard(ctx, chapterId, args.cardholderPersonId);
+    } else {
+      await requireFinanceManager(ctx, chapterId);
+    }
 
     if (args.monthlyCapCents != null) assertIntegerCents(args.monthlyCapCents);
 
@@ -851,59 +860,119 @@ export const issueCard = action({
     validUntil: v.optional(v.number()),
   },
   returns: cardSummaryValidator,
-  handler: async (ctx, args): Promise<CardSummary> => {
-    const prep: IssueCardResult = await ctx.runMutation(
-      internal.cards.beginIssueCard,
-      args,
+  handler: (ctx, args): Promise<CardSummary> => runIssueCard(ctx, args),
+});
+
+/**
+ * Create the caller's OWN card — the self-serve path a member reaches from
+ * My Card, including a holder whose only card is a legacy Relay card (the
+ * dedup in `beginIssueCard` is Increase-only, so a Relay row never reads as
+ * "already has a card"). No request, no approval: gated by
+ * `requireSelfIssueCard` (caller must be the cardholder), then the same
+ * eligibility + prerequisite checks as a manager's "Issue card". Virtual, no
+ * cap, no validity window — the member card's defaults ("no budget limit,
+ * just keep every charge's receipt current"); a manager can still set
+ * controls afterwards from Cardholders. Idempotent: a second tap returns the
+ * card the first one made.
+ */
+export const createMyCard = action({
+  args: {},
+  returns: cardSummaryValidator,
+  handler: async (ctx): Promise<CardSummary> => {
+    const cardholderPersonId: Id<"people"> = await ctx.runQuery(
+      internal.cards.selfIssueCardholder,
+      {},
     );
-    if (prep.kind === "existing") return prep.card;
-
-    // Self-select the Increase env from the chapter account's id prefix: a
-    // sandbox-provisioned account (`sandbox_...`) uses the sandbox key + base, a
-    // prod account the prod ones — so a card is always issued in the same
-    // environment its account lives in.
-    const { key, base } = prep.increaseAccountId
-      ? increaseEnvForObjectId(prep.increaseAccountId)
-      : { key: undefined as string | undefined, base: increaseApiBase() };
-    if (!key || !prep.increaseAccountId) {
-      console.warn(
-        "[cards] issueCard degraded: Increase key for this account's environment / active account not configured — card created without an Increase card id",
-      );
-      return prep.card;
-    }
-
-    // WP-C.2: attach the Digital Card Profile (PW card art) for THIS account's
-    // environment, if one has been minted (`increase.ts`'s
-    // `createDigitalCardProfile`) — omitted entirely when unconfigured, which
-    // is the common case until the pipeline has been run at least once.
-    // Increase nests this under `digital_wallet` (grounded against the Cards
-    // resource's create body), not at the top level.
-    const cardArtProfileId: string | null = await ctx.runQuery(
-      internal.increaseCardArt.getCardArtProfileId,
-      { sandbox: isSandboxObjectId(prep.increaseAccountId) },
-    );
-
-    try {
-      const card = await increasePost(key, base, "/cards", {
-        account_id: prep.increaseAccountId,
-        description: prep.description,
-        digital_wallet: buildDigitalWallet(
-          prep.cardholderEmail,
-          cardArtProfileId,
-        ),
-      });
-      return await ctx.runMutation(internal.cards.finishIssueCard, {
-        cardId: prep.cardId,
-        increaseCardId: String(card.id),
-        last4: card.last4 != null ? String(card.last4) : undefined,
-      });
-    } catch (err) {
-      console.error("[cards] issueCard: Increase card create failed:", err);
-      // The `cards` row already exists — leave it as the degraded card.
-      return prep.card;
-    }
+    return runIssueCard(ctx, {
+      cardholderPersonId,
+      type: "virtual",
+      selfIssue: true,
+    });
   },
 });
+
+/** The caller's own roster person in their chapter — `createMyCard`'s
+ *  cardholder. Throws the same `NO_PERSON` `requestCard` does. */
+export const selfIssueCardholder = internalQuery({
+  args: {},
+  returns: v.id("people"),
+  handler: async (ctx): Promise<Id<"people">> => {
+    const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
+    const person = await viewerPerson(ctx, chapterId);
+    if (!person) {
+      throw new ConvexError({
+        code: "NO_PERSON",
+        message: "You don't have a roster profile in this chapter yet.",
+      });
+    }
+    return person._id;
+  },
+});
+
+/** Shared body of `issueCard` and `createMyCard`: `beginIssueCard` gates and
+ *  finds-or-creates the row, then the Increase card is minted onto it. */
+async function runIssueCard(
+  ctx: ActionCtx,
+  args: {
+    cardholderPersonId: Id<"people">;
+    type: (typeof CARD_TYPES)[number];
+    monthlyCapCents?: number;
+    validFrom?: number;
+    validUntil?: number;
+    selfIssue?: boolean;
+  },
+): Promise<CardSummary> {
+  const prep: IssueCardResult = await ctx.runMutation(
+    internal.cards.beginIssueCard,
+    args,
+  );
+  if (prep.kind === "existing") return prep.card;
+
+  // Self-select the Increase env from the chapter account's id prefix: a
+  // sandbox-provisioned account (`sandbox_...`) uses the sandbox key + base, a
+  // prod account the prod ones — so a card is always issued in the same
+  // environment its account lives in.
+  const { key, base } = prep.increaseAccountId
+    ? increaseEnvForObjectId(prep.increaseAccountId)
+    : { key: undefined as string | undefined, base: increaseApiBase() };
+  if (!key || !prep.increaseAccountId) {
+    console.warn(
+      "[cards] issueCard degraded: Increase key for this account's environment / active account not configured — card created without an Increase card id",
+    );
+    return prep.card;
+  }
+
+  // WP-C.2: attach the Digital Card Profile (PW card art) for THIS account's
+  // environment, if one has been minted (`increase.ts`'s
+  // `createDigitalCardProfile`) — omitted entirely when unconfigured, which
+  // is the common case until the pipeline has been run at least once.
+  // Increase nests this under `digital_wallet` (grounded against the Cards
+  // resource's create body), not at the top level.
+  const cardArtProfileId: string | null = await ctx.runQuery(
+    internal.increaseCardArt.getCardArtProfileId,
+    { sandbox: isSandboxObjectId(prep.increaseAccountId) },
+  );
+
+  try {
+    const card = await increasePost(key, base, "/cards", {
+      account_id: prep.increaseAccountId,
+      description: prep.description,
+      digital_wallet: buildDigitalWallet(
+        prep.cardholderEmail,
+        cardArtProfileId,
+      ),
+    });
+    return await ctx.runMutation(internal.cards.finishIssueCard, {
+      cardId: prep.cardId,
+      increaseCardId: String(card.id),
+      last4: card.last4 != null ? String(card.last4) : undefined,
+    });
+  } catch (err) {
+    console.error("[cards] issueCard: Increase card create failed:", err);
+    // The `cards` row already exists — leave it as the degraded card.
+    return prep.card;
+  }
+}
 
 // ── listCards / myCard (reads) ───────────────────────────────────────────────
 
