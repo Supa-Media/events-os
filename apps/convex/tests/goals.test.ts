@@ -3,6 +3,7 @@ import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
+import { runGoalSeatMeasuresToManual } from "../migrations/0088_goal_seat_measures_to_manual";
 
 /**
  * Goals (goals.ts, goalsEdit.ts, goalTeams.ts, goalsImport.ts,
@@ -10,9 +11,8 @@ import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
  *  - the One Pager imports once into ordinary rows, matching chapters by name,
  *  - plan content is gated on the plan-edit resolver while updates are open
  *    to every member (lib/goalsAccess.ts),
- *  - automatic measures read the real record (a filled seat completes its
- *    key result with no update posted), counting only holders seated since
- *    the key result started watching the seat,
+ *  - recruiting is typed in by hand: a seat holder never completes a key
+ *    result on their own,
  *  - deleting a key result unlinks the projects that pointed at it.
  */
 
@@ -119,75 +119,49 @@ describe("who may change what", () => {
   });
 });
 
-describe("progress from the real record", () => {
-  test("filling the watched seat completes a seat key result", async () => {
+describe("progress", () => {
+  test("recruiting key results are typed in by hand, not read from seats", async () => {
     const { s, planId, plan } = await importedPlan();
     await run(s.t, (ctx) => runSeedSeatDefs(ctx));
-    const kr = plan.objectives[0].keyResults[0]; // Recruit a recruiting associate.
-    expect(kr.measureKind).toBe("seat_filled");
+    const nycDirector = plan.objectives[0].keyResults[1];
+    expect(nycDirector).toMatchObject({ title: "Recruit the NYC Chapter Director.", measureKind: "manual", target: 1, unit: "people" });
 
+    // Someone already in the seat doesn't make it done.
     await run(s.t, async (ctx) => {
       const def = await ctx.db
         .query("seatDefs")
-        .withIndex("by_slug", (q) => q.eq("slug", "recruiting_associate"))
+        .withIndex("by_slug", (q) => q.eq("slug", "chapter_director"))
         .unique();
-      const personId = await ctx.db.insert("people", { chapterId: s.chapterId, name: "New hire", createdAt: Date.now() });
-      await ctx.db.insert("seatAssignments", { seatDefId: def!._id, scope: "central", personId, createdAt: Date.now() });
+      const personId = await ctx.db.insert("people", { chapterId: s.chapterId, name: "President", createdAt: Date.now() });
+      await ctx.db.insert("seatAssignments", { seatDefId: def!._id, scope: s.chapterId, personId, createdAt: Date.now() });
     });
-    const after = await s.as.query(api.goals.plan, { planId });
-    const row = after!.objectives[0].keyResults[0];
-    expect(row.status).toBe("not_started");
-    expect(row.progress.displayStatus).toBe("done");
+    let row = (await s.as.query(api.goals.plan, { planId }))!.objectives[0].keyResults[1];
+    expect(row.progress).toMatchObject({ current: null, displayStatus: "not_started" });
+
+    await s.as.mutation(api.goalsEdit.postUpdate, { keyResultId: row._id, status: "done", current: 1, note: "Hired" });
+    row = (await s.as.query(api.goals.plan, { planId }))!.objectives[0].keyResults[1];
+    expect(row.progress).toMatchObject({ current: 1, displayStatus: "done" });
   });
 
-  test("someone already in the seat isn't counted as the recruit", async () => {
-    const t = newT();
-    const s = await setupChapter(t, { email: ED, chapterName: "New York" });
-    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
-    const seat = (slug: string, createdAt: number) =>
-      run(s.t, async (ctx) => {
-        const def = await ctx.db
-          .query("seatDefs")
-          .withIndex("by_slug", (q) => q.eq("slug", slug))
-          .unique();
-        const personId = await ctx.db.insert("people", { chapterId: s.chapterId, name: slug, createdAt });
-        await ctx.db.insert("seatAssignments", { seatDefId: def!._id, scope: s.chapterId, personId, createdAt });
-      });
-    // The chapter's existing president, mirrored onto the director seat.
-    await seat("chapter_director", Date.now() - 60_000);
-    const planId = await s.as.mutation(api.goalsImport.importOnePager, {});
-    const nycDirector = async () =>
-      (await s.as.query(api.goals.plan, { planId }))!.objectives[0].keyResults.find((k) => k.code === "1.2")!;
-
-    const before = await nycDirector();
-    expect(before).toMatchObject({ measureKind: "seat_filled", seatSlug: "chapter_director", seatScope: s.chapterId });
-    expect(before.progress).toMatchObject({ current: 0, displayStatus: "not_started" });
-
-    await seat("chapter_director", Date.now() + 1);
-    expect((await nycDirector()).progress).toMatchObject({ current: 1, displayStatus: "done" });
-  });
-
-  test("re-pointing a key result at a seat counts from then, not from before", async () => {
-    const { s, planId, plan } = await importedPlan();
-    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
-    await run(s.t, async (ctx) => {
-      const def = await ctx.db
-        .query("seatDefs")
-        .withIndex("by_slug", (q) => q.eq("slug", "treasurer"))
-        .unique();
-      const personId = await ctx.db.insert("people", { chapterId: s.chapterId, name: "Treasurer", createdAt: 0 });
-      await ctx.db.insert("seatAssignments", { seatDefId: def!._id, scope: s.chapterId, personId, createdAt: Date.now() - 60_000 });
-    });
-    const kr = plan.objectives[2].keyResults[0];
-    await s.as.mutation(api.goalsEdit.updateKeyResult, {
-      keyResultId: kr._id,
-      measureKind: "seat_filled",
-      seatSlug: "treasurer",
-      seatScope: s.chapterId,
-      target: 1,
-    });
-    const row = (await s.as.query(api.goals.plan, { planId }))!.objectives[2].keyResults[0];
-    expect(row.progress).toMatchObject({ current: 0, displayStatus: row.status });
+  test("migration 0088 turns legacy seat key results manual and keeps their status", async () => {
+    const { s, plan } = await importedPlan();
+    const kr = plan.objectives[0].keyResults[1];
+    await run(s.t, (ctx) =>
+      ctx.db.patch(kr._id, {
+        measureKind: "seat_filled",
+        seatSlug: "chapter_director",
+        seatScope: s.chapterId,
+        target: undefined,
+        unit: undefined,
+        status: "at_risk",
+      }),
+    );
+    const first = await run(s.t, (ctx) => runGoalSeatMeasuresToManual(ctx));
+    expect(first.converted).toBe(1);
+    const row = await run(s.t, (ctx) => ctx.db.get(kr._id));
+    expect(row).toMatchObject({ measureKind: "manual", target: 1, unit: "people", status: "at_risk" });
+    expect(row?.seatSlug).toBeUndefined();
+    expect((await run(s.t, (ctx) => runGoalSeatMeasuresToManual(ctx))).converted).toBe(0);
   });
 });
 

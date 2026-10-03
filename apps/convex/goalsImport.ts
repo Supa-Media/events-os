@@ -129,20 +129,7 @@ export const importOnePager = mutation({
       });
       for (const [ki, k] of o.keyResults.entries()) {
         const m = k.measure;
-        let measure: Pick<Doc<"goalKeyResults">, "measureKind"> &
-          Partial<Pick<Doc<"goalKeyResults">, "target" | "unit" | "seatSlug" | "seatScope">> = {
-          measureKind: "manual",
-        };
-        if (m?.kind === "manual") {
-          measure = { measureKind: "manual", target: m.target, unit: m.unit };
-        } else if (m?.kind === "seat_filled") {
-          const scope = m.scope === "central" ? "central" : matchChapter(chapters, m.scope);
-          // A chapter that doesn't exist yet can't be counted; fall back to
-          // a manual 0-of-1 the owner flips when the seat is filled.
-          measure = scope
-            ? { measureKind: "seat_filled", seatSlug: m.seat, seatScope: scope, target: m.target }
-            : { measureKind: "manual", target: m.target ?? 1, unit: "people" };
-        }
+        const measure = { measureKind: "manual" as const, target: m?.target, unit: m?.unit };
         await ctx.db.insert("goalKeyResults", {
           planId,
           objectiveId,

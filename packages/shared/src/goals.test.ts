@@ -43,7 +43,6 @@ describe("ONE_PAGER_2027 seed", () => {
     }
     for (const k of krs) {
       if (k.ownerSeat) expect(seats).toContain(k.ownerSeat);
-      if (k.measure?.kind === "seat_filled") expect(seats).toContain(k.measure.seat);
     }
   });
 

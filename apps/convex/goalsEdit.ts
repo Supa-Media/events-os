@@ -293,8 +293,6 @@ const keyResultFields = {
   target: v.optional(v.union(v.number(), v.null())),
   current: v.optional(v.union(v.number(), v.null())),
   unit: v.optional(v.union(unit, v.null())),
-  seatSlug: v.optional(v.union(v.string(), v.null())),
-  seatScope: v.optional(v.union(v.id("chapters"), v.literal("central"), v.null())),
   eventTypeIds: v.optional(v.array(v.id("eventTypes"))),
   eventChapterId: v.optional(v.union(v.id("chapters"), v.null())),
 };
@@ -351,14 +349,6 @@ export const updateKeyResult = mutation({
     // One accountable owner: picking a team clears a seat owner and back.
     if (rest.ownerTeamId) patch.ownerSeatSlug = undefined;
     if (rest.ownerSeatSlug) patch.ownerTeamId = undefined;
-    // Pointing a key result at a seat starts counting from now: whoever
-    // already holds that seat isn't progress on it.
-    const kind = rest.measureKind ?? kr.measureKind;
-    const seatChanged =
-      (rest.seatSlug !== undefined && rest.seatSlug !== kr.seatSlug) ||
-      (rest.seatScope !== undefined && rest.seatScope !== kr.seatScope) ||
-      (rest.measureKind !== undefined && rest.measureKind !== kr.measureKind);
-    if (kind === "seat_filled" && seatChanged) patch.seatWatchSince = Date.now();
     await ctx.db.patch(keyResultId, { ...patch, updatedAt: Date.now() });
   },
 });

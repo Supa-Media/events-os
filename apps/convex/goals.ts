@@ -82,6 +82,8 @@ export const plan = query({
           .take(50);
         outKrs.push({
           ...k,
+          // Legacy seat_filled rows read as manual until migration 0088 runs.
+          measureKind: k.measureKind === "seat_filled" ? ("manual" as const) : k.measureKind,
           code: keyResultCode(oi, ki),
           ownerLabel:
             teamName(k.ownerTeamId) ??

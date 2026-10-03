@@ -369,6 +369,7 @@ const REGISTRY_NAMES = [
   "0085_folders_as_primitive",
   "0086_reaward_after_data_export_removal",
   "0087_reaward_after_transfers_removal",
+  "0088_goal_seat_measures_to_manual",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
