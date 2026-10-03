@@ -132,7 +132,11 @@ function SheetBody({
             <ProgressBar fraction={p.fraction} />
             <Text className="text-xs text-muted">
               {formatGoalValue(p.current ?? 0, kr.unit)} of {formatGoalValue(p.target ?? 0, kr.unit)}
-              {manual ? "" : ", counted automatically"}
+              {manual
+                ? ""
+                : kr.measureKind === "seat_filled"
+                  ? `, counting people seated since ${formatDue(kr.seatWatchSince ?? kr._creationTime)}`
+                  : ", counted automatically"}
             </Text>
           </View>
         ) : null}

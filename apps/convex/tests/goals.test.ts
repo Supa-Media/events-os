@@ -11,7 +11,8 @@ import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
  *  - plan content is gated on the plan-edit resolver while updates are open
  *    to every member (lib/goalsAccess.ts),
  *  - automatic measures read the real record (a filled seat completes its
- *    key result with no update posted),
+ *    key result with no update posted), counting only holders seated since
+ *    the key result started watching the seat,
  *  - deleting a key result unlinks the projects that pointed at it.
  */
 
@@ -137,6 +138,56 @@ describe("progress from the real record", () => {
     const row = after!.objectives[0].keyResults[0];
     expect(row.status).toBe("not_started");
     expect(row.progress.displayStatus).toBe("done");
+  });
+
+  test("someone already in the seat isn't counted as the recruit", async () => {
+    const t = newT();
+    const s = await setupChapter(t, { email: ED, chapterName: "New York" });
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    const seat = (slug: string, createdAt: number) =>
+      run(s.t, async (ctx) => {
+        const def = await ctx.db
+          .query("seatDefs")
+          .withIndex("by_slug", (q) => q.eq("slug", slug))
+          .unique();
+        const personId = await ctx.db.insert("people", { chapterId: s.chapterId, name: slug, createdAt });
+        await ctx.db.insert("seatAssignments", { seatDefId: def!._id, scope: s.chapterId, personId, createdAt });
+      });
+    // The chapter's existing president, mirrored onto the director seat.
+    await seat("chapter_director", Date.now() - 60_000);
+    const planId = await s.as.mutation(api.goalsImport.importOnePager, {});
+    const nycDirector = async () =>
+      (await s.as.query(api.goals.plan, { planId }))!.objectives[0].keyResults.find((k) => k.code === "1.2")!;
+
+    const before = await nycDirector();
+    expect(before).toMatchObject({ measureKind: "seat_filled", seatSlug: "chapter_director", seatScope: s.chapterId });
+    expect(before.progress).toMatchObject({ current: 0, displayStatus: "not_started" });
+
+    await seat("chapter_director", Date.now() + 1);
+    expect((await nycDirector()).progress).toMatchObject({ current: 1, displayStatus: "done" });
+  });
+
+  test("re-pointing a key result at a seat counts from then, not from before", async () => {
+    const { s, planId, plan } = await importedPlan();
+    await run(s.t, (ctx) => runSeedSeatDefs(ctx));
+    await run(s.t, async (ctx) => {
+      const def = await ctx.db
+        .query("seatDefs")
+        .withIndex("by_slug", (q) => q.eq("slug", "treasurer"))
+        .unique();
+      const personId = await ctx.db.insert("people", { chapterId: s.chapterId, name: "Treasurer", createdAt: 0 });
+      await ctx.db.insert("seatAssignments", { seatDefId: def!._id, scope: s.chapterId, personId, createdAt: Date.now() - 60_000 });
+    });
+    const kr = plan.objectives[2].keyResults[0];
+    await s.as.mutation(api.goalsEdit.updateKeyResult, {
+      keyResultId: kr._id,
+      measureKind: "seat_filled",
+      seatSlug: "treasurer",
+      seatScope: s.chapterId,
+      target: 1,
+    });
+    const row = (await s.as.query(api.goals.plan, { planId }))!.objectives[2].keyResults[0];
+    expect(row.progress).toMatchObject({ current: 0, displayStatus: row.status });
   });
 });
 

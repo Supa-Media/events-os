@@ -79,9 +79,12 @@ export const goalKeyResults = defineTable({
   target: v.optional(v.number()),
   current: v.optional(v.number()),
   unit: v.optional(unitValidator),
-  // seat_filled: which seat, at which scope.
+  // seat_filled: which seat, at which scope. Only holders seated at or after
+  // `seatWatchSince` count (unset = the key result's creation), so someone
+  // already in the seat doesn't read as a recruit the plan still asks for.
   seatSlug: v.optional(v.string()),
   seatScope: v.optional(v.union(v.id("chapters"), v.literal("central"))),
+  seatWatchSince: v.optional(v.number()),
   // event_count: which templates count, optionally in one chapter only.
   eventTypeIds: v.optional(v.array(v.id("eventTypes"))),
   eventChapterId: v.optional(v.id("chapters")),
