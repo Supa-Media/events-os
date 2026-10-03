@@ -2,7 +2,8 @@
  * Key-result progress, read from the real record at query time.
  *
  * Automatic measures never store their number: a seat-filled result counts
- * `seatAssignments` now, an event-count result counts completed `events` now,
+ * `seatAssignments` made since it started watching the seat (a holder already
+ * seated before then isn't the recruit the plan asks for), an event-count result counts completed `events` now,
  * so the Goals screen can't drift from the org chart or the calendar. Manual
  * measures use the number someone typed (`current`).
  */
@@ -24,12 +25,9 @@ export function planYearBounds(year: number): { start: number; end: number } {
   return { start: Date.UTC(year, 0, 1), end: Date.UTC(year + 1, 0, 1) };
 }
 
-async function seatHolderCount(
-  ctx: QueryCtx,
-  seatSlug: string,
-  scope: Doc<"goalKeyResults">["seatScope"],
-): Promise<number> {
-  if (!scope) return 0;
+async function seatHolderCount(ctx: QueryCtx, kr: Doc<"goalKeyResults">): Promise<number> {
+  const { seatSlug, seatScope: scope } = kr;
+  if (!seatSlug || !scope) return 0;
   const def = await ctx.db
     .query("seatDefs")
     .withIndex("by_slug", (q) => q.eq("slug", seatSlug))
@@ -39,7 +37,8 @@ async function seatHolderCount(
     .query("seatAssignments")
     .withIndex("by_scope_and_seat", (q) => q.eq("scope", scope).eq("seatDefId", def._id))
     .take(100);
-  return rows.length;
+  const since = kr.seatWatchSince ?? kr._creationTime;
+  return rows.filter((r) => r.createdAt >= since).length;
 }
 
 async function completedEventCount(
@@ -73,7 +72,7 @@ export async function keyResultProgress(
   let target: number | null = kr.target ?? null;
   const automatic = kr.measureKind !== "manual";
   if (kr.measureKind === "seat_filled" && kr.seatSlug) {
-    current = await seatHolderCount(ctx, kr.seatSlug, kr.seatScope);
+    current = await seatHolderCount(ctx, kr);
     target = target ?? 1;
   } else if (kr.measureKind === "event_count") {
     current = await completedEventCount(ctx, kr, planYear);

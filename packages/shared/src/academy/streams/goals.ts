@@ -32,7 +32,7 @@ export const GOALS_SECTIONS: Omit<AcademySection, "order">[] = [
           ["A count of gatherings (15 WWS)", "**Events** on the calendar, counted automatically when completed"],
           ["Something every event does", "A row on the event **template**"],
           ["A rhythm (monthly newsletter)", "A **duty** on the seat that owns it"],
-          ["Filling a seat", "The **org chart**; it counts as done once someone is seated"],
+          ["Filling a seat", "The **org chart**; it counts as done once someone new is seated (whoever already held the seat doesn't count)"],
         ],
       },
       {
