@@ -54,18 +54,17 @@ export const GOAL_PLAN_STATUS_LABELS: Record<GoalPlanStatus, string> = {
 /**
  * How a key result's progress is read.
  *   manual       — someone types the number (or just sets the status).
- *   seat_filled  — counts holders of one seat at one scope (Central or a
- *                  chapter). "Recruit the NYC Chapter Director" is done the
- *                  day someone is seated.
  *   event_count  — counts COMPLETED events of the chosen event types (and
  *                  optionally one chapter) dated inside the plan's year.
  * Money is `manual` for now; reading Giving/Finance totals is a follow-up.
+ * Recruiting is `manual` too, by the founder's call (2026-10-03): the org
+ * chart can't yet tell a recruit from someone already in the seat, so a
+ * person marks it done.
  */
-export const KEY_RESULT_MEASURE_KINDS = ["manual", "seat_filled", "event_count"] as const;
+export const KEY_RESULT_MEASURE_KINDS = ["manual", "event_count"] as const;
 export type KeyResultMeasureKind = (typeof KEY_RESULT_MEASURE_KINDS)[number];
 export const KEY_RESULT_MEASURE_LABELS: Record<KeyResultMeasureKind, string> = {
   manual: "Typed in by hand",
-  seat_filled: "A seat being filled",
   event_count: "Completed events",
 };
 
@@ -133,7 +132,6 @@ export interface SeedKeyResult {
   /** Epoch ms (America/New_York midnight-ish is fine — display is by date). */
   due?: string;
   measure?:
-    | { kind: "seat_filled"; seat: string; scope: "central" | "nyc" | "dmv"; target?: number }
     | { kind: "manual"; target?: number; unit?: GoalUnit };
 }
 export interface SeedObjective {
@@ -230,14 +228,14 @@ export const ONE_PAGER_2027: SeedPlan = {
       title: "Build healthy Central, NYC, and DMV teams",
       owner: "People team",
       keyResults: [
-        { title: "Recruit a recruiting associate.", owner: "People team", timing: "Oct 31, 2026", due: "2026-10-31", measure: { kind: "seat_filled", seat: "recruiting_associate", scope: "central" } },
-        { title: "Recruit the NYC Chapter Director.", owner: "People team", timing: "Nov 15, 2026", due: "2026-11-15", measure: { kind: "seat_filled", seat: "chapter_director", scope: "nyc" } },
+        { title: "Recruit a recruiting associate.", owner: "People team", timing: "Oct 31, 2026", due: "2026-10-31", measure: { kind: "manual", target: 1, unit: "people" } },
+        { title: "Recruit the NYC Chapter Director.", owner: "People team", timing: "Nov 15, 2026", due: "2026-11-15", measure: { kind: "manual", target: 1, unit: "people" } },
         { title: "Recruit four remaining NYC chapter leads.", owner: "People team", contributors: ["NYC chapter"], timing: "Dec 31, 2026", due: "2026-12-31", measure: { kind: "manual", target: 4, unit: "count" } },
-        { title: "Recruit the DMV Chapter Director.", owner: "People team", timing: "Apr 30, 2027", due: "2027-04-30", measure: { kind: "seat_filled", seat: "chapter_director", scope: "dmv" } },
+        { title: "Recruit the DMV Chapter Director.", owner: "People team", timing: "Apr 30, 2027", due: "2027-04-30", measure: { kind: "manual", target: 1, unit: "people" } },
         { title: "Staff and train the DMV chapter.", owner: "People team", contributors: ["DMV chapter"], timing: "Jun 30, 2027", due: "2027-06-30" },
         { title: "Hold monthly chapter team meetings.", ownerSeat: "chapter_director", timing: "Monthly" },
         { title: "Confirm returning members' roles and commitments.", owner: "People team", contributors: ["All teams"], timing: "Nov 30, 2026", due: "2026-11-30" },
-        { title: "Recruit a Partnerships Associate.", owner: "People team", contributors: ["Development team"], timing: "Dec 31, 2026", due: "2026-12-31", measure: { kind: "seat_filled", seat: "partnership_associate", scope: "central" } },
+        { title: "Recruit a Partnerships Associate.", owner: "People team", contributors: ["Development team"], timing: "Dec 31, 2026", due: "2026-12-31", measure: { kind: "manual", target: 1, unit: "people" } },
         { title: "Recruiting 4 dedicated experienced event planners.", owner: "People team", contributors: ["Central Events"], timing: "Dec 31, 2026", due: "2026-12-31", measure: { kind: "manual", target: 4, unit: "count" } },
         { title: "Document the team onboarding process.", owner: "People team", timing: "Dec 15, 2026", due: "2026-12-15" },
         { title: "Equip chapter marketers with brand resources and training.", owner: "People team", contributors: ["Marketing team"], timing: "Before chapter launch" },

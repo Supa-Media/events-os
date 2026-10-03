@@ -75,13 +75,13 @@ export const goalKeyResults = defineTable({
   // The hard deadline, when there is one (epoch ms). Drives Deadlines.
   dueDate: v.optional(v.number()),
   status: v.union(...KEY_RESULT_STATUSES.map((s) => v.literal(s))),
-  measureKind: v.union(...KEY_RESULT_MEASURE_KINDS.map((k) => v.literal(k))),
+  // "seat_filled" is legacy: migration 0088 turns those rows manual. Drop it
+  // (and the seat fields below) once that has run in production.
+  measureKind: v.union(...KEY_RESULT_MEASURE_KINDS.map((k) => v.literal(k)), v.literal("seat_filled")),
   target: v.optional(v.number()),
   current: v.optional(v.number()),
   unit: v.optional(unitValidator),
-  // seat_filled: which seat, at which scope. Only holders seated at or after
-  // `seatWatchSince` count (unset = the key result's creation), so someone
-  // already in the seat doesn't read as a recruit the plan still asks for.
+  // Legacy seat_filled fields; see measureKind.
   seatSlug: v.optional(v.string()),
   seatScope: v.optional(v.union(v.id("chapters"), v.literal("central"))),
   seatWatchSince: v.optional(v.number()),

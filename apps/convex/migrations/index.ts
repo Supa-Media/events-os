@@ -105,6 +105,7 @@ import { recaptureDesignCovers } from "./0084_recapture_design_covers";
 import { foldersAsPrimitive } from "./0085_folders_as_primitive";
 import { reawardAfterDataExportRemoval } from "./0086_reaward_after_data_export_removal";
 import { reawardAfterTransfersRemoval } from "./0087_reaward_after_transfers_removal";
+import { goalSeatMeasuresToManual } from "./0088_goal_seat_measures_to_manual";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -554,4 +555,8 @@ export const MIGRATIONS: Migration[] = [
   // inline when the last required module passes, so people who had finished
   // the other three newly qualify with no event left to fire. See the file.
   reawardAfterTransfersRemoval,
+  // 0088: "seat filled" key results counted whoever already held the seat as
+  // a recruit; recruiting is marked by hand for now, so those rows become
+  // manual (status and target kept). See the file.
+  goalSeatMeasuresToManual,
 ];

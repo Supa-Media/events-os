@@ -53,8 +53,6 @@ export function KeyResultEditor({
   const [kind, setKind] = useState<KeyResultMeasureKind>(kr.measureKind);
   const [target, setTarget] = useState(kr.target != null ? String(kr.target) : "");
   const [unit, setUnit] = useState<GoalUnit | "">(kr.unit ?? "");
-  const [seatSlug, setSeatSlug] = useState(kr.seatSlug ?? "");
-  const [seatScope, setSeatScope] = useState<string>(kr.seatScope ?? "central");
   const [eventTypeIds, setEventTypeIds] = useState<Id<"eventTypes">[]>(kr.eventTypeIds ?? []);
   const [eventChapterId, setEventChapterId] = useState<string>(kr.eventChapterId ?? "");
   const [saving, setSaving] = useState(false);
@@ -80,7 +78,6 @@ export function KeyResultEditor({
     const targetNum = parseNumber(target);
     if (dueMs === undefined) return alertError(new Error("Write the due date as YYYY-MM-DD."));
     if (targetNum === undefined) return alertError(new Error("The target needs to be a number."));
-    if (kind === "seat_filled" && !seatSlug) return alertError(new Error("Pick the seat to watch."));
     if (kind === "event_count" && eventTypeIds.length === 0) {
       return alertError(new Error("Pick at least one event template to count."));
     }
@@ -97,13 +94,6 @@ export function KeyResultEditor({
         measureKind: kind,
         target: targetNum,
         unit: kind === "manual" ? unit || null : null,
-        seatSlug: kind === "seat_filled" ? seatSlug : null,
-        seatScope:
-          kind === "seat_filled"
-            ? seatScope === "central"
-              ? "central"
-              : (seatScope as Id<"chapters">)
-            : null,
         eventTypeIds: kind === "event_count" ? eventTypeIds : [],
         eventChapterId: kind === "event_count" && eventChapterId ? (eventChapterId as Id<"chapters">) : null,
       });
@@ -151,30 +141,6 @@ export function KeyResultEditor({
         options={KEY_RESULT_MEASURE_KINDS.map((k) => ({ value: k, label: KEY_RESULT_MEASURE_LABELS[k] }))}
         onChange={(k) => setKind(k as KeyResultMeasureKind)}
       />
-      {kind === "seat_filled" ? (
-        <View className="flex-row gap-2">
-          <View className="flex-1">
-            <Select
-              label="Seat"
-              value={seatSlug}
-              options={options.seats.map((s) => ({ value: s.slug, label: s.title }))}
-              onChange={setSeatSlug}
-              searchable
-            />
-          </View>
-          <View className="flex-1">
-            <Select
-              label="Where"
-              value={seatScope}
-              options={[
-                { value: "central", label: "Central" },
-                ...options.chapters.map((c) => ({ value: c._id, label: c.name })),
-              ]}
-              onChange={setSeatScope}
-            />
-          </View>
-        </View>
-      ) : null}
       {kind === "event_count" ? (
         <View className="gap-2">
           <Text className="text-sm font-medium text-ink">Count completed events from</Text>
@@ -200,11 +166,11 @@ export function KeyResultEditor({
       <View className="flex-row gap-2">
         <View className="flex-1">
           <TextField
-            label={kind === "seat_filled" ? "People needed" : "Target"}
+            label="Target"
             value={target}
             onChangeText={setTarget}
             keyboardType="numeric"
-            placeholder={kind === "seat_filled" ? "1" : "Optional"}
+            placeholder="Optional"
           />
         </View>
         {kind === "manual" ? (
