@@ -271,7 +271,7 @@ export function outcomeMessage(
         "",
         "Thank you for the work you already put in. It told us more than any interview could have.",
         "",
-        "Here's what happens next: we'll get you onboarded, walk you through what you own and what you get to decide on your own, and set up your first check-in. Expect to hear from us within the week with dates.",
+        "Here's what happens next: we'll get you onboarded, walk you through what you own and what you get to decide on your own, and set up your first check-in. We'll be in touch with dates.",
         "",
         "Glad you're here.",
       ].join("\n");
@@ -617,13 +617,12 @@ export const GENERAL_INTEREST_SLUG = "general-interest";
 export const GENERAL_INTEREST_TITLE = "General interest";
 
 /**
- * What we promise a candidate, in days, and therefore what the desk is
- * measured against: an application gets a human reply within a week, and
- * nobody sits in an open stage for more than a month without hearing
- * something. These are PRODUCT commitments (published on `/team`),
- * not something the Academy pinned — if they change, the page changes.
+ * Internal aging thresholds, in days, that the desk flags files against: an
+ * application unanswered for more than a week, or any open stage untouched
+ * for more than a month. These are triage alarms for the team, NOT a reply
+ * deadline promised to candidates — no public copy quotes them.
  */
-export const RESPONSE_PROMISE_DAYS = 7;
+export const APPLICATION_STALE_DAYS = 7;
 export const STALE_STAGE_DAYS = 30;
 
 /** Is this file overdue a human touch? Closed files never are. */
@@ -633,7 +632,7 @@ export function isStale(
   now: number,
 ): boolean {
   if (isClosedStage(stage)) return false;
-  const limit = stage === "applied" ? RESPONSE_PROMISE_DAYS : STALE_STAGE_DAYS;
+  const limit = stage === "applied" ? APPLICATION_STALE_DAYS : STALE_STAGE_DAYS;
   return now - stageChangedAt > limit * DAY_MS_LOCAL;
 }
 

@@ -15,7 +15,6 @@
  * this script fills the role-dependent DOM around them.
  */
 import {
-  RESPONSE_PROMISE_DAYS,
   TRIAL_TRACKS,
   roleAcceptsApplications,
   type PublicJobListing,
@@ -151,7 +150,7 @@ function renderRole(d: PublicJobListing): string {
       <p class="max-w-prose text-lg leading-relaxed text-ink/80">${esc(d.summary)}</p>
       <div class="mt-2 flex flex-wrap items-center gap-3">
         <a href="${esc(applyHref)}" class="${APPLY_BTN_CLASS}">${accepting ? "Apply for this role →" : "Register your interest →"}</a>
-        <span class="text-sm text-ink/60">${accepting ? `A person replies within ${RESPONSE_PROMISE_DAYS} days.` : "Not open yet — we'll come back to you when it is."}</span>
+        <span class="text-sm text-ink/60">${accepting ? "A person reads every application." : "Not open yet — we'll come back to you when it is."}</span>
       </div>
     </header>
 

@@ -1058,7 +1058,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "The page makes one promise with a clock on it: **a human replies within a week, either way.** The desk counts the files that are past it, the ones nobody owns, and the trials past their midpoint — in red, at the top. Those numbers are the desk's own report card, and they are the reason a friendly page is a commitment rather than a brochure.",
+        text: "The page makes one promise: **a human replies, either way.** The desk counts the files that have waited over a week unanswered, the ones nobody owns, and the trials past their midpoint — in red, at the top. Those numbers are the desk's own report card, and they are the reason a friendly page is a commitment rather than a brochure.",
       },
       {
         kind: "reveal",

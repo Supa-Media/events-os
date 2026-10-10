@@ -145,13 +145,13 @@ function SignupsBody({ canManage }: { canManage: boolean }) {
         <Text className="mb-3 text-sm text-muted">
           People who want to help at a gathering, not hold a seat. Reply,
           then put them on the roster so they show up when an event needs
-          those hands. We promise a reply within {summary.replyDays} days.
+          those hands.
         </Text>
 
         <View className="mb-4 flex-row flex-wrap gap-2">
           <Stat label="Waiting" value={summary.open} />
           <Stat label="Unanswered" value={summary.unanswered} alarming />
-          <Stat label="Past our promise" value={summary.pastPromise} alarming />
+          <Stat label="Waiting over a week" value={summary.pastPromise} alarming />
           <Stat label="On the roster" value={summary.rostered} />
         </View>
 

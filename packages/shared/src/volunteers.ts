@@ -194,6 +194,7 @@ export const VOLUNTEER_LIMITS = {
   areas: 8,
 } as const;
 
-/** The same promise the team pipeline makes, for the same reason: a hand
- *  raised into silence is worse than no form at all. */
-export const VOLUNTEER_REPLY_DAYS = 7;
+/** Internal aging alarm, same as the team pipeline's: a signup left
+ *  unanswered longer than this is flagged on the desk. Not a promised reply
+ *  time — no public copy quotes it. */
+export const VOLUNTEER_STALE_DAYS = 7;
