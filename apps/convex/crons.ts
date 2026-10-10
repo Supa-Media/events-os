@@ -351,4 +351,13 @@ crons.cron(
   {},
 );
 
+// Monday 13:00 UTC = 9am EDT (8am EST): the leads inbox's weekly count of
+// volunteer signups and team applications. Sends nothing on a quiet week.
+crons.cron(
+  "weekly recruiting digest",
+  "0 13 * * 1",
+  internal.recruitingDigest.sendWeeklyRecruitingDigest,
+  {},
+);
+
 export default crons;
