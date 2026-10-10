@@ -125,6 +125,18 @@ export const jobApplications = defineTable({
    *  what a candidate SAYS and how the desk FILES it are different facts. */
   referredBy: v.optional(v.string()),
 
+  // ── Other doors they'd walk through ──────────────────────────────────────
+  /** "I'm open to other roles that may come up" — a standing yes to being
+   *  asked about a seat that isn't posted yet. Absent on files from before
+   *  the form asked, which is not the same as a no. */
+  openToOtherRoles: v.optional(v.boolean()),
+  /** Other roles that were OPEN when they applied and that they ticked as
+   *  "I'd also consider this". Slug + title snapshotted, same reason as
+   *  `roleSlug`/`roleTitle`: the file must outlive the postings. */
+  otherRoles: v.optional(
+    v.array(v.object({ slug: v.string(), title: v.string() })),
+  ),
+
   // ── What they said ───────────────────────────────────────────────────────
   /** Answers keyed by `APPLICATION_QUESTIONS[].key`. A record rather than
    *  named columns so a question can be reworded, added, or retired without a

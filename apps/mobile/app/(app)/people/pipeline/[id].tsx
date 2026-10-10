@@ -208,6 +208,17 @@ function FileBody({
               Referred by: {app.referredBy}
             </Text>
           ) : null}
+          {app.otherRoles.length > 0 ? (
+            <Text className="mt-2 text-xs text-ink">
+              Would also consider:{" "}
+              {app.otherRoles.map((r) => r.title).join(", ")}
+            </Text>
+          ) : null}
+          {app.openToOtherRoles ? (
+            <Text className="mt-1 text-xs text-ink">
+              Open to other roles that may come up
+            </Text>
+          ) : null}
           <Text className="mt-2 text-xs text-faint">
             Applied {formatDate(app.createdAt)}
           </Text>

@@ -206,6 +206,15 @@ function PipelineBody() {
                           tone="info"
                         />
                       ) : null}
+                      {row.openToOtherRoles ? (
+                        <Badge label="Open to other roles" tone="lavender" />
+                      ) : null}
+                      {row.otherRoleCount > 0 ? (
+                        <Badge
+                          label={`+${row.otherRoleCount} other role${row.otherRoleCount === 1 ? "" : "s"}`}
+                          tone="lavender"
+                        />
+                      ) : null}
                       {row.outcome === "not_now" && row.revisitAt ? (
                         <Badge
                           label={`Revisit ${new Date(row.revisitAt).toLocaleDateString()}`}

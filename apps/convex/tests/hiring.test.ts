@@ -169,6 +169,84 @@ describe("hiring — the public intake", () => {
     expect(rows[0].phone).toBe("555-0199");
   });
 
+  test("other roles they'd consider are stored cleaned, titled from the live posting", async () => {
+    const t = newT();
+    const now = Date.now();
+    await run(t, (ctx) =>
+      ctx.db.insert("jobListings", {
+        slug: "sound-lead",
+        title: "Sound Lead",
+        status: "open",
+        published: true,
+        team: "Production",
+        commitment: "Volunteer",
+        location: "NYC",
+        hoursPerWeek: 4,
+        reportsTo: "Production Director",
+        worksWith: [],
+        manages: [],
+        trialTrack: "team_member",
+        order: 0,
+        summary: "",
+        whyThisSeatExists: "",
+        outcomes: [],
+        authority: [],
+        responsibilities: [],
+        rhythms: [],
+        firstNinetyDays: [],
+        required: [],
+        preferred: [],
+        notThisRole: [],
+        successLooks: [],
+        postedAt: now,
+        createdAt: now,
+        updatedAt: now,
+      }),
+    );
+    const id = await submit(t, {
+      openToOtherRoles: true,
+      otherRoles: [
+        { slug: "Sound-Lead", title: "<b>forged</b>" },
+        { slug: "sound-lead", title: "Sound Lead" },
+        // The role they're applying FOR is not an "other" role.
+        { slug: "people-director", title: "People Director" },
+        { slug: "retired-role", title: "Retired Role" },
+        { slug: "  ", title: "blank" },
+      ],
+    });
+    const row = await run(t, (ctx) => ctx.db.get(id));
+    expect(row?.openToOtherRoles).toBe(true);
+    expect(row?.otherRoles).toEqual([
+      { slug: "sound-lead", title: "Sound Lead" },
+      { slug: "retired-role", title: "Retired Role" },
+    ]);
+
+    const notice = await t.query(internal.hiring.getNewApplicationNotice, {
+      applicationId: id,
+    });
+    expect(notice?.openToOtherRoles).toBe(true);
+    expect(notice?.otherRoleTitles).toEqual(["Sound Lead", "Retired Role"]);
+  });
+
+  test("not ticking anything files a plain no, not a missing field", async () => {
+    const t = newT();
+    const id = await submit(t);
+    const row = await run(t, (ctx) => ctx.db.get(id));
+    expect(row?.openToOtherRoles).toBe(false);
+    expect(row?.otherRoles).toEqual([]);
+  });
+
+  test("an absurd list of other roles is refused", async () => {
+    const t = newT();
+    const otherRoles = Array.from({ length: 21 }, (_, i) => ({
+      slug: `role-${i}`,
+      title: `Role ${i}`,
+    }));
+    await expect(
+      t.mutation(api.hiring.submitApplication, applicationArgs({ otherRoles })),
+    ).rejects.toThrow(/at most 20/);
+  });
+
   test("the same person applying for a DIFFERENT role gets their own file", async () => {
     const t = newT();
     await submit(t);
