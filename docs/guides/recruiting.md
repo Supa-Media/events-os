@@ -92,7 +92,8 @@ untrue.
 Chapter OS → **People → Recruiting → Team applications**. The numbers along the
 top are the desk's report card, not decoration:
 
-- **Past our promise** — applications older than 7 days that nobody has answered.
+- **Waiting over a week** — applications older than 7 days that nobody has
+  answered. An internal alarm, not a deadline we promise applicants.
 - **No owner** — files nobody has claimed. An unowned file aging is the loudest
   alarm here.
 - **Trial reviews due** — a trial past its midpoint with no review filed.
@@ -158,8 +159,8 @@ else they wrote.
 
 Do two things:
 
-1. **Reply within a week.** Same promise as the team side, published on the
-   page. Mark it "reached out" so the desk stops counting it against you.
+1. **Reply.** Every signup hears from a person. Mark it "reached out" so the
+   desk stops counting it as waiting.
 2. **Add to roster.** This is the only button here that changes anything: it
    creates (or reuses) their person record, marks them a volunteer, and tags
    them with the Service Catalog services their chosen areas imply. That

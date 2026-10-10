@@ -29,7 +29,7 @@ import { mutation as peopleMutation } from "./lib/peopleAggregate";
 import {
   VOLUNTEER_AREAS,
   VOLUNTEER_LIMITS,
-  VOLUNTEER_REPLY_DAYS,
+  VOLUNTEER_STALE_DAYS,
   isVolunteerArea,
   isClosedVolunteerStage,
   serviceLabelsForAreas,
@@ -279,7 +279,7 @@ export const listSignups = query({
 });
 
 /** Header numbers: how many are waiting, and how many nobody has answered
- *  inside the promise. Same shape of question the team pipeline asks. */
+ *  for over a week. Same shape of question the team pipeline asks. */
 export const signupSummary = query({
   args: {},
   returns: v.object({
@@ -308,7 +308,7 @@ export const signupSummary = query({
       open += 1;
       if (row.stage === "new") {
         unanswered += 1;
-        if (now - row.createdAt > VOLUNTEER_REPLY_DAYS * 24 * 60 * 60 * 1000) {
+        if (now - row.createdAt > VOLUNTEER_STALE_DAYS * 24 * 60 * 60 * 1000) {
           pastPromise += 1;
         }
       }
@@ -318,7 +318,7 @@ export const signupSummary = query({
       unanswered,
       pastPromise,
       rostered,
-      replyDays: VOLUNTEER_REPLY_DAYS,
+      replyDays: VOLUNTEER_STALE_DAYS,
     };
   },
 });

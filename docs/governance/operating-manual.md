@@ -177,8 +177,8 @@ Academy teaches (`growing-the-team`); since 2026-08-23 the product carries it:
    with a reason, or a not-yet carrying the date it will be revisited.
 
 Applications, rubric reviews, and decisions live on the Hiring desk in Chapter
-OS (`hiring.view` / `hiring.edit` / `hiring.approve`). The organization's stated
-commitment to an applicant is a human reply within **7 days**. Placement into a
+OS (`hiring.view` / `hiring.edit` / `hiring.approve`). Every applicant hears
+back from a person, either way; no reply deadline is promised. Placement into a
 seat is still an appointment under §2.3 — the pipeline informs the appointment;
 it does not make it. Volunteer signups are triaged on the same desk, with a
 single act at the end: adding them to the roster, which is what makes them

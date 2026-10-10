@@ -25,7 +25,6 @@ import {
   CLOSED_HIRING_STAGES,
   HIRING_STAGE_DEFS,
   OPEN_HIRING_STAGES,
-  RESPONSE_PROMISE_DAYS,
   isStale,
   type HiringStage,
 } from "@events-os/shared";
@@ -119,14 +118,13 @@ function PipelineBody() {
         <SectionHeader title="Team applications" count={`${summary.open} open`} />
         <Text className="mb-3 text-sm text-muted">
           Everyone applying for a SEAT comes through here — one funnel, one
-          standard. We promise a human reply within {RESPONSE_PROMISE_DAYS}{" "}
-          days. (Volunteers who just want to help at a gathering are the other
-          tab.)
+          standard. (Volunteers who just want to help at a gathering are the
+          other tab.)
         </Text>
 
         <View className="mb-4 flex-row flex-wrap gap-2">
           <Stat label="Open files" value={summary.open} />
-          <Stat label="Past our promise" value={summary.pastPromise} alarming />
+          <Stat label="Waiting over a week" value={summary.pastPromise} alarming />
           <Stat label="No owner" value={summary.unassigned} alarming />
           <Stat label="Trial reviews due" value={summary.trialReviewsDue} alarming />
           <Stat label="Awaiting the call" value={summary.awaitingDecision} alarming />

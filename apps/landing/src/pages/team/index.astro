@@ -13,7 +13,6 @@ import Container from "../../components/ui/Container.astro";
 import Eyebrow from "../../components/ui/Eyebrow.astro";
 import Button from "../../components/ui/Button.astro";
 import HiringProcess from "../../components/team/HiringProcess.astro";
-import { RESPONSE_PROMISE_DAYS } from "@events-os/shared/src/hiring";
 import { asset } from "../../lib/asset";
 
 // Roles are NOT rendered here at build time: they live in Convex and the
@@ -119,8 +118,7 @@ import { asset } from "../../lib/asset";
       </p>
       <HiringProcess />
       <p class="mt-6 max-w-prose text-sm text-ink/70">
-        You'll hear from a person within {RESPONSE_PROMISE_DAYS} days either
-        way. If the answer is no, you'll get a real one, not silence. If it's
+        You'll hear from a person either way. If the answer is no, you'll get a real one, not silence. If it's
         not now, we'll tell you when we're coming back to it.
       </p>
     </section>

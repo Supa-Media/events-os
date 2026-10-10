@@ -50,7 +50,7 @@ import {
   HIRING_STAGES,
   HIRING_OUTCOME_DEFS,
   MIN_REVIEWS_BEFORE_DECISION,
-  RESPONSE_PROMISE_DAYS,
+  APPLICATION_STALE_DAYS,
   RUBRIC_MAX,
   RUBRIC_MIN,
   isApplicationQuestionKey,
@@ -374,7 +374,7 @@ export const submitApplication = mutation({
       applicationId,
     });
     // …and tell the people who can actually act on it. A desk nobody opens is
-    // how a 7-day promise quietly becomes a 7-week one.
+    // how an application quietly sits unanswered for weeks.
     await ctx.scheduler.runAfter(0, internal.hiring.sendNewApplicationNotice, {
       applicationId,
     });
@@ -522,8 +522,8 @@ export const listApplications = query({
 });
 
 /**
- * The header numbers: how many files sit in each stage, how many are past the
- * promise, how many nobody owns, and how many trials are overdue a review.
+ * The header numbers: how many files sit in each stage, how many have waited
+ * over a week unanswered, how many nobody owns, and how many trials are overdue a review.
  *
  * The last three are the ones that matter. A stage count tells you the funnel's
  * shape; an aging unassigned file tells you the funnel is failing someone.
@@ -561,7 +561,7 @@ export const pipelineSummary = query({
       if (isClosedStage(row.stage as HiringStage)) continue;
       open += 1;
       if (row.stage === "applied" &&
-          now - row.createdAt > RESPONSE_PROMISE_DAYS * 24 * 60 * 60 * 1000) {
+          now - row.createdAt > APPLICATION_STALE_DAYS * 24 * 60 * 60 * 1000) {
         pastPromise += 1;
       }
       if (!row.assignedTo) unassigned += 1;
@@ -582,7 +582,7 @@ export const pipelineSummary = query({
       unassigned,
       trialReviewsDue,
       awaitingDecision,
-      responsePromiseDays: RESPONSE_PROMISE_DAYS,
+      responsePromiseDays: APPLICATION_STALE_DAYS,
     };
   },
 });
@@ -1209,7 +1209,7 @@ export const sendApplicationReceived = internalAction({
       const html = emailShell(`
         ${emailHeading("We've got your application")}
         ${emailParagraph(`Thanks, ${escapeHtml(payload.name.split(/\s+/)[0] || "friend")} — your application for <b>${escapeHtml(payload.roleTitle)}</b> is in, and a real person reads every one.`)}
-        ${emailParagraph(`<b>What happens next.</b> You'll hear from us within ${RESPONSE_PROMISE_DAYS} days either way. If we go further, it's a conversation about you and why you want to serve, then one about the role itself. Every role here starts with an Empowerment Trial — a month or two of real, bounded work — before anything is official. Nobody gets a title before they've done the work.`)}
+        ${emailParagraph(`<b>What happens next.</b> You'll hear from us either way. If we go further, it's a conversation about you and why you want to serve, then one about the role itself. Every role here starts with an Empowerment Trial — a month or two of real, bounded work — before anything is official. Nobody gets a title before they've done the work.`)}
         ${emailParagraph("If your situation changes — your time, your church, your interest — just reply to this email and tell us. We'd rather know.")}
         ${emailButtonRow(`${siteUrl()}/team`, "See the open seats →")}
       `);
@@ -1343,7 +1343,7 @@ export const sendNewApplicationNotice = internalAction({
         ${emailHeading("A new application")}
         ${emailParagraph(`<b>${escapeHtml(payload.name)}</b> applied for <b>${escapeHtml(payload.roleTitle)}</b>${payload.location ? ` — ${escapeHtml(payload.location)}` : ""}.`)}
         ${capacity}
-        ${emailParagraph(`We've told them they'll hear from a person within ${RESPONSE_PROMISE_DAYS} days. Reply to them at ${escapeHtml(payload.email)}.`, { size: 12 })}
+        ${emailParagraph(`Reply to them at ${escapeHtml(payload.email)}.`, { size: 12 })}
         ${link ? emailButtonRow(link, "Open the pipeline →") : ""}
       `);
 
