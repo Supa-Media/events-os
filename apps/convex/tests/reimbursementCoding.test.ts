@@ -1054,7 +1054,9 @@ describe("the substantiation reaches the surfaces that need it", () => {
     const stale = await run(s.t, async () =>
       s.t.query(internal.reimbursements.listStaleReimbursements, {
         chapterId: s.chapterId,
-        now: Date.now(),
+        // +1: the age check is strict (`< now - olderThanMs`), so a request
+        // stamped in the same millisecond as `now` would not count as old.
+        now: Date.now() + 1,
         // Sent-back requests join the sweep on the SAME staleness window as
         // everything else (0 here = "everything is old enough").
         olderThanMs: 0,
