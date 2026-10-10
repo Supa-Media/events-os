@@ -15,6 +15,7 @@ import type { Id } from "../_generated/dataModel";
 import {
   CANDIDATE_SOURCE_IDS,
   HIRING_STAGES,
+  LEADS_INBOX,
   MIN_REVIEWS_BEFORE_DECISION,
   REVIEW_KINDS,
   REVIEW_RECOMMENDATIONS,
@@ -458,7 +459,7 @@ describe("hiring — the desk's numbers", () => {
 });
 
 describe("hiring — who gets told", () => {
-  test("the new-application notice goes to central hiring-power holders, and nobody else", async () => {
+  test("the new-application notice goes to the leads inbox and central hiring-power holders, and nobody else", async () => {
     const t = newT();
     const s = await setupChapter(t);
     // Holds the power → gets told.
@@ -477,18 +478,21 @@ describe("hiring — who gets told", () => {
     const notice = await t.query(internal.hiring.getNewApplicationNotice, {
       applicationId: id,
     });
-    expect(notice?.recipients).toEqual(["seat-director_seat@publicworship.life"]);
+    expect(notice?.recipients).toEqual([
+      LEADS_INBOX,
+      "seat-director_seat@publicworship.life",
+    ]);
     expect(notice?.roleTitle).toBe("People Director");
     // The availability answer rides along — it is the org's stated hard gate.
     expect(notice?.capacity).toContain("10 hours a week");
   });
 
-  test("no hiring seats yet means an empty recipient list, not a failure", async () => {
+  test("no hiring seats yet still tells the leads inbox", async () => {
     const t = newT();
     const id = await submit(t);
     const notice = await t.query(internal.hiring.getNewApplicationNotice, {
       applicationId: id,
     });
-    expect(notice?.recipients).toEqual([]);
+    expect(notice?.recipients).toEqual([LEADS_INBOX]);
   });
 });

@@ -391,6 +391,7 @@ import type * as receiptPdf from "../receiptPdf.js";
 import type * as receipts from "../receipts.js";
 import type * as reconcileSuggest from "../reconcileSuggest.js";
 import type * as reconciliation from "../reconciliation.js";
+import type * as recruitingDigest from "../recruitingDigest.js";
 import type * as registrations from "../registrations.js";
 import type * as reimbursementApprovedNoticeBackfill from "../reimbursementApprovedNoticeBackfill.js";
 import type * as reimbursementBackfill from "../reimbursementBackfill.js";
@@ -876,6 +877,7 @@ declare const fullApi: ApiFromModules<{
   receipts: typeof receipts;
   reconcileSuggest: typeof reconcileSuggest;
   reconciliation: typeof reconciliation;
+  recruitingDigest: typeof recruitingDigest;
   registrations: typeof registrations;
   reimbursementApprovedNoticeBackfill: typeof reimbursementApprovedNoticeBackfill;
   reimbursementBackfill: typeof reimbursementBackfill;

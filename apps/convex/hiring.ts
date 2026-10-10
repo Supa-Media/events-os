@@ -49,6 +49,7 @@ import {
   GENERAL_INTEREST_TITLE,
   HIRING_STAGES,
   HIRING_OUTCOME_DEFS,
+  LEADS_INBOX,
   MIN_REVIEWS_BEFORE_DECISION,
   APPLICATION_STALE_DAYS,
   RUBRIC_MAX,
@@ -1288,8 +1289,9 @@ export const markOutcomeMessageSent = internalMutation({
 });
 
 /** Everything the desk's new-application notice needs, or `null` when the file
- *  vanished under a scheduled send. Recipients come from the SEAT CHART (see
- *  `hiringDeskRecipients`), so holding the power is the subscription. */
+ *  vanished under a scheduled send. Recipients are the leads inbox
+ *  (`LEADS_INBOX`, always) plus everyone the SEAT CHART says can act on it
+ *  (see `hiringDeskRecipients`), so holding the power is the subscription. */
 export const getNewApplicationNotice = internalQuery({
   args: { applicationId: v.id("jobApplications") },
   returns: v.union(
@@ -1298,20 +1300,28 @@ export const getNewApplicationNotice = internalQuery({
       recipients: v.array(v.string()),
       name: v.string(),
       email: v.string(),
+      phone: v.union(v.string(), v.null()),
       roleTitle: v.string(),
       location: v.union(v.string(), v.null()),
+      referredBy: v.union(v.string(), v.null()),
       capacity: v.union(v.string(), v.null()),
     }),
   ),
   handler: async (ctx, { applicationId }) => {
     const row = await ctx.db.get(applicationId);
     if (!row) return null;
+    const seatHolders = await hiringDeskRecipients(ctx);
     return {
-      recipients: await hiringDeskRecipients(ctx),
+      recipients: [
+        LEADS_INBOX,
+        ...seatHolders.filter((e) => e !== LEADS_INBOX),
+      ],
       name: row.name,
       email: row.email,
+      phone: row.phone ?? null,
       roleTitle: row.roleTitle,
       location: row.location ?? null,
+      referredBy: row.referredBy ?? null,
       // The availability answer, previewed in the notice: it is the org's
       // stated hard gate, so it is the one answer worth reading before
       // deciding whether this needs attention today.
@@ -1333,7 +1343,7 @@ export const sendNewApplicationNotice = internalAction({
       );
       if (!payload || payload.recipients.length === 0) return null;
 
-      const link = appUrl("/hiring");
+      const link = appUrl("/people/pipeline");
       const capacity = payload.capacity
         ? emailParagraph(
             `<b>On their time:</b> ${escapeHtml(payload.capacity.slice(0, 400))}`,
@@ -1343,7 +1353,8 @@ export const sendNewApplicationNotice = internalAction({
         ${emailHeading("A new application")}
         ${emailParagraph(`<b>${escapeHtml(payload.name)}</b> applied for <b>${escapeHtml(payload.roleTitle)}</b>${payload.location ? ` — ${escapeHtml(payload.location)}` : ""}.`)}
         ${capacity}
-        ${emailParagraph(`Reply to them at ${escapeHtml(payload.email)}.`, { size: 12 })}
+        ${payload.referredBy ? emailParagraph(`<b>Referred by:</b> ${escapeHtml(payload.referredBy)}`) : ""}
+        ${emailParagraph(`Reply to them at ${escapeHtml(payload.email)}${payload.phone ? ` or ${escapeHtml(payload.phone)}` : ""}.`, { size: 12 })}
         ${link ? emailButtonRow(link, "Open the pipeline →") : ""}
       `);
 

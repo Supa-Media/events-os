@@ -617,6 +617,15 @@ export const GENERAL_INTEREST_SLUG = "general-interest";
 export const GENERAL_INTEREST_TITLE = "General interest";
 
 /**
+ * The leadership team's shared inbox. It gets an email for every new team
+ * application the moment it lands (alongside the seat holders who carry the
+ * hiring power), and the weekly recruiting digest of volunteer signups and
+ * applications. A group mailbox rather than a person, so it is a constant
+ * here, not a seat: who reads it is decided in the mail admin, not the app.
+ */
+export const LEADS_INBOX = "leads@publicworship.life";
+
+/**
  * Internal aging thresholds, in days, that the desk flags files against: an
  * application unanswered for more than a week, or any open stage untouched
  * for more than a month. These are triage alarms for the team, NOT a reply
