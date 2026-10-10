@@ -177,6 +177,49 @@ function normalizedEmail(raw: string | undefined): string {
   return email;
 }
 
+/**
+ * The "I'd also consider…" list, cleaned: blanks and the role they're applying
+ * FOR dropped, duplicates collapsed, count capped. A slug that names a live
+ * posting takes that posting's title (the page could have sent anything); one
+ * that doesn't is kept with its title capped rather than refused, for the same
+ * stale-bookmark reason the main `roleSlug` isn't validated.
+ */
+async function resolveOtherRoles(
+  ctx: MutationCtx,
+  raw: Array<{ slug: string; title: string }> | undefined,
+  appliedFor: string,
+): Promise<Array<{ slug: string; title: string }>> {
+  const seen = new Set<string>([appliedFor]);
+  const picked: Array<{ slug: string; title: string }> = [];
+  for (const entry of raw ?? []) {
+    const slug = entry.slug.trim().toLowerCase().slice(0, ROLE_FIELD_MAX_LEN);
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    picked.push({ slug, title: entry.title });
+  }
+  if (picked.length > APPLICATION_LIMITS.otherRoles) {
+    throw new ConvexError({
+      code: "TOO_MANY_OTHER_ROLES",
+      message: `Please pick at most ${APPLICATION_LIMITS.otherRoles} other roles.`,
+    });
+  }
+  return Promise.all(
+    picked.map(async ({ slug, title }) => {
+      const listing = await ctx.db
+        .query("jobListings")
+        .withIndex("by_slug", (q) => q.eq("slug", slug))
+        .unique();
+      return {
+        slug,
+        title: (listing?.title ?? (title.trim() || slug)).slice(
+          0,
+          ROLE_FIELD_MAX_LEN,
+        ),
+      };
+    }),
+  );
+}
+
 // ── PUBLIC (no auth) ─────────────────────────────────────────────────────────
 
 /**
@@ -213,6 +256,12 @@ export const submitApplication = mutation({
     location: v.optional(v.string()),
     links: v.optional(v.array(v.string())),
     referredBy: v.optional(v.string()),
+    /** "Open to other roles that may come up." */
+    openToOtherRoles: v.optional(v.boolean()),
+    /** Other open roles they'd also consider, as the form listed them. */
+    otherRoles: v.optional(
+      v.array(v.object({ slug: v.string(), title: v.string() })),
+    ),
     // Loose `v.record(v.string(), v.string())`, narrowed in the handler so an
     // unknown key produces a friendly message rather than Convex's generic
     // argument-validation failure (the same call `submitInterest` makes).
@@ -281,6 +330,9 @@ export const submitApplication = mutation({
       }
     }
 
+    const otherRoles = await resolveOtherRoles(ctx, args.otherRoles, roleSlug);
+    const openToOtherRoles = args.openToOtherRoles === true;
+
     const answers: Record<string, string> = {};
     for (const [key, raw] of Object.entries(args.answers)) {
       if (!isApplicationQuestionKey(key)) {
@@ -328,6 +380,8 @@ export const submitApplication = mutation({
         ...(location ? { location } : {}),
         ...(links.length ? { links } : {}),
         ...(referredBy ? { referredBy } : {}),
+        openToOtherRoles,
+        otherRoles,
         answers,
         updatedAt: now,
       });
@@ -349,6 +403,8 @@ export const submitApplication = mutation({
       ...(location ? { location } : {}),
       ...(links.length ? { links } : {}),
       ...(referredBy ? { referredBy } : {}),
+      openToOtherRoles,
+      otherRoles,
       answers,
       // Rung 3 of the ordered search by definition — it arrived through the
       // public call. A director who nudged someone to apply properly can
@@ -425,6 +481,11 @@ const applicationRowValidator = v.object({
   revisitAt: v.union(v.number(), v.null()),
   outcomeMessageSentAt: v.union(v.number(), v.null()),
   reviewCount: v.number(),
+  /** "Open to other roles that may come up" — the pool a new seat's search
+   *  starts from. `false` on files from before the form asked. */
+  openToOtherRoles: v.boolean(),
+  /** How many other open roles they also ticked (titles on the full file). */
+  otherRoleCount: v.number(),
   createdAt: v.number(),
 });
 
@@ -478,6 +539,8 @@ async function applicationRow(ctx: QueryCtx, row: Doc<"jobApplications">) {
     revisitAt: row.revisitAt ?? null,
     outcomeMessageSentAt: row.outcomeMessageSentAt ?? null,
     reviewCount: await countReviews(ctx, row._id),
+    openToOtherRoles: row.openToOtherRoles === true,
+    otherRoleCount: row.otherRoles?.length ?? 0,
     createdAt: row.createdAt,
   };
 }
@@ -598,6 +661,7 @@ export const getApplication = query({
         ...applicationRowValidator.fields,
         links: v.array(v.string()),
         referredBy: v.union(v.string(), v.null()),
+        otherRoles: v.array(v.object({ slug: v.string(), title: v.string() })),
         answers: v.record(v.string(), v.string()),
         trialBrief: v.union(v.string(), v.null()),
         trialStartedAt: v.union(v.number(), v.null()),
@@ -663,6 +727,7 @@ export const getApplication = query({
         ...(await applicationRow(ctx, row)),
         links: row.links ?? [],
         referredBy: row.referredBy ?? null,
+        otherRoles: row.otherRoles ?? [],
         answers: row.answers,
         trialBrief: row.trialBrief ?? null,
         trialStartedAt: row.trialStartedAt ?? null,
@@ -1305,6 +1370,8 @@ export const getNewApplicationNotice = internalQuery({
       location: v.union(v.string(), v.null()),
       referredBy: v.union(v.string(), v.null()),
       capacity: v.union(v.string(), v.null()),
+      openToOtherRoles: v.boolean(),
+      otherRoleTitles: v.array(v.string()),
     }),
   ),
   handler: async (ctx, { applicationId }) => {
@@ -1326,6 +1393,8 @@ export const getNewApplicationNotice = internalQuery({
       // stated hard gate, so it is the one answer worth reading before
       // deciding whether this needs attention today.
       capacity: row.answers.capacity ?? null,
+      openToOtherRoles: row.openToOtherRoles === true,
+      otherRoleTitles: (row.otherRoles ?? []).map((r) => r.title),
     };
   },
 });
@@ -1354,6 +1423,8 @@ export const sendNewApplicationNotice = internalAction({
         ${emailParagraph(`<b>${escapeHtml(payload.name)}</b> applied for <b>${escapeHtml(payload.roleTitle)}</b>${payload.location ? ` — ${escapeHtml(payload.location)}` : ""}.`)}
         ${capacity}
         ${payload.referredBy ? emailParagraph(`<b>Referred by:</b> ${escapeHtml(payload.referredBy)}`) : ""}
+        ${payload.otherRoleTitles.length > 0 ? emailParagraph(`<b>Would also consider:</b> ${payload.otherRoleTitles.map(escapeHtml).join(", ")}`) : ""}
+        ${payload.openToOtherRoles ? emailParagraph(`<b>Open to other roles that may come up.</b>`) : ""}
         ${emailParagraph(`Reply to them at ${escapeHtml(payload.email)}${payload.phone ? ` or ${escapeHtml(payload.phone)}` : ""}.`, { size: 12 })}
         ${link ? emailButtonRow(link, "Open the pipeline →") : ""}
       `);

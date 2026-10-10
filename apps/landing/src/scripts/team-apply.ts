@@ -12,6 +12,11 @@
  * site ships no framework runtime, and an application form is the last place
  * to start.
  */
+import {
+  roleAcceptsApplications,
+  type PublicJobListing,
+} from "@events-os/shared/src/hiring";
+
 const API = "/api/team/apply";
 
 const form = document.querySelector<HTMLFormElement>("[data-apply-form]");
@@ -39,6 +44,69 @@ function hydrateRole(): void {
   // rendered fallback already reads "General interest".
   if (titleEl && title) titleEl.textContent = title;
   if (title) document.title = `Apply · ${title} — Public Worship`;
+}
+
+/** List every OTHER role that's taking applications as a checkbox, so someone
+ *  applying for one seat can say which others they'd also take. Best-effort:
+ *  no backend, no roles, or only the one they're applying for → the block
+ *  stays hidden and the form works exactly as before. */
+async function hydrateOtherRoles(): Promise<void> {
+  const wrap = document.querySelector<HTMLElement>("[data-apply-other-roles]");
+  const list = document.querySelector<HTMLElement>(
+    "[data-apply-other-roles-list]",
+  );
+  if (!wrap || !list) return;
+  const appliedFor = (
+    new URLSearchParams(window.location.search).get("role") ?? ""
+  )
+    .trim()
+    .toLowerCase();
+
+  let roles: PublicJobListing[] = [];
+  try {
+    const res = await fetch("/api/team/roles", {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return;
+    const body = (await res.json()) as { roles?: PublicJobListing[] };
+    roles = Array.isArray(body.roles) ? body.roles : [];
+  } catch {
+    return;
+  }
+
+  const others = roles.filter(
+    (r) => roleAcceptsApplications(r.status) && r.slug !== appliedFor,
+  );
+  if (others.length === 0) return;
+
+  for (const role of others) {
+    const label = document.createElement("label");
+    label.className = "flex items-start gap-3";
+    const box = document.createElement("input");
+    box.type = "checkbox";
+    box.className = "mt-1 h-4 w-4 shrink-0 accent-red-500";
+    box.dataset.otherRoleSlug = role.slug;
+    box.dataset.otherRoleTitle = role.title;
+    const text = document.createElement("span");
+    text.className = "text-sm leading-relaxed text-ink";
+    text.textContent = role.title;
+    label.append(box, text);
+    list.appendChild(label);
+  }
+  wrap.classList.remove("hidden");
+}
+
+/** The other roles they ticked, as `{ slug, title }`. */
+function collectOtherRoles(): Array<{ slug: string; title: string }> {
+  const boxes = document.querySelectorAll<HTMLInputElement>(
+    "[data-other-role-slug]",
+  );
+  return [...boxes]
+    .filter((b) => b.checked)
+    .map((b) => ({
+      slug: b.dataset.otherRoleSlug ?? "",
+      title: b.dataset.otherRoleTitle ?? "",
+    }));
 }
 
 function setStatus(message: string, tone: "info" | "error" = "info"): void {
@@ -97,6 +165,8 @@ async function submit(event: SubmitEvent): Promise<void> {
       .split("\n")
       .map((l) => l.trim())
       .filter(Boolean),
+    openToOtherRoles: data.get("openToOtherRoles") === "on",
+    otherRoles: collectOtherRoles(),
     website: String(data.get("website") ?? ""),
     answers: collectAnswers(data),
   };
@@ -136,6 +206,7 @@ async function submit(event: SubmitEvent): Promise<void> {
 function init(): void {
   if (!form) return;
   hydrateRole();
+  void hydrateOtherRoles();
   form.addEventListener("submit", submit);
 }
 
@@ -144,9 +215,3 @@ if (document.readyState === "loading") {
 } else {
   init();
 }
-
-// Marks this file a MODULE for TypeScript. Astro already bundles it as one
-// (the page imports it), but a file with no top-level import/export reads as a
-// global script to `tsc`, which then sees another page script's `form` /
-// `statusEl` as a redeclaration of this one's. No runtime effect.
-export {};

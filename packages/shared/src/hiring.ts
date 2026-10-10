@@ -604,6 +604,9 @@ export const APPLICATION_LIMITS = {
   link: 500,
   links: 4,
   referredBy: 160,
+  /** How many OTHER open roles one application can also raise a hand for.
+   *  Far past any real list of openings; a bound, not a product rule. */
+  otherRoles: 20,
 } as const;
 
 /**

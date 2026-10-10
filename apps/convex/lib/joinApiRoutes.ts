@@ -90,6 +90,20 @@ export function registerJoinApiRoutes(http: HttpRouter): void {
           ? body.links.map((l) => String(l ?? "").trim()).filter(Boolean)
           : [];
 
+        // `[{ slug, title }]` from the "I'd also consider" checkboxes. Shape
+        // only here; dedupe, caps, and titles are `submitApplication`'s job.
+        const otherRoles = Array.isArray(body.otherRoles)
+          ? body.otherRoles
+              .filter((r): r is Record<string, unknown> =>
+                Boolean(r) && typeof r === "object",
+              )
+              .map((r) => ({
+                slug: String(r.slug ?? "").trim(),
+                title: String(r.title ?? "").trim(),
+              }))
+              .filter((r) => r.slug)
+          : [];
+
         const roleSlug = String(body.roleSlug ?? "").trim();
         const roleTitle = String(body.roleTitle ?? "").trim();
         const phone = String(body.phone ?? "").trim();
@@ -105,6 +119,8 @@ export function registerJoinApiRoutes(http: HttpRouter): void {
           ...(location ? { location } : {}),
           ...(links.length ? { links } : {}),
           ...(referredBy ? { referredBy } : {}),
+          openToOtherRoles: body.openToOtherRoles === true,
+          ...(otherRoles.length ? { otherRoles } : {}),
           answers,
         });
         return { ok: true };
