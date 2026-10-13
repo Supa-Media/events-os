@@ -17,7 +17,7 @@ export const GOALS_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The **Goals** page holds the year plan: a mission, a few headline targets, and objectives. Each objective is judged by **key results**, the specific outcomes that tell us it happened.",
+        text: "The **Goals** page holds the year plan: a mission, a few headline targets, and objectives. Each objective is measured by **key results**, the specific outcomes that show it happened.",
       },
       {
         kind: "rule",
@@ -37,12 +37,12 @@ export const GOALS_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "To link a project, open it and pick the key result under **Goal**. A project moves one key result at most. Work tied to no goal is fine; it just doesn't count toward the plan.",
+        text: "To link a project, open it and pick the key result under **Goal**. A project moves one key result at most. Work tied to no goal is fine, but it doesn't count toward the plan.",
       },
       {
         kind: "reveal",
         prompt: "Someone makes a key result called \"Eden 2027\" and lists permits and volunteers under it. What's wrong?",
-        answer: "That's an event, not a score. Plan Eden as an event. The key result it moves is something like \"host four flagship events\", which counts Eden when it's done.",
+        answer: "Eden is an event, not a score, so plan it as an event. The key result it moves is something like \"host four flagship events\", which counts Eden once it's done.",
       },
     ],
     quiz: [
@@ -75,7 +75,7 @@ export const GOALS_SECTIONS: Omit<AcademySection, "order">[] = [
         options: ["As many as it touches", "One at most", "Exactly two", "None; projects and goals aren't connected"],
         answerIndex: 1,
         explanation:
-          "One primary key result per project keeps the plan honest: each piece of work has one place it's counted.",
+          "Each project counts toward one key result at most, so every piece of work is counted in one place.",
       },
     ],
   },

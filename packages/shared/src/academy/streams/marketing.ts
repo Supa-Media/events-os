@@ -73,19 +73,19 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Every flyer, banner, overlay, and sign that says Public Worship should look like it came from the same place — whether it was made by the founding team or a brand-new chapter three time zones away. That's what a brand kit buys you: consistency without a bottleneck.",
+        text: "Every flyer, banner, overlay, and sign that says Public Worship should look like it came from the same place, even when a new chapter three time zones away made it. A brand kit gives you that without a bottleneck.",
       },
       {
         kind: "p",
-        text: "**The kit lives in Marketing → Designs, and that is the answer to every \"what red is it?\" question.** This lesson deliberately does not print the hex codes or list the typefaces. The designer changes those — that is their job, and the kit is built for them to do it without filing a ticket. A lesson that repeated today's values would be a second answer that goes quietly wrong the day the first one moves, and the person it misleads is the one who trusted their training.",
+        text: "**The kit lives in Marketing → Designs.** It answers every \"what red is it?\" question. This lesson does not print the hex codes or list the typefaces, on purpose. The designer changes those in the kit without filing a ticket, and a lesson that copied today's values would go wrong the day they change.",
       },
       {
         kind: "bullets",
         items: [
-          "**Colors:** open Designs and tap one to copy its hex. The brand red is the one color that has to show up somewhere on anything public-facing — it's also the default accent in the org's saved email templates, so an email and a flyer carry the same red.",
-          "**Fonts:** listed in Designs grouped by what each is for, so \"what do I set a headline in?\" has exactly one answer. More than one face can share a job; the kit shows you which.",
-          "**Logos:** in Designs, and in the shared Logos folder they point at — pull from there, don't recreate one from a screenshot.",
-          "**Templates:** the Canva files cover the recurring shapes — flyers for distribution, banners, social media overlays, signage. Duplicate a template, don't build from a blank canvas.",
+          "**Colors:** open Designs and tap one to copy its hex. The brand red has to appear somewhere on anything public-facing. It is also the default accent in the org's saved email templates, so an email and a flyer carry the same red.",
+          "**Fonts:** grouped in Designs by role, so \"what do I set a headline in?\" has one answer. More than one face can share a job; the kit shows which.",
+          "**Logos:** in Designs and the shared Logos folder they point at. Never recreate one from a screenshot.",
+          "**Templates:** Canva files for the recurring shapes: flyers for distribution, banners, social media overlays, and signage. Duplicate a template instead of starting from a blank canvas.",
         ],
       },
       {
@@ -96,43 +96,43 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "table",
         headers: ["Need", "Where it lives"],
         rows: [
-          ["The brand red, or any brand color", "Marketing → Designs, Colors — tap to copy"],
-          ["What to set a headline or caption in", "Marketing → Designs, Fonts — grouped by role"],
+          ["The brand red, or any brand color", "Marketing → Designs, Colors (tap to copy)"],
+          ["What to set a headline or caption in", "Marketing → Designs, Fonts (grouped by role)"],
           ["Logo (any format)", "Marketing → Designs, Logos folder"],
-          ["A flyer, banner, overlay, or signage", "Marketing → Designs — open the Canva template and duplicate it"],
+          ["A flyer, banner, overlay, or signage", "Marketing → Designs: open the Canva template and duplicate it"],
         ],
       },
       {
         kind: "rule",
         title: "Nobody should have to ask permission to look right",
-        text: "A chapter in a new city should be able to make something that looks unmistakably PW without messaging anyone for help. That is why reading the kit needs no seat at all: if you are making a flyer at 11pm and you need the red, you should be able to get the red. Changing the kit is a different matter — it takes the \"Manage the brand kit\" power, which the marketing chain holds, and so do the Executive Director and every Chapter Director. One kit, one look, and a short list of people who can move it.",
+        text: "A chapter in a new city should be able to make something unmistakably PW without messaging anyone. So reading the kit needs no seat: if you are making a flyer at 11pm, you can get the red. Changing the kit takes the \"Manage the brand kit\" power. The marketing chain holds it, and so do the Executive Director and every Chapter Director.",
       },
       {
         kind: "reveal",
         prompt:
           "A brand-new chapter needs a flyer for their first event and nobody from the founding team is reachable this week. What do they do?",
         answer:
-          "They don't wait, and they don't guess. Open Marketing → Designs, copy the brand color, take the logo from the Logos folder, duplicate the flyer template, and swap in their event details. The whole point of a self-serve kit is that a chapter never stalls on a design because HQ is asleep — and never has to eyeball a red off an old JPEG either.",
+          "They don't wait and they don't guess. Open Marketing → Designs, copy the brand color, take the logo from the Logos folder, duplicate the flyer template, and swap in the event details. Nobody eyeballs a red off an old JPEG.",
       },
       {
         kind: "link",
         label: "Further reading: PW Designs, Flyers, Fonts, Colors",
         url: "https://www.notion.so/29c7f1c177b680e49273d51138fc1677",
-        note: "Background and history. Where the two disagree, the kit in Marketing → Designs is right — it's the one the designer maintains.",
+        note: "Background and history. Where the two disagree, the kit in Marketing → Designs is right, because the designer maintains it.",
       },
     ],
     quiz: [
       {
         prompt: "You need the exact brand red for a flyer. Where do you get it?",
         options: [
-          "From this lesson — the training writes the hex code down",
+          "From this lesson, which writes the hex code down",
           "Marketing → Designs: open Colors and tap it to copy the hex",
           "Eyedropper it off the most recent flyer you can find",
           "Message the Marketing Director and wait",
         ],
         answerIndex: 1,
         explanation:
-          "The kit is the only copy that is current. Training, old flyers, and someone's memory are all snapshots of what the brand was on the day they were made — and the designer is allowed to move it. Going to the kit is a habit worth having even on the days the answer hasn't changed.",
+          "The kit is the only current copy. Training, old flyers, and memory are snapshots of the brand on the day they were made, and the designer can change it. Check the kit even when you think you know the answer.",
       },
       {
         prompt: "Who can open the brand kit, and who can change it?",
@@ -144,19 +144,19 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "Reading the kit is deliberately ungated — a brand kit behind a permission is a brand kit people work around, and the person making something at 11pm is exactly who needs it. Changing it takes a named power, held by the marketing chain plus the ED and Chapter Directors, so the org has one look rather than five.",
+          "Reading the kit is ungated on purpose: people work around a brand kit behind a permission, and the person making something at 11pm needs it. Changing it takes a named power, held by the marketing chain plus the ED and Chapter Directors, so the org keeps one look.",
       },
       {
         prompt: "The designer decides the org should use a different face for captions. What has to happen?",
         options: [
           "They edit the fonts in Marketing → Designs, and everyone reading the kit sees the new one",
           "A developer changes it in the code and ships a release",
-          "Nothing can change — the brand faces are fixed",
+          "Nothing can change; the brand faces are fixed",
           "Every chapter picks its own face from then on",
         ],
         answerIndex: 0,
         explanation:
-          "The kit is theirs to curate — add a face, change what it's for, reorder it, remove one. That is the whole reason it is a live tool and not a page of documentation, and it is why this lesson points at the kit instead of listing the faces.",
+          "The kit is the designer's to curate: add a face, change its role, reorder, or remove one. That is why it is a live tool and not documentation, and why this lesson points at the kit instead of listing faces.",
       },
       {
         prompt: "Why should a brand-new chapter be able to make an on-brand flyer without asking anyone?",
@@ -164,11 +164,11 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "Because design doesn't matter for a first event",
           "So the look stays consistent across every city without HQ becoming a bottleneck",
           "Because Canva requires no login",
-          "It's not actually possible — every design needs sign-off",
+          "It isn't possible; every design needs sign-off",
         ],
         answerIndex: 1,
         explanation:
-          "The whole reason the color, fonts, and templates are documented and shared is so consistency scales with the network instead of depending on one team's availability.",
+          "The color, fonts, and templates are shared so consistency grows with the network instead of depending on one team's availability.",
       },
     ],
   },
@@ -182,32 +182,32 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "A busking setup is simple: the keyboard, the mics, and the speaker all connect into the Zoom recorder. Turn the recorder on, confirm every channel you're using shows red, and hit record — before anyone plays a note.",
+        text: "In a busking setup, the keyboard, the mics, and the speaker all connect into the Zoom recorder. Do these three things before anyone plays a note.",
       },
       {
         kind: "bullets",
         items: [
-          "**Connect in order:** keyboard into the recorder, mics into the recorder, speaker into the recorder.",
-          "**Turn on the recorder** and check that every channel actually being used is lit **red** — that's the recorder confirming it's receiving signal on that channel.",
-          "**Hit record**, and confirm it: the light next to the record button glows red the moment it's actually recording.",
+          "**Connect in order:** keyboard, then mics, then speaker, each into the recorder.",
+          "**Turn on the recorder** and check that every channel in use is lit **red**. Red means the recorder is receiving signal on that channel.",
+          "**Hit record** and confirm it: the light next to the record button glows red once it is recording.",
         ],
       },
       {
         kind: "story",
-        title: "Read the source, out loud",
-        text: "The Busking Setup doc doesn't casually mention hitting record — it says \"HIT RECORD - PLS PLS PLS, you know it's recording when the light next to the button is red.\" That's not the tone of a routine checklist item. It reads like it was written by someone who has packed up gear after a session and realized, too late, that nothing was actually captured. The rule survives in that exact wording because skipping it has cost real recordings before.",
+        title: "Read the source",
+        text: "\"HIT RECORD - PLS PLS PLS, you know it's recording when the light next to the button is red,\" says the Busking Setup doc. That is not the tone of a routine checklist. It reads like someone wrote it after packing up gear and finding nothing was captured. The wording survives because skipping this step has cost real recordings before.",
       },
       {
         kind: "rule",
         title: "Confirm red before a single note plays",
-        text: "Channels lit red and the record light lit red are the only two signals that matter. If either one isn't red, nothing downstream — editing, timelines, posting — has anything to work with.",
+        text: "Channels lit red and the record light lit red are the only two signals that matter. If either isn't red, there is nothing to edit, sync, or post.",
       },
       {
         kind: "reveal",
         prompt:
-          "You've been playing for ten minutes before you think to check whether the recorder is actually running. What now?",
+          "You've been playing for ten minutes before you think to check whether the recorder is running. What now?",
         answer:
-          "Check immediately — don't wait until the set is over. If the channels or the record light aren't red, nothing so far has been captured, and the sooner you catch it, the less you lose. Better to interrupt the session and fix it than to find out afterward that ten minutes are gone for good.",
+          "Check now, not after the set. If the channels or the record light aren't red, nothing has been captured, and the sooner you catch it the less you lose. Stopping to fix it beats finding out afterward that ten minutes are gone.",
       },
       {
         kind: "link",
@@ -226,7 +226,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Red is the signal, both for a live channel and for the record indicator itself — it's the one visual check the setup depends on.",
+          "Red is the signal for a live channel and for the record indicator. It is the one visual check the setup depends on.",
       },
       {
         prompt: "What connects into the Zoom recorder in a busking setup?",
@@ -234,35 +234,35 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "Only the mics",
           "The keyboard, the mics, and the speaker",
           "Just a single line-in cable",
-          "Nothing — the recorder captures ambient room sound only",
+          "Nothing; the recorder captures ambient room sound only",
         ],
         answerIndex: 1,
         explanation:
-          "All three — keyboard, mics, and speaker — connect into the recorder so everything gets captured, not just one source.",
+          "All three connect into the recorder so every source is captured.",
       },
       {
         prompt: "Why does the source document plead \"PLS PLS PLS\" about hitting record?",
         options: [
-          "It's just a stylistic quirk with no real meaning",
-          "Because forgetting to confirm recording has genuinely cost captured footage before",
+          "It's a stylistic quirk with no meaning",
+          "Because forgetting to confirm recording has cost captured footage before",
           "Because the record button is hard to find",
           "It's a joke between the production team",
         ],
         answerIndex: 1,
         explanation:
-          "The pleading tone reads as a lesson learned the hard way — the rule exists in that exact wording because skipping the check has lost recordings in the past.",
+          "The pleading reads as a lesson learned the hard way. The wording exists because skipping the check has lost recordings before.",
       },
       {
         prompt: "You realize partway through a set you never confirmed recording. What's the right move?",
         options: [
-          "Finish the set, then check — it's probably fine",
+          "Finish the set, then check; it's probably fine",
           "Check immediately; if it isn't recording, catching it now loses less than catching it after",
           "Assume it's recording since the recorder is powered on",
           "Restart the whole session from the beginning regardless",
         ],
         answerIndex: 1,
         explanation:
-          "The channel and record lights are the only real confirmation. Checking immediately, rather than waiting, is what limits how much footage is actually lost.",
+          "The channel and record lights are the only real confirmation. Checking right away limits how much footage is lost.",
       },
     ],
   },
@@ -272,11 +272,11 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "mktg-shoot-to-timeline",
     title: "From shoot to timeline",
     subtitle: "The Editing Prep SOP: files uploaded, clips synced, ready to cut",
-    minutes: 4,
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Editing Prep exists so an editor opens a project and finds a synced master timeline waiting — not a folder of loose clips they have to sort through first. It's two jobs: get every file uploaded and arranged, then sync it all into one long master timeline.",
+        text: "With Editing Prep done, an editor opens a project and finds a synced master timeline, not a folder of loose clips. It's two jobs: upload and arrange every file, then sync it all into one long master timeline.",
       },
       {
         kind: "table",
@@ -284,33 +284,33 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         rows: [
           [
             "1. Copy the template",
-            "Duplicate the project template, rename it in the standard convention — \"Event - Lead Person\" — and make sure proxies and originals are synced.",
+            "Duplicate the project template, name it in the standard convention, \"Event - Lead Person\", and make sure proxies and originals are synced.",
           ],
           [
             "2. Upload the files",
-            "Video and audio both go to Dropbox under Areas > Media. Retrieve audio from the Zoom recorder's micro-SD card — unless audio was recorded directly on camera, in which case skip that step entirely.",
+            "Video and audio both go to Dropbox under Areas > Media. Pull audio from the Zoom recorder's micro-SD card, unless audio was recorded directly on camera. Then skip that step.",
           ],
           [
             "3. Arrange the bins",
-            "All audio clips can share one bin; video clips get separated by which camera shot them.",
+            "All audio clips can share one bin. Separate video clips by the camera that shot them.",
           ],
           [
             "4. Build the master timeline",
-            "Lay down the audio tracks first — audio usually runs the whole day across several mic channels. Then place the video clips, aligning each one by listening to its audio against the timeline.",
+            "Lay down the audio tracks first; audio usually runs the whole day across several mic channels. Then place each video clip, aligning it by listening to its audio against the timeline.",
           ],
         ],
       },
       {
         kind: "rule",
         title: "Audio first, video aligned to it",
-        text: "Audio is usually the one continuous throughline of the whole day, even when it's split across several mic channels. Lay it down first, then sync every video clip to it by ear — that's the reliable way to build one honest 1–3 hour master timeline instead of guessing at timestamps.",
+        text: "Audio is usually the one continuous track of the whole day, even split across several mic channels. Lay it down first, then sync each video clip to it by ear. That builds one 1–3 hour master timeline without guessing at timestamps.",
       },
       {
         kind: "reveal",
         prompt:
-          "Two SD cards come back from a shoot: one from the Zoom audio recorder, one from a camera that recorded its own audio too. Do you need to pull the recorder's audio for that camera's clips?",
+          "Two SD cards come back from a shoot: one from the Zoom audio recorder, one from a camera that recorded its own audio too. Do you need the recorder's audio for that camera's clips?",
         answer:
-          "No — if a camera already recorded its own audio, there's no need to also pull from the separate Zoom recorder for that footage. The recorder's SD card matters specifically for cameras or setups that didn't capture their own sound.",
+          "No. If a camera recorded its own audio, you don't need the Zoom recorder's audio for that footage. The recorder's SD card matters for cameras or setups that didn't capture their own sound.",
       },
       {
         kind: "link",
@@ -329,7 +329,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "\"Event - Lead Person\" is the standard convention — consistent naming is what lets anyone find the right project later.",
+          "\"Event - Lead Person\" is the standard, so anyone can find the right project later.",
       },
       {
         prompt: "Where do video and audio files get uploaded during prep?",
@@ -341,7 +341,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "Areas > Media in Dropbox is the shared destination for both video and audio — the same place every prep pass uploads to.",
+          "Areas > Media in Dropbox is the shared destination for both video and audio on every prep pass.",
       },
       {
         prompt: "What goes down on the master timeline first, and why?",
@@ -353,19 +353,19 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Audio is the reliable throughline — even split across channels, it usually spans the full day, so video clips get synced against it by listening, not guessed at by timestamp.",
+          "Even split across channels, audio usually spans the whole day. Video clips sync to it by ear instead of by guessed timestamps.",
       },
       {
         prompt: "When do you skip pulling audio from the Zoom recorder's micro-SD card?",
         options: [
-          "Never — audio always comes from the recorder",
+          "Never; audio always comes from the recorder",
           "When the camera already recorded its own audio directly",
           "When the shoot is under an hour",
           "When there's only one camera",
         ],
         answerIndex: 1,
         explanation:
-          "If audio was captured directly on camera, there's nothing extra to retrieve from the separate recorder for that footage.",
+          "If audio was captured on camera, there's nothing to pull from the recorder for that footage.",
       },
     ],
   },
@@ -379,32 +379,32 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Before you can open a shared project, you need three things set up: a Blackmagic Cloud account, DaVinci Resolve installed, and a spot in the Public Worship org so the app can actually show you the projects. Every step routes through asking the right person or joining the right group — not through anyone handing you a shared login.",
+        text: "To open a shared project you need a Blackmagic Cloud account, DaVinci Resolve installed, and a place in the Public Worship org so the app can show you the projects. Each step goes through asking the right person or joining the right group, never a shared login.",
       },
       {
         kind: "bullets",
         items: [
-          "**Step 1 — Blackmagic Cloud account.** Free to create; this is the account your access gets tied to.",
-          "**Step 2 — Install DaVinci Resolve.** The free version gets most editors 95% of the way there. Color graders need **Resolve Studio**, the paid tier — same app, more features.",
-          "**Step 3 — Ask an admin for org access.** Request to be added to the Public Worship organization and the **Editors** group, using the same email as your Blackmagic Cloud account. You'll get an email invite — accept it, then let the admin know so they can finish adding you to Editors.",
-          "**Step 4 — Open Resolve and log in.** Sign into your Blackmagic Cloud account from inside the app, choose the Public Worship profile, and every shared project becomes visible.",
+          "**1. Create a Blackmagic Cloud account.** It's free, and your access is tied to it.",
+          "**2. Install DaVinci Resolve.** The free version gets most editors 95% of the way. Color graders need **Resolve Studio**, the paid tier: same app, more features.",
+          "**3. Ask an admin for org access.** Ask to be added to the Public Worship organization and the **Editors** group, using your Blackmagic Cloud email. Accept the email invite, then tell the admin so they can finish adding you to Editors.",
+          "**4. Open Resolve and log in.** Sign into Blackmagic Cloud inside the app and choose the Public Worship profile. Every shared project appears.",
         ],
       },
       {
         kind: "p",
-        text: "Dropbox works the same way: request to join the storage Google Group to get access, then install Dropbox locally if you're actually editing or prepping footage — at that point it stops being optional, since Editing Prep depends on it.",
+        text: "Dropbox works the same way: request to join the storage Google Group. If you edit or prep footage, also install Dropbox locally. Editing Prep depends on it, so for you it is required.",
       },
       {
         kind: "rule",
         title: "Ask, don't guess",
-        text: "Every piece of this environment is gated by a request — an admin invite to the org and Editors group, a request to join the storage group for Dropbox. Nobody self-serves their way in by finding a shared password; you ask the right person through the right channel and wait for the invite.",
+        text: "Every part of this setup starts with a request: an admin invite to the org and Editors group, or a request to join the storage group for Dropbox. Nobody gets in with a shared password. Ask the right person and wait for the invite.",
       },
       {
         kind: "reveal",
         prompt:
           "You're joining as a color grader. Which Resolve version do you need, and what do you need to request first?",
         answer:
-          "Resolve Studio — the paid tier is required for color grading work; the free version won't cut it. Before any of that matters, though, you still need an admin to add you to the Public Worship organization and the Editors group, using the same email as your Blackmagic Cloud account.",
+          "Resolve Studio, because color grading needs the paid tier. First, though, an admin still has to add you to the Public Worship organization and the Editors group, using your Blackmagic Cloud email.",
       },
       {
         kind: "link",
@@ -421,14 +421,14 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "Which DaVinci Resolve version do color graders specifically need?",
         options: [
-          "The free version — it's enough for everyone",
+          "The free version; it's enough for everyone",
           "Resolve Studio, the paid tier",
           "A special \"Colorist Edition\" that doesn't exist",
           "Either version, it makes no difference",
         ],
         answerIndex: 1,
         explanation:
-          "The free version gets most editors 95% of the way there, but color grading specifically needs the paid Resolve Studio tier.",
+          "The free version gets most editors 95% of the way, but color grading needs the paid Resolve Studio tier.",
       },
       {
         prompt: "How do you get added to the Public Worship organization and Editors group?",
@@ -436,11 +436,11 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "It happens automatically after installing Resolve",
           "You ask an admin to add you, using the same email as your Blackmagic Cloud account",
           "You email support@blackmagicdesign.com",
-          "There's no group — every account gets full access",
+          "There's no group; every account gets full access",
         ],
         answerIndex: 1,
         explanation:
-          "Org and Editors-group access is admin-gated by request — you send the ask, using your Blackmagic Cloud email, and accept the resulting invite.",
+          "An admin grants org and Editors access on request. Ask using your Blackmagic Cloud email, then accept the invite.",
       },
       {
         prompt: "What's the process to get Dropbox access?",
@@ -452,19 +452,19 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Access routes through requesting to join the storage group — the same \"ask, don't guess\" pattern as the DaVinci org access.",
+          "Access starts with a request to join the storage group, the same \"ask, don't guess\" pattern as DaVinci org access.",
       },
       {
         prompt: "Is installing Dropbox locally optional for someone doing editing prep?",
         options: [
           "Yes, always optional",
-          "No — if you're editing or prepping footage, it stops being optional",
+          "No. If you're editing or prepping footage, it's required",
           "Only optional for color graders",
           "Dropbox isn't used for editing at all",
         ],
         answerIndex: 1,
         explanation:
-          "Dropbox is casually optional for browsing, but Editing Prep's upload steps depend on it locally — at that point it's required, not optional.",
+          "Dropbox is optional for browsing, but Editing Prep's upload steps need it installed locally.",
       },
     ],
   },
@@ -478,7 +478,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Marketing is the one function whose work is entirely public, and for a long time it was the function with the least control over anything public. Changing a headline on publicworship.life, reordering the link cards, or adding somebody to the newsletter all meant asking a developer. The **Marketing** tab in Chapter OS is where those things live now.",
+        text: "Marketing's work is entirely public. Changing a headline on publicworship.life, reordering the link cards, or adding someone to the newsletter used to mean asking a developer. Now it all lives in the **Marketing** tab in Chapter OS.",
       },
       {
         kind: "table",
@@ -491,63 +491,39 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
       },
       {
-        kind: "heading",
-        text: "The site changes as soon as you save it",
+        kind: "p",
+        text: "**Site** copy has no publish step, review queue, or deploy. Each field saves when you tap away, and the live page shows the new words within about a minute. Nobody downstream catches a typo for you. A field's counter turns red before its limit, which is where the design breaks.",
       },
       {
         kind: "p",
-        text: "There is no publish step on copy, no review queue, and no deploy. Edit a field, leave it, and the live page carries the new words within about a minute. That's deliberate — a headline is a sentence, and a sentence somebody spots as wrong should be fixable by the person who spotted it. It also means there is nobody downstream to catch a typo for you.",
-      },
-      {
-        kind: "tip",
-        text: "In the app · Marketing → Site. Each field saves on its own when you tap away from it. The counter under a field turns red before you hit the limit — those limits are where the design actually breaks, not arbitrary.",
-      },
-      {
-        kind: "p",
-        text: "The Links tab works the same way, with one difference: a **card** has a show/hide switch, so you can build one before its announcement goes out. The row called **Live event cards** isn't a card at all — it's the rule for the event pages the homepage pulls in automatically. Set how many show, lead with a specific event, or keep one off the front page entirely. The preview under it is the real thing: what it lists is what the site will show.",
+        text: "On **Links**, each card has a show/hide switch, so you can build one before its announcement goes out. The **Live event cards** row is the rule for the event pages the homepage pulls in automatically. Set how many show, \"Lead with\" a specific event, or keep one off the front page. Pins go first in the order you set, then the rest by date. The preview underneath runs the same selection the site does.",
       },
       {
         kind: "rule",
         title: "Only what's already published can be pinned",
-        text: "Leading with an event doesn't publish it. If an event's RSVP page isn't live, pinning it does nothing — because the alternative would be putting a link to a 404 on the front page. Publish the page from the event first, then choose where it sits.",
+        text: "Leading with an event doesn't publish it. If its RSVP page isn't live, the pin is skipped, so the front page never links to a 404. Publish the page from the event first, then choose where it sits.",
       },
       {
-        kind: "heading",
-        text: "The mailing list is a promise, not a spreadsheet",
-      },
-      {
-        kind: "p",
-        text: "The list is not its own table of names — it's every person the OS already knows, with the added question of whether we can actually reach them. That's why adding someone who's already a donor updates that person instead of creating a second one, and why a name added here shows up on the People tab too.",
-      },
-      {
-        kind: "bullets",
-        items: [
-          "**Opted out** — someone at the org marked this person as not-to-be-marketed. You can put them back.",
-          "**Unsubscribed or bounced** — the person clicked unsubscribe, texted STOP, or the address hard-bounced. **Nothing you do in the app undoes this**, adding them again included. Only the person can, and only by filling in the sign-up link themselves.",
-          "**No address on file** — nothing to send to.",
-          "**Inactive** — off the roster entirely.",
+        kind: "table",
+        headers: ["Greyed out as", "What it means"],
+        rows: [
+          ["Opted out", "Someone at the org marked this person not to be marketed to. You can put them back."],
+          [
+            "Unsubscribed or bounced",
+            "The person clicked unsubscribe, texted STOP, or the address hard-bounced. Nothing you do in the app undoes this, adding them again included.",
+          ],
+          ["No address on file", "Nothing to send to."],
+          ["Inactive", "Off the roster entirely."],
         ],
       },
       {
         kind: "rule",
         title: "Their \"no\" outranks our \"but\"",
-        text: "The two greyed-out reasons look identical to a sender and are completely different to us. One is our decision and ours to reverse. The other is theirs, and no conversation at an event changes it — if someone who unsubscribed wants back on, they re-subscribe themselves through the sign-up link. Re-adding them in the app will look like it worked and won't be.",
-      },
-      {
-        kind: "p",
-        text: "Taking someone off stops **both** email and texts in one action. That's on purpose: nobody who says \"stop emailing me\" means \"but keep texting me.\" It asks you to confirm first — a removal is a promise to a real person, and several at once is several promises.",
-      },
-      {
-        kind: "heading",
-        text: "Stop sending people Google Forms",
-      },
-      {
-        kind: "p",
-        text: "There's a sign-up link at the top of the Mailing list tab — copy it and share it. It goes to a page that writes straight into this list, with the person's name, what they agreed to, and the date. A Google Form put those names in a spreadsheet nothing else could see, so every signup was a manual re-entry away from being reachable, and nobody could answer \"did this person ever actually say yes?\"",
+        text: "Opted out is our decision and ours to reverse. Unsubscribed is theirs, and no conversation at an event changes it. Re-adding them in the app looks like it worked and doesn't. Only the person can undo it, by re-subscribing through the sign-up link.",
       },
       {
         kind: "tip",
-        text: "In the app · Marketing → Mailing list. It's a grid, like People — tick rows to remove, put back, or export a batch at once, and tap a name to open that person's record. Export gives you the reachable people only: opted-out and unsubscribed addresses are never in the file, so you can paste it into Mailchimp without carrying a mistake across.",
+        text: "In the app · Marketing → Mailing list. It holds every person the OS already knows, so adding a donor updates their record and a new name also appears on People. Share the sign-up link at the top instead of a Google Form: it records the name, what they agreed to, and the date. Removing someone stops **both** email and texts, after you confirm. Export holds reachable people only, so opted-out and unsubscribed addresses never reach Mailchimp.",
       },
       {
         kind: "scenario",
@@ -555,29 +531,22 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "Someone comes up to you after a gathering: \"I unsubscribed a while back but I do want the newsletter again.\" What do you do?",
         options: [
           {
-            text: "Add them on the Mailing list tab — they asked, so it's handled.",
+            text: "Add them on the Mailing list tab. They asked, so it's handled.",
             feedback:
-              "It'll look like it worked. It won't: an unsubscribe is address-level and adding someone again doesn't clear it, so they still get nothing and you won't find out for weeks.",
+              "It will look like it worked. It won't: an unsubscribe is address-level and adding someone again doesn't clear it, so they still get nothing and you won't find out for weeks.",
           },
           {
             text: "Hand them the sign-up link and let them re-subscribe themselves.",
             correct: true,
             feedback:
-              "Right. Their own \"yes\" is the only thing that can undo their own \"no\" — and it lands with a fresh consent record and date.",
+              "Right. Only their own \"yes\" can undo their own \"no\", and it lands with a fresh consent record and date.",
           },
           {
             text: "Ask a developer to delete the unsubscribe row.",
             feedback:
-              "Nobody should be reaching into that ledger by hand, and it isn't necessary — the sign-up link is the supported path and it takes them thirty seconds.",
+              "Nobody should edit that ledger by hand, and there's no need. The sign-up link is the supported path and takes them thirty seconds.",
           },
         ],
-      },
-      {
-        kind: "reveal",
-        prompt:
-          "You've got a big event in six weeks and a small one this Saturday. The homepage is showing the small one. What do you change?",
-        answer:
-          "On Marketing → Links, open the Live event cards row and \"Lead with\" the six-week event — pins go first, in the order you set them, then everything else by date. Bump the count to 2 and both show. Check the preview underneath before you leave: it runs the same selection the site does.",
       },
     ],
     quiz: [
@@ -585,13 +554,13 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "You fix a typo in the homepage headline. What has to happen before it's live?",
         options: [
           "Someone has to approve it",
-          "Nothing — it's live within about a minute",
+          "Nothing; it's live within about a minute",
           "A developer has to deploy the site",
           "It goes out with the next newsletter",
         ],
         answerIndex: 1,
         explanation:
-          "Copy has no publish step and no deploy. That's the point of the desk — and it means nobody downstream catches your typo either.",
+          "Copy has no publish step and no deploy. That's the point of the desk, and it means nobody downstream catches your typo.",
       },
       {
         prompt:
@@ -600,11 +569,11 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "Adding them again on the Mailing list tab",
           "Tapping \"Put back\"",
           "They re-subscribe themselves through the sign-up link",
-          "Nothing — they can never receive our email again",
+          "Nothing; they can never receive our email again",
         ],
         answerIndex: 2,
         explanation:
-          "That state came from the person or from a bounce, and nothing you do in the app clears it. Their own sign-up can — for an unsubscribe. A bounce or a spam complaint survives even that.",
+          "That state came from the person or a bounce, and nothing you do in the app clears it. Their own sign-up clears an unsubscribe. A bounce or a spam complaint survives even that.",
       },
       {
         prompt: "You take someone off the mailing list. What stops?",
@@ -616,14 +585,14 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "One action covers both channels — nobody who asks us to stop emailing means \"keep texting.\" Receipts and RSVP confirmations aren't marketing and keep arriving.",
+          "One action covers both channels: nobody who asks us to stop emailing means \"keep texting.\" Receipts and RSVP confirmations aren't marketing and keep arriving.",
       },
       {
         prompt: "You \"lead with\" an event whose RSVP page isn't published yet. What shows on the homepage?",
         options: [
           "The event, which publishes it automatically",
           "The event, linking to a page that 404s",
-          "Nothing for that event — the pin is skipped",
+          "Nothing for that event; the pin is skipped",
           "An error on the links section",
         ],
         answerIndex: 2,
@@ -640,7 +609,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Exports carry reachable people only, so an opt-out or a spam complaint can't be carried across into a sending tool by accident.",
+          "Exports carry reachable people only, so an opt-out or a spam complaint can't slip into a sending tool by accident.",
       },
     ],
   },
@@ -654,47 +623,42 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Two of the marketing desk's tabs are the answer to questions this Academy has been answering in prose: **Designs** is the brand kit as a real thing you can open, and **Blog** is where the org's public writing is written.",
+        text: "**Marketing → Designs** holds the brand kit: the colors, the typefaces, and the Canva and Figma files. You need no seat to open it, so a flyer made at 11pm can still get the brand red. Changing the kit takes the \"Manage the brand kit\" power, not a desk. The marketing chain holds it, and so do the Executive Director and every **Chapter Director**. A Chapter Director editing the kit edits the org's one brand, not a chapter copy.",
       },
       {
-        kind: "heading",
-        text: "Designs: anyone can look, a named few can change",
-      },
-      {
-        kind: "p",
-        text: "The colors, the typefaces, and the Canva and Figma files are all in **Marketing → Designs**, and you do not need any seat at all to open it. That is deliberate, and it is the brand lesson's rule made real: if you are making a flyer at 11pm and you need the brand red, you should be able to get it.",
-      },
-      {
-        kind: "p",
-        text: "**Changing** the kit is the gated half, and the gate is a power — \"Manage the brand kit\" — not a desk you belong to. The marketing chain holds it, and so do the Executive Director and every **Chapter Director**. There is still exactly one kit: a Chapter Director editing it is editing the org's brand, not giving their chapter its own. That is the whole reason the list of people who can is short and deliberate.",
-      },
-      {
-        kind: "bullets",
-        items: [
-          "**Folders** are the shelves down the side, and everything lives on one. A folder holds any mix of things — a color, a typeface, and the posters made out of them — so \"Easter 2026\" can be the whole look for an event rather than three lists you have to cross-reference. Marketing names them.",
-          "**Design files** — the files themselves. Open one and the Canva or Figma file renders full size, one tap from the real, editable thing. Anything else (a Dropbox folder, a Drive file) is a labelled link.",
-          "**An event's photos and clips** — press **Upload** on any folder and pick as many files as you like at once; each becomes its own row in that folder, named after the file it came from. That is how \"Field Day\" or \"WWS\" is a library anyone in the org can open rather than a drive somebody has to be invited to. Video plays in the web app and opens in your phone's player on mobile; a clip you want a nicer tile for takes an uploaded thumbnail like anything else.",
-          "**Colors** — tap one to copy the hex. This is where the brand red lives now; nothing else in the Academy prints it, so there is only ever one answer to check.",
-          "**Faces** — each one shown as a specimen set in the face itself, so \"what do I set a headline in?\" has one answer. If your device can't show a face, the card says so honestly and offers the download instead of showing you a lookalike. The designer curates the list, including having more than one face for a job.",
+        kind: "table",
+        headers: ["In Designs", "How it works"],
+        rows: [
+          [
+            "Folders",
+            "The shelves down the side; everything lives on one. A folder can mix colors, typefaces, and the posters made from them, so \"Easter 2026\" holds an event's whole look. Marketing names them.",
+          ],
+          [
+            "Design files",
+            "Link to the editable Canva or Figma file, not an exported image: design tools' image links expire, as pasted newsletters taught us. We host the small preview. Anything else (a Dropbox folder, a Drive file) is a labelled link.",
+          ],
+          [
+            "Photos and clips",
+            "Press Upload on any folder and pick many files at once. Each becomes its own row, named after its file. Video plays in the web app and opens in your phone's player on mobile.",
+          ],
+          [
+            "Colors",
+            "Tap one to copy the hex. Nothing else in the Academy prints the brand red, so there is one answer to check.",
+          ],
+          [
+            "Faces",
+            "Each shows as a specimen set in that face. If your device can't show one, the card says so and offers the download instead of a lookalike. The designer curates the list, including more than one face per job.",
+          ],
         ],
       },
       {
         kind: "rule",
         title: "\"Colors\" is a folder, not a fixed part of the screen",
-        text: "The palette and the typefaces sit in two folders that have been PINNED — pinning is what gives a folder its own section on the page. Any folder can be pinned, so the look for a season or an event can sit up there next to them. And one thing can be in several folders at once: the brand red is in Colors and in the event folder that uses it, and taking it out of the event does nothing to the palette. Nothing is copied, so there is still only ever one red.",
-      },
-      {
-        kind: "rule",
-        title: "Link to the tool, not to the picture",
-        text: "A design row points at the Canva or Figma file — the place you can actually edit it — not at an exported image. We learned this the expensive way with pasted newsletters: design tools' own image links expire, and a library full of dead thumbnails is worse than an empty one. The little preview image is one we host ourselves.",
-      },
-      {
-        kind: "heading",
-        text: "Blog: writing it and publishing it are two different jobs",
+        text: "The palette and the typefaces sit in two pinned folders; pinning gives a folder its own section on the page. Any folder can be pinned, such as a season's look. One thing can be in several folders: the brand red is in Colors and in the event folder that uses it. Removing it from the event leaves the palette alone. Nothing is copied.",
       },
       {
         kind: "p",
-        text: "Posts live in **Marketing → Blog** now, not as files in the website's code, so writing one no longer needs a developer. But unlike everything else on this desk, putting one live is a separate permission.",
+        text: "Posts live in **Marketing → Blog**, not in the website's code, so writing one needs no developer. Unlike the rest of the desk, putting a post live is a separate permission. Every draft has its own private preview link for reviewers. It stays out of search and can be revoked for that post alone, so never publish a draft briefly.",
       },
       {
         kind: "table",
@@ -708,11 +672,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "A headline is a sentence. A post is an argument.",
-        text: "You can fix the homepage's headline yourself, the moment you notice it — nobody approves that. A blog post is different in kind: it says what Public Worship believes, under Public Worship's name, and people quote it back years later. An edit can't un-say it. So the person who writes it and the person who decides it goes live are allowed to be two people, and on our chart usually are.",
-      },
-      {
-        kind: "p",
-        text: "**Sharing a draft doesn't mean publishing it briefly.** Every draft has its own private link you can send to whoever is reviewing — it stays out of search, and it can be revoked for that post alone.",
+        text: "You fix the homepage headline yourself, with no approval. A post says what Public Worship believes, under its name, and people quote it back years later. An edit can't un-say it. So the writer and the person who publishes can be two people, and on our chart usually are.",
       },
       {
         kind: "scenario",
@@ -722,27 +682,27 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           {
             text: "Delete it, so it's gone.",
             feedback:
-              "The app won't let you, and that's on purpose: people have that link in emails, in messages, in their notes. A 404 tells a reader we lost something rather than that we withdrew it.",
+              "The app won't let you, on purpose: people have that link in emails, messages, and notes. A 404 tells a reader we lost something, not that we withdrew it.",
           },
           {
-            text: "Take it down — the URL still works and says the post was taken down.",
+            text: "Take it down. The URL still works and says the post was taken down.",
             correct: true,
             feedback:
-              "Right. Anyone who follows an old link gets an honest answer instead of a dead end, and the post stops being in the index, the feed, and search.",
+              "Right. An old link gets an honest answer instead of a dead end, and the post leaves the index, the feed, and search.",
           },
           {
             text: "Quietly rewrite it so it says something else.",
             feedback:
-              "Tempting and wrong. If a post has changed materially it should say it was updated — the same rule the published finances follow when a figure is corrected.",
+              "Wrong. A post that changed materially should say it was updated, the same rule the published finances follow when a figure is corrected.",
           },
         ],
       },
       {
         kind: "reveal",
         prompt:
-          "You're a Marketing Associate. You've finished a post and the Publish button won't do anything for you. What's actually happening, and what do you do?",
+          "You're a Marketing Associate. You've finished a post and the Publish button won't do anything for you. What's happening, and what do you do?",
         answer:
-          "Publishing is a separate permission and you don't hold it — that isn't a bug, it's the rule that a post goes out under the org's name with somebody accountable for it. Save it, copy the draft's preview link, and send it to the Marketing Director or the ED. Your draft is safe and nothing you wrote is lost.",
+          "Publishing is a separate permission you don't hold. That's the rule, not a bug: a post goes out under the org's name with somebody accountable for it. Save it, copy the draft's preview link, and send it to the Marketing Director or the ED. Your draft is safe.",
       },
     ],
     quiz: [
@@ -752,17 +712,17 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
           "Only the Marketing Director",
           "Only people with a marketing seat",
           "Anyone signed in",
-          "Nobody — it's a Dropbox folder",
+          "Nobody; it's a Dropbox folder",
         ],
         answerIndex: 2,
         explanation:
-          "Reading is deliberately open to everyone; changing it is the part that's gated, and that gate is the \"Manage the brand kit\" power — held by the marketing chain, the ED, and Chapter Directors. Nobody should have to ask permission to look right.",
+          "Reading is open to everyone on purpose. Changing it takes the \"Manage the brand kit\" power, held by the marketing chain, the ED, and Chapter Directors. Nobody should have to ask permission to look right.",
       },
       {
         prompt:
           "You add the brand red to an \"Easter 2026\" folder. What happens to the Colors folder it was already in?",
         options: [
-          "It leaves Colors — a thing can only be in one folder",
+          "It leaves Colors; a thing can only be in one folder",
           "Nothing. It is in both, and it is still one color",
           "The red is copied, so there are now two of them",
           "Colors is locked and cannot be changed",
@@ -789,7 +749,7 @@ export const MARKETING_SECTIONS: Omit<AcademySection, "order">[] = [
         options: [
           "Blog posts are longer",
           "The blog is on a different server",
-          "A post is an argument published under the org's name that gets quoted back later — an edit can't un-say it",
+          "A post is an argument published under the org's name that gets quoted back later; an edit can't un-say it",
           "It isn't different; the rule is inconsistent",
         ],
         answerIndex: 2,
@@ -838,10 +798,10 @@ export const MARKETING_COURSES: Course[] = [
     level: "intermediate",
     audience: "role",
     description:
-      "The PW look — the color, fonts, and self-serve templates that make " +
-      "anything on-brand — plus the Marketing desk: editing the homepage, the " +
-      "link cards, and the mailing list. (The house caption voice is coming " +
-      "soon, once the Marketing Director authors current guidance.)",
+      "The PW look: the color, fonts, and self-serve templates that keep " +
+      "anything on-brand. Plus the Marketing desk: the homepage, the link " +
+      "cards, the mailing list, the design library, and the blog. The house " +
+      "caption voice comes once the Marketing Director writes current guidance.",
     icon: "pen-tool",
     moduleSlugs: ["mktg-the-look", "mktg-the-desk", "mktg-the-library-and-the-blog"],
   },
@@ -853,10 +813,9 @@ export const MARKETING_COURSES: Course[] = [
     audience: "role",
     description:
       "From a busking setup's Zoom recorder to a synced DaVinci timeline: " +
-      "field-capture habits, the Editing Prep SOP, and how to get access to " +
-      "the tools. (Ads/pixel setup is a coming-soon area of this course; a " +
-      "short-form video-editing standard is coming too, once the Marketing " +
-      "Director authors current guidance.)",
+      "field-capture habits, the Editing Prep SOP, and access to the tools. " +
+      "Ads/pixel setup is coming, and so is a short-form video-editing " +
+      "standard once the Marketing Director writes current guidance.",
     icon: "hard-drive",
     moduleSlugs: ["mktg-hit-record", "mktg-shoot-to-timeline", "mktg-getting-access"],
   },
