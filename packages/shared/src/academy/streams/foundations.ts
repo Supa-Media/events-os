@@ -769,6 +769,10 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Unlike a filed document, what's inside each app group is live. An event shows what's due today, who owns each row, and whether it's on pace. PARA tells you where to look; the app shows what's true when you get there.",
       },
       {
+        kind: "tip",
+        text: "The Academy is kept current in the app. Seats holding the **Edit Academy courses** power see **Edit course** on a course's page, and every change they publish is recorded. If a lesson is wrong, tell one of them.",
+      },
+      {
         kind: "reveal",
         prompt: "Where does the brand's logo file live, versus this Saturday's task list?",
         answer:

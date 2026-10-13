@@ -20,11 +20,7 @@ import {
   LevelChip,
 } from "../../../../components/academy/CurriculumRows";
 import { colors } from "../../../../lib/theme";
-import {
-  getAcademyCourse,
-  academyCourseModules,
-  requiredModuleSlugsForCourse,
-} from "@events-os/shared";
+import { useAcademyCatalog } from "../../../../lib/useAcademyCatalog";
 
 /**
  * ACADEMY COURSE — `/academy/course/<slug>`. The drilled-in view of one course:
@@ -36,9 +32,17 @@ import {
 export default function AcademyCourseScreen() {
   const router = useRouter();
   const { slug } = useLocalSearchParams<{ slug: string }>();
-  const course = getAcademyCourse(slug ?? "");
+  const catalog = useAcademyCatalog();
+  const course = catalog?.getCourse(slug ?? "");
 
   const progress = useQuery(api.academy.myProgress);
+  // People holding "Edit Academy courses" get the editor's way in, and see a
+  // draft in progress before learners do.
+  const canEdit = useQuery(api.academyEditor.canEditCourses) === true;
+  const editorState = useQuery(
+    api.academyEditor.courseEditor,
+    canEdit && course ? { courseSlug: course.slug } : "skip",
+  );
   // Owner fix (2026-07-18): was `api.academy.courseCompleters` (chapter-
   // visible, decision D4, but completers-ONLY — every chapter person who'd
   // earned the course, in a full-width vertical row each) — replaced with a
@@ -51,6 +55,7 @@ export default function AcademyCourseScreen() {
     course ? { courseSlug: course.slug } : "skip",
   );
 
+  if (catalog === undefined) return <Screen loading />;
   if (!course) {
     return (
       <Screen>
@@ -72,8 +77,8 @@ export default function AcademyCourseScreen() {
   if (progress === undefined) return <Screen loading />;
 
   const bySlug = new Map(progress.sections.map((s) => [s.slug, s]));
-  const modules = academyCourseModules(course.slug);
-  const required = requiredModuleSlugsForCourse(course.slug);
+  const modules = catalog.courseModules(course.slug);
+  const required = catalog.requiredModuleSlugsForCourse(course.slug);
   const passedRequired = required.filter(
     (s) => bySlug.get(s)?.passed === true,
   ).length;
@@ -94,9 +99,18 @@ export default function AcademyCourseScreen() {
         >
           <Icon name="arrow-left" size={18} color={colors.muted} />
         </Pressable>
-        <Text className="text-xs font-bold uppercase tracking-wider text-accent">
+        <Text className="flex-1 text-xs font-bold uppercase tracking-wider text-accent">
           Academy · Course
         </Text>
+        {canEdit ? (
+          <Button
+            title="Edit course"
+            icon="edit-2"
+            variant="secondary"
+            size="sm"
+            onPress={() => router.push(`/academy/edit/${course.slug}`)}
+          />
+        ) : null}
       </View>
 
       <View className="flex-row items-center gap-2.5">
@@ -113,6 +127,24 @@ export default function AcademyCourseScreen() {
         <LevelChip level={course.level} />
       </View>
       <Text className="mt-1.5 text-base text-muted">{course.description}</Text>
+
+      {editorState?.draft ? (
+        <View className="mt-4 rounded-lg border border-warn-soft bg-warn-bg p-4">
+          <View className="flex-row flex-wrap items-center gap-2">
+            <Icon name="edit-3" size={16} color={colors.warn} />
+            <Text className="flex-1 text-sm text-ink">
+              <Text className="font-semibold">Draft in progress</Text>
+              {` by ${editorState.draft.updatedByMe ? "you" : editorState.draft.updatedByName}. Learners still see the published version.`}
+            </Text>
+            <Button
+              title="Open draft"
+              variant="ghost"
+              size="sm"
+              onPress={() => router.push(`/academy/edit/${course.slug}`)}
+            />
+          </View>
+        </View>
+      ) : null}
 
       {/* Progress + earned banner */}
       <Card padding="md" className="mt-4">

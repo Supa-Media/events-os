@@ -158,6 +158,7 @@ any more, and a missed rung is no longer possible.
 | `hiring.view` | Read the Hiring desk — applications, rubric reviews, trials |
 | `hiring.edit` | Run the pipeline: move a candidate, file a review, start a trial |
 | `hiring.approve` | Make the call — place, not-now, or decline, and send the outcome |
+| `people.academy.edit` | Edit Academy courses in the app and publish the changes |
 | `org.chart.edit` | Add, move, rename, and re-power seats (implies `org.seats.edit`) |
 | `org.seats.edit` | Put people in seats and take them out without a proposal |
 | `data.export` | Bulk-export a dataset you can already see |

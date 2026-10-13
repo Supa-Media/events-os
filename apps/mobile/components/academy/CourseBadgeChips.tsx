@@ -2,8 +2,8 @@ import { View, Text } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { getAcademyCourse } from "@events-os/shared";
 import { Badge } from "../ui";
+import { useAcademyCatalog } from "../../lib/useAcademyCatalog";
 
 /**
  * A person's earned Academy course badges — a small, display-only chip row for
@@ -15,11 +15,12 @@ import { Badge } from "../ui";
  */
 export function CourseBadgeChips({ personId }: { personId: Id<"people"> }) {
   const badges = useQuery(api.academy.personBadges, { personId });
-  if (badges === undefined || badges.length === 0) return null;
+  const catalog = useAcademyCatalog();
+  if (badges === undefined || badges.length === 0 || !catalog) return null;
 
   // Resolve titles from the catalog; drop any slug no longer defined there.
   const courses = badges
-    .map((b) => getAcademyCourse(b.courseSlug))
+    .map((b) => catalog.getCourse(b.courseSlug))
     .filter((c): c is NonNullable<typeof c> => c != null);
   if (courses.length === 0) return null;
 

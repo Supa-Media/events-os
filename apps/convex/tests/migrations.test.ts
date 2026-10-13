@@ -370,6 +370,7 @@ const REGISTRY_NAMES = [
   "0086_reaward_after_data_export_removal",
   "0087_reaward_after_transfers_removal",
   "0088_goal_seat_measures_to_manual",
+  "0089_add_academy_edit_power_defaults",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

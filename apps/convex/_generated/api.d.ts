@@ -9,6 +9,7 @@
  */
 
 import type * as academy from "../academy.js";
+import type * as academyEditor from "../academyEditor.js";
 import type * as accessAllowlist from "../accessAllowlist.js";
 import type * as ai from "../ai.js";
 import type * as aiActions from "../aiActions.js";
@@ -110,6 +111,8 @@ import type * as inventory from "../inventory.js";
 import type * as items from "../items.js";
 import type * as legacyCards from "../legacyCards.js";
 import type * as listings from "../listings.js";
+import type * as lib_academyCatalog from "../lib/academyCatalog.js";
+import type * as lib_academyContentAccess from "../lib/academyContentAccess.js";
 import type * as lib_access from "../lib/access.js";
 import type * as lib_aiEngine from "../lib/aiEngine.js";
 import type * as lib_applicationForm from "../lib/applicationForm.js";
@@ -411,6 +414,7 @@ import type * as sales from "../sales.js";
 import type * as salesDonations from "../salesDonations.js";
 import type * as salesSync from "../salesSync.js";
 import type * as schema_academy from "../schema/academy.js";
+import type * as schema_academyEdits from "../schema/academyEdits.js";
 import type * as schema_accessAllowlist from "../schema/accessAllowlist.js";
 import type * as schema_ai from "../schema/ai.js";
 import type * as schema_backerMilestones from "../schema/backerMilestones.js";
@@ -497,6 +501,7 @@ import type {
 
 declare const fullApi: ApiFromModules<{
   academy: typeof academy;
+  academyEditor: typeof academyEditor;
   accessAllowlist: typeof accessAllowlist;
   ai: typeof ai;
   aiActions: typeof aiActions;
@@ -598,6 +603,8 @@ declare const fullApi: ApiFromModules<{
   items: typeof items;
   legacyCards: typeof legacyCards;
   listings: typeof listings;
+  "lib/academyCatalog": typeof lib_academyCatalog;
+  "lib/academyContentAccess": typeof lib_academyContentAccess;
   "lib/access": typeof lib_access;
   "lib/aiEngine": typeof lib_aiEngine;
   "lib/applicationForm": typeof lib_applicationForm;
@@ -899,6 +906,7 @@ declare const fullApi: ApiFromModules<{
   salesDonations: typeof salesDonations;
   salesSync: typeof salesSync;
   "schema/academy": typeof schema_academy;
+  "schema/academyEdits": typeof schema_academyEdits;
   "schema/accessAllowlist": typeof schema_accessAllowlist;
   "schema/ai": typeof schema_ai;
   "schema/backerMilestones": typeof schema_backerMilestones;

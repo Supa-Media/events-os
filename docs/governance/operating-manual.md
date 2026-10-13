@@ -75,7 +75,7 @@ update these tables, `governance.test.ts` fails.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit`, `marketing.blog.publish`, `marketing.designs.edit` |
+| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit`, `marketing.blog.publish`, `marketing.designs.edit`, `people.academy.edit` |
 | Financial Manager | Executive Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
 | Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
@@ -89,10 +89,10 @@ update these tables, `governance.test.ts` fails.
 | Social Media Manager | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.list.view`, `marketing.blog.edit`, `marketing.designs.edit` |
 | Graphic Designer | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.designs.edit` |
 | Marketing Associate | Marketing Director | many | `marketing.list.view`, `marketing.blog.edit` |
-| Expansion Director | Executive Director | 1 | `giving.view`, `data.export`, `hiring.approve` |
+| Expansion Director | Executive Director | 1 | `giving.view`, `data.export`, `hiring.approve`, `people.academy.edit` |
 | Chapter Directors | Expansion Director | many | — |
 | Recruiting Associate | Expansion Director | many | `hiring.edit` |
-| Training Associate | Expansion Director | many | — |
+| Training Associate | Expansion Director | many | `people.academy.edit` |
 
 <!-- /seat-chart -->
 
@@ -213,6 +213,7 @@ A **power** is one named thing a person is allowed to do. The grammar is
 | `hiring.view` | Read the Hiring desk — applications, interview rubrics, trial reviews |
 | `hiring.edit` | Run the pipeline: move candidates, file rubric reviews, start an Empowerment Trial |
 | `hiring.approve` | Make the call — place, not-now, or decline a candidate, and send the outcome message |
+| `people.academy.edit` | Edit Academy courses in the app — details, lessons, lesson order, quizzes — and publish the changes to every learner. Every publish is recorded and can be undone |
 | `marketing.site.edit` | Change the public homepage's copy, impact numbers, and Important Links cards — live, with no deploy |
 | `marketing.designs.edit` | Change the brand kit — colors, fonts, and the design library. Everyone may READ it; this changes it |
 | `marketing.blog.edit` | Draft and revise posts for the public blog |

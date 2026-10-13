@@ -2202,6 +2202,11 @@ export * from "./playbook";
 // course/theme layer (themes → courses → module slugs). Content lives per-
 // stream in ./academy/streams/*; ./academy assembles + re-exports it all. ──
 export * from "./academy";
+// The published in-app course edits laid over that curriculum, and the
+// editor's helpers. Separate entry points (not re-exported by ./academy)
+// because they import it — re-exporting would make the import circular.
+export * from "./academy/catalog";
+export * from "./academy/courseEdit";
 
 // ── Academy role paths (seat/event-hat → ordered course playlist) ─────────────
 export * from "./academyPaths";
