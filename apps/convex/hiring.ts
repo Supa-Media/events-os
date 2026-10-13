@@ -44,6 +44,7 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import {
   APPLICATION_LIMITS,
+  APPLICATION_TOGGLEABLE_FIELDS,
   DEFAULT_APPLICATION_QUESTIONS,
   GENERAL_INTEREST_SLUG,
   GENERAL_INTEREST_TITLE,
@@ -57,6 +58,7 @@ import {
   isClosedStage,
   isRubricCriterion,
   trialDueDates,
+  type ApplicationToggleableField,
   type HiringOutcome,
   type HiringStage,
   type TrialTrack,
@@ -336,12 +338,12 @@ export const submitApplication = mutation({
     const openToOtherRoles = args.openToOtherRoles === true;
 
     const form = await loadApplicationForm(ctx);
-    const missingFields = [
-      { key: "phone", label: "Phone", has: Boolean(phone) },
-      { key: "location", label: "Where you're based", has: Boolean(location) },
-      { key: "links", label: "Anything we should look at", has: links.length > 0 },
-      { key: "referredBy", label: "Did someone here send you?", has: Boolean(referredBy) },
-    ] as const;
+    const filled: Record<ApplicationToggleableField, boolean> = {
+      phone: Boolean(phone),
+      location: Boolean(location),
+      links: links.length > 0,
+      referredBy: Boolean(referredBy),
+    };
 
     const answers: Record<string, string> = {};
     for (const [key, raw] of Object.entries(args.answers)) {
@@ -361,9 +363,9 @@ export const submitApplication = mutation({
       answers[key] = value;
     }
     const missing = [
-      ...missingFields
-        .filter((f) => form.requiredFields[f.key] && !f.has)
-        .map((f) => f.label),
+      ...APPLICATION_TOGGLEABLE_FIELDS.filter(
+        (f) => form.requiredFields[f.key] && !filled[f.key],
+      ).map((f) => f.label),
       ...form.questions
         .filter((q) => q.required && !answers[q.key])
         .map((q) => q.label),
