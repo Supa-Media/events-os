@@ -118,6 +118,12 @@ export const jobApplications = defineTable({
   email: v.string(),
   phone: v.optional(v.string()),
   location: v.optional(v.string()),
+  /** "@ada.sings" — free text, because handles look different on every
+   *  platform. A link to a profile belongs in `links`. */
+  socialHandle: v.optional(v.string()),
+  /** Male or female (`APPLICATION_GENDERS`). Absent on files from before the
+   *  form asked. */
+  gender: v.optional(v.union(v.literal("male"), v.literal("female"))),
   /** Portfolio, LinkedIn, a church's site — capped in count and length at
    *  write time (`APPLICATION_LIMITS`). */
   links: v.optional(v.array(v.string())),
@@ -354,6 +360,10 @@ export const applicationForm = defineTable({
   requiredFields: v.object({
     phone: v.boolean(),
     location: v.boolean(),
+    // Optional only because rows saved before the form asked lack them;
+    // `loadApplicationForm` fills them from the defaults.
+    gender: v.optional(v.boolean()),
+    socialHandle: v.optional(v.boolean()),
     links: v.boolean(),
     referredBy: v.boolean(),
   }),

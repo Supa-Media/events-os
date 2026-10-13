@@ -120,9 +120,9 @@ async function hydrateQuestions(): Promise<void> {
 
   for (const { key } of APPLICATION_TOGGLEABLE_FIELDS) {
     const required = form.requiredFields?.[key] === true;
-    const field = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
-      `[data-apply-form] [name="${key}"]`,
-    );
+    const field = document.querySelector<
+      HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+    >(`[data-apply-form] [name="${key}"]`);
     if (field) field.required = required;
     const optional = document.querySelector<HTMLElement>(
       `[data-optional-for="${key}"]`,
@@ -214,9 +214,9 @@ function collectAnswers(data: FormData): Record<string, string> {
 /** The first empty required field, so we can focus it and say which one it is
  *  rather than letting the server answer that question a second later. */
 function firstMissing(): HTMLElement | null {
-  const fields = form?.querySelectorAll<HTMLInputElement | HTMLTextAreaElement>(
-    "[required]",
-  );
+  const fields = form?.querySelectorAll<
+    HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement
+  >("[required]");
   for (const field of fields ?? []) {
     if (!field.value.trim()) return field;
   }
@@ -243,6 +243,8 @@ async function submit(event: SubmitEvent): Promise<void> {
     email: String(data.get("email") ?? ""),
     phone: String(data.get("phone") ?? ""),
     location: String(data.get("location") ?? ""),
+    gender: String(data.get("gender") ?? ""),
+    socialHandle: String(data.get("socialHandle") ?? ""),
     referredBy: String(data.get("referredBy") ?? ""),
     // One link per line — a textarea is kinder than four inputs, and the
     // server caps both the count and each length.

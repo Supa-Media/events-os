@@ -41,6 +41,7 @@ function applicationArgs(overrides: Record<string, unknown> = {}) {
     email: "Ada@Example.com",
     phone: "555-0100",
     location: "Queens, NY",
+    gender: "female",
     answers: {
       why: "I've watched this from the outside for a year and want in.",
       ownership: "I ran our church's volunteer onboarding end to end.",
@@ -361,6 +362,49 @@ describe("hiring — the editable application form", () => {
     const view = await s.as.query(api.applicationForm.getApplicationForm, {});
     expect(view.isDefault).toBe(true);
     expect(view.form).toEqual(defaultForm());
+  });
+  test("gender and social handle are filed and shown on the file", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedHiringSeat(s, ["hiring.view"]);
+    const id = await submit(t, { gender: "Male", socialHandle: " @ada.sings " });
+    const file = await s.as.query(api.hiring.getApplication, { applicationId: id });
+    expect(file?.application.gender).toBe("male");
+    expect(file?.application.socialHandle).toBe("@ada.sings");
+
+    await expect(
+      submit(t, { gender: "other", email: "c@example.com" }),
+    ).rejects.toThrow(/male or female/);
+  });
+
+  test("gender is required by default; the social handle is not", async () => {
+    const t = newT();
+    const noGender = applicationArgs();
+    delete (noGender as Record<string, unknown>).gender;
+    await expect(
+      t.mutation(api.hiring.submitApplication, noGender),
+    ).rejects.toThrow(/Gender/);
+  });
+
+  test("a form saved before these fields existed takes their defaults", async () => {
+    const t = newT();
+    await run(t, async (ctx) => {
+      await ctx.db.insert("applicationForm", {
+        questions: DEFAULT_APPLICATION_FORM.questions.map((q) => ({ ...q })),
+        requiredFields: {
+          phone: true,
+          location: false,
+          links: false,
+          referredBy: false,
+        },
+        updatedAt: 0,
+      });
+    });
+    const form = await t.query(internal.applicationForm.publicApplicationForm, {});
+    expect(form.requiredFields).toEqual({
+      ...DEFAULT_APPLICATION_FORM.requiredFields,
+      phone: true,
+    });
   });
 });
 
