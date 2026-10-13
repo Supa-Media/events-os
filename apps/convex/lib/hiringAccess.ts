@@ -138,6 +138,29 @@ export async function requireListingManage(
 }
 
 /**
+ * Assert the caller may EDIT the `/team/apply` form — its questions, their
+ * wording, and which fields are optional.
+ *
+ * Today this is "run the hiring desk" (`hiring.edit`), same as the postings:
+ * the people who read the answers are the people who decide what to ask. Its
+ * own named resolver per CLAUDE.md, so if the questions ever want a narrower
+ * owner it graduates to a `hiring.form.edit` power here and no call site
+ * changes.
+ */
+export async function requireApplicationFormManage(
+  ctx: QueryCtx,
+): Promise<HiringAccess> {
+  const access = await resolveHiringAccess(ctx);
+  if (!access.canManage) {
+    throw new ConvexError({
+      code: "FORBIDDEN",
+      message: "You don't have permission to edit the application form.",
+    });
+  }
+  return access;
+}
+
+/**
  * Assert the caller may CLOSE a file — place, not-now, or decline someone.
  * Separate from `requireHiringManage` on purpose: this is the one hiring act
  * the org reserves to a director, and the reservation is worth a gate rather

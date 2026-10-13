@@ -138,11 +138,18 @@ export const jobApplications = defineTable({
   ),
 
   // ── What they said ───────────────────────────────────────────────────────
-  /** Answers keyed by `APPLICATION_QUESTIONS[].key`. A record rather than
-   *  named columns so a question can be reworded, added, or retired without a
-   *  schema migration; unknown keys are rejected at the write gate, so the bag
-   *  can't become a junk drawer. */
+  /** Answers keyed by the form's question `key` (`applicationForm`). A record
+   *  rather than named columns so a question can be reworded, added, or
+   *  retired without a schema migration; unknown keys are rejected at the
+   *  write gate, so the bag can't become a junk drawer. */
   answers: v.record(v.string(), v.string()),
+  /** The questions as they were worded when this person applied, in order.
+   *  The form is editable, so the desk shows THESE labels, not today's.
+   *  Absent on files from before the form was editable — those were asked
+   *  `DEFAULT_APPLICATION_QUESTIONS`. */
+  questions: v.optional(
+    v.array(v.object({ key: v.string(), label: v.string() })),
+  ),
 
   // ── Where they are ───────────────────────────────────────────────────────
   stage: stageValidator,
@@ -322,3 +329,34 @@ export const jobListings = defineTable({
   // The public list reads published rows; the manager reads all. Both want
   // them grouped so the page's status ordering is a cheap client-side sort.
   .index("by_published", ["published"]);
+
+/**
+ * The `/team/apply` form itself — its questions and which "Who you are"
+ * fields are required. ONE row at most: absent means "use
+ * `DEFAULT_APPLICATION_FORM` from `@events-os/shared`", which is what every
+ * read goes through (`lib/applicationForm.ts#loadApplicationForm`), so a fresh
+ * deployment needs no seeding.
+ *
+ * Questions keep a stable `key` across rewording; answers are filed under it.
+ * A file also snapshots the labels it was asked (`jobApplications.questions`)
+ * so retiring or rewording a question never makes an old answer unreadable.
+ */
+export const applicationForm = defineTable({
+  questions: v.array(
+    v.object({
+      key: v.string(),
+      label: v.string(),
+      help: v.string(),
+      maxLength: v.number(),
+      required: v.boolean(),
+    }),
+  ),
+  requiredFields: v.object({
+    phone: v.boolean(),
+    location: v.boolean(),
+    links: v.boolean(),
+    referredBy: v.boolean(),
+  }),
+  updatedAt: v.number(),
+  updatedBy: v.optional(v.id("users")),
+});

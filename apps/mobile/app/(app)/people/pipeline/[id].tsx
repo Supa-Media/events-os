@@ -26,7 +26,6 @@ import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
-  APPLICATION_QUESTIONS,
   CANDIDATE_SOURCES,
   HIRING_OUTCOMES,
   HIRING_OUTCOME_DEFS,
@@ -313,18 +312,12 @@ function FileBody({
         {/* ── Their answers ───────────────────────────────────────── */}
         <SectionHeader title="What they said" />
         <View className="gap-2">
-          {APPLICATION_QUESTIONS.map((q) => {
-            const answer = app.answers[q.key];
-            if (!answer) return null;
-            return (
-              <Card key={q.key} padding="md">
-                <Text className="text-xs font-semibold text-muted">
-                  {q.label}
-                </Text>
-                <Text className="mt-1 text-sm leading-5 text-ink">{answer}</Text>
-              </Card>
-            );
-          })}
+          {app.answeredQuestions.map((q) => (
+            <Card key={q.key} padding="md">
+              <Text className="text-xs font-semibold text-muted">{q.label}</Text>
+              <Text className="mt-1 text-sm leading-5 text-ink">{q.answer}</Text>
+            </Card>
+          ))}
         </View>
 
         {/* ── Have we met them before? ────────────────────────────── */}

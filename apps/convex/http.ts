@@ -478,6 +478,29 @@ http.route({
   }),
 });
 
+// ── The application form's questions: GET /api/team/application ─────────────
+// `/team/apply` renders its questions from this at runtime, so the desk can
+// reword a question, add one, or make it optional from the OS
+// (`applicationForm.ts`) with no rebuild — same pattern as /api/team/roles.
+// The form's own copy only; nothing an applicant wrote is reachable here.
+http.route({
+  path: "/api/team/application",
+  method: "GET",
+  handler: httpAction(async (ctx) => {
+    const form = await ctx.runQuery(
+      internal.applicationForm.publicApplicationForm,
+      {},
+    );
+    return new Response(JSON.stringify(form), {
+      status: 200,
+      headers: {
+        "Content-Type": "application/json",
+        "Cache-Control": "public, max-age=60",
+      },
+    });
+  }),
+});
+
 // ── The backer portal: /backer (sign in, then your own record) ──────────────
 //
 // ONE ROUTE, TWO PAGES. With no live session it renders the sign-in screen;

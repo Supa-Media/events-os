@@ -56,6 +56,7 @@ describe("public routes are actually registered", () => {
     // Regression guard for the migration itself: these were live before the
     // blog moved and must not have been collateral.
     expect(resolves("/api/team/roles")).toBe(true);
+    expect(resolves("/api/team/application")).toBe(true);
     expect(resolves("/api/events/upcoming")).toBe(true);
     expect(resolves("/give")).toBe(true);
     expect(resolves("/rsvp/anything")).toBe(true);

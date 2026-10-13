@@ -13,7 +13,10 @@
  * to start.
  */
 import {
+  APPLICATION_TOGGLEABLE_FIELDS,
+  applicationQuestionCountPhrase,
   roleAcceptsApplications,
+  type ApplicationFormConfig,
   type PublicJobListing,
 } from "@events-os/shared/src/hiring";
 
@@ -44,6 +47,88 @@ function hydrateRole(): void {
   // rendered fallback already reads "General interest".
   if (titleEl && title) titleEl.textContent = title;
   if (title) document.title = `Apply · ${title} — Public Worship`;
+}
+
+/** One question's markup — the client twin of the `questions.map` in
+ *  apply.astro, built with DOM calls so desk-written text is never parsed as
+ *  HTML. */
+function questionField(q: ApplicationFormConfig["questions"][number]): HTMLElement {
+  const label = document.createElement("label");
+  label.className = "block";
+
+  const title = document.createElement("span");
+  title.className = "text-sm font-semibold text-ink";
+  title.textContent = q.label;
+  if (!q.required) {
+    const optional = document.createElement("span");
+    optional.className = "font-normal text-ink/50";
+    optional.textContent = " (optional)";
+    title.appendChild(optional);
+  }
+  label.appendChild(title);
+
+  if (q.help) {
+    const help = document.createElement("span");
+    help.className = "mt-1 block text-sm leading-relaxed text-ink/65";
+    help.textContent = q.help;
+    label.appendChild(help);
+  }
+
+  const area = document.createElement("textarea");
+  area.name = `answers.${q.key}`;
+  area.rows = q.maxLength > 1500 ? 6 : 4;
+  area.maxLength = q.maxLength;
+  area.required = q.required;
+  area.className =
+    "mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base leading-relaxed text-ink outline-none focus:border-red-500";
+  label.appendChild(area);
+  return label;
+}
+
+/** Swap the build-time default questions for the live form the desk edits
+ *  (`GET /api/team/application`). Best-effort: if the fetch fails the defaults
+ *  stay, and the server's own message covers any difference. Anything already
+ *  typed into a question that survives the swap is carried over. */
+async function hydrateQuestions(): Promise<void> {
+  const wrap = document.querySelector<HTMLElement>("[data-apply-questions]");
+  if (!wrap) return;
+
+  let form: ApplicationFormConfig;
+  try {
+    const res = await fetch("/api/team/application", {
+      headers: { Accept: "application/json" },
+    });
+    if (!res.ok) return;
+    form = (await res.json()) as ApplicationFormConfig;
+    if (!Array.isArray(form.questions) || form.questions.length === 0) return;
+  } catch {
+    return;
+  }
+
+  const typed = new Map<string, string>();
+  for (const area of wrap.querySelectorAll<HTMLTextAreaElement>("textarea")) {
+    if (area.value) typed.set(area.name, area.value);
+  }
+  wrap.replaceChildren(...form.questions.map(questionField));
+  for (const area of wrap.querySelectorAll<HTMLTextAreaElement>("textarea")) {
+    const value = typed.get(area.name);
+    if (value) area.value = value;
+  }
+
+  const count = document.querySelector<HTMLElement>("[data-apply-question-count]");
+  if (count) count.textContent = applicationQuestionCountPhrase(form.questions.length);
+
+  for (const { key } of APPLICATION_TOGGLEABLE_FIELDS) {
+    const required = form.requiredFields?.[key] === true;
+    const field = document.querySelector<HTMLInputElement | HTMLTextAreaElement>(
+      `[data-apply-form] [name="${key}"]`,
+    );
+    if (field) field.required = required;
+    const optional = document.querySelector<HTMLElement>(
+      `[data-optional-for="${key}"]`,
+    );
+    if (optional) optional.hidden = required;
+  }
 }
 
 /** List every OTHER role that's taking applications as a checkbox, so someone
@@ -206,6 +291,7 @@ async function submit(event: SubmitEvent): Promise<void> {
 function init(): void {
   if (!form) return;
   hydrateRole();
+  void hydrateQuestions();
   void hydrateOtherRoles();
   form.addEventListener("submit", submit);
 }

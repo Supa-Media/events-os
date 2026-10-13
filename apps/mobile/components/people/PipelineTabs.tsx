@@ -20,6 +20,9 @@ const TABS: { label: string; path: string }[] = [
   // the funnel is the person who owns what's open (see `lib/hiringAccess.ts`'s
   // `requireListingManage`).
   { label: "Job listings", path: "/people/listings" },
+  // The questions every applicant answers on /team/apply — editable here,
+  // live on the page with no deploy (`apps/convex/applicationForm.ts`).
+  { label: "Application form", path: "/people/application" },
 ];
 
 export function PipelineTabs() {

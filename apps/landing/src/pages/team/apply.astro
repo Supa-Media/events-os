@@ -3,11 +3,11 @@
  * /team/apply — the application form, for a specific role
  * (`?role=<slug>&title=<title>`) or for the general-interest pool.
  *
- * The questions are rendered from `APPLICATION_QUESTIONS` in
- * `@events-os/shared` — the same list the backend validates against
- * (`hiring.submitApplication`) and the same one the Hiring desk renders answers
- * under. Copying them into this file would guarantee the three drift apart;
- * importing them means a reworded question ships everywhere at once.
+ * The questions are editable from the OS (People desk → Application form), so
+ * this page renders `DEFAULT_APPLICATION_FORM` at build time and then
+ * `team-apply.ts` swaps in the live form from `GET /api/team/application` —
+ * the same set `hiring.submitApplication` validates against. If that fetch
+ * fails, the defaults stay and the server's message covers any difference.
  *
  * Posts to `/api/team/apply`, which pw-router proxies to Convex on
  * publicworship.life (every path under `/api/` already routes there).
@@ -16,16 +16,20 @@ import BaseLayout from "../../layouts/BaseLayout.astro";
 import Container from "../../components/ui/Container.astro";
 import Eyebrow from "../../components/ui/Eyebrow.astro";
 import {
-  APPLICATION_QUESTIONS,
   APPLICATION_LIMITS,
+  DEFAULT_APPLICATION_FORM,
   GENERAL_INTEREST_TITLE,
+  applicationQuestionCountPhrase,
 } from "@events-os/shared/src/hiring";
+
+const questions = DEFAULT_APPLICATION_FORM.questions;
+const requiredFields = DEFAULT_APPLICATION_FORM.requiredFields;
 import { asset } from "../../lib/asset";
 ---
 
 <BaseLayout
   title="Apply"
-  description="Apply to serve with Public Worship. Six questions, and a real person reads every application."
+  description="Apply to serve with Public Worship. A few questions, and a real person reads every application."
   noindex={true}
 >
   <Container size="narrow" class="py-16 sm:py-24">
@@ -46,7 +50,9 @@ import { asset } from "../../lib/asset";
         </span>
       </h1>
       <p class="max-w-prose text-base leading-relaxed text-ink/75">
-        Six questions. Honest, specific answers beat polished ones — we're
+        <span data-apply-question-count
+          >{applicationQuestionCountPhrase(questions.length)}</span
+        > Honest, specific answers beat polished ones — we're
         trying to understand you, not grade your writing. A person reads every
         application and you'll hear back either way.
       </p>
@@ -103,11 +109,17 @@ import { asset } from "../../lib/asset";
           </label>
           <label class="block">
             <span class="text-sm font-semibold text-ink">
-              Phone <span class="font-normal text-ink/50">(optional)</span>
+              Phone
+              <span
+                class="font-normal text-ink/50"
+                data-optional-for="phone"
+                hidden={requiredFields.phone}>(optional)</span
+              >
             </span>
             <input
               type="tel"
               name="phone"
+              required={requiredFields.phone}
               maxlength={APPLICATION_LIMITS.phone}
               autocomplete="tel"
               class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
@@ -116,11 +128,16 @@ import { asset } from "../../lib/asset";
           <label class="block">
             <span class="text-sm font-semibold text-ink">
               Where you're based
-              <span class="font-normal text-ink/50">(optional)</span>
+              <span
+                class="font-normal text-ink/50"
+                data-optional-for="location"
+                hidden={requiredFields.location}>(optional)</span
+              >
             </span>
             <input
               type="text"
               name="location"
+              required={requiredFields.location}
               maxlength={APPLICATION_LIMITS.location}
               placeholder="Queens, NY"
               class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
@@ -131,13 +148,18 @@ import { asset } from "../../lib/asset";
         <label class="block">
           <span class="text-sm font-semibold text-ink">
             Anything we should look at
-            <span class="font-normal text-ink/50">(optional)</span>
+            <span
+              class="font-normal text-ink/50"
+              data-optional-for="links"
+              hidden={requiredFields.links}>(optional)</span
+            >
           </span>
           <span class="mt-1 block text-sm text-ink/65">
             A portfolio, a LinkedIn, something you made. One per line, up to {APPLICATION_LIMITS.links}.
           </span>
           <textarea
             name="links"
+            required={requiredFields.links}
             rows="3"
             class="mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
           ></textarea>
@@ -146,11 +168,16 @@ import { asset } from "../../lib/asset";
         <label class="block">
           <span class="text-sm font-semibold text-ink">
             Did someone here send you?
-            <span class="font-normal text-ink/50">(optional)</span>
+            <span
+              class="font-normal text-ink/50"
+              data-optional-for="referredBy"
+              hidden={requiredFields.referredBy}>(optional)</span
+            >
           </span>
           <input
             type="text"
             name="referredBy"
+            required={requiredFields.referredBy}
             maxlength={APPLICATION_LIMITS.referredBy}
             class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
           />
@@ -161,28 +188,34 @@ import { asset } from "../../lib/asset";
         <legend class="font-display text-xl font-normal text-ink">
           The questions
         </legend>
-        {
-          APPLICATION_QUESTIONS.map((q) => (
-            <label class="block">
-              <span class="text-sm font-semibold text-ink">
-                {q.label}
-                {!q.required && (
-                  <span class="font-normal text-ink/50"> (optional)</span>
+        {/* Re-rendered by team-apply.ts from the live form; keep this markup
+            and `renderQuestions` there in step. */}
+        <div class="space-y-6" data-apply-questions>
+          {
+            questions.map((q) => (
+              <label class="block">
+                <span class="text-sm font-semibold text-ink">
+                  {q.label}
+                  {!q.required && (
+                    <span class="font-normal text-ink/50"> (optional)</span>
+                  )}
+                </span>
+                {q.help && (
+                  <span class="mt-1 block text-sm leading-relaxed text-ink/65">
+                    {q.help}
+                  </span>
                 )}
-              </span>
-              <span class="mt-1 block text-sm leading-relaxed text-ink/65">
-                {q.help}
-              </span>
-              <textarea
-                name={`answers.${q.key}`}
-                rows={q.maxLength > 1500 ? 6 : 4}
-                maxlength={q.maxLength}
-                required={q.required}
-                class="mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base leading-relaxed text-ink outline-none focus:border-red-500"
-              />
-            </label>
-          ))
-        }
+                <textarea
+                  name={`answers.${q.key}`}
+                  rows={q.maxLength > 1500 ? 6 : 4}
+                  maxlength={q.maxLength}
+                  required={q.required}
+                  class="mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base leading-relaxed text-ink outline-none focus:border-red-500"
+                />
+              </label>
+            ))
+          }
+        </div>
       </fieldset>
 
       <fieldset class="space-y-4">
