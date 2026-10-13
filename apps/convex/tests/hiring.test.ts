@@ -44,7 +44,7 @@ function applicationArgs(overrides: Record<string, unknown> = {}) {
     answers: {
       why: "I've watched this from the outside for a year and want in.",
       ownership: "I ran our church's volunteer onboarding end to end.",
-      escalation: "Budget shortfall: three options, recommended the middle one.",
+      leadership: "I led our worship team through a merger; we disagreed on setlists and I got us to one rhythm.",
       capacity: "About 10 hours a week; my evenings are free.",
       covering: "Grace Fellowship, Astoria — I attend and give there.",
     },
