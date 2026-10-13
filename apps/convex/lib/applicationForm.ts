@@ -25,6 +25,8 @@ export const applicationQuestionValidator = v.object({
 export const requiredFieldsValidator = v.object({
   phone: v.boolean(),
   location: v.boolean(),
+  gender: v.boolean(),
+  socialHandle: v.boolean(),
   links: v.boolean(),
   referredBy: v.boolean(),
 });
@@ -52,5 +54,12 @@ export async function loadApplicationForm(
       requiredFields: { ...DEFAULT_APPLICATION_FORM.requiredFields },
     };
   }
-  return { questions: row.questions, requiredFields: row.requiredFields };
+  return {
+    questions: row.questions,
+    // A row saved before a field existed takes that field's default.
+    requiredFields: {
+      ...DEFAULT_APPLICATION_FORM.requiredFields,
+      ...row.requiredFields,
+    },
+  };
 }

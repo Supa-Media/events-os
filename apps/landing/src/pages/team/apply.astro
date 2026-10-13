@@ -16,6 +16,7 @@ import BaseLayout from "../../layouts/BaseLayout.astro";
 import Container from "../../components/ui/Container.astro";
 import Eyebrow from "../../components/ui/Eyebrow.astro";
 import {
+  APPLICATION_GENDERS,
   APPLICATION_LIMITS,
   DEFAULT_APPLICATION_FORM,
   GENERAL_INTEREST_TITLE,
@@ -140,6 +141,47 @@ import { asset } from "../../lib/asset";
               required={requiredFields.location}
               maxlength={APPLICATION_LIMITS.location}
               placeholder="Queens, NY"
+              class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+            />
+          </label>
+          <label class="block">
+            <span class="text-sm font-semibold text-ink">
+              Gender
+              <span
+                class="font-normal text-ink/50"
+                data-optional-for="gender"
+                hidden={requiredFields.gender}>(optional)</span
+              >
+            </span>
+            <select
+              name="gender"
+              required={requiredFields.gender}
+              class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+            >
+              <option value="">Choose one</option>
+              {
+                APPLICATION_GENDERS.map((g) => (
+                  <option value={g.value}>{g.label}</option>
+                ))
+              }
+            </select>
+          </label>
+          <label class="block">
+            <span class="text-sm font-semibold text-ink">
+              Social media handle
+              <span
+                class="font-normal text-ink/50"
+                data-optional-for="socialHandle"
+                hidden={requiredFields.socialHandle}>(optional)</span
+              >
+            </span>
+            <input
+              type="text"
+              name="socialHandle"
+              required={requiredFields.socialHandle}
+              maxlength={APPLICATION_LIMITS.socialHandle}
+              placeholder="@yourname on Instagram"
+              autocapitalize="off"
               class="mt-1 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
             />
           </label>

@@ -43,6 +43,7 @@ import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import {
+  APPLICATION_GENDERS,
   APPLICATION_LIMITS,
   APPLICATION_TOGGLEABLE_FIELDS,
   DEFAULT_APPLICATION_QUESTIONS,
@@ -258,6 +259,10 @@ export const submitApplication = mutation({
     email: v.string(),
     phone: v.optional(v.string()),
     location: v.optional(v.string()),
+    socialHandle: v.optional(v.string()),
+    /** "male" | "female" — a string here so anything else gets a readable
+     *  message rather than Convex's argument-validation failure. */
+    gender: v.optional(v.string()),
     links: v.optional(v.array(v.string())),
     referredBy: v.optional(v.string()),
     /** "Open to other roles that may come up." */
@@ -296,6 +301,15 @@ export const submitApplication = mutation({
     const phone = trimmedOrUndefined(args.phone);
     const location = trimmedOrUndefined(args.location);
     const referredBy = trimmedOrUndefined(args.referredBy);
+    const socialHandle = trimmedOrUndefined(args.socialHandle);
+    const genderRaw = trimmedOrUndefined(args.gender)?.toLowerCase();
+    const gender = APPLICATION_GENDERS.find((g) => g.value === genderRaw)?.value;
+    if (genderRaw && !gender) {
+      throw new ConvexError({
+        code: "INVALID_GENDER",
+        message: "Gender must be male or female.",
+      });
+    }
 
     if (phone && phone.length > APPLICATION_LIMITS.phone) {
       throw new ConvexError({
@@ -307,6 +321,12 @@ export const submitApplication = mutation({
       throw new ConvexError({
         code: "INVALID_LOCATION",
         message: `Location must be ${APPLICATION_LIMITS.location} characters or fewer.`,
+      });
+    }
+    if (socialHandle && socialHandle.length > APPLICATION_LIMITS.socialHandle) {
+      throw new ConvexError({
+        code: "INVALID_SOCIAL_HANDLE",
+        message: `Social media handle must be ${APPLICATION_LIMITS.socialHandle} characters or fewer.`,
       });
     }
     if (referredBy && referredBy.length > APPLICATION_LIMITS.referredBy) {
@@ -341,6 +361,8 @@ export const submitApplication = mutation({
     const filled: Record<ApplicationToggleableField, boolean> = {
       phone: Boolean(phone),
       location: Boolean(location),
+      gender: Boolean(gender),
+      socialHandle: Boolean(socialHandle),
       links: links.length > 0,
       referredBy: Boolean(referredBy),
     };
@@ -405,6 +427,8 @@ export const submitApplication = mutation({
         name,
         ...(phone ? { phone } : {}),
         ...(location ? { location } : {}),
+        ...(socialHandle ? { socialHandle } : {}),
+        ...(gender ? { gender } : {}),
         ...(links.length ? { links } : {}),
         ...(referredBy ? { referredBy } : {}),
         openToOtherRoles,
@@ -429,6 +453,8 @@ export const submitApplication = mutation({
       email,
       ...(phone ? { phone } : {}),
       ...(location ? { location } : {}),
+      ...(socialHandle ? { socialHandle } : {}),
+      ...(gender ? { gender } : {}),
       ...(links.length ? { links } : {}),
       ...(referredBy ? { referredBy } : {}),
       openToOtherRoles,
@@ -709,6 +735,8 @@ export const getApplication = query({
     v.object({
       application: v.object({
         ...applicationRowValidator.fields,
+        socialHandle: v.union(v.string(), v.null()),
+        gender: v.union(v.literal("male"), v.literal("female"), v.null()),
         links: v.array(v.string()),
         referredBy: v.union(v.string(), v.null()),
         otherRoles: v.array(v.object({ slug: v.string(), title: v.string() })),
@@ -781,6 +809,8 @@ export const getApplication = query({
     return {
       application: {
         ...(await applicationRow(ctx, row)),
+        socialHandle: row.socialHandle ?? null,
+        gender: row.gender ?? null,
         links: row.links ?? [],
         referredBy: row.referredBy ?? null,
         otherRoles: row.otherRoles ?? [],
@@ -1425,6 +1455,7 @@ export const getNewApplicationNotice = internalQuery({
       phone: v.union(v.string(), v.null()),
       roleTitle: v.string(),
       location: v.union(v.string(), v.null()),
+      socialHandle: v.union(v.string(), v.null()),
       referredBy: v.union(v.string(), v.null()),
       capacity: v.union(v.string(), v.null()),
       openToOtherRoles: v.boolean(),
@@ -1445,6 +1476,7 @@ export const getNewApplicationNotice = internalQuery({
       phone: row.phone ?? null,
       roleTitle: row.roleTitle,
       location: row.location ?? null,
+      socialHandle: row.socialHandle ?? null,
       referredBy: row.referredBy ?? null,
       // The availability answer, previewed in the notice: it is the org's
       // stated hard gate, so it is the one answer worth reading before
@@ -1479,6 +1511,7 @@ export const sendNewApplicationNotice = internalAction({
         ${emailHeading("A new application")}
         ${emailParagraph(`<b>${escapeHtml(payload.name)}</b> applied for <b>${escapeHtml(payload.roleTitle)}</b>${payload.location ? ` — ${escapeHtml(payload.location)}` : ""}.`)}
         ${capacity}
+        ${payload.socialHandle ? emailParagraph(`<b>Social:</b> ${escapeHtml(payload.socialHandle)}`) : ""}
         ${payload.referredBy ? emailParagraph(`<b>Referred by:</b> ${escapeHtml(payload.referredBy)}`) : ""}
         ${payload.otherRoleTitles.length > 0 ? emailParagraph(`<b>Would also consider:</b> ${payload.otherRoleTitles.map(escapeHtml).join(", ")}`) : ""}
         ${payload.openToOtherRoles ? emailParagraph(`<b>Open to other roles that may come up.</b>`) : ""}

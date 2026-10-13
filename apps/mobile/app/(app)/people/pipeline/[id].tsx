@@ -40,6 +40,7 @@ import {
   TRIAL_BOUNDARIES,
   TRIAL_DELIVERABLE_PROMPT,
   TRIAL_TRACKS,
+  applicationGenderLabel,
   isClosedStage,
   outcomeMessage,
   type HiringOutcome,
@@ -192,6 +193,16 @@ function FileBody({
           ) : null}
           {app.location ? (
             <Text className="mt-0.5 text-xs text-muted">{app.location}</Text>
+          ) : null}
+          {app.gender ? (
+            <Text className="mt-0.5 text-xs text-muted">
+              {applicationGenderLabel(app.gender)}
+            </Text>
+          ) : null}
+          {app.socialHandle ? (
+            <Text className="mt-0.5 text-xs text-ink" selectable>
+              Social: {app.socialHandle}
+            </Text>
           ) : null}
           {app.links.length > 0 ? (
             <View className="mt-2 gap-0.5">

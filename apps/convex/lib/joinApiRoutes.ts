@@ -109,6 +109,8 @@ export function registerJoinApiRoutes(http: HttpRouter): void {
         const phone = String(body.phone ?? "").trim();
         const location = String(body.location ?? "").trim();
         const referredBy = String(body.referredBy ?? "").trim();
+        const socialHandle = String(body.socialHandle ?? "").trim();
+        const gender = String(body.gender ?? "").trim();
 
         await ctx.runMutation(api.hiring.submitApplication, {
           ...(roleSlug ? { roleSlug } : {}),
@@ -117,6 +119,8 @@ export function registerJoinApiRoutes(http: HttpRouter): void {
           email: String(body.email ?? ""),
           ...(phone ? { phone } : {}),
           ...(location ? { location } : {}),
+          ...(socialHandle ? { socialHandle } : {}),
+          ...(gender ? { gender } : {}),
           ...(links.length ? { links } : {}),
           ...(referredBy ? { referredBy } : {}),
           openToOtherRoles: body.openToOtherRoles === true,

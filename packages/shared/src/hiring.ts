@@ -606,6 +606,8 @@ export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
 export const APPLICATION_TOGGLEABLE_FIELDS = [
   { key: "phone", label: "Phone" },
   { key: "location", label: "Where you're based" },
+  { key: "gender", label: "Gender" },
+  { key: "socialHandle", label: "Social media handle" },
   { key: "links", label: "Anything we should look at" },
   { key: "referredBy", label: "Did someone here send you?" },
 ] as const;
@@ -625,10 +627,27 @@ export const DEFAULT_APPLICATION_FORM: ApplicationFormConfig = {
   requiredFields: {
     phone: false,
     location: false,
+    gender: true,
+    // Not everyone has one, and nobody should be turned away for that.
+    socialHandle: false,
     links: false,
     referredBy: false,
   },
 };
+
+/** The gender question's only answers. Stored as the value, shown as the label. */
+export const APPLICATION_GENDERS = [
+  { value: "male", label: "Male" },
+  { value: "female", label: "Female" },
+] as const;
+
+export type ApplicationGender = (typeof APPLICATION_GENDERS)[number]["value"];
+
+export function applicationGenderLabel(
+  value: string | null | undefined,
+): string | null {
+  return APPLICATION_GENDERS.find((g) => g.value === value)?.label ?? null;
+}
 
 /** Bounds on what the desk can set. Bounds, not product rules. */
 export const APPLICATION_FORM_LIMITS = {
@@ -713,6 +732,7 @@ export const APPLICATION_LIMITS = {
   email: 200,
   phone: 40,
   location: 120,
+  socialHandle: 120,
   link: 500,
   links: 4,
   referredBy: 160,
