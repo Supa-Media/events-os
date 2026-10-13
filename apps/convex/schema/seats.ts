@@ -87,6 +87,11 @@ export const seatDefs = defineTable({
   // Bridge to the legacy `specializedRoles.title` this seat corresponds to
   // (see `SPECIALIZED_ROLE_TITLES` in `@events-os/shared`), where one exists.
   legacyTitle: v.optional(legacyTitleValidator),
+  // The seat's Academy courses, in order, as set by a chart editor. Absent
+  // means "never customized" — the built-in role path for this slug applies
+  // (`seatRolePath` in `@events-os/shared/academyPaths`). An empty array means
+  // the editor chose no training for this seat.
+  courseSlugs: v.optional(v.array(v.string())),
   createdAt: v.number(),
   updatedAt: v.number(),
 })

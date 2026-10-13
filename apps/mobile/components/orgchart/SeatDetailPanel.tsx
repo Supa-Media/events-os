@@ -2,7 +2,7 @@
  * The seat panel — slides over the chart when a box is selected. A header
  * (scope, the seat's name, Focus) over five tabs:
  *
- *   Overview  reports-to, seat size, training, remove   `SeatOverviewTab`
+ *   Overview  reports-to, seat size, courses, remove    `SeatOverviewTab`
  *   Powers    what the seat can do + the picker          `SeatPowersTab`
  *   People    holders, open spots, proposals             `SeatPeopleTab`
  *   Duties    the real duties from Work → Duties         `SeatDuties`
@@ -153,6 +153,7 @@ export function SeatDetailPanel({
             seat={selected.seat}
             scope={selected.scope}
             maxHolders={detail.maxHolders}
+            courseSlugs={detail.courseSlugs}
             holders={detail.holders}
             derived={detail.derived}
             canEdit={canEdit}

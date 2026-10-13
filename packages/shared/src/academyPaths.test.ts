@@ -8,6 +8,9 @@ import {
   nextIncompleteModuleForPath,
   requiredModuleSlugsForPath,
   rolePathProgress,
+  seatRolePath,
+  defaultNewSeatCourseSlugs,
+  unknownCourseSlugs,
 } from "./academyPaths";
 
 /**
@@ -178,5 +181,42 @@ describe("nextIncompleteModuleForPath", () => {
 
   test("returns null for a path with no courses (nothing to do yet)", () => {
     expect(nextIncompleteModuleForPath(EMPTY_PATH, new Set())).toBeNull();
+  });
+});
+
+describe("seatRolePath", () => {
+  test("no stored courses → the built-in path, unchanged", () => {
+    expect(seatRolePath({ slug: "treasurer", title: "Anything" })).toBe(getRolePath("seat", "treasurer"));
+    expect(seatRolePath({ slug: "custom_seat", title: "Custom" })).toBeUndefined();
+  });
+
+  test("stored courses override, with the live title and the built-in icon", () => {
+    const builtIn = getRolePath("seat", "treasurer")!;
+    const path = seatRolePath({ slug: "treasurer", title: "Money Keeper", courseSlugs: ["how-we-work"] });
+    expect(path).toEqual({
+      seatSlug: "treasurer",
+      kind: "seat",
+      title: "Money Keeper",
+      icon: builtIn.icon,
+      courseSlugs: ["how-we-work"],
+    });
+  });
+
+  test("a runtime-added seat gets a path from its stored courses", () => {
+    const path = seatRolePath({ slug: "people_associate", title: "People Associate", courseSlugs: ["how-we-work"] });
+    expect(path?.courseSlugs).toEqual(["how-we-work"]);
+    expect(path?.icon).toBe("book-open");
+  });
+
+  test("an empty list (or only retired courses) means no path", () => {
+    expect(seatRolePath({ slug: "treasurer", title: "T", courseSlugs: [] })).toBeUndefined();
+    expect(seatRolePath({ slug: "treasurer", title: "T", courseSlugs: ["retired-course"] })).toBeUndefined();
+  });
+
+  test("default new-seat courses are the Foundations trio, all real", () => {
+    const d = defaultNewSeatCourseSlugs();
+    expect(d).toEqual(getRolePath("event_hat", "everyone")!.courseSlugs);
+    expect(unknownCourseSlugs(d)).toEqual([]);
+    expect(unknownCourseSlugs(["nope", ...d])).toEqual(["nope"]);
   });
 });

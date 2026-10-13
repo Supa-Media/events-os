@@ -21,8 +21,8 @@ import {
   academyCoursesForTheme,
   requiredModuleSlugsForCourse,
   ROLE_PATHS,
-  getRolePath,
   rolePathProgress,
+  seatRolePath,
   nextIncompleteModuleForPath,
   seatsForChart,
   type Course,
@@ -44,6 +44,7 @@ type AcademyChapter =
   | undefined;
 type SeatAssignments = FunctionReturnType<typeof api.seats.mySeatAssignments>;
 type FullChart = FunctionReturnType<typeof api.seats.chart>;
+type FullChartSeat = Extract<FullChart, { kind: "full" }>["central"][number];
 
 export default function AcademyScreen() {
   const router = useRouter();
@@ -398,17 +399,25 @@ function RolesView({
     seatsForChart("central").map((d) => d.id),
   );
   const seatPaths = ROLE_PATHS.filter((p) => p.kind === "seat");
-  const chapterPaths = seatPaths.filter(
-    (p) => !centralSeatSlugs.has(p.seatSlug),
-  );
-  const centralPaths = seatPaths.filter((p) =>
-    centralSeatSlugs.has(p.seatSlug),
-  );
+  // Seat paths come from the LIVE chart once it loads: a chart editor can set
+  // any seat's courses (and add seats) in the org chart, so the built-in
+  // `ROLE_PATHS` are only the fallback while the chart query is in flight.
+  // The chapter chart is shared by every chapter, so any one chapter's seats
+  // stand for all of them.
+  const liveSeatPaths = (seats: FullChartSeat[] | undefined) =>
+    seats?.filter((s) => !s.derived).flatMap((s) => seatRolePath(s) ?? []);
+  const liveFull = fullChart?.kind === "full" ? fullChart : null;
+  const chapterPaths =
+    liveSeatPaths(liveFull?.chapters[0]?.seats) ??
+    seatPaths.filter((p) => !centralSeatSlugs.has(p.seatSlug));
+  const centralPaths =
+    liveSeatPaths(liveFull?.central) ??
+    seatPaths.filter((p) => centralSeatSlugs.has(p.seatSlug));
   const eventPaths = ROLE_PATHS.filter((p) => p.kind === "event_hat");
 
   // The caller's held seats that have a role path (seats only — never hats).
   const yourPath = assignments.flatMap((assignment) => {
-    const path = getRolePath("seat", assignment.slug);
+    const path = seatRolePath(assignment);
     return path ? [{ assignment, path }] : [];
   });
 

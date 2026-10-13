@@ -3,14 +3,14 @@
  * narrowed to this seat) in plain sentences. Only chart editors can read the
  * log, so the panel only offers this tab to them.
  *
- * Covers renames, moves, size changes, and power changes (the picker's writes
+ * Covers renames, moves, size changes, course changes, and power changes (the picker's writes
  * are logged as `updateSeat`). Changes to who HOLDS the seat are not in this
  * log; they live on the seat's assignments and proposals.
  */
 import { ActivityIndicator, Text, View } from "react-native";
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { isPower, powerLabel } from "@events-os/shared";
+import { getAcademyCourse, isPower, powerLabel } from "@events-os/shared";
 import { colors } from "../../lib/theme";
 
 type Snapshot = {
@@ -18,6 +18,8 @@ type Snapshot = {
   parentSlug?: string;
   maxHolders?: number;
   capabilities?: string[];
+  /** `null` = the built-in role path (the override was cleared). */
+  courseSlugs?: string[] | null;
 };
 
 /** One log row as a sentence. Exported for tests. */
@@ -51,6 +53,16 @@ export function describeChange(
         const removed = [...b].filter((p) => !a.has(p)).map(label);
         if (added.length) lines.push(`Gave it ${added.join(", ")}`);
         if (removed.length) lines.push(`Took away ${removed.join(", ")}`);
+      }
+      if (after && "courseSlugs" in after) {
+        const list = after.courseSlugs;
+        lines.push(
+          list == null
+            ? "Went back to the standard courses"
+            : list.length === 0
+              ? "Removed all courses"
+              : `Set courses to ${list.map((c) => getAcademyCourse(c)?.title ?? c).join(", ")}`,
+        );
       }
       return lines.length ? lines : ["Updated this seat"];
     }

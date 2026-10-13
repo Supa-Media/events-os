@@ -4,7 +4,6 @@ import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { useQuery } from "convex/react";
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
-import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Screen,
   Card,
@@ -23,6 +22,7 @@ import {
   getAcademyCourse,
   requiredModuleSlugsForCourse,
   rolePathProgress,
+  seatRolePath,
   seatsForChart,
   RESPONSIBILITY_CADENCE_LABELS,
 } from "@events-os/shared";
@@ -31,21 +31,23 @@ type FullChart = FunctionReturnType<typeof api.seats.chart>;
 type CourseCompleters = FunctionReturnType<typeof api.academy.courseCompleters>;
 type CompleterPerson = NonNullable<CourseCompleters>[number];
 
+type FullChartSeat = Extract<FullChart, { kind: "full" }>["central"][number];
+
 /**
- * Resolve a seat slug → its `seatDefs` id via the full org-chart payload. Seat
- * defs are shared across chapters (identical `defId` per slug), so the FIRST
- * match — central chart first, then any chapter subtree — is the seat's def.
+ * Resolve a seat slug → its live chart node via the full org-chart payload.
+ * Seat defs are shared across chapters (identical node per slug), so the FIRST
+ * match — central chart first, then any chapter subtree — is the seat.
  */
-function findSeatDefId(
+function findSeatNode(
   chart: FullChart,
   slug: string,
-): Id<"seatDefs"> | undefined {
+): { seat: FullChartSeat; central: boolean } | undefined {
   if (chart.kind !== "full") return undefined;
   const central = chart.central.find((s) => s.slug === slug);
-  if (central) return central.defId;
+  if (central) return { seat: central, central: true };
   for (const c of chart.chapters) {
     const s = c.seats.find((seat) => seat.slug === slug);
-    if (s) return s.defId;
+    if (s) return { seat: s, central: false };
   }
   return undefined;
 }
@@ -70,18 +72,23 @@ export default function RolePathScreen() {
   }>();
   const pathKind: "seat" | "event_hat" =
     kind === "event_hat" ? "event_hat" : "seat";
-  const path = getRolePath(pathKind, seatSlug ?? "");
-
   const progress = useQuery(api.academy.myProgress);
-  // Full chart only to resolve slug → seatDefId for duties (seat paths only).
+  // Full chart for seat paths: the seat's live courses (a chart editor can
+  // change them in the org chart) and its seatDefId for duties.
   const fullChart = useQuery(
     api.seats.chart,
-    path && path.kind === "seat" ? {} : "skip",
+    pathKind === "seat" ? {} : "skip",
   );
-  const seatDefId =
-    path && path.kind === "seat" && fullChart
-      ? findSeatDefId(fullChart, path.seatSlug)
+  const liveSeat =
+    pathKind === "seat" && fullChart
+      ? findSeatNode(fullChart, seatSlug ?? "")
       : undefined;
+  // A seat in the live chart resolves through its stored courses; otherwise
+  // (event hats, or the chart still loading) the built-in path stands in.
+  const path = liveSeat
+    ? seatRolePath(liveSeat.seat)
+    : getRolePath(pathKind, seatSlug ?? "");
+  const seatDefId = liveSeat?.seat.defId;
   const duties = useQuery(
     api.responsibilities.dutiesForSeat,
     seatDefId ? { seatDefId } : "skip",
@@ -95,6 +102,9 @@ export default function RolePathScreen() {
     setCompleterLists((prev) => ({ ...prev, [slug]: list }));
   }, []);
 
+  if (!path && pathKind === "seat" && fullChart === undefined) {
+    return <Screen loading />;
+  }
   if (!path) {
     return (
       <Screen>
@@ -120,7 +130,10 @@ export default function RolePathScreen() {
   );
   const isSeat = path.kind === "seat";
   const isCentral =
-    isSeat && seatsForChart("central").some((d) => d.id === path.seatSlug);
+    isSeat &&
+    (liveSeat
+      ? liveSeat.central
+      : seatsForChart("central").some((d) => d.id === path.seatSlug));
   const chartLabel = isSeat ? (isCentral ? "Central" : "Chapter") : "Event role";
 
   const { completed, total, fraction } = rolePathProgress(path, passedSlugs);

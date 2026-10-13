@@ -1,8 +1,10 @@
 /**
  * Add seat — the modal behind the "+" under a seat box, shown to anyone who
  * can edit the chart (superuser or `org.chart.edit`; the backend's
- * `seatStructure.addSeat` enforces it). Name, how many people it seats, and
- * its powers, chosen in the same `PowersPicker` every other surface uses.
+ * `seatStructure.addSeat` enforces it). Name, how many people it seats, its
+ * powers (the same `PowersPicker` every other surface uses), and its Academy
+ * courses (`CoursesPicker`, prefilled with the Foundations trio every seat
+ * path starts with).
  *
  * Everything else this file used to hold — the "Edit structure" banner, the
  * inline rename, the Edit seat modal with its flat checkbox list of every
@@ -20,11 +22,18 @@ import { useEffect, useState } from "react";
 import { Pressable, Text, TextInput, View } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
-import { MULTI_HOLDER_CAP, powerLabel, type Power } from "@events-os/shared";
+import {
+  MULTI_HOLDER_CAP,
+  defaultNewSeatCourseSlugs,
+  getAcademyCourse,
+  powerLabel,
+  type Power,
+} from "@events-os/shared";
 import { Button } from "../ui";
 import { colors } from "../../lib/theme";
 import { alertError } from "../../lib/errors";
 import { OrgModal } from "./OrgModal";
+import { CoursesPicker } from "./CoursesPicker";
 import { PowersPicker } from "./PowersPicker";
 
 export function AddSeatModal({
@@ -45,6 +54,8 @@ export function AddSeatModal({
   const [several, setSeveral] = useState(false);
   const [powers, setPowers] = useState<Power[]>([]);
   const [pickerOpen, setPickerOpen] = useState(false);
+  const [courses, setCourses] = useState<string[]>(defaultNewSeatCourseSlugs);
+  const [coursesOpen, setCoursesOpen] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
   useEffect(() => {
@@ -52,6 +63,7 @@ export function AddSeatModal({
       setTitle("");
       setSeveral(false);
       setPowers([]);
+      setCourses(defaultNewSeatCourseSlugs());
     }
   }, [visible]);
 
@@ -66,6 +78,7 @@ export function AddSeatModal({
         maxHolders: several ? MULTI_HOLDER_CAP : 1,
         duties: [],
         capabilities: powers,
+        courseSlugs: courses,
       });
       onClose();
     } catch (err) {
@@ -80,7 +93,7 @@ export function AddSeatModal({
   return (
     <>
       <OrgModal
-        visible={visible && !pickerOpen}
+        visible={visible && !pickerOpen && !coursesOpen}
         title={`Add a seat under ${parentTitle}`}
         subtitle={chart === "chapter" ? "Added to every chapter's chart." : undefined}
         onClose={onClose}
@@ -155,6 +168,23 @@ export function AddSeatModal({
               className="self-start"
             />
           </View>
+
+          <View className="gap-1.5">
+            <Text className="text-sm font-semibold text-ink">Training</Text>
+            <Text className="text-sm text-muted">
+              {courses.length === 0
+                ? "No courses."
+                : courses.map((c) => getAcademyCourse(c)?.title ?? c).join(", ")}
+            </Text>
+            <Button
+              title={courses.length ? "Change courses" : "Choose courses"}
+              variant="secondary"
+              size="sm"
+              icon="book-open"
+              onPress={() => setCoursesOpen(true)}
+              className="self-start"
+            />
+          </View>
         </View>
       </OrgModal>
 
@@ -165,6 +195,14 @@ export function AddSeatModal({
         initial={powers}
         onSave={(next) => setPowers(next)}
         onClose={() => setPickerOpen(false)}
+      />
+
+      <CoursesPicker
+        visible={coursesOpen}
+        seatTitle={title.trim() || "the new seat"}
+        initial={courses}
+        onSave={(next) => setCourses(next)}
+        onClose={() => setCoursesOpen(false)}
       />
     </>
   );
