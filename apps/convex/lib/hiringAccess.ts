@@ -29,7 +29,7 @@
  * finance and giving gates.
  */
 import { ConvexError } from "convex/values";
-import { expandPowers } from "@events-os/shared";
+import { expandPowers, type Power } from "@events-os/shared";
 import { Id } from "../_generated/dataModel";
 import { QueryCtx } from "../_generated/server";
 import { isSuperuser } from "./superuser";
@@ -200,6 +200,23 @@ const CENTRAL_ASSIGNMENT_SCAN_LIMIT = 500;
  * treat as "send nothing", never as an error.
  */
 export async function hiringDeskRecipients(ctx: QueryCtx): Promise<string[]> {
+  return await centralHoldersOf(ctx, "hiring.edit");
+}
+
+/**
+ * Who gets the daily applications digest: every central seat holder who can
+ * SEE the pipeline (`hiring.view`, which `hiring.edit` and `hiring.approve`
+ * imply). Wider than `hiringDeskRecipients` on purpose — the digest is a read
+ * of the desk, so anyone who may open it is told what's in it. Same seat-chart
+ * subscription rule; same "empty means send nothing".
+ */
+export async function hiringDigestRecipients(ctx: QueryCtx): Promise<string[]> {
+  return await centralHoldersOf(ctx, "hiring.view");
+}
+
+/** Deduped, lowercased emails of real people on central seats whose expanded
+ *  powers include `power`. */
+async function centralHoldersOf(ctx: QueryCtx, power: Power): Promise<string[]> {
   const assignments = await ctx.db
     .query("seatAssignments")
     .withIndex("by_scope", (q) => q.eq("scope", "central"))
@@ -213,7 +230,7 @@ export async function hiringDeskRecipients(ctx: QueryCtx): Promise<string[]> {
     let carries = defCache.get(key);
     if (carries === undefined) {
       const def = await ctx.db.get(assignment.seatDefId);
-      carries = def ? expandPowers(def.capabilities).has("hiring.edit") : false;
+      carries = def ? expandPowers(def.capabilities).has(power) : false;
       defCache.set(key, carries);
     }
     if (!carries) continue;
