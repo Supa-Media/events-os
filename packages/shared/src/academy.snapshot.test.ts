@@ -912,6 +912,14 @@
  * `works-goals-and-work` (3 min, 3-quiz), in its own `goals` course after the
  * Development courses (see `academy/streams/goals.ts`). Appended so nothing
  * renumbers.
+ *
+ * The succinctness pass (2026-10-13) rewrote every section's prose to the
+ * prose budget (`academyProse.test.ts`) and the workspace's unslop rules,
+ * cutting the curriculum from ~41,700 to ~28,800 body words. Slugs, titles,
+ * order and quiz lengths are untouched. `minutes` came DOWN on 39 sections to
+ * match the shorter text (about 200 words a minute plus a minute for the
+ * quiz, never raised); capstones kept theirs because their time is the
+ * sandbox, not the reading.
  */
 import { describe, expect, test } from "vitest";
 import { ACADEMY_COURSES, ACADEMY_SECTIONS } from "./academy";
@@ -1063,7 +1071,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "foundations-chapters-and-central",
     title: "Chapters and central",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1095,7 +1103,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "foundations-showing-up",
     title: "Showing up",
-    minutes: 5,
+    minutes: 3,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1111,7 +1119,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "foundations-spending",
     title: "Spending like it's not yours",
-    minutes: 3,
+    minutes: 2,
     quizLength: 3,
     optional: false,
     capstoneKind: null,
@@ -1143,7 +1151,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "anatomy-of-an-event",
     title: "Anatomy of an event",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1151,7 +1159,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "being-an-owner",
     title: "Being an owner",
-    minutes: 4,
+    minutes: 3,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1199,7 +1207,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "tab-crew-duties",
     title: "Crew Duties",
-    minutes: 5,
+    minutes: 3,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1215,7 +1223,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "keeping-inventory",
     title: "Keeping inventory",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1223,7 +1231,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "tab-permits",
     title: "Permits",
-    minutes: 3,
+    minutes: 2,
     quizLength: 3,
     optional: false,
     capstoneKind: null,
@@ -1231,7 +1239,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "tab-debrief",
     title: "Debrief",
-    minutes: 3,
+    minutes: 2,
     quizLength: 3,
     optional: false,
     capstoneKind: null,
@@ -1311,7 +1319,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "works-duties",
     title: "Duties",
-    minutes: 3,
+    minutes: 2,
     quizLength: 3,
     optional: false,
     capstoneKind: null,
@@ -1335,7 +1343,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "works-planning-the-work",
     title: "Planning the work",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1367,7 +1375,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-one-on-one",
     title: "The 1:1: person first, then work",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1391,7 +1399,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-holding-the-line",
     title: "Holding the line",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1407,7 +1415,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-director-philosophy",
     title: "Directing",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1415,7 +1423,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-ownership-not-babysitting",
     title: "Ownership, not babysitting",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1423,7 +1431,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-the-slas",
     title: "The SLAs",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1439,7 +1447,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-building-for-your-absence",
     title: "Building for your absence",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1447,7 +1455,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-empower-first",
     title: "Empower first, appoint second",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1455,7 +1463,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-the-front-door",
     title: "The front door",
-    minutes: 5,
+    minutes: 4,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1463,7 +1471,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mgmt-the-interview",
     title: "The interview",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1601,7 +1609,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-raise-vs-manage",
     title: "Raise vs. manage",
-    minutes: 3,
+    minutes: 2,
     quizLength: 3,
     optional: false,
     capstoneKind: null,
@@ -1654,7 +1662,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "finance-central-budgets",
     title: "Central budgets",
-    minutes: 3,
+    minutes: 2,
     quizLength: 3,
     optional: false,
     capstoneKind: null,
@@ -1694,7 +1702,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "music-worship-is-a-sacrifice",
     title: "Worship is a sacrifice",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1710,7 +1718,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "music-four-shapes-of-praise",
     title: "Four shapes of praise",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1822,7 +1830,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "mktg-shoot-to-timeline",
     title: "From shoot to timeline",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1854,7 +1862,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-giving-vocabulary",
     title: "Donors, backers, sponsors: the words we use",
-    minutes: 4,
+    minutes: 3,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1862,7 +1870,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-donor-crm-basics",
     title: "The donor CRM: your desk",
-    minutes: 4,
+    minutes: 3,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1870,7 +1878,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-relationship-workflow",
     title: "Owners, notes, and the top-donor list",
-    minutes: 6,
+    minutes: 4,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1878,7 +1886,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-import-and-backfill",
     title: "The canonical import: preview, classify, commit",
-    minutes: 5,
+    minutes: 4,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1886,7 +1894,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-gifts-ledger-and-audit",
     title: "The gifts ledger: see it, fix it, trace it",
-    minutes: 4,
+    minutes: 3,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1894,7 +1902,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-public-gift-wall",
     title: "The public gift wall: anonymous by default",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1902,7 +1910,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-backer-floor-and-ladder",
     title: "The $50 floor, and the milestone ladder",
-    minutes: 4,
+    minutes: 3,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1910,7 +1918,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-backer-lifecycle",
     title: "A backer's lifecycle: subscribe, pay, sometimes falter",
-    minutes: 5,
+    minutes: 4,
     quizLength: 5,
     optional: false,
     capstoneKind: null,
@@ -1918,7 +1926,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-backer-portal",
     title: "The backer portal: their own page",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1926,7 +1934,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-givebutter-migration",
     title: "The Givebutter migration: history in, recurring gifts re-signed",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1934,7 +1942,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-sponsor-packages",
     title: "Sponsor packages: benefits we give, commitments we keep",
-    minutes: 4,
+    minutes: 2,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1942,7 +1950,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-sponsorship-pipeline",
     title: "The pipeline: prospect to active partner",
-    minutes: 4,
+    minutes: 3,
     quizLength: 4,
     optional: false,
     capstoneKind: null,
@@ -1950,7 +1958,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-church-partnerships",
     title: "Church partnerships: two-sided, not transactional",
-    minutes: 4,
+    minutes: 2,
     quizLength: 3,
     optional: false,
     capstoneKind: null,
@@ -1958,7 +1966,7 @@ const EXPECTED_SECTIONS: {
   {
     slug: "dev-partner-portal",
     title: "The partner portal: one page they read, sign, and pay",
-    minutes: 5,
+    minutes: 3,
     quizLength: 5,
     optional: false,
     capstoneKind: null,

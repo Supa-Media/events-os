@@ -56,46 +56,37 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "music-worship-is-a-sacrifice",
     title: "Worship is a sacrifice",
-    subtitle: "Doxa + logos — the content is God, not us",
-    minutes: 4,
+    subtitle: "Doxa and logos: the content is God, not us",
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Doxology comes from two Greek words: **doxa** (δόξα) — glory, weight, the visible splendor of who God is — and **logos** (λόγος) — word or declaration. A doxology is, at its simplest, a declaration of God's glory.",
-      },
-      {
-        kind: "p",
-        text: '"Glory be to the Father, and to the Son, and to the Holy Spirit" is a doxology. "Praise God from whom all blessings flow" is a doxology. When Paul, mid-argument in Romans, breaks into "For from him and through him and to him are all things. To him be the glory forever. Amen" (Rom 11:36) — that is a doxology. When the angels cry "Holy, holy, holy" (Isa 6:3; Rev 4:8) — that is a doxology.',
+        text: 'Doxology joins two Greek words: **doxa** (δόξα: glory, the weight and visible splendor of who God is) and **logos** (λόγος: word or declaration). A doxology declares God\'s glory. Examples include the Gloria Patri, "Praise God from whom all blessings flow," Romans 11:36 ("To him be the glory forever") and the angels\' "Holy, holy, holy" (Isa 6:3; Rev 4:8).',
       },
       {
         kind: "rule",
         title: "The content is God, not us",
-        text: "A doxology does not report what God did for me. It does not describe how I feel about God. It declares who God is — His character, His acts, His worth — and stops there. The worshiper may be present, but only as the voice carrying the declaration, never as its subject.",
+        text: "A doxology does not report what God did for me or how I feel about Him. It declares who God is (His character, His acts, His worth) and stops there. The worshiper may be present, but only as the voice carrying the declaration, never as its subject.",
       },
-      { kind: "heading", text: "Worship is a sacrifice" },
       {
         kind: "p",
-        text: "Worship, in the Hebrew of the Old Testament, is **shâchâh** — to bow down. In John 4, Jesus says the Father seeks worshipers who worship in spirit and in truth. In Hebrews 13:15 the writer calls it a **sacrifice of praise** — the fruit of lips that openly profess his name. Three anchors: worship is a bow, it is offered in truth, and it is a sacrifice. Something is given. Something leaves the worshiper's hand and is laid at God's feet.",
+        text: "The Old Testament Hebrew for worship, **shâchâh**, means to bow down. In John 4, Jesus says the Father seeks worshipers who worship in spirit and in truth. Hebrews 13:15 calls it a **sacrifice of praise**, the fruit of lips that openly profess his name. Three anchors: worship is a bow, offered in truth, and a sacrifice laid at God's feet.",
       },
       {
         kind: "rule",
         title: "A song whose lyrics never leave the worshiper has not yet brought a sacrifice",
-        text: "Romans 12:1 calls worship a sacrifice. A sacrifice is, by definition, something carried out of the worshiper's possession and laid down in front of God. If the song never makes it past their own story, no sacrifice has been offered — there has been feeling, sometimes the deepest feeling of the week, but nothing has been given.",
+        text: "Romans 12:1 calls worship a sacrifice: something carried out of the worshiper's possession and laid before God. A song that never gets past the worshiper's own story brings feeling, sometimes deep feeling, but gives nothing.",
       },
       {
         kind: "p",
-        text: "Not every worship song must be doxological. Scripture sings in many registers, and lament, testimony, confession, and petition are all faithful forms of worship in their proper place. Sung once, in their proper moment, they are holy. Sung as a steady diet, they can quietly train a congregation to spend its whole worship set thinking about itself — its situation, its journey, its longings, its sins — and to walk out having brought nothing to God at all.",
-      },
-      {
-        kind: "p",
-        text: "Doxology is the form of worship in which it is hardest to inject the self in a way that becomes unintentional self-idolatry. When a song's entire content is who God is, there is no grammatical room left for the singer to drift to the center. Other forms can be worship — but they require a vigilance the doxological form does not, because in them the path back to the self is always one careless line away.",
+        text: "Not every worship song must be doxological. Lament, testimony, confession and petition are faithful in their proper moment. As a steady diet, they train a congregation to think only about itself: its situation, journey, longings and sins. Doxology leaves the least room for unintentional self-idolatry, because when a song's entire content is who God is, the singer cannot take the center. Other forms need more vigilance: the self is one careless line away.",
       },
       {
         kind: "reveal",
         prompt:
           "A congregation sings a beautiful song about how safe and loved they feel this morning. Has a sacrifice been brought?",
         answer:
-          "Not by this song alone. If the lyrics never leave the worshiper's own feelings, nothing has been carried out and laid at God's feet — that's real feeling, not yet a sacrifice. It doesn't make the moment fake; it means the sacrifice of praise Hebrews 13:15 describes is still waiting to be brought, by this song or another in the set.",
+          "Not by this song alone. The feeling is real, but lyrics that never leave the worshiper's own feelings lay nothing at God's feet. Another song in the set can still bring the sacrifice of praise.",
       },
       {
         kind: "link",
@@ -114,43 +105,43 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Doxa is glory — the weight and visible splendor of who God is. Logos is word or declaration. A doxology is a declaration of God's glory, nothing more and nothing less.",
+          "Doxa is glory, the weight and visible splendor of who God is. Logos is word or declaration. A doxology is a declaration of God's glory.",
       },
       {
         prompt: "What is the common thread across every doxology, from the Gloria Patri to Romans 11:36?",
         options: [
           "They all use the word \"holy\"",
-          "The content is God, not us — they declare who He is and stop there",
+          "The content is God, not us: they declare who He is and stop there",
           "They're all sung, never spoken",
           "They all come from the book of Psalms",
         ],
         answerIndex: 1,
         explanation:
-          "A doxology doesn't report what God did for me or how I feel about Him — it declares who He is and stops. The worshiper may carry the declaration, but is never its subject.",
+          "A doxology doesn't report what God did for me or how I feel about Him. It declares who He is and stops. The worshiper may carry the declaration but is never its subject.",
       },
       {
         prompt: "What does Hebrews 13:15 call worship?",
         options: [
           "A feeling of gratitude",
-          "A sacrifice of praise — the fruit of lips that openly profess His name",
+          "A sacrifice of praise, the fruit of lips that openly profess His name",
           "A weekly obligation",
           "A performance for the congregation",
         ],
         answerIndex: 1,
         explanation:
-          "Hebrews 13:15's \"sacrifice of praise\" is one of three anchors (with shâchâh — to bow — and worship \"in spirit and in truth\") behind the conviction that worship is something given, not just felt.",
+          "Hebrews 13:15's \"sacrifice of praise\" is one of three anchors, with shâchâh (to bow) and worship \"in spirit and in truth\". Together they say worship is something given, not only felt.",
       },
       {
         prompt: "What does it mean for a song's lyrics to \"never leave the worshiper\"?",
         options: [
           "The song is too long",
-          "The lyrics stay entirely inside the worshiper's own story or feelings and never actually declare anything about God",
+          "The lyrics stay inside the worshiper's own story or feelings and never declare anything about God",
           "The worshiper forgets the words",
           "The song isn't in the church's usual key",
         ],
         answerIndex: 1,
         explanation:
-          "A sacrifice is carried out of the worshiper's possession and laid down before God. A song whose content never gets past the worshiper's own experience — however moving — hasn't made that trip. Feeling happened; nothing was given.",
+          "A sacrifice is carried out of the worshiper's possession and laid down before God. A song that never gets past the worshiper's own experience, however moving, hasn't made that trip. Feeling happened; nothing was given.",
       },
     ],
   },
@@ -164,28 +155,28 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "For any lyric — one we've written or are considering leading — we ask: **what is the function of the worshiper's presence?** And: **is she giving something to God, or reporting something about herself?** The pronoun does not decide it. The function does.",
+        text: "For any lyric we've written or might lead, we ask **what the function of the worshiper's presence is**. Is she giving something to God, or reporting something about herself? The function decides it, not the pronoun.",
       },
       {
         kind: "rule",
         title: "The test is grammatical-person-blind",
-        text: 'Swapping "I" for "we" does not move a song from one zone to the other. "We\'ll never be more loved than we are right now" is still self-as-recipient-of-affection — just collective. Read for function, not for pronoun.',
+        text: 'Swapping "I" for "we" does not move a song from one zone to the other. "We\'ll never be more loved than we are right now" is still self as recipient of affection, only collective. Read for function, not for pronoun.',
       },
       { kind: "heading", text: "Why pronoun-counting fails" },
       {
         kind: "p",
-        text: 'The same holds for possessives. "My King, my Rock, my Savior" is relational ascription — naming God by what He is, with "my" indicating covenant rather than experience. "My story, my journey, my experience" is testimony — the worshiper\'s biography as content. Same pronoun, opposite function.',
+        text: 'Possessives work the same way. "My King, my Rock, my Savior" is relational ascription: it names God by what He is, and "my" means covenant, not experience. "My story, my journey, my experience" is testimony, with the worshiper\'s biography as content. Same pronoun, opposite function.',
       },
       {
         kind: "p",
-        text: 'Even the same verb can point in opposite directions. "When I in awesome wonder consider all the worlds Thy hands have made" uses "I" as the giver of consideration outward, toward God\'s works — offering, and welcome. "Who thought I\'d find You at the lowest place?" uses "I" as the reporter of personal surprise — testimony, and not the diet. Both have "I" as grammatical subject; the function is opposite.',
+        text: '"When I in awesome wonder consider all the worlds Thy hands have made" uses "I" to give consideration outward, toward God\'s works. That is offering, and welcome. "Who thought I\'d find You at the lowest place?" uses "I" to report personal surprise. That is testimony, and not the diet. Both have "I" as subject; the function is opposite.',
       },
       {
         kind: "reveal",
         prompt:
           "\"Take my life and let it be consecrated, Lord, to Thee.\" Self surrenders using \"my life.\" Does the possessive make this about the worshiper?",
         answer:
-          "No — direction is what matters, not the possessive. \"My life\" is being GIVEN to God here, yielded to His authority; the line runs outward. Compare \"my story, my journey\" — same word, but pointed at the worshiper's own biography as the content. Read for function, not the word.",
+          "No. Direction matters, not the possessive. \"My life\" is being GIVEN to God, yielded to His authority, so the line runs outward. \"My story, my journey\" uses the same word but makes the worshiper's own biography the content.",
       },
       {
         kind: "link",
@@ -198,49 +189,49 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What does the test actually ask about a lyric?",
         options: [
           "Whether it uses \"I\" or \"we\"",
-          "What the function of the worshiper's presence is — giving to God, or reporting about herself",
+          "What the function of the worshiper's presence is: giving to God, or reporting about herself",
           "Whether it rhymes",
           "How many times God is mentioned by name",
         ],
         answerIndex: 1,
         explanation:
-          "The test is a function question, not a word-count exercise: is the worshiper's presence there to give something to God, or to report something about herself? The pronoun never settles it.",
+          "The test asks whether the worshiper's presence is there to give something to God or to report something about herself. The pronoun never settles it.",
       },
       {
         prompt: "Why does counting \"I\" vs. \"we\" fail as a test?",
         options: [
           "Because \"we\" always drifts to testimony",
-          "Because the test is grammatical-person-blind — \"We'll never be more loved than we are right now\" is still self-as-recipient, just collective",
+          "Because the test is grammatical-person-blind: \"We'll never be more loved than we are right now\" is still self as recipient, only collective",
           "Because congregations only sing \"we\"",
           "Because \"I\" is always doxological",
         ],
         answerIndex: 1,
         explanation:
-          "Swapping the pronoun doesn't change the function. A song about receiving love is about receiving love whether it says \"I\" or \"we\" — the drift is the same, just collectivized.",
+          "Swapping the pronoun doesn't change the function. A song about receiving love is about receiving love whether it says \"I\" or \"we\".",
       },
       {
         prompt: "\"My King, my Rock, my Savior\" and \"My story, my journey, my experience\" share the same possessive. What's true?",
         options: [
           "They're both testimony because they both use \"my\"",
-          "They're opposite functions — the first names God by covenant relationship (ascription), the second makes the worshiper's biography the content (testimony)",
+          "They're opposite functions: the first names God by covenant relationship (ascription), the second makes the worshiper's biography the content (testimony)",
           "Neither passes the test",
           "Possessives always fail the test",
         ],
         answerIndex: 1,
         explanation:
-          "Same pronoun, opposite function: \"my\" can indicate covenant (naming who God is to me) or it can make the worshiper's own story the subject. Read for function, not the word.",
+          "Same pronoun, opposite function. \"My\" can mean covenant (naming who God is to me) or it can make the worshiper's own story the subject.",
       },
       {
-        prompt: "\"When I in awesome wonder consider all the worlds Thy hands have made\" — what makes this offering, not testimony, despite the \"I\"?",
+        prompt: "\"When I in awesome wonder consider all the worlds Thy hands have made\": what makes this offering, not testimony, despite the \"I\"?",
         options: [
           "It's an old hymn, so it's automatically doxological",
-          "\"I\" is the giver of consideration outward, toward God's works — the direction is Godward, not inward",
+          "\"I\" gives consideration outward, toward God's works; the direction is Godward, not inward",
           "It doesn't mention God directly",
           "It has more words than a typical testimony line",
         ],
         answerIndex: 1,
         explanation:
-          "The verb \"consider\" points outward at God's works here — the worshiper's faculties are the instrument, God's works are the content. Compare to a line where \"I\" reports personal surprise or experience: same subject, opposite function.",
+          "\"Consider\" points outward at God's works. The worshiper's faculties are the instrument; God's works are the content. A line where \"I\" reports personal surprise has the same subject and the opposite function.",
       },
     ],
   },
@@ -250,11 +241,11 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "music-four-shapes-of-praise",
     title: "Four shapes of praise",
     subtitle: "Ascription, offering, diminishment, surrender",
-    minutes: 4,
+    minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Ascription is the core of doxological worship — the purest form. The other three shapes are expressions of it: ways the worshiper's presence serves the declaration of God's glory rather than competing with it.",
+        text: "Ascription is the core of doxological worship, the purest form. The other three shapes are ways the worshiper's presence serves the declaration of God's glory instead of competing with it.",
       },
       {
         kind: "table",
@@ -267,7 +258,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
           [
             "**Offering** (instrumental doxology)",
-            "Self as the giver of attention, wonder, voice, awe — faculties turned Godward as instruments of the declaration. \"Bless the Lord, O my soul\" is the paradigm: the soul is the addressee, God is the destination.",
+            "Self as the giver of attention, wonder, voice, awe: faculties turned Godward as instruments of the declaration. \"Bless the Lord, O my soul\" is the classic example. The soul is the addressee; God is the destination.",
             "Ps 34:3; Ps 103:1; Ps 121:1; Ps 145:1–2; Lk 1:46",
           ],
           [
@@ -277,7 +268,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
           [
             "**Surrender** (embodied doxology)",
-            "Self appears only to be yielded to God's authority — the worshiper's life itself becomes a declaration of His lordship.",
+            "Self appears only to be yielded to God's authority. The worshiper's life becomes a declaration of His lordship.",
             "Rom 12:1; Lk 22:42; Lk 1:38; Isa 6:8",
           ],
         ],
@@ -285,21 +276,21 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The welcome zone has four shapes",
-        text: "Self appears only to make God greater, or not at all. Each is a different way of pointing the same declaration back at Him — ascribing His worth, offering your faculties to it, shrinking beneath it, or yielding your life to it.",
+        text: "Self appears only to make God greater, or not at all. Each shape points the same declaration back at Him: ascribing His worth, offering your faculties to it, shrinking beneath it, or yielding your life to it.",
       },
       {
         kind: "reveal",
         prompt:
-          "Case study — \"A thousand generations falling down in worship, to sing the song of ages to the Lamb\" (Holy Forever). Which shape, and why?",
+          "Case study: \"A thousand generations falling down in worship, to sing the song of ages to the Lamb\" (Holy Forever). Which shape, and why?",
         answer:
-          "Ascription. The worshiper disappears into \"a thousand generations\" — the content is the Lamb receiving worship across all time, not the worshiper's own experience. The catalog rates the whole song doxological throughout on this pattern.",
+          "Ascription. The worshiper disappears into \"a thousand generations\". The content is the Lamb receiving worship across all time, not the worshiper's experience. The catalog rates the whole song doxological throughout on this pattern.",
       },
       {
         kind: "reveal",
         prompt:
-          "Case study — \"O Lord my God, when I in awesome wonder, consider all the worlds Thy hands have made\" (How Great Thou Art, v.1). Which shape?",
+          "Case study: \"O Lord my God, when I in awesome wonder, consider all the worlds Thy hands have made\" (How Great Thou Art, v.1). Which shape?",
         answer:
-          "Offering — the philosophy's own canonical example. \"I\" is the giver of wonder, sight, and hearing, turned outward to God's works. The worshiper's faculties are the instrument of the declaration, not its content — the magnifying glass, not what you see through it.",
+          "Offering, the philosophy's own canonical example. \"I\" gives wonder, sight and hearing, turned outward to God's works. The worshiper's faculties are the instrument of the declaration, not its content.",
       },
       {
         kind: "link",
@@ -314,25 +305,25 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
     quiz: [
       {
-        prompt: "Which shape is described as \"the core of doxological worship — the purest form\"?",
+        prompt: "Which shape is described as \"the core of doxological worship, the purest form\"?",
         options: ["Offering", "Ascription", "Diminishment", "Surrender"],
         answerIndex: 1,
         explanation:
-          "Ascription — direct declaration of who God is — is the center. The other three shapes (offering, diminishment, surrender) are ways the worshiper's presence serves that same declaration rather than competing with it.",
+          "Ascription, the direct declaration of who God is, is the center. Offering, diminishment and surrender are ways the worshiper's presence serves that declaration instead of competing with it.",
       },
       {
-        prompt: "\"Bless the Lord, O my soul\" is the paradigm of which shape?",
+        prompt: "\"Bless the Lord, O my soul\" is the classic example of which shape?",
         options: ["Ascription", "Offering", "Diminishment", "Surrender"],
         answerIndex: 1,
         explanation:
-          "Offering — the soul is addressed as the instrument, and God is the destination. The worshiper's faculties (voice, attention, wonder) are turned Godward as instruments of the declaration.",
+          "Offering. The soul is addressed as the instrument and God is the destination. The worshiper's voice, attention and wonder are turned Godward as instruments of the declaration.",
       },
       {
         prompt: "\"He must increase, I must decrease\" is the shape of...",
         options: ["Offering", "Surrender", "Diminishment", "Ascription"],
         answerIndex: 2,
         explanation:
-          "Diminishment — self appears only to be made small so God's glory appears larger by contrast. It's inverse doxology: the worshiper shrinks, the glory grows.",
+          "Diminishment, or inverse doxology. Self appears only to be made small so God's glory appears larger by contrast.",
       },
       {
         prompt: "What do all four welcome shapes have in common?",
@@ -344,7 +335,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Ascription, offering, diminishment, and surrender are four different postures pointed at the same target: making God greater. Whenever self shows up in one of these shapes, it's serving the declaration, not competing with it.",
+          "Ascription, offering, diminishment and surrender all aim at making God greater. When self shows up in one of these shapes, it serves the declaration instead of competing with it.",
       },
     ],
   },
@@ -353,12 +344,12 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "music-the-five-drifts",
     title: "The five drifts",
-    subtitle: "Discoverer, recipient, testifier, resolved, petitioner — not the diet",
+    subtitle: "Discoverer, recipient, testifier, resolved, petitioner: not the diet",
     minutes: 4,
     blocks: [
       {
         kind: "p",
-        text: "The songs outside the welcome zone are not bad — they are anthropological rather than doxological. Their content is the human experience of God rather than God Himself. Lament, testimony, confession, and petition are all faithful forms of worship in their proper place. We sing these. We do not build our identity around them, because the church already has them in abundance.",
+        text: "Songs outside the welcome zone are not bad. They are anthropological, not doxological: their content is the human experience of God, not God Himself. Lament, testimony, confession and petition are faithful forms of worship in their proper place. We sing these. We do not build our identity around them, because the church already has them in abundance.",
       },
       {
         kind: "table",
@@ -386,34 +377,40 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
           [
             "**Petitioner**",
-            "Self as supplicant — asking, requesting, naming need",
+            "Self as supplicant: asking, requesting, naming need",
             "\"Open the eyes of my heart, Lord\"",
           ],
         ],
       },
       {
         kind: "rule",
-        title: "Not forbidden — not the diet",
-        text: "The welcome zone has four shapes; the not-the-diet zone has five. None of the five is wrong to sing. The conviction is only that a catalog built mainly from these five trains a congregation to spend its whole worship set thinking about itself — moved, perhaps deeply, but never past its own perimeter.",
+        title: "Not forbidden, not the diet",
+        text: "The welcome zone has four shapes; the not-the-diet zone has five. None of the five is wrong to sing. But a catalog built mainly from them trains a congregation to spend the whole set thinking about itself, moved but never past its own perimeter.",
       },
       { kind: "heading", text: "How the drift happens" },
       {
-        kind: "p",
-        text: "Each of the four doxological shapes can slide into its closest anthropological cousin, usually mid-line: **ascription → testimony** (\"You are Faithful Father, never failing\" drifts to \"You've never failed me yet\"), **offering → recipient** (\"I lift my hands to bless the Lord\" drifts to \"I lift my hands to receive all You have for me\"), **diminishment → discoverer** (\"I am nothing without You\" drifts to \"how did I get this lucky?\"), and **surrender → resolved** (\"Have Your way in me\" drifts to \"I'll never let go of Your hand\"). The drift is rarely deliberate — it's the gravity of the worshiper's own story pulling the line back to herself.",
+        kind: "bullets",
+        items: [
+          "Each doxological shape can slide into its anthropological cousin, usually mid-line and rarely on purpose. The gravity of the worshiper's own story pulls the line back to herself.",
+          "**Ascription drifts to testimony:** \"You are Faithful Father, never failing\" becomes \"You've never failed me yet.\"",
+          "**Offering drifts to recipient:** \"I lift my hands to bless the Lord\" becomes \"I lift my hands to receive all You have for me.\"",
+          "**Diminishment drifts to discoverer:** \"I am nothing without You\" becomes \"how did I get this lucky?\"",
+          "**Surrender drifts to resolved:** \"Have Your way in me\" becomes \"I'll never let go of Your hand.\"",
+        ],
       },
       {
         kind: "reveal",
         prompt:
-          "Case study — \"All my life You have been faithful, all my life You have been so, so good\" (Goodness of God). Ascription, or a drift into testimony?",
+          "Case study: \"All my life You have been faithful, all my life You have been so, so good\" (Goodness of God). Ascription, or a drift into testimony?",
         answer:
-          "Testimony — the catalog's verdict on the whole song is anthropological. Compare it to plain ascription, \"You are faithful\": the \"all my life\" prefix turns a declaration about God into biography about the worshiper. Same claim, different function — the classic ascription → testimony drift.",
+          "Testimony. The catalog rates the whole song anthropological. Plain ascription says \"You are faithful\"; the \"all my life\" prefix turns that declaration about God into biography about the worshiper. It is the classic drift from ascription to testimony.",
       },
       {
         kind: "reveal",
         prompt:
-          "Case study — \"Open up my eyes in wonder, and show me who You are and fill me with Your heart\" (Build My Life, chorus). Which anthropological shape?",
+          "Case study: \"Open up my eyes in wonder, and show me who You are and fill me with Your heart\" (Build My Life, chorus). Which anthropological shape?",
         answer:
-          "Self as petitioner — the fifth anthropological shape. \"Open, show, fill, lead\" all ask God to act on the worshiper; the direction reverses from giving to receiving. It's the same shape as \"Open the eyes of my heart, Lord\" in the test.",
+          "Self as petitioner, the fifth anthropological shape. \"Open, show, fill, lead\" all ask God to act on the worshiper, so the direction reverses from giving to receiving. It is the same shape as \"Open the eyes of my heart, Lord\" in the table.",
       },
       {
         kind: "link",
@@ -437,43 +434,43 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The welcome zone has four shapes (ascription, offering, diminishment, surrender). The not-the-diet zone has five (discoverer, recipient, testifier, resolved, petitioner) — self carries the song in every one of the five.",
+          "The welcome zone has four shapes (ascription, offering, diminishment, surrender). The not-the-diet zone has five (discoverer, recipient, testifier, resolved, petitioner), and self carries the song in every one of them.",
       },
       {
         prompt: "Are the five anthropological shapes forbidden?",
         options: [
-          "Yes — they should never be sung",
-          "No — they're faithful forms of worship in their proper place; the concern is making them the steady diet, not singing them at all",
+          "Yes, they should never be sung",
+          "No. They're faithful forms of worship in their proper place; the concern is making them the steady diet",
           "Only \"petitioner\" is forbidden",
           "Only in congregational settings",
         ],
         answerIndex: 1,
         explanation:
-          "Not the diet, not forbidden. Lament, testimony, confession, and petition are faithful in their place — the conviction is against building a catalog's identity around them, not against ever singing them.",
+          "Not the diet, not forbidden. Lament, testimony, confession and petition are faithful in their place. The conviction is against building a catalog's identity around them, not against singing them.",
       },
       {
         prompt: "\"Have Your way in me\" drifting to \"I'll never let go of Your hand\" is an example of which drift pair?",
         options: [
-          "Ascription → testimony",
-          "Offering → recipient",
-          "Surrender → resolved",
-          "Diminishment → discoverer",
+          "Ascription to testimony",
+          "Offering to recipient",
+          "Surrender to resolved",
+          "Diminishment to discoverer",
         ],
         answerIndex: 2,
         explanation:
-          "Surrender (yielding to God's authority) drifts to resolved (the worshiper's own promise or commitment) — the energy moves from God acting on the worshiper to the worshiper's resolve about herself.",
+          "Surrender (yielding to God's authority) drifts to resolved (the worshiper's own promise or commitment). The energy moves from God acting on the worshiper to the worshiper's resolve about herself.",
       },
       {
         prompt: "What causes the drift from a doxological shape to its anthropological cousin, according to the philosophy?",
         options: [
           "Bad theology on the songwriter's part, always deliberate",
-          "The gravity of the worshiper's own story pulling the line back to herself — rarely deliberate",
+          "The gravity of the worshiper's own story pulling the line back to herself, rarely deliberate",
           "Using contemporary instrumentation",
           "Singing in the first person",
         ],
         answerIndex: 1,
         explanation:
-          "The drift is rarely a deliberate theological choice — it's the natural pull of the worshiper's own story reasserting itself mid-line. That's exactly why the test has to be applied line by line, not just to a song's overall theme.",
+          "The drift is rarely a deliberate choice. The worshiper's own story pulls the line back mid-line, which is why the test is applied line by line, not only to a song's overall theme.",
       },
     ],
   },
@@ -491,24 +488,24 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Theological soundness, non-negotiable.** Every release is checked against Scripture and our Statement of Beliefs.",
           "**Writers as stewards of the test.** Every writing room has someone whose job is to apply the test to the lyric before the song leaves the room.",
           "**The same standard for songs we did not write.** When we lead a cover, a hymn, or a worship song already in circulation, it goes through the same test. Popularity does not exempt it.",
-          "**Singability.** Songs are ideally written so a congregation can actually sing them in the rooms where we lead worship.",
+          "**Singability.** Songs are ideally written so a congregation can sing them in the rooms where we lead worship.",
         ],
       },
       {
         kind: "rule",
         title: "Fear of God in the room",
-        text: "Songwriting that calls itself worship is no small thing. We approach the work as people who will give an account. \"The fear of the LORD is the beginning of wisdom\" (Proverbs 9:10).",
+        text: "We approach songwriting that calls itself worship as people who will give an account. \"The fear of the LORD is the beginning of wisdom\" (Proverbs 9:10).",
       },
       {
         kind: "p",
-        text: "We do not begin with method. We begin with bowing. We will fail. When we do, we want to be told, with Scripture in hand. This work is submitted to God and to His people — every song, whether we wrote it or are simply leading it this Sunday.",
+        text: "We begin with bowing, not method. We will fail, and when we do, we want to be told, with Scripture in hand. Every song is submitted to God and to His people, whether we wrote it or are leading it this Sunday.",
       },
       {
         kind: "reveal",
         prompt:
           "Your team wants to cover a wildly popular new worship song everyone already knows. Does its popularity mean it skips the test?",
         answer:
-          "No — the same standard applies to every song, whether you wrote it or it's already in wide circulation. Popularity doesn't exempt a cover, a hymn, or a radio hit from the same line-by-line test as an original.",
+          "No. A cover, a hymn or a radio hit goes through the same line-by-line test as an original.",
       },
       {
         kind: "link",
@@ -527,13 +524,13 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Every writing room designates someone whose job is applying the doxological test to the lyric before the song is considered finished — the standard is a role, not an afterthought.",
+          "Every writing room has someone whose job is applying the doxological test to the lyric before the song leaves the room. The standard is a role, not an afterthought.",
       },
       {
         prompt: "Does a song's popularity exempt it from the test when leading a cover?",
         options: [
-          "Yes — popular songs are already vetted by their success",
-          "No — a cover, hymn, or already-circulating worship song goes through the same test as an original",
+          "Yes, popular songs are already vetted by their success",
+          "No. A cover, hymn or already-circulating worship song goes through the same test as an original",
           "Only hymns are exempt",
           "Only if the artist is well-known",
         ],
@@ -551,7 +548,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "It's a posture, not an emotion — treating worship songwriting with the seriousness of people who will answer for what they put in a congregation's mouth.",
+          "It's a posture, not an emotion: writing worship songs as people who will answer for what they put in a congregation's mouth.",
       },
     ],
   },
@@ -565,35 +562,35 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Before you lead a song — a cover, a hymn, or something new — there's a short checklist to work through with your Music Lead. It exists so the whole team (accompanists, harmony singers, sound) knows what you're bringing well before the day you sing it.",
-      },
-      {
-        kind: "bullets",
-        items: [
-          "**Name of song and artist**, checked against the Selection Philosophy — the same test every song in the catalog goes through.",
-          "**A short reference recording** (30 seconds to a minute) of the version you want to cover.",
-          "**Your own version, with your own flavor** — a recording of you singing the cover with your modifications, not just the original.",
-          "**Accompaniment plans** — what you want backing the song (keyboard, guitar, drums, etc.).",
-          "**Harmony coordination** — coordinate harmonies yourself, or let your Music Lead know in advance that you'll need help pulling other singers in.",
-          "**Pre-recorded, or performed live the day of** — decide which, and say so.",
-          "**A written arrangement** of the song (e.g. v1, chorus ×2, bridge) — chord progression is optional but welcome.",
-        ],
+        text: "Before you lead a song (a cover, a hymn or something new), work through this checklist with your Music Lead. It tells the whole team (accompanists, harmony singers, sound) what you're bringing well before the day you sing it.",
       },
       {
         kind: "rule",
         title: "The philosophy comes first",
-        text: "Checking the song against the Selection Philosophy is the first item on the list, not an afterthought — the same test from the doxology course applies whether the song is a hymn, a cover, or something you wrote yourself.",
+        text: "Check the song against the Selection Philosophy before anything else on the list. It is the same doxology test every song goes through, whether a hymn, a cover or your own.",
+      },
+      {
+        kind: "bullets",
+        items: [
+          "**Name of song and artist.**",
+          "**A short reference recording** (30 seconds to a minute) of the version you want to cover.",
+          "**Your own version, with your own flavor:** a recording of you singing the cover with your modifications.",
+          "**Accompaniment plans:** what you want backing the song (keyboard, guitar, drums, etc.).",
+          "**Harmony coordination:** coordinate harmonies yourself, or tell your Music Lead in advance that you'll need help pulling other singers in.",
+          "**Pre-recorded, or performed live the day of:** decide which, and say so.",
+          "**A written arrangement** of the song (e.g. v1, chorus ×2, bridge). Chord progression is optional but welcome.",
+        ],
       },
       {
         kind: "reveal",
         prompt:
-          "You've picked a cover and you know exactly how you want to sing it, but you haven't recorded a demo of your own version yet — just filled out the checklist form. Ready to submit?",
+          "You've picked a cover and know exactly how you want to sing it, but you've only filled out the checklist form, with no recording of your own version. Ready to submit?",
         answer:
-          "Not quite — the checklist wants an actual recording of you singing the cover with your modifications, not just a plan. The reference recording shows what you're covering; your own take shows how.",
+          "Not yet. The checklist wants a recording of you singing the cover with your modifications, not a plan. The reference recording shows what you're covering; your own take shows how.",
       },
       {
         kind: "tip",
-        text: "Set-building and rehearsal craft are coming to this course — for now, this is the per-song submission checklist.",
+        text: "Set-building and rehearsal craft are coming to this course. For now, it covers the per-song submission checklist.",
       },
       {
         kind: "link",
@@ -612,43 +609,43 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Checking against the Selection Philosophy comes first — every song, cover or original, goes through the same doxological test before anything else is planned.",
+          "Checking against the Selection Philosophy comes first. Every song, cover or original, goes through the same doxological test before anything else is planned.",
       },
       {
         prompt: "You want harmony singers on your cover. What does the checklist ask you to do?",
         options: [
-          "Nothing — harmonies are always arranged automatically",
+          "Nothing, harmonies are always arranged automatically",
           "Coordinate them yourself, or tell your Music Lead in advance that you'll need help pulling other singers in",
           "Sing without harmonies",
           "Only the Music Lead can request harmonies",
         ],
         answerIndex: 1,
         explanation:
-          "Harmony coordination is on you or your Music Lead — but it has to happen in advance, not day-of, so the other singers have time to learn their parts.",
+          "Harmony coordination is on you or your Music Lead, and it happens in advance, not day-of, so the other singers have time to learn their parts.",
       },
       {
-        prompt: "Why does the checklist ask for a recording of your OWN version, not just a reference recording of the original?",
+        prompt: "Why does the checklist ask for a recording of your OWN version, not only a reference recording of the original?",
         options: [
-          "It doesn't — only the original matters",
-          "Because you're expected to bring your own flavor to the cover, and the team needs to hear what that sounds like, not just the source",
+          "It doesn't, only the original matters",
+          "Because you're expected to bring your own flavor to the cover, and the team needs to hear what that sounds like",
           "To prove you can sing",
           "For copyright purposes only",
         ],
         answerIndex: 1,
         explanation:
-          "Two recordings serve two different purposes: the reference recording shows what you're covering, and your own version shows how you're covering it — the modifications and flavor you're bringing.",
+          "The reference recording shows what you're covering. Your own version shows how: the modifications and flavor you're bringing.",
       },
       {
         prompt: "What does this course's description say is coming next?",
         options: [
-          "Nothing — this is the complete course",
+          "Nothing, this is the complete course",
           "Set-building and rehearsal craft",
           "A producing certification",
           "A songwriting bootcamp",
         ],
         answerIndex: 1,
         explanation:
-          "This course is deliberately one lesson for now — the per-song submission checklist. Set-building and rehearsal craft are marked coming soon.",
+          "This course is one lesson for now: the per-song submission checklist. Set-building and rehearsal craft are marked coming soon.",
       },
     ],
   },
@@ -662,58 +659,52 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "\"Producer\" is a broad, versatile term. It can trip people up because you don't necessarily need to play an instrument, sing, or make beats to be one. Producing is about bringing order to chaos to achieve a desired result — taking all the moving parts of making music (the chaos, opinions, egos, people, and ideas) and transforming them into a finished song, ready for release.",
+        text: "You don't need to play an instrument, sing or make beats to be a producer. Producing means bringing order to chaos to reach a result. A producer takes the moving parts of making music (opinions, egos, people, ideas) and turns them into a finished song, ready for release.",
       },
-      { kind: "heading", text: "A different perspective: the apple metaphor" },
+      { kind: "heading", text: "The apple metaphor" },
       {
         kind: "table",
         headers: ["Producer", "What they do"],
         rows: [
           [
             "**The Gardener**",
-            "Nurtures apple trees directly — studies the plants, masters the climate, spends years cultivating, harvests their own apples.",
+            "Nurtures apple trees directly: studies the plants, masters the climate, spends years cultivating, harvests their own apples.",
           ],
           [
             "**The Farm Owner**",
-            "Doesn't grow apples themselves — hires the Gardener, recruits workers to wash/package/brand, arranges transport. Produces apples by coordinating resources.",
+            "Doesn't grow apples. Hires the Gardener, recruits workers to wash, package and brand, and arranges transport. Produces apples by coordinating resources.",
           ],
           [
             "**The Shopper**",
-            "Doesn't plant or farm at all — drives to the store, picks a bag of apples, delivers them. Different method, same result: apples delivered.",
+            "Doesn't plant or farm at all. Drives to the store, picks a bag of apples, delivers them. Different method, same result: apples delivered.",
           ],
         ],
       },
       {
         kind: "rule",
         title: "All three are \"producing\"",
-        text: "Producing is about understanding all the steps to a result and either executing them yourself, coordinating others to complete them, or using pre-existing solutions to get there faster. It's about vision and leadership more than any specific skill set.",
+        text: "Producing means knowing every step to a result, then doing the steps yourself, coordinating others to do them, or using existing solutions to get there faster. It takes vision and leadership more than any one skill.",
       },
-      { kind: "heading", text: "Example workflows" },
       {
         kind: "bullets",
         items: [
-          "**Traditional hip-hop producing:** choose a sample → build an instrumental around the loop → write lyrics → adjust the instrumental to fit → book studio time and an engineer → record.",
-          "**Inspiration hit:** hum ideas into a voice memo → turn the memo into an instrumental → write lyrics → record.",
-          "**\"$$$\":** find a songwriter → buy a song from them → re-record it with your artist.",
-          "**The messy-first method:** buy an instrumental → loop it and record an open-ended freestyle → refine the best parts into lyrics → hate it (this step is important) → wake up the next day and love it → share it with trusted friends/artist for feedback → finish the song based on their reactions.",
-          "**\"DJ Khaled\":** know a lot of artists → gather them in one room → play instrumentals → record the best ideas → add your signature tagline.",
+          "**Traditional hip-hop producing:** choose a sample, build an instrumental around the loop, write lyrics, adjust the instrumental to fit, book studio time and an engineer, record.",
+          "**Inspiration hit:** hum ideas into a voice memo, turn it into an instrumental, write lyrics, record.",
+          "**\"$$$\":** find a songwriter, buy a song from them, re-record it with your artist.",
+          "**The messy-first method:** buy an instrumental, loop it and record a freestyle, refine the best parts into lyrics. Then **hate it** (this step is important). Wake up the next day and love it, get feedback from trusted friends or the artist, and finish the song. Disliking a draft, then hearing it with fresh ears, is a real, repeatable part of finishing.",
+          "**\"DJ Khaled\":** know a lot of artists, gather them in one room, play instrumentals, record the best ideas, add your signature tagline.",
         ],
       },
       {
-        kind: "tip",
-        text: "Hate it. (This step is important.) — the messy-first method's third step isn't a joke: writing something you initially dislike, then coming back to it with fresh ears, is a real and repeatable part of finishing a song.",
-      },
-      { kind: "heading", text: "Choosing your steps" },
-      {
         kind: "p",
-        text: "There's no universal formula — just like there's no guaranteed recipe for making a million dollars. The steps you take depend on your **time** (what's your deadline?), **budget** (how much can you spend?), **talent** (what skills do you have?), **collaborators** (who can you work with, and what are their strengths?), and **vision** (who will be the face of the project?).",
+        text: "There's no universal formula. Your steps depend on **time** (deadline), **budget**, **talent** (your skills), **collaborators** (who you can work with and their strengths) and **vision** (who will be the face of the project).",
       },
       {
         kind: "reveal",
         prompt:
-          "You don't play an instrument, sing, or make beats — you just buy a finished instrumental and hand it to a songwriter and an engineer. Are you producing?",
+          "You don't play an instrument, sing or make beats. You buy a finished instrumental and hand it to a songwriter and an engineer. Are you producing?",
         answer:
-          "Yes — that's Producer C in the apple metaphor, the Shopper. You don't grow or farm anything, but you still deliver the result. Producing is about understanding the steps to a result and either executing them, coordinating them, or using pre-existing solutions — not one specific hands-on skill.",
+          "Yes. Like the Shopper, you grow nothing but still deliver the result. Producing is knowing the steps to a result and doing them, coordinating them or using existing solutions.",
       },
       {
         kind: "link",
@@ -726,25 +717,25 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "Do you need to play an instrument or make beats to be a music producer?",
         options: [
           "Yes, always",
-          "No — producing means bringing order to chaos to deliver finished music, and that can be done by coordinating others or using existing solutions",
+          "No. Producing means bringing order to chaos to deliver finished music, which you can do by coordinating others or using existing solutions",
           "Only if you're the artist too",
           "Only for hip-hop production",
         ],
         answerIndex: 1,
         explanation:
-          "The Farm Owner and the Shopper in the apple metaphor never touch an instrument either — they coordinate or acquire. All three are still \"producing\" because the result (apples, or a finished song) gets delivered.",
+          "The Farm Owner and the Shopper never touch an instrument; they coordinate or acquire. All three still count as \"producing\" because the result (apples, or a finished song) gets delivered.",
       },
       {
         prompt: "In the apple metaphor, what do the Gardener, the Farm Owner, and the Shopper have in common?",
         options: [
           "They all personally grow the apples",
-          "They all deliver apples to someone, by different methods — all three count as \"producing\" them",
+          "They all deliver apples to someone, by different methods, so all three count as \"producing\" them",
           "Only the Gardener actually produces anything",
-          "Nothing — they're unrelated roles",
+          "Nothing, they're unrelated roles",
         ],
         answerIndex: 1,
         explanation:
-          "Different methods, same result: apples delivered. Producing music works the same way — hands-on creation, coordination, or acquisition can all be legitimate production.",
+          "Different methods, same result: apples delivered. In music, hands-on creation, coordination and acquisition are all legitimate production.",
       },
       {
         prompt: "What's the point of the messy-first method's \"hate it\" step?",
@@ -756,7 +747,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The step is called out as important on purpose — disliking a rough draft is normal, not a signal to abandon it. Coming back the next day with fresh ears is part of the process.",
+          "Disliking a rough draft is normal, not a signal to abandon it. Coming back the next day with fresh ears is part of the process.",
       },
       {
         prompt: "What five factors decide which production steps you should actually take?",
@@ -768,7 +759,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "There's no universal formula for producing music — the right steps depend on your deadline (time), what you can spend (budget), your own skills (talent), who you can work with (collaborators), and who will be the face of the project (vision).",
+          "There's no universal formula. The right steps depend on your deadline (time), what you can spend (budget), your skills (talent), who you can work with (collaborators) and who will be the face of the project (vision).",
       },
     ],
   },
@@ -782,36 +773,27 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "An artist is more than just a musician — they are a brand. Think of yourself as a business: your music is your product, but your brand — your image, values, and presence — is what sells it. Two artists can sing the exact same song, yet their branding can make those performances feel entirely different.",
+        text: "An artist is a brand as well as a musician. Your music is the product; your brand (image, values, presence) is what sells it. Two artists can sing the same song and, because of their branding, the performances feel entirely different. Your brand should reflect who you authentically are, build trust and loyalty with your audience, and send a clear, consistent message through your music, pictures and videos.",
       },
       {
         kind: "bullets",
         items: [
-          "Your brand should **reflect who you are authentically.**",
-          "Your brand should **build trust and loyalty** with your audience.",
-          "Your brand should **convey a clear, consistent message** through everything you do — the music you release, the pictures and videos you share.",
-        ],
-      },
-      { kind: "heading", text: "Practical branding tips" },
-      {
-        kind: "bullets",
-        items: [
-          "**Be intentional with visuals.** Every photo or video you post adds to your public image — make sure it aligns with your brand values.",
-          "**Stay consistent.** From your logo to your social presence, maintain a unified aesthetic and tone.",
-          "**Engage your audience.** Build relationships with your fans — respond to comments, show gratitude, share moments of vulnerability or joy.",
+          "**Be intentional with visuals.** Every photo or video you post adds to your public image, so make sure it fits your brand values.",
+          "**Stay consistent.** Keep one aesthetic and tone, from your logo to your social presence.",
+          "**Engage your audience.** Respond to comments, show gratitude, share moments of vulnerability or joy.",
         ],
       },
       {
         kind: "rule",
         title: "Public Worship standards",
-        text: "As an artist associated with Public Worship, you're held to a higher standard. Your music doesn't need to be explicitly worship-focused, but it must align with Christian values — artists should view themselves as role models, akin to teachers or leaders within the church.",
+        text: "Artists associated with Public Worship are held to a higher standard. Your music doesn't need to be worship-focused, but it must align with Christian values. See yourself as a role model, like a teacher or leader in the church.",
       },
       {
         kind: "bullets",
         items: [
-          "**Content integrity** — your lyrics, themes, and visuals stay consistent with a Christian lifestyle.",
-          "**Public behavior** — you represent not just yourself but the broader faith community, online and offline.",
-          "**Spiritual accountability** — surround yourself with mentors and peers who hold you to your commitments.",
+          "**Content integrity:** your lyrics, themes and visuals stay consistent with a Christian lifestyle.",
+          "**Public behavior:** online and offline, you represent the broader faith community as well as yourself.",
+          "**Spiritual accountability:** surround yourself with mentors and peers who hold you to your commitments.",
         ],
       },
       {
@@ -819,7 +801,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "You post a personal, unfiltered photo that doesn't match anything else on your page. Does that count as branding?",
         answer:
-          "It still shapes your brand — just not intentionally. Every photo or video you post adds to your public image, so the practical move is to be deliberate about visuals rather than random. Consistency is part of what builds trust.",
+          "Yes, just not on purpose. Every photo or video adds to your public image, so be deliberate about visuals. Consistency builds trust.",
       },
       {
         kind: "link",
@@ -832,25 +814,25 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What sells an artist's music, according to this lesson?",
         options: [
           "The production quality alone",
-          "The brand — image, values, and presence — not just the song itself",
+          "The brand (image, values, presence), not only the song itself",
           "The record label",
           "Streaming algorithm placement",
         ],
         answerIndex: 1,
         explanation:
-          "Two artists can sing the exact same song and it can feel entirely different — the brand around the music is what sells it, not the song in isolation.",
+          "Two artists can sing the same song and it feels entirely different. The brand around the music sells it, not the song in isolation.",
       },
       {
         prompt: "Does a Public Worship-affiliated artist's non-worship music need to be explicitly Christian in content?",
         options: [
           "Yes, every release must be a worship song",
-          "No — but it must still align with Christian values, since the artist is held to a higher standard as a representative of the faith community",
+          "No, but it must still align with Christian values, since the artist is held to a higher standard as a representative of the faith community",
           "No standards apply outside worship music",
           "Only if the artist is a paid staff member",
         ],
         answerIndex: 1,
         explanation:
-          "The music itself doesn't have to be worship-focused, but content integrity and public behavior standards still apply — the artist is seen as a role model, not just a musician.",
+          "The music doesn't have to be worship-focused, but content integrity and public behavior standards still apply. The artist is a role model as well as a musician.",
       },
       {
         prompt: "What is \"spiritual accountability\" in this context?",
@@ -862,13 +844,13 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "It's relational, not procedural — having people in your life who can actually speak into your choices and hold you to the standard you've claimed.",
+          "It's relational, not procedural: people in your life who can speak into your choices and hold you to the standard you've claimed.",
       },
       {
         prompt: "Why can two artists singing the same song feel completely different to an audience?",
         options: [
           "Different microphones",
-          "Their branding — image, values, and consistent presence — shapes how the performance is received",
+          "Their branding (image, values, consistent presence) shapes how the performance is received",
           "One of them must be more talented",
           "It's impossible; identical songs always feel the same",
         ],
@@ -888,7 +870,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Because of the real costs involved in producing and releasing a track, the artist is usually the one taking on the financial responsibility for a project — which is part of why an artist can also act as a producer, a vocalist, or even a company.",
+        text: "Producing and releasing a track costs real money, and the artist usually carries that financial responsibility. That is part of why an artist can also act as a producer, a vocalist or even a company.",
       },
       {
         kind: "table",
@@ -905,24 +887,19 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Asking us to release your idea is asking us to bet $500+ on your song",
-        text: "For Public Worship songs where the organization is the artist, Public Worship typically takes on the majority of the fiscal responsibility for the release — which is exactly why we're selective about the songs we choose to release. This isn't personal; it's stewardship, not gatekeeping. We may not always agree on which songs should get that privilege.",
+        text: "When Public Worship is the artist, it typically carries most of the fiscal responsibility for the release. That is why we're selective about which songs we release. It is stewardship, not gatekeeping, and we may not always agree on which songs get that privilege.",
       },
       {
         kind: "p",
-        text: "The good news: you always have the option to take on that financial responsibility yourself and release your song as your own artist. As an artist, you're a business owner — and any successful business owner knows the importance of calculating return on investment.",
-      },
-      { kind: "heading", text: "The fork in the road" },
-      {
-        kind: "p",
-        text: "Not everyone who loves music should be the artist fronting a release budget. There are other ways to contribute meaningfully:",
+        text: "You can always take on that financial responsibility yourself and release the song as your own artist. An artist is a business owner, and a business owner calculates return on investment. At this fork in the road, remember that not everyone who loves music should be the artist fronting a release budget. Other ways to contribute:",
       },
       {
         kind: "bullets",
         items: [
-          "**Producing** — shaping the sound and vision of songs.",
-          "**Writing** — crafting lyrics and melodies for other artists.",
-          "**Vocal performance** — recording backing or lead vocals for others.",
-          "**Playing instruments** — contributing your musical skills to live or recorded projects.",
+          "**Producing:** shaping the sound and vision of songs.",
+          "**Writing:** crafting lyrics and melodies for other artists.",
+          "**Vocal performance:** recording backing or lead vocals for others.",
+          "**Playing instruments:** contributing your skills to live or recorded projects.",
         ],
       },
       {
@@ -930,7 +907,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "A songwriter asks Public Worship to release their song idea as an official release. The team says no. Is that a verdict on their talent?",
         answer:
-          "No — it's stewardship, not personal judgment. Asking Public Worship to release an idea is asking the organization to bet $500 or more on it, since PW typically takes on the majority of the fiscal responsibility for its own releases. Selectivity protects that bet; it isn't a verdict on the songwriter.",
+          "No. Asking Public Worship to release an idea asks it to bet $500 or more, because it typically carries most of the fiscal responsibility for its own releases. Selectivity is stewardship of that bet, not a verdict on the songwriter.",
       },
       {
         kind: "link",
@@ -944,43 +921,43 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         options: ["$50–100", "$300–650+", "$1,000–2,000", "There's no meaningful cost"],
         answerIndex: 1,
         explanation:
-          "Production, recording, mixing/mastering, distribution, and marketing add up to roughly $300–650+ — real money, which is exactly why releases aren't approved casually.",
+          "Production, recording, mixing/mastering, distribution and marketing add up to roughly $300–650+. That is real money, so releases aren't approved casually.",
       },
       {
         prompt: "Why is Public Worship selective about which songs it releases as an organization?",
         options: [
           "Personal taste of whoever is in charge that week",
-          "Releasing a song means betting real money ($500+) on it — selectivity is stewardship of that money, not gatekeeping someone's talent",
+          "Releasing a song means betting real money ($500+) on it; selectivity is stewardship of that money, not gatekeeping someone's talent",
           "There's a strict quota of releases per year",
           "Only staff-written songs are eligible",
         ],
         answerIndex: 1,
         explanation:
-          "Since the organization typically fronts the fiscal responsibility for its own releases, asking to release an idea is asking Public Worship to bet real money on it — the selectivity is about stewarding that bet, not judging the person.",
+          "Public Worship typically carries the fiscal responsibility for its own releases, so asking it to release an idea asks it to bet real money. Selectivity stewards that bet; it doesn't judge the person.",
       },
       {
         prompt: "If you're not ready to front the budget for your own release, what's an alternative path into music, per this lesson?",
         options: [
-          "There is none — you must be the artist or nothing",
+          "There is none, you must be the artist or nothing",
           "Producing, writing, vocal performance, or playing instruments for other artists",
           "Only working for a label",
           "Waiting until you can self-fund a full album",
         ],
         answerIndex: 1,
         explanation:
-          "The \"fork in the road\" names four other ways to contribute meaningfully — producing, writing, vocal performance, and playing instruments — without being the artist who fronts the release budget.",
+          "The \"fork in the road\" names four other ways to contribute (producing, writing, vocal performance, playing instruments) without being the artist who fronts the release budget.",
       },
       {
         prompt: "As an artist financially responsible for your own release, what does the lesson say you should calculate?",
         options: [
-          "Nothing — art shouldn't be measured financially",
+          "Nothing, art shouldn't be measured financially",
           "Return on investment, the same way any business owner would",
           "Only your streaming numbers",
           "Your total studio hours",
         ],
         answerIndex: 1,
         explanation:
-          "Being an artist who funds your own release makes you a business owner in a real sense — and calculating ROI on that investment is part of treating it like one.",
+          "An artist who funds their own release is a business owner, and a business owner calculates return on investment.",
       },
     ],
   },
@@ -994,38 +971,37 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "When we reach out to a vocalist, producer, engineer, or player, the terms are not invented in the conversation. They're already published: **publicworship.life/collaborate** walks anyone through their own situation and role, and **/music-policy** is the canonical document behind it. Your job on an invite is to point at what's published, not to negotiate a private version of it.",
+        text: "When we reach out to a vocalist, producer, engineer or player, the terms are already published. **publicworship.life/collaborate** walks anyone through their situation and role; **/music-policy** is the canonical document behind it. Point at what's published; don't negotiate a private version.",
       },
-      { kind: "heading", text: "Running the invite" },
       {
         kind: "bullets",
         items: [
-          "**Send the link first.** /collaborate lets someone — and their manager, or their lawyer — read the whole picture before they answer you.",
-          "**Name the ask precisely.** One song, which part (a lead, a verse, a bridge, a vocal moment), and the credit exactly as it would appear on the release.",
-          "**Say what cash is funded before they choose a path** — the release's cash budget for their role, and whether the rate sheet is fully, partly, or not funded. Before, never after.",
-          "**Say the master out loud, early.** Public Worship owns the official master. If that's a dealbreaker for them, it's a conversation before anything is recorded, not after.",
-          "**Approval rights are real.** Their performance, their credit, and how their name and likeness are used are theirs to sign off on.",
-          "**Non-exclusive, always.** Their catalog, their label, their deals, their career are untouched by this song.",
-          "**No path is holier.** Never hint — in words or in tone — that taking donation or equity earns someone the next invitation.",
-          "**Paper before recording.** A split sheet and the release agreement get signed before the song goes out; no release ships with unresolved splits.",
+          "**Send the link first,** so they (and their manager or lawyer) read the whole picture before answering.",
+          "**Name the ask precisely:** one song, which part (a lead, a verse, a bridge, a vocal moment), and the exact credit on the release.",
+          "**Say what cash is funded before they choose a path:** the release's cash budget for their role, and whether the rate sheet is fully, partly or not funded. Never after.",
+          "**Say the master out loud, early.** Public Worship owns the official master; if that's a dealbreaker, talk before anything is recorded.",
+          "**Approval rights are real.** They sign off on their performance, credit, and use of their name and likeness.",
+          "**Non-exclusive, always.** This song leaves their catalog, label, deals and career untouched.",
+          "**No path is holier.** Never hint, in words or tone, that taking donation or equity earns the next invitation.",
+          "**Paper before recording.** The split sheet and release agreement are signed before the song goes out. No release ships with unresolved splits.",
         ],
       },
       {
         kind: "rule",
         title: "\"No\" has to cost nothing",
-        text: "Declining is one of the four honored paths, not a failed negotiation. Say so plainly when you invite someone: listening to the song and saying it isn't for them costs them nothing, and the door stays open for later. An invitation that carries a cost for saying no isn't an invitation.",
+        text: "Declining is one of the four honored paths, not a failed negotiation. Say so when you invite: hearing the song and saying it isn't for them costs nothing, and the door stays open.",
       },
       {
         kind: "rule",
         title: "Sponsors fund a release; they don't own a piece of it",
-        text: "An outside supporter or church can fund a release's production or promotion budget as a tax-deductible release-budget sponsorship, and gets recognition for it — credits, mentions, \"made possible by.\" They do not receive master points, master ownership, or any equity-like interest. Public Worship does not sell master participation for cash.",
+        text: "A supporter or church can fund a release's production or promotion budget as a tax-deductible release-budget sponsorship. They get recognition (credits, mentions, \"made possible by\"), never master points, master ownership or any equity-like interest. Public Worship does not sell master participation for cash.",
       },
       {
         kind: "reveal",
         prompt:
           "An artist's manager replies to your DM with \"what's your standard deal?\" What do you send?",
         answer:
-          "The /collaborate walkthrough and the rate sheet on it — that IS the standard deal, published so nobody gets a different one. Add the two specifics only you know: what part of the song you're asking for, and what cash is actually funded for that role on this release. Then let them read it before they answer.",
+          "The /collaborate walkthrough and its rate sheet. That IS the standard deal, published so nobody gets a different one. Add what only you know: the part you're asking for and the cash funded for that role.",
       },
       {
         kind: "link",
@@ -1043,49 +1019,49 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "Where do the terms of a collaboration come from?",
         options: [
           "Whatever you and the collaborator agree to in the DM",
-          "The published pages — /collaborate and /music-policy — which you point at rather than negotiate around",
+          "The published pages (/collaborate and /music-policy), which you point at instead of negotiating around",
           "The Music Director decides per person",
           "Each artist's manager sets them",
         ],
         answerIndex: 1,
         explanation:
-          "Rates, paths, and ownership are published on purpose so nobody gets a private version of the deal. The invite adds only what's specific to this song: the ask, and what cash is funded for that role.",
+          "Rates, paths and ownership are published so nobody gets a private version of the deal. The invite adds only what's specific to this song: the ask, and what cash is funded for that role.",
       },
       {
         prompt: "When does a contributor learn what cash is actually funded for their role?",
         options: [
           "After the session, once the budget is final",
-          "Before they choose a path — in writing, never after",
+          "Before they choose a path, in writing, never after",
           "Only if they ask",
           "At the release date",
         ],
         answerIndex: 1,
         explanation:
-          "The whole point of the four paths is an informed choice. Someone choosing equity because they were never told cash was available — or expecting cash that was never funded — is the failure this rule exists to prevent.",
+          "The four paths exist for an informed choice. This rule prevents someone choosing equity because nobody told them cash was available, or expecting cash that was never funded.",
       },
       {
         prompt: "A church wants to fund a release's production budget. What do they receive?",
         options: [
           "Master points proportional to their gift",
-          "Recognition — credits, mentions, \"made possible by\" — but never master points or ownership",
+          "Recognition (credits, mentions, \"made possible by\"), never master points or ownership",
           "A share of the writer split",
           "Approval rights over the final mix",
         ],
         answerIndex: 1,
         explanation:
-          "Release-budget sponsorship is a tax-deductible gift to Global Echo Charitable Co., not an investment. Public Worship does not sell master participation for cash — the financial relationship ends at the gift.",
+          "Release-budget sponsorship is a tax-deductible gift to Global Echo Charitable Co., not an investment. Public Worship does not sell master participation for cash; the financial relationship ends at the gift.",
       },
       {
         prompt: "Why say \"Public Worship owns the official master\" early in an invite?",
         options: [
           "To pressure the artist into deciding quickly",
-          "Because if it's a dealbreaker for them, that conversation belongs before anything is recorded — not after",
+          "Because if it's a dealbreaker for them, that conversation belongs before anything is recorded",
           "It isn't said; it's in the paperwork",
           "Because artists rarely care about masters",
         ],
         answerIndex: 1,
         explanation:
-          "Master ownership is the part of the policy that most resembles a label deal, so it gets surfaced early and honestly. Finding out after a session is how a good relationship turns into a bad one.",
+          "Master ownership is the part of the policy most like a label deal, so say it early and honestly. Finding out after a session sours a good relationship.",
       },
     ],
   },
@@ -1094,21 +1070,21 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "music-greenlight-and-the-demo",
     title: "Greenlight, demos, and getting a song back",
-    subtitle: "Nothing attaches until a song is greenlit — in writing",
+    subtitle: "Nothing attaches until a song is greenlit, in writing",
     minutes: 4,
     blocks: [
       {
         kind: "p",
-        text: "Public Worship sessions, retreats, and writing camps generate far more songs than we will ever release. That's normal and healthy — not every idea is meant to leave the room. A song becomes an **Official Public Worship Release** only when Public Worship explicitly *greenlights* it for a specific project, cycle, or release plan.",
+        text: "Sessions, retreats and writing camps produce far more songs than we will ever release, and that's normal. A song becomes an **Official Public Worship Release** only when Public Worship explicitly *greenlights* it for a specific project, cycle or release plan.",
       },
       {
         kind: "rule",
         title: "Greenlight is a written designation",
-        text: "It is never implied by enthusiasm in the room, by a song landing well in a session, or by someone senior saying they love it. Until it's written down for a specific project, the song is still in development.",
+        text: "Enthusiasm in the room, a song landing well in a session, or someone senior saying they love it never implies greenlight. Until it's written down for a specific project, the song is still in development.",
       },
       {
         kind: "p",
-        text: "**The compensation framework only starts at greenlight.** The cash fees, master income participation, and donation paths on the rate sheet apply to greenlit songs. Before greenlight: writers keep their writer share on whatever they wrote, Public Worship has no publishing claim, and none of the four paths are live yet.",
+        text: "**The compensation framework starts at greenlight.** The rate sheet's cash fees, master income participation and donation paths apply to greenlit songs. Before greenlight, writers keep their writer share, Public Worship has no publishing claim, and none of the four paths are live.",
       },
       {
         kind: "table",
@@ -1134,26 +1110,21 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
         ],
       },
-      { kind: "heading", text: "Why the demo stays with us" },
       {
         kind: "p",
-        text: "Any recording made with Public Worship resources — studio time, equipment, engineering, session leadership — is owned by Public Worship as a *recording*, greenlit or not. The composition is a separate thing, and it can still go back to the writers.",
-      },
-      {
-        kind: "p",
-        text: "**Asking for a song back.** If a song was written in a Public Worship context and hasn't been greenlit, any writer on it may request a formal release of the *composition* back to them, free of any Public Worship publishing or administrative claim. In most cases that request is granted. Public Worship may decline if the song is actively being considered for a future project or cycle — and when we decline, we say what we're considering it for and when we'll revisit. If it's granted, the writer is free to re-record and release the song as their own work: no publishing share, no master claim, no encumbrance. The original demo stays owned by Public Worship, and we won't commercially release it without the writers' written agreement.",
+        text: "Any recording made with Public Worship resources (studio time, equipment, engineering, session leadership) is owned by Public Worship, greenlit or not. The *composition* is separate. Any writer on an ungreenlit song may request its formal release back to them, free of any Public Worship publishing or administrative claim. Most requests are granted. Public Worship may decline if the song is actively being considered for a future project or cycle, and then says what for and when it will revisit. Once released, the writer may re-record and release the song as their own: no publishing share, no master claim, no encumbrance. Public Worship keeps the demo and won't commercially release it without the writers' written agreement.",
       },
       {
         kind: "rule",
         title: "Selection is stewardship, not judgment",
-        text: "Releasing a song costs real money — studio, mixing, mastering, distribution, marketing, time. Each release is an investment of nonprofit resources in one particular song. A song not being chosen is a stewardship call about the project, the cycle, and the catalog. It is not a verdict on the people who made it.",
+        text: "Each release spends nonprofit money on one song: studio, mixing, mastering, distribution, marketing, time. Not choosing a song is a stewardship call about the project, the cycle and the catalog, not a verdict on the people who made it.",
       },
       {
         kind: "reveal",
         prompt:
           "A song from your session got a standing ovation in the room and a director said \"we have to release this.\" Is it greenlit?",
         answer:
-          "No. Greenlight is a written designation for a specific project, cycle, or release plan — enthusiasm in the room isn't it. Until it's written, none of the four paths or rate-sheet numbers apply to that song. Ask for the written designation before you plan around it.",
+          "No. Greenlight is a written designation for a specific project, cycle or release plan. Until it's written, none of the four paths or rate-sheet numbers apply. Ask for the written designation before you plan around it.",
       },
       {
         kind: "link",
@@ -1162,7 +1133,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "link",
-        label: "Further reading: policy §4 — demos, greenlit releases, unreleased songs",
+        label: "Further reading: policy §4, demos, greenlit releases and unreleased songs",
         url: "https://publicworship.life/music-policy#demos",
       },
     ],
@@ -1180,7 +1151,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           "Greenlight is a written designation. A song written in our space, recorded on our gear, and loved by everyone present is still not an official release until it's greenlit in writing.",
       },
       {
-        prompt: "When does the compensation framework — cash, participation, donation — attach to a song?",
+        prompt: "When does the compensation framework (cash, participation, donation) attach to a song?",
         options: [
           "The moment it's written in a Public Worship session",
           "At greenlight, and not before",
@@ -1189,31 +1160,31 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The four paths and the rate sheet apply to greenlit songs. Before greenlight, writers keep their writer share and Public Worship has no publishing claim — but no compensation framework is attached either.",
+          "The four paths and the rate sheet apply to greenlit songs. Before greenlight, writers keep their writer share and Public Worship has no publishing claim, but no compensation framework is attached either.",
       },
       {
         prompt: "You wrote a song in a PW session that hasn't been greenlit, and you want to release it yourself. What can you ask for?",
         options: [
-          "Nothing — songs written in session belong to PW permanently",
-          "A formal release of the composition back to you — usually granted; PW may decline only if it's actively being considered, and will say what for and when it'll revisit",
+          "Nothing, songs written in session belong to PW permanently",
+          "A formal release of the composition back to you. It's usually granted; PW may decline only if it's actively being considered, and will say what for and when it'll revisit",
           "The demo recording, which becomes yours automatically",
           "A refund of the studio costs",
         ],
         answerIndex: 1,
         explanation:
-          "The composition can come back to the writers on request, free of any PW publishing or admin claim. The demo recording — made with PW's studio, gear, and engineering — stays owned by PW, and PW won't release it commercially without the writers' written agreement.",
+          "The composition can come back to the writers on request, free of any PW publishing or admin claim. The demo recording, made with PW's studio, gear and engineering, stays owned by PW, and PW won't release it commercially without the writers' written agreement.",
       },
       {
         prompt: "A song of yours isn't greenlit this cycle. What does that mean?",
         options: [
           "The team judged your songwriting and found it lacking",
-          "It's a stewardship call about the project, the cycle, and the catalog — releasing costs real money, and not every song fits",
+          "It's a stewardship call about the project, the cycle and the catalog; releasing costs real money, and not every song fits",
           "The song can never be considered again",
           "You should stop writing for Public Worship",
         ],
         answerIndex: 1,
         explanation:
-          "Selection is stewardship, not judgment. Each release spends real nonprofit money on one particular song, so not everything gets chosen — and that choice isn't a comment on the people involved.",
+          "Selection is stewardship, not judgment. Each release spends real nonprofit money on one song, so not everything gets chosen, and that choice isn't a comment on the people involved.",
       },
     ],
   },
@@ -1227,7 +1198,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Music rights get tangled fast, so we keep them in three clearly separate lanes. Almost every confusing conversation about \"what do I get?\" is really a question about which lane a contribution lands in.",
+        text: "We keep music rights in three separate lanes. Most \"what do I get?\" confusion is about which lane a contribution lands in.",
       },
       {
         kind: "table",
@@ -1235,51 +1206,50 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         rows: [
           [
             "**Composition** (writer share)",
-            "The song itself — lyrics, melody, chord structure, core composition",
+            "The song itself: lyrics, melody, chord structure, core composition",
             "100% to the writers, per the agreed split sheet. **Public Worship takes 0%.**",
           ],
           [
             "**Publishing** (publisher share)",
-            "The administrative and stewardship side — registering the song with CCLI and the PROs, administering it, stewarding it over time",
+            "The administrative side: registering the song with CCLI and the PROs, administering it, stewarding it over time",
             "50% Public Worship Publishing, 50% split among the writers according to their writer splits",
           ],
           [
             "**Master recording**",
-            "The actual recording people stream (one song can have several masters — studio, live, acoustic)",
+            "The recording people stream (one song can have several masters: studio, live, acoustic)",
             "Owned by Public Worship, held by Global Echo Charitable Co.",
           ],
         ],
       },
       {
         kind: "rule",
-        title: "Producing, playing, and engineering are honored — they aren't writer share",
-        text: "You're on the writer split if you contributed lyrics, melody, or composition. Producing, mixing, engineering, and performing are real and honored contributions, compensated through the four paths at the published rate for that role — not by taking a piece of writer credit. Public Worship honors writing by leaving that lane whole.",
+        title: "Producing, playing and engineering aren't writer share",
+        text: "You're on the writer split if you contributed lyrics, melody or composition. Producing, mixing, engineering and performing are paid through the four paths at that role's published rate, not with writer credit. Public Worship honors writing by leaving that lane whole.",
       },
-      { kind: "heading", text: "Why Public Worship owns the master" },
       {
         kind: "bullets",
         items: [
-          "**Catalog continuity.** Worship songs need to stay available for decades. Team members move, sign elsewhere, change paths. A catalog scattered across former volunteers' personal accounts is unworkable.",
-          "**Clean rights.** Distribution, sync, and licensing require unambiguous ownership; a master split across many parties makes those slow or impossible.",
+          "**Catalog continuity.** Public Worship owns the master because worship songs need to stay available for decades, and team members move, sign elsewhere and change paths. A catalog scattered across former volunteers' accounts is unworkable.",
+          "**Clean rights.** Distribution, sync and licensing need unambiguous ownership; a master split across many parties makes them slow or impossible.",
           "**Mission protection.** We can decline uses that contradict the ministry's purpose.",
-          "**Reinvestment.** Master income funds the next session — and the nonprofit form makes that enforceable, because there are no shareholders.",
+          "**Reinvestment.** Master income funds the next session, and the nonprofit form makes that enforceable because there are no shareholders.",
         ],
       },
       {
         kind: "p",
-        text: "That ownership comes with published stewardship promises, not a blank check: if Global Echo dissolves, the catalog goes to an aligned 501(c)(3) or reverts pro-rata to participation holders; if a release is pulled from distribution and not restored within **18 months**, its master reverts to the named primary artist; and no master is sold or transferred to a for-profit entity without the written consent of the named primary artist (or, absent one, holders of a majority of that release's participation points). Nothing in the policy waives a writer's statutory right to terminate transfers of the *composition* under 17 U.S.C. §§ 203 and 304(c).",
+        text: "Ownership comes with published stewardship promises. If Global Echo dissolves, the catalog goes to an aligned 501(c)(3) or reverts pro-rata to participation holders. If a release is pulled from distribution and not restored within **18 months**, its master reverts to the named primary artist. No master goes to a for-profit entity without written consent from the named primary artist (or, absent one, holders of a majority of that release's participation points). The policy never waives a writer's statutory right to terminate transfers of the *composition* under 17 U.S.C. §§ 203 and 304(c).",
       },
       {
         kind: "rule",
         title: "Owning the master isn't the same as keeping all the income",
-        text: "Master ownership = control of the recording (distribution, licensing, takedowns, sync approval). Master income participation = a contractual right to a percentage of net master income, without ownership. Participation is expressed in points, and one point equals 1% of net master income for that release — \"5 points\" and \"5%\" mean the same thing.",
+        text: "Master ownership is control of the recording (distribution, licensing, takedowns, sync approval). Participation is a contractual right to a percentage of net master income, without ownership. One point equals 1% of net master income for that release, so \"5 points\" means 5%.",
       },
       {
         kind: "reveal",
         prompt:
-          "You mixed the record and wrote none of it. A friend tells you that you should be on the split sheet. Are they right?",
+          "You mixed the record and wrote none of it. A friend says you belong on the split sheet. Are they right?",
         answer:
-          "No. Mixing is honored and compensated — the mix-engineer rate through the four paths, plus your credit on the release — but the writer share covers lyrics, melody, and composition only. That lane is left whole for the writers (Public Worship takes 0% of it), and it doesn't widen to cover recording roles.",
+          "No. Mixing earns the mix-engineer rate through the four paths, plus credit. The writer share covers only lyrics, melody and composition.",
       },
       {
         kind: "link",
@@ -1288,7 +1258,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "link",
-        label: "Further reading: policy §§5–10 — rights, writer share, publishing, master",
+        label: "Further reading: policy §§5–10, rights, writer share, publishing and master",
         url: "https://publicworship.life/music-policy#rights",
       },
     ],
@@ -1298,7 +1268,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         options: ["50%", "0%", "25%", "It depends on the song"],
         answerIndex: 1,
         explanation:
-          "Writers keep 100% of the writer share, per the split sheet. Public Worship's role as commissioner and steward shows up in the publisher share and in master ownership — not in a piece of writer credit.",
+          "Writers keep 100% of the writer share, per the split sheet. Public Worship's role as commissioner and steward shows up in the publisher share and master ownership, not in writer credit.",
       },
       {
         prompt: "How does the publisher share split on an Official Public Worship Release?",
@@ -1310,24 +1280,24 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "PW Publishing retains 50% of the publisher share for originating, funding, registering, and stewarding the release; the other 50% flows to the writers in the same proportions as their writer splits.",
+          "PW Publishing keeps 50% of the publisher share for originating, funding, registering and stewarding the release. The other 50% goes to the writers in proportion to their writer splits.",
       },
       {
         prompt: "What's the difference between master ownership and master income participation?",
         options: [
-          "Nothing — they're two names for the same thing",
+          "Nothing, they're two names for the same thing",
           "Ownership is control of the recording; participation is a contractual right to a percentage of net master income, without ownership",
           "Participation includes the right to license the song",
           "Ownership applies to the composition, participation to the recording",
         ],
         answerIndex: 1,
         explanation:
-          "Public Worship owns and controls the official master — distribution, licensing, takedowns, sync approval — and grants participation in the income from it. One point of participation equals 1% of net master income for that release.",
+          "Public Worship owns and controls the official master (distribution, licensing, takedowns, sync approval) and grants participation in its income. One point equals 1% of net master income for that release.",
       },
       {
         prompt: "What happens if Public Worship pulls a release from distribution and doesn't restore it within 18 months?",
         options: [
-          "Nothing — ownership is permanent",
+          "Nothing, ownership is permanent",
           "Master ownership of that release reverts to the named primary artist (or pro-rata to participation holders)",
           "The song enters the public domain",
           "The writers lose their writer share",
@@ -1343,12 +1313,12 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "music-the-four-paths",
     title: "The four paths",
-    subtitle: "Cash, participation, donation, decline — equally honored",
+    subtitle: "Cash, participation, donation, decline: equally honored",
     minutes: 4,
     blocks: [
       {
         kind: "p",
-        text: "For every contributor role on a greenlit release, Public Worship publishes two numbers: the **cash fee** for that role at market rate, and the **master income participation** you may take instead of the cash. Both are predefined, not negotiated release by release. Before recording, every contributor picks one of four paths, recorded in writing as part of the release agreement.",
+        text: "Every contributor role on a greenlit release has two published numbers: the **cash fee** at market rate, and the **master income participation** you may take instead. Neither is negotiated per release. Before recording, each contributor picks one of four paths, recorded in writing in the release agreement.",
       },
       {
         kind: "table",
@@ -1357,7 +1327,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           [
             "**Cash fee**",
             "The published rate as a one-time payment",
-            "*When funded* — depends on this release's budget",
+            "*When funded*, depending on this release's budget",
           ],
           [
             "**Master income participation**",
@@ -1366,31 +1336,25 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
           ],
           [
             "**Donation to mission**",
-            "Your work as an in-kind gift through Global Echo Charitable Co., with credit and gratitude. Under IRS rules the value of donated *services* isn't deductible — only out-of-pocket expenses and tangible property are",
+            "Your work as an in-kind gift through Global Echo Charitable Co., with credit and gratitude. Under IRS rules donated *services* aren't deductible; only out-of-pocket expenses and tangible property are",
             "Always",
           ],
           [
             "**Decline**",
-            "None of the above works for you on this release — a real answer",
+            "None of the above works for you on this release. A real answer",
             "Always",
           ],
         ],
       },
       {
         kind: "rule",
-        title: "All four paths are equally valued — and we say so out loud",
-        text: "Choosing cash doesn't make someone less invested in the mission. Choosing participation isn't greedy — it's accepting the risk that the song may not perform. Donation isn't \"the pure option,\" it's one of four honorable answers. We don't track who chose what as a measure of commitment, and we never imply that donating or taking equity makes someone more spiritual or more deserving of the next invitation.",
-      },
-      { kind: "heading", text: "Cash is the conditional one" },
-      {
-        kind: "p",
-        text: "Public Worship is a new initiative with no recurring music revenue. Participation and donation don't require cash on hand, so they're available on every release. A cash fee depends on that release's budget — some releases fund the rate sheet fully, some partly, some not at all. **Before** anyone signs onto a release, we put in writing the total cash budget, what's allocated to each role, and whether the going rate is fully, partly, or not funded. You choose knowing what's actually on offer.",
+        title: "All four paths are equally valued, and we say so out loud",
+        text: "Cash doesn't mean less invested. Participation isn't greedy; it accepts the risk that the song may not perform. Donation isn't \"the pure option.\" We don't track who chose what, and never imply that donating or taking equity makes someone more spiritual or more deserving of the next invitation.",
       },
       {
         kind: "p",
-        text: "If cash matters to you and we can't fund it, there are three honored answers: take equity or donate instead; take a partial cash fee plus partial equity, if the budget allows a mixed path; or decline this release. If too many contributors need cash we can't fund, we reshape the team, postpone, or set the song aside — we'd rather pause a release than push someone toward a path that isn't right for them.",
+        text: "**Cash is the conditional path.** Public Worship is new and has no recurring music revenue. Participation and donation need no cash, so every release offers them; a cash fee depends on the release's budget. **Before** anyone signs on, we put in writing the total cash budget, each role's allocation, and whether the going rate is fully, partly or not funded.",
       },
-      { kind: "heading", text: "The rate sheet" },
       {
         kind: "table",
         headers: ["Role", "Cash fee", "Master points"],
@@ -1410,16 +1374,11 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "tip",
-        text: "Rates are **per song, not per session** — a producer who works on three songs is paid for three songs. These are anchored to independent-artist market rates, not major-label rates and not a \"ministry discount.\" Effective 2026, next scheduled review end of 2027 — the published sheet at publicworship.life/collaborate is canonical if this lesson ever lags behind it.",
-      },
-      { kind: "heading", text: "The featured-artist ladder" },
-      {
-        kind: "p",
-        text: "The **Featured vocalist** row prices a performance — someone sings on the record. It does not price a **name**. When Public Worship invites an established artist to feature, part of what the release receives is their audience, and the flat session rate was never built to reflect that.",
+        text: "Rates are **per song, not per session**: a producer on three songs is paid for three songs. They match independent-artist market rates, with no \"ministry discount.\" Effective 2026, next review end of 2027; publicworship.life/collaborate is canonical.",
       },
       {
         kind: "p",
-        text: "So an invited feature scales, on a published formula rather than a private negotiation: **$300 in cash, or 1 master point, for every 100k monthly listeners** — cash capping at $1,500 and points at 5.",
+        text: "**The featured-artist ladder.** The Featured vocalist row prices a performance, not a **name**. An invited artist brings an audience, so the feature scales. The ladder pays **$300 in cash, or 1 master point, for every 100k monthly listeners**, with cash capping at $1,500 and points at 5. The bottom rung is the $300 featured-vocal rate. Cash stays conditional: a rung prices the role, not what a release can fund.",
       },
       {
         kind: "table",
@@ -1433,32 +1392,60 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
       },
       {
-        kind: "rule",
-        title: "Why points cap at 5 when cash caps at $1,500",
-        text: "Everywhere else on the sheet a point costs roughly $100 of cash — a $500 lead producer takes 5 points, a $300 featured vocal takes 3. Carry that ratio up the ladder and a capped feature would be worth 15 points: exactly the Primary Artist baseline. A single guest verse would earn the same ownership as an artist we build a catalog with over years. So the ladder breaks the ratio on purpose. A NAME is paid in cash; equity stays weighted toward the people building the catalog. The points column is also floored at the flat featured-vocalist rate of 3 — being invited never costs you participation.",
-      },
-      {
-        kind: "rule",
-        title: "Cash and points are alternatives, but they're divisible",
-        text: "Take any percentage of the cash fee and the remaining percentage of the points. At the cap that's $1,500, or 5 points, or $750 plus 2.5 points. This is the published form of the \"partial cash plus partial equity\" the four paths have always allowed: wanting more points means taking less cash, in a stated proportion rather than a private negotiation. The split is proportional rather than a dollars-per-point exchange rate on purpose — a rate would let someone convert a capped cash fee back into points at a ratio the ladder deliberately doesn't offer. Audience is the artist's monthly listener count from public streaming data, measured when the agreement is signed and fixed from that point, so nothing is reopened mid-release in either direction.",
-      },
-      {
-        kind: "p",
-        text: "Note the bottom rung: it **is** the existing $300 featured-vocal rate. The ladder isn't a separate deal bolted onto the sheet — it's the same row, extended. And cash stays conditional on the release budget here exactly as everywhere else; a rung says what the role is worth, not what a given release can fund.",
+        kind: "table",
+        headers: ["Ladder rule", "Why"],
+        rows: [
+          [
+            "**Points cap at 5**",
+            "Elsewhere a point costs about $100 ($500 lead producer: 5 points). At that ratio a capped feature would be 15 points, the Primary Artist baseline. A NAME is paid in cash; equity stays with the people building the catalog.",
+          ],
+          [
+            "**Points floor at 3**",
+            "The flat featured-vocalist rate, so being invited never costs you participation.",
+          ],
+          [
+            "**Cash and points are alternatives, but divisible**",
+            "You can't hand them both in full. Take any percentage of the cash fee and the remaining percentage of the points. At the cap: $1,500, or 5 points, or $750 plus 2.5 points. More points means less cash.",
+          ],
+          [
+            "**Proportional, not an exchange rate**",
+            "A dollars-per-point rate would let someone convert a capped cash fee back into points at a ratio the ladder deliberately doesn't offer.",
+          ],
+          [
+            "**Audience is fixed at signing**",
+            "Monthly listeners from public streaming data, measured when the agreement is signed. Nothing reopens mid-release in either direction.",
+          ],
+        ],
       },
       {
         kind: "reveal",
         prompt:
           "You're courting an artist with 180k monthly listeners for a feature. What's the published cash fee, and can you also offer them 3 points to close the deal?",
         answer:
-          "$600 — 180k clears one 100k step past the floor, and the cash cap doesn't come into play until 400k. On points they'd get 3: one point per 100k earns 2, but the floor is the flat featured-vocal rate of 3, and an invited artist is never offered less than a walk-in. You can't hand them both in full — but you CAN split proportionally, say $300 plus 1.5 points. Everything that isn't a path at all still comes with it: featured credit, their whole writer share, approval rights. If the budget can't fund the cash, say so in writing before they choose.",
+          "$600, the 100k–199k rung. Points would be 3 (the floor beats one per 100k). You can't offer both in full, but you CAN split proportionally, say $300 plus 1.5 points. Credit, writer share and approval rights come regardless. If the cash isn't funded, say so in writing before they choose.",
       },
       {
-        kind: "reveal",
+        kind: "scenario",
         prompt:
           "A background vocalist tells you she needs the cash fee, and this release's budget can't fund her role. What's the honest move?",
-        answer:
-          "Tell her what IS funded, in writing, before she picks a path — then walk her through the other three: participation at 0.75%, a partial cash + partial equity mix if the budget allows any of it, or declining this one with no cost to her standing. If none of those work for enough of the team, the release gets reshaped, postponed, or set aside. What we never do is let her find out after she's sung.",
+        options: [
+          {
+            text: "Tell her in writing what IS funded before she picks, then offer the other paths: 0.75% participation, a partial cash and equity mix if the budget allows any, or declining at no cost to her standing",
+            correct: true,
+            feedback:
+              "Right. If none of those work for enough of the team, the release is reshaped, postponed or set aside. She never finds out after she's sung.",
+          },
+          {
+            text: "Record her now and sort out payment once the budget is final",
+            feedback:
+              "No. Funding is disclosed in writing before anyone chooses a path, never after she's sung.",
+          },
+          {
+            text: "Suggest donation as the most committed option",
+            feedback:
+              "No. All four paths are equally valued. Never imply that donating earns standing or the next invitation.",
+          },
+        ],
       },
       {
         kind: "link",
@@ -1467,7 +1454,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "link",
-        label: "Further reading: policy §§11–13 — the four paths, rate sheet, cash availability",
+        label: "Further reading: policy §§11–13, the four paths, rate sheet and cash availability",
         url: "https://publicworship.life/music-policy#four-paths",
       },
     ],
@@ -1482,44 +1469,44 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Participation, donation, and declining don't require cash on hand, so they're available on every release. Only the cash fee depends on what that release's budget actually funds.",
+          "Participation, donation and declining need no cash on hand, so they're available on every release. Only the cash fee depends on what that release's budget funds.",
       },
       {
         prompt: "When does a contributor find out whether their cash fee is funded?",
         options: [
           "After the recording session",
-          "Before they choose a path — in writing, including the release's cash budget and what's allocated to their role",
+          "Before they choose a path, in writing, including the release's cash budget and what's allocated to their role",
           "When the release goes live",
           "Only if the answer is yes",
         ],
         answerIndex: 1,
         explanation:
-          "Release-budget transparency is the point: total cash budget, the amount allocated to each role, and whether the going rate is fully, partly, or not funded — all shared before anyone signs on.",
+          "The total cash budget, each role's allocation, and whether the going rate is fully, partly or not funded are all shared before anyone signs on.",
       },
       {
         prompt: "Is choosing the donation path more spiritual than taking the cash fee?",
         options: [
-          "Yes — donating is the most committed option",
-          "No — all four paths are equally valued, and we never imply that donating or taking equity earns better standing or future invitations",
+          "Yes, donating is the most committed option",
+          "No. All four paths are equally valued, and we never imply that donating or taking equity earns better standing or future invitations",
           "Yes, but only for volunteers",
           "It depends on the release",
         ],
         answerIndex: 1,
         explanation:
-          "The policy says this explicitly and so do we: we don't track who chose which path as a measure of commitment. Cash is what we offer when we have it; equity is what we can always offer; donation is a gift, never an expectation.",
+          "We don't track who chose which path as a measure of commitment. Cash is what we offer when we have it; equity is what we can always offer; donation is a gift, never an expectation.",
       },
       {
         prompt: "A lead producer takes participation instead of cash. What does the rate sheet give them?",
-        options: ["$500", "5 points — 5% of net master income", "15 points", "2%"],
+        options: ["$500", "5 points, or 5% of net master income", "15 points", "2%"],
         answerIndex: 1,
         explanation:
-          "Lead producer (full song) is $500 cash or 5% master income participation, per song. Each role on the sheet publishes both numbers so the choice is between two known quantities.",
+          "Lead producer (full song) is $500 cash or 5% master income participation, per song. Every role on the sheet publishes both numbers, so the choice is between two known quantities.",
       },
       {
         prompt: "A producer works on three songs for one release cycle. How are they paid?",
         options: [
           "One fee for the session",
-          "Per song — three songs means three fees (or three point allocations)",
+          "Per song: three songs means three fees (or three point allocations)",
           "A flat monthly rate",
           "Only for the song that performs best",
         ],
@@ -1534,12 +1521,12 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "music-what-your-role-receives",
     title: "What your role receives",
-    subtitle: "Primary artist, featured artist, contributor — and the 50-point cap",
+    subtitle: "Primary artist, featured artist, contributor, and the 50-point cap",
     minutes: 4,
     blocks: [
       {
         kind: "p",
-        text: "The /collaborate walkthrough sorts people by what they actually did on a release. Underneath it are three role families, each with its own published picture.",
+        text: "The /collaborate walkthrough sorts people by what they did. It rests on three role families.",
       },
       {
         kind: "table",
@@ -1547,50 +1534,45 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         rows: [
           [
             "**Primary Artist**",
-            "The named artist we're building with over time — sound, writing, worship identity, catalog",
+            "The named artist we're building with over time: sound, writing, worship identity, catalog",
             "A **15-point baseline** (15% of net master income) per release, automatic under the Primary Artist Agreement; full writer share on anything written; the writer side of the publisher pool; cash or honorarium where the budget allows; ongoing collaboration",
           ],
           [
             "**Featured Artist**",
-            "Prominently featured on one specific release — *Public Worship feat. [you]* — with no long-term commitment",
-            "Featured credit on the release and every DSP; writer share on anything written; one of the four paths for the feature itself, on the featured-artist ladder — per 100k monthly listeners, $300 cash or 1 master point, capping at $1,500 and 5 points (and never below the flat 3)",
+            "Prominently featured on one release (*Public Worship feat. [you]*) with no long-term commitment",
+            "Featured credit on the release and every DSP; writer share on anything written; a four-paths choice on the featured-artist ladder ($300 cash or 1 point per 100k monthly listeners, capped at $1,500 and 5 points, never below 3)",
           ],
           [
             "**Contributor**",
             "Producers, musicians, engineers, arrangers, vocalists, creative directors",
-            "Credit on the release; one of the four paths at the published rate for that role; writer share only if they also contributed lyrics, melody, or composition",
+            "Credit on the release; one of the four paths at the published rate for that role; writer share only if they also contributed lyrics, melody or composition",
           ],
         ],
       },
       {
         kind: "rule",
         title: "Roles compound; credit isn't a path",
-        text: "A primary artist who also produces gets the 15-point baseline PLUS the producer's path for producing. Every role is compensated separately at its own published rate, so someone who wrote, produced, and played is paid three times over. Credit, though, is never one of the four paths — you're credited for what you did whichever path you take. Credit isn't traded; it's owed.",
+        text: "A primary artist who also produces gets the 15-point baseline PLUS the producer's path. Each role is paid at its own rate, so someone who wrote, produced and played is paid three times over. Credit is never one of the four paths: it is owed for what you did, whichever path you take.",
       },
-      { kind: "heading", text: "Why the baseline is 15 and not 50" },
       {
         kind: "p",
-        text: "The 15-point baseline is deliberate. We expect most Public Worship releases to carry **more than one** primary artist co-leading a song. A 50-point baseline for a single artist creates a zero-sum dynamic where artists hoard songs and treat them as solo property. We'd rather build a catalog where collaboration is the norm and several artists meaningfully share in a song's income. We are not artists trying to keep everything; we're artists who need other artists in order to grow.",
+        text: "**Why the baseline is 15, not 50.** We expect most releases to have **more than one** primary artist co-leading a song. A 50-point baseline for one artist would make songs zero-sum, hoarded as solo property. We want a catalog where collaboration is the norm and several artists share in a song's income.",
       },
       {
         kind: "rule",
         title: "Contributor points are capped at 50",
-        text: "Public Worship may allocate up to 50 points of net master income across all artists and contributors on a release, retaining at least 50 for mission reinvestment. If the proposed allocations would blow past the cap, it's resolved BEFORE the agreement is signed, never after: (1) surface the math in front of everyone at once — never in a private conversation with one person; (2) re-offer the four paths, since the same contribution can be taken as cash, a mix, donation, or declined; (3) reduce non-baseline points pro-rata, preserving the 15-point primary baseline; (4) if it still doesn't reconcile, reshape the team, postpone, or set the song aside.",
+        text: "Public Worship may allocate up to 50 points of net master income across all artists and contributors on a release, keeping at least 50 for mission reinvestment. Overages are resolved BEFORE signing, never after, in this order. (1) Show everyone the math at once, never privately with one person. (2) Re-offer the four paths. (3) Reduce non-baseline points pro-rata, preserving the 15-point primary baseline. (4) If it still doesn't fit, reshape the team, postpone or set the song aside.",
       },
       {
         kind: "p",
-        text: "**If you leave later:** existing master income participation on existing releases continues — earned participation is earned. The catalog stays with Public Worship; future releases are negotiated fresh. And the relationship is non-exclusive the whole way through: your own music, your own deals, your own catalog, your own career stay yours.",
-      },
-      {
-        kind: "p",
-        text: "**Nothing releases without the paperwork.** Depending on the song that means a split sheet, a master release agreement, producer / featured / primary artist / contributor agreements, a publishing or admin agreement, a master participation agreement, and the per-release budget and recoupment list. No release goes out with unclear ownership, unclear credits, or unresolved expectations.",
+        text: "**If you leave,** your participation on existing releases continues. The catalog stays with Public Worship; future releases are negotiated fresh. The relationship is non-exclusive: your own music, deals, catalog and career stay yours. **Nothing releases without the paperwork.** Depending on the song, that means a split sheet, a master release agreement and role agreements (producer, featured, primary artist, contributor). It also means a publishing or admin agreement, a master participation agreement, and the per-release budget and recoupment list.",
       },
       {
         kind: "reveal",
         prompt:
           "You're the named primary artist on a release and you also produced it. Do you get the 15-point baseline, or the lead producer's 5 points?",
         answer:
-          "Both. The 15-point baseline comes automatically with the Primary Artist Agreement, and producing is a separate role compensated under the four paths — $500 cash, 5 points, donation, or decline. Roles compound. All allocations across everyone still have to fit inside the 50-point contributor cap, which is reconciled before anything is signed.",
+          "Both. The baseline comes with the Primary Artist Agreement; producing is a separate role paid under the four paths ($500 cash, 5 points, donation or decline). Everything must still fit the 50-point cap, reconciled before signing.",
       },
       {
         kind: "link",
@@ -1608,7 +1590,7 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What does a named Primary Artist receive automatically on a release?",
         options: [
           "50% of net master income",
-          "A 15-point baseline — 15% of net master income — under the Primary Artist Agreement",
+          "A 15-point baseline (15% of net master income) under the Primary Artist Agreement",
           "Ownership of the master",
           "Nothing automatic; everything is negotiated per song",
         ],
@@ -1620,19 +1602,19 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "Why is the Primary Artist baseline 15 points rather than 50?",
         options: [
           "Because the ministry can't afford more",
-          "Because most releases are expected to have more than one primary artist co-leading — a 50-point baseline would make artists treat songs as solo property",
+          "Because most releases are expected to have more than one primary artist co-leading, and a 50-point baseline would make artists treat songs as solo property",
           "Because primary artists also get cash",
           "It's an industry-standard number",
         ],
         answerIndex: 1,
         explanation:
-          "It's a deliberate anti-hoarding choice: the catalog is meant to be collaborative, with several artists meaningfully sharing in a song's income rather than one artist holding a song alone.",
+          "It's a deliberate anti-hoarding choice. The catalog is meant to be collaborative, with several artists sharing in a song's income instead of one artist holding a song alone.",
       },
       {
         prompt: "Contributor allocations on a release would total 58 points. What happens?",
         options: [
           "The extra 8 points come out of the writers' share",
-          "It's reconciled before signing — surface the math to everyone, re-offer the four paths, then reduce non-baseline points pro-rata (the 15-point baseline is preserved), and reshape or pause if it still doesn't fit",
+          "It's reconciled before signing: surface the math to everyone, re-offer the four paths, reduce non-baseline points pro-rata (preserving the 15-point baseline), and reshape or pause if it still doesn't fit",
           "Whoever signed first keeps their points",
           "Public Worship absorbs the overage silently",
         ],
@@ -1643,20 +1625,20 @@ export const MUSIC_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         prompt: "Public Worship invites an artist with 660k monthly listeners to feature. What can they take?",
         options: [
-          "$300 or 3 points — the featured-vocalist rate covers every feature",
-          "$1,500 or 5 points — both at their cap — or any proportional split of the two",
+          "$300 or 3 points, since the featured-vocalist rate covers every feature",
+          "$1,500 or 5 points (both at their cap), or any proportional split of the two",
           "$1,980 and 6.6 points, straight from the formula",
           "$1,500 plus 5 points, since the ladder pays both",
         ],
         answerIndex: 1,
         explanation:
-          "660k is past both caps: cash stops at $1,500 (400k) and points at 5. They're alternatives, not a package — but divisible, so $750 plus 2.5 points is equally available. Points cap far below the cash-to-points ratio elsewhere on the sheet because a one-song feature must never reach the 15-point Primary Artist baseline.",
+          "660k is past both caps: cash stops at $1,500 (400k) and points at 5. They're alternatives, not a package, but divisible, so $750 plus 2.5 points is equally available. Points cap far below the sheet's usual cash-to-points ratio so a one-song feature never reaches the 15-point Primary Artist baseline.",
       },
       {
         prompt: "A contributor chooses the donation path. Do they still get credited?",
         options: [
-          "No — credit goes with the cash or equity paths",
-          "Yes — credit isn't one of the four paths; you're credited for what you did regardless of which path you take",
+          "No, credit goes with the cash or equity paths",
+          "Yes. Credit isn't one of the four paths; you're credited for what you did regardless of which path you take",
           "Only if they ask for it in writing",
           "Only on the streaming platforms, not the release",
         ],
@@ -1712,7 +1694,7 @@ export const MUSIC_COURSES: Course[] = [
     level: "intermediate",
     audience: "role",
     description:
-      "What to submit before you lead a song — checked against the " +
+      "What to submit before you lead a song: the song checked against the " +
       "Selection Philosophy, a reference recording, your own flavor, " +
       "accompaniment, harmonies, and a written arrangement. Set-building " +
       "and rehearsal craft are coming to this course.",
@@ -1727,8 +1709,8 @@ export const MUSIC_COURSES: Course[] = [
     audience: "role",
     description:
       "What producing actually means (it's broader than beat-making), what " +
-      "it takes to build an artist brand — including the standard Public " +
-      "Worship-affiliated artists are held to — the honest economics of " +
+      "it takes to build an artist brand (including the standard Public " +
+      "Worship-affiliated artists are held to), the honest economics of " +
       "releasing a song, and how to run an invite so a collaborator sees the " +
       "published terms before they answer.",
     icon: "headphones",
@@ -1750,7 +1732,7 @@ export const MUSIC_COURSES: Course[] = [
       "with, so the room knows it too: greenlight and the demo, the three " +
       "rights lanes (writer share, publishing, master), the four " +
       "equally-honored paths and the published rate sheet, and what each " +
-      "role receives — including the 15-point Primary Artist baseline and " +
+      "role receives, including the 15-point Primary Artist baseline and " +
       "the 50-point cap.",
     icon: "percent",
     moduleSlugs: [

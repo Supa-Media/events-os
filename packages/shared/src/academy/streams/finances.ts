@@ -880,43 +880,43 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "A chapter runs on **backers**: people who give every month, not once. $50 a month is the floor for that ongoing commitment. Above-and-beyond giving, donor stewardship and sponsorships live on the Giving page, and belong to the Development stream.",
+        text: "A chapter runs on **backers**: people who give every month, not once. $50 a month is the floor. Above-and-beyond giving, donor stewardship and sponsorships live on the Giving page and belong to the Development stream.",
       },
       {
         kind: "rule",
         title: "Everything is keyed on backer COUNT",
-        text: "Tiers and the operating formula key off headcount, never dollars. A chapter scales by growing its base of backers, not by squeezing more out of the ones it has. That is deliberate: people who keep giving matter more than any single big gift.",
+        text: "Tiers and the operating formula key off headcount, never dollars. A chapter grows by adding backers, not by asking current ones for more. People who keep giving matter more than any single big gift.",
       },
       {
         kind: "rule",
         title: "Every dollar you spend was someone's gift",
-        text: "That is true no matter which tool tracks the charge or which process is in place this year. The posture underneath doesn't change. If you spent it on the mission, prove it — quickly, not eventually.",
+        text: "That holds whatever tool tracks the charge this year. If you spent it on the mission, prove it quickly.",
       },
       {
         kind: "rule",
         title: "The card is mission-only",
-        text: "No exceptions, not even for a good deal. If a personal item lands on it by accident, flag it right away rather than leaving it for someone else to find. And if you would rather just cover something yourself, route it instead: donate, then pay with the card. That keeps the expense on the books instead of an untrackable personal favour, and it may be deductible.",
+        text: "No exceptions, not even for a good deal. If a personal item lands on it by accident, flag it right away. If you'd rather cover something yourself, donate the money, then pay with the card. That keeps the expense on the books, and the donation may be deductible.",
       },
       {
         kind: "reveal",
         prompt:
           "A single donor offers $5,000 in one gift. Does your chapter's tier move?",
         answer:
-          "No. Tiers key on backer count, so a one-off gift — however welcome — doesn't move it. That gift belongs on the Giving page. A tier moves when the number of people committed monthly moves.",
+          "No. Tiers key on backer count, so a one-off gift doesn't move it. That gift belongs on the Giving page. A tier moves when the number of monthly backers moves.",
       },
     ],
     quiz: [
       {
-        prompt: "What actually grows a chapter's operating budget, per the model?",
+        prompt: "What grows a chapter's operating budget, per the model?",
         options: [
           "Asking current backers to give more each month",
-          "Adding more backers — headcount, not total dollars, is the unit the system tracks",
+          "Adding more backers. Headcount, not total dollars, is the unit the system tracks",
           "Running more events",
           "Cutting operating costs",
         ],
         answerIndex: 1,
         explanation:
-          "Tiers and the operating formula key off backer COUNT. A chapter scales by growing its base of backers, not by squeezing more out of the ones it has.",
+          "Tiers and the operating formula key off backer COUNT. A chapter grows by adding backers, not by asking current ones for more.",
       },
       {
         prompt: "What is the $50/month backer floor?",
@@ -928,44 +928,44 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "A backer gives every month, not once — $50/month is the floor for that ongoing commitment (above-and-beyond giving, donor stewardship, and sponsorships live on the Giving page — see the Development stream).",
+          "A backer gives every month, not once, and $50/month is the floor. Above-and-beyond giving, donor stewardship and sponsorships live on the Giving page (see the Development stream).",
       },
       {
         prompt: "Why track backers by count instead of total dollars raised?",
         options: [
           "Dollars are hard to add up",
-          "Headcount is the unit the tier table and operating formula are built on — a stable base of people, not a lump sum, sustains a chapter",
+          "Headcount is the unit the tier table and operating formula are built on. A stable base of people, not a lump sum, sustains a chapter",
           "It's a legal requirement",
           "Donations aren't recorded individually",
         ],
         answerIndex: 1,
         explanation:
-          "Every constant in the model — tiers, the operating formula — is keyed on backer headcount. That's deliberate: people who keep giving matter more than any single big gift.",
+          "Tiers and the operating formula are keyed on backer headcount on purpose: people who keep giving matter more than any single big gift.",
       },
       {
         prompt: "You see a discounted personal item while buying event supplies. What's the rule?",
         options: [
-          "Buy it on the Public Worship card — it was a good deal",
+          "Buy it on the Public Worship card, since it was a good deal",
           "Never put personal purchases on the card; flag it immediately if one lands there by accident",
           "Only buy it if it's under $20",
           "Ask your Treasurer first, then buy it either way",
         ],
         answerIndex: 1,
         explanation:
-          "The card is mission-only, no exceptions for good deals. An accidental personal charge gets flagged right away, not left for someone else to find later.",
+          "The card is mission-only, with no exceptions for good deals. Flag an accidental personal charge right away.",
       },
       {
         prompt:
           "A teammate wants to personally cover a $40 team meal instead of dealing with reimbursement. What's the steward's move?",
         options: [
-          "Let them quietly cover it — it saves everyone the reimbursement paperwork",
+          "Let them quietly cover it to save the reimbursement paperwork",
           "Tell them personal generosity toward the team isn't allowed at all",
           "Have them donate the $40 to Public Worship, then let Public Worship pay for the meal on the Public Worship card",
           "Have them put it on their own card and expense it later as a personal gift",
         ],
         answerIndex: 2,
         explanation:
-          "Same generosity, routed correctly: a donation plus the Public Worship card keeps the expense on the books instead of turning into one more untrackable personal favor — and it may be deductible depending on applicable tax rules and the nature of the contribution.",
+          "A donation plus the Public Worship card keeps the expense on the books instead of becoming an untrackable personal favor. The donation may also be deductible, depending on applicable tax rules and the nature of the contribution.",
       },
     ],
   },
@@ -999,13 +999,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Three questions, in order. Which budget does this come out of? Is there room in it? Then, and only then, which track are you on? The first two are facts you can look up in the app. The third is the judgment those facts feed.",
+        text: "Ask three questions, in order. Which budget does this come out of? Is there room in it? Then, which track are you on? You can look up the first two in the app. The third is your judgment, based on them.",
       },
       {
         kind: "table",
         headers: ["Track", "What it means"],
         rows: [
-          ["Green", "An approved budget, with room in it. Spend — then tell the budget's owner."],
+          ["Green", "An approved budget, with room in it. Spend, then tell the budget's owner."],
           ["Yellow", "No budget, or no room left. Get a yes BEFORE you spend."],
           ["Red", "Spending the org shouldn't be making at all. No budget makes it green."],
         ],
@@ -1013,24 +1013,24 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Yellow means before, not after",
-        text: "Asking afterwards isn't asking. It hands someone a decision that has already been made. That forces them either to rubber-stamp it or to make you pay for it.",
+        text: "Asking afterwards isn't asking. The decision is already made, so the approver can only rubber-stamp it or make you pay for it.",
       },
       {
         kind: "rule",
         title: "Red is a kind of spending, not a size",
-        text: "A large purchase with an approved budget is green. An unbudgeted one is yellow and needs a yes. Red is spending the org shouldn't make at all — which is why no budget and no approval turns it green.",
+        text: "A large purchase with an approved budget is green. An unbudgeted one is yellow and needs a yes. Red is spending the org shouldn't make at all, so no budget or approval makes it green.",
       },
       {
         kind: "rule",
         title: "Green still needs a heads-up",
-        text: "Green doesn't need permission; that is what an approved budget means. It does need a word to the budget's owner. They are the only person tracking everything else still to come out of that budget, and a purchase that arrives silently is one they can't plan around.",
+        text: "Green doesn't need permission; that is what an approved budget means. It does need a word to the budget's owner. They track everything else still to come out of that budget and can't plan around a purchase they don't know about.",
       },
       {
         kind: "reveal",
         prompt:
           "You put a red purchase on the card anyway, and you kept the receipt. What happens to it?",
         answer:
-          "It comes back to you as a personal charge, recorded under your name and repaid out of your own pocket. The receipt doesn't help. Proving you made the purchase was never the question.",
+          "It comes back to you as a personal charge, recorded under your name and repaid from your own pocket. The receipt doesn't help, because proving you made the purchase was never the question.",
       },
     ],
     quiz: [
@@ -1044,7 +1044,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Budget, room, track — in that order. The first two are facts you can look up in the app; the third is the judgment those facts feed.",
+          "Budget, room, track, in that order. You can look up the first two in the app; the track is your judgment, based on them.",
       },
       {
         prompt: "A purchase is yellow. When do you get approval?",
@@ -1056,7 +1056,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "Before — that's the whole of the yellow track. Asking afterwards isn't asking; it hands someone a decision that's already been made and forces them to either rubber-stamp it or make you pay for it.",
+          "Before. Asking afterwards isn't asking: the decision is already made, so the approver can only rubber-stamp it or make you pay for it.",
       },
       {
         prompt: "Which of these makes a purchase RED?",
@@ -1068,32 +1068,32 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "Red is about the kind of spending, not the size or the paperwork. A large purchase with an approved budget is green; an unbudgeted one is yellow and needs a yes. Red is spending the org shouldn't be making at all — which is why no budget and no approval turns it green.",
+          "Red is about the kind of spending, not the size or the paperwork. A large purchase with an approved budget is green; an unbudgeted one is yellow and needs a yes. Red is spending the org shouldn't make at all, so no budget or approval makes it green.",
       },
       {
-        prompt: "What actually happens to a charge judged red?",
+        prompt: "What happens to a charge judged red?",
         options: [
           "It's absorbed into the chapter's general budget",
-          "It becomes a personal charge — money you owe Public Worship and repay yourself",
+          "It becomes a personal charge: money you owe Public Worship and repay yourself",
           "Nothing, as long as you attached a receipt",
           "The budget owner is asked to approve it retroactively",
         ],
         answerIndex: 1,
         explanation:
-          "It's sent back to you as a personal charge, recorded under your name and repaid out of your own pocket. A receipt doesn't help — proving you made the purchase was never the question.",
+          "It comes back to you as a personal charge, recorded under your name and repaid from your own pocket. A receipt doesn't help, because proving you made the purchase was never the question.",
       },
       {
         prompt:
           "You're about to buy something clearly covered by an event's approved budget, with plenty of room. What do you owe the budget's owner?",
         options: [
           "A formal approval request before buying",
-          "Nothing at all — it's green",
+          "Nothing at all, since it's green",
           "A quick heads-up that it's landing on their budget",
           "A written justification at the monthly close",
         ],
         answerIndex: 2,
         explanation:
-          "Green doesn't need permission — that's what having an approved budget means. It does need a heads-up: the owner is the only person tracking everything else still to come out of that budget, and a purchase that arrives silently is one they can't plan around.",
+          "Green doesn't need permission; that's what an approved budget means. It does need a heads-up, because the owner tracks everything else still to come out of that budget.",
       },
     ],
   },
@@ -1107,29 +1107,29 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "A charge whose receipt is still missing after 7 days locks the card automatically. The grace window is a week — not a day, and not a month. The unlock is self-service and instant: uploading the missing receipt clears the lock the moment it lands, at any stage.",
+        text: "If a charge's receipt is still missing after 7 days, the card locks automatically. The grace window is a week, not a day or a month. Unlocking is self-service and instant: upload the missing receipt and the lock clears, at any stage.",
       },
       {
         kind: "rule",
         title: "A receipt is required no matter the amount",
-        text: "A receipt, or a clear photo of one, is required for every charge and every method. Skip it and you risk being personally responsible: a card charge can be flagged personal, and a reimbursement claim can simply be denied.",
+        text: "Every charge, by every method, needs a receipt or a clear photo of one. Without it you risk being personally responsible: a card charge can be flagged personal, and a reimbursement claim can be denied.",
       },
       {
         kind: "rule",
         title: "Emailing captures; tapping attaches",
-        text: "Emailing a receipt CAPTURES it — the half worth doing at the counter, often before the charge has posted. It doesn't decide which charge the receipt belongs to. You do that in one tap at **/code**: your own page for receipts, coding and flagging your own charges. No finance seat is needed, and the link works even if you have never opened the rest of the app.",
+        text: "Emailing a receipt CAPTURES it, which you can do at the counter, often before the charge has posted. It doesn't say which charge the receipt belongs to. You attach it with one tap at **/code**, your own page for receipts, coding and flagging your charges. It needs no finance seat and works even if you've never opened the rest of the app.",
       },
       {
         kind: "rule",
         title: "The lock is a mechanism, not the rule",
-        text: "It works by Public Worship being asked to approve each purchase as it happens, which only cards we issue can do. On an older linked card it simply never fires. Every other consequence is unchanged — including the charge becoming money you owe back once it has gone long enough without an account of it.",
+        text: "The lock works because Public Worship is asked to approve each purchase as it happens, which only cards we issue allow. On an older linked card it never fires. Every other consequence still applies, including the charge becoming money you owe once it goes long enough unaccounted for.",
       },
       {
         kind: "reveal",
         prompt:
           "You emailed the receipt from the checkout line on day one. On day eight your card locks. Why?",
         answer:
-          "Because capturing isn't attaching. The receipt has been sitting in the library since day one. But nothing had confirmed which charge it belonged to, so the charge still counted as missing its receipt and the clock kept running. One tap at /code would have stopped it.",
+          "Capturing isn't attaching. The receipt sat in the library from day one, but nothing confirmed which charge it belonged to. The charge still counted as missing its receipt, so the clock kept running. One tap at /code would have stopped it.",
       },
     ],
     quiz: [
@@ -1138,58 +1138,58 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         options: ["24 hours", "7 days", "30 days", "There's no deadline"],
         answerIndex: 1,
         explanation:
-          "A charge whose receipt is still missing after 7 days locks the card automatically — the grace window is a week, not a day and not a month.",
+          "If a charge's receipt is still missing after 7 days, the card locks automatically.",
       },
       {
         prompt: "Your card auto-locked for a missing receipt from last week. How do you unlock it?",
         options: [
           "Call the Financial Manager",
-          "Upload the receipt — the lock lifts automatically, no review needed",
+          "Upload the receipt; the lock lifts automatically, no review needed",
           "Wait for the next reimbursement cycle",
           "You can't; a new card is issued",
         ],
         answerIndex: 1,
         explanation:
-          "The unlock is self-service and instant: uploading the missing receipt clears the auto-lock the moment it lands, at any stage.",
+          "Unlocking is self-service and instant: upload the missing receipt and the auto-lock clears, at any stage.",
       },
       {
         prompt:
           "You emailed a receipt in on Monday. On Friday the charge still reads as missing its receipt. What's happening?",
         options: [
-          "A bug — an emailed receipt attaches itself to the matching charge",
+          "A bug. An emailed receipt attaches itself to the matching charge",
           "It's in the receipts library waiting on you: the app offers it as a match when you open that charge at /code, and one tap attaches it",
           "Emailed receipts take about a week to process",
           "That address only works for reimbursements",
         ],
         answerIndex: 1,
         explanation:
-          "Emailing CAPTURES the receipt — the half worth doing at the counter, often before the charge has even posted. It doesn't decide which charge the receipt belongs to; you do, in one tap, at /code (your own page: receipts, coding, and flagging your own charges — no finance seat needed, and the link works even if you have never opened the rest of the app). Until that tap, the receipt is still missing and the 7-day clock is still running.",
+          "Emailing CAPTURES the receipt but doesn't say which charge it belongs to. You attach it with one tap at /code, which needs no finance seat. Until that tap, the receipt is still missing and the 7-day clock keeps running.",
       },
       {
         prompt:
-          "A $6 supply run and a $940 reimbursement claim both show up with no receipt. Which one actually needs a receipt to keep you from being personally on the hook?",
+          "A $6 supply run and a $940 reimbursement claim both show up with no receipt. Which one needs a receipt to keep you from being personally on the hook?",
         options: [
-          "Only the $940 one — small charges are exempt",
-          "Neither — receipts are only for reimbursements, not card charges",
-          "Both — the receipt rule doesn't scale with the dollar amount or the method",
-          "Only the card charge — reimbursements are covered automatically once approved",
+          "Only the $940 one; small charges are exempt",
+          "Neither. Receipts are only for reimbursements, not card charges",
+          "Both. The receipt rule doesn't scale with the dollar amount or the method",
+          "Only the card charge; reimbursements are covered automatically once approved",
         ],
         answerIndex: 2,
         explanation:
-          "The rule is absolute: a receipt (or a clear photo of one) is required no matter the amount or the method. Skip it on either one and you risk being personally responsible — a card charge can be flagged personal, a reimbursement claim can simply be denied.",
+          "A receipt (or a clear photo of one) is required whatever the amount or method. Without one, a card charge can be flagged personal and a reimbursement claim can be denied.",
       },
       {
         prompt:
           "You carry one of the older cards from our previous bank, which can't be auto-locked. What does that change about the 7-day rule?",
         options: [
-          "Nothing about what you owe — the reminders, the Treasurer's flag, and eventually being billed for unaccounted spending all still apply; only the lock itself can't fire",
+          "Nothing about what you owe. The reminders, the Treasurer's flag, and eventually being billed for unaccounted spending all still apply; only the lock itself can't fire",
           "The receipt deadline no longer applies to you",
           "You get 30 days instead of 7",
           "You have to hand the card back",
         ],
         answerIndex: 0,
         explanation:
-          "The lock is one enforcement mechanism, not the rule. It works by Public Worship being asked to approve each purchase as it happens, which only cards Public Worship issues do — so on an older linked card it simply doesn't fire. Every other consequence is unchanged, including the charge becoming money you owe back once the spending has gone long enough without an account of it.",
+          "The lock is one enforcement mechanism, not the rule. It needs Public Worship to approve each purchase as it happens, which only cards Public Worship issues allow, so it never fires on an older linked card. Every other consequence still applies, including owing the money once the charge goes long enough unaccounted for.",
       },
     ],
   },
@@ -1211,34 +1211,34 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "finance-receipt-exceptions",
     title: "When there's genuinely no receipt",
-    subtitle: "Document it anyway — with your name on it",
+    subtitle: "Document it anyway, with your name on it",
     minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "Sometimes there is genuinely no receipt — a cash payment at a stall, a vendor who never issued one. An exception is the documented substitute, not a shrug. Marking the charge Closed with nothing attached is exactly what the app refuses: a published ledger can't tell that row from a documented one.",
+        text: "Sometimes no receipt exists: a cash payment at a stall, or a vendor who never issued one. An exception is the documented substitute. The app refuses to mark a charge Closed with nothing attached, because a published ledger can't tell that row from a documented one.",
       },
       {
         kind: "rule",
         title: "Evidence is not a receipt, and is labelled as such",
-        text: "Photos prove the flowers existed. They don't prove what was paid. They attach to the exception as proof of purchase and are labelled that way. Pretending evidence is a receipt would make the published ledger easier to produce and less worth believing.",
+        text: "Photos prove the flowers existed, not what was paid. They attach to the exception as proof of purchase and are labelled that way. Passing evidence off as a receipt would make the published ledger less believable.",
       },
       {
         kind: "rule",
         title: "Asking to be let off isn't being let off",
-        text: "A PENDING exception stops nothing — not the reminder timeline, not the card auto-lock. Only an approved one stands in for a receipt. It does let you submit the charge's coding, because filing the attestation is the part that's yours. The charge still isn't closed until someone approves it.",
+        text: "A PENDING exception stops neither the reminder timeline nor the card auto-lock. Only an approved one stands in for a receipt. Filing does let you submit the charge's coding, since the attestation is your part. The charge still can't close until someone approves it.",
       },
       {
         kind: "rule",
         title: "You cannot approve your own exception",
-        text: "Separation of duties again — the same rule that governs reimbursements, budgets and campaigns. Without it everyone would simply except their own charges and the receipt policy would mean nothing. Under $75 a manager may approve their own: a two-name ceremony on a parking meter buys nothing. And a receipt always outranks an attestation. Attach one and the app supersedes the exception by itself.",
+        text: "This is separation of duties, the same rule as for reimbursements, budgets and campaigns. Otherwise everyone could except their own charges. Under $75 a manager may approve their own, since a second name on a parking meter adds nothing. A receipt always outranks an attestation: attach one and the app supersedes the exception.",
       },
       {
         kind: "reveal",
         prompt:
           "You file an exception on day five with photos attached. On day seven your card locks anyway. Is that a bug?",
         answer:
-          "No. A pending exception is a request, not a decision, so the clock keeps running until someone approves it. Filing it was still the right move: it let you submit your coding, and it put a named attestation on the record instead of a blank.",
+          "No. A pending exception is a request, so the clock runs until someone approves it. Filing was still right: it let you submit your coding and put a named attestation on the record instead of a blank.",
       },
     ],
     quiz: [
@@ -1247,63 +1247,63 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "You tipped a sound engineer $40 in cash. No receipt exists and never will. What's the right move?",
         options: [
           "Mark the charge Closed and move on",
-          "File a receipt exception — pick the reason, say what it was for, and let a manager approve it",
+          "File a receipt exception: pick the reason, say what it was for, and let a manager approve it",
           "Nothing; small cash amounts are exempt",
           "Ask the venue to write you a receipt for it later",
         ],
         answerIndex: 1,
         explanation:
-          "An exception is the documented substitute for a receipt, not a shrug. Marking it Closed with nothing attached is exactly what the app refuses — a published ledger can't tell that row from a documented one.",
+          "An exception is the documented substitute for a receipt. The app refuses to mark it Closed with nothing attached, because a published ledger can't tell that row from a documented one.",
       },
       {
         prompt:
           "You bought flowers for an event and never got a receipt, but you have photos of them at the service. What do the photos count as?",
         options: [
-          "A receipt — attach them and the charge is documented",
-          "Evidence on the exception — proof of the purchase, but not a receipt",
+          "A receipt; attach them and the charge is documented",
+          "Evidence on the exception: proof of the purchase, but not a receipt",
           "Nothing; only paper receipts count",
           "A reimbursement claim",
         ],
         answerIndex: 1,
         explanation:
-          "Photos prove the flowers existed; they don't prove what was paid. They attach to the exception as proof of purchase and are labelled that way. Pretending evidence is a receipt would make the published ledger easier to produce and less worth believing.",
+          "Photos prove the flowers existed, not what was paid. They attach to the exception as proof of purchase and are labelled that way.",
       },
       {
         prompt: "You filed an exception this morning. Is the charge documented?",
         options: [
-          "Yes — filing is what counts",
+          "Yes, filing is what counts",
           "Not until a Finance manager approves it; until then the reminders and the 7-day lock still apply",
           "Yes, if you attached a photo",
           "Only if it's under $75",
         ],
         answerIndex: 1,
         explanation:
-          "Asking to be let off isn't being let off. A pending exception stops nothing — not the reminder timeline, not the card auto-lock. Only an approved one stands in for a receipt. It does let you submit the charge's coding, because filing the attestation is the part that's yours; the charge still isn't closed until someone approves it.",
+          "A pending exception stops neither the reminder timeline nor the card auto-lock. Only an approved one stands in for a receipt. Filing does let you submit the charge's coding, but the charge can't close until someone approves the exception.",
       },
       {
         prompt:
           "You're a Finance manager and you filed a $200 exception on your own charge. Can you approve it?",
         options: [
-          "Yes — you have the permission",
-          "No — above $75 the approver has to be someone other than the person who filed it",
+          "Yes, you have the permission",
+          "No. Above $75 the approver has to be someone other than the person who filed it",
           "Yes, if you attach evidence",
           "Only after 7 days",
         ],
         answerIndex: 1,
         explanation:
-          "Separation of duties, the same rule that governs reimbursements, budgets, and campaigns. Without it everyone would simply except their own charges and the receipt policy would mean nothing. Under $75 a manager can approve their own — a two-name ceremony on a parking meter buys nothing.",
+          "Separation of duties, the same rule as for reimbursements, budgets and campaigns. Under $75 a manager can approve their own, since a second name on a parking meter adds nothing.",
       },
       {
         prompt: "A receipt turns up weeks after an exception was already approved. Now what?",
         options: [
-          "Nothing — the exception already settled it",
+          "Nothing; the exception already settled it",
           "Attach the receipt; it takes over and the exception retires itself",
           "Withdraw the exception first, then attach the receipt",
           "Ask a manager to reverse the approval",
         ],
         answerIndex: 1,
         explanation:
-          "A receipt always outranks an attestation. Attaching it is enough — the app supersedes the exception on its own, so the row stops reading \"documented exception\" the moment it has the real document.",
+          "A receipt always outranks an attestation. Attach it and the app supersedes the exception, so the row stops reading \"documented exception\".",
       },
     ],
   },
@@ -1332,29 +1332,29 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "A coding is the reason for a charge, written by the person who made it. \"Bus to NY\" is what the bank already told us. \"Travel to NY to film the Eden event\" is a reason. Travel adds a route — city level is enough — because where the money went is part of what the record has to say.",
+        text: "A coding is the reason for a charge, written by the person who made it. \"Bus to NY\" is what the bank already told us. \"Travel to NY to film the Eden event\" is a reason. Travel also needs a route (city level is enough), because where the money went is part of the record.",
       },
       {
         kind: "rule",
         title: "Purpose and proof are one record",
-        text: "What the money was for and how it can be proved travel together, so a coding won't submit on a charge with neither a receipt nor an exception. The exception lives in the same sheet, and FILING one is enough to submit. Approving it is somebody else's work, and waiting on them would strand the charge in your queue. It does still have to be approved before the charge can close.",
+        text: "A coding won't submit on a charge with neither a receipt nor an exception. The exception lives in the same sheet, and FILING one is enough to submit, so you aren't stuck waiting on the approver. It still has to be approved before the charge can close.",
       },
       {
         kind: "rule",
         title: "Names never publish",
-        text: "A meal asks who was there — every name, up to 15 people; above that a headcount and an identifiable group. None of those names reach the public ledger. Volunteers, community members and guests never consented to a public financial record, and some are minors. So the ledger prints the shape of the room: \"5 volunteers, 3 community members, 2 contractors\".",
+        text: "A meal asks who was there: every name up to 15 people, and above that a headcount and an identifiable group. No names reach the public ledger. Volunteers, community members and guests never consented to a public financial record, and some are minors. The ledger prints only the breakdown: \"5 volunteers, 3 community members, 2 contractors\".",
       },
       {
         kind: "rule",
         title: "Sixty days, then it is wages",
-        text: "The 60-day safe harbor is the accountable plan's substantiation window. Past it, unsubstantiated spending is legally wages to the spender. Converting it into a repayment you can settle is the kinder of those two endings — and coding it in week one avoids both.",
+        text: "The 60-day safe harbor is the accountable plan's substantiation window. Past it, unsubstantiated spending is legally wages to the spender. Converting it into a repayment you can settle is the kinder outcome. Coding it in week one avoids both.",
       },
       {
         kind: "reveal",
         prompt:
           "You code a Transportation charge and the sheet asks where you travelled from and to. Did the category answer anything for you?",
         answer:
-          "No. A category picks the QUESTION SET — that is why Transportation lands on travel's route questions without a second decision — but it never answers one. The purpose, the route, who was there all stay blank until you type them, and you can correct the branch if the category guessed wrong.",
+          "No. A category picks the QUESTION SET, which is why Transportation shows travel's route questions, but it never answers one. The purpose, route and attendees stay blank until you type them. You can correct the branch if the category guessed wrong.",
       },
     ],
     quiz: [
@@ -1362,27 +1362,27 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "You take a bus to New York to film the Eden event. What does the coding need beyond the amount and the receipt?",
         options: [
-          "Nothing — the receipt is the record",
+          "Nothing; the receipt is the record",
           "A purpose written for the public, plus where you travelled from and where to",
           "Just the word \"travel\" and the date",
           "Approval from your Treasurer before you go",
         ],
         answerIndex: 1,
         explanation:
-          "\"Bus to NY\" is what the bank already told us. \"Travel to NY to film the Eden event\" is a reason — and travel adds a route (city level is enough), because where the money went is part of what the record has to say.",
+          "\"Bus to NY\" is what the bank already told us. \"Travel to NY to film the Eden event\" is a reason. Travel also needs a route (city level is enough).",
       },
       {
         prompt:
-          "You're coding a $12 parking charge — cash to an attendant, no receipt, and there never will be one. Can you submit the coding?",
+          "You're coding a $12 parking charge: cash to an attendant, no receipt, and there never will be one. Can you submit the coding?",
         options: [
-          "No — nothing submits without a receipt attached",
-          "Yes — file the receipt exception in the same sheet; filing it is your half of the documentation and the coding goes through",
-          "Yes — the receipt and the coding are separate obligations, so submit now and sort the receipt out later",
+          "No. Nothing submits without a receipt attached",
+          "Yes. File the receipt exception in the same sheet; filing it is your half of the documentation and the coding goes through",
+          "Yes. The receipt and the coding are separate obligations, so submit now and sort the receipt out later",
           "Only once a manager has approved the exception",
         ],
         answerIndex: 1,
         explanation:
-          "What the money was for and how it can be proved are one record, so a coding won't submit on a charge with neither. The exception lives in the same sheet, and FILING it is enough to submit — approving it is somebody else's work, and waiting on them would strand the charge in your queue. It does still have to be approved before the charge can be closed.",
+          "Purpose and proof are one record, so a coding won't submit on a charge with neither. FILING the exception in the same sheet is enough to submit. It still has to be approved before the charge can close.",
       },
       {
         prompt:
@@ -1390,38 +1390,38 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         options: [
           "The full list of names",
           "First names only",
-          "The headcount and the affiliation breakdown — \"5 volunteers, 3 community members, 2 contractors\"",
+          "The headcount and the affiliation breakdown, e.g. \"5 volunteers, 3 community members, 2 contractors\"",
           "Nothing about who was there",
         ],
         answerIndex: 2,
         explanation:
-          "Names never publish. Volunteers, community members and guests didn't consent to a public financial record and some are minors — so the ledger prints the shape of the room and the names stay inside the app.",
+          "Names never publish. Volunteers, community members and guests didn't consent to a public financial record, and some are minors. The names stay inside the app.",
       },
       {
         prompt:
           "A charge from September is still uncoded 60 days later. What happens, and why?",
         options: [
-          "Nothing — the Treasurer codes it for you at year end",
+          "Nothing; the Treasurer codes it for you at year end",
           "It auto-converts to a personal repayment you owe back: under IRS accountable-plan rules, spending nobody substantiates becomes taxable income to the person who spent it",
           "The card is cancelled permanently",
           "It's written off and removed from the books",
         ],
         answerIndex: 1,
         explanation:
-          "The 60-day safe harbor is the accountable plan's substantiation window. Past it, unsubstantiated spending is legally wages to the spender — converting it to a repayment you can settle is the kinder of the two endings, and coding it in week one avoids both.",
+          "The 60-day safe harbor is the accountable plan's substantiation window. Past it, unsubstantiated spending is legally wages to the spender, so a repayment you can settle is the kinder outcome. Coding in week one avoids both.",
       },
       {
         prompt:
-          "You code a Transportation charge and the sheet already shows the travel branch's route questions. You then leave the purpose blank instead of letting AI draft it. What's actually going on?",
+          "You code a Transportation charge and the sheet already shows the travel branch's route questions. You then leave the purpose blank instead of letting AI draft it. What's going on?",
         options: [
-          "The feature just isn't built yet",
-          "Your category picked which QUESTIONS to ask (a route, in this case) — it never answers them; the purpose, route and who-was-there stay blank until you type them",
+          "The feature isn't built yet",
+          "Your category picked which QUESTIONS to ask (a route, in this case) but never answers them; the purpose, route and who-was-there stay blank until you type them",
           "AI drafted the route from the merchant name, but you still have to write the purpose yourself",
           "To keep the app cheap to run",
         ],
         answerIndex: 1,
         explanation:
-          "A category can pick the QUESTION SET — it's why Transportation lands on travel's route questions without a second decision — but it never answers a question. The purpose, the route, who was there: all of it stays blank until you type it, and you can always correct the branch yourself if the category guessed wrong. A plausible sentence about a charge nobody witnessed is worth nothing to a backer or an auditor — the first-hand account is the whole reason the ledger is worth publishing.",
+          "A category picks the QUESTION SET but never answers a question. The purpose, route and attendees stay blank until you type them, and you can correct the branch. A plausible sentence about a charge nobody witnessed is worth nothing to a backer or an auditor; the ledger is worth publishing because the account is first-hand.",
       },
     ],
   },
@@ -1435,46 +1435,46 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Two situations. You paid out of pocket for mission work — submit a **reimbursement request**. A personal charge hit your card — **flag it**, which starts you owing money back. Paying someone for WORK is neither: that is a contractor payment, with its own lesson.",
+        text: "If you paid out of pocket for mission work, submit a **reimbursement request**. If a personal charge hit your card, **flag it**, which records money you owe back. Paying someone for WORK is neither: that is a contractor payment, with its own lesson.",
       },
       {
         kind: "bullets",
         items: [
-          "**Submitting.** Every line carries its own receipt, date and coding. None of it is optional — the app blocks submission until each line is complete. Bank details are captured up front, so approval fires the payout automatically.",
-          "**Approved is not paid.** The email names the decision and the amount, never that the money moved. A reviewer can approve some lines and not others; where the figures differ it names both — and the smaller one is the whole payment, not a first instalment.",
-          "**A second email goes when the money actually leaves**, naming the date. That is the one to wait for. If nothing lands within a week, ask your Treasurer.",
+          "**Submitting.** Every line needs its own receipt, date and coding, and the app blocks submission until each line is complete. Bank details are captured up front, so approval fires the payout automatically.",
+          "**Approved is not paid.** The approval email names the decision and the amount, never that money moved. A reviewer can approve some lines and not others. If the figures differ, the email names both, and the smaller one is the whole payment, not a first instalment.",
+          "**A second email goes when the money leaves**, naming the date. Wait for that one. If nothing lands within a week, ask your Treasurer.",
         ],
       },
       {
         kind: "rule",
         title: "Sent back is a revision, not a rejection",
-        text: "Rejected is terminal. **Sent back** is a loop: fix the line and resubmit, keeping your original submission date, so a question never costs your place in the queue. A revision may change the SUBSTANTIATION only — a wrong amount is a reject and a fresh request.",
+        text: "Rejected is terminal. **Sent back** is a loop: fix the line and resubmit. You keep your original submission date, so a question never costs your place in the queue. A revision may change the SUBSTANTIATION only; a wrong amount means a reject and a fresh request.",
       },
       {
         kind: "rule",
         title: "Flagging says YOU made the charge",
-        text: "You can flag your own transactions, not just managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status: a row can be Closed AND an unpaid personal expense at once. So a charge you genuinely don't recognize is not a flag. Freeze the card yourself, then tell your Treasurer.",
+        text: "Anyone can flag their own transactions, not only managers, and catching your own mistake early clears it fastest. The flag is separate from the charge's status: a row can be Closed AND an unpaid personal expense. A charge you don't recognize is not a flag. Freeze the card yourself, then tell your Treasurer.",
       },
       {
         kind: "reveal",
         prompt:
           "Someone repaid a personal charge months ago, before the receipt button existed, and now needs proof they paid. What can a manager do?",
         answer:
-          "Send the receipt again. A settled row's button never expires after one use. It is the same receipt email, not a new record — which is what makes it work for a debt settled long before the button existed. Pressing it twice is refused rather than mailing the payer twice.",
+          "Send the receipt again. A settled row's button never expires. It sends the same receipt email, not a new record, so it works for a debt settled before the button existed. Pressing it twice in a row is refused rather than mailing the payer twice.",
       },
     ],
     quiz: [
       {
         prompt: "You paid for event supplies with your own card. What do you do?",
         options: [
-          "Submit a reimbursement request — every line with its own receipt, date, and coding (purpose, plus route or attendees where they apply)",
-          "Nothing — it evens out eventually",
+          "Submit a reimbursement request, every line with its own receipt, date, and coding (purpose, plus route or attendees where they apply)",
+          "Nothing; it evens out eventually",
           "Ask your Treasurer to send you cash directly",
           "Put it on your Public Worship card retroactively",
         ],
         answerIndex: 0,
         explanation:
-          "A reimbursement request is the front door for out-of-pocket mission spending — and every line carries its own receipt, date, and substantiation, because one request routinely mixes a fare, a hotel night and a meal. The app blocks submission until each line is complete. That's how \"Public Worship owes you\" gets tracked to paid.",
+          "A reimbursement request is how you claim out-of-pocket mission spending. Every line carries its own receipt, date and substantiation, because one request often mixes a fare, a hotel night and a meal. The app blocks submission until each line is complete.",
       },
       {
         prompt: "A personal charge accidentally hit your Public Worship card. What's true?",
@@ -1482,50 +1482,50 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "It's fine, the card is shared",
           "Nothing happens automatically",
           "Only a manager can notice this, never you",
-          "Flag it — that opens an amount YOU owe Public Worship, tracked until repaid",
+          "Flag it. That opens an amount YOU owe Public Worship, tracked until repaid",
         ],
         answerIndex: 3,
         explanation:
-          "Flagging is available on your OWN transactions, not just to managers — catching your own mistake early is the fastest way to clear it. The flag is separate from the charge's status too: it can be fully Closed AND an unpaid personal expense at the same time — flagging doesn't touch its category, budget, or receipt. And the mirror rule: flagging says YOU made the charge, so a charge you genuinely don't recognize is not a flag — freeze the card yourself (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager right away so it gets investigated.",
+          "You can flag your OWN transactions, not only managers, and catching your own mistake early clears it fastest. The flag doesn't touch the charge's status, category, budget or receipt, so a row can be Closed AND an unpaid personal expense. Flagging says YOU made the charge. For a charge you don't recognize, freeze the card yourself (instant, self-serve, reversible), then tell your Treasurer or the Financial Manager right away.",
       },
       {
         prompt:
-          "Someone repaid a personal charge months ago, before this org even had the receipt button, and now needs proof they paid. What can a manager do?",
+          "Someone repaid a personal charge months ago, before this org had the receipt button, and now needs proof they paid. What can a manager do?",
         options: [
-          "Nothing — the receipt only ever goes out at the moment of payment",
+          "Nothing; the receipt only ever goes out at the moment of payment",
           "Mark the charge repaid again to trigger a fresh email",
-          "Open it on the Personal charges screen and press Send receipt — every settled row keeps that button, no matter how old",
+          "Open it on the Personal charges screen and press Send receipt; every settled row keeps that button, no matter how old",
           "Ask the payer to screenshot their bank statement instead, since the app can't help",
         ],
         answerIndex: 2,
         explanation:
-          "A settled row's receipt button never expires after one use — a manager can send it again whenever it's genuinely needed, days or months later, which is exactly what makes it useful for a debt settled long before the button existed. It's a manual door to the SAME receipt email the automatic send uses, not a new record; there is still no way to \"mark repaid\" a charge that hasn't actually been paid through the app. The one limit is a brief one: pressing it twice back-to-back is refused with a clear \"try again in a moment\" rather than mailing the payer twice.",
+          "A settled row's receipt button never expires, so a manager can resend it days or months later. It sends the SAME receipt email as the automatic send, not a new record. There is still no way to \"mark repaid\" a charge that wasn't paid through the app. Pressing it twice back-to-back is refused with \"try again in a moment\".",
       },
       {
         prompt:
-          "An email lands saying your $240 reimbursement was approved. What does that actually mean about your money?",
+          "An email lands saying your $240 reimbursement was approved. What does that mean about your money?",
         options: [
-          "It's been sent — approved and paid are the same event, so it's already left the account",
+          "It's been sent. Approved and paid are the same event, so it's already left the account",
           "It's approved but not yet paid: sending the payout is the next step, and the request moves to Paid when the money settles",
-          "Nothing yet — approval emails go out before anyone has really reviewed it",
+          "Nothing yet. Approval emails go out before anyone has reviewed it",
           "It means the full amount you submitted was approved, since partial approvals aren't possible",
         ],
         answerIndex: 1,
         explanation:
-          "Approved and paid are separate states, and the email is careful never to claim otherwise — it tells you the decision, not that the money has moved. Read the figure too: a reviewer can approve some of your lines and not others, and when the approved amount differs from what you submitted the email names both — and that smaller figure is the whole payment, not a first instalment. You get a SECOND email when the payout actually goes, naming the date it left; that one is your cue to look for the money. If it still doesn't arrive, contact your Treasurer.",
+          "Approved and paid are separate states; the email tells you the decision, not that money moved. A reviewer can approve some lines and not others. If the approved amount differs from what you submitted, the email names both, and the smaller figure is the whole payment. A SECOND email names the date the payout left. If the money still doesn't arrive, contact your Treasurer.",
       },
       {
         prompt:
           "A reviewer sends your request back with the note \"the hotel line needs where you travelled from and to.\" What's true?",
         options: [
-          "It's rejected — you'll have to start a brand-new request",
+          "It's rejected; you'll have to start a brand-new request",
           "It's in Changes requested: fix the substantiation on that line and resubmit, and it returns to review with your original submission date",
           "It's approved as long as you reply to the email explaining the trip",
           "You can fix the route and correct the line's amount while you're in there",
         ],
         answerIndex: 1,
         explanation:
-          "Sent back is not rejected — rejected is terminal, this is a revision loop, and resubmitting keeps your original submission date so a question never costs you your place in the queue. But a revision may change the SUBSTANTIATION only: a wrong amount is a reject and a fresh request, never a quiet edit under a reviewer who already saw the number. While it sits with you it isn't payable, though you can still cancel it.",
+          "Rejected is terminal; sent back is a revision loop. Resubmitting keeps your original submission date. A revision may change the SUBSTANTIATION only: a wrong amount means a reject and a fresh request, never a quiet edit after the reviewer saw the number. While it sits with you it isn't payable, though you can still cancel it.",
       },
     ],
   },
@@ -1542,29 +1542,29 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "A reimbursement gives back money someone ALREADY SPENT: the receipt substantiates it, and it is not income. A contractor payment buys WORK. Nothing was spent, so the AGREEMENT substantiates it, and the money IS reportable income — which is why a tax form is collected first. \"They have no receipt for their time\" is not a receipt problem. It means you are in the wrong flow.",
+        text: "A reimbursement gives back money someone ALREADY SPENT. The receipt substantiates it, and it is not income. A contractor payment buys WORK. Nothing was spent, so the AGREEMENT substantiates it, and the money IS reportable income, so a tax form is collected first. If someone \"has no receipt for their time\", you are in the wrong flow.",
       },
       {
         kind: "rule",
         title: "A self-serve request arrives uncoded",
-        text: "Both entry points share one queue and one route from Needs review on. The difference is that a request the contractor raised carries no coding. What the requester says the money is for starts that conversation; it is not evidence for it. The server refuses to release money until somebody with the books in front of them says which budget pays.",
+        text: "Both entry points share one queue and one route from Needs review on. A request the contractor raised carries no coding. The requester's stated purpose is a starting point, not evidence. The server won't release money until someone with the books in front of them says which budget pays.",
       },
       {
         kind: "rule",
         title: "You cannot approve your own agreement",
-        text: "Rank isn't the control here; separation of duties is. Three signals get checked: are you the payee on the roster, is your sign-in email the payee's, and did you write this agreement. The third stops whoever set the amount from also releasing the money. The check runs again when the payout goes, because approving and paying can be two different acts.",
+        text: "The control is separation of duties, not rank. Three checks run: are you the payee on the roster, is your sign-in email the payee's, and did you write this agreement. The third stops whoever set the amount from also releasing the money. The checks run again when the payout goes, since approving and paying can be separate acts.",
       },
       {
         kind: "rule",
         title: "Changing an agreed term voids the acceptance",
-        text: "Amount, description and service date are the terms the contractor said yes to. Change one and the acceptance is voided: the payment reverts to **Awaiting contractor** and he is asked to accept again. Nothing is payable in between. Coding is different — he never agreed to which budget line pays him, so re-coding voids nothing.",
+        text: "Amount, description and service date are the terms the contractor accepted. Change one and the payment reverts to **Awaiting contractor** until he accepts again. Nothing is payable in between. Coding is different: he never agreed to which budget line pays him, so re-coding voids nothing.",
       },
       {
         kind: "reveal",
         prompt:
           "A $4,000 agreement pays $2,000 on signing and $2,000 on delivery. The deposit goes out. What state is the agreement in?",
         answer:
-          "Approved, not Paid. Paid is an ENDING: nothing more happens to an agreement that reaches it. So a deposit must not stamp it, or the balance would be stranded and the contractor owed money the app no longer thinks it owes. It closes only once the whole schedule is settled.",
+          "Approved, not Paid. Paid is an ENDING: nothing more happens to an agreement in that state. If the deposit stamped it Paid, the balance would be stranded and the app would forget the contractor is still owed. It closes only once the whole schedule is settled.",
       },
     ],
     quiz: [
@@ -1572,40 +1572,40 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "A volunteer spent $80 of her own money on cups. A photographer spent six hours shooting the same event for an agreed $600. Which is which?",
         options: [
-          "Both are reimbursements — money leaving for a person is a reimbursement either way",
+          "Both are reimbursements, since money leaving for a person is a reimbursement either way",
           "The cups are a reimbursement (money already spent, substantiated by the receipt, not income); the photographer is a contractor payment (work bought, substantiated by the agreement, and reportable income)",
           "Both are contractor payments, since both people did something for the event",
           "The photographer is a reimbursement for her time; the cups need a contractor agreement because a purchase is a service",
         ],
         answerIndex: 1,
         explanation:
-          "This is the distinction everything else hangs on. A reimbursement gives back money someone ALREADY SPENT — the receipt substantiates it and it is not income. A contractor payment buys WORK — nothing was spent, so the AGREEMENT substantiates it, and the money IS reportable income, which is why a tax form is collected first. \"They have no receipt for their time\" is not a receipt problem; it means you're in the wrong flow.",
+          "A reimbursement gives back money someone ALREADY SPENT: the receipt substantiates it and it is not income. A contractor payment buys WORK: the AGREEMENT substantiates it, and the money IS reportable income, so a tax form is collected first.",
       },
       {
         prompt:
           "A blank request lands in the queue: $450, \"sound engineering for the March night.\" The terms look right and the person is real. Why can't you approve it yet?",
         options: [
-          "It arrived uncoded — nobody has said which budget, event or project pays for it, and approval is refused until a human does",
+          "It arrived uncoded. Nobody has said which budget, event or project pays for it, and approval is refused until a human does",
           "Blank requests always need a second approver before the first one",
           "You can approve it; blank requests are approved exactly like pre-filled ones",
           "It has to be re-entered as a pre-filled agreement before it can be approved",
         ],
         answerIndex: 0,
         explanation:
-          "Both entry points share one queue and one route from Needs review on — the difference is that a self-serve request arrives UNCODED. What the requester says the money is for is the start of that conversation, not evidence for it, so the server refuses to release money until somebody with the books in front of them says which budget it belongs to.",
+          "Both entry points share one queue and one route from Needs review on, but a self-serve request arrives UNCODED. The requester's stated purpose is a starting point, not evidence, so the server won't release money until someone with the books in front of them says which budget pays.",
       },
       {
         prompt:
           "You're the chapter Treasurer. You pre-filled an agreement for a designer, sent the link, and she's accepted. Who approves it?",
         options: [
-          "You do — you hold the seat that approves chapter payments",
+          "You do, since you hold the seat that approves chapter payments",
           "Anyone with a finance manager seat, including you, since you're not the payee",
-          "Someone other than you — the person who wrote the agreement can't approve it, so in practice the central Financial Manager does",
+          "Someone other than you. The person who wrote the agreement can't approve it, so in practice the central Financial Manager does",
           "The Chapter Director, because chapter money is theirs to sign off on",
         ],
         answerIndex: 2,
         explanation:
-          "Rank isn't the control here; separation of duties is. Three signals are checked — are you the payee on the roster, is your sign-in email the payee's, and did you write this agreement — and the third is what stops the person who set the amount from also releasing the money. The check runs again at the moment the payout goes, because approving and paying can be two different acts.",
+          "The control is separation of duties, not rank. Three checks run: are you the payee on the roster, is your sign-in email the payee's, and did you write this agreement. The third stops whoever set the amount from also releasing the money. The checks run again when the payout goes.",
       },
       {
         prompt:
@@ -1614,24 +1614,24 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Moving it from the Events budget to the Media budget",
           "Fixing a typo in your internal note about who introduced him",
           "Changing the amount to $950, or rewording the description of the work, or moving the service date",
-          "None — once accepted, nothing on the record can be changed by anyone",
+          "None. Once accepted, nothing on the record can be changed by anyone",
         ],
         answerIndex: 2,
         explanation:
-          "Amount, description and service date are the AGREED terms — the things he actually said yes to. Change one and his acceptance is voided, the payment reverts to Awaiting contractor, and he's asked to accept again; nothing is payable in between. Coding is a different matter: he never agreed to which budget line pays him, so re-coding voids nothing.",
+          "Amount, description and service date are the AGREED terms. Change one and the payment reverts to Awaiting contractor until he accepts again; nothing is payable in between. He never agreed to which budget line pays him, so re-coding voids nothing.",
       },
       {
         prompt:
           "A $4,000 agreement is set up to pay $2,000 on signing and $2,000 on delivery. The deposit goes out. What is the state of the agreement?",
         options: [
-          "Paid — money has gone out under it, so the agreement is complete",
+          "Paid, because money has gone out under it",
           "Still approved and still owing $2,000; it only reaches Paid when every scheduled payment has been sent or cancelled",
           "Awaiting contractor, because the second payment needs a fresh signature",
           "Split into two agreements at the moment the first one paid",
         ],
         answerIndex: 1,
         explanation:
-          "Paid is an ENDING — nothing more happens to an agreement that reaches it. So a deposit landing must not stamp it, or the balance would be stranded with nothing able to pay it and the contractor would be owed $2,000 that the app no longer thinks it owes. The agreement drops back to Approved between payments, which is exactly the state the next one is released from, and closes only when the whole schedule has been settled one way or the other.",
+          "Paid is an ENDING: nothing more happens to an agreement in that state. If the deposit stamped it Paid, the remaining $2,000 would be stranded. The agreement drops back to Approved between payments, the state the next payment is released from, and closes only when the whole schedule is settled.",
       },
     ],
   },
@@ -1645,34 +1645,34 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "A contractor payment is income to the person receiving it, so we collect a tax form before we pay. A **W-9** from a US person or business. A **W-8BEN** from a foreign individual, a **W-8BEN-E** from a foreign entity.",
+        text: "A contractor payment is income to the person receiving it, so we collect a tax form before we pay. A US person or business gives a **W-9**. A foreign individual gives a **W-8BEN**, and a foreign entity a **W-8BEN-E**.",
       },
       {
         kind: "rule",
         title: "The work publishes; the person does not",
-        text: "A reader can audit what the money bought. The counterparty is the fixed words \"Contractor payment\" — the name, email, tax form and bank details are never published in any form. This runs opposite to a reimbursement, which publishes as \"Reimbursement to <name>\": that is a member being made whole, this is someone's income.",
+        text: "A reader can audit what the money bought. The counterparty shows as the fixed words \"Contractor payment\". The name, email, tax form and bank details never publish. A reimbursement is the opposite and publishes as \"Reimbursement to <name>\", because it makes a member whole, while a contractor payment is someone's income.",
       },
       {
         kind: "rule",
         title: "The description publishes verbatim, and forever",
-        text: "It is the one field that publishes word for word. A published month is frozen and can only be amended in public. The checker refuses emails, phone numbers, street addresses and long digit runs wherever the text is typed. It is deliberately crude: it stops the accidental paste, not a determined one.",
+        text: "It is the one field that publishes word for word, and a published month is frozen, amendable only in public. The checker refuses emails, phone numbers, street addresses and long digit runs wherever the text is typed. It is deliberately crude: it stops an accidental paste, not a determined one.",
       },
       {
         kind: "rule",
         title: "Every look at a W-9 is logged",
-        text: "The gate is a role, not a named individual, so the log is what makes the access answerable: who looked, at whose form, when. The form is destroyed four years after the LAST payment it covers. No tax ID is ever typed into a field — the form is a file, and nothing parses it.",
+        text: "Access is granted by role, not to named people, so the log records who looked, at whose form, and when. The form is destroyed four years after the LAST payment it covers. No tax ID is ever typed into a field: the form is a file, and nothing parses it.",
       },
       {
         kind: "rule",
         title: "We don't hold the bank digits",
-        text: "Raw account numbers are never persisted. They are validated, handed to the bank once, and what comes back is a reference and the last four. So \"we can't tell you, we don't have it\" is the true answer, and it is the point rather than a limitation.",
+        text: "Raw account numbers are never stored. They are validated and handed to the bank once, which returns a reference and the last four digits. \"We can't tell you, we don't have it\" is the true answer, by design.",
       },
       {
         kind: "reveal",
         prompt:
-          "A foreign contractor fills in a W-9 by mistake. Why does the flow refuse to pay rather than just proceed?",
+          "A foreign contractor fills in a W-9 by mistake. Why does the flow refuse to pay rather than proceed?",
         answer:
-          "Withholding isn't something a form field can decide. A W-9 is for US persons and entities; a foreign payee needs a W-8BEN or a W-8BEN-E. Paying at zero withholding and finding out at tax time is the worse ending, so the app declines to guess.",
+          "A form field can't decide withholding. A W-9 is for US persons and entities; a foreign payee needs a W-8BEN or a W-8BEN-E. Paying at zero withholding and finding out at tax time is worse, so the app declines to guess.",
       },
     ],
     quiz: [
@@ -1680,65 +1680,65 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "A $1,800 contractor payment to Jane Doe Media settles and the month is published. What does a stranger reading publicworship.life see?",
         options: [
-          "\"Jane Doe Media — $1,800\", with the work described beside it",
-          "Nothing — contractor payments are held back from the public ledger",
-          "The description of the work, the amount, the date and the category — with the counterparty shown as \"Contractor payment\", never her name",
+          "\"Jane Doe Media: $1,800\", with the work described beside it",
+          "Nothing. Contractor payments are held back from the public ledger",
+          "The description of the work, the amount, the date and the category, with the counterparty shown as \"Contractor payment\", never her name",
           "A single line saying the chapter spent $1,800 on contractors that month",
         ],
         answerIndex: 2,
         explanation:
-          "The work publishes so a reader can audit what the money bought; the person doesn't. The counterparty is the fixed words \"Contractor payment\", and her name, email, tax form and bank details are never published in any form. Note this runs the opposite way from a reimbursement, which publishes as \"Reimbursement to <name>\" — that's a member being made whole, this is someone's income.",
+          "The work publishes so a reader can audit what the money bought; the person doesn't. The counterparty shows as \"Contractor payment\", and her name, email, tax form and bank details never publish. A reimbursement is the opposite and publishes as \"Reimbursement to <name>\".",
       },
       {
         prompt:
-          "You're writing the service description on an agreement and you type: \"Photography for the June night — reach Ade at 555-0142.\" What happens?",
+          "You're writing the service description on an agreement and you type: \"Photography for the June night, reach Ade at 555-0142.\" What happens?",
         options: [
           "It's accepted; the phone number is only visible internally",
-          "It's refused — the same check runs on the contractor's page, the staff form and the server, and a phone number is one of the shapes it recognizes",
+          "It's refused. The same check runs on the contractor's page, the staff form and the server, and a phone number is one of the shapes it recognizes",
           "It's accepted, and a treasurer strips the number automatically before publishing",
           "It's accepted but the whole description is withheld from the public ledger",
         ],
         answerIndex: 1,
         explanation:
-          "The description is the one field that publishes VERBATIM and permanently — a published month is frozen and can only be amended in public. The checker refuses emails, phone numbers, street addresses and long digit runs wherever the text is typed. It's deliberately crude: it stops the accidental paste, not a determined one, so reading the sentence as a stranger would is still yours to do.",
+          "The description publishes VERBATIM and permanently; a published month is frozen and can only be amended in public. The checker refuses emails, phone numbers, street addresses and long digit runs. It's deliberately crude, so you still need to read the sentence as a stranger would.",
       },
       {
         prompt: "Who can open a contractor's actual W-9 file, and what happens when they do?",
         options: [
           "Anyone on the chapter roster; opening it is an ordinary read",
-          "Finance managers and treasurers — and every single view is written to the audit trail before the file opens",
+          "Finance managers and treasurers, and every view is written to the audit trail before the file opens",
           "Only the Executive Director, and views aren't logged because the seat is trusted",
-          "Nobody — the form is write-only once uploaded",
+          "Nobody; the form is write-only once uploaded",
         ],
         answerIndex: 1,
         explanation:
-          "The gate is a role, not a named individual, so the log is what makes the access answerable after the fact: who looked, at whose form, when. The form itself is destroyed four years after the LAST payment it covers — an SSN we no longer hold is an SSN that can't leak — and no tax ID is ever typed into a field in the first place; the form is a file and nothing parses it.",
+          "Access is granted by role, so the log records who looked, at whose form, and when. The form is destroyed four years after the LAST payment it covers, since an SSN we no longer hold can't leak. No tax ID is typed into a field; the form is a file and nothing parses it.",
       },
       {
         prompt:
           "A contractor calls: \"Can you read me back the account number you have for me? I think I fat-fingered it.\" What can you tell her?",
         options: [
           "The full account number, from the payment record",
-          "Only the last four digits — the full routing and account numbers went straight to the bank and were never stored here",
+          "Only the last four digits. The full routing and account numbers went straight to the bank and were never stored here",
           "Nothing at all; bank details can't be discussed",
           "The number, but only after a finance manager approves the request",
         ],
         answerIndex: 1,
         explanation:
-          "Raw bank digits are never persisted. They're validated, handed to the bank once, and what comes back is a reference and the last four — so \"we can't tell you, we don't have it\" is the true answer, and it's the point rather than a limitation. If the account is wrong, she re-enters it; nobody here is reading it back to her.",
+          "Raw bank digits are never stored. They're validated and handed to the bank once, which returns a reference and the last four. If the account is wrong, she re-enters it.",
       },
       {
         prompt:
           "A contractor uploads a W-8BEN rather than a W-9. What does that change about approving the payment?",
         options: [
-          "Nothing — it's just a different form for the same thing",
+          "Nothing; it's a different form for the same thing",
           "It blocks approval: a W-8 means the payee isn't a US person, and foreign payments can carry withholding this system doesn't compute, so a human handles it off-platform",
           "It speeds it up, since foreign payments have no tax reporting",
           "It means no tax form is needed at all and the upload can be skipped",
         ],
         answerIndex: 1,
         explanation:
-          "A W-9 is for US persons and entities; a W-8BEN (individual) or W-8BEN-E (entity) says the payee is foreign. Withholding isn't something a form field can decide, so the flow refuses rather than paying at zero withholding and discovering the problem at tax time. The payment isn't wrong and neither is the contractor — it's a case the app declines to guess at.",
+          "A W-9 is for US persons and entities; a W-8BEN (individual) or W-8BEN-E (entity) says the payee is foreign. A form field can't decide withholding, so the flow refuses rather than paying at zero withholding and finding out at tax time. Nothing is wrong with the payment or the contractor; the app just won't guess.",
       },
     ],
   },
@@ -1752,29 +1752,29 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The Book is the Treasurer's home: every chapter charge as a row, with Category, Budget, receipts and a \"What it was for\" sentence editable inline. Nothing here is guessed. A charge counts against a budget only when you link it — there is no automatic matching.",
+        text: "The Book is the Treasurer's home. Every chapter charge is a row, with Category, Budget, receipts and a \"What it was for\" sentence editable inline. Nothing is guessed: a charge counts against a budget only when you link it. There is no automatic matching.",
       },
       {
         kind: "table",
         headers: ["Filter", "What it catches"],
         rows: [
-          ["Needs budget", "Open and categorized, still not linked to a budget. Fees are absent on purpose: a fee is charged, not chosen."],
-          ["Owes a receipt or coding", "The chase. Everything anyone still owes you — a receipt, a coding, or an answer to one you sent back."],
-          ["Needs explaining", "Every row that will publish with a blank where its explanation should be."],
-          ["Coding review", "A submitted coding waiting on you to approve it or send it back."],
-          ["Personal (unpaid)", "Flagged personal, not yet repaid. These cannot be closed until the money is back."],
-          ["Closed", "Already cleared — where every other row is trying to get to."],
+          ["Needs budget", "Open and categorized, not yet linked to a budget. Fees are left out on purpose: a fee is charged, not chosen."],
+          ["Owes a receipt or coding", "The chase: everything anyone still owes you, whether a receipt, a coding, or an answer to one you sent back."],
+          ["Needs explaining", "Every row that would publish with a blank explanation."],
+          ["Coding review", "A submitted coding waiting for you to approve it or send it back."],
+          ["Personal (unpaid)", "Flagged personal, not yet repaid. These can't be closed until the money is back."],
+          ["Closed", "Already cleared. Every other row is heading here."],
         ],
       },
       {
         kind: "rule",
         title: "Unattributed is loud on purpose",
-        text: "A charge with no budget link is never absorbed into whichever budget looks closest. It shows on the dashboard as **Unattributed**, in plain sight, with one tap back into this exact filtered view. Loud and wrong beats quiet and wrong.",
+        text: "A charge with no budget link is never absorbed into the nearest-looking budget. It shows on the dashboard as **Unattributed**, with one tap back into this filtered view. Loud and wrong beats quiet and wrong.",
       },
       {
         kind: "rule",
         title: "Group by is how you get everywhere else",
-        text: "**Group by: Month or Person** bands the rows. It filters nothing. A month band carries Preview and Publish. A person band carries Chase — put **State → Owes a receipt or coding** on top of it and that is your chase list, one cardholder per band.",
+        text: "**Group by: Month or Person** bands the rows without filtering anything. A month band carries Preview and Publish. A person band carries Chase. Add **State → Owes a receipt or coding** and you have your chase list, one cardholder per band.",
       },
       {
         kind: "rule",
@@ -1784,12 +1784,12 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Explain writes one true sentence many times",
-        text: "Select rows, press **Explain**, type one sentence. Each charge gets its OWN coding, under your name, with its own audit entry — nothing is written in aggregate. Rows that can't take it are refused one at a time and listed back by name, still selected. Meals are never offered in bulk: a meal's proof is who was there, and that differs every time.",
+        text: "Select rows, press **Explain**, type one sentence. Each charge gets its OWN coding under your name, with its own audit entry. Rows that can't take it are refused one at a time and listed back by name, still selected. Meals are never offered in bulk, because a meal's proof is who was there.",
       },
       {
         kind: "rule",
         title: "Undo is not Send back",
-        text: "Approving publishes, so you get about ten seconds to take it back. **Undo** returns the coding to awaiting review — your queue, nobody told. **Send back** means the author has something to fix: it moves the row to their queue and emails your note. You can undo only your own approval, and only for a couple of minutes.",
+        text: "Approving publishes, so you get about ten seconds to take it back. **Undo** returns the coding to awaiting review in your queue and tells nobody. **Send back** means the author has something to fix: it moves the row to their queue and emails your note. You can undo only your own approval, within a couple of minutes.",
       },
       {
         kind: "try_status",
@@ -1801,7 +1801,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         terminal: "reconciled",
         caption:
-          "Excluded is the fourth status, for a row that should never count at all — a duplicate, a bank error. It requires a reason. Don't reach for it on a transfer or a payout; those have their own markings.",
+          "Excluded is the fourth status, for a row that should never count at all, like a duplicate or a bank error. It requires a reason. Don't use it on a transfer or a payout; those have their own markings.",
       },
     ],
     quiz: [
@@ -1809,64 +1809,64 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "How does a charge get counted against a budget?",
         options: [
           "The system matches it automatically by category",
-          "You explicitly link it to that budget in Reconcile — nothing is derived or guessed",
+          "You explicitly link it to that budget in Reconcile; nothing is derived or guessed",
           "Any charge in the same month as the budget counts",
           "The Chapter Director assigns it",
         ],
         answerIndex: 1,
         explanation:
-          "Explicit-only attribution is the whole point: budgets only ever count transactions someone deliberately linked, never inferred matches.",
+          "Attribution is explicit only: budgets count only transactions someone deliberately linked, never inferred matches.",
       },
       {
         prompt: "What does \"Unattributed\" mean on the dashboard?",
         options: [
           "A bug",
-          "Spend with no explicit budget link — shown loudly on purpose instead of being silently absorbed somewhere",
+          "Spend with no explicit budget link, shown loudly on purpose instead of being silently absorbed somewhere",
           "Money that left the account without a transaction record",
           "Funds waiting on a bank sync",
         ],
         answerIndex: 1,
         explanation:
-          "Unattributed is a first-class, visible bucket with a one-tap path into the exact filtered Reconcile view — it's designed to be noticed, not hidden.",
+          "Unattributed is a visible bucket with a one-tap path into the filtered Reconcile view. It is designed to be noticed.",
       },
       {
         prompt:
           "You approve a coding, then immediately realise the sentence names someone it shouldn't. The Undo is still on screen. What does pressing it do?",
         options: [
-          "Hides the approval locally — the record stays approved",
+          "Hides the approval locally; the record stays approved",
           "Puts the coding back to awaiting review, in your queue, and tells nobody",
           "Sends it back to its author with a note, exactly as Send back would",
-          "Nothing — an approved coding is permanent",
+          "Nothing; an approved coding is permanent",
         ],
         answerIndex: 1,
         explanation:
-          "Undo says the APPROVER mis-tapped, so it returns the coding to exactly where it was \u2014 awaiting review \u2014 and notifies nobody, because the author never saw the approval. That is why it is not Send back: Send back means the AUTHOR has something to fix, moves the row into their queue, and emails them your note. Undo is also limited server-side to your OWN approval and to a couple of minutes; past that, Send back is the honest path, since an approval that has stood a while may already have been acted on.",
+          "Undo means the APPROVER mis-tapped. It returns the coding to awaiting review and notifies nobody, because the author never saw the approval. Send back means the AUTHOR has something to fix: it moves the row into their queue and emails your note. The server limits Undo to your OWN approval and a couple of minutes; after that, use Send back, since the approval may already have been acted on.",
       },
       {
         prompt:
           "You're grouped by Month with a State filter on, and March's band reads \"12 of 318 charges · -$4,102 of -$88,201\". You press Publish on that band. What goes public?",
         options: [
           "The 12 charges the filter left, totalling -$4,102",
-          "All 318 charges in March, totalling -$88,201 — publishing is about the month, never about your filter",
-          "Nothing — you can't publish while a filter is on",
+          "All 318 charges in March, totalling -$88,201. Publishing is about the month, never about your filter",
+          "Nothing; you can't publish while a filter is on",
           "Whichever rows are currently loaded on the page",
         ],
         answerIndex: 1,
         explanation:
-          "That is exactly why the band names both figures. Publishing acts on the whole month, so a band that could only say \"12 charges\" next to a Publish button was quietly describing something other than what the button did. The second number in each pair is the month; the first is just what you happen to be looking at. (Publish opens the publish console's own flow right there over the grid, and nothing about it is shortened by being opened from a band — a second approver, an amendment reason on a re-publish, and a refusal if the month's snapshot came back incomplete.)",
+          "Publishing acts on the whole month, which is why the band names both figures. The second number in each pair is the month; the first is what your filter shows. Publish opens the publish console's full flow over the grid: a second approver, an amendment reason on a re-publish, and a refusal if the month's snapshot came back incomplete.",
       },
       {
         prompt:
           "You select 40 subway fares that all ran the same route and press Explain, typing one sentence. What happens?",
         options: [
           "The app drafts a purpose for each charge based on the merchant",
-          "Each charge gets its own coding carrying your sentence, under your name — and any that can't take it (no receipt yet, already approved) are refused one by one and listed back to you",
+          "Each charge gets its own coding carrying your sentence, under your name, and any that can't take it (no receipt yet, already approved) are refused one by one and listed back to you",
           "One shared explanation is attached to all 40 rows at once",
           "The 40 are marked closed without a coding",
         ],
         answerIndex: 1,
         explanation:
-          "Writing a true sentence once instead of forty times is still your testimony — nothing is composed for you, and nothing is waived in aggregate. It's per-row underneath: one coding, one author, one audit entry each. And it never claims more than it did: rows that can't take the explanation come back named, still selected, so what you still owe is in front of you. Meals aren't offered in bulk at all — a meal's proof is who was at it, and that's different every time.",
+          "Typing the sentence once is still your testimony; nothing is composed for you. Underneath it is per row: one coding, one author, one audit entry each. Rows that can't take it come back named and still selected, so you can see what you still owe. Meals aren't offered in bulk, because a meal's proof is who was there.",
       },
     ],
   },
@@ -1880,29 +1880,29 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The reminder timeline handles the routine cases on its own. A charge whose receipt is still missing on day 7 locks the card automatically. The lock is about the missing receipt — not the amount, and not anyone's manual action.",
+        text: "The reminder timeline handles routine cases on its own. If a charge's receipt is still missing on day 7, the card locks automatically. The lock depends only on the missing receipt, not the amount or anyone's manual action.",
       },
       {
         kind: "rule",
         title: "Capturing and attaching are two different steps",
-        text: "Emailing a receipt gets the document into the library. That is the half worth doing at the counter, often before the charge has even posted. Attaching it is a human confirming the match. You can link one by hand from Receipts, but the cardholder's tap is the cheaper path, and it is exactly what your nudge is asking for.",
+        text: "Emailing a receipt puts it in the library, which the cardholder can do at the counter, often before the charge posts. Attaching it means a person confirms the match. You can link one by hand from Receipts, but the cardholder's tap is cheaper, and it is what your nudge asks for.",
       },
       {
         kind: "rule",
         title: "The chase is two controls, not a screen",
-        text: "There is no Chase Receipts page and no menu entry for one. Put **State → Owes a receipt or coding** on top of **Group by → Person**. That pairing is the chase, with each cardholder's Chase button in their own band. The chase acts on the view you are standing in: your filters, your search, and any rows you have ticked. Ticked rows are the narrowest thing on screen, so they win. There is one chase per cardholder per 24 hours, so narrow it before you press.",
+        text: "There is no Chase Receipts page or menu entry. Put **State → Owes a receipt or coding** on top of **Group by → Person**, and each cardholder's band gets a Chase button. The chase acts on your current view: filters, search, and any ticked rows. Ticked rows are the narrowest, so they win. You get one chase per cardholder per 24 hours, so narrow it before you press.",
       },
       {
         kind: "rule",
         title: "Two piles, and neither can publish",
-        text: "Rows that are still open and owe a receipt or an approved exception are the ones you nudge. Rows closed with nothing behind them are different: nobody is going to send you a receipt for those, so you document them or honestly re-open them. No row is in both piles, so the backlog is the sum of the two.",
+        text: "Open rows that owe a receipt or an approved exception are the ones you nudge. Rows closed with nothing behind them are different: no receipt is coming, so you document them or honestly re-open them. No row is in both piles, so the backlog is the sum of the two.",
       },
       {
         kind: "reveal",
         prompt:
           "A cardholder emailed you their receipt three days ago, but the card just locked anyway. What went wrong?",
         answer:
-          "Nothing went wrong. Emailing captured the receipt into the library; it never decided which charge the receipt belongs to. Until somebody taps to confirm the match, the charge still has no receipt attached and the 7-day clock keeps running.",
+          "Nothing. Emailing put the receipt in the library but didn't say which charge it belongs to. Until someone taps to confirm the match, the charge has no receipt attached and the 7-day clock keeps running.",
       },
     ],
     quiz: [
@@ -1916,58 +1916,58 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The day-7 auto-lock is purely about a missing receipt, not spend amount or anyone's manual action.",
+          "The day-7 auto-lock depends only on a missing receipt, not the amount or anyone's manual action.",
       },
       {
         prompt:
           "A cardholder emailed in nine receipts this month, and nine of their charges still sit in Needs documentation. Is something broken?",
         options: [
-          "Yes — emailed receipts are supposed to attach themselves to the matching charge",
-          "No — an emailed receipt lands in the library and attaches when a human confirms it against the charge, which the cardholder does while coding it",
-          "Yes — the OCR pipeline has stalled and needs a retry",
-          "No — emailed receipts always take a full month to post",
+          "Yes. Emailed receipts are supposed to attach themselves to the matching charge",
+          "No. An emailed receipt lands in the library and attaches when a human confirms it against the charge, which the cardholder does while coding it",
+          "Yes. The OCR pipeline has stalled and needs a retry",
+          "No. Emailed receipts always take a full month to post",
         ],
         answerIndex: 1,
         explanation:
-          "Capturing a receipt and attaching it are two different steps. Emailing gets the document into the library — the half worth doing at the counter, often before the charge has posted; attaching it is a human confirming the match. You can link one by hand from Receipts, but the cardholder's tap is the cheaper path and it's exactly what your nudge is asking for.",
+          "Capturing and attaching are separate steps. Emailing puts the receipt in the library; attaching means a person confirms the match. You can link one by hand from Receipts, but the cardholder's tap is cheaper, and it is what your nudge asks for.",
       },
       {
-        prompt: "What's the Treasurer's actual daily worklist for receipts?",
+        prompt: "What's the Treasurer's daily worklist for receipts?",
         options: [
           "Personally message every cardholder every day",
-          "Transactions, set to State \u2192 Owes a receipt or coding and grouped by Person \u2014 the handful of stragglers each month, not the whole roster",
+          "Transactions, set to State \u2192 Owes a receipt or coding and grouped by Person: the handful of stragglers each month, not the whole roster",
           "A shared spreadsheet outside the app",
           "There isn't one; it's fully automatic",
         ],
         answerIndex: 1,
         explanation:
-          "The reminder timeline handles the routine cases; that one State + Group by pairing is where you spend your actual attention. It isn't a separate screen \u2014 there is no Chase Receipts page and no menu entry for it, just those two controls, with each cardholder's Chase button sitting in their own band.",
+          "The reminder timeline handles routine cases; that State + Group by pairing is where your attention goes. There is no Chase Receipts page or menu entry, only those two controls, with each cardholder's Chase button in their own band.",
       },
       {
         prompt:
           "Reconcile shows Needs documentation: 7 and Closed without documentation: 3. How many rows stand between you and publishing the period, and how do you see them?",
         options: [
-          "3 — the 7 are still open, so they aren't a publishing problem yet",
-          "7 — the 3 were closed, so somebody already settled them",
-          "10 — the two filters are disjoint, so the publishing backlog is both; pick both and they widen, because they're in the same group",
-          "7 — the 3 are inside the 7, so the bigger number is the real one",
+          "3. The 7 are still open, so they aren't a publishing problem yet",
+          "7. The 3 were closed, so somebody already settled them",
+          "10. The two filters are disjoint, so the publishing backlog is both; pick both and they widen, because they're in the same group",
+          "7. The 3 are inside the 7, so the bigger number is the real one",
         ],
         answerIndex: 2,
         explanation:
-          "Neither pile can be published. The 7 are open and owe a receipt or an approved exception — you nudge those. The 3 were closed with nothing behind them — nobody is going to send you a receipt for those; you document them or honestly re-open them. No row is in both piles, so the backlog is the sum, and multi-select within the State group is how you look at it in one view. (The last option is the old shape: the two used to overlap almost entirely — 42 rows in common, 3 that weren't — which is exactly why they were split into halves that mean different jobs.)",
+          "Neither pile can publish. The 7 are open and owe a receipt or an approved exception, so you nudge those. The 3 were closed with nothing behind them, so you document them or honestly re-open them. No row is in both piles, so the backlog is the sum. Multi-select within the State group shows both in one view.",
       },
       {
         prompt:
           "Priya has five open charges. Two are waiting on a decision from you, three are hers to code. You want to ask her for the three and only the three. What do you do?",
         options: [
-          "Chase her — she'll work out which ones you meant",
-          "Tick those three rows in the grid, then press Chase on her band — a selection wins over everything else, so those three are what gets asked for",
+          "Chase her; she'll work out which ones you meant",
+          "Tick those three rows in the grid, then press Chase on her band. A selection wins over everything else, so those three are what gets asked for",
           "Wait until you've cleared your own two, then chase her",
           "Email her outside the app; the chase can only ever ask for everything",
         ],
         answerIndex: 1,
         explanation:
-          "The chase acts on the view you are standing in — your filters, your search, and above all any rows you have ticked, which are the narrowest thing on the screen and therefore win. Chasing her for all five would ask for two she cannot do anything about, which is how a reminder teaches people it isn't worth reading carefully. Note the cap that makes this matter: one chase per cardholder per 24 hours, so the ask you send is the ask you get for the day — narrow it before you press, not after.",
+          "The chase acts on your current view: filters, search, and any ticked rows, which are the narrowest and so win. Asking for all five would include two she can't act on, which teaches people to skim reminders. You get one chase per cardholder per 24 hours, so narrow it before you press.",
       },
     ],
   },
@@ -1981,20 +1981,20 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The whole Treasurer job compresses into one target: close the month in under 30 minutes. That's only possible because the work was done continuously — Reconcile kept current, receipts chased as they came due — not saved up for month-end.",
+        text: "The Treasurer's target is to close the month in under 30 minutes. That only works if the work happens all month: Reconcile kept current and receipts chased as they come due, not saved for month-end.",
       },
       {
         kind: "rule",
         title: "Close is a check, not a marathon",
-        text: "If close is taking hours, the real problem happened three weeks earlier: charges piled up uncategorized, receipts went unchased, budgets went unlinked. A clean close is proof the month was run well, not a task in itself.",
+        text: "If close takes hours, the problem started weeks earlier: charges piled up uncategorized, receipts went unchased, budgets went unlinked. A clean close shows the month was run well.",
       },
       {
         kind: "bullets",
         items: [
-          "**Everything closed:** every charge has a receipt, a category and a budget link, and has been marked Closed. The closed count in the Transactions header climbs toward the whole month.",
-          "**Reimbursement queue triaged:** nothing sitting unreviewed that's actually yours to act on — the submission email is a nudge, not a substitute for actually clearing the queue.",
-          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready — it's a flag, not a status. So it's easy to close a month while real debts sit uncollected. Check the pill directly and nudge anyone who still owes. When someone pays you back, confirm it on Cards → \"Personal to repay\" with \"Mark repaid\". Otherwise the debt stays open on the books, whatever landed in the account.",
-          "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation. That trust is this system's north-star metric.",
+          "**Everything closed:** every charge has a receipt, a category and a budget link, and is marked Closed. The closed count in the Transactions header climbs toward the whole month.",
+          "**Reimbursement queue triaged:** nothing yours to act on sits unreviewed. The submission email is a nudge; it doesn't clear the queue for you.",
+          "**Personal (unpaid) filter checked:** a personal flag doesn't block Ready, because it's a flag, not a status. So a month can close with debts uncollected. Check the pill and nudge anyone who still owes. When someone pays you back, confirm it on Cards → \"Personal to repay\" with \"Mark repaid\". Otherwise the debt stays open on the books, whatever landed in the account.",
+          "**Report up:** the central Financial Manager should be able to open your chapter's numbers and trust them without a conversation. That trust is the system's main measure of success.",
         ],
       },
       {
@@ -2019,19 +2019,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "Under 30 minutes is the north-star target — and it's only reachable if the month was reconciled continuously, not all at once.",
+          "Under 30 minutes, and it's only reachable if the month was reconciled continuously, not all at once.",
       },
       {
         prompt: "Why would a close take hours instead of minutes?",
         options: [
           "The app is slow",
-          "The real work — reconciling, chasing receipts — didn't happen continuously during the month",
+          "The real work (reconciling, chasing receipts) didn't happen continuously during the month",
           "There are too many backers",
           "Central hasn't approved the budget yet",
         ],
         answerIndex: 1,
         explanation:
-          "A long close is a symptom, not the disease — it means Reconcile and receipt-chasing were deferred instead of done as the month went.",
+          "A long close means Reconcile and receipt-chasing were put off instead of done as the month went.",
       },
       {
         prompt: "Who should be able to trust your chapter's numbers without asking you anything?",
@@ -2039,24 +2039,24 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Only you",
           "The central Financial Manager",
           "Every backer individually",
-          "Nobody needs to — the numbers are internal",
+          "Nobody needs to; the numbers are internal",
         ],
         answerIndex: 1,
         explanation:
-          "The FM trusting every chapter's numbers without asking is the system's stated north-star metric, right alongside the 30-minute close.",
+          "The FM trusting every chapter's numbers without asking is the system's main measure of success, alongside the 30-minute close.",
       },
       {
         prompt:
           "A cardholder pays back a personal charge and you confirm it with \"Mark repaid\". What happens to the original charge?",
         options: [
-          "It's deleted from the ledger — the debt is settled, so the row goes away",
+          "It's deleted from the ledger, since the debt is settled",
           "It stays on the ledger with its receipt and coding, and an offsetting credit posts against it so the two net to zero",
           "It moves to the Excluded filter",
           "Nothing changes until next month's bank import",
         ],
         answerIndex: 1,
         explanation:
-          "Nothing is ever deleted. Settling posts one offsetting credit against the charge — the pair nets to zero in category and budget spend, the row reads \"Repaid\", and the money's whole story stays on the books. Until you confirm it, the debt stays open no matter what landed in the account.",
+          "Nothing is ever deleted. Settling posts one offsetting credit against the charge, so the pair nets to zero in category and budget spend and the row reads \"Repaid\". Until you confirm it, the debt stays open no matter what landed in the account.",
       },
     ],
   },
@@ -2075,34 +2075,34 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Publishing takes a month's books and freezes a copy. That copy is what the world sees. It is the property that stops an after-the-fact edit from silently rewriting what we already said — which is why fixing the ledger is only half of making a correction.",
+        text: "Publishing freezes a copy of a month's books, and that copy is what the world sees. A later edit can't silently rewrite what we already said. So fixing the ledger is only half of a correction.",
       },
       {
         kind: "rule",
         title: "We publish gaps rather than around them",
-        text: "A month with unexplained rows still publishes, with the blanks showing. Blocking would mean publishing nothing for a year. Hiding those rows, or letting them look documented, would be a claim we cannot back. The only thing refused outright is an incomplete ledger presented as complete.",
+        text: "A month with unexplained rows still publishes, with the blanks showing. Blocking would mean publishing nothing for a year. Hiding those rows, or letting them look documented, would be a claim we can't back. The only thing refused outright is an incomplete ledger presented as complete.",
       },
       {
         kind: "rule",
         title: "Publishing is its own seat power",
-        text: "It is separate from reconciling, because its audience is outside the org and a published number cannot be un-seen. The Executive Director and Financial Manager carry it centrally; a Chapter Director carries it for their own book. Notably not the Treasurer, who prepares it. It refuses a self-approval wherever you publish from.",
+        text: "It is separate from reconciling, because its audience is outside the org and a published number can't be un-seen. The Executive Director and Financial Manager carry it centrally; a Chapter Director carries it for their own book. The Treasurer, who prepares it, does not. It refuses a self-approval wherever you publish from.",
       },
       {
         kind: "rule",
         title: "A year is the months added up",
-        text: "A year is never published on its own. It never estimates, and never fills in a month nobody closed. It states how many of the twelve it covers — so the way to make the year complete is to close the months.",
+        text: "A year is never published on its own. It never estimates or fills in a month nobody closed, and it states how many of the twelve it covers. To complete the year, close the months.",
       },
       {
         kind: "rule",
         title: "Names are internal forever",
-        text: "Members and guests never consented to a public financial record, and some are minors. The ledger publishes the headcount and the affiliation mix, which answer the accountability question without publishing a person.",
+        text: "Members and guests never consented to a public financial record, and some are minors. The ledger publishes the headcount and the affiliation mix instead.",
       },
       {
         kind: "reveal",
         prompt:
           "You spot a wrong figure in a month you published last week. You fix the transaction, and the ledger is now right. Are you done?",
         answer:
-          "No. The published copy is frozen, so the world is still reading the old number. Correcting it means amending in public, with a reason. The fix and the disclosure are two halves of one act.",
+          "No. The published copy is frozen, so the world still reads the old number. You also have to amend it in public, with a reason.",
       },
     ],
     quiz: [
@@ -2110,14 +2110,14 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "You publish August, then next week you edit one of August's transactions in Reconcile. What does the public page show?",
         options: [
-          "The edited version — the page reads the live books",
+          "The edited version, since the page reads the live books",
           "The version that was published. The month is frozen; the edit changes nothing public until a correction is published",
-          "Nothing — the month is pulled until it's re-approved",
+          "Nothing; the month is pulled until it's re-approved",
           "Both versions, side by side, automatically",
         ],
         answerIndex: 1,
         explanation:
-          "Publishing freezes a copy, and that copy is what the world sees. It's the property that stops an after-the-fact edit from silently rewriting what we already said — which is exactly why fixing the ledger is only half of making a correction.",
+          "Publishing freezes a copy, and that copy is what the world sees. A later edit can't silently rewrite it, so fixing the ledger is only half of a correction.",
       },
       {
         prompt: "A month has four charges with no receipt and no approved exception. What happens?",
@@ -2136,25 +2136,25 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         options: [
           "You, as long as you hold a finance manager seat",
           "Anyone on the chapter roster",
-          "Someone else holding the Publish finances power — the system refuses a self-approval and records which way each month went",
+          "Someone else holding the Publish finances power. The system refuses a self-approval and records which way each month went",
           "Only the Executive Director, never anyone else",
         ],
         answerIndex: 2,
         explanation:
-          "Publishing is a separate seat power from reconciling, because its audience is outside the org and a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book — notably not the Treasurer, who prepares it. This holds wherever you publish from: the flow that opens over a month band on Transactions is the console's own flow, so it refuses a self-approval in exactly the same words.",
+          "Publishing is a separate seat power from reconciling, because a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book. The Treasurer, who prepares it, does not. The flow that opens over a month band on Transactions is the console's own flow, so it refuses a self-approval the same way.",
       },
       {
         prompt:
           "The 2026 year view shows $1.4M raised. Four months of 2026 haven't been closed. What is the page showing?",
         options: [
           "An estimate for the whole year, projected from the eight closed months",
-          "Only the eight published months, added together — and it says so on the page",
+          "Only the eight published months, added together, and it says so on the page",
           "The whole year, because the year is published separately from the months",
-          "Nothing — a year needs all twelve months before it appears",
+          "Nothing; a year needs all twelve months before it appears",
         ],
         answerIndex: 1,
         explanation:
-          "A year is never published on its own; it is the months added up. It never estimates or fills in a month nobody closed, and it states how many of the twelve it covers — so the way to make the year complete is to close the months.",
+          "A year is the published months added up. It never estimates or fills in a month nobody closed, and it states how many of the twelve it covers.",
       },
       {
         prompt:
@@ -2162,12 +2162,12 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         options: [
           "The twelve names",
           "Nothing about the people at all",
-          "The headcount and the mix — \"12 people — 5 team members, 7 community members\"",
+          "The headcount and the mix: \"12 people: 5 team members, 7 community members\"",
           "Only the person whose card was charged",
         ],
         answerIndex: 2,
         explanation:
-          "Names are internal forever — members and guests never consented to a public financial record, and some are minors. The headcount and affiliation mix answer the accountability question without publishing a person.",
+          "Names are internal forever. Members and guests never consented to a public financial record, and some are minors, so the page shows the headcount and affiliation mix.",
       },
     ],
   },
@@ -2177,32 +2177,32 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-raise-vs-manage",
     title: "Raise vs. manage",
     subtitle: "Three people, three jobs, on purpose",
-    minutes: 3,
+    minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "The playbook splits money into three jobs, held by three different humans. The Chapter Director **raises** it from backers. The Treasurer **records** it in Reconcile — receipts, budgets. The central Financial Manager **oversees** it: audit, cross-chapter trust. As Chapter Director, your finance job is raising and approving — not bookkeeping.",
+        text: "The playbook splits money into three jobs, held by three different people. The Chapter Director **raises** it from backers. The Treasurer **records** it in Reconcile (receipts, budgets). The central Financial Manager **oversees** it through audit and cross-chapter checks. As Chapter Director, your finance job is raising and approving, not bookkeeping.",
       },
       {
         kind: "table",
         headers: ["Job", "Who", "What it is NOT"],
         rows: [
-          ["Raise", "Chapter Director", "Recording transactions — that's the Treasurer's job"],
-          ["Record", "Treasurer", "Fundraising — a Treasurer never fundraises"],
-          ["Oversee", "Central Financial Manager", "Day-to-day approval — the FM audits, doesn't run your chapter"],
+          ["Raise", "Chapter Director", "Recording transactions. That's the Treasurer's job."],
+          ["Record", "Treasurer", "Fundraising. A Treasurer never fundraises."],
+          ["Oversee", "Central Financial Manager", "Day-to-day approval. The FM audits; they don't run your chapter."],
         ],
       },
       {
         kind: "rule",
         title: "Separation of duties is identity-based, not a courtesy",
-        text: "The system enforces approver ≠ requester by the actual person, not by job title — even if you personally hold two seats, you can't approve something you yourself submitted. It's the same protection everywhere in the app, not a special rule just for you.",
+        text: "The system checks that the approver is not the requester by person, not job title. Even if you hold two seats, you can't approve something you submitted. The same check applies everywhere in the app.",
       },
       {
         kind: "reveal",
         prompt:
           "As Chapter Director, can you also do the Treasurer's Reconcile work if they're on vacation?",
         answer:
-          "You could technically cover the gap, but the playbook's raise/record/oversee split exists precisely so no one person controls all three jobs long-term. Cover a gap; don't make dual-hatting your chapter's normal state — it's a transition condition, not a design.",
+          "You can cover a gap. But the raise/record/oversee split exists so no one person controls all three jobs long-term. Holding both roles should be a temporary state, not how your chapter runs.",
       },
     ],
     quiz: [
@@ -2216,7 +2216,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Raising and approving are the Director's two jobs — recording is the Treasurer's, and cross-chapter audit is the FM's.",
+          "The Director raises and approves. Recording is the Treasurer's job, and cross-chapter audit is the FM's.",
       },
       {
         prompt: "Why does a Treasurer never fundraise?",
@@ -2228,19 +2228,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The three-party separation is the mandated structure the playbook uses to keep any single person from controlling the whole money loop.",
+          "The playbook separates the three jobs so no single person controls the whole money loop.",
       },
       {
-        prompt: "How does the system enforce \"approver ≠ requester\"?",
+        prompt: "How does the system enforce \"the approver is not the requester\"?",
         options: [
           "By job title only",
-          "By the actual person's identity — even a dual-hat holder can't approve their own submission",
+          "By the actual person's identity. Even someone holding two seats can't approve their own submission",
           "It doesn't enforce it; it's just a guideline",
           "Only for reimbursements, not budgets",
         ],
         answerIndex: 1,
         explanation:
-          "SoD is identity-based (personId + auth email), not role-based, and it applies everywhere approvals happen — reimbursements and budgets alike.",
+          "Separation of duties checks identity (person record and sign-in email), not role, and applies everywhere approvals happen, including reimbursements and budgets.",
       },
     ],
   },
@@ -2249,29 +2249,29 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "finance-approving-budgets",
     title: "Approving budgets",
-    subtitle: "The 85% principle — submit, approve, and why raising the cap isn't automatic",
+    subtitle: "The 85% principle: submit, approve, and why raising the cap isn't automatic",
     minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "The **85% principle** is explicit: chapters approve freely within their own money. Central's control is audit, not a gate. The Financial Manager's cross-chapter audit is oversight after the money moves, never pre-approval before it does.",
+        text: "Under the **85% principle**, chapters approve freely within their own money. Central's control is audit, not a gate: the Financial Manager's cross-chapter audit happens after the money moves, never as pre-approval.",
       },
       {
         kind: "rule",
         title: "Reach is per seat",
-        text: "The Treasurer and the Chapter Director approve their OWN chapter's codings. The Financial Manager and the Executive Director approve any chapter's, and central's. Even inside your own chapter, you could never approve a coding you wrote yourself.",
+        text: "The Treasurer and the Chapter Director approve their OWN chapter's codings. The Financial Manager and the Executive Director approve any chapter's, and central's. Nobody can approve a coding they wrote.",
       },
       {
         kind: "rule",
         title: "Raising a cap is not automatic",
-        text: "Bump an approved budget's amount and it drops back to Draft when you save. The OLD approved figure stays the real spending cap, so nothing silently expands. But the increase is invisible to every approver until you deliberately send it for review again.",
+        text: "Raise an approved budget's amount and it drops back to Draft when you save. The OLD approved figure stays the spending cap, so nothing silently expands. Approvers can't see the increase until you send it for review again.",
       },
       {
         kind: "reveal",
         prompt:
           "You are the Treasurer. You wrote a budget and your Chapter Director is away. Can you approve it yourself?",
         answer:
-          "No. Separation of duties is identity-based, not rank-based: whoever submits can never be the one who approves, even holding a seat that otherwise could. The Financial Manager or the Executive Director can act on it instead.",
+          "No. Separation of duties goes by identity, not rank: whoever submits can never approve, even holding a seat that otherwise could. The Financial Manager or the Executive Director can act on it instead.",
       },
     ],
     quiz: [
@@ -2279,50 +2279,50 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt:
           "You're the Treasurer for New York. A coding on a CENTRAL charge, and another on Chicago's charge, are both sitting in review. Which can you approve?",
         options: [
-          "Both — a Treasurer is a finance manager, and managers approve codings",
-          "Neither — a Treasurer approves codings for their own chapter only",
+          "Both. A Treasurer is a finance manager, and managers approve codings",
+          "Neither. A Treasurer approves codings for their own chapter only",
           "The central one, since central outranks a chapter",
           "Chicago's, since it's a chapter like yours",
         ],
         answerIndex: 1,
         explanation:
-          "Reach is per seat. The Treasurer and the Chapter Director approve their OWN chapter's codings; the Financial Manager and the Executive Director approve any chapter's and central's. Neither of those rows is yours — and even inside your own chapter you could never approve a coding you wrote.",
+          "Reach is per seat. The Treasurer and the Chapter Director approve their OWN chapter's codings; the Financial Manager and the Executive Director approve any chapter's and central's. And nobody can approve a coding they wrote.",
       },
       {
         prompt: "Within a chapter's 85%, who approves how the money gets spent?",
         options: [
           "Central has to sign off on everything first",
-          "The Chapter Director, freely, within mission/vision — central doesn't pre-approve chapter budgets",
-          "Nobody — it's unrestricted",
+          "The Chapter Director, freely, within mission/vision; central doesn't pre-approve chapter budgets",
+          "Nobody; it's unrestricted",
           "The Treasurer alone",
         ],
         answerIndex: 1,
         explanation:
-          "The 85% principle is explicit: chapters approve freely within their own money; central's control is audit, not a gate.",
+          "Under the 85% principle, chapters approve freely within their own money; central's control is audit, not a gate.",
       },
       {
         prompt: "What is central's role in a chapter's budget, per the 85% principle?",
         options: [
           "Approving every line item",
-          "Auditing after the fact — oversight, not a gate",
+          "Auditing after the fact: oversight, not a gate",
           "Setting the chapter's spending limit line by line",
           "Central has no visibility at all",
         ],
         answerIndex: 1,
         explanation:
-          "The Financial Manager's cross-chapter audit is oversight after the money moves, not pre-approval before it does.",
+          "The Financial Manager's cross-chapter audit happens after the money moves, not as pre-approval.",
       },
       {
-        prompt: "You bump an APPROVED budget's amount from $2,000 to $3,000. What happens?",
+        prompt: "You raise an APPROVED budget's amount from $2,000 to $3,000. What happens?",
         options: [
-          "Nothing — the higher amount is available immediately",
-          "It drops back to Draft — NOT auto-submitted; the old $2,000 stays the spending cap, and the increase won't be reviewed until you send it for approval again",
+          "Nothing; the higher amount is available immediately",
+          "It drops back to Draft, NOT auto-submitted; the old $2,000 stays the spending cap, and the increase won't be reviewed until you send it for approval again",
           "The budget is deleted and a new one is created",
           "Only a Financial Manager can ever raise a budget's amount",
         ],
         answerIndex: 1,
         explanation:
-          "An increase past the approved cap flips the budget back to Draft, not Awaiting approval — it's fully editable and invisible to approvers until you deliberately submit it again. The old approved amount keeps enforcing the cap the whole time it sits unsent. Decreases and line reshuffles never trigger any of this.",
+          "An increase past the approved cap returns the budget to Draft, not Awaiting approval. It stays editable and hidden from approvers until you submit it again, and the old approved amount keeps enforcing the cap. Decreases and line reshuffles don't trigger this.",
       },
     ],
   },
@@ -2340,24 +2340,24 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Tiers are keyed on BACKER COUNT — headcount, never dollars, exactly like every other constant in the model. The count is derived live from real pledge activity, and nobody can set it by hand. The old manual-entry seam was removed after a typed-in number contradicted the real one on a public page.",
+        text: "Tiers are keyed on BACKER COUNT: headcount, never dollars, like every other constant in the model. The count is derived live from real pledge activity, and nobody can set it by hand. Manual entry was removed after a typed-in number contradicted the real one on a public page.",
       },
       {
         kind: "rule",
-        title: "The skim is a flat 15%, and it really moves",
-        text: "Every chapter sends 15% up to central. It is modeled as an actual transfer, not just a number on a report. That is why you can see it leave, and why it reconciles like any other movement between accounts.",
+        title: "The skim is a flat 15%, moved as a real transfer",
+        text: "Every chapter sends 15% to central as an actual transfer, not a number on a report. You can see it leave, and it reconciles like any other movement between accounts.",
       },
       {
         kind: "rule",
         title: "A monthly cost is a fixed base plus the team",
-        text: "The fixed base — film, event food, equipment transport, storage, software — doesn't move with team size. The per-teammate part does: $20 a month each, which is the monthly team meal. So a six-person team on a $570 base costs $570 + 6 × $20 = $690. Every teammate carries a real recurring cost, so growing the team is good but deliberate: the floor moves, and the raising has to move with it.",
+        text: "The fixed base (film, event food, equipment transport, storage, software) doesn't change with team size. The per-teammate part does: $20 a month each, for the monthly team meal. A six-person team on a $570 base costs $570 + 6 × $20 = $690. Grow the team deliberately, because the floor rises and the raising has to rise with it.",
       },
       {
         kind: "reveal",
         prompt:
           "Your chapter's giving jumps sharply this month but the backer count is flat. Does the tier move?",
         answer:
-          "No. Tiers are keyed on backer count, not dollars — the same headcount rule every constant in the model uses. More money from the same backers is a bigger month, not a bigger chapter.",
+          "No. Tiers are keyed on backer count, not dollars. More money from the same backers is a bigger month, not a bigger chapter.",
       },
     ],
     quiz: [
@@ -2365,62 +2365,62 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What sets a chapter's tier?",
         options: [
           "Total dollars raised in a year",
-          "Backer headcount — the 20/30/50 thresholds",
+          "Backer headcount: the 20/30/50 thresholds",
           "How many events the chapter runs",
           "How long the chapter has existed",
         ],
         answerIndex: 1,
         explanation:
-          "Tiers are keyed on backer count, exactly like every other constant in the model — headcount, never dollars.",
+          "Tiers are keyed on backer count, like every other constant in the model: headcount, never dollars.",
       },
       {
         prompt: "What percentage of chapter revenue moves to central each month?",
         options: [
           "A flat 15%, as a real transfer to the City Launch Fund",
-          "0% — chapters keep everything",
+          "0%; chapters keep everything",
           "50%",
           "It varies by chapter size",
         ],
         answerIndex: 0,
         explanation:
-          "The skim is flat 15% for every chapter, modeled as an actual transfer, not just a number on a report.",
+          "The skim is a flat 15% for every chapter, made as an actual transfer, not a number on a report.",
       },
       {
-        prompt: "Where does a chapter's backer count actually come from today?",
+        prompt: "Where does a chapter's backer count come from today?",
         options: [
           "The Treasurer types it in by hand every month",
-          "It's recomputed automatically from active $50+ pledges on the Giving page — there is no hand-entry path at all",
+          "It's recomputed automatically from active $50+ pledges on the Giving page; there is no hand-entry path at all",
           "Central emails it to the chapter once a quarter",
           "It's calculated once a year during budgeting season",
         ],
         answerIndex: 1,
         explanation:
-          "The count is derived, live, from real pledge activity. Nobody can set it by hand — the old manual-entry seam was removed after a typed-in number contradicted the real one on a public page.",
+          "The count is derived live from real pledge activity. Nobody can set it by hand; manual entry was removed after a typed-in number contradicted the real one on a public page.",
       },
       {
         prompt: "Your chapter has 6 teammates. What's its monthly operating floor?",
         options: [
-          "$570 — the fixed base is the floor",
-          "$690 — the $570 fixed base plus $20 for each of the 6 teammates",
-          "$120 — $20 per teammate",
+          "$570, because the fixed base is the floor",
+          "$690: the $570 fixed base plus $20 for each of the 6 teammates",
+          "$120: $20 per teammate",
           "It depends on the tier, not the team size",
         ],
         answerIndex: 1,
         explanation:
-          "$570 + 6 × $20 = $690. The fixed base (film, event food, equipment transport, storage, software) doesn't move with team size; the $20 does — it's the monthly team meal, one per teammate.",
+          "$570 + 6 × $20 = $690. The fixed base (film, event food, equipment transport, storage, software) doesn't change with team size; the $20 monthly team meal per teammate does.",
       },
       {
         prompt:
           "A Chapter Director adds four people to the team this month. What happened to the chapter's costs?",
         options: [
-          "Nothing — people are free; only programs cost money",
-          "The monthly floor rose $80, plus four more seats in the conference fund — real recurring cost the plan has to account for",
+          "Nothing; people are free and only programs cost money",
+          "The monthly floor rose $80, plus four more seats in the conference fund: real recurring cost the plan has to account for",
           "Costs fell, because more people share the work",
           "Only the conference fund changes; the monthly floor is fixed",
         ],
         answerIndex: 1,
         explanation:
-          "Every teammate carries a real recurring cost. Growing the team is expected and good — the point is to do it deliberately, knowing the floor moved and the raising has to move with it, rather than discovering it at close.",
+          "Every teammate carries a real recurring cost. Growing the team is good, but do it knowing the floor rose and the raising has to rise with it, rather than finding out at close.",
       },
     ],
   },
@@ -2434,29 +2434,29 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The rollup is per chapter, side by side, with Central appearing as a row exactly like every chapter. Nothing is pre-aggregated away. Drill-down re-checks your central reach and then shows the chapter's real dashboard — the Financial Manager's audit tool IS the chapter's own view.",
+        text: "The rollup shows every chapter side by side, with Central as a row like any chapter. Nothing is pre-aggregated away. Drill-down re-checks your central reach, then shows the chapter's real dashboard: the Financial Manager audits from the chapter's own view.",
       },
       {
         kind: "rule",
         title: "Books stay separate even in the merged view",
-        text: "You can SEE every book; that is the whole audit posture. But coding a chapter's charge belongs to that chapter's Treasurer. Central's own rows and your own chapter's rows stay fully editable.",
+        text: "You can SEE every book, which is what auditing needs. Coding a chapter's charge belongs to that chapter's Treasurer. Central's own rows and your own chapter's rows stay fully editable.",
       },
       {
         kind: "rule",
         title: "Paid-from never moves; charged-to does",
-        text: "Pay for New York's venue on a Public Worship card and Central really did pay. Its statement has to keep matching, so paid-from stays put. Charged-to is what the budget measures, so the cost lands on New York's plan. The gap between them is a receivable, shown in Inter-chapter balances and settled overnight by the reconciliation engine.",
+        text: "Pay for New York's venue on a Public Worship card and Central did pay. Its statement has to keep matching, so paid-from stays put. Charged-to is what the budget measures, so the cost lands on New York's plan. The gap is a receivable, shown in Inter-chapter balances and settled overnight by the reconciliation engine.",
       },
       {
         kind: "rule",
         title: "Report up",
-        text: "Categories are org-wide: Supplies means Supplies in every book. Funds are the opposite on purpose — a fund is a chapter's own restricted money, so it stays chapter-owned. You are an auditor who can verify any chapter's numbers, never a gate purchases wait behind. The central Financial Manager should be able to open your chapter's numbers and trust them without a conversation.",
+        text: "Categories are org-wide: Supplies means Supplies in every book. Funds are the opposite: a fund is a chapter's own restricted money, so it stays chapter-owned. You are an auditor who can verify any chapter's numbers, never a gate purchases wait behind. The central Financial Manager should be able to open a chapter's numbers and trust them without a conversation.",
       },
       {
         kind: "reveal",
         prompt:
           "Drilling into another chapter, you spot a charge coded to the wrong budget. Can you fix it?",
         answer:
-          "No — and that is the design. Seeing every book is the audit posture; coding that chapter's charge belongs to its Treasurer. Tell them. Your own chapter's rows and central's stay fully editable to you.",
+          "No, by design. You can see every book, but coding that chapter's charge belongs to its Treasurer, so tell them. Your own chapter's rows and central's stay fully editable to you.",
       },
     ],
     quiz: [
@@ -2464,64 +2464,64 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What does the central rollup show?",
         options: [
           "Only central's own budgets",
-          "Every chapter as a row — spend vs budget — plus Central's own row",
+          "Every chapter as a row (spend vs budget), plus Central's own row",
           "A single combined number with no chapter breakdown",
           "Nothing until a chapter submits a report",
         ],
         answerIndex: 1,
         explanation:
-          "The rollup is per-chapter, side by side, with Central appearing as a row exactly like every chapter — nothing is pre-aggregated away.",
+          "The rollup shows every chapter side by side, with Central as a row like any chapter. Nothing is pre-aggregated away.",
       },
       {
         prompt: "When you drill into a chapter from the central view, what do you see?",
         options: [
           "A summary PDF",
           "The exact same dashboard that chapter's own Treasurer sees",
-          "Nothing — drill-down is view-only metadata",
+          "Nothing; drill-down is view-only metadata",
           "Only that chapter's card list",
         ],
         answerIndex: 1,
         explanation:
-          "Drill-down re-checks your central reach and then shows the chapter's real dashboard — the FM's audit tool IS the chapter's own view.",
+          "Drill-down re-checks your central reach, then shows the chapter's real dashboard. The FM audits from the chapter's own view.",
       },
       {
         prompt:
           "In Reconcile's All books view you open a charge belonging to a chapter you're not the Treasurer of. What can you do with it?",
         options: [
-          "Edit it like any other row — central reach means central can code anything",
-          "Read it, but not edit it — the row shows a lock instead of a checkbox",
+          "Edit it like any other row, since central reach means central can code anything",
+          "Read it, but not edit it. The row shows a lock instead of a checkbox",
           "Nothing at all; other chapters' rows are hidden from you",
           "Delete it, but not re-code it",
         ],
         answerIndex: 1,
         explanation:
-          "Books stay separate even in the merged view. You can SEE every book — that's the whole audit posture — but coding a chapter's charge belongs to that chapter's Treasurer. Central's own rows and your own chapter's rows stay fully editable.",
+          "Books stay separate even in the merged view. You can SEE every book, but coding a chapter's charge belongs to that chapter's Treasurer. Central's own rows and your own chapter's rows stay fully editable.",
       },
       {
         prompt:
           "You pay for New York's venue deposit on a Public Worship card and code it to New York's event budget. What happens?",
         options: [
-          "The charge moves into New York's account — its book now shows the money leaving",
+          "The charge moves into New York's account, so its book now shows the money leaving",
           "It stays paid from Central, counts against New York's budget, and New York owes Central the amount",
           "It counts against Central's budget instead, since Central's card paid",
           "Nothing until someone records a transfer first",
         ],
         answerIndex: 1,
         explanation:
-          "Paid-from never moves — Central's account really did pay, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap between the two is a receivable the app computes for you, visible in Inter-chapter balances — and settled automatically by the morning reconciliation engine, which books the transfer overnight so every book reads true by morning (the Accounts page shows each one for audit, and when the Financial Manager has turned on Real cash movement, the actual money moves between the Increase accounts to match).",
+          "Paid-from never moves: Central's account paid, and its statement has to keep matching. Charged-to is what the budget measures, so the deposit lands on New York's plan. The gap is a receivable shown in Inter-chapter balances. The morning reconciliation engine books the transfer overnight, and the Accounts page lists each one for audit. If the Financial Manager has turned on Real cash movement, the money also moves between the Increase accounts.",
       },
       {
         prompt:
           "Whose categories does a charge on a Central card get to pick from?",
         options: [
-          "None — a Central charge carries no category",
-          "The same list every chapter uses — there's one category list for the whole org",
+          "None; a Central charge carries no category",
+          "The same list every chapter uses. There's one category list for the whole org",
           "Only the categories of the chapter whose budget it's charged to",
           "Central has its own separate list, kept apart from the chapters'",
         ],
         answerIndex: 1,
         explanation:
-          "Categories are org-wide: Supplies means Supplies in every book, so every charge anywhere takes one from the same list and the picker offers you the same labels wherever you're standing. Funds are the opposite, deliberately — a fund is a chapter's own restricted money, so it stays chapter-owned. And on your actual relationship to a chapter's spending: you're an auditor who can verify any chapter's numbers at any time, not a gate purchases wait behind. Chapter budgets are approved by the Chapter Director, never pre-cleared by you.",
+          "Categories are org-wide: Supplies means Supplies in every book, and the picker offers the same labels everywhere. Funds are the opposite: a fund is a chapter's own restricted money, so it stays chapter-owned. You audit chapter spending; you don't pre-clear it. The Chapter Director approves chapter budgets.",
       },
     ],
   },
@@ -2535,26 +2535,26 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The same receipt timeline every cardholder lives under — reminder, escalation, day-7 auto-lock — rolls up to you across every chapter. The Cards view's escalation queue is where you see which cards are closest to locking, before it happens.",
+        text: "Every cardholder's receipt timeline (reminder, escalation, day-7 auto-lock) rolls up to you across every chapter. The escalation queue in the Cards view shows which cards are closest to locking, before it happens.",
       },
       {
         kind: "table",
         headers: ["Stage", "What it means for you"],
         rows: [
-          ["Flagged (day 1–3)", "Still routine — the cardholder likely hasn't noticed yet"],
-          ["Escalated (day 3+)", "Worth a nudge if it's a repeat pattern for that person"],
-          ["Locked (day 7)", "Automatic — no action needed from you; it lifts the moment a receipt is attached to the charge"],
+          ["Flagged (day 1–3)", "Still routine. The cardholder likely hasn't noticed yet."],
+          ["Escalated (day 3+)", "Worth a nudge if it's a repeat pattern for that person."],
+          ["Locked (day 7)", "Automatic, with no action from you. It lifts the moment a receipt is attached to the charge."],
         ],
       },
       {
         kind: "rule",
         title: "You watch patterns, not individual charges",
-        text: "One missing receipt is normal life. The same cardholder hitting escalation every month is worth a real conversation. The queue exists so you notice the pattern, not so you chase every stray charge.",
+        text: "One missing receipt is normal. The same cardholder hitting escalation every month is worth a conversation. The queue shows you the pattern; it isn't a list of stray charges to chase.",
       },
       {
         kind: "rule",
         title: "A full receipts library is not a documented month",
-        text: "Receipts that arrive by email or text are CAPTURED, not filed. They wait in the Receipts library until a human confirms which charge each belongs to. The cardholder does that in one tap, when the app offers the match while they code the charge. So the two numbers you'd expect to move together don't: receipts in, and charges documented. The second is the one that governs the lock, this queue, and the close.\n\nWe gave up the automatic match deliberately. Guessing was right most of the time, and wrong invisibly. A receipt stuck to the wrong charge reads as finished, which is worse than one that isn't attached at all. A chapter where the queue keeps growing doesn't have a broken pipeline. It has a habit that hasn't landed yet, which is the pattern this view exists to show you.",
+        text: "Receipts that arrive by email or text are CAPTURED, not filed. They wait in the Receipts library until a person confirms which charge each belongs to. The cardholder does that in one tap when the app offers the match during coding. So receipts in and charges documented don't move together. Charges documented is the number that drives the lock, this queue and the close.\n\nWe dropped automatic matching on purpose. It was usually right, but wrong invisibly: a receipt on the wrong charge looks finished, which is worse than an unattached one. A growing queue means a habit that hasn't formed yet, not a broken pipeline.",
       },
       {
         kind: "try_status",
@@ -2563,11 +2563,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           { value: "active", label: "Active, no issue", color: "gray" },
           { value: "flagged", label: "Flagged", color: "amber" },
           { value: "escalated", label: "Escalated", color: "amber" },
-          { value: "cleared", label: "Receipt uploaded — cleared", color: "green" },
+          { value: "cleared", label: "Receipt uploaded, cleared", color: "green" },
         ],
         terminal: "cleared",
         caption:
-          "Notice the card never needs YOU to unlock it — a receipt attached to the charge at any stage clears the whole chain. Landing in the library isn't the same thing: that step is capture, and the attaching is still a tap someone takes.",
+          "The card never needs YOU to unlock it: a receipt attached to the charge at any stage clears the whole chain. Landing in the library is only capture; someone still has to tap to attach it.",
       },
     ],
     quiz: [
@@ -2581,44 +2581,44 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The queue is scoped to the receipt timeline specifically — the FM's cross-chapter view of the exact same mechanic every member lives under.",
+          "The queue covers only the receipt timeline: the FM's cross-chapter view of the same mechanism every member is under.",
       },
       {
         prompt: "A cardholder hits \"escalated\" once this month. What's the right response?",
         options: [
           "Lock their card personally right away",
-          "Nothing unusual — one instance is normal; a repeating pattern for the same person is what's worth a conversation",
+          "Nothing unusual. One instance is normal; a repeating pattern for the same person is what's worth a conversation",
           "Report them to the Executive Director",
           "Cancel their card",
         ],
         answerIndex: 1,
         explanation:
-          "The queue exists to catch PATTERNS across months, not to turn a single late receipt into an incident.",
+          "The queue is for spotting PATTERNS across months, not turning one late receipt into an incident.",
       },
       {
         prompt: "Who unlocks a card that hit the day-7 auto-lock?",
         options: [
           "The Financial Manager, manually, each time",
-          "Nobody has to — uploading the missing receipt unlocks it automatically",
+          "Nobody has to. Uploading the missing receipt unlocks it automatically",
           "It requires an Increase support ticket",
           "It stays locked for 30 days regardless",
         ],
         answerIndex: 1,
         explanation:
-          "The unlock mechanic is identical for every seat — receipt attached, lock lifts, no manual review anywhere in the chain.",
+          "The unlock works the same for every seat: attach the receipt and the lock lifts, with no manual review.",
       },
       {
         prompt:
           "A chapter's Receipts library is filling up nicely, but its escalation queue keeps growing. What's the likely explanation?",
         options: [
           "The OCR pipeline is failing silently and needs a retry",
-          "Receipts are being captured but never confirmed against their charges — that tap happens when the cardholder codes the charge",
+          "Receipts are being captured but never confirmed against their charges; that tap happens when the cardholder codes the charge",
           "The day-7 timer is misconfigured for that chapter",
           "Emailed receipts don't count as documentation at all",
         ],
         answerIndex: 1,
         explanation:
-          "Emailed and texted receipts land in the library; nothing attaches them to a charge until a human confirms the match, which the cardholder does while coding it. Capture is the easy half and it's already happening — the pattern worth a conversation is the confirming half nobody's doing.",
+          "Emailed and texted receipts land in the library and attach only when a person confirms the match, which the cardholder does while coding. Capture is already happening; the confirming step is what's missing, and that's worth a conversation.",
       },
     ],
   },
@@ -2632,24 +2632,24 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Accounts visibility is tighter than general finance-seat access: Executive Director and Financial Manager only. Chapters never see it. Central is provisioned its own real account, and that account is the City Launch Fund's actual home.",
+        text: "Only the Executive Director and Financial Manager can see Accounts, a tighter limit than general finance-seat access. Chapters never see it. Central has its own real account, and that account holds the City Launch Fund.",
       },
       {
         kind: "rule",
         title: "A cardholder freezes their own card",
-        text: "It is self-serve, instant, and reversible by them alone. That is the fastest real protection available. They should also tell their Treasurer or the Financial Manager — but the freeze doesn't wait for a manager to respond.",
+        text: "Freezing is self-serve, instant, and reversible by the cardholder alone, which makes it the fastest protection. They should also tell their Treasurer or the Financial Manager, but the freeze doesn't wait for a manager.",
       },
       {
         kind: "rule",
         title: "What shipped, and what the training gate does",
-        text: "A cardholder freezes and unfreezes their own card instantly. A Financial Manager or Treasurer can permanently cancel one. Any member without a Public Worship-issued card creates their own from My Card in one tap, with no request to approve. That includes someone whose only card is an older linked (Relay) card. You can still issue a card to someone directly from Cardholders. A required Academy course gates every issuance, self-serve or yours: until it is finished, \"Create my card\" stays disabled. The cards admin flags an untrained cardholder as \"Needs training\", and the requirement is off by default.",
+        text: "A cardholder freezes and unfreezes their own card instantly. A Financial Manager or Treasurer can permanently cancel one. Any member without a Public Worship-issued card creates one from My Card in one tap, with no approval. That includes someone whose only card is an older linked (Relay) card. You can still issue a card directly from Cardholders. A required Academy course gates every issuance, self-serve or yours: until it's finished, \"Create my card\" stays disabled. The cards admin flags an untrained cardholder as \"Needs training\". The requirement is off by default.",
       },
       {
         kind: "reveal",
         prompt:
           "A teammate sees a charge on their card they don't recognize. What is the first thing they should do?",
         answer:
-          "Freeze the card themselves. It is instant and they can undo it. Then tell their Treasurer or the Financial Manager so it gets investigated. A charge you don't recognize is never a personal flag — flagging says YOU made the charge.",
+          "Freeze the card themselves; it's instant and reversible. Then tell their Treasurer or the Financial Manager so it gets investigated. An unrecognized charge is never a personal flag, because flagging says YOU made the charge.",
       },
     ],
     quiz: [
@@ -2663,19 +2663,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Accounts visibility is tighter than general finance-seat access — ED and FM only, chapters never see it.",
+          "Accounts is limited to the ED and FM, tighter than general finance-seat access. Chapters never see it.",
       },
       {
-        prompt: "Where does the City Launch Fund's balance actually live?",
+        prompt: "Where does the City Launch Fund's balance live?",
         options: [
           "A spreadsheet central maintains manually",
-          "Central's own Increase account — central has an account just like every chapter",
+          "Central's own Increase account; central has an account just like every chapter",
           "Split evenly across all chapter accounts",
           "It's a virtual number with no real account",
         ],
         answerIndex: 1,
         explanation:
-          "Central is provisioned its own real account (WP-1.2), and that account is the City Launch Fund's actual home.",
+          "Central has its own real account (WP-1.2), and that account holds the City Launch Fund.",
       },
       {
         prompt: "A cardholder suspects their card was compromised. What's the shipped response today?",
@@ -2687,32 +2687,32 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 0,
         explanation:
-          "The cardholder freezes it themselves instantly — it's self-serve and reversible by them alone. That's the fastest real protection. They should also tell their Treasurer or FM, but the freeze action doesn't need to wait for a manager to respond.",
+          "The cardholder freezes it themselves, instantly and reversibly. That's the fastest protection. They should also tell their Treasurer or FM, but the freeze doesn't wait for a manager.",
       },
       {
         prompt: "Are self-serve freeze, card cancel/close, and members creating their own card live today?",
         options: [
           "Yes, all three are live",
-          "Not yet — they're near-term (WP-C.1) additions; the only shipped control today is a manager's lock/unlock",
+          "Not yet. They're near-term (WP-C.1) additions; the only shipped control today is a manager's lock/unlock",
           "Only cancel/close is live",
           "Only self-serve freeze is live",
         ],
         answerIndex: 0,
         explanation:
-          "All three are live: a cardholder can self-serve freeze/unfreeze their own card instantly (reversible), an FM or Treasurer can permanently cancel/close a card, and any member without a Public Worship-issued card creates their own from My Card, with no approval step.",
+          "All three are live. A cardholder can freeze and unfreeze their own card instantly, an FM or Treasurer can permanently cancel/close a card, and any member without a Public Worship-issued card creates one from My Card with no approval step.",
       },
       {
         prompt:
           "Central finance has set a required Academy course before a card can be issued. A member who hasn't finished it opens My Card to create their own. What happens?",
         options: [
-          "The card is created anyway — the requirement only applies when a manager issues it",
+          "The card is created anyway; the requirement only applies when a manager issues it",
           "\"Create my card\" stays disabled and points them to the course; once they finish it, they create the card themselves",
           "A request is sent to you to approve",
           "Their existing card is locked until they finish",
         ],
         answerIndex: 1,
         explanation:
-          "The prerequisite gates EVERY issuance, self-serve or yours. My Card names the course and keeps the button disabled until it's done, then the member creates the card in one tap — and the cards admin flags an untrained cardholder as 'Needs training'. The requirement is off by default and set on the Accounts screen.",
+          "The prerequisite gates EVERY issuance, self-serve or yours. My Card names the course and keeps the button disabled until it's done; then the member creates the card in one tap. The cards admin flags an untrained cardholder as 'Needs training'. The requirement is off by default and set on the Accounts screen.",
       },
     ],
   },
@@ -2722,31 +2722,31 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     slug: "finance-central-budgets",
     title: "Central budgets",
     subtitle: "Central's own money, planned the same way a chapter's is",
-    minutes: 3,
+    minutes: 2,
     blocks: [
       {
         kind: "p",
-        text: "Central isn't a bookkeeping abstraction — it has its own budgets, its own line, and its own row in every rollup, using the exact same budget machinery every chapter uses. A central budget's chapter field is literally the string \"central\", not a null or a special case bolted onto the side.",
+        text: "Central has its own budgets, its own line, and its own row in every rollup, using the same budget machinery as every chapter. A central budget's chapter field is the string \"central\", not a null or a special case.",
       },
       {
         kind: "bullets",
         items: [
-          "**New budget, central scope:** created the same way a chapter budget is, just scoped to central instead of a chapter.",
-          "**Central's rollup row:** sits alongside every chapter in the by-chapter view, with the identical drill-down behavior.",
+          "**New budget, central scope:** created the same way as a chapter budget, scoped to central instead of a chapter.",
+          "**Central's rollup row:** sits alongside every chapter in the by-chapter view, with the same drill-down.",
           "**What lives here:** central operating costs, the City Launch Fund balance, and the launch grants that seed new cities.",
         ],
       },
       {
         kind: "rule",
         title: "One system, one set of rules",
-        text: "Central spending follows the same invariants as chapter spending. Actuals come only from explicitly-linked transactions, and an over-cap budget gets a loud warning. Approval mirrors a chapter's separation of duties: you approve central budgets, and the Financial Manager approves the ones you submitted.",
+        text: "Central spending follows the same rules as chapter spending. Actuals come only from explicitly linked transactions, and an over-cap budget gets a loud warning. Approval follows a chapter's separation of duties: you approve central budgets, and the Financial Manager approves the ones you submitted.",
       },
       {
         kind: "reveal",
         prompt:
           "Why does central use the exact same budget tables and rules as a chapter, instead of its own separate system?",
         answer:
-          "Because \"central\" is just another scope in the same model — a sentinel string, not a parallel structure. Every rule, report and rollup that works for a chapter works for central automatically, with nothing built twice.",
+          "\"Central\" is another scope in the same model, marked by a sentinel string. Every rule, report and rollup that works for a chapter works for central, with nothing built twice.",
       },
     ],
     quiz: [
@@ -2760,31 +2760,31 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Central is a string sentinel, never null — the deliberate pattern this codebase uses everywhere central needs to be its own scope.",
+          "Central is a string sentinel, never null. The codebase uses this pattern wherever central needs its own scope.",
       },
       {
         prompt: "Where does central appear in the by-chapter rollup?",
         options: [
-          "It doesn't — central is invisible there",
+          "It doesn't; central is invisible there",
           "As its own row, with the same drill-down every chapter gets",
           "Only as a footnote at the bottom",
           "Central has a separate dashboard with no rollup at all",
         ],
         answerIndex: 1,
         explanation:
-          "Central gets a real row in the rollup, not special-cased out of it — the whole point of treating it as a scope, not an exception.",
+          "Central gets a real row in the rollup, because it is a scope, not an exception.",
       },
       {
         prompt: "Who approves a central budget you didn't personally submit?",
         options: [
           "You, the Executive Director",
           "Only the Treasurer",
-          "No one — central budgets don't need approval",
+          "No one; central budgets don't need approval",
           "Every chapter director votes",
         ],
         answerIndex: 0,
         explanation:
-          "Central budget approval mirrors a chapter's: the ED approves, and SoD only reroutes to the FM if the ED was the one who submitted it.",
+          "Central budget approval mirrors a chapter's: the ED approves, and separation of duties reroutes to the FM only if the ED submitted it.",
       },
     ],
   },
@@ -2793,12 +2793,12 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "finance-governance-and-seats",
     title: "Governance and seats",
-    subtitle: "One seat, one holder — and the honest seat switcher",
+    subtitle: "One seat, one holder, and the honest seat switcher",
     minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Seats get assigned from the **Org Chart** tab: open a seat and go to its People tab. Anyone holding the Fill seats power (the Executive Director today) can add or remove a holder directly. Anyone else proposes a change for the seat's holder, or the seat above it, to confirm — a two-party handoff, not a unilateral edit. Executive Director and Financial Manager sit at central; Chapter Director and Treasurer sit per chapter. Each is one holder per seat — assigning a new Executive Director replaces the old one, it doesn't add a second. Editing the chart's STRUCTURE itself (adding, moving, or removing seats) is separate and narrower: only the Executive Director or a superuser can do that.",
+        text: "Seats are assigned from the **Org Chart** tab: open a seat and go to its People tab. Anyone holding the Fill seats power (the Executive Director today) can add or remove a holder directly. Anyone else proposes a change for the seat's holder, or the seat above it, to confirm. Executive Director and Financial Manager sit at central; Chapter Director and Treasurer sit per chapter. Each seat has one holder, so assigning a new Executive Director replaces the old one. Editing the chart's STRUCTURE (adding, moving or removing seats) is narrower: only the Executive Director or a superuser can do it.",
       },
       {
         kind: "table",
@@ -2811,19 +2811,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Today, some people genuinely hold two real seats at once — you might be Executive Director AND a Chapter Director. That is not a bug or a special permission. Hold seats at both central and a chapter and you get an honest **seat switcher** — \"which desk are you at?\" — listing exactly your real seats. Someone with one seat never sees a switcher at all.",
+        text: "Today some people hold two seats at once, such as Executive Director AND a Chapter Director. Hold seats at both central and a chapter and you get a **seat switcher** (\"which desk are you at?\") listing exactly your real seats. Someone with one seat never sees a switcher.",
       },
       {
         kind: "rule",
         title: "Dual-hatting is a phase, not a design",
-        text: "The playbook's end state has no one holding both a central and a chapter seat — dual-hatting exists only because a city is small early on. As chapters grow their own leadership, the seat switcher naturally has less and less to switch between.",
+        text: "In the playbook's end state, no one holds both a central and a chapter seat. Dual-hatting exists only because a city is small early on. As chapters grow their own leadership, the switcher has less to switch between.",
       },
       {
         kind: "reveal",
         prompt:
-          "You're seated as both Executive Director and a Chapter Director. The finance dashboard opens — what decides which view you land on?",
+          "You're seated as both Executive Director and a Chapter Director. The finance dashboard opens. What decides which view you land on?",
         answer:
-          "Your seat switcher lets you pick which desk you're at; the dashboard then shows exactly that seat's real view. There's no \"preview\" mode pretending to be a seat you don't hold — only your genuine seats, listed honestly.",
+          "Your seat switcher: pick a desk and the dashboard shows that seat's real view. There's no \"preview\" mode for a seat you don't hold; only your real seats are listed.",
       },
     ],
     quiz: [
@@ -2831,13 +2831,13 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "How many holders can one seat (e.g. Executive Director) have at once?",
         options: [
           "Unlimited",
-          "One — assigning a new holder replaces the old one",
+          "One. Assigning a new holder replaces the old one",
           "Two, for redundancy",
           "It depends on chapter size",
         ],
         answerIndex: 1,
         explanation:
-          "Seats are one-holder slots per (scope, title) — a new assignment replaces, it never stacks.",
+          "Each seat has one holder per scope and title. A new assignment replaces the old one; it never stacks.",
       },
       {
         prompt: "Who sees a seat switcher in the finance dashboard?",
@@ -2845,23 +2845,23 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
           "Everyone, always",
           "Only someone who genuinely holds seats at both central and a chapter",
           "Only the Executive Director",
-          "Nobody — switchers were removed entirely",
+          "Nobody; switchers were removed entirely",
         ],
         answerIndex: 1,
         explanation:
-          "Single-seat holders never see a switcher — it exists purely for the real, transition-period case of holding two real seats.",
+          "Single-seat holders never see a switcher. It exists only for the transition-period case of holding two real seats.",
       },
       {
         prompt: "What does the playbook say about dual-hatting long-term?",
         options: [
           "It's the permanent design",
-          "It's a transition state that should empty out as chapters mature — no one holds both a central and chapter seat at steady state",
+          "It's a transition state that should empty out as chapters mature; no one holds both a central and chapter seat at steady state",
           "It should apply to every leader",
           "It only applies to Treasurers",
         ],
         answerIndex: 1,
         explanation:
-          "The playbook explicitly calls for no dual-hatting across central and chapter once a city is established — today's overlap is a startup condition.",
+          "The playbook calls for no dual-hatting across central and chapter once a city is established. Today's overlap is a startup condition.",
       },
     ],
   },
@@ -2882,7 +2882,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Two money flows tie the network together. The 15% skim moves UP from every chapter into the City Launch Fund. A one-time launch grant moves DOWN from central to seed a new city. The fund itself is real today — it's central's own account. Both flows move as a deliberate, human-recorded transfer, not an automatic pipe — and that's a choice, not a gap.",
+        text: "Two money flows connect the network. The 15% skim moves UP from every chapter into the City Launch Fund. A one-time launch grant moves DOWN from central to seed a new city. The fund is real today: it's central's own account. Both flows are transfers a person records by hand, by choice.",
       },
       {
         kind: "table",
@@ -2895,18 +2895,18 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The fund exists; a human moves the money into and out of it",
-        text: "The City Launch Fund's balance is a real number in a real central account you can see today. Central's bookkeeper records every skim contribution and every launch grant as a manual transfer. Same ledger entry either way, just typed in rather than run by a cron job.",
+        text: "The City Launch Fund's balance is a real number in a central account you can see today. Central's bookkeeper records every skim contribution and every launch grant as a manual transfer. It is the same ledger entry a scheduled job would make, typed in by hand.",
       },
       {
         kind: "tip",
-        text: "**Why manual, on purpose:** with one chapter and a small backer base, an automated monthly transfer is complexity the network doesn't need yet. So is the wiring, approval flow and failure handling it would require. Every transfer between a chapter and central goes through ONE mutation today, with a note saying what it's for. If the network grows enough that this becomes a real burden, automating it is a well-understood, revisitable decision — not a broken promise.",
+        text: "**Why manual, on purpose:** with one chapter and a small backer base, the network doesn't need an automated monthly transfer yet. Its wiring, approval flow and failure handling would be extra complexity. Every transfer between a chapter and central goes through ONE mutation, with a note saying what it's for. If the network grows enough to make this a burden, automating it can be revisited.",
       },
       {
         kind: "reveal",
         prompt:
           "A brand-new city is ready to launch. Where does its ~$7,800–8,300 in equipment and training-trip funding come from, and who moves it?",
         answer:
-          "The City Launch Fund — the pool every existing chapter has been feeding with its monthly 15% skim. The fund's balance is real and visible today; central's bookkeeper records the one-time transfer to the new chapter by hand, the same way every skim contribution gets recorded.",
+          "The City Launch Fund, which every existing chapter feeds with its monthly 15% skim. Central's bookkeeper records the one-time transfer to the new chapter by hand, the same way each skim contribution is recorded.",
       },
     ],
     quiz: [
@@ -2914,25 +2914,25 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "What does the City Launch Fund pay for?",
         options: [
           "Ongoing chapter operating costs",
-          "A new city's one-time launch cost — equipment and training trip",
+          "A new city's one-time launch cost: equipment and training trip",
           "Reimbursements to individual members",
           "Central's own salaries",
         ],
         answerIndex: 1,
         explanation:
-          "The fund's entire purpose is seeding the next city's launch — a one-time cost, not recurring operations.",
+          "The fund exists to seed the next city's launch, a one-time cost, not recurring operations.",
       },
       {
         prompt: "Is the monthly skim transfer automated today?",
         options: [
           "Yes, fully automatic",
-          "No — central's bookkeeper records it as a deliberate manual transfer; that's a choice for the network's current size, not an unfinished feature",
+          "No. Central's bookkeeper records it as a deliberate manual transfer; that's a choice for the network's current size, not an unfinished feature",
           "It was automated then removed after a failure",
           "It only runs once a year",
         ],
         answerIndex: 1,
         explanation:
-          "The fund's balance is real and live, and every contribution to it is a real transfer — recording it by hand is a deliberate simplification, not a missing Phase 4 feature waiting to ship.",
+          "The fund's balance is real, and every contribution is a real transfer. Recording it by hand is a deliberate simplification, not a missing Phase 4 feature.",
       },
       {
         prompt: "Why are skim and launch-grant transfers modeled as `flow:\"transfer\"` rows?",
@@ -2944,7 +2944,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Transfers are excluded from category/budget spend everywhere in this system — the skim and launch grants are money MOVEMENTS, not purchases, and must never distort actuals.",
+          "Transfers are excluded from category/budget spend everywhere. The skim and launch grants are money MOVEMENTS, not purchases, and must never distort actuals.",
       },
     ],
   },
@@ -2964,37 +2964,37 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "finance-budget-lifecycle",
     title: "The budget lifecycle",
-    subtitle: "Draft, send for review, approve — never by the person who sent it",
+    subtitle: "Draft, send for review, approve, never by the person who sent it",
     minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "An event or project doesn't automatically get a budget — plenty are pure work-tracking. A budget exists once real money enters the picture. Type a planned amount when you create the event and a Draft budget appears, or tap **Add budget** on its page later. Either way nothing is approved yet: a budget is a plan until someone moves it forward.",
+        text: "An event or project doesn't get a budget automatically; plenty are pure work-tracking. A budget exists once real money is involved. Type a planned amount when you create the event and a Draft budget appears, or tap **Add budget** on its page later. Either way nothing is approved yet.",
       },
       {
         kind: "bullets",
         items: [
-          "**Draft** — the amount and line items are yours to edit freely. Nobody has weighed in yet, and nothing you type here spends anything.",
-          "**Send for review** — a deliberate tap, never an autosave. The moment you send it, the budget is Awaiting approval and visible to whoever can act on it. They get an email too, not just a badge in the app.",
-          "**Approve or Request changes** — the approver clears it, or kicks it back with a reason, which reopens it for editing and a fresh send. Either decision emails the submitter, so a reason never sits waiting to be noticed.",
-          "**Who approves what** — a chapter budget's approver is its Treasurer or Chapter Director; a central budget's is the Executive Director or Financial Manager.",
+          "**Draft:** the amount and line items are yours to edit. Nobody has weighed in, and nothing you type spends anything.",
+          "**Send for review:** a deliberate tap, never an autosave. Once sent, the budget is Awaiting approval and visible to whoever can act on it. They also get an email.",
+          "**Approve or Request changes:** the approver clears it, or sends it back with a reason, which reopens it for editing and a fresh send. Either decision emails the submitter.",
+          "**Who approves what:** a chapter budget's approver is its Treasurer or Chapter Director; a central budget's is the Executive Director or Financial Manager.",
         ],
       },
       {
         kind: "rule",
-        title: "Approver ≠ submitter, no exceptions",
-        text: "Whoever sends a budget for review can never be the one who approves it. Same identity-based rule that governs reimbursements, applied to budgets.",
+        title: "The approver is never the submitter",
+        text: "Whoever sends a budget for review can never approve it. It is the same identity-based rule as for reimbursements.",
       },
       {
         kind: "tip",
-        text: "**Raising the cap sends it back to Draft — but nobody's told.** Bump an APPROVED budget's amount and it drops back to Draft when you save. Not Awaiting approval, and not auto-submitted. The OLD figure stays the real spending cap, so nothing silently expands. But the raise is invisible to every approver until YOU hit Send for review again. Decreasing an amount, or reshuffling line items, never triggers any of this.",
+        text: "**Raising the cap sends it back to Draft, and nobody is told.** Raise an APPROVED budget's amount and it drops back to Draft when you save. It is not Awaiting approval or auto-submitted. The OLD figure stays the spending cap, so nothing silently expands. Approvers can't see the raise until YOU tap Send for review again. Decreasing an amount or reshuffling line items doesn't trigger this.",
       },
       {
         kind: "reveal",
         prompt:
           "A charge lands against an event whose budget is still sitting in Draft. Can anyone attribute it there right now?",
         answer:
-          "No — only an APPROVED budget can take a charge. The transaction waits in Needs Budget, patiently, until the budget's owner sends it for review and someone approves it. Attribution and approval move together on purpose — see the next lesson.",
+          "No. Only an APPROVED budget can take a charge. The transaction waits in Needs Budget until the budget's owner sends it for review and someone approves it. The next lesson covers why attribution and approval are tied.",
       },
     ],
     quiz: [
@@ -3004,48 +3004,48 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         options: [
           "It's sitting in Draft at $0, waiting for someone to send it for review",
           "It's Awaiting approval automatically",
-          "There's no budget row at all yet — most events need none; one appears once a real amount is entered or someone taps Add budget",
+          "There's no budget row at all yet. Most events need none; one appears once a real amount is entered or someone taps Add budget",
           "It's Approved automatically at $0",
         ],
         answerIndex: 2,
         explanation:
-          "A budget only exists once real money enters the picture. No amount at creation means no budget row yet, not a hidden Draft one — the moment a real amount is entered or Add budget is tapped, THAT budget is born a Draft.",
+          "A budget exists only once real money is involved. No amount at creation means no budget row, not a hidden Draft. When a real amount is entered or Add budget is tapped, the budget starts as a Draft.",
       },
       {
         prompt: "What moves a budget out of Draft and into review?",
         options: [
           "It happens automatically after 24 hours",
-          "A deliberate \"Send for review\" tap — nothing routes to an approver until you choose to send it",
+          "A deliberate \"Send for review\" tap. Nothing routes to an approver until you choose to send it",
           "The first charge attributed to it",
           "The Financial Manager pulls it into review",
         ],
         answerIndex: 1,
         explanation:
-          "Send for review is an explicit action, not a side effect — a budget can sit in Draft indefinitely with zero consequence.",
+          "Send for review is an explicit action, not a side effect. A budget can sit in Draft indefinitely.",
       },
       {
         prompt: "Who can approve a budget you just submitted?",
         options: [
-          "Anyone with approval authority for that scope — except you",
+          "Anyone with approval authority for that scope, except you",
           "You can, if you also hold the approver's seat",
           "Whoever is fastest to open the app",
-          "Nobody — a submitter's own budget is stuck forever",
+          "Nobody; a submitter's own budget is stuck forever",
         ],
         answerIndex: 0,
         explanation:
-          "Approver ≠ submitter is about identity, not title — the same person can never wear both hats on one decision.",
+          "The rule goes by identity, not title: the same person can never both submit and approve one budget.",
       },
       {
-        prompt: "You raise an APPROVED budget's cap from $2,000 to $3,000. It drops back to Draft — not automatically resubmitted. What actually limits spending until someone sends it for review again and it's approved?",
+        prompt: "You raise an APPROVED budget's cap from $2,000 to $3,000. It drops back to Draft, not automatically resubmitted. What limits spending until someone sends it for review again and it's approved?",
         options: [
-          "The new $3,000 — available immediately",
-          "The old $2,000 — still the live spending cap until it's sent for review again and approved",
+          "The new $3,000, available immediately",
+          "The old $2,000, still the live spending cap until it's sent for review again and approved",
           "Spending is blocked entirely until the increase clears",
           "Whichever amount the last charge used",
         ],
         answerIndex: 1,
         explanation:
-          "The increase flips the budget back to Draft, not Awaiting approval — it sits fully editable and invisible to approvers until someone deliberately sends it again. The OLD approved amount keeps enforcing the cap the whole time, so spending power never silently jumps — but skip that resend and the raise is never reviewed at all, and no approver is ever notified.",
+          "The increase returns the budget to Draft, editable and hidden from approvers until someone sends it again. The OLD approved amount keeps enforcing the cap. Skip the resend and the raise is never reviewed, and no approver is notified.",
       },
     ],
   },
@@ -3066,37 +3066,37 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "finance-one-home-per-dollar",
     title: "One home per dollar",
-    subtitle: "Explicit links only — nothing rides in silently",
+    subtitle: "Explicit links only; nothing rides in silently",
     minutes: 3,
     blocks: [
       {
         kind: "p",
-        text: "Attribution is explicit-only. A transaction counts toward a budget the moment a person deliberately links it there. Nothing is coded automatically. No charge lands on the nearest-looking budget because the dates happen to line up.",
+        text: "Attribution is explicit only. A transaction counts toward a budget when a person deliberately links it there. Nothing is coded automatically, and no charge lands on the nearest-looking budget because the dates line up.",
       },
       {
         kind: "bullets",
         items: [
-          "**Unattributed is the honest name for \"not yet claimed.\"** Every charge without an explicit link sits in the Needs Budget bucket, in plain sight on the dashboard. It is a number the chapter drives to zero, never one to bury.",
-          "**Only an approved budget can take a charge.** The \"For\" picker is grouped Events / Projects / Recurring. It offers only budgets that have cleared review. A Draft or Awaiting-approval budget can't receive a link yet, on purpose.",
-          "**Nothing codes a charge but a person.** The picker ranks the likely homes so the right one is usually first. Ranking is only ordering — a link exists because someone chose it.",
+          "**Unattributed means \"not yet claimed.\"** Every charge without an explicit link sits in the Needs Budget bucket, visible on the dashboard. The chapter drives that number to zero; it never buries it.",
+          "**Only an approved budget can take a charge.** The \"For\" picker is grouped Events / Projects / Recurring and offers only budgets that have cleared review. A Draft or Awaiting-approval budget can't receive a link yet.",
+          "**Only a person codes a charge.** The picker ranks likely budgets so the right one is usually first, but a link exists only because someone chose it.",
         ],
       },
       {
         kind: "rule",
-        title: "Every dollar belongs to a chapter or to central — never both",
-        text: "A budget's level is a real chapter, or the literal \"central\" scope. Never null, never a mix. A chapter's dashboard never surfaces central's money alongside its own, and central's rollup never absorbs a chapter's.",
+        title: "Every dollar belongs to a chapter or to central, never both",
+        text: "A budget's level is a real chapter or the literal \"central\" scope: never null, never a mix. A chapter's dashboard never shows central's money alongside its own, and central's rollup never absorbs a chapter's.",
       },
       {
         kind: "rule",
         title: "A coding can't be approved without a budget",
-        text: "Approving publishes the charge, so it can't publish as spend nothing paid for. Reviewing a coding with no budget, you set the budget yourself on the record — the cardholder was told to leave it to you — then approve. Correcting is not sending back, and it does not make you the author.",
+        text: "Approving publishes the charge, so it can't publish as spend nothing paid for. If a coding has no budget, set the budget yourself on the record, then approve. The cardholder was told to leave it to you. Correcting is not sending back, and it doesn't make you the author.",
       },
       {
         kind: "reveal",
         prompt:
           "You're logging a charge for a brand-new event that doesn't have an approved budget yet. What happens in the \"For\" picker?",
         answer:
-          "Nothing — that event's budget won't appear until it clears review. The charge waits in Needs Budget. Open the event's page, use Add budget, and send it for review. Once approved, the same charge attributes cleanly.",
+          "The event's budget doesn't appear until it clears review, so the charge waits in Needs Budget. Open the event's page, use Add budget, and send it for review. Once it's approved, the charge can be attributed.",
       },
     ],
     quiz: [
@@ -3110,56 +3110,56 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Explicit-only attribution means a link only exists because a human made it real. The picker can rank the likely homes; it never picks one.",
+          "A link exists only because a person made it. The picker can rank the likely budgets; it never picks one.",
       },
       {
         prompt: "What does the Needs Budget bucket mean?",
         options: [
           "A bug in the sync",
-          "Spend with no explicit, approved-budget link yet — shown loudly on purpose, not silently absorbed",
+          "Spend with no explicit, approved-budget link yet, shown loudly on purpose, not silently absorbed",
           "Money that left the account without a transaction record",
           "Charges waiting on a bank sync",
         ],
         answerIndex: 1,
         explanation:
-          "Needs Budget is a first-class, visible bucket — designed to be noticed and driven to zero, not hidden.",
+          "Needs Budget is a visible bucket, designed to be noticed and driven to zero.",
       },
       {
         prompt: "Why won't the \"For\" picker offer a budget that's still Draft or Awaiting approval?",
         options: [
           "It's a display bug",
-          "Only an approved budget is attributable — attribution and approval move together on purpose",
+          "Only an approved budget is attributable; attribution and approval move together on purpose",
           "Draft budgets are picker-only, approved budgets are hidden",
           "The picker shows every budget regardless of status",
         ],
         answerIndex: 1,
         explanation:
-          "The picker and the write-side attribution check share one gate: a budget has to clear review before a charge can call it home.",
+          "The picker and the server's attribution check use the same rule: a budget has to clear review before a charge can be linked to it.",
       },
       {
         prompt:
           "A coding is waiting on you and the charge has no budget. The Approve button won't work. What's the move?",
         options: [
           "Send it back with a note asking the cardholder which budget it was",
-          "Set the budget yourself on the record, then approve — correcting is part of reviewing",
+          "Set the budget yourself on the record, then approve; correcting is part of reviewing",
           "Approve it anyway and fix the budget in Reconcile afterwards",
           "Leave it in the queue until somebody attributes it",
         ],
         answerIndex: 1,
         explanation:
-          "The cardholder's own form tells them to leave the budget blank if they aren't sure, because a guess is worse than a blank and the finance team knows the answer. Bouncing the coding back over it asks them for something they were told not to give, and costs days. So the record is editable by whoever may decide it: set the budget (and the category, and anything else that's wrong), then approve. Two things the correction deliberately doesn't do — it never touches the sentence the author wrote, which is the substantiation of record, and it never makes you the author, which is what keeps your own approval a genuine second pair of eyes.",
+          "The cardholder's form tells them to leave the budget blank if unsure, because a guess is worse than a blank. Sending it back asks for what they were told not to give, and costs days. Set the budget (and the category, or anything else wrong), then approve. The correction never touches the author's sentence, the substantiation of record. It never makes you the author, so your approval stays a real second check.",
       },
       {
         prompt: "Can a chapter's dashboard show central's money mixed in with its own?",
         options: [
           "Yes, they roll up together automatically",
-          "No — every dollar belongs to exactly one level, chapter or central, never both",
+          "No. Every dollar belongs to exactly one level, chapter or central, never both",
           "Only if the Financial Manager enables it",
           "Only for the skim transfer",
         ],
         answerIndex: 1,
         explanation:
-          "Chapter and central are separate homes for every dollar — a chapter's view never quietly includes central's money, or vice versa.",
+          "Every dollar has one home. A chapter's view never includes central's money, or the reverse.",
       },
     ],
   },
@@ -3196,10 +3196,9 @@ export const FINANCES_COURSES: Course[] = [
     audience: "team",
     description:
       "What every member needs: where the money comes from, reading the " +
-      "org's books on the Ledger tab, using your card + the 7-day receipt " +
+      "org's books on the Ledger tab, using your card and the 7-day receipt " +
       "rule, coding what you spent and why, and both directions of " +
-      "reimbursement. Gains a 'getting your budget " +
-      "approved' module once budget approval (Phase 3) ships.",
+      "reimbursement.",
     icon: "dollar-sign",
     moduleSlugs: [
       "finance-stewardship",
@@ -3305,7 +3304,7 @@ export const FINANCES_COURSES: Course[] = [
     audience: "role",
     description:
       "The central Financial Manager's remit: auditing every chapter, " +
-      "watching the receipt escalation queue, and administering accounts + cards.",
+      "watching the receipt escalation queue, and administering accounts and cards.",
     icon: "bar-chart-2",
     moduleSlugs: [
       "finance-cross-chapter-audit",
@@ -3320,8 +3319,8 @@ export const FINANCES_COURSES: Course[] = [
     level: "leader",
     audience: "role",
     description:
-      "Central budgets, governance + seat assignment, and the launch " +
-      "grants + skim transfer that grow the network to its next city.",
+      "Central budgets, governance and seat assignment, and the launch " +
+      "grants and skim transfer that grow the network to its next city.",
     icon: "award",
     moduleSlugs: [
       "finance-central-budgets",
