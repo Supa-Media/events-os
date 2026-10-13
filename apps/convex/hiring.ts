@@ -44,7 +44,8 @@ import type { Doc, Id } from "./_generated/dataModel";
 import { internal } from "./_generated/api";
 import {
   APPLICATION_LIMITS,
-  APPLICATION_QUESTIONS,
+  APPLICATION_TOGGLEABLE_FIELDS,
+  DEFAULT_APPLICATION_QUESTIONS,
   GENERAL_INTEREST_SLUG,
   GENERAL_INTEREST_TITLE,
   HIRING_STAGES,
@@ -54,10 +55,10 @@ import {
   APPLICATION_STALE_DAYS,
   RUBRIC_MAX,
   RUBRIC_MIN,
-  isApplicationQuestionKey,
   isClosedStage,
   isRubricCriterion,
   trialDueDates,
+  type ApplicationToggleableField,
   type HiringOutcome,
   type HiringStage,
   type TrialTrack,
@@ -78,6 +79,7 @@ import {
   resolveHiringAccess,
 } from "./lib/hiringAccess";
 import { requireUserId } from "./lib/context";
+import { loadApplicationForm } from "./lib/applicationForm";
 import { escapeHtml } from "./lib/html";
 import { appUrl, siteUrl } from "./lib/siteUrl";
 import {
@@ -229,13 +231,15 @@ async function resolveOtherRoles(
  * What it enforces, and why each rule is here rather than only in the form:
  *  - Name and email are required. A file nobody can reply to is not an
  *    application, and the response promise on `/team` is a promise.
- *  - Every REQUIRED question in `APPLICATION_QUESTIONS` must be answered.
- *    Those questions are the org's actual screen — availability, spiritual
- *    covering, ownership, and how someone escalates — so an application
- *    missing one cannot be compared against the ones that answered.
- *  - Unknown answer keys are REJECTED, not stored. The answers bag exists so
+ *  - Every REQUIRED question on the live form (`lib/applicationForm.ts`,
+ *    edited by the desk) must be answered, and so must any "Who you are"
+ *    field the desk marked required. Those questions are the org's actual
+ *    screen, so an application missing one cannot be compared against the
+ *    ones that answered.
+ *  - Unknown answer keys are DROPPED, not stored. The answers bag exists so
  *    questions can change without a migration, not so a crafted POST can
- *    write arbitrary fields into the desk's UI.
+ *    write arbitrary fields into the desk's UI; dropping rather than refusing
+ *    keeps a page loaded before a question was retired submittable.
  *  - A repeat submission for the same role by the same email inside
  *    `DUPLICATE_WINDOW_MS` updates the existing file instead of opening a
  *    second one.
@@ -333,17 +337,23 @@ export const submitApplication = mutation({
     const otherRoles = await resolveOtherRoles(ctx, args.otherRoles, roleSlug);
     const openToOtherRoles = args.openToOtherRoles === true;
 
+    const form = await loadApplicationForm(ctx);
+    const filled: Record<ApplicationToggleableField, boolean> = {
+      phone: Boolean(phone),
+      location: Boolean(location),
+      links: links.length > 0,
+      referredBy: Boolean(referredBy),
+    };
+
     const answers: Record<string, string> = {};
     for (const [key, raw] of Object.entries(args.answers)) {
-      if (!isApplicationQuestionKey(key)) {
-        throw new ConvexError({
-          code: "UNKNOWN_QUESTION",
-          message: `We don't have a question called "${key}".`,
-        });
-      }
+      // A key the live form doesn't have is DROPPED, not stored and not an
+      // error: it's almost always a page loaded before the desk retired that
+      // question, and the applicant can't do anything about it.
+      const question = form.questions.find((q) => q.key === key);
+      if (!question) continue;
       const value = raw.trim();
       if (!value) continue;
-      const question = APPLICATION_QUESTIONS.find((q) => q.key === key)!;
       if (value.length > question.maxLength) {
         throw new ConvexError({
           code: "ANSWER_TOO_LONG",
@@ -352,15 +362,32 @@ export const submitApplication = mutation({
       }
       answers[key] = value;
     }
-    const missing = APPLICATION_QUESTIONS.filter(
-      (q) => q.required && !answers[q.key],
-    );
+    const missing = [
+      ...APPLICATION_TOGGLEABLE_FIELDS.filter(
+        (f) => form.requiredFields[f.key] && !filled[f.key],
+      ).map((f) => f.label),
+      ...form.questions
+        .filter((q) => q.required && !answers[q.key])
+        .map((q) => q.label),
+    ];
     if (missing.length > 0) {
+      // A required question the page never sent at all means the page predates
+      // the latest edit to the form — say so, or they'd hunt for a field that
+      // isn't on their screen.
+      const stalePage = form.questions.some(
+        (q) => q.required && !(q.key in args.answers),
+      );
       throw new ConvexError({
         code: "MISSING_ANSWERS",
-        message: `Still needed: ${missing.map((q) => q.label).join(" · ")}`,
+        message:
+          `Still needed: ${missing.join(" · ")}` +
+          (stalePage
+            ? ". The form has changed since this page loaded; reload it to see the latest questions (copy your answers first)."
+            : ""),
       });
     }
+    // The wording they were actually asked — the form can change under a file.
+    const questions = form.questions.map((q) => ({ key: q.key, label: q.label }));
 
     // Same person, same role, same day → the same application. Scanned through
     // `by_email` (bounded) rather than a compound index: an applicant's own
@@ -383,6 +410,7 @@ export const submitApplication = mutation({
         openToOtherRoles,
         otherRoles,
         answers,
+        questions,
         updatedAt: now,
       });
       await ctx.db.insert("applicationEvents", {
@@ -406,6 +434,7 @@ export const submitApplication = mutation({
       openToOtherRoles,
       otherRoles,
       answers,
+      questions,
       // Rung 3 of the ordered search by definition — it arrived through the
       // public call. A director who nudged someone to apply properly can
       // re-file it as `personal_network` afterwards, which is the honesty the
@@ -651,6 +680,27 @@ export const pipelineSummary = query({
   },
 });
 
+/** A file's answers as `{ key, label, answer }`, in the order asked. Uses the
+ *  labels snapshotted at submit; files from before the form was editable were
+ *  asked `DEFAULT_APPLICATION_QUESTIONS`. Any answer whose key isn't in either
+ *  still shows (under its key) rather than vanishing. */
+function answeredQuestions(
+  row: Doc<"jobApplications">,
+): Array<{ key: string; label: string; answer: string }> {
+  const asked = row.questions ?? DEFAULT_APPLICATION_QUESTIONS;
+  const out: Array<{ key: string; label: string; answer: string }> = [];
+  const seen = new Set<string>();
+  for (const q of asked) {
+    seen.add(q.key);
+    const answer = row.answers[q.key];
+    if (answer) out.push({ key: q.key, label: q.label, answer });
+  }
+  for (const [key, answer] of Object.entries(row.answers)) {
+    if (!seen.has(key) && answer) out.push({ key, label: key, answer });
+  }
+  return out;
+}
+
 /** One file, with its answers, its rubric cards, and its timeline. */
 export const getApplication = query({
   args: { applicationId: v.id("jobApplications") },
@@ -663,6 +713,12 @@ export const getApplication = query({
         referredBy: v.union(v.string(), v.null()),
         otherRoles: v.array(v.object({ slug: v.string(), title: v.string() })),
         answers: v.record(v.string(), v.string()),
+        /** Every answer, in the order and wording it was asked. Built from
+         *  the file's own snapshot, so edits to the live form never relabel
+         *  or hide an answer someone already gave. */
+        answeredQuestions: v.array(
+          v.object({ key: v.string(), label: v.string(), answer: v.string() }),
+        ),
         trialBrief: v.union(v.string(), v.null()),
         trialStartedAt: v.union(v.number(), v.null()),
         decisionReason: v.union(v.string(), v.null()),
@@ -729,6 +785,7 @@ export const getApplication = query({
         referredBy: row.referredBy ?? null,
         otherRoles: row.otherRoles ?? [],
         answers: row.answers,
+        answeredQuestions: answeredQuestions(row),
         trialBrief: row.trialBrief ?? null,
         trialStartedAt: row.trialStartedAt ?? null,
         decisionReason: row.decisionReason ?? null,

@@ -1010,6 +1010,10 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "A role gets published only when someone can write down three things. These are the **outcomes** it's accountable for (and how we'd know one landed), what the holder can **decide** without asking, and what the role is **not**. If those can't be written, the seat isn't ready, and no candidate gets contacted.",
       },
       {
+        kind: "p",
+        text: "The questions applicants answer belong to the desk too. **People → Recruiting → Application form** is where anyone who runs the pipeline rewords a question, adds or removes one, or marks it optional, and the page changes the moment it's saved. Every file keeps the wording its applicant was actually asked, so an edit never relabels an answer already in.",
+      },
+      {
         kind: "table",
         headers: ["Stage on the desk", "What it means"],
         rows: [

@@ -14,6 +14,7 @@ import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import {
   CANDIDATE_SOURCE_IDS,
+  DEFAULT_APPLICATION_FORM,
   HIRING_STAGES,
   LEADS_INBOX,
   MIN_REVIEWS_BEFORE_DECISION,
@@ -133,13 +134,13 @@ describe("hiring — the public intake", () => {
     ).rejects.toThrow(/home church/i);
   });
 
-  test("an unknown answer key is refused rather than stored", async () => {
+  test("an unknown answer key is dropped rather than stored", async () => {
     const t = newT();
     const args = applicationArgs();
     (args.answers as Record<string, string>).salary_expectation = "$200k";
-    await expect(
-      t.mutation(api.hiring.submitApplication, args),
-    ).rejects.toThrow(/salary_expectation/);
+    const id = await submit(t, { answers: args.answers });
+    const row = await run(t, (ctx) => ctx.db.get(id));
+    expect(row?.answers).not.toHaveProperty("salary_expectation");
   });
 
   test("a junk email address is refused", async () => {
@@ -253,6 +254,113 @@ describe("hiring — the public intake", () => {
     await submit(t, { roleSlug: "chapter-director", roleTitle: "Chapter Director" });
     const rows = await run(t, (ctx) => ctx.db.query("jobApplications").collect());
     expect(rows).toHaveLength(2);
+  });
+});
+
+describe("hiring — the editable application form", () => {
+  function defaultForm() {
+    return {
+      questions: DEFAULT_APPLICATION_FORM.questions.map((q) => ({ ...q })),
+      requiredFields: { ...DEFAULT_APPLICATION_FORM.requiredFields },
+    };
+  }
+
+  test("with nothing saved, the public form is the defaults", async () => {
+    const t = newT();
+    const form = await t.query(internal.applicationForm.publicApplicationForm, {});
+    expect(form).toEqual(defaultForm());
+  });
+
+  test("`hiring.view` can read the form but not change it", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedHiringSeat(s, ["hiring.view"]);
+    const view = await s.as.query(api.applicationForm.getApplicationForm, {});
+    expect(view.isDefault).toBe(true);
+    await expect(
+      s.as.mutation(api.applicationForm.saveApplicationForm, { form: defaultForm() }),
+    ).rejects.toThrow(/edit the application form/);
+  });
+
+  test("a saved edit drives what the intake requires", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedHiringSeat(s, ["hiring.edit"]);
+    const form = defaultForm();
+    // Reword `why`, make `covering` optional, retire `trial`, add a new one,
+    // and require a phone number.
+    form.questions[0].label = "Why us?";
+    form.questions.find((q) => q.key === "covering")!.required = false;
+    form.questions = form.questions.filter((q) => q.key !== "trial");
+    form.questions.push({
+      key: "q7",
+      label: "What instrument do you play?",
+      help: "",
+      maxLength: 200,
+      required: true,
+    });
+    form.requiredFields.phone = true;
+    await s.as.mutation(api.applicationForm.saveApplicationForm, { form });
+
+    // The new required question is enforced, and the page is told it's stale.
+    await expect(submit(t)).rejects.toThrow(/instrument.*reload/i);
+
+    const args = applicationArgs();
+    const answers = args.answers as Record<string, string>;
+    delete answers.covering;
+    answers.q7 = "Bass.";
+    answers.trial = "Retired question — dropped.";
+    const id = await submit(t, { answers });
+    const row = await run(t, (ctx) => ctx.db.get(id));
+    expect(row?.answers.q7).toBe("Bass.");
+    expect(row?.answers).not.toHaveProperty("trial");
+    expect(row?.questions?.[0]).toEqual({ key: "why", label: "Why us?" });
+
+    // A required identity field is enforced too.
+    const noPhone = applicationArgs({ answers, email: "b@example.com" });
+    delete (noPhone as Record<string, unknown>).phone;
+    await expect(
+      t.mutation(api.hiring.submitApplication, noPhone),
+    ).rejects.toThrow(/Phone/);
+  });
+
+  test("the desk keeps showing the wording a file was asked", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedHiringSeat(s, ["hiring.edit"]);
+    const id = await submit(t);
+    const form = defaultForm();
+    form.questions[0].label = "Reworded later";
+    await s.as.mutation(api.applicationForm.saveApplicationForm, { form });
+
+    const file = await s.as.query(api.hiring.getApplication, { applicationId: id });
+    expect(file?.application.answeredQuestions[0].label).toBe(
+      DEFAULT_APPLICATION_FORM.questions[0].label,
+    );
+  });
+
+  test("an invalid form is refused, and reset restores the defaults", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedHiringSeat(s, ["hiring.edit"]);
+    const bad = defaultForm();
+    bad.questions[1].key = bad.questions[0].key;
+    await expect(
+      s.as.mutation(api.applicationForm.saveApplicationForm, { form: bad }),
+    ).rejects.toThrow(/same id/);
+    await expect(
+      s.as.mutation(api.applicationForm.saveApplicationForm, {
+        form: { ...defaultForm(), questions: [] },
+      }),
+    ).rejects.toThrow(/at least one question/);
+
+    const edited = defaultForm();
+    edited.questions[0].label = "Changed";
+    await s.as.mutation(api.applicationForm.saveApplicationForm, { form: edited });
+    await s.as.mutation(api.applicationForm.resetApplicationForm, {});
+    const view = await s.as.query(api.applicationForm.getApplicationForm, {});
+    expect(view.isDefault).toBe(true);
+    expect(view.form).toEqual(defaultForm());
   });
 });
 

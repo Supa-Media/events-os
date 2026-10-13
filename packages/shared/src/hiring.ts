@@ -523,11 +523,28 @@ export const DEFAULT_CANDIDATE_SOURCE: CandidateSource = "public_call";
 
 // ── The application itself ───────────────────────────────────────────────────
 
+/** One question on the application form. */
+export interface ApplicationQuestion {
+  /** Stable id the answer is stored under (`jobApplications.answers`). Never
+   *  changes once a question exists, so rewording a question doesn't orphan
+   *  the answers already filed under it. */
+  key: string;
+  label: string;
+  /** The helper line under the label. May be empty. */
+  help: string;
+  /** Character cap on the answer, enforced server-side. */
+  maxLength: number;
+  required: boolean;
+}
+
 /**
- * The questions every applicant answers, in order. Same set for every role —
- * one door — with the role's own specifics carried by the role page rather
- * than by bespoke per-role questions, which is what makes two applications
- * comparable at all.
+ * The questions every applicant answers, in order, as the org first wrote
+ * them. These are the DEFAULTS: the live set is editable by the hiring desk
+ * (`applicationForm.ts` in Convex, the "Application form" tab on the People
+ * desk) and falls back to this list until someone saves a change. Same set for
+ * every role — one door — with the role's own specifics carried by the role
+ * page rather than by bespoke per-role questions, which is what makes two
+ * applications comparable at all.
  *
  * Four of the six are load-bearing gates the Academy already names
  * (`capacity`, `covering`) or that *Buy Back Your Time* argues for
@@ -535,7 +552,7 @@ export const DEFAULT_CANDIDATE_SOURCE: CandidateSource = "public_call";
  * rule). `why` and `trial` are the two that consistently separate people who
  * want a title from people who want the work.
  */
-export const APPLICATION_QUESTIONS = [
+export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
   {
     key: "why",
     label: "Why Public Worship, and why this role?",
@@ -578,20 +595,114 @@ export const APPLICATION_QUESTIONS = [
     maxLength: 1500,
     required: false,
   },
+];
+
+/**
+ * The "Who you are" fields whose optional/required setting the desk can
+ * change. Name and email are NOT here: they are always required, because an
+ * application nobody can reply to isn't one.
+ */
+export const APPLICATION_TOGGLEABLE_FIELDS = [
+  { key: "phone", label: "Phone" },
+  { key: "location", label: "Where you're based" },
+  { key: "links", label: "Anything we should look at" },
+  { key: "referredBy", label: "Did someone here send you?" },
 ] as const;
 
-export type ApplicationQuestionKey = (typeof APPLICATION_QUESTIONS)[number]["key"];
+export type ApplicationToggleableField =
+  (typeof APPLICATION_TOGGLEABLE_FIELDS)[number]["key"];
 
-export function isApplicationQuestionKey(
-  value: string,
-): value is ApplicationQuestionKey {
-  return APPLICATION_QUESTIONS.some((q) => q.key === value);
+/** The whole editable shape of `/team/apply`. */
+export interface ApplicationFormConfig {
+  questions: ApplicationQuestion[];
+  /** Which of the toggleable "Who you are" fields are required. */
+  requiredFields: Record<ApplicationToggleableField, boolean>;
 }
 
-export function applicationQuestion(key: ApplicationQuestionKey) {
-  const found = APPLICATION_QUESTIONS.find((q) => q.key === key);
-  if (!found) throw new Error(`Unknown application question: ${key}`);
-  return found;
+export const DEFAULT_APPLICATION_FORM: ApplicationFormConfig = {
+  questions: DEFAULT_APPLICATION_QUESTIONS.map((q) => ({ ...q })),
+  requiredFields: {
+    phone: false,
+    location: false,
+    links: false,
+    referredBy: false,
+  },
+};
+
+/** Bounds on what the desk can set. Bounds, not product rules. */
+export const APPLICATION_FORM_LIMITS = {
+  minQuestions: 1,
+  maxQuestions: 20,
+  label: 300,
+  help: 600,
+  minAnswerLength: 100,
+  maxAnswerLength: 5000,
+  key: 40,
+} as const;
+
+const QUESTION_KEY_RE = /^[a-z0-9][a-z0-9_-]*$/;
+
+/** A fresh key for a question the desk just added. Unique against `taken`. */
+export function newApplicationQuestionKey(taken: readonly string[]): string {
+  let n = taken.length + 1;
+  while (taken.includes(`q${n}`)) n += 1;
+  return `q${n}`;
+}
+
+/**
+ * Everything wrong with a proposed form, as sentences a person can act on.
+ * Empty means it can be saved. The backend runs this on every save; the editor
+ * runs it too so the Save button can explain itself.
+ */
+export function problemsWithApplicationForm(
+  form: ApplicationFormConfig,
+): string[] {
+  const L = APPLICATION_FORM_LIMITS;
+  const problems: string[] = [];
+  const { questions } = form;
+  if (questions.length < L.minQuestions) {
+    problems.push("The form needs at least one question.");
+  }
+  if (questions.length > L.maxQuestions) {
+    problems.push(`The form can have at most ${L.maxQuestions} questions.`);
+  }
+  const seen = new Set<string>();
+  questions.forEach((q, i) => {
+    const n = `Question ${i + 1}`;
+    if (!QUESTION_KEY_RE.test(q.key) || q.key.length > L.key) {
+      problems.push(`${n} has an invalid id.`);
+    } else if (seen.has(q.key)) {
+      problems.push(`${n} has the same id as another question.`);
+    }
+    seen.add(q.key);
+    if (!q.label.trim()) problems.push(`${n} needs a question.`);
+    if (q.label.length > L.label) {
+      problems.push(`${n}'s question must be ${L.label} characters or fewer.`);
+    }
+    if (q.help.length > L.help) {
+      problems.push(`${n}'s helper text must be ${L.help} characters or fewer.`);
+    }
+    if (
+      !Number.isInteger(q.maxLength) ||
+      q.maxLength < L.minAnswerLength ||
+      q.maxLength > L.maxAnswerLength
+    ) {
+      problems.push(
+        `${n}'s answer limit must be between ${L.minAnswerLength} and ${L.maxAnswerLength} characters.`,
+      );
+    }
+  });
+  return problems;
+}
+
+/** "Six questions." — the form's intro line, counted from the live set. */
+export function applicationQuestionCountPhrase(count: number): string {
+  const words = [
+    "Zero", "One", "Two", "Three", "Four", "Five", "Six", "Seven", "Eight",
+    "Nine", "Ten", "Eleven", "Twelve",
+  ];
+  const n = words[count] ?? String(count);
+  return `${n} question${count === 1 ? "" : "s"}.`;
 }
 
 /** Field caps for the identity part of the form. Enforced server-side

@@ -111,7 +111,7 @@ const NAV: NavEntry[] = [
     icon: "user-plus",
     path: "/people/pipeline",
     group: "A",
-    alsoActiveOn: ["/people/volunteers"],
+    alsoActiveOn: ["/people/volunteers", "/people/listings", "/people/application"],
   },
   // Goals — the year plan (objectives + key results). Whole-org reading, so
   // shown to every member like Work; placed after the desks so it never takes
