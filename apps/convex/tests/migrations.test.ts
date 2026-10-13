@@ -373,6 +373,7 @@ const REGISTRY_NAMES = [
   "0089_add_academy_edit_power_defaults",
   "0090_application_form_kingdom_city",
   "0091_application_form_leadership_question",
+  "0092_application_form_drop_trial_question",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
