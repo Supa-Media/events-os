@@ -360,4 +360,14 @@ crons.cron(
   {},
 );
 
+// Daily 13:00 UTC = 9am EDT (8am EST): the applications digest to everyone
+// holding `hiring.view`. Sends nothing on a day with no new applications and
+// no open files.
+crons.cron(
+  "daily applications digest",
+  "0 13 * * *",
+  internal.applicationsDigest.sendDailyApplicationsDigest,
+  {},
+);
+
 export default crons;

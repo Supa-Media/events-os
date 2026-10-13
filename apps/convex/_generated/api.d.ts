@@ -15,6 +15,7 @@ import type * as ai from "../ai.js";
 import type * as aiActions from "../aiActions.js";
 import type * as aiEngine from "../aiEngine.js";
 import type * as applicationForm from "../applicationForm.js";
+import type * as applicationsDigest from "../applicationsDigest.js";
 import type * as audiences from "../audiences.js";
 import type * as auth from "../auth.js";
 import type * as backerMilestones from "../backerMilestones.js";
@@ -507,6 +508,7 @@ declare const fullApi: ApiFromModules<{
   aiActions: typeof aiActions;
   aiEngine: typeof aiEngine;
   applicationForm: typeof applicationForm;
+  applicationsDigest: typeof applicationsDigest;
   audiences: typeof audiences;
   auth: typeof auth;
   backerMilestones: typeof backerMilestones;

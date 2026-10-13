@@ -725,4 +725,36 @@ describe("hiring — who gets told", () => {
     });
     expect(notice?.recipients).toEqual([LEADS_INBOX]);
   });
+
+  test("the daily digest reaches everyone who can see the pipeline and counts the last day", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedHiringSeat(s, ["hiring.view"], { slug: "viewer_seat" });
+    const otherUserId = await run(t, (ctx) =>
+      ctx.db.insert("users", { email: "musician@publicworship.life" }),
+    );
+    await seedHiringSeat(s, ["giving.view"], {
+      slug: "music_seat",
+      userId: otherUserId,
+    });
+
+    await submit(t);
+    const old = await submit(t, { email: "old@example.com", roleTitle: "Music Director" });
+    await run(t, (ctx) =>
+      ctx.db.patch(old, { createdAt: Date.now() - 3 * 24 * 60 * 60 * 1000 }),
+    );
+
+    const summary = await t.query(internal.applicationsDigest.dailySummary, {
+      since: Date.now() - 24 * 60 * 60 * 1000,
+    });
+    expect(summary.recipients).toEqual(["seat-viewer_seat@publicworship.life"]);
+    expect(summary.newCount).toBe(1);
+    expect(summary.byRole).toEqual([{ label: "People Director", count: 1 }]);
+    expect(summary.applicants).toEqual([
+      { name: "Ada Rivera", roleTitle: "People Director", location: "Queens, NY" },
+    ]);
+    // Both files are still open, including the one from three days ago.
+    expect(summary.openTotal).toBe(2);
+    expect(summary.openByStage).toEqual([{ label: "Applied", count: 2 }]);
+  });
 });
