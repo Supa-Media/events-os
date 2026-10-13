@@ -589,13 +589,6 @@ export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
     maxLength: 1000,
     required: true,
   },
-  {
-    key: "trial",
-    label: "Every role starts with an Empowerment Trial — real, bounded work before anything is official. What would you want yours to be?",
-    help: "Optional. A good answer here has told us more than a resume, more than once.",
-    maxLength: 1500,
-    required: false,
-  },
 ];
 
 /**

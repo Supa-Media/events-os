@@ -288,11 +288,11 @@ describe("hiring — the editable application form", () => {
     const s = await setupChapter(t);
     await seedHiringSeat(s, ["hiring.edit"]);
     const form = defaultForm();
-    // Reword `why`, make `covering` optional, retire `trial`, add a new one,
+    // Reword `why`, make `covering` optional, retire `leadership`, add a new one,
     // and require a phone number.
     form.questions[0].label = "Why us?";
     form.questions.find((q) => q.key === "covering")!.required = false;
-    form.questions = form.questions.filter((q) => q.key !== "trial");
+    form.questions = form.questions.filter((q) => q.key !== "leadership");
     form.questions.push({
       key: "q7",
       label: "What instrument do you play?",
@@ -310,11 +310,11 @@ describe("hiring — the editable application form", () => {
     const answers = args.answers as Record<string, string>;
     delete answers.covering;
     answers.q7 = "Bass.";
-    answers.trial = "Retired question — dropped.";
+    answers.leadership = "Retired question — dropped.";
     const id = await submit(t, { answers });
     const row = await run(t, (ctx) => ctx.db.get(id));
     expect(row?.answers.q7).toBe("Bass.");
-    expect(row?.answers).not.toHaveProperty("trial");
+    expect(row?.answers).not.toHaveProperty("leadership");
     expect(row?.questions?.[0]).toEqual({ key: "why", label: "Why us?" });
 
     // A required identity field is enforced too.
