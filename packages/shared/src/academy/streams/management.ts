@@ -1003,15 +1003,11 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The five steps now live in the product. **publicworship.life/team** lists the open seats, and anyone can apply. Every application lands in **People → Recruiting** in Chapter OS, the same door for strangers and friends. A candidate's file holds their answers, the rubric, the trial brief, and the call.",
+        text: "The five steps now live in the product. **publicworship.life/team** lists the open seats, and anyone can apply. Every application lands in **People → Recruiting**, the same door for strangers and friends. Each file holds the answers, rubric, trial brief, and call. Edit the questions under **Application form**.",
       },
       {
         kind: "p",
         text: "A role gets published only when someone can write down three things. These are the **outcomes** it's accountable for (and how we'd know one landed), what the holder can **decide** without asking, and what the role is **not**. If those can't be written, the seat isn't ready, and no candidate gets contacted.",
-      },
-      {
-        kind: "p",
-        text: "The questions applicants answer belong to the desk too. **People → Recruiting → Application form** is where anyone who runs the pipeline rewords a question, adds or removes one, or marks it optional, and the page changes the moment it's saved. Every file keeps the wording its applicant was actually asked, so an edit never relabels an answer already in.",
       },
       {
         kind: "table",
