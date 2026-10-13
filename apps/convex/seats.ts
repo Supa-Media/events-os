@@ -91,6 +91,8 @@ const seatNodeValidator = v.object({
   maxHolders: v.number(),
   derived: v.boolean(),
   sortOrder: v.number(),
+  // Stored course override (see `schema/seats.ts`); absent = built-in path.
+  courseSlugs: v.optional(v.array(v.string())),
   holders: v.array(chartHolderValidator),
   vacant: v.boolean(),
 });
@@ -248,6 +250,7 @@ function buildNode(
     maxHolders: def.maxHolders,
     derived: def.derived === true,
     sortOrder: def.sortOrder,
+    ...(def.courseSlugs !== undefined ? { courseSlugs: def.courseSlugs } : {}),
     holders,
     vacant: holders.length === 0,
   };
@@ -400,6 +403,8 @@ export const seatDetail = query({
       capabilities: v.array(seatCapabilityValidator),
       maxHolders: v.number(),
       derived: v.boolean(),
+      // Stored course override; absent = the built-in role path applies.
+      courseSlugs: v.optional(v.array(v.string())),
       // True iff the CALLER may edit this seat's powers (superuser backstop OR
       // a held `org.editChart` seat — the SAME gate `setSeatGivingPower` /
       // `seatStructure.updateSeat` enforce server-side). Surfaced here so the
@@ -485,6 +490,7 @@ export const seatDetail = query({
       capabilities: def.capabilities,
       maxHolders: def.maxHolders,
       derived: isDerived,
+      ...(def.courseSlugs !== undefined ? { courseSlugs: def.courseSlugs } : {}),
       canEditPowers,
       canFillSeats,
       holders: resolvedHolders.map((h) => ({
@@ -519,6 +525,8 @@ export const mySeatAssignments = query({
       chart: seatChartValidator,
       scope: v.union(v.id("chapters"), v.literal("central")),
       scopeName: v.string(),
+      // The seat's stored course override; absent = its built-in role path.
+      courseSlugs: v.optional(v.array(v.string())),
       createdAt: v.number(),
     }),
   ),
@@ -568,6 +576,7 @@ export const mySeatAssignments = query({
         chart: def.chart,
         scope: a.scope,
         scopeName,
+        ...(def.courseSlugs !== undefined ? { courseSlugs: def.courseSlugs } : {}),
         createdAt: a.createdAt,
       });
     }

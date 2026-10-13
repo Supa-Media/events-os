@@ -38,6 +38,7 @@ import {
   SEAT_CAPABILITIES,
   SEAT_ROOT,
   MULTI_HOLDER_CAP,
+  unknownCourseSlugs,
 } from "@events-os/shared";
 import {
   requireChartEditor,
@@ -320,6 +321,20 @@ function assertValidMaxHolders(maxHolders: number): void {
   }
 }
 
+/** A seat's course list as stored: known courses only, each once, in the
+ *  order given. Rejects an unknown slug outright rather than dropping it —
+ *  the picker only offers real courses, so one here is a caller bug. */
+function normalizeCourseSlugs(courseSlugs: readonly string[]): string[] {
+  const unknown = unknownCourseSlugs(courseSlugs);
+  if (unknown.length > 0) {
+    throw new ConvexError({
+      code: "UNKNOWN_COURSE",
+      message: `Unknown course: ${unknown.join(", ")}.`,
+    });
+  }
+  return [...new Set(courseSlugs)];
+}
+
 // ── Mutations ────────────────────────────────────────────────────────────────
 
 /**
@@ -339,6 +354,8 @@ export const addSeat = mutation({
     maxHolders: v.number(),
     duties: v.array(v.string()),
     capabilities: v.array(seatCapabilityValidator),
+    /** The seat's Academy courses, in order. Omitted = no training path. */
+    courseSlugs: v.optional(v.array(v.string())),
   },
   returns: v.id("seatDefs"),
   handler: async (ctx, args) => {
@@ -349,6 +366,8 @@ export const addSeat = mutation({
       throw new ConvexError({ code: "INVALID_TITLE", message: "Title can't be empty." });
     }
     assertValidMaxHolders(args.maxHolders);
+    const courseSlugs =
+      args.courseSlugs !== undefined ? normalizeCourseSlugs(args.courseSlugs) : undefined;
 
     if (args.parentSlug === SEAT_ROOT) {
       throw new ConvexError({
@@ -378,6 +397,7 @@ export const addSeat = mutation({
       maxHolders: args.maxHolders,
       duties: args.duties,
       capabilities: args.capabilities,
+      ...(courseSlugs !== undefined ? { courseSlugs } : {}),
       sortOrder,
       derived: false,
       createdAt: now,
@@ -391,6 +411,7 @@ export const addSeat = mutation({
       maxHolders: args.maxHolders,
       duties: summarizeDuties(args.duties),
       capabilities: args.capabilities,
+      ...(courseSlugs !== undefined ? { courseSlugs } : {}),
     });
 
     return seatDefId;
@@ -430,8 +451,9 @@ export const renameSeat = mutation({
 });
 
 /**
- * Update a seat's `maxHolders`/`duties`/`capabilities` (any subset — omitted
- * fields are left untouched). Rejects a `derived` seat (its holders — and
+ * Update a seat's `maxHolders`/`duties`/`capabilities`/`courseSlugs` (any
+ * subset — omitted fields are left untouched). `courseSlugs: null` clears a
+ * customized course list back to the seat's built-in role path. Rejects a `derived` seat (its holders — and
  * hence its effective `maxHolders`/floor — are computed, not editable;
  * mirrors `reparentSeat`/`removeSeat`'s guard). Enforces the `maxHolders`
  * floor (can't drop below the seat's current largest per-scope holder
@@ -445,9 +467,10 @@ export const updateSeat = mutation({
     maxHolders: v.optional(v.number()),
     duties: v.optional(v.array(v.string())),
     capabilities: v.optional(v.array(seatCapabilityValidator)),
+    courseSlugs: v.optional(v.union(v.array(v.string()), v.null())),
   },
   returns: v.null(),
-  handler: async (ctx, { slug, maxHolders, duties, capabilities }) => {
+  handler: async (ctx, { slug, maxHolders, duties, capabilities, courseSlugs }) => {
     const editor = await requireChartEditor(ctx);
     const def = await requireDefBySlug(ctx, slug);
 
@@ -459,7 +482,9 @@ export const updateSeat = mutation({
       });
     }
 
-    const patch: Partial<Pick<Doc<"seatDefs">, "maxHolders" | "duties" | "capabilities">> = {};
+    const patch: Partial<
+      Pick<Doc<"seatDefs">, "maxHolders" | "duties" | "capabilities" | "courseSlugs">
+    > = {};
     const before: Record<string, unknown> = {};
     const after: Record<string, unknown> = {};
 
@@ -512,6 +537,22 @@ export const updateSeat = mutation({
       patch.capabilities = capabilities;
       before.capabilities = def.capabilities;
       after.capabilities = capabilities;
+    }
+
+    if (courseSlugs !== undefined) {
+      // `undefined` in a patch removes the field — back to the built-in path.
+      const next = courseSlugs === null ? undefined : normalizeCourseSlugs(courseSlugs);
+      const same =
+        next === undefined
+          ? def.courseSlugs === undefined
+          : def.courseSlugs !== undefined &&
+            def.courseSlugs.length === next.length &&
+            def.courseSlugs.every((c, i) => c === next[i]);
+      if (!same) {
+        patch.courseSlugs = next;
+        before.courseSlugs = def.courseSlugs ?? null;
+        after.courseSlugs = next ?? null;
+      }
     }
 
     if (Object.keys(patch).length === 0) return null; // no-op, nothing to log

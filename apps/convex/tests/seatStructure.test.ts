@@ -440,6 +440,85 @@ describe("seatStructure.updateSeat", () => {
   });
 });
 
+// ── Seat courses ─────────────────────────────────────────────────────────────
+
+describe("seatStructure — seat courses", () => {
+  test("addSeat stores the chosen courses, deduped, in order", async () => {
+    const s = await edSetup();
+    const seatDefId = await s.as.mutation(api.seatStructure.addSeat, {
+      ...addSeatArgs,
+      courseSlugs: ["how-we-work", "welcome-to-public-worship", "how-we-work"],
+    });
+    const def = await run(s.t, (ctx) => ctx.db.get(seatDefId));
+    expect(def?.courseSlugs).toEqual(["how-we-work", "welcome-to-public-worship"]);
+  });
+
+  test("addSeat without courses leaves the field absent", async () => {
+    const s = await edSetup();
+    const seatDefId = await s.as.mutation(api.seatStructure.addSeat, addSeatArgs);
+    const def = await run(s.t, (ctx) => ctx.db.get(seatDefId));
+    expect(def?.courseSlugs).toBeUndefined();
+  });
+
+  test("rejects an unknown course slug", async () => {
+    const s = await edSetup();
+    await expect(
+      s.as.mutation(api.seatStructure.addSeat, { ...addSeatArgs, courseSlugs: ["no-such-course"] }),
+    ).rejects.toBeInstanceOf(ConvexError);
+    await expect(
+      s.as.mutation(api.seatStructure.updateSeat, { slug: "music_lead", courseSlugs: ["no-such-course"] }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+
+  test("updateSeat sets, logs, and clears a seat's courses; seatDetail and chart surface them", async () => {
+    const s = await edSetup();
+    await s.as.mutation(api.seatStructure.updateSeat, {
+      slug: "music_lead",
+      courseSlugs: ["how-we-work"],
+    });
+    const def = await defBySlug(s, "music_lead");
+    expect(def.courseSlugs).toEqual(["how-we-work"]);
+
+    const detail = await s.as.query(api.seats.seatDetail, { defId: def._id, scope: s.chapterId });
+    expect(detail?.courseSlugs).toEqual(["how-we-work"]);
+    const chart = await s.as.query(api.seats.chart, { scope: s.chapterId });
+    if (chart.kind !== "chapter") throw new Error("expected a chapter chart");
+    expect(chart.seats.find((n) => n.slug === "music_lead")?.courseSlugs).toEqual(["how-we-work"]);
+
+    const log = await s.as.query(api.seatStructure.structureLog, {});
+    const row = log.find((r) => r.slug === "music_lead" && r.mutation === "updateSeat")!;
+    expect(row.before).toEqual({ courseSlugs: null });
+    expect(row.after).toEqual({ courseSlugs: ["how-we-work"] });
+
+    // Same list again is a no-op (no second log row).
+    await s.as.mutation(api.seatStructure.updateSeat, { slug: "music_lead", courseSlugs: ["how-we-work"] });
+    const log2 = await s.as.query(api.seatStructure.structureLog, {});
+    expect(log2.filter((r) => r.slug === "music_lead").length).toBe(1);
+
+    // null goes back to the built-in path.
+    await s.as.mutation(api.seatStructure.updateSeat, { slug: "music_lead", courseSlugs: null });
+    expect((await defBySlug(s, "music_lead")).courseSlugs).toBeUndefined();
+  });
+
+  test("an empty list is stored (no training), distinct from the built-in default", async () => {
+    const s = await edSetup();
+    await s.as.mutation(api.seatStructure.updateSeat, { slug: "music_lead", courseSlugs: [] });
+    expect((await defBySlug(s, "music_lead")).courseSlugs).toEqual([]);
+  });
+
+  test("a seat holder without org.editChart can't change courses", async () => {
+    const s = await edSetup();
+    const { as: treasurerAs, userId } = await signInAs(s.t, "treasurer@publicworship.life");
+    const personId = await run(s.t, (ctx) =>
+      ctx.db.insert("people", { chapterId: s.chapterId, name: "Treasurer", userId, createdAt: Date.now() }),
+    );
+    await directlyAssign(s, "treasurer", s.chapterId, personId);
+    await expect(
+      treasurerAs.mutation(api.seatStructure.updateSeat, { slug: "music_lead", courseSlugs: ["how-we-work"] }),
+    ).rejects.toBeInstanceOf(ConvexError);
+  });
+});
+
 // ── Self-lockout guard ───────────────────────────────────────────────────────
 
 describe("seatStructure — SELF-LOCKOUT guard", () => {

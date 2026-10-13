@@ -592,6 +592,53 @@ export function getRolePath(
 }
 
 /**
+ * A seat's EFFECTIVE role path, given its live `seatDefs` row.
+ *
+ * A chart editor can set a seat's courses in the org chart
+ * (`seatDefs.courseSlugs`, written by `seatStructure.updateSeat` / `addSeat`).
+ * That stored list, when present, IS the seat's path — it overrides the
+ * built-in `ROLE_PATHS` entry, and is the only path a runtime-added seat can
+ * have. Absent means "never customized": the built-in path (if any) applies,
+ * unchanged.
+ *
+ * A customized path takes the seat's live title (so a rename carries through),
+ * keeps the built-in icon when there is one, and drops any course slug the
+ * catalog no longer has. An empty list means "no training for this seat" and
+ * resolves to `undefined`, same as a seat with no built-in path.
+ */
+export function seatRolePath(seat: {
+  slug: string;
+  title: string;
+  courseSlugs?: readonly string[] | null;
+}): RolePath | undefined {
+  const builtIn = getRolePath("seat", seat.slug);
+  if (seat.courseSlugs == null) return builtIn;
+  const courseSlugs = [...new Set(seat.courseSlugs)].filter(
+    (c) => getAcademyCourse(c) !== undefined,
+  );
+  if (courseSlugs.length === 0) return undefined;
+  return {
+    seatSlug: seat.slug,
+    kind: "seat",
+    title: seat.title,
+    icon: builtIn?.icon ?? "book-open",
+    courseSlugs,
+  };
+}
+
+/** The courses a brand-new seat is offered by default: the Foundations trio
+ *  every built-in seat path starts with (the `"everyone"` path). */
+export function defaultNewSeatCourseSlugs(): string[] {
+  return [...(getRolePath("event_hat", "everyone")?.courseSlugs ?? [])];
+}
+
+/** The course slugs in `slugs` that don't exist in the catalog — the
+ *  validation `seatStructure` runs before storing a seat's courses. */
+export function unknownCourseSlugs(slugs: readonly string[]): string[] {
+  return slugs.filter((c) => getAcademyCourse(c) === undefined);
+}
+
+/**
  * The union of required module slugs across every course in the path, in course
  * order (a course's OPTIONAL modules — e.g. the worship capstone — are excluded
  * via `requiredModuleSlugsForCourse`). Deduped through a Set so each module is
