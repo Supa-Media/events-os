@@ -526,9 +526,15 @@ export const updateSeat = mutation({
 });
 
 /**
- * Move a seat to a new parent, within the SAME chart. Rejects: a `derived`
- * seat, moving a chart's root, moving TO become a second root, a self-parent,
- * a cross-chart parent, or any move that would introduce a cycle. Runs the
+ * Move a seat to a new parent, within the SAME chart. Rejects: moving a
+ * chart's root, moving TO become a second root, a self-parent, a cross-chart
+ * parent, a `derived` parent (it has no real holders to report to), or any
+ * move that would introduce a cycle.
+ *
+ * A `derived` seat CAN be moved: the `chapter_directors` mirror's parent is
+ * where every chapter reports (`chapterRollupParentSlug`), so moving it is
+ * how an editor changes who the chapter directors report to. Only its
+ * holders are computed, not its position. Runs the
  * self-lockout simulation (a no-op in practice today, since capabilities
  * live on the seat itself and aren't inherited from position — but kept
  * uniform with `updateSeat`/`removeSeat` as a defense-in-depth guard against
@@ -541,12 +547,6 @@ export const reparentSeat = mutation({
     const editor = await requireChartEditor(ctx);
     const def = await requireDefBySlug(ctx, slug);
 
-    if (def.derived === true) {
-      throw new ConvexError({
-        code: "DERIVED_SEAT",
-        message: "This seat's holders are computed automatically — its position can't be edited.",
-      });
-    }
     if (def.parentSlug === SEAT_ROOT) {
       throw new ConvexError({
         code: "CANNOT_REPARENT_ROOT",
@@ -565,6 +565,12 @@ export const reparentSeat = mutation({
       throw new ConvexError({
         code: "CROSS_CHART_PARENT",
         message: "A seat's parent must be in the same chart.",
+      });
+    }
+    if (newParentDef.derived === true) {
+      throw new ConvexError({
+        code: "DERIVED_PARENT",
+        message: "This seat's holders are computed automatically, so nothing can report to it.",
       });
     }
 

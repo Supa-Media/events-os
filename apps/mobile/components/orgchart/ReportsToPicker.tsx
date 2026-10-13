@@ -41,7 +41,9 @@ export function ReportsToPicker({
   function choose(target: SeatNode) {
     confirmAction({
       title: `Move ${seat.title}?`,
-      message: `${seat.title} will report to ${target.title}. Everyone under it moves along with it.`,
+      message: seat.derived
+        ? `Every chapter's director will report to ${target.title}, and each chapter's team moves with them.`
+        : `${seat.title} will report to ${target.title}. Everyone under it moves along with it.`,
       confirmLabel: "Move",
       onConfirm: () =>
         void (async () => {
@@ -66,8 +68,15 @@ export function ReportsToPicker({
         .filter(({ seat: s }) => !q || s.title.toLowerCase().includes(q))
         .map(({ seat: s, depth }) => {
           const current = s.slug === seat.parentSlug;
-          const blocked = ownBranch.has(s.slug);
-          const reason = s.slug === seat.slug ? "this seat" : blocked ? "reports to this seat" : null;
+          const blocked = ownBranch.has(s.slug) || s.derived;
+          const reason =
+            s.slug === seat.slug
+              ? "this seat"
+              : ownBranch.has(s.slug)
+                ? "reports to this seat"
+                : s.derived
+                  ? "filled automatically"
+                  : null;
           return (
             <Pressable
               key={s.slug}

@@ -566,12 +566,21 @@ describe("seatStructure.reparentSeat", () => {
     expect((await defBySlug(s, "production_coordinator")).parentSlug).toBe("marketing_lead");
   });
 
-  test("rejects reparenting a derived seat", async () => {
+  test("moves the derived Chapter Directors seat (where every chapter reports)", async () => {
+    const s = await edSetup();
+    await s.as.mutation(api.seatStructure.reparentSeat, {
+      slug: "chapter_directors",
+      newParentSlug: "executive_director",
+    });
+    expect((await defBySlug(s, "chapter_directors")).parentSlug).toBe("executive_director");
+  });
+
+  test("rejects moving a seat under a derived seat", async () => {
     const s = await edSetup();
     await expect(
       s.as.mutation(api.seatStructure.reparentSeat, {
-        slug: "chapter_directors",
-        newParentSlug: "recruiting_associate",
+        slug: "recruiting_associate",
+        newParentSlug: "chapter_directors",
       }),
     ).rejects.toBeInstanceOf(ConvexError);
   });

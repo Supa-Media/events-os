@@ -14,10 +14,10 @@ import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
-  CHAPTER_ROLLUP_PARENT,
   POWER_DEFS,
   POWER_DOMAINS,
   SEAT_ROOT,
+  chapterRollupParentSlug,
   powersAtScope,
   type Power,
 } from "@events-os/shared";
@@ -184,8 +184,8 @@ export function buildChartTree(seats: SeatNode[], scope: NodeScope): ChartBuild 
 /**
  * The FULL tree: the central chart with each chapter's own root+subtree
  * grafted in — vertically stacked as extra children under the seat every
- * chapter's `chapter_director` rolls up into server-side
- * (`CHAPTER_ROLLUP_PARENT`, today `expansion_director`). Every chapter is
+ * chapter's `chapter_director` rolls up into server-side — wherever the
+ * `chapter_directors` mirror sits (`chapterRollupParentSlug`). Every chapter is
  * identical in shape (same shared chapter chart), only occupancy differs.
  * Orphans are pooled across the central chart AND every chapter.
  */
@@ -194,6 +194,7 @@ export function buildFullTree(chart: FullChart): ChartBuild {
   if (!centralBuild.root) return centralBuild;
 
   const orphans: TreeNode[] = [...centralBuild.orphans];
+  const rollupParent = chapterRollupParentSlug(chart.central);
 
   function graft(node: TreeNode, depth = 0): TreeNode {
     if (depth >= MAX_TREE_DEPTH) {
@@ -203,7 +204,7 @@ export function buildFullTree(chart: FullChart): ChartBuild {
       return node;
     }
     const children = node.children.map((c) => graft(c, depth + 1));
-    if (node.seat.slug === CHAPTER_ROLLUP_PARENT) {
+    if (node.seat.slug === rollupParent) {
       for (const chapter of chart.chapters) {
         const chapterBuild = buildChartTree(chapter.seats, chapter.chapterId);
         orphans.push(...chapterBuild.orphans);
@@ -319,7 +320,7 @@ export type ReportsTo = {
  * by exactly the same person(s) (normal in this org: one person often sits in
  * several boxes). A chapter chart's ROOT (`chapter_director`) has no parent
  * within its own chart — once exhausted, the walk jumps to the CENTRAL
- * rollup-parent seat (`expansion_director`), mirroring the server's
+ * rollup-parent seat (the `chapter_directors` mirror's parent), mirroring the server's
  * chapter→central rollup. Returns `null` at the true top of the org (central
  * root) or if every ancestor is vacant/same-person all the way up.
  *
@@ -371,7 +372,7 @@ export function computeReportsTo(
     if (slugCursor === SEAT_ROOT) {
       if (scopeCursor === "central") return null; // top of the org
       scopeCursor = "central";
-      slugCursor = CHAPTER_ROLLUP_PARENT;
+      slugCursor = chapterRollupParentSlug(chart.central);
       continue;
     }
     const parent = listFor(scopeCursor).find((s) => s.slug === slugCursor);

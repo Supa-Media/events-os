@@ -15,7 +15,7 @@ import { requireUserId, getChapterIdOrNull } from "./context";
 import { isSuperuser } from "./superuser";
 import { resolvePersonaForRoster } from "./people";
 import {
-  CHAPTER_ROLLUP_PARENT,
+  chapterRollupParentSlug,
   buildSeatManagerIndex,
   effectiveManagerIds,
   type SeatManagerIndex,
@@ -305,7 +305,7 @@ export function personEffectiveManagerIds(
     person._id,
     person.managerId ?? null,
     "central",
-    CHAPTER_ROLLUP_PARENT,
+    chapterRollupParentSlug(index.defById.values()),
   );
 }
 

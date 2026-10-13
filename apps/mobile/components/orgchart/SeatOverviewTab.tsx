@@ -58,6 +58,9 @@ export function SeatOverviewTab({
   const [savingSize, setSavingSize] = useState(false);
   const isRoot = seat.parentSlug === SEAT_ROOT;
   const editable = canEdit && !derived;
+  // A derived seat's holders are computed, but its position isn't: moving the
+  // Chapter Directors mirror is how an editor changes where the chapters report.
+  const movable = canEdit && !isRoot;
   const parentTitle = chartSeats.find((s) => s.slug === seat.parentSlug)?.title ?? null;
   const rolePath = getRolePath("seat", seat.slug);
 
@@ -97,7 +100,7 @@ export function SeatOverviewTab({
       <View className="gap-1.5">
         <View className="flex-row items-center justify-between gap-2">
           <Label>Reports to</Label>
-          {editable && !isRoot ? (
+          {movable ? (
             <Button title="Change" variant="ghost" size="sm" icon="corner-up-right" onPress={() => setMoveOpen(true)} />
           ) : null}
         </View>
@@ -198,7 +201,7 @@ export function SeatOverviewTab({
         </View>
       ) : null}
 
-      {editable && !isRoot ? (
+      {movable ? (
         <ReportsToPicker
           visible={moveOpen}
           seat={seat}

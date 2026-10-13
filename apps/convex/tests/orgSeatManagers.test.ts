@@ -113,6 +113,25 @@ describe("seat-derived managers (org.workload)", () => {
     expect(workload!.managers.map((m) => m.name)).toEqual(["Erin"]);
   });
 
+  test("moving the Chapter Directors seat moves who every chapter director reports to", async () => {
+    const s = await seatSetup();
+    const dana = await makePerson(s, "Dana");
+    const erin = await makePerson(s, "Erin");
+    const eli = await makePerson(s, "Eli");
+    await assign(s, "chapter_director", s.chapterId, dana);
+    await assign(s, "expansion_director", "central", erin);
+    await assign(s, "executive_director", "central", eli);
+
+    const before = await s.as.query(api.org.workload, { personId: dana });
+    expect(before!.managers.map((m) => m.name)).toEqual(["Erin"]);
+
+    const mirror = await defBySlug(s, "chapter_directors");
+    await run(s.t, (ctx) => ctx.db.patch(mirror._id, { parentSlug: "executive_director" }));
+
+    const after = await s.as.query(api.org.workload, { personId: dana });
+    expect(after!.managers.map((m) => m.name)).toEqual(["Eli"]);
+  });
+
   test("the executive director (top of the org) has no managers — not a fallback signal", async () => {
     const s = await seatSetup();
     const eli = await makePerson(s, "Eli");
