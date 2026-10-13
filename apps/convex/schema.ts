@@ -159,6 +159,11 @@ import {
   aiSettings,
 } from "./schema/ai";
 import { academyProgress, courseCompletions } from "./schema/academy";
+import {
+  academyCourseDrafts,
+  academyCourseEdits,
+  academyCourseVersions,
+} from "./schema/academyEdits";
 import { schemaMigrations } from "./schema/migrations";
 import { integrationSettings } from "./schema/integrationSettings";
 import { mailchimpMembers, mailchimpSyncRuns } from "./schema/mailchimp";
@@ -640,6 +645,11 @@ const schema = defineSchema({
   // Academy (per-person curriculum progress + earned course badges).
   academyProgress,
   courseCompletions,
+  // In-app course edits laid over the code-defined curriculum: what's
+  // published, the editors' drafts, and every published version.
+  academyCourseEdits,
+  academyCourseDrafts,
+  academyCourseVersions,
 
   // Migration ledger (which data migrations have run on this deployment).
   schemaMigrations,

@@ -51,6 +51,9 @@ import {
   requiredModuleSlugsForCourse,
   type AcademySection,
 } from "./academy";
+// Type-only: the path helpers take the LIVE catalog (published in-app course
+// edits laid over code) when a screen has one, and fall back to code.
+import type { AcademyCatalog } from "./academy/catalog";
 import { SEAT_DEFS, SEAT_IDS } from "./seats";
 
 /**
@@ -645,11 +648,15 @@ export function unknownCourseSlugs(slugs: readonly string[]): string[] {
  * counted once even in the (by-construction impossible) case of overlap. This
  * is the denominator for path progress.
  */
-export function requiredModuleSlugsForPath(path: RolePath): string[] {
+export function requiredModuleSlugsForPath(
+  path: RolePath,
+  catalog?: AcademyCatalog,
+): string[] {
+  const requiredFor = catalog?.requiredModuleSlugsForCourse ?? requiredModuleSlugsForCourse;
   const seen = new Set<string>();
   const result: string[] = [];
   for (const courseSlug of path.courseSlugs) {
-    for (const moduleSlug of requiredModuleSlugsForCourse(courseSlug)) {
+    for (const moduleSlug of requiredFor(courseSlug)) {
       if (!seen.has(moduleSlug)) {
         seen.add(moduleSlug);
         result.push(moduleSlug);
@@ -673,8 +680,9 @@ export function requiredModuleSlugsForPath(path: RolePath): string[] {
 export function rolePathProgress(
   path: RolePath,
   passedSlugs: Set<string>,
+  catalog?: AcademyCatalog,
 ): { completed: number; total: number; fraction: number } {
-  const required = requiredModuleSlugsForPath(path);
+  const required = requiredModuleSlugsForPath(path, catalog);
   const total = required.length;
   const completed = required.filter((slug) => passedSlugs.has(slug)).length;
   const fraction = total === 0 ? 0 : completed / total;
@@ -690,11 +698,14 @@ export function rolePathProgress(
 export function nextIncompleteModuleForPath(
   path: RolePath,
   passedSlugs: Set<string>,
+  catalog?: AcademyCatalog,
 ): AcademySection | null {
+  const requiredFor = catalog?.requiredModuleSlugsForCourse ?? requiredModuleSlugsForCourse;
+  const sectionFor = catalog?.getSection ?? getAcademySection;
   for (const courseSlug of path.courseSlugs) {
-    for (const moduleSlug of requiredModuleSlugsForCourse(courseSlug)) {
+    for (const moduleSlug of requiredFor(courseSlug)) {
       if (!passedSlugs.has(moduleSlug)) {
-        return getAcademySection(moduleSlug) ?? null;
+        return sectionFor(moduleSlug) ?? null;
       }
     }
   }

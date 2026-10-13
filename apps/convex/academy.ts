@@ -28,20 +28,14 @@ import { mutation as triggerMutation } from "./lib/peopleAggregate";
 import { Doc, Id } from "./_generated/dataModel";
 import { ConvexError, v } from "convex/values";
 import {
-  ACADEMY_COURSES,
-  ACADEMY_REQUIRED_SECTION_COUNT,
-  ACADEMY_SECTIONS,
   ACADEMY_TRAINING_TEMPLATES,
   CORE_MODULE_KEYS,
   DAY_MS,
   DAY_OFFSET_MODULES,
   computeDueDate,
-  courseForModuleSlug,
   defaultStatusValue,
-  getAcademySection,
   isCompleteStatus,
-  previousModuleInCourse,
-  requiredModuleSlugsForCourse,
+  type AcademyCatalog,
   type AcademySection,
   type AcademyTrainingKind,
   type ModuleKey,
@@ -71,6 +65,7 @@ import {
   buildChildrenOf,
   subtreeIds,
 } from "./lib/org";
+import { loadAcademyCatalog, publishedCourseEdits } from "./lib/academyCatalog";
 
 /** A person may hold at most this many training events PER CAPSTONE, ever
  *  (incl. cancelled). */
@@ -81,9 +76,10 @@ const TRAINING_EVENT_LIMIT = 5;
  *  (Tasks quests before Comms quests, Debrief last). */
 const MODULE_ORDER = new Map(CORE_MODULE_KEYS.map((k, i) => [k as string, i]));
 
-/** Throw unless `slug` names a real curriculum section. */
-function requireSection(slug: string) {
-  const section = getAcademySection(slug);
+/** Throw unless `slug` names a real curriculum section in the live catalog
+ *  (code plus published in-app edits — see `lib/academyCatalog.ts`). */
+function requireSection(cat: AcademyCatalog, slug: string) {
+  const section = cat.getSection(slug);
   if (!section) {
     throw new ConvexError({
       code: "UNKNOWN_SECTION",
@@ -94,10 +90,13 @@ function requireSection(slug: string) {
 }
 
 /** Throw unless `slug` names a capstone section; returns it with its meta. */
-function requireCapstoneSection(slug: string): AcademySection & {
+function requireCapstoneSection(
+  cat: AcademyCatalog,
+  slug: string,
+): AcademySection & {
   capstone: { kind: AcademyTrainingKind };
 } {
-  const section = requireSection(slug);
+  const section = requireSection(cat, slug);
   if (!section.capstone) {
     throw new ConvexError({
       code: "NOT_A_CAPSTONE",
@@ -363,14 +362,15 @@ async function courseEarnedAt(
   ctx: QueryCtx,
   chapterId: Id<"chapters">,
   personId: Id<"people">,
-  course: (typeof ACADEMY_COURSES)[number],
+  cat: AcademyCatalog,
+  courseSlug: string,
   bySlug: Map<string, Doc<"academyProgress">>,
 ): Promise<number | null> {
-  const required = requiredModuleSlugsForCourse(course.slug);
+  const required = cat.requiredModuleSlugsForCourse(courseSlug);
   if (required.length === 0) return null; // an empty course is never "earned"
   let earnedAt = 0;
   for (const slug of required) {
-    const section = getAcademySection(slug);
+    const section = cat.getSection(slug);
     if (!section) return null; // catalog invariant guarantees this can't happen
     const stamped = bySlug.get(slug)?.passedAt;
     if (stamped != null) {
@@ -413,15 +413,15 @@ async function maybeAwardCourse(
   ctx: MutationCtx,
   chapterId: Id<"chapters">,
   personId: Id<"people">,
+  cat: AcademyCatalog,
   courseSlug: string,
 ): Promise<boolean> {
-  const course = ACADEMY_COURSES.find((c) => c.slug === courseSlug);
-  if (!course) return false;
+  if (!cat.getCourse(courseSlug)) return false;
   if ((await completedCourseSlugs(ctx, chapterId, personId)).has(courseSlug)) {
     return false;
   }
   const bySlug = await progressBySlug(ctx, chapterId, personId);
-  const earnedAt = await courseEarnedAt(ctx, chapterId, personId, course, bySlug);
+  const earnedAt = await courseEarnedAt(ctx, chapterId, personId, cat, courseSlug, bySlug);
   if (earnedAt === null) return false;
   await ctx.db.insert("courseCompletions", {
     chapterId,
@@ -444,14 +444,16 @@ export async function awardAllCourses(
 ): Promise<number> {
   const have = await completedCourseSlugs(ctx, chapterId, personId);
   const bySlug = await progressBySlug(ctx, chapterId, personId);
+  const cat = await loadAcademyCatalog(ctx);
   let awarded = 0;
-  for (const course of ACADEMY_COURSES) {
+  for (const course of cat.courses) {
     if (have.has(course.slug)) continue;
     const earnedAt = await courseEarnedAt(
       ctx,
       chapterId,
       personId,
-      course,
+      cat,
+      course.slug,
       bySlug,
     );
     if (earnedAt === null) continue;
@@ -486,8 +488,8 @@ export async function hasCompletedCourse(
   personId: Id<"people">,
   courseSlug: string,
 ): Promise<boolean> {
-  const course = ACADEMY_COURSES.find((c) => c.slug === courseSlug);
-  if (!course) return false;
+  const cat = await loadAcademyCatalog(ctx);
+  if (!cat.getCourse(courseSlug)) return false;
   // The canonical earned badge first — one indexed read.
   if ((await completedCourseSlugs(ctx, chapterId, personId)).has(courseSlug)) {
     return true;
@@ -495,7 +497,7 @@ export async function hasCompletedCourse(
   // Live derivation for a course that's complete but not yet badge-awarded.
   const bySlug = await progressBySlug(ctx, chapterId, personId);
   return (
-    (await courseEarnedAt(ctx, chapterId, personId, course, bySlug)) !== null
+    (await courseEarnedAt(ctx, chapterId, personId, cat, courseSlug, bySlug)) !== null
   );
 }
 
@@ -530,8 +532,9 @@ type CapstoneTraining = {
 export const myProgress = query({
   args: {},
   handler: async (ctx) => {
+    const cat = await loadAcademyCatalog(ctx);
     const empty = {
-      sections: ACADEMY_SECTIONS.map((s) => ({
+      sections: cat.sections.map((s) => ({
         slug: s.slug,
         readAt: null as number | null,
         quizBestScore: null as number | null,
@@ -540,11 +543,11 @@ export const myProgress = query({
         passed: false,
         // Per-course unlock: with zero progress, every course's first module is
         // open (first-in-course → no predecessor). No global order-1 gate.
-        unlocked: previousModuleInCourse(s.slug) == null,
+        unlocked: cat.previousModuleInCourse(s.slug) == null,
         training: null as CapstoneTraining,
       })),
       completed: 0,
-      total: ACADEMY_REQUIRED_SECTION_COUNT,
+      total: cat.requiredSectionCount,
       earnedCourseSlugs: [] as string[],
     };
     const chapterId = await getChapterIdOrNull(ctx);
@@ -586,19 +589,19 @@ export const myProgress = query({
       );
     };
 
-    // Resolve passed per section IN CURRICULUM ORDER — a capstone's unlock
-    // depends on the module before it IN ITS COURSE, which for the capstones
-    // (owning-an-event) is being-an-owner then the prior capstone; both sit
-    // earlier in curriculum order, so they're already resolved when we get here.
+    // Resolve passed per section COURSE BY COURSE, in each course's lesson
+    // order — a capstone's unlock depends on the module before it IN ITS
+    // COURSE, which is therefore always resolved first, however an in-app
+    // edit has reordered the lessons.
     const passedBySlug = new Map<string, boolean>();
     const trainingBySlug = new Map<string, CapstoneTraining>();
-    for (const s of ACADEMY_SECTIONS) {
+    for (const s of cat.courses.flatMap((c) => cat.courseModules(c.slug))) {
       if (!s.capstone) {
         passedBySlug.set(s.slug, bySlug.get(s.slug)?.passedAt != null);
         continue;
       }
       const storedPass = bySlug.get(s.slug)?.passedAt != null;
-      const previousSlug = previousModuleInCourse(s.slug);
+      const previousSlug = cat.previousModuleInCourse(s.slug);
       const unlockedNow =
         previousSlug == null || passedBySlug.get(previousSlug) === true;
 
@@ -637,9 +640,9 @@ export const myProgress = query({
       trainingBySlug.set(s.slug, training);
     }
 
-    const sections = ACADEMY_SECTIONS.map((s) => {
+    const sections = cat.sections.map((s) => {
       const row = bySlug.get(s.slug);
-      const previousSlug = previousModuleInCourse(s.slug);
+      const previousSlug = cat.previousModuleInCourse(s.slug);
       return {
         slug: s.slug,
         readAt: row?.readAt ?? null,
@@ -659,7 +662,7 @@ export const myProgress = query({
         training: trainingBySlug.get(s.slug) ?? null,
       };
     });
-    const completed = ACADEMY_SECTIONS.filter(
+    const completed = cat.sections.filter(
       (s) => s.optional !== true && passedBySlug.get(s.slug) === true,
     ).length;
     // The caller's own earned course badges — one indexed read, so the hub's
@@ -670,7 +673,7 @@ export const myProgress = query({
     return {
       sections,
       completed,
-      total: ACADEMY_REQUIRED_SECTION_COUNT,
+      total: cat.requiredSectionCount,
       earnedCourseSlugs,
     };
   },
@@ -680,7 +683,7 @@ export const myProgress = query({
 export const markRead = mutation({
   args: { sectionSlug: v.string() },
   handler: async (ctx, { sectionSlug }) => {
-    requireSection(sectionSlug);
+    requireSection(await loadAcademyCatalog(ctx), sectionSlug);
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const me = await requirePerson(ctx, chapterId, userId);
@@ -707,7 +710,10 @@ export const markRead = mutation({
 export const submitQuiz = mutation({
   args: { sectionSlug: v.string(), answers: v.array(v.number()) },
   handler: async (ctx, { sectionSlug, answers }) => {
-    const section = requireSection(sectionSlug);
+    // Graded against the LIVE catalog — the same published edits the learner's
+    // screen was built from.
+    const cat = await loadAcademyCatalog(ctx);
+    const section = requireSection(cat, sectionSlug);
     if (section.quiz.length === 0) {
       throw new ConvexError({
         code: "NO_QUIZ",
@@ -733,8 +739,8 @@ export const submitQuiz = mutation({
     // of order is. Every quiz module's course-predecessor is itself a quiz
     // module, so the stored stamp is the whole answer here. A module the caller
     // ALREADY passed stays open for retakes even when its predecessor is unpassed.
-    const previousSlug = previousModuleInCourse(sectionSlug);
-    const previous = previousSlug ? getAcademySection(previousSlug) : undefined;
+    const previousSlug = cat.previousModuleInCourse(sectionSlug);
+    const previous = previousSlug ? cat.getSection(previousSlug) : undefined;
     const alreadyPassed = bySlug.get(sectionSlug)?.passedAt != null;
     if (
       !alreadyPassed &&
@@ -767,8 +773,8 @@ export const submitQuiz = mutation({
     // A newly-passed module may be the last one its course needed → award the
     // badge. Only the module's own course can complete from this pass.
     if (newlyPassed) {
-      const course = courseForModuleSlug(sectionSlug);
-      if (course) await maybeAwardCourse(ctx, chapterId, me, course.slug);
+      const course = cat.courseForModuleSlug(sectionSlug);
+      if (course) await maybeAwardCourse(ctx, chapterId, me, cat, course.slug);
     }
 
     return { score, total, passed, results };
@@ -786,7 +792,8 @@ export const submitQuiz = mutation({
 export const syncCapstone = mutation({
   args: { capstoneSlug: v.string() },
   handler: async (ctx, { capstoneSlug }) => {
-    const section = requireCapstoneSection(capstoneSlug);
+    const cat = await loadAcademyCatalog(ctx);
+    const section = requireCapstoneSection(cat, capstoneSlug);
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const userId = (await requireUserId(ctx)) as Id<"users">;
     const me = await getPersonForUser(ctx, chapterId, userId);
@@ -812,8 +819,8 @@ export const syncCapstone = mutation({
     });
 
     // The capstone that just passed may complete its course (Owning an event).
-    const course = courseForModuleSlug(section.slug);
-    if (course) await maybeAwardCourse(ctx, chapterId, me, course.slug);
+    const course = cat.courseForModuleSlug(section.slug);
+    if (course) await maybeAwardCourse(ctx, chapterId, me, cat, course.slug);
 
     return { passed: true };
   },
@@ -853,7 +860,8 @@ export const chapterProgress = query({
     // One chapter-wide read of progress rows, grouped by person. Only
     // REQUIRED slugs in the CURRENT curriculum count — rows stranded by a
     // renamed section (or the optional bonus) must not inflate anyone.
-    const requiredSections = ACADEMY_SECTIONS.filter(
+    const cat = await loadAcademyCatalog(ctx);
+    const requiredSections = cat.sections.filter(
       (s) => s.optional !== true,
     );
     const requiredQuizSlugs = new Set(
@@ -938,9 +946,9 @@ export const chapterProgress = query({
           name: p.name,
           completed: Math.min(
             quizPassed + capstonesPassed,
-            ACADEMY_REQUIRED_SECTION_COUNT,
+            cat.requiredSectionCount,
           ),
-          total: ACADEMY_REQUIRED_SECTION_COUNT,
+          total: cat.requiredSectionCount,
         };
       }),
     );
@@ -948,7 +956,7 @@ export const chapterProgress = query({
       people: people.sort(
         (a, b) => b.completed - a.completed || a.name.localeCompare(b.name),
       ),
-      total: ACADEMY_REQUIRED_SECTION_COUNT,
+      total: cat.requiredSectionCount,
     };
   },
 });
@@ -1230,7 +1238,8 @@ export const startTraining = triggerMutation({
     ctx,
     { capstoneSlug },
   ): Promise<{ eventId: Id<"events"> }> => {
-    const section = requireCapstoneSection(capstoneSlug);
+    const cat = await loadAcademyCatalog(ctx);
+    const section = requireCapstoneSection(cat, capstoneSlug);
     const kind = section.capstone.kind;
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     const userId = (await requireUserId(ctx)) as Id<"users">;
@@ -1246,8 +1255,8 @@ export const startTraining = triggerMutation({
     // completion. First-in-course would open immediately, but every capstone has
     // a predecessor within owning-an-event, so `previous` is always set here.
     const bySlug = await progressBySlug(ctx, chapterId, me);
-    const previousSlug = previousModuleInCourse(section.slug);
-    const previous = previousSlug ? getAcademySection(previousSlug) : undefined;
+    const previousSlug = cat.previousModuleInCourse(section.slug);
+    const previous = previousSlug ? cat.getSection(previousSlug) : undefined;
     if (previous) {
       const previousPassed = previous.capstone
         ? await capstonePassedFor(ctx, chapterId, me, previous, bySlug)
@@ -1323,7 +1332,10 @@ export const startTraining = triggerMutation({
 export const trainingStatus = query({
   args: { capstoneSlug: v.string() },
   handler: async (ctx, { capstoneSlug }) => {
-    const section = requireCapstoneSection(capstoneSlug);
+    const section = requireCapstoneSection(
+      await loadAcademyCatalog(ctx),
+      capstoneSlug,
+    );
     const chapterId = await getChapterIdOrNull(ctx);
     if (!chapterId) return null;
     const userId = await requireUserId(ctx);
@@ -1352,4 +1364,15 @@ export const trainingStatus = query({
       complete: questsComplete(quests),
     };
   },
+});
+
+/**
+ * The published in-app course edits — everything a client needs to build the
+ * same catalog the server grades against (`buildAcademyCatalog` in
+ * `@events-os/shared`). Public to every reader of the Academy, like the
+ * curriculum itself; drafts are never in here.
+ */
+export const courseEdits = query({
+  args: {},
+  handler: async (ctx) => await publishedCourseEdits(ctx),
 });

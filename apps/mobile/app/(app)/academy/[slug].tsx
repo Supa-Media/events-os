@@ -20,13 +20,11 @@ import { ArticleBlocks } from "../../../components/academy/ArticleBlocks";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { errorMessage } from "../../../lib/errors";
+import { useAcademyCatalog } from "../../../lib/useAcademyCatalog";
 import {
   MODULE_LABELS,
-  getAcademySection,
-  moduleCourseIndex,
-  nextModuleInCourse,
-  previousModuleInCourse,
   shuffledOptionOrder,
+  type AcademyCatalog,
   type AcademySection,
   type ModuleKey,
 } from "@events-os/shared";
@@ -46,7 +44,10 @@ type TrainingStatus = FunctionReturnType<typeof api.academy.trainingStatus>;
 export default function AcademySectionScreen() {
   const router = useRouter();
   const { slug } = useLocalSearchParams<{ slug: string }>();
-  const section = getAcademySection(slug ?? "");
+  // The live catalog (published in-app edits over code) — the same version
+  // the server grades this quiz against.
+  const catalog = useAcademyCatalog();
+  const section = catalog?.getSection(slug ?? "");
 
   const progress = useQuery(api.academy.myProgress);
   const markRead = useMutation(api.academy.markRead);
@@ -61,6 +62,7 @@ export default function AcademySectionScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [section?.slug]);
 
+  if (catalog === undefined) return <Screen loading />;
   if (!section) {
     return (
       <Screen>
@@ -87,9 +89,9 @@ export default function AcademySectionScreen() {
   // returning null at the course's end (where "next" returns to the course page
   // rather than dead-ending). The catalog invariant guarantees every section
   // maps to a course, so `here` is only null for an off-catalog slug.
-  const here = moduleCourseIndex(section.slug);
-  const nextSlug = nextModuleInCourse(section.slug);
-  const next = nextSlug ? getAcademySection(nextSlug) : undefined;
+  const here = catalog.moduleCourseIndex(section.slug);
+  const nextSlug = catalog.nextModuleInCourse(section.slug);
+  const next = nextSlug ? catalog.getSection(nextSlug) : undefined;
   const isCapstone = section.capstone != null;
 
   return (
@@ -173,6 +175,7 @@ export default function AcademySectionScreen() {
       ) : (
         <Quiz
           section={section}
+          catalog={catalog}
           unlocked={state?.unlocked !== false}
           passed={state?.passed === true}
           bestScore={state?.quizBestScore ?? null}
@@ -218,11 +221,13 @@ function freshSeed(): number {
 
 function Quiz({
   section,
+  catalog,
   unlocked,
   passed,
   bestScore,
 }: {
   section: AcademySection;
+  catalog: AcademyCatalog;
   unlocked: boolean;
   passed: boolean;
   bestScore: number | null;
@@ -260,8 +265,8 @@ function Quiz({
   const total = section.quiz.length;
   const answered = Object.keys(answers).length;
   // The unlock predecessor is the module before this one IN ITS COURSE.
-  const previousSlug = previousModuleInCourse(section.slug);
-  const previous = previousSlug ? getAcademySection(previousSlug) : undefined;
+  const previousSlug = catalog.previousModuleInCourse(section.slug);
+  const previous = previousSlug ? catalog.getSection(previousSlug) : undefined;
 
   if (!unlocked) {
     return (

@@ -17,10 +17,9 @@ import {
   ProgressBar,
 } from "../../../../components/ui";
 import { colors } from "../../../../lib/theme";
+import { useAcademyCatalog } from "../../../../lib/useAcademyCatalog";
 import {
   getRolePath,
-  getAcademyCourse,
-  requiredModuleSlugsForCourse,
   rolePathProgress,
   seatRolePath,
   seatsForChart,
@@ -73,6 +72,7 @@ export default function RolePathScreen() {
   const pathKind: "seat" | "event_hat" =
     kind === "event_hat" ? "event_hat" : "seat";
   const progress = useQuery(api.academy.myProgress);
+  const catalog = useAcademyCatalog();
   // Full chart for seat paths: the seat's live courses (a chart editor can
   // change them in the org chart) and its seatDefId for duties.
   const fullChart = useQuery(
@@ -123,7 +123,7 @@ export default function RolePathScreen() {
       </Screen>
     );
   }
-  if (progress === undefined) return <Screen loading />;
+  if (progress === undefined || catalog === undefined) return <Screen loading />;
 
   const passedSlugs = new Set(
     progress.sections.filter((s) => s.passed).map((s) => s.slug),
@@ -136,7 +136,11 @@ export default function RolePathScreen() {
       : seatsForChart("central").some((d) => d.id === path.seatSlug));
   const chartLabel = isSeat ? (isCentral ? "Central" : "Chapter") : "Event role";
 
-  const { completed, total, fraction } = rolePathProgress(path, passedSlugs);
+  const { completed, total, fraction } = rolePathProgress(
+    path,
+    passedSlugs,
+    catalog,
+  );
   const courseSlugs = path.courseSlugs;
 
   // Intersect completers across every course, once all lists have resolved. Any
@@ -329,9 +333,10 @@ function PathCourseRow({
   passedSlugs: Set<string>;
   onPress: () => void;
 }) {
-  const course = getAcademyCourse(courseSlug);
-  if (!course) return null; // asserted to exist at module load; defensive
-  const required = requiredModuleSlugsForCourse(courseSlug);
+  const catalog = useAcademyCatalog();
+  const course = catalog?.getCourse(courseSlug);
+  if (!catalog || !course) return null; // asserted to exist at module load; defensive
+  const required = catalog.requiredModuleSlugsForCourse(courseSlug);
   const passed = required.filter((s) => passedSlugs.has(s)).length;
   const total = required.length;
   const complete = total > 0 && passed >= total;

@@ -106,6 +106,7 @@ import { foldersAsPrimitive } from "./0085_folders_as_primitive";
 import { reawardAfterDataExportRemoval } from "./0086_reaward_after_data_export_removal";
 import { reawardAfterTransfersRemoval } from "./0087_reaward_after_transfers_removal";
 import { goalSeatMeasuresToManual } from "./0088_goal_seat_measures_to_manual";
+import { addAcademyEditPowerDefaults } from "./0089_add_academy_edit_power_defaults";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -559,4 +560,8 @@ export const MIGRATIONS: Migration[] = [
   // a recruit; recruiting is marked by hand for now, so those rows become
   // manual (status and target kept). See the file.
   goalSeatMeasuresToManual,
+  // 0089: the new `people.academy.edit` power ("Edit Academy courses") onto
+  // the live ED, Expansion Director and Training Associate seats. Additive
+  // only. See the file.
+  addAcademyEditPowerDefaults,
 ];

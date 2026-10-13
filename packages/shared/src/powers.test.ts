@@ -279,6 +279,9 @@ describe("legacy migration", () => {
       "hiring.view",
       "hiring.edit",
       "hiring.approve",
+      // The Academy course editor shipped 2026-10-13. Course content was code
+      // until then, so no string ever granted changing it.
+      "people.academy.edit",
       // The Marketing desk shipped 2026-08-28 (the homepage's own copy and
       // link cards + the mailing/SMS list). Same story as `hiring` — a new
       // domain, nothing in the old vocabulary meant it.
@@ -425,8 +428,9 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
    *    before, so it is named here for the same reason the rest are.
    */
   const POST_STANDARDIZATION_DOMAINS: Partial<Record<string, string[]>> = {
-    executive_director: ["hiring", "marketing"],
-    expansion_director: ["hiring"],
+    executive_director: ["hiring", "marketing", "people"],
+    expansion_director: ["hiring", "people"],
+    training_associate: ["people"],
     recruiting_associate: ["hiring"],
     marketing_director: ["marketing"],
     social_media_manager: ["marketing"],
@@ -628,8 +632,15 @@ describe("areas are earned, not reserved", () => {
     // filling seats live inside `org.chart.edit`? No — a Chapter Director
     // should be able to staff seats without being able to delete or re-power
     // them, so it needed its own string. `org.chart.edit` implies it.
+    //
+    // Raised to 27 on 2026-10-13 for `people.academy.edit`. Asked again: is
+    // changing the Academy part of any desk someone already holds? No — the
+    // training was code until the in-app course editor, and the founder asked
+    // for it as a power they could hand to people. It is one string, with no
+    // view rung (every member reads the Academy) and no approve rung (every
+    // publish is recorded and any version can be restored).
     // Kept tight on purpose so the NEXT power trips this again.
-    expect(POWERS.length).toBeLessThanOrEqual(26);
+    expect(POWERS.length).toBeLessThanOrEqual(27);
   });
 });
 

@@ -185,6 +185,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // internet under the org's name (`blog.publish` implies `blog.edit`).
       "marketing.blog.publish",
       "marketing.designs.edit",
+      // 2026-10-13: the Academy is the org's canonical training; the ED can
+      // change it, and hands the power to whichever seats should.
+      "people.academy.edit",
     ],
     legacyTitle: "executive_director",
   },
@@ -454,7 +457,14 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // IS the org's people funnel. "One pipeline, one standard, someone who can
     // say yes, no, why, or not now" is a power, and this is the seat that
     // holds it. See `packages/shared/src/hiring.ts` and `lib/hiringAccess.ts`.
-    capabilities: ["giving.view", "data.export", "hiring.approve"],
+    // 2026-10-13: + people.academy.edit — this seat owns the recruiting AND
+    // training pipeline, and the Academy is the training.
+    capabilities: [
+      "giving.view",
+      "data.export",
+      "hiring.approve",
+      "people.academy.edit",
+    ],
   },
   chapter_directors: {
     id: "chapter_directors",
@@ -485,7 +495,8 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     parentId: "expansion_director",
     maxHolders: MULTI_HOLDER_CAP,
     duties: [],
-    capabilities: [],
+    // 2026-10-13: keeps the Academy's courses current — the seat's whole job.
+    capabilities: ["people.academy.edit"],
   },
 
   // ── Chapter chart ───────────────────────────────────────────────────────

@@ -136,6 +136,11 @@ export const POWER_DOMAINS = [
    *  interview rubric, the Empowerment Trial, and the call at the end. The
    *  People desk — one funnel for the whole org, so it is CENTRAL only. */
   "hiring",
+  /** Growing the people already in: today, the Academy — the org's canonical
+   *  training — and who may rewrite it. Separate from `hiring` on purpose:
+   *  the person who keeps the training current has no reason to read a
+   *  candidate's file, and the recruiter has no reason to rewrite a quiz. */
+  "people",
   /** The public face: the website's own copy and link cards, and the mailing
    *  and SMS lists the org can reach. Named `marketing` rather than `site`
    *  because the desk is a FUNCTION's home (the Marketing seat's), not one
@@ -224,6 +229,8 @@ export const POWERS = [
   "hiring.view",
   "hiring.edit",
   "hiring.approve",
+  // ── people ────────────────────────────────────────────────────────────────
+  "people.academy.edit",
   // ── marketing ─────────────────────────────────────────────────────────────
   "marketing.site.edit",
   "marketing.designs.edit",
@@ -451,6 +458,24 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
     implies: ["hiring.edit"],
     scope: "central",
   },
+  // ── people ────────────────────────────────────────────────────────────────
+  /** The Academy course editor (`apps/convex/academyEditor.ts`). An AREA, not
+   *  the bare `people.edit`, because the domain is "people" and a domain-wide
+   *  edit would read as "edit people" — this is one thing, the training.
+   *  Not `scope: "central"`: there is one Academy, but who may change it is a
+   *  question for the seat chart, the same reasoning as the brand kit's
+   *  `marketing.designs.edit`. No approval rung: an editor publishes their own
+   *  changes, every publish is recorded, and any version can be restored. */
+  "people.academy.edit": {
+    id: "people.academy.edit",
+    domain: "people",
+    area: "academy",
+    action: "edit",
+    label: "Edit Academy courses",
+    description:
+      "Change a course's details, lessons, lesson order and quizzes, and publish the changes to every learner.",
+  },
+
 
   // ── marketing ─────────────────────────────────────────────────────────────
   /**
@@ -869,6 +894,12 @@ export const POWER_DOMAIN_DEFS: Record<PowerDomain, PowerDomainDef> = {
       { value: "run", label: "Run the pipeline", power: "hiring.edit" },
       { value: "decide", label: "Make the call", power: "hiring.approve" },
     ],
+  },
+  people: {
+    id: "people",
+    label: "People",
+    description:
+      "Growing and training the team. The Academy is the org's canonical training, so who may change it is a power, not a setting.",
   },
   marketing: {
     id: "marketing",

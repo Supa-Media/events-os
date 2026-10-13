@@ -17,17 +17,23 @@ import {
 import { LevelChip } from "../../../components/academy/CurriculumRows";
 import { colors, spacing } from "../../../lib/theme";
 import {
-  ACADEMY_THEMES,
-  academyCoursesForTheme,
-  requiredModuleSlugsForCourse,
   ROLE_PATHS,
   rolePathProgress,
   seatRolePath,
   nextIncompleteModuleForPath,
   seatsForChart,
+  BUILT_IN_ACADEMY_CATALOG,
+  type AcademyCatalog,
   type Course,
   type RolePath,
 } from "@events-os/shared";
+import { useAcademyCatalog } from "../../../lib/useAcademyCatalog";
+
+/** The live catalog for the hub's pieces. The screen waits for it before
+ *  rendering any of them, so the fallback is never what's shown. */
+function useHubCatalog(): AcademyCatalog {
+  return useAcademyCatalog() ?? BUILT_IN_ACADEMY_CATALOG;
+}
 
 /**
  * THE ACADEMY HUB — streams → courses. The catalog is organised into three
@@ -49,6 +55,7 @@ type FullChartSeat = Extract<FullChart, { kind: "full" }>["central"][number];
 export default function AcademyScreen() {
   const router = useRouter();
   const progress = useQuery(api.academy.myProgress);
+  const catalog = useAcademyCatalog();
 
   // "Who's trained" is a managers/admins surface — only they subscribe.
   // org.nav is the app-wide policy signal AppShell already consumes.
@@ -77,7 +84,7 @@ export default function AcademyScreen() {
     if (mySeatAssignments.length > 0) setView("roles");
   }, [mySeatAssignments]);
 
-  if (progress === undefined) {
+  if (progress === undefined || catalog === undefined) {
     return <Screen loading />;
   }
 
@@ -149,6 +156,7 @@ function TracksView({
   chapter: AcademyChapter;
   onOpenCourse: (slug: string) => void;
 }) {
+  const catalog = useHubCatalog();
   return (
     <>
       {/* Overall path progress */}
@@ -173,8 +181,8 @@ function TracksView({
       {/* Streams, stacked vertically. Each stream is a horizontal rail of
           compact course tiles — every stream renders, even before its first
           course ships, so the shape of the Academy is visible up front. */}
-      {ACADEMY_THEMES.map((theme) => {
-        const courses = academyCoursesForTheme(theme.key);
+      {catalog.themes.map((theme) => {
+        const courses = catalog.coursesForTheme(theme.key);
         return (
           <View key={theme.key}>
             <SectionHeader title={theme.title} count={courses.length} />
@@ -262,7 +270,7 @@ function CourseTile({
   earned: boolean;
   onPress: () => void;
 }) {
-  const required = requiredModuleSlugsForCourse(course.slug);
+  const required = useHubCatalog().requiredModuleSlugsForCourse(course.slug);
   const passed = required.filter((slug) => passedSlugs.has(slug)).length;
   const total = required.length;
 
@@ -483,8 +491,9 @@ function RolePathCard({
   passedSlugs: Set<string>;
   onPress: () => void;
 }) {
-  const { fraction } = rolePathProgress(path, passedSlugs);
-  const next = nextIncompleteModuleForPath(path, passedSlugs);
+  const catalog = useHubCatalog();
+  const { fraction } = rolePathProgress(path, passedSlugs, catalog);
+  const next = nextIncompleteModuleForPath(path, passedSlugs, catalog);
   return (
     <Card padding="md" onPress={onPress}>
       <View className="flex-row items-center gap-3">
@@ -581,7 +590,11 @@ function RolePathTile({
   vacant: boolean;
   onPress: () => void;
 }) {
-  const { completed, total, fraction } = rolePathProgress(path, passedSlugs);
+  const { completed, total, fraction } = rolePathProgress(
+    path,
+    passedSlugs,
+    useHubCatalog(),
+  );
   return (
     <Card padding="md" onPress={onPress} className="h-52 w-60">
       <View className="flex-row items-center justify-between gap-2">

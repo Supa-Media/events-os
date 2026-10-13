@@ -235,6 +235,8 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "marketing.list.edit",
       "marketing.blog.publish",
       "marketing.designs.edit",
+      // 2026-10-13: the Academy course editor.
+      "people.academy.edit",
     ],
     // `finance.edit` at central replaces what took four strings before
     // (`finance.manager` + `finance.central` + `finance.accounts` +
@@ -299,10 +301,15 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // call on a candidate; `hiring.approve` implies `hiring.edit`, so it runs
     // the funnel too. The associate below runs it WITHOUT being able to close
     // a file — that split is the whole reason `hiring.approve` exists.
-    expansion_director: ["giving.view", "data.export", "hiring.approve"],
+    expansion_director: [
+      "giving.view",
+      "data.export",
+      "hiring.approve",
+      "people.academy.edit",
+    ],
     chapter_directors: [],
     recruiting_associate: ["hiring.edit"],
-    training_associate: [],
+    training_associate: ["people.academy.edit"],
     // A CHAPTER seat: `finance.view` is read of the whole finance domain at
     // THIS chapter. It needs no carve-out for the org's bank accounts because
     // those live at central, which a chapter grant never reaches.
