@@ -539,7 +539,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Directing is a trust, not a title bump. Even unpaid today, it rehearses what the movement becomes tomorrow. The baseline ask is **at least 5 focused hours a week**, alongside school, a job, family, and other callings. The real ask is ownership: \"You are not babysitting your department. You are raising it.\"",
+        text: "Directing is a trust, not a title bump. Even unpaid today, it rehearses what the movement becomes tomorrow. The baseline ask is **at least 10 focused hours a week**, alongside school, a job, family, and other callings. The real ask is ownership: \"You are not babysitting your department. You are raising it.\"",
       },
       {
         kind: "rule",
@@ -550,7 +550,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "table",
         headers: ["If your department needs…", "Your job is…"],
         rows: [
-          ["**40 hrs/week of work**", "Structure a system where that happens, even though you can give only 5 yourself"],
+          ["**40 hrs/week of work**", "Structure a system where that happens, even though you can give only 10 yourself"],
           ["**A rotation, not a soloist**", "Recruit and organize a team: volunteers, friends, contractors if budget allows"],
           ["**To survive you missing a week**", "Build runbooks and a bench BEFORE you need them"],
         ],
@@ -577,7 +577,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
     ],
     quiz: [
       {
-        prompt: "What does the Director role ask for, beyond the 5-hour baseline?",
+        prompt: "What does the Director role ask for, beyond the 10-hour baseline?",
         options: [
           "Nothing more than the hours logged",
           "Ownership: building a department that runs at its real scope, not only covering the baseline yourself",
@@ -592,13 +592,13 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         prompt: "Your department needs 40 hours of work a week. What's the doctrine?",
         options: [
           "Work 40 hours yourself, no matter the cost",
-          "Structure a system (team, runbooks, delegation) that produces 40 hours of output from your 5",
-          "Scale the department down to fit 5 hours",
+          "Structure a system (team, runbooks, delegation) that produces 40 hours of output from your 10",
+          "Scale the department down to fit 10 hours",
           "Ask Leadership to do it for you",
         ],
         answerIndex: 1,
         explanation:
-          "The 5-hour ask is a floor on your time, not a ceiling on your department's output. System and team close the gap, not burnout.",
+          "The 10-hour ask is a floor on your time, not a ceiling on your department's output. System and team close the gap, not burnout.",
       },
       {
         prompt: "Why does the doctrine call directors \"the visionary of your department\" rather than an executor of instructions?",
@@ -622,7 +622,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "Build-for-scale means the department works when you're absent. Systems and templates are how a 5-hour Director runs a 40-hour department.",
+          "Build-for-scale means the department works when you're absent. Systems and templates are how a 10-hour Director runs a 40-hour department.",
       },
     ],
   },
@@ -807,7 +807,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
   {
     slug: "mgmt-building-for-your-absence",
     title: "Building for your absence",
-    subtitle: "The 5-hour director, forward pull, and one cross-functional move a week",
+    subtitle: "The 10-hour director, forward pull, and one cross-functional move a week",
     minutes: 3,
     blocks: [
       {
@@ -816,7 +816,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Start with the math. You committed 5 focused hours, and your department needs more than that to run. The gap is the size of the system you're supposed to build. Delegation and scale thinking are the only way the math works.",
+        text: "Start with the math. You committed 10 focused hours, and your department needs more than that to run. The gap is the size of the system you're supposed to build. Delegation and scale thinking are the only way the math works.",
       },
       {
         kind: "rule",
@@ -834,9 +834,9 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "reveal",
         prompt:
-          "You've hit your 5 hours this week just keeping your own duties fulfilled. There's no time left for anything proactive. Is that a compliant week?",
+          "You've hit your 10 hours this week just keeping your own duties fulfilled. There's no time left for anything proactive. Is that a compliant week?",
         answer:
-          "No. It's a warning sign. Five hours spent entirely on your own tasks, with no proactive or cross-functional moves, means the department still runs on you. The standard measures building what runs without you, not hours alone.",
+          "No. It's a warning sign. Ten hours spent entirely on your own tasks, with no proactive or cross-functional moves, means the department still runs on you. The standard measures building what runs without you, not hours alone.",
       },
       {
         kind: "tip",
@@ -869,7 +869,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
           "Forward pull has a number on purpose. A director who only responds to requests is keeping pace, not leading.",
       },
       {
-        prompt: "A director spends their entire 5 hours firefighting their own duties, week after week, with no proactive or cross-functional moves. What does the standard say?",
+        prompt: "A director spends their entire 10 hours firefighting their own duties, week after week, with no proactive or cross-functional moves. What does the standard say?",
         options: [
           "That's a fully compliant week: the hours were logged",
           "It's a warning sign: time spent is not the same as building capacity that survives your absence",
