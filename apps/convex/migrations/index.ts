@@ -107,6 +107,7 @@ import { reawardAfterDataExportRemoval } from "./0086_reaward_after_data_export_
 import { reawardAfterTransfersRemoval } from "./0087_reaward_after_transfers_removal";
 import { goalSeatMeasuresToManual } from "./0088_goal_seat_measures_to_manual";
 import { addAcademyEditPowerDefaults } from "./0089_add_academy_edit_power_defaults";
+import { applicationFormKingdomCity } from "./0090_application_form_kingdom_city";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -564,4 +565,8 @@ export const MIGRATIONS: Migration[] = [
   // the live ED, Expansion Director and Training Associate seats. Additive
   // only. See the file.
   addAcademyEditPowerDefaults,
+  // 0090: the live application form's church question named Fount; it now
+  // names Kingdom City. Rewrites only that name in stored labels/help. See the
+  // file.
+  applicationFormKingdomCity,
 ];

@@ -371,6 +371,7 @@ const REGISTRY_NAMES = [
   "0087_reaward_after_transfers_removal",
   "0088_goal_seat_measures_to_manual",
   "0089_add_academy_edit_power_defaults",
+  "0090_application_form_kingdom_city",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
