@@ -108,6 +108,7 @@ import { reawardAfterTransfersRemoval } from "./0087_reaward_after_transfers_rem
 import { goalSeatMeasuresToManual } from "./0088_goal_seat_measures_to_manual";
 import { addAcademyEditPowerDefaults } from "./0089_add_academy_edit_power_defaults";
 import { applicationFormKingdomCity } from "./0090_application_form_kingdom_city";
+import { applicationFormLeadershipQuestion } from "./0091_application_form_leadership_question";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -569,4 +570,7 @@ export const MIGRATIONS: Migration[] = [
   // names Kingdom City. Rewrites only that name in stored labels/help. See the
   // file.
   applicationFormKingdomCity,
+  // 0091: the stored form's `escalation` question becomes the new
+  // `leadership` one (same slot, limit and required flag). See the file.
+  applicationFormLeadershipQuestion,
 ];

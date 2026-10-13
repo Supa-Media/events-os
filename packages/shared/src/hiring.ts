@@ -38,9 +38,9 @@
  *     the seat gets to make on its own (enforced by the landing site's
  *     `roles` collection schema, which mirrors `ROLE_TEMPLATE_SECTIONS`).
  *   - The 1-3-1 escalation rule (one problem, three options, one
- *     recommendation) is asked of every applicant as `escalation` below,
- *     because how someone escalates is the cheapest early read on whether
- *     delegating to them will actually buy time back.
+ *     recommendation) used to be asked of every applicant as `escalation`;
+ *     on 2026-10-13 the founder swapped it for `leadership` below, a read on
+ *     whether someone leads people: alignment, conflict, what they've learned.
  *   - The Camcorder Method — the RECIPIENT writes the playbook from real
  *     executions — is why the trial brief asks for a written playbook rather
  *     than handing one over (`TRIAL_DELIVERABLE_PROMPT`).
@@ -547,10 +547,11 @@ export interface ApplicationQuestion {
  * applications comparable at all.
  *
  * Four of the six are load-bearing gates the Academy already names
- * (`capacity`, `covering`) or that *Buy Back Your Time* argues for
- * (`ownership` — outcomes and a definition of done; `escalation` — the 1-3-1
- * rule). `why` and `trial` are the two that consistently separate people who
- * want a title from people who want the work.
+ * (`capacity`, `covering`), that *Buy Back Your Time* argues for
+ * (`ownership` — outcomes and a definition of done), or that the founder
+ * asked for (`leadership` — alignment, conflict, an affinity to lead). `why`
+ * and `trial` are the two that consistently separate people who want a title
+ * from people who want the work.
  */
 export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
   {
@@ -568,9 +569,9 @@ export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
     required: true,
   },
   {
-    key: "escalation",
-    label: "Describe a hard call you had to take to someone above you.",
-    help: "What was the problem, what options did you weigh, and what did you recommend? (One problem, three options, one recommendation — that's how we escalate here.)",
+    key: "leadership",
+    label: "Tell us about a time you led people.",
+    help: "Who were you leading, and toward what? How did you get everyone on the same page, and what did you do when people disagreed? What has leading taught you?",
     maxLength: 2000,
     required: true,
   },
