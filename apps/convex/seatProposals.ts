@@ -5,9 +5,9 @@
  * of their own seats in the org-chart tree (walking `parentSlug` on the LIVE
  * `seatDefs` rows, not the static `@events-os/shared` template — runtime-added
  * seats must participate). A chapter chart's root seat (`chapter_director`)
- * hangs under the central `expansion_director` seat via
- * `CHAPTER_ROLLUP_PARENT` (see `packages/shared/src/seats.ts`), so a central
- * holder can propose into any chapter.
+ * hangs under whichever central seat the `chapter_directors` mirror sits
+ * under (`liveChapterRollupParent` below; `expansion_director` by default),
+ * so a central holder can propose into any chapter.
  *
  * The proposal only takes effect once APPROVED by a holder of a seat ABOVE
  * THE PROPOSER: starting from the proposer's own qualifying seat (the
@@ -68,7 +68,7 @@
  *    VACANT right now — that ancestor structurally EXISTS, so the proposal
  *    waits for someone to occupy it.
  *  - A proposer whose walk stops early because a `parentSlug` is dangling or
- *    the `CHAPTER_ROLLUP_PARENT` bridge target is missing — this fails
+ *    the chapter-rollup bridge target is missing — this fails
  *    CLOSED (`reachedRoot: false`, logged via `console.warn`) rather than
  *    treating "the walk gave up" as "reached the top"; a broken/corrupt
  *    chart must never grant an unintended auto-execute.
@@ -82,7 +82,12 @@ import { query, mutation } from "./_generated/server";
 import { ConvexError, v } from "convex/values";
 import { Doc, Id } from "./_generated/dataModel";
 import type { QueryCtx, MutationCtx } from "./_generated/server";
-import { SEAT_ROOT, CHAPTER_ROLLUP_PARENT, MULTI_HOLDER_CAP } from "@events-os/shared";
+import {
+  SEAT_ROOT,
+  CHAPTER_ROLLUP_SEAT,
+  MULTI_HOLDER_CAP,
+  chapterRollupParentSlug,
+} from "@events-os/shared";
 import { assignSeatImpl, unassignSeatImpl } from "./seats";
 import { requireAccess, requireUserId } from "./lib/context";
 
@@ -164,6 +169,13 @@ async function defBySlug(
     .unique();
 }
 
+/** The central seat a chapter's root reports to: wherever an editor has put
+ *  the `chapter_directors` mirror (see `chapterRollupParentSlug`). */
+async function liveChapterRollupParent(ctx: QueryCtx | MutationCtx): Promise<string> {
+  const mirror = await defBySlug(ctx, CHAPTER_ROLLUP_SEAT);
+  return chapterRollupParentSlug(mirror ? [mirror] : []);
+}
+
 /** Stable key for a (scope, seatDefId) pair — used for chain-cycle guards and
  *  proposer/held-seat set membership checks. */
 function linkKey(scope: Scope, seatDefId: Id<"seatDefs">): string {
@@ -180,7 +192,7 @@ function linkKey(scope: Scope, seatDefId: Id<"seatDefs">): string {
  * while already at `"central"` scope) — the one case where "nothing further
  * exists above" is actually TRUE, not just "the walk gave up". Every other
  * way the loop can stop — a dangling `parentSlug` with no matching
- * `seatDefs` row, a missing `CHAPTER_ROLLUP_PARENT` bridge target, or
+ * `seatDefs` row, a missing chapter-rollup bridge target, or
  * exhausting `MAX_CHAIN_DEPTH` — is a DATA problem, not "you've reached the
  * top of a well-formed tree", so `reachedRoot` is `false` for all of them.
  * Treating a `false` case as chain-top would auto-execute a proposal nobody
@@ -202,7 +214,7 @@ interface AncestorWalkResult {
   reachedRoot: boolean;
   /** The slug that couldn't be resolved, set whenever `reachedRoot` is
    *  `false` for a NAMED reason (a dangling `parentSlug`, or a missing
-   *  `CHAPTER_ROLLUP_PARENT` bridge target) — logged by the chain-top-adjacent
+   *  chapter-rollup bridge target) — logged by the chain-top-adjacent
    *  call site so a broken chart is loudly diagnosable. Unset for the
    *  `MAX_CHAIN_DEPTH`-exhaustion case (already deeply defensive/unreachable
    *  in practice). */
@@ -213,7 +225,8 @@ interface AncestorWalkResult {
  * `start`'s full ancestor chain, nearest first, walking `parentSlug` on the
  * LIVE `seatDefs` rows. When climbing off a chapter chart's root seat
  * (`parentSlug === SEAT_ROOT` while `scope` isn't `"central"`), bridges to
- * the central `CHAPTER_ROLLUP_PARENT` seat (`expansion_director`) — this is
+ * the central seat the `chapter_directors` mirror currently sits under
+ * (`liveChapterRollupParent`, `expansion_director` by default) — this is
  * how a central holder's authority reaches into every chapter. Stops at the
  * central chart's true root (`executive_director`'s `parentSlug ===
  * SEAT_ROOT` while already at `"central"` scope) — nobody is above it. See
@@ -232,11 +245,12 @@ async function ancestorChain(
   for (let i = 0; i < MAX_CHAIN_DEPTH; i++) {
     if (def.parentSlug === SEAT_ROOT) {
       if (scope === "central") return { chain, reachedRoot: true }; // the true top of the tree
-      const bridgeDef = await defBySlug(ctx, CHAPTER_ROLLUP_PARENT);
+      const bridgeSlug = await liveChapterRollupParent(ctx);
+      const bridgeDef = await defBySlug(ctx, bridgeSlug);
       if (!bridgeDef) {
         // Rollup target not seeded — fail CLOSED (see AncestorWalkResult):
         // this is NOT a genuine root, so it must never read as chain-top.
-        return { chain, reachedRoot: false, unresolvedSlug: CHAPTER_ROLLUP_PARENT };
+        return { chain, reachedRoot: false, unresolvedSlug: bridgeSlug };
       }
       scope = "central";
       def = bridgeDef;
@@ -506,7 +520,7 @@ async function pendingRows(
  *  - `"vacate"`: rejects if `subjectPersonId` doesn't currently hold the seat.
  *  - Below-your-seat: rejects unless the caller currently holds SOME strict
  *    ancestor of (`seatDefId`, `scope`) — walking the LIVE `seatDefs` tree,
- *    bridging chapter→central via `CHAPTER_ROLLUP_PARENT`.
+ *    bridging chapter→central via the chapter-rollup bridge.
  *  - Rejects a duplicate PENDING proposal for the exact same
  *    (seatDefId, scope, action, subjectPersonId).
  */

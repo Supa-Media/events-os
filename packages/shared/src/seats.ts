@@ -657,10 +657,36 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
 };
 
 // ── Chapter ↔ central rollup ─────────────────────────────────────────────────
-/** Every chapter chart's root (`chapter_director`) rolls up into this CENTRAL
- *  seat's derived holder list (`chapter_directors`). Kept as a named constant
- *  (not a magic string) so the rollup wiring has one editable source. */
+/** The CENTRAL seat that mirrors every chapter's root (`chapter_director`)
+ *  as its derived holder list. Where this seat sits on the live chart IS where
+ *  the chapters report: moving it (Reports to → Change on the chart) moves
+ *  every chapter's subtree and every chapter director's manager with it. */
+export const CHAPTER_ROLLUP_SEAT: SeatId = "chapter_directors";
+
+/** The template's default for where the chapters report — `CHAPTER_ROLLUP_SEAT`'s
+ *  parent in `SEAT_DEFS`. Only the fallback: the live answer is
+ *  `chapterRollupParentSlug` over the stored seat defs, since an editor can
+ *  move the Chapter Directors seat. */
 export const CHAPTER_ROLLUP_PARENT: SeatId = "expansion_director";
+
+/**
+ * The central seat every chapter's `chapter_director` reports to, read from
+ * the LIVE seat defs: the current parent of the `chapter_directors` mirror.
+ * Falls back to `CHAPTER_ROLLUP_PARENT` if the mirror is missing (unseeded)
+ * or somehow parentless. Every chapter→central walk (manager graph, seat
+ * proposals, the chart's graft and "reports to") must use this rather than
+ * the constant, or they disagree with the chart the moment someone moves it.
+ */
+export function chapterRollupParentSlug(
+  defs: Iterable<{ slug: string; parentSlug: string }>,
+): string {
+  for (const d of defs) {
+    if (d.slug === CHAPTER_ROLLUP_SEAT) {
+      return d.parentSlug === SEAT_ROOT ? CHAPTER_ROLLUP_PARENT : d.parentSlug;
+    }
+  }
+  return CHAPTER_ROLLUP_PARENT;
+}
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 /** The direct children of `id` (seats whose `parentId === id`), same chart. */

@@ -203,6 +203,18 @@ describe("buildFullTree", () => {
     expect(rollupNode?.children[0].scope).toBe("chapter-1");
   });
 
+  test("follows the Chapter Directors seat when it's moved", () => {
+    const chart = fullChartFixture();
+    chart.central.push(
+      seat({ slug: "chapter_directors", parentSlug: "cfo", title: "Chapter Directors" }),
+    );
+    const { root } = buildFullTree(chart);
+    const cfo = root?.children.find((c) => c.seat.slug === "cfo");
+    const expansion = root?.children.find((c) => c.seat.slug === CHAPTER_ROLLUP_PARENT);
+    expect(cfo?.children.map((c) => c.seat.slug)).toEqual(["chapter_directors", "chapter_director"]);
+    expect(expansion?.children).toHaveLength(0);
+  });
+
   test("pools orphans across the central chart and every chapter", () => {
     const { orphans } = buildFullTree(fullChartFixture());
     const slugs = orphans.map((o) => o.seat.slug).sort();
