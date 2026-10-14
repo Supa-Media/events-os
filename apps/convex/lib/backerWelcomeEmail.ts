@@ -109,7 +109,7 @@ export type BackerWelcomePayload = {
   givePageUrl: string | null;
   /** Their own portal — where they manage the card, the amount, and read their
    *  giving. Named here rather than assumed, so a deployment with no site URL
-   *  degrades to the reply-to-us sentence instead of a dead button. */
+   *  leaves the sentence out instead of rendering a dead link. */
   portalUrl: string | null;
 };
 
@@ -229,18 +229,15 @@ export function renderBackerWelcomeEmail(payload: BackerWelcomePayload): {
     emailRule(),
     // THE PORTAL, NAMED. This sentence used to be "reply to this email and
     // we'll send you a secure link" — a manual process standing in for a page
-    // that now exists. A welcome email is the single best place a backer will
-    // ever learn the portal is there, so it says so plainly and keeps the
-    // human offer underneath rather than instead.
+    // that now exists, behind a reply channel nobody works. A welcome email is
+    // the single best place a backer will ever learn the portal is there, so
+    // it says so plainly. No portal URL → the sentence is left out.
     payload.portalUrl
       ? emailParagraph(
-          `Change your amount, update your card, or stop any time — it's all on your own page: ${emailLink(payload.portalUrl, payload.portalUrl)}. Prefer a person? Reply to this email and one will read it.`,
+          `Change your amount, update your card, or stop any time — it's all on your own page: ${emailLink(payload.portalUrl, payload.portalUrl)}.`,
           { size: 12, margin: "0 0 8px" },
         )
-      : emailParagraph(
-          "Need to change your amount, update your card, or stop your monthly gift? Just reply to this email — a person reads it, and we'll send you a secure link. No hoops, ever.",
-          { size: 12, margin: "0 0 8px" },
-        ),
+      : "",
     emailParagraph(
       "Thank you for standing with us. Genuinely — this is the biggest thing anyone does here.",
       { size: 12, margin: "0" },
