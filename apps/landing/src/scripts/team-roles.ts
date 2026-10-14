@@ -18,7 +18,12 @@ import {
   roleAcceptsApplications,
   type PublicJobListing,
 } from "@events-os/shared/src/hiring";
-import { statusLabel, statusChipClass, rolePath } from "../lib/roles";
+import {
+  statusLabel,
+  statusChipClass,
+  rolePath,
+  applyPath,
+} from "../lib/roles";
 
 /** Port of `RoleCard.astro`: enough of a seat to self-select out of, and no
  *  more — the status chip, the hours, and who it reports to are the three
@@ -55,11 +60,24 @@ function buildCard(role: PublicJobListing): HTMLLIElement {
           <dd>${esc(role.location)}</dd>
         </div>
       </dl>
-      <a href="${esc(href)}" class="mt-5 inline-flex items-center gap-1 text-sm font-bold text-red-500 hover:underline underline-offset-4">
-        Read the full role →
-      </a>
+      <div class="mt-5 flex flex-wrap items-center gap-x-6 gap-y-3">
+        ${applyButton(role)}
+        <a href="${esc(href)}" class="inline-flex items-center gap-1 text-sm font-bold text-red-500 hover:underline underline-offset-4">
+          Read the full role →
+        </a>
+      </div>
     </article>`;
   return li;
+}
+
+/** The card's Apply button, straight to this role's application. Only seats
+ *  taking applications get one — a not-open seat has nothing to apply to, and
+ *  `applyPath` would quietly send it to the general pool instead. */
+function applyButton(role: PublicJobListing): string {
+  if (!roleAcceptsApplications(role.status)) return "";
+  return `<a href="${esc(applyPath(role))}" class="inline-flex items-center justify-center rounded-[10px] bg-red-500 px-5 py-3 text-sm font-bold leading-none text-white transition-all duration-150 hover:bg-red-600 active:bg-red-700">
+          Apply for this seat
+        </a>`;
 }
 
 /** Minimal HTML-escape for values interpolated into the card template. */
