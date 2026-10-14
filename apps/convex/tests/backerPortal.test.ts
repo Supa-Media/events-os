@@ -647,14 +647,15 @@ describe("the payment-failed email", () => {
     expect(html).not.toMatch(/action required|immediately|failure to/i);
   });
 
-  test("degrades to a reply-to-us sentence with no portal url", () => {
+  test("drops the button, and never asks for a reply, with no portal url", () => {
     const { html } = renderPaymentFailedEmail({
       firstName: "friend",
       monthlyCents: 2500,
       chapterName: null,
       portalUrl: null,
     });
-    expect(html).toContain("Reply to this email");
+    expect(html).not.toContain("Update your card</a>");
+    expect(html).not.toMatch(/reply/i);
     expect(html).toContain("Public Worship");
   });
 });

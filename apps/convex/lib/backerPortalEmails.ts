@@ -67,8 +67,8 @@ export type PaymentFailedPayload = {
   monthlyCents: number;
   /** The city they back, or `null` — the copy falls back to the org. */
   chapterName: string | null;
-  /** The portal, when `APP_URL`/`SITE_URL` resolves. `null` degrades the CTA to
-   *  a sentence rather than a dead link. */
+  /** The portal, when `APP_URL`/`SITE_URL` resolves. `null` drops the CTA
+   *  rather than render a dead link. */
   portalUrl: string | null;
 };
 
@@ -118,15 +118,14 @@ export function renderPaymentFailedEmail(payload: PaymentFailedPayload): {
           ),
           { margin: "0 0 20px" },
         ),
+        // No "reply to this email" fallback: replies aren't a channel anyone
+        // works, so without a portal URL the button is simply left out.
         payload.portalUrl
           ? emailButton(payload.portalUrl, "Update your card")
-          : emailParagraph(
-              "Reply to this email and we'll send you a secure link to update your card.",
-              { margin: "0 0 16px" },
-            ),
+          : "",
         emailRule(),
         emailParagraph(
-          `And if now isn't the right time to keep giving, that's genuinely all right — reply and tell us, and we'll stop it. No hoops, and no hard feelings. ${esc(city)} is grateful for what you've already given.`,
+          `And if now isn't the right time to keep giving, that's genuinely all right — you can stop it from the same page. No hoops, and no hard feelings. ${esc(city)} is grateful for what you've already given.`,
           { size: 12, margin: "0" },
         ),
       ]

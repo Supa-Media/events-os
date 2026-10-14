@@ -29,7 +29,7 @@ import { internalAction } from "./_generated/server";
 import type { ActionCtx } from "./_generated/server";
 import { v } from "convex/values";
 import { internal } from "./_generated/api";
-import { rsvpPageUrl, siteUrl } from "./lib/siteUrl";
+import { backerPortalUrl, rsvpPageUrl, siteUrl } from "./lib/siteUrl";
 import { resolveResendSettings, sendResendEmail } from "./lib/resend";
 import { escapeHtml } from "./lib/html";
 import {
@@ -240,6 +240,12 @@ export const sendDonationReceiptEmail = internalAction({
   },
 });
 
+/** 2 Corinthians 9:7 (ESV) — the verse the monthly receipt closes on. */
+export const GIVING_VERSE = {
+  text: "Each one must give as he has decided in his heart, not reluctantly or under compulsion, for God loves a cheerful giver.",
+  reference: "2 Corinthians 9:7",
+} as const;
+
 /**
  * Monthly receipt after a backer's Stripe billing cycle is recorded
  * (F-6 P2 `invoice.paid`). Extends the donation-receipt pattern; copy speaks to
@@ -272,9 +278,21 @@ export const sendPledgeReceiptEmail = internalAction({
         { dashed: true, center: true, margin: "0" },
       )}
       ${emailParagraph(
-        "Need to update your card or change your amount? Just reply to this email and we'll send you a secure link.",
-        { size: 12, margin: "16px 0 0" },
-      )}`),
+        `<i>&ldquo;${GIVING_VERSE.text}&rdquo;</i><br/><span style="font-size:12px">${GIVING_VERSE.reference}</span>`,
+        { margin: "20px 0 0" },
+      )}
+      ${
+        // The portal, not "reply to this email": replies aren't a real channel,
+        // and the portal is where a backer sees where the money goes AND
+        // changes their card or amount. No site URL → no dead button.
+        siteUrl()
+          ? `<div style="text-align:center;margin:24px 0 0">${emailButton(backerPortalUrl(), "See where your giving goes")}</div>
+      ${emailParagraph(
+        "Update your card, change your amount, or stop any time from the same page.",
+        { size: 12, margin: "12px 0 0" },
+      )}`
+          : ""
+      }`),
     });
     return null;
   },
