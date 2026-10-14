@@ -32,7 +32,7 @@ import {
 import { internal } from "../_generated/api";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 
-/** A complete, valid application body — the six answers the form requires. */
+/** A complete, valid application body — every answer the form requires. */
 function applicationArgs(overrides: Record<string, unknown> = {}) {
   return {
     roleSlug: "people-director",
@@ -47,6 +47,7 @@ function applicationArgs(overrides: Record<string, unknown> = {}) {
       ownership: "I ran our church's volunteer onboarding end to end.",
       leadership: "I led our worship team through a merger; we disagreed on setlists and I got us to one rhythm.",
       capacity: "About 10 hours a week; my evenings are free.",
+      monthlyMeeting: "Yes",
       covering: "Grace Fellowship, Astoria — I attend and give there.",
     },
     ...overrides,
@@ -133,6 +134,25 @@ describe("hiring — the public intake", () => {
     await expect(
       t.mutation(api.hiring.submitApplication, args),
     ).rejects.toThrow(/home church/i);
+  });
+
+  test("a yes/no question takes only Yes or No, and a No is filed as given", async () => {
+    const t = newT();
+    const args = applicationArgs();
+    const answers = args.answers as Record<string, string>;
+    answers.monthlyMeeting = "Maybe";
+    await expect(
+      t.mutation(api.hiring.submitApplication, { ...args, answers }),
+    ).rejects.toThrow(/needs a Yes or No/);
+    delete answers.monthlyMeeting;
+    await expect(
+      t.mutation(api.hiring.submitApplication, { ...args, answers }),
+    ).rejects.toThrow(/first Thursday/);
+    answers.monthlyMeeting = "No";
+    const id = await submit(t, { answers });
+    const row = await run(t, (ctx) => ctx.db.get(id));
+    expect(row?.answers.monthlyMeeting).toBe("No");
+    expect(row?.questions?.map((q) => q.key)).toContain("monthlyMeeting");
   });
 
   test("an unknown answer key is dropped rather than stored", async () => {

@@ -14,7 +14,9 @@
  */
 import {
   APPLICATION_TOGGLEABLE_FIELDS,
+  APPLICATION_YES_NO,
   applicationQuestionCountPhrase,
+  isYesNoQuestion,
   roleAcceptsApplications,
   type ApplicationFormConfig,
   type PublicJobListing,
@@ -74,6 +76,23 @@ function questionField(q: ApplicationFormConfig["questions"][number]): HTMLEleme
     label.appendChild(help);
   }
 
+  if (isYesNoQuestion(q)) {
+    const select = document.createElement("select");
+    select.name = `answers.${q.key}`;
+    select.required = q.required;
+    select.className =
+      "mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500";
+    const choices = [["", "Choose one"], ...APPLICATION_YES_NO.map((a) => [a, a])];
+    for (const [value, text] of choices) {
+      const option = document.createElement("option");
+      option.value = value;
+      option.textContent = text;
+      select.appendChild(option);
+    }
+    label.appendChild(select);
+    return label;
+  }
+
   const area = document.createElement("textarea");
   area.name = `answers.${q.key}`;
   area.rows = q.maxLength > 1500 ? 6 : 4;
@@ -106,13 +125,17 @@ async function hydrateQuestions(): Promise<void> {
   }
 
   const typed = new Map<string, string>();
-  for (const area of wrap.querySelectorAll<HTMLTextAreaElement>("textarea")) {
-    if (area.value) typed.set(area.name, area.value);
+  const fields = () =>
+    wrap.querySelectorAll<HTMLTextAreaElement | HTMLSelectElement>("textarea, select");
+  for (const field of fields()) {
+    if (field.value) typed.set(field.name, field.value);
   }
   wrap.replaceChildren(...form.questions.map(questionField));
-  for (const area of wrap.querySelectorAll<HTMLTextAreaElement>("textarea")) {
-    const value = typed.get(area.name);
-    if (value) area.value = value;
+  for (const field of fields()) {
+    const value = typed.get(field.name);
+    // A question that switched between written and yes/no keeps no answer:
+    // a select silently ignores a value it has no option for.
+    if (value) field.value = value;
   }
 
   const count = document.querySelector<HTMLElement>("[data-apply-question-count]");

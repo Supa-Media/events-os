@@ -110,6 +110,7 @@ import { addAcademyEditPowerDefaults } from "./0089_add_academy_edit_power_defau
 import { applicationFormKingdomCity } from "./0090_application_form_kingdom_city";
 import { applicationFormLeadershipQuestion } from "./0091_application_form_leadership_question";
 import { applicationFormDropTrialQuestion } from "./0092_application_form_drop_trial_question";
+import { applicationFormMonthlyMeetingQuestion } from "./0093_application_form_monthly_meeting_question";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -577,4 +578,7 @@ export const MIGRATIONS: Migration[] = [
   // 0092: the stored form's Empowerment Trial question (`trial`) is removed.
   // See the file.
   applicationFormDropTrialQuestion,
+  // 0093: the stored form gains the required yes/no `monthlyMeeting`
+  // question (first-Thursday all-team meeting), after `capacity`. See the file.
+  applicationFormMonthlyMeetingQuestion,
 ];

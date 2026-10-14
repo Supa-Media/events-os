@@ -532,9 +532,25 @@ export interface ApplicationQuestion {
   label: string;
   /** The helper line under the label. May be empty. */
   help: string;
-  /** Character cap on the answer, enforced server-side. */
+  /** Character cap on the answer, enforced server-side. Ignored for a
+   *  yes/no question, whose answer is one of `APPLICATION_YES_NO`. */
   maxLength: number;
   required: boolean;
+  /** How it's answered. Absent means `"text"`, so every question saved
+   *  before yes/no existed reads unchanged. */
+  kind?: ApplicationQuestionKind;
+}
+
+/** A written answer, or a single Yes / No pick. */
+export const APPLICATION_QUESTION_KINDS = ["text", "yesNo"] as const;
+export type ApplicationQuestionKind = (typeof APPLICATION_QUESTION_KINDS)[number];
+
+/** A yes/no question's only answers. Stored as written, so every place that
+ *  shows answers (the pipeline file, exports) reads them with no special case. */
+export const APPLICATION_YES_NO = ["Yes", "No"] as const;
+
+export function isYesNoQuestion(q: Pick<ApplicationQuestion, "kind">): boolean {
+  return q.kind === "yesNo";
 }
 
 /**
@@ -546,12 +562,13 @@ export interface ApplicationQuestion {
  * page rather than by bespoke per-role questions, which is what makes two
  * applications comparable at all.
  *
- * Four of the six are load-bearing gates the Academy already names
- * (`capacity`, `covering`), that *Buy Back Your Time* argues for
- * (`ownership` — outcomes and a definition of done), or that the founder
- * asked for (`leadership` — alignment, conflict, an affinity to lead). `why`
- * and `trial` are the two that consistently separate people who want a title
- * from people who want the work.
+ * Most are load-bearing gates the Academy already names (`capacity`,
+ * `covering`, `monthlyMeeting` — the active team meets the first Thursday of
+ * every month), that *Buy Back Your Time* argues for (`ownership` — outcomes
+ * and a definition of done), or that the founder asked for (`leadership` —
+ * alignment, conflict, an affinity to lead). `why` is the one that most
+ * consistently separates people who want a title from people who want the
+ * work.
  */
 export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
   {
@@ -581,6 +598,14 @@ export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
     help: "This is a gate, not a formality: roughly 10 hrs/week for a director seat, 5 for a team seat, plus recurring meetings. We'd rather know now.",
     maxLength: 1000,
     required: true,
+  },
+  {
+    key: "monthlyMeeting",
+    label: "Can you join the all-team meeting on the first Thursday of every month?",
+    help: "It's mandatory for everyone on the team. It's where we pray, align, and make decisions together.",
+    maxLength: 100,
+    required: true,
+    kind: "yesNo",
   },
   {
     key: "covering",
@@ -695,10 +720,14 @@ export function problemsWithApplicationForm(
     if (q.help.length > L.help) {
       problems.push(`${n}'s helper text must be ${L.help} characters or fewer.`);
     }
+    if (q.kind !== undefined && !APPLICATION_QUESTION_KINDS.includes(q.kind)) {
+      problems.push(`${n} has an unknown answer type.`);
+    }
     if (
-      !Number.isInteger(q.maxLength) ||
+      !isYesNoQuestion(q) &&
+      (!Number.isInteger(q.maxLength) ||
       q.maxLength < L.minAnswerLength ||
-      q.maxLength > L.maxAnswerLength
+      q.maxLength > L.maxAnswerLength)
     ) {
       problems.push(
         `${n}'s answer limit must be between ${L.minAnswerLength} and ${L.maxAnswerLength} characters.`,

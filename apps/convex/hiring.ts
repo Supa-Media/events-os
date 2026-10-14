@@ -46,6 +46,7 @@ import {
   APPLICATION_GENDERS,
   APPLICATION_LIMITS,
   APPLICATION_TOGGLEABLE_FIELDS,
+  APPLICATION_YES_NO,
   DEFAULT_APPLICATION_QUESTIONS,
   GENERAL_INTEREST_SLUG,
   GENERAL_INTEREST_TITLE,
@@ -58,6 +59,7 @@ import {
   RUBRIC_MIN,
   isClosedStage,
   isRubricCriterion,
+  isYesNoQuestion,
   trialDueDates,
   type ApplicationToggleableField,
   type HiringOutcome,
@@ -376,7 +378,14 @@ export const submitApplication = mutation({
       if (!question) continue;
       const value = raw.trim();
       if (!value) continue;
-      if (value.length > question.maxLength) {
+      if (isYesNoQuestion(question)) {
+        if (!(APPLICATION_YES_NO as readonly string[]).includes(value)) {
+          throw new ConvexError({
+            code: "INVALID_ANSWER",
+            message: `"${question.label}" needs a Yes or No.`,
+          });
+        }
+      } else if (value.length > question.maxLength) {
         throw new ConvexError({
           code: "ANSWER_TOO_LONG",
           message: `"${question.label}" must be ${question.maxLength} characters or fewer.`,
