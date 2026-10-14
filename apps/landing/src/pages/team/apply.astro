@@ -18,9 +18,11 @@ import Eyebrow from "../../components/ui/Eyebrow.astro";
 import {
   APPLICATION_GENDERS,
   APPLICATION_LIMITS,
+  APPLICATION_YES_NO,
   DEFAULT_APPLICATION_FORM,
   GENERAL_INTEREST_TITLE,
   applicationQuestionCountPhrase,
+  isYesNoQuestion,
 } from "@events-os/shared/src/hiring";
 
 const questions = DEFAULT_APPLICATION_FORM.questions;
@@ -247,13 +249,26 @@ import { asset } from "../../lib/asset";
                     {q.help}
                   </span>
                 )}
-                <textarea
-                  name={`answers.${q.key}`}
-                  rows={q.maxLength > 1500 ? 6 : 4}
-                  maxlength={q.maxLength}
-                  required={q.required}
-                  class="mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base leading-relaxed text-ink outline-none focus:border-red-500"
-                />
+                {isYesNoQuestion(q) ? (
+                  <select
+                    name={`answers.${q.key}`}
+                    required={q.required}
+                    class="mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base text-ink outline-none focus:border-red-500"
+                  >
+                    <option value="">Choose one</option>
+                    {APPLICATION_YES_NO.map((a) => (
+                      <option value={a}>{a}</option>
+                    ))}
+                  </select>
+                ) : (
+                  <textarea
+                    name={`answers.${q.key}`}
+                    rows={q.maxLength > 1500 ? 6 : 4}
+                    maxlength={q.maxLength}
+                    required={q.required}
+                    class="mt-2 w-full rounded-xl border border-ink/20 bg-white px-4 py-3 text-base leading-relaxed text-ink outline-none focus:border-red-500"
+                  />
+                )}
               </label>
             ))
           }

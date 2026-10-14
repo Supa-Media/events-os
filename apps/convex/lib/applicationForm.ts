@@ -14,12 +14,19 @@ import {
 import type { Doc } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
 
+export const applicationQuestionKindValidator = v.union(
+  v.literal("text"),
+  v.literal("yesNo"),
+);
+
 export const applicationQuestionValidator = v.object({
   key: v.string(),
   label: v.string(),
   help: v.string(),
   maxLength: v.number(),
   required: v.boolean(),
+  // Absent = "text"; rows saved before yes/no existed carry none.
+  kind: v.optional(applicationQuestionKindValidator),
 });
 
 export const requiredFieldsValidator = v.object({

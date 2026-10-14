@@ -18,6 +18,7 @@ import { api } from "@events-os/convex/_generated/api";
 import {
   APPLICATION_FORM_LIMITS,
   APPLICATION_TOGGLEABLE_FIELDS,
+  isYesNoQuestion,
   newApplicationQuestionKey,
   problemsWithApplicationForm,
   type ApplicationFormConfig,
@@ -44,6 +45,18 @@ function toDraft(form: ApplicationFormConfig): DraftQuestion[] {
   return form.questions.map((q) => ({ ...q, maxLength: String(q.maxLength) }));
 }
 
+/** A yes/no answer has no length to cap, but its question keeps the written
+ *  limit it had so flipping it back restores that; only a limit that would
+ *  fail validation is replaced. */
+function draftMaxLength(q: DraftQuestion): number {
+  const typed = Number.parseInt(q.maxLength, 10) || 0;
+  if (!isYesNoQuestion(q)) return typed;
+  const L = APPLICATION_FORM_LIMITS;
+  return typed >= L.minAnswerLength && typed <= L.maxAnswerLength
+    ? typed
+    : L.minAnswerLength;
+}
+
 function fromDraft(
   questions: DraftQuestion[],
   requiredFields: ApplicationFormConfig["requiredFields"],
@@ -53,7 +66,7 @@ function fromDraft(
       ...q,
       label: q.label.trim(),
       help: q.help.trim(),
-      maxLength: Number.parseInt(q.maxLength, 10) || 0,
+      maxLength: draftMaxLength(q),
     })),
     requiredFields,
   };
@@ -283,14 +296,27 @@ function FormEditor({
             multiline
             numberOfLines={2}
           />
-          <TextField
-            label="Answer limit (characters)"
-            value={q.maxLength}
-            onChangeText={(maxLength) => update(i, { maxLength })}
-            keyboardType="number-pad"
-            editable={canEdit}
-            hint={`Between ${APPLICATION_FORM_LIMITS.minAnswerLength} and ${APPLICATION_FORM_LIMITS.maxAnswerLength}.`}
-          />
+          <View className="mb-2 flex-row items-center justify-between gap-3">
+            <Text className="text-sm text-ink">
+              {isYesNoQuestion(q) ? "Answered Yes or No" : "Written answer"}
+            </Text>
+            <Switch
+              value={isYesNoQuestion(q)}
+              onValueChange={(yesNo) => update(i, { kind: yesNo ? "yesNo" : "text" })}
+              disabled={!canEdit}
+              accessibilityLabel={`Question ${i + 1} answered Yes or No`}
+            />
+          </View>
+          {isYesNoQuestion(q) ? null : (
+            <TextField
+              label="Answer limit (characters)"
+              value={q.maxLength}
+              onChangeText={(maxLength) => update(i, { maxLength })}
+              keyboardType="number-pad"
+              editable={canEdit}
+              hint={`Between ${APPLICATION_FORM_LIMITS.minAnswerLength} and ${APPLICATION_FORM_LIMITS.maxAnswerLength}.`}
+            />
+          )}
           <View className="flex-row items-center justify-between gap-3">
             <Text className="text-sm text-ink">
               {q.required ? "Required" : "Optional"}
@@ -324,7 +350,7 @@ function FormEditor({
             confirmReset ? (
               <View className="gap-2">
                 <Text className="text-sm text-muted">
-                  This replaces every question with the original six. Answers
+                  This replaces every question with the original set. Answers
                   already received are kept.
                 </Text>
                 <View className="flex-row gap-2">

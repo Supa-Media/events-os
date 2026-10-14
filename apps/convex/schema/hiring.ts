@@ -355,6 +355,8 @@ export const applicationForm = defineTable({
       help: v.string(),
       maxLength: v.number(),
       required: v.boolean(),
+      // Absent = a written answer; "yesNo" = one of Yes / No.
+      kind: v.optional(v.union(v.literal("text"), v.literal("yesNo"))),
     }),
   ),
   requiredFields: v.object({

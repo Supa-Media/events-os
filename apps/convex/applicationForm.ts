@@ -60,6 +60,7 @@ export const saveApplicationForm = mutation({
         help: q.help.trim(),
         maxLength: q.maxLength,
         required: q.required,
+        ...(q.kind === "yesNo" ? { kind: q.kind } : {}),
       })),
       requiredFields: form.requiredFields,
     };

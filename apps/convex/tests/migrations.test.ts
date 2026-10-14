@@ -374,6 +374,7 @@ const REGISTRY_NAMES = [
   "0090_application_form_kingdom_city",
   "0091_application_form_leadership_question",
   "0092_application_form_drop_trial_question",
+  "0093_application_form_monthly_meeting_question",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
