@@ -125,7 +125,7 @@ export function renderPaymentFailedEmail(payload: PaymentFailedPayload): {
           : "",
         emailRule(),
         emailParagraph(
-          `And if now isn't the right time to keep giving, that's genuinely all right — you can stop it from the same page. No hoops, and no hard feelings. ${esc(city)} is grateful for what you've already given.`,
+          `And if now isn't the right time to keep giving, that's genuinely all right${payload.portalUrl ? " — you can stop it from the same page" : ""}. No hoops, and no hard feelings. ${esc(city)} is grateful for what you've already given.`,
           { size: 12, margin: "0" },
         ),
       ]
