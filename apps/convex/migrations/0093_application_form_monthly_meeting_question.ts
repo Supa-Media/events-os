@@ -11,19 +11,19 @@ import {
  *
  * The founder asked that applicants say whether they can join the mandatory
  * all-team meeting on the first Thursday of every month. The code default
- * already carries it (`monthlyMeeting`, a required yes/no); this adds it to
+ * already carries it (`monthly_meeting`, a required yes/no); this adds it to
  * the row the desk saved in the OS, right after the hours question
  * (`capacity`) where the defaults put it, or at the end if the desk removed
  * that one. Nothing else the desk wrote changes.
  *
- * Idempotent by content: a second run finds `monthlyMeeting` already there.
+ * Idempotent by content: a second run finds `monthly_meeting` already there.
  */
 export async function runApplicationFormMonthlyMeetingQuestion(ctx: MutationCtx) {
   const row = await ctx.db.query("applicationForm").first();
   if (!row) return { changed: 0 };
-  const next = DEFAULT_APPLICATION_QUESTIONS.find((q) => q.key === "monthlyMeeting");
-  if (!next) throw new Error("DEFAULT_APPLICATION_QUESTIONS lost `monthlyMeeting`");
-  if (row.questions.some((q) => q.key === "monthlyMeeting")) return { changed: 0 };
+  const next = DEFAULT_APPLICATION_QUESTIONS.find((q) => q.key === "monthly_meeting");
+  if (!next) throw new Error("DEFAULT_APPLICATION_QUESTIONS lost `monthly_meeting`");
+  if (row.questions.some((q) => q.key === "monthly_meeting")) return { changed: 0 };
   // A full form can't take another question without failing its own save.
   if (row.questions.length >= APPLICATION_FORM_LIMITS.maxQuestions) {
     return { changed: 0 };

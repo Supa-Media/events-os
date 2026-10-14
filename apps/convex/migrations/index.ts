@@ -578,7 +578,7 @@ export const MIGRATIONS: Migration[] = [
   // 0092: the stored form's Empowerment Trial question (`trial`) is removed.
   // See the file.
   applicationFormDropTrialQuestion,
-  // 0093: the stored form gains the required yes/no `monthlyMeeting`
+  // 0093: the stored form gains the required yes/no `monthly_meeting`
   // question (first-Thursday all-team meeting), after `capacity`. See the file.
   applicationFormMonthlyMeetingQuestion,
 ];

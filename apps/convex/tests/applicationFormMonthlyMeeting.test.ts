@@ -1,5 +1,5 @@
 /**
- * 0093: the stored form gains the yes/no `monthlyMeeting` question right
+ * 0093: the stored form gains the yes/no `monthly_meeting` question right
  * after `capacity`, and nothing else the desk wrote changes.
  */
 import { describe, expect, test } from "vitest";
@@ -11,7 +11,7 @@ describe("0093_application_form_monthly_meeting_question", () => {
   test("inserts the question after capacity, once", async () => {
     const t = newT();
     const stored = DEFAULT_APPLICATION_FORM.questions
-      .filter((q) => q.key !== "monthlyMeeting")
+      .filter((q) => q.key !== "monthly_meeting")
       .map((q) => (q.key === "why" ? { ...q, label: "Desk wording" } : q));
     await run(t, async (ctx) => {
       await ctx.db.insert("applicationForm", {
@@ -25,8 +25,8 @@ describe("0093_application_form_monthly_meeting_question", () => {
     });
     const row = await run(t, (ctx) => ctx.db.query("applicationForm").first());
     const keys = row!.questions.map((q) => q.key);
-    expect(keys.indexOf("monthlyMeeting")).toBe(keys.indexOf("capacity") + 1);
-    expect(row!.questions.find((q) => q.key === "monthlyMeeting")).toMatchObject({
+    expect(keys.indexOf("monthly_meeting")).toBe(keys.indexOf("capacity") + 1);
+    expect(row!.questions.find((q) => q.key === "monthly_meeting")).toMatchObject({
       required: true,
       kind: "yesNo",
       label: expect.stringContaining("first Thursday"),

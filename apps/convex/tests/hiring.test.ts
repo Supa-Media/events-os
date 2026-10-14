@@ -47,7 +47,7 @@ function applicationArgs(overrides: Record<string, unknown> = {}) {
       ownership: "I ran our church's volunteer onboarding end to end.",
       leadership: "I led our worship team through a merger; we disagreed on setlists and I got us to one rhythm.",
       capacity: "About 10 hours a week; my evenings are free.",
-      monthlyMeeting: "Yes",
+      monthly_meeting: "Yes",
       covering: "Grace Fellowship, Astoria — I attend and give there.",
     },
     ...overrides,
@@ -140,19 +140,19 @@ describe("hiring — the public intake", () => {
     const t = newT();
     const args = applicationArgs();
     const answers = args.answers as Record<string, string>;
-    answers.monthlyMeeting = "Maybe";
+    answers.monthly_meeting = "Maybe";
     await expect(
       t.mutation(api.hiring.submitApplication, { ...args, answers }),
     ).rejects.toThrow(/needs a Yes or No/);
-    delete answers.monthlyMeeting;
+    delete answers.monthly_meeting;
     await expect(
       t.mutation(api.hiring.submitApplication, { ...args, answers }),
     ).rejects.toThrow(/first Thursday/);
-    answers.monthlyMeeting = "No";
+    answers.monthly_meeting = "No";
     const id = await submit(t, { answers });
     const row = await run(t, (ctx) => ctx.db.get(id));
-    expect(row?.answers.monthlyMeeting).toBe("No");
-    expect(row?.questions?.map((q) => q.key)).toContain("monthlyMeeting");
+    expect(row?.answers.monthly_meeting).toBe("No");
+    expect(row?.questions?.map((q) => q.key)).toContain("monthly_meeting");
   });
 
   test("an unknown answer key is dropped rather than stored", async () => {

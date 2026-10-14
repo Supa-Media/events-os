@@ -563,7 +563,7 @@ export function isYesNoQuestion(q: Pick<ApplicationQuestion, "kind">): boolean {
  * applications comparable at all.
  *
  * Most are load-bearing gates the Academy already names (`capacity`,
- * `covering`, `monthlyMeeting` — the active team meets the first Thursday of
+ * `covering`, `monthly_meeting` — the active team meets the first Thursday of
  * every month), that *Buy Back Your Time* argues for (`ownership` — outcomes
  * and a definition of done), or that the founder asked for (`leadership` —
  * alignment, conflict, an affinity to lead). `why` is the one that most
@@ -600,7 +600,7 @@ export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
     required: true,
   },
   {
-    key: "monthlyMeeting",
+    key: "monthly_meeting",
     label: "Can you join the in-person all-team meeting on the first Thursday of every month?",
     help: "It's mandatory for everyone on the team, and it meets in person in your city: New York City today, and the DMV area once that chapter launches. It's where we pray, align, and make decisions together.",
     maxLength: 100,
