@@ -47,11 +47,6 @@ import { asset } from "../../lib/asset";
         decide on your own, and what it is <em>not</em>. If we can't write that
         down, we're not ready to ask someone to do it.
       </p>
-      <p class="max-w-prose text-base leading-relaxed text-ink/70">
-        Want to help at a gathering rather than hold a seat? That's a different
-        (and much shorter) door —
-        <a href={asset("/serve")} class="text-red-500 underline-offset-2 hover:underline">volunteer with us</a>.
-      </p>
     </div>
 
     {/* ── Open roles ─────────────────────────────────────────────── */}
@@ -149,6 +144,16 @@ import { asset } from "../../lib/asset";
         </p>
       </div>
     </section>
+
+    {/* ── The volunteer door ─────────────────────────────────────── */}
+    {/* Deliberately last: people were taking this link for the seat
+        application, so it sits after every seat and the process, not above
+        them. */}
+    <p class="mt-14 max-w-prose text-base leading-relaxed text-ink/70" data-animate="fade-up">
+      Not looking to hold a seat, and just want to help at a gathering? That's
+      a different (and much shorter) door —
+      <a href={asset("/serve")} class="text-red-500 underline-offset-2 hover:underline">volunteer with us</a>.
+    </p>
 
     <p class="mt-12 text-sm text-ink/60">
       Public Worship is a volunteer-run initiative of Global Echo Charitable
