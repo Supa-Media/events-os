@@ -655,7 +655,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Monthly all-team meetings are part of being on the active team.** They're on the first Thursday of every month. The whole team prays, aligns, makes decisions, and builds trust there. Don't skip one because the agenda looks thin.",
+          "**Monthly all-team meetings are part of being on the active team.** They meet in person in each chapter's city on the first Thursday of every month. The whole team prays, aligns, makes decisions, and builds trust there. Don't skip one because the agenda looks thin.",
           "**Everyone gets a recurring 1:1 with their Director.** It happens at least every other week, and weekly is encouraged while a project is running. That's where alignment and course-correction happen.",
           "**Both sides own the 1:1.** If it keeps slipping, either the Director or the team member can, and should, get it back on the calendar.",
           "**Raise serious conflict early**, the same way you'd raise a blocker, while there's still time to work with it.",

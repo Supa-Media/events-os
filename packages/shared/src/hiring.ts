@@ -601,8 +601,8 @@ export const DEFAULT_APPLICATION_QUESTIONS: readonly ApplicationQuestion[] = [
   },
   {
     key: "monthlyMeeting",
-    label: "Can you join the all-team meeting on the first Thursday of every month?",
-    help: "It's mandatory for everyone on the team. It's where we pray, align, and make decisions together.",
+    label: "Can you join the in-person all-team meeting on the first Thursday of every month?",
+    help: "It's mandatory for everyone on the team, and it meets in person in your city: New York City today, and the DMV area once that chapter launches. It's where we pray, align, and make decisions together.",
     maxLength: 100,
     required: true,
     kind: "yesNo",
