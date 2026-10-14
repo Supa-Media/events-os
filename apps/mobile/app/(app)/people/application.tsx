@@ -45,6 +45,18 @@ function toDraft(form: ApplicationFormConfig): DraftQuestion[] {
   return form.questions.map((q) => ({ ...q, maxLength: String(q.maxLength) }));
 }
 
+/** A yes/no answer has no length to cap, but its question keeps the written
+ *  limit it had so flipping it back restores that; only a limit that would
+ *  fail validation is replaced. */
+function draftMaxLength(q: DraftQuestion): number {
+  const typed = Number.parseInt(q.maxLength, 10) || 0;
+  if (!isYesNoQuestion(q)) return typed;
+  const L = APPLICATION_FORM_LIMITS;
+  return typed >= L.minAnswerLength && typed <= L.maxAnswerLength
+    ? typed
+    : L.minAnswerLength;
+}
+
 function fromDraft(
   questions: DraftQuestion[],
   requiredFields: ApplicationFormConfig["requiredFields"],
@@ -54,11 +66,7 @@ function fromDraft(
       ...q,
       label: q.label.trim(),
       help: q.help.trim(),
-      // A yes/no answer has no length to cap; keep a valid number on file so
-      // flipping the question back to written still saves.
-      maxLength: isYesNoQuestion(q)
-        ? APPLICATION_FORM_LIMITS.minAnswerLength
-        : Number.parseInt(q.maxLength, 10) || 0,
+      maxLength: draftMaxLength(q),
     })),
     requiredFields,
   };
