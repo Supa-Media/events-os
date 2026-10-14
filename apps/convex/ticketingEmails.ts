@@ -282,15 +282,13 @@ export const sendPledgeReceiptEmail = internalAction({
         { margin: "20px 0 0" },
       )}
       ${
-        // The portal, not "reply to this email": replies aren't a real channel,
-        // and the portal is where a backer sees where the money goes AND
-        // changes their card or amount. No site URL → no dead button.
+        // The portal, not "reply to this email": replies aren't a channel
+        // anyone works. No site URL → no dead link.
         siteUrl()
-          ? `<div style="text-align:center;margin:24px 0 0">${emailButton(backerPortalUrl(), "See where your giving goes")}</div>
-      ${emailParagraph(
-        "Update your card, change your amount, or stop any time from the same page.",
-        { size: 12, margin: "12px 0 0" },
-      )}`
+          ? emailParagraph(emailLink(backerPortalUrl(), "Manage your card and amount"), {
+              size: 12,
+              margin: "16px 0 0",
+            })
           : ""
       }`),
     });
