@@ -148,8 +148,10 @@ function payMethodPickerHtml(prefix: string): string {
  * charged; and it stays honest when the box is UNticked too ("adds $3.30, so
  * the full $100 reaches us") rather than only appearing once they've agreed.
  *
- * OFF BY DEFAULT, like the wall opt-in above it. A pre-ticked box that quietly
- * adds money to a total is a dark pattern, and it would poison a gift.
+ * ON BY DEFAULT, at the founder's call (2026-10-16), matching the sponsor
+ * portal's "add the processing fee" box. It stays honest because the line
+ * under it states the exact charge before they pay ("You'll be charged $103.30,
+ * and $100 reaches us"), and unticking it is one tap.
  *
  * ONE-TIME ONLY, deliberately. The monthly form opens a Stripe SUBSCRIPTION
  * through `givingPledges`, where "the fee" is a recurring charge on a schedule
@@ -157,7 +159,7 @@ function payMethodPickerHtml(prefix: string): string {
  * guessing at it here would ship a number nobody had checked.
  */
 function coverFeesHtml(prefix: string): string {
-  return `<label class="sharewall"><input type="checkbox" id="${prefix}_covfees"> Cover the processing fee so my whole gift gets through</label>
+  return `<label class="sharewall"><input type="checkbox" id="${prefix}_covfees" checked> Cover the processing fee so my whole gift gets through</label>
   <p class="sharewall-hint">Whichever way you pay, the processor takes a cut of every gift. Tick this and it's added to your total instead of coming out of what you gave &mdash; priced for the method you picked above. Completely optional &mdash; your gift is welcome either way.</p>
   <p class="covline" id="${prefix}_covline" style="display:none"></p>`;
 }
