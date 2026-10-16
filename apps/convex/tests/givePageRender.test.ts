@@ -967,7 +967,7 @@ describe("the fee surfaces on the give form", () => {
   };
   const html = renderGiveMapPage(TERRITORIES, STATS, false, SITE, RATES, WALL);
 
-  test("the cover-fees box says what we RECEIVE, and is off by default", () => {
+  test("the cover-fees box says what we RECEIVE, and is on by default", () => {
     expect(html).toContain('id="gc_onetime_covfees"');
     expect(html).toMatch(/Cover the processing fee so my whole gift gets through/);
     // Rail-neutral, because the form now offers both — and it says the quote
@@ -975,8 +975,9 @@ describe("the fee surfaces on the give form", () => {
     expect(html).toMatch(/the processor takes a cut of every gift/);
     expect(html).toMatch(/priced for the method you picked above/);
     expect(html).toMatch(/Completely optional/);
-    // A pre-ticked box that quietly adds money to a total is a dark pattern.
-    expect(html).not.toMatch(/id="gc_onetime_covfees"[^>]*checked/);
+    // Ticked by default (founder's call, 2026-10-16); the live line under it
+    // states the exact charge, so the giver sees the total before paying.
+    expect(html).toMatch(/id="gc_onetime_covfees" checked/);
   });
 
   test("the rail picker is asked BEFORE the fee is quoted, and defaults to card", () => {
