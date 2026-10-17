@@ -848,6 +848,38 @@ export function roleAcceptsApplications(status: RoleStatus): boolean {
   return status === "open" || status === "filling";
 }
 
+// ── Which city a listing is for (the /team region chips) ─────────────────────
+
+/** The cities a listing can be filtered by on `/team`, in chip order. */
+export const LISTING_REGIONS = ["nyc", "dmv"] as const;
+export type ListingRegion = (typeof LISTING_REGIONS)[number];
+
+export const LISTING_REGION_LABELS: Record<ListingRegion, string> = {
+  nyc: "NYC",
+  dmv: "DMV",
+};
+
+const REGION_PATTERNS: Record<ListingRegion, RegExp> = {
+  nyc: /\b(nyc|new york|brooklyn|manhattan|queens|bronx)\b/i,
+  dmv: /\b(dmv|d\.?c\.?|washington|maryland|virginia)\b/i,
+};
+
+/**
+ * The regions a listing belongs to, read from its free-text `location`.
+ *
+ * Listings carry no chapter: a chapter-chart seat is one shape stamped onto
+ * every chapter, so `seatId` can't say which city a posting is for. The
+ * location line is where the desk already writes that. A remote seat, or one
+ * that names no city, is open to both, so it shows under either chip.
+ */
+export function listingRegions(location: string): ListingRegion[] {
+  const named = LISTING_REGIONS.filter((r) => REGION_PATTERNS[r].test(location));
+  if (named.length === 0 || /\bremote\b/i.test(location)) {
+    return [...LISTING_REGIONS];
+  }
+  return named;
+}
+
 // ── The listing as public content (the /team wire shape) ─────────────────────
 
 /**

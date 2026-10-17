@@ -13,9 +13,17 @@
  * The endpoint returns only PUBLISHED roles, already sorted in display order
  * (open, filling, not_open, closed), so this script never sorts — it only
  * splits on whether a role is still taking applications.
+ *
+ * The All / NYC / DMV chips above the lists filter both of them by
+ * `listingRegions` (read from each role's location line). The choice rides in
+ * `?region=` so a filtered page can be shared.
  */
 import {
+  LISTING_REGIONS,
+  LISTING_REGION_LABELS,
+  listingRegions,
   roleAcceptsApplications,
+  type ListingRegion,
   type PublicJobListing,
 } from "@events-os/shared/src/hiring";
 import {
@@ -96,6 +104,79 @@ function hide(el: Element | null): void {
   el?.classList.add("hidden");
 }
 
+type RegionFilter = ListingRegion | "all";
+
+/** `?region=` on load, if it names a real region; otherwise All. */
+function initialFilter(): RegionFilter {
+  const raw = new URLSearchParams(window.location.search).get("region");
+  return LISTING_REGIONS.find((r) => r === raw?.toLowerCase()) ?? "all";
+}
+
+/** Each card remembers its regions so the chips can toggle it in place. */
+function tagRegions(li: HTMLLIElement, role: PublicJobListing): HTMLLIElement {
+  li.dataset.regions = listingRegions(role.location).join(" ");
+  return li;
+}
+
+/** Show the cards in `filter`, and the empty/section states that follow. */
+function applyFilter(filter: RegionFilter): void {
+  const openList = document.getElementById("team-open-roles");
+  const openNone = document.getElementById("team-open-none");
+  const regionNone = document.getElementById("team-open-region-none");
+  const upcomingSection = document.getElementById("team-upcoming-section");
+  const upcomingList = document.getElementById("team-upcoming-roles");
+
+  const visibleIn = (list: HTMLElement | null): number => {
+    let count = 0;
+    for (const li of Array.from(list?.children ?? []) as HTMLElement[]) {
+      const match =
+        filter === "all" || (li.dataset.regions ?? "").split(" ").includes(filter);
+      li.classList.toggle("hidden", !match);
+      if (match) count += 1;
+    }
+    return count;
+  };
+
+  const totalOpen = openList?.children.length ?? 0;
+  const shownOpen = visibleIn(openList);
+  // The general "nothing open" copy is for an empty board; a board that only
+  // has seats in the other city gets its own line.
+  if (totalOpen > 0) {
+    openList?.classList.toggle("hidden", shownOpen === 0);
+    if (regionNone) {
+      regionNone.classList.toggle("hidden", shownOpen > 0);
+      const label = regionNone.querySelector("[data-region-label]");
+      if (label && filter !== "all") label.textContent = LISTING_REGION_LABELS[filter];
+    }
+  } else {
+    show(openNone);
+  }
+
+  if ((upcomingList?.children.length ?? 0) > 0) {
+    upcomingSection?.classList.toggle("hidden", visibleIn(upcomingList) === 0);
+  }
+
+  for (const chip of Array.from(
+    document.querySelectorAll<HTMLButtonElement>("[data-region-chip]"),
+  )) {
+    const on = chip.dataset.regionChip === filter;
+    chip.setAttribute("aria-pressed", String(on));
+    chip.classList.toggle("bg-ink", on);
+    chip.classList.toggle("text-cream", on);
+    chip.classList.toggle("border-ink", on);
+    chip.classList.toggle("bg-cream-soft", !on);
+    chip.classList.toggle("text-ink/75", !on);
+  }
+}
+
+function setFilter(filter: RegionFilter): void {
+  applyFilter(filter);
+  const url = new URL(window.location.href);
+  if (filter === "all") url.searchParams.delete("region");
+  else url.searchParams.set("region", filter);
+  history.replaceState(null, "", url);
+}
+
 async function hydrateRoles(): Promise<void> {
   const openList = document.getElementById("team-open-roles");
   const openNone = document.getElementById("team-open-none");
@@ -123,17 +204,24 @@ async function hydrateRoles(): Promise<void> {
   const open = roles.filter((r) => roleAcceptsApplications(r.status));
   const upcoming = roles.filter((r) => !roleAcceptsApplications(r.status));
 
-  if (open.length > 0) {
-    for (const role of open) openList.appendChild(buildCard(role));
-    show(openList);
-  } else {
-    show(openNone);
+  for (const role of open) openList.appendChild(tagRegions(buildCard(role), role));
+  for (const role of upcoming) {
+    upcomingList.appendChild(tagRegions(buildCard(role), role));
   }
 
-  if (upcoming.length > 0) {
-    for (const role of upcoming) upcomingList.appendChild(buildCard(role));
-    show(upcomingSection);
+  // Chips only once there are seats to filter.
+  const chips = document.getElementById("team-region-chips");
+  if (chips && roles.length > 0) {
+    chips.addEventListener("click", (event) => {
+      const chip = (event.target as Element).closest<HTMLButtonElement>(
+        "[data-region-chip]",
+      );
+      if (chip) setFilter(chip.dataset.regionChip as RegionFilter);
+    });
+    show(chips);
   }
+
+  applyFilter(initialFilter());
 }
 
 if (document.readyState === "loading") {

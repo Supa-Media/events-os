@@ -14,6 +14,15 @@ import Eyebrow from "../../components/ui/Eyebrow.astro";
 import Button from "../../components/ui/Button.astro";
 import HiringProcess from "../../components/team/HiringProcess.astro";
 import { asset } from "../../lib/asset";
+import {
+  LISTING_REGIONS,
+  LISTING_REGION_LABELS,
+} from "@events-os/shared/src/hiring";
+
+const regionChips = [
+  { id: "all", label: "All" },
+  ...LISTING_REGIONS.map((id) => ({ id, label: LISTING_REGION_LABELS[id] })),
+];
 
 // Roles are NOT rendered here at build time: they live in Convex and the
 // landing build has no Convex URL. The lists below are empty shells that
@@ -54,9 +63,42 @@ import { asset } from "../../lib/asset";
         exactly one of them once the fetch resolves. The fallback line below is
         the pre-JS / fetch-failed state — a real link to the general-interest
         door so the page is never a dead end with JS off or the backend down. */}
-    <section class="mt-14" data-animate="fade-up">
+    {/* ── City filter ────────────────────────────────────────────── */}
+    {/* Hidden until team-roles.ts has seats to filter; it wires the clicks. */}
+    <div
+      id="team-region-chips"
+      class="mt-12 flex flex-wrap gap-2 hidden"
+      role="group"
+      aria-label="Filter seats by city"
+    >
+      {regionChips.map((chip) => (
+        <button
+          type="button"
+          data-region-chip={chip.id}
+          aria-pressed={chip.id === "all" ? "true" : "false"}
+          class:list={[
+            "rounded-full border px-4 py-2 text-sm font-bold transition-colors hover:border-ink",
+            chip.id === "all"
+              ? "border-ink bg-ink text-cream"
+              : "border-ink/15 bg-cream-soft text-ink/75",
+          ]}
+        >
+          {chip.label}
+        </button>
+      ))}
+    </div>
+
+    <section class="mt-8" data-animate="fade-up">
       <h2 class="font-display text-2xl font-normal text-ink">Open seats</h2>
       <ul id="team-open-roles" class="mt-6 space-y-5 hidden"></ul>
+      <p id="team-open-region-none" class="mt-4 max-w-prose text-ink/70 hidden">
+        No <span data-region-label></span> seats are open right now. Tell us who
+        you are anyway —
+        <a
+          href={asset("/team/apply")}
+          class="text-red-500 underline-offset-2 hover:underline">the pool below</a
+        > is where most of our roles get filled from.
+      </p>
       <p id="team-open-none" class="mt-4 max-w-prose text-ink/70 hidden">
         Nothing is open at this moment — which usually means we're mid-way
         through filling something. Tell us who you are anyway; the pool below is
