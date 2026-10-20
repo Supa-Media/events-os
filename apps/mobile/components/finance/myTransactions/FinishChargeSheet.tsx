@@ -15,6 +15,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery } from "convex/react";
 import {
   ATTENDEE_AFFILIATION_LABELS,
@@ -1123,6 +1124,7 @@ export function FinishChargeSheet({
   onClose: () => void;
 }) {
   const desktop = useWindowDimensions().width >= 768;
+  const insets = useSafeAreaInsets();
   const actionable = todo === undefined ? true : todo.actionable;
   // FINDING 5 (UX audit, 2026-08-12): the raw bank/processor description —
   // shown beneath the cleaned name only when it actually says something
@@ -1153,6 +1155,7 @@ export function FinishChargeSheet({
   const panel = (
     <View
       className="min-h-0 flex-1 bg-raised"
+      style={Platform.OS === "web" ? undefined : { paddingTop: insets.top, paddingBottom: insets.bottom }}
       accessibilityLabel="Charge coding panel"
     >
       <View className="gap-3 border-b border-border px-5 py-5">
