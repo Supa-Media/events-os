@@ -1128,6 +1128,7 @@ export function FinishChargeSheet({
   // shown beneath the cleaned name only when it actually says something
   // different (`null` when there's nothing to add).
   const rawLine = rawBankLine(txn);
+  const cardholderName = (txn as { cardholderName?: string | null }).cardholderName;
 
   // FINDING 10 (UX audit, 2026-08-12): "Done" used to close unconditionally —
   // a person who typed a purpose, a receipt-total check, or a note and then
@@ -1139,6 +1140,7 @@ export function FinishChargeSheet({
   const [confirmClose, setConfirmClose] = useState(false);
   useEffect(() => {
     onDirtyChange?.(dirty);
+    if (!dirty) setConfirmClose(false);
   }, [dirty, onDirtyChange]);
   function requestClose() {
     if (!dirty) {
@@ -1179,8 +1181,11 @@ export function FinishChargeSheet({
               {dateStr(txn.postedAt)}
               {txn.cardLast4 ? ` · Card ••${txn.cardLast4}` : ""}
             </Text>
+            {cardholderName ? (
+              <Text className="mt-1 text-xs text-muted">Cardholder: {cardholderName}</Text>
+            ) : null}
             {rawLine ? (
-              <Text className="mt-1 text-xs text-faint">{rawLine}</Text>
+              <Text className="mt-1 text-xs text-faint" numberOfLines={2}>{rawLine}</Text>
             ) : null}
           </View>
           <Text className="text-xl font-semibold text-ink">
