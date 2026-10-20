@@ -114,6 +114,18 @@ export function codingRequired(f: ChargeFacts, sinceMs: number): boolean {
  * coding sitting in review is waiting on the treasurer, not on the cardholder.
  */
 export function chargeTodo(f: ChargeFacts, sinceMs: number): ChargeTodo {
+  // Personal purchases leave expense coding entirely, including a prior
+  // send-back. Repayment status belongs to the repayment portal.
+  if (f.isPersonal) {
+    return {
+      kind: "settled",
+      label: "Personal — no coding needed",
+      tone: "neutral",
+      rank: 5,
+      actionable: false,
+      outstanding: [],
+    };
+  }
   const closed = f.status === "reconciled";
   const documented = f.hasReceipt || f.hasApprovedException === true;
   const needsCoding =
