@@ -1327,7 +1327,7 @@ export function PersonalChargeEscape({
         details, they will not be submitted. Ask finance if you mark a charge by
         mistake.
       </Text>
-      <View className="flex-row gap-2">
+      <View className="flex-row flex-wrap gap-2">
         <Button
           title="Confirm personal charge"
           size="sm"
