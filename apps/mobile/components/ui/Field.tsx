@@ -90,6 +90,7 @@ export function TextField({ label, hint, suffix, ...inputProps }: TextFieldProps
             onBlur={() => setFocused(false)}
             className="flex-1 py-2.5 text-base text-ink"
             {...inputProps}
+            accessibilityLabel={inputProps.accessibilityLabel ?? label}
           />
           <Text className="text-base text-faint">{suffix}</Text>
         </View>
@@ -105,6 +106,7 @@ export function TextField({ label, hint, suffix, ...inputProps }: TextFieldProps
         onBlur={() => setFocused(false)}
         className={`rounded-md border ${border} bg-raised px-3 py-2.5 text-base text-ink`}
         {...inputProps}
+        accessibilityLabel={inputProps.accessibilityLabel ?? label}
         {...(multilineProps ?? {})}
       />
     </Field>
@@ -164,6 +166,10 @@ export function Select({
     <Field label={label} hint={hint}>
       <Pressable
         onPress={() => setOpen((o) => !o)}
+        accessibilityRole="button"
+        accessibilityLabel={label ?? placeholder}
+        accessibilityValue={{ text: current?.label ?? placeholder }}
+        aria-expanded={open}
         onHoverIn={() => setHovered(true)}
         onHoverOut={() => setHovered(false)}
         className={`flex-row items-center justify-between rounded-md border bg-raised px-3 py-2.5 ${
@@ -232,6 +238,9 @@ function SelectRow({
   return (
     <Pressable
       onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={label}
+      accessibilityState={{ selected }}
       onHoverIn={() => setHovered(true)}
       onHoverOut={() => setHovered(false)}
       className={`flex-row items-center justify-between px-3 py-2.5 ${

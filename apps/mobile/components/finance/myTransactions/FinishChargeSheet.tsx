@@ -1,72 +1,8 @@
 /**
- * FinishChargeSheet — everything one charge still needs, in one place.
- *
- * The owner ask (2026-08-08): a cardholder who gets the "you have 3 charges to
- * code" email should be able to finish all three without leaving the screen
- * and without a finance role. So this sheet carries the whole job:
- *
- *   1. What the reviewer said, if they sent it back — first, biggest, and
- *      quoted verbatim. It is the only thing on this screen that already
- *      tells them exactly what to do.
- *   2. THE ONE REQUIRED ACT: category, then the substantiation record, then
- *      the receipt that proves it — one form, not three errands (see below).
- *   3. The optional extras (a note for the finance team, "this was personal")
- *      — kept, but demoted below the things the accountable plan requires.
- *
- * CATEGORY FIRST, INLINE, NO MODAL (founder, 2026-08-1x: "when I click to
- * view a transaction it shows category but it still shows 'Add coding
- * (optional)' when it should be an inline thing that already knows the
- * category and just asks for more information"). The Category picker now
- * opens "What it was for" — moved up from "Anything else (optional)" — and
- * the coding fields (`../coding/CodingFieldSet`, shared with
- * `TransactionCodingModal` so Reconcile and this sheet can never render two
- * different forms) sit directly beneath it, always visible once there's
- * something left to code. The expense-type chips FOLLOW whichever category is
- * picked (`categoryOptions[].expenseTypeHint` → `CodingCategoryContext`) —
- * "Transportation" lands on the travel questions with no second decision —
- * until the person taps a chip themselves, which sticks for good
- * (`deriveExpenseType.ts` owns that rule, tested on its own). A category with
- * no hint leaves the chips unselected exactly as the old standalone picker
- * did. DERIVING THE QUESTIONS is not the same act as ANSWERING them: purpose,
- * attendees, and headcount stay empty until the person types them, always —
- * see `CodingFieldSet`'s own module doc.
- *
- * ONE PRIMARY SUBMIT for the actionable case: CODING FIRST, ALWAYS
- * (`transactionCodings.submit`), then the category ONLY IF IT CHANGED
- * (`planCategoryEdit` — `submitOwnCharge` for the caller's own charge,
- * `finances.setTransactionCategory` for a bookkeeper reviewing someone
- * else's), off one button (`submitBoth`). Coding goes first on purpose: it's
- * the testimony, the actual point of the screen, and a category hiccup must
- * never block it (HIGH review finding, fixed 2026-08-1x — the old
- * category-then-coding order meant a bookkeeper coding a historical
- * Stripe-FC/Relay-CSV row from the Explain workbench, who doesn't own that
- * card, never got past `submitOwnCharge`'s `NOT_A_CARD_CHARGE`/`FORBIDDEN`,
- * so the coding never submitted at all). Both mutations stay independently
- * idempotent, so a retry after a partial failure never double-books
- * anything; the toast names exactly which half didn't land, and a category
- * failure after a successful coding reads as exactly that — the explanation
- * already saved — never as "nothing saved".
- *
- * SETTLED/SUMMARY ROWS (`todo.actionable === false`) keep the pre-existing
- * posture: a read-only summary card with an explicit "Edit" (or "Add a coding
- * (optional)") affordance — clicking it reveals this SAME inline field set,
- * never a modal. Only the "nothing coded yet, and the cardholder is on the
- * hook for it" case shows the fields with no click required at all.
- *
- * Everything about the receipt half — upload, confirming a receipt that was
- * emailed in, or saying there is no receipt — lives in `CodingDocumentation`,
- * mounted both here and via the section below, so the two can't drift.
- *
- * NO MACHINE EVER WRITES AN ANSWER (owner decision, 2026-08-08: no AI
- * anywhere in coding). Merchant, amount and date are shown as context because
- * a person can't substantiate what they can't see. ONE deliberate carve-out
- * (owner directive, 2026-08-12: "auto populate with request purpose notes
- * that we already have… remove a copy and paste step"): a reimbursement
- * payout's PRISTINE form starts from the claimant's own request words — a
- * human's existing testimony carried forward with a provenance line, never a
- * machine's composition. `reimbursementPrefill.ts` decides what carries; the
- * fill-once effect below applies it exactly once per row, never over an
- * existing coding or anything already typed.
+ * One charge, one record: receipt first, expense details next, then submit.
+ * `/code` embeds this in a desktop side panel; narrow screens use a full-screen
+ * drawer. The same body also serves the finance workbench. Existing permissions,
+ * human-authored testimony, category-write ordering, and exception rules apply.
  */
 import { useEffect, useRef, useState } from "react";
 import {
@@ -77,7 +13,9 @@ import {
   ScrollView,
   Text,
   View,
+  useWindowDimensions,
 } from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery } from "convex/react";
 import {
   ATTENDEE_AFFILIATION_LABELS,
@@ -102,7 +40,6 @@ import {
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { errorMessage } from "../../../lib/errors";
-import { confirmAction } from "../../../lib/confirmAction";
 import {
   CodingFieldSet,
   CodingProblemsList,
@@ -119,7 +56,10 @@ import { ReimbursementContextBlock } from "../coding/ReimbursementContextBlock";
 import { PriorCodingBlock } from "../coding/PriorCodingBlock";
 import { CodingDocumentation } from "./CodingDocumentation";
 import { PublicPurposeNotice } from "../coding/PublicPurposeEditor";
-import { parseAmountToCents, receiptAmountMismatch } from "./receiptAmountCheck";
+import {
+  parseAmountToCents,
+  receiptAmountMismatch,
+} from "./receiptAmountCheck";
 import type { ChargeTodo, ChargeTodoKind, MyTxnRow } from "./chargeTodo";
 
 /** The category picker's own option shape — `myChargeCategories`' id/name
@@ -162,21 +102,16 @@ function dateStr(ts: number): string {
   });
 }
 
-/** A requirement's heading — a title and a done/outstanding marker, so what's
- *  left is readable at a glance instead of inferred from which buttons happen
- *  to be enabled.
- *
- *  DELIBERATELY UNNUMBERED. These used to be steps 1, 2, 3, which said out
- *  loud that the receipt was a later, separate errand — the exact reading the
- *  server no longer allows. A dot and a check say "outstanding" and "done"
- *  without implying an order. */
+/** A visible section number becomes a check once that requirement is complete. */
 function RequirementHeader({
   title,
   done,
   hint,
   optional = false,
+  step,
 }: {
   title: string;
+  step?: number;
   done: boolean;
   hint?: string;
   /** FINDING 11 (UX audit, 2026-08-12): a row where THIS requirement isn't
@@ -202,14 +137,14 @@ function RequirementHeader({
           ) : outstandingOptional ? (
             <Icon name="minus" size={10} color={colors.faint} />
           ) : (
-            <Icon name="circle" size={10} color={colors.muted} />
+            <Text className="text-xs font-semibold text-muted">
+              {step ?? "•"}
+            </Text>
           )}
         </View>
-        <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
-          {title}
-        </Text>
+        <Text className="text-base font-semibold text-ink">{title}</Text>
       </View>
-      {hint ? <Text className="mt-1 text-2xs text-muted">{hint}</Text> : null}
+      {hint ? <Text className="mt-1 text-xs text-muted">{hint}</Text> : null}
     </View>
   );
 }
@@ -238,8 +173,11 @@ export function FinishChargeSheetBody({
   onClose,
   onDirtyChange,
   renderReview,
+  contained = false,
 }: {
   txn: MyTxnRow;
+  /** Own the scroller and pinned submission bar inside a charge panel. */
+  contained?: boolean;
   /** Does the CALLER own this row (they're its cardholder-of-record), or are
    *  they reaching it as a bookkeeper/finance-manager reviewing someone
    *  else's charge? Decides which mutation the category half calls
@@ -300,7 +238,10 @@ export function FinishChargeSheetBody({
      *  the host's Approve affordance can say so BEFORE the tap; the budget
      *  picker that fixes it is in the form this slot sits inside. */
     budgetRequired: boolean;
-    runAction: (fn: () => Promise<unknown>, errorTitle: string) => Promise<unknown>;
+    runAction: (
+      fn: () => Promise<unknown>,
+      errorTitle: string,
+    ) => Promise<unknown>;
   }) => React.ReactNode;
 }) {
   // Absent `todo` (explain.tsx) reads as "actionable" — the sheet's original,
@@ -328,11 +269,14 @@ export function FinishChargeSheetBody({
   // field, different access rule (`requireTxnNoteReceiptCategoryAccess`:
   // bookkeeper+, or event-edit rights), reachable on ANY chapter transaction
   // rather than only the caller's own card. See `planCategoryEdit`.
-  const setTransactionCategory = useMutation(api.finances.setTransactionCategory);
+  const setTransactionCategory = useMutation(
+    api.finances.setTransactionCategory,
+  );
   const setTransactionNote = useMutation(api.finances.setTransactionNote);
   const { run, toast, dismiss } = useActionRunner();
 
   const [editing, setEditing] = useState(false);
+  const [showExtras, setShowExtras] = useState(false);
   const [busy, setBusy] = useState(false);
   // FINDING 3 (UX audit, 2026-08-12): `submitBoth` had no success feedback at
   // all — a failure toasts, but a SUCCESS just quietly returns to the summary
@@ -377,7 +321,6 @@ export function FinishChargeSheetBody({
   // wrongly says "you can't submit this".
   const hasDocumentation =
     data?.hasDocumentation ?? (documented || pendingException != null);
-  const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
   // A person-attributed txn only ever gets `cardId` + `cardLast4` together, so
   // this is the reliable "the cardholder can self-service this" signal
   // (`submitOwnCharge` / `flagPersonalCharge` both refuse a non-card txn).
@@ -422,7 +365,10 @@ export function FinishChargeSheetBody({
   const category: CodingCategoryContext = !isCardCharge
     ? undefined
     : catDraft
-      ? { name: selectedCategoryOption?.label ?? "", expenseTypeHint: selectedCategoryOption?.expenseTypeHint }
+      ? {
+          name: selectedCategoryOption?.label ?? "",
+          expenseTypeHint: selectedCategoryOption?.expenseTypeHint,
+        }
       : null;
 
   const initialCodingValue: CodingFormValue | null = coding
@@ -483,7 +429,12 @@ export function FinishChargeSheetBody({
   const alwaysInline = actionable && coding == null;
   const showForm = alwaysInline || editing;
 
-  const blocking = form.value == null || form.fieldProblems.length > 0;
+  const blocking =
+    data === undefined ||
+    busy ||
+    form.value == null ||
+    form.fieldProblems.length > 0 ||
+    !hasDocumentation;
 
   // FINDING 8: the note is provenance-labeled when it's exactly the ported
   // reimbursement-request purpose (`deriveReimbursementTxnFields`'s own
@@ -502,7 +453,7 @@ export function FinishChargeSheetBody({
   // equality against every field) — the point is catching "I typed
   // something and tapped away", not modeling every possible edit.
   const hasUnsentInput =
-    (showForm && form.touched) ||
+    (showForm && (form.touched || catDraft !== txn.categoryId)) ||
     noteDraft.trim() !== (txn.note ?? "").trim() ||
     receiptTotal.trim().length > 0;
   useEffect(() => {
@@ -527,428 +478,157 @@ export function FinishChargeSheetBody({
    *  double-books anything, and a category failure AFTER a successful coding
    *  reports itself as exactly that — the explanation already saved. */
   async function submitBoth() {
-    await guard(async () => {
-      if (form.value != null) {
-        const { budgetId, ...codingValue } = form.value;
-        try {
-          await submitCoding({
-            transactionId,
-            ...codingValue,
-            ...(budgetId ? { budgetId: budgetId as Id<"budgets"> } : {}),
-          });
-        } catch (err) {
-          throw new Error(
-            `The explanation didn't submit — nothing was lost, just try again. ${errorMessage(err)}`,
-          );
-        }
-        // ONE TAP, BOTH DECISIONS, when the server allows it: the coding just
-        // submitted is immediately approved (solo-operator relaxation,
-        // recorded single-party server-side). A failure here is ITS OWN
-        // failure — the submission above already landed and must never read
-        // as lost; a retry re-submits idempotently and approves again.
-        if (data?.canSelfApprove) {
+    await guard(
+      async () => {
+        if (form.value != null) {
+          const { budgetId, ...codingValue } = form.value;
           try {
-            await approveCoding({ transactionId });
+            await submitCoding({
+              transactionId,
+              ...codingValue,
+              ...(budgetId ? { budgetId: budgetId as Id<"budgets"> } : {}),
+            });
           } catch (err) {
             throw new Error(
-              `Submitted for review — but the one-tap approval didn't land. Approve it from the review queue, or try again. ${errorMessage(err)}`,
+              `The explanation didn't submit — nothing was lost, just try again. ${errorMessage(err)}`,
+            );
+          }
+          // ONE TAP, BOTH DECISIONS, when the server allows it: the coding just
+          // submitted is immediately approved (solo-operator relaxation,
+          // recorded single-party server-side). A failure here is ITS OWN
+          // failure — the submission above already landed and must never read
+          // as lost; a retry re-submits idempotently and approves again.
+          if (data?.canSelfApprove) {
+            try {
+              await approveCoding({ transactionId });
+            } catch (err) {
+              throw new Error(
+                `Submitted for review — but the one-tap approval didn't land. Approve it from the review queue, or try again. ${errorMessage(err)}`,
+              );
+            }
+          }
+        }
+
+        const plan = planCategoryEdit({
+          isCardCharge,
+          ownCharge,
+          draftCategoryId: (catDraft
+            ? catDraft
+            : null) as Id<"budgetCategories"> | null,
+          currentCategoryId: (txn.categoryId ??
+            null) as Id<"budgetCategories"> | null,
+        });
+        if (plan.kind !== "none") {
+          try {
+            if (plan.kind === "own") {
+              await submitOwnCharge({
+                transactionId,
+                categoryId: plan.categoryId,
+              });
+            } else {
+              await setTransactionCategory({
+                transactionId,
+                categoryId: plan.categoryId,
+              });
+            }
+          } catch (err) {
+            // The explanation above already saved — this is a SEPARATE
+            // failure, and must never read as "nothing saved".
+            throw new Error(
+              `Explanation saved. Couldn't set the category: ${errorMessage(err)}`,
             );
           }
         }
-      }
 
-      const plan = planCategoryEdit({
-        isCardCharge,
-        ownCharge,
-        draftCategoryId: (catDraft ? catDraft : null) as Id<"budgetCategories"> | null,
-        currentCategoryId: (txn.categoryId ?? null) as Id<"budgetCategories"> | null,
-      });
-      if (plan.kind !== "none") {
-        try {
-          if (plan.kind === "own") {
-            await submitOwnCharge({ transactionId, categoryId: plan.categoryId });
-          } else {
-            await setTransactionCategory({ transactionId, categoryId: plan.categoryId });
-          }
-        } catch (err) {
-          // The explanation above already saved — this is a SEPARATE
-          // failure, and must never read as "nothing saved".
-          throw new Error(`Explanation saved. Couldn't set the category: ${errorMessage(err)}`);
-        }
-      }
-
-      setEditing(false);
-    }, "Couldn't save this charge", () => setJustSubmitted(true));
+        setEditing(false);
+      },
+      "Couldn't save this charge",
+      () => {
+        setJustSubmitted(true);
+        setReceiptTotal("");
+      },
+    );
   }
 
-  return (
-    <>
-      <View className="gap-5">
-              {/* FINDING 3 (UX audit, 2026-08-12): an unmistakable success
+  const content = (
+    <View className="gap-5">
+      {/* FINDING 3 (UX audit, 2026-08-12): an unmistakable success
                   state — the panel deliberately doesn't auto-advance to the
                   next row after a submit, so this is what makes staying put
                   read as "that worked" rather than "did anything happen?".
                   Only shown once the form has actually closed back to the
                   summary view (`!showForm`) — never layered under the form
                   itself. */}
-              {justSubmitted && !showForm ? (
-                <View className="flex-row items-center gap-2 rounded-lg border border-success/40 bg-success-bg px-3 py-2.5">
-                  <Icon name="check-circle" size={16} color={colors.success} />
-                  <Text className="text-sm font-semibold text-success">
-                    {data?.canSelfApprove
-                      ? "Submitted and approved ✓"
-                      : "Submitted for review ✓"}
-                  </Text>
-                </View>
-              ) : null}
+      {justSubmitted && !showForm ? (
+        <View className="flex-row items-center gap-2 rounded-lg border border-success/40 bg-success-bg px-3 py-2.5">
+          <Icon name="check-circle" size={16} color={colors.success} />
+          <Text className="text-sm font-semibold text-success">
+            {data?.canSelfApprove
+              ? "Submitted and approved ✓"
+              : "Submitted for review ✓"}
+          </Text>
+        </View>
+      ) : null}
 
-              {/* THE SEND-BACK, FIRST. For the person who has to act on it,
+      {/* THE SEND-BACK, FIRST. For the person who has to act on it,
                   this is the single most important thing on the screen — a
                   reviewer already told them exactly what would make this
                   approvable, and burying it under form fields wastes the one
                   piece of certainty in the whole flow. */}
-              {coding?.status === "changes_requested" && coding.reviewNote ? (
-                <View className="rounded-lg border border-danger/40 bg-danger-bg px-3 py-2.5">
-                  <View className="mb-1 flex-row items-center gap-1.5">
-                    <Icon name="corner-up-left" size={13} color={colors.danger} />
-                    <Text className="text-2xs font-semibold uppercase tracking-wide text-danger">
-                      Sent back by {coding.decidedByName ?? "a reviewer"}
-                    </Text>
-                  </View>
-                  <Text className="text-sm text-ink">
-                    “{coding.reviewNote}”
-                  </Text>
-                  <Text className="mt-1 text-2xs text-muted">
-                    Fix what it asks for and resubmit — it goes straight back to
-                    review.
-                  </Text>
-                </View>
-              ) : null}
+      {coding?.status === "changes_requested" && coding.reviewNote ? (
+        <View className="rounded-lg border border-danger/40 bg-danger-bg px-3 py-2.5">
+          <View className="mb-1 flex-row items-center gap-1.5">
+            <Icon name="corner-up-left" size={13} color={colors.danger} />
+            <Text className="text-2xs font-semibold uppercase tracking-wide text-danger">
+              Sent back by {coding.decidedByName ?? "a reviewer"}
+            </Text>
+          </View>
+          <Text className="text-sm text-ink">“{coding.reviewNote}”</Text>
+          <Text className="mt-1 text-2xs text-muted">
+            Fix what it asks for and resubmit — it goes straight back to review.
+          </Text>
+        </View>
+      ) : null}
 
-              {/* THE ONE REQUIRED ACT — said as one thing, then shown as its
-                  two halves. The sheet used to number these 1 and 2, which
-                  read as "do the words now, chase the paper later"; the
-                  server stopped allowing that (see the module doc). */}
-              <View className="gap-3">
-                {/* This rule matters while you're doing the work; a settled
-                    row already did it, so restating "can't be submitted
-                    without both" there would read as a fresh demand rather
-                    than as the summary the module doc promises. */}
-                {actionable ? (
-                  <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
-                    <Text className="text-xs font-semibold text-ink">
-                      Coding a charge is one act, not two errands.
-                    </Text>
-                    <Text className="mt-0.5 text-2xs text-muted">
-                      What the money was for, and the receipt that proves it,
-                      go in together — a coding can&apos;t be submitted
-                      without both. If there is genuinely no receipt, say so
-                      in the same place and that counts. This is what keeps
-                      what you spent from becoming taxable income to you.
-                    </Text>
-                  </View>
-                ) : null}
+      <View className="gap-3">
+        {actionable ? (
+          <Text className="text-sm text-muted">
+            Add the receipt and expense details, then submit them together for
+            review.
+          </Text>
+        ) : null}
 
-                <View>
-                  <RequirementHeader
-                    title="What it was for"
-                    done={coding != null && coding.status !== "changes_requested"}
-                    optional={data?.requiresCoding === false}
-                    hint={
-                      data?.requiresCoding === false
-                        ? "Not required for this row, but any spend can carry one."
-                        : "The IRS calls this substantiation: what the money bought, which org work it served, and who was involved."
-                    }
-                  />
-                  {!showForm ? (
-                    coding == null ? (
-                      <View className="gap-2">
-                        {/* SUMMARY MODE, NO CODING: this row is already
-                            squared away without one (`chargeTodo` only calls a
-                            row settled-and-uncoded when nothing required it —
-                            otherwise it would have ranked "needs coding" and
-                            `actionable` would be true, and `alwaysInline`
-                            would have shown the form instead of this button). */}
-                        <Text className="text-xs text-muted">
-                          Coding is optional for this charge — add one if it
-                          needs explaining.
-                        </Text>
-                        <Button
-                          title="Add a coding (optional)"
-                          variant="muted"
-                          size="sm"
-                          icon="edit-3"
-                          disabled={data === undefined}
-                          onPress={startEditing}
-                        />
-                      </View>
-                    ) : (
-                      <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
-                        <View className="mb-1 flex-row items-center gap-2">
-                          <Badge
-                            label={coding.statusLabel}
-                            tone={CODING_TONE[coding.status] ?? "neutral"}
-                          />
-                          <Text className="text-xs font-medium text-ink">
-                            {coding.expenseTypeLabel}
-                          </Text>
-                          {selectedCategoryOption ? (
-                            <Text className="text-2xs text-muted">
-                              · {selectedCategoryOption.label}
-                            </Text>
-                          ) : null}
-                        </View>
-                        <Text className="text-xs text-ink">
-                          {coding.businessPurpose}
-                        </Text>
-                        {/* THE AUTHOR HAS TO SEE IT. If a reviewer rewrote the
-                            sentence that publishes — usually to take a name out
-                            — saying nothing would leave the public record and the
-                            author's memory of it silently disagreeing. Their own
-                            words are still the ones above, untouched. */}
-                        <PublicPurposeNotice state={coding} />
-                        {/* FINDING 2: lodging is ONE place, not a route —
-                            "Route: — → Chicago" would misread a stay as a
-                            half-known trip. */}
-                        {coding.expenseType === "lodging" ? (
-                          coding.travelTo ? (
-                            <Text className="mt-1 text-2xs text-muted">
-                              Stayed in {coding.travelTo}
-                            </Text>
-                          ) : null
-                        ) : coding.travelFrom || coding.travelTo ? (
-                          <Text className="mt-1 text-2xs text-muted">
-                            Route: {coding.travelFrom ?? "—"} →{" "}
-                            {coding.travelTo ?? "—"}
-                          </Text>
-                        ) : null}
-                        {coding.headcount != null ? (
-                          <Text className="mt-1 text-2xs text-muted">
-                            {coding.headcount}{" "}
-                            {coding.headcount === 1 ? "person" : "people"}
-                            {coding.groupDescription
-                              ? ` — ${coding.groupDescription}`
-                              : ""}
-                          </Text>
-                        ) : null}
-                        {coding.attendees != null && coding.attendees.length > 0 ? (
-                          <Text className="mt-1 text-2xs text-muted">
-                            {coding.attendees
-                              .map(
-                                (a) =>
-                                  `${a.name} (${ATTENDEE_AFFILIATION_LABELS[
-                                    a.affiliation as AttendeeAffiliation
-                                  ].toLowerCase()})`,
-                              )
-                              .join(", ")}
-                          </Text>
-                        ) : null}
-                        {coding.portedFromReimbursementId ? (
-                          <Text className="mt-1 text-2xs text-muted">
-                            Ported from reimbursement request — the
-                            claimant's own approved answers.
-                          </Text>
-                        ) : null}
-                        {coding.status !== "approved" ? (
-                          <View className="mt-2 flex-row">
-                            <Button
-                              title={
-                                coding.status === "changes_requested"
-                                  ? "Edit and resubmit"
-                                  : "Edit"
-                              }
-                              variant="secondary"
-                              size="sm"
-                              onPress={startEditing}
-                            />
-                          </View>
-                        ) : null}
-                      </View>
-                    )
-                  ) : (
-                    <View className="gap-3">
-                      {isCardCharge ? (
-                        <Select
-                          label="Category"
-                          hint="What kind of spend was this? Picking one gets you the right proof questions below — the finance team can still change it later."
-                          value={catDraft ?? ""}
-                          options={categoryOptions}
-                          onChange={(v) => setCatDraft(v || null)}
-                          placeholder="No category"
-                        />
-                      ) : null}
-
-                      {/* FINDING 1: "What the claimant already wrote" — ABOVE
-                          the form, so it's seen before typing starts, not
-                          discovered after. `null` (renders nothing) for the
-                          vast majority of charges, which aren't reimbursement
-                          payouts at all. */}
-                      <ReimbursementContextBlock
-                        context={data?.reimbursementContext}
-                        onUseLine={(line) =>
-                          form.applyExternalLine({
-                            expenseType:
-                              (line.expenseType as ExpenseType | null) ?? "general",
-                            businessPurpose: line.businessPurpose ?? "",
-                            travelFrom: line.travelFrom,
-                            travelTo: line.travelTo,
-                            headcount: line.headcount,
-                            attendees: line.attendees?.map((a) => ({
-                              name: a.name,
-                              affiliation: a.affiliation as AttendeeAffiliation,
-                            })),
-                            groupDescription: line.groupDescription,
-                          })
-                        }
-                      />
-
-                      {/* "You've coded this vendor before" — directly below
-                          the claimant's own words, ANALOGY not testimony, and
-                          only ever applied on an explicit tap. `null` for the
-                          vast majority of charges, which have no prior
-                          APPROVED coding at this merchant. */}
-                      <PriorCodingBlock
-                        priorCoding={data?.priorCoding}
-                        onUse={(coding) =>
-                          form.applyExternalLine({
-                            expenseType: coding.expenseType as ExpenseType,
-                            businessPurpose: coding.businessPurpose,
-                            travelFrom: coding.travelFrom,
-                            travelTo: coding.travelTo,
-                            headcount: coding.headcount,
-                            attendees: coding.attendees?.map((a) => ({
-                              name: a.name,
-                              affiliation: a.affiliation as AttendeeAffiliation,
-                            })),
-                            groupDescription: coding.groupDescription,
-                          })
-                        }
-                      />
-
-                      {/* PROVENANCE, said out loud: when the form started
-                          from the claimant's words (the prefill above), the
-                          person coding needs to know these answers came from
-                          the request — not from a machine, and not from a
-                          previous coder. */}
-                      {form.prefilled ? (
-                        <View className="flex-row items-start gap-1.5">
-                          <Icon name="file-text" size={12} color={colors.muted} />
-                          <Text className="flex-1 text-2xs italic text-muted">
-                            The form below started from the claimant&apos;s own
-                            words on the request — edit anything before you
-                            submit.
-                          </Text>
-                        </View>
-                      ) : null}
-
-                      <ExpenseTypeChips form={form} category={category} />
-                      <CodingFieldSet
-                        form={form}
-                        transactionId={transactionId}
-                        minPurposeLength={data?.minPurposeLength ?? 20}
-                        personalChargeSlot={
-                          isCardCharge ? (
-                            <PersonalChargeEscape
-                              alreadyFlagged={txn.isPersonal === true}
-                              onFlag={() =>
-                                guard(async () => {
-                                  await submitOwnCharge({
-                                    transactionId,
-                                    categoryId: null,
-                                    note: null,
-                                    flagPersonal: true,
-                                  });
-                                  setEditing(false);
-                                  onClose?.();
-                                }, "Couldn't flag this as a personal charge")
-                              }
-                            />
-                          ) : null
-                        }
-                      />
-                      {/* A prefilled-but-incomplete form shows its problems
-                          even before a touch — otherwise the disabled submit
-                          would have no visible reason. */}
-                      <CodingProblemsList
-                        problems={
-                          form.touched || form.prefilled ? form.fieldProblems : []
-                        }
-                      />
-                      <View className="flex-row gap-2">
-                        <Button
-                          // "Submit & approve" says out loud that one tap is
-                          // both decisions — shown only when the server's
-                          // `canSelfApprove` says this caller may single-party
-                          // decide (founder, 2026-08-12).
-                          title={
-                            coding?.status === "changes_requested"
-                              ? data?.canSelfApprove
-                                ? "Resubmit & approve"
-                                : "Resubmit for review"
-                              : data?.canSelfApprove
-                                ? "Submit & approve"
-                                : "Submit for review"
-                          }
-                          size="sm"
-                          icon="check"
-                          loading={busy}
-                          disabled={blocking}
-                          onPress={() => void submitBoth()}
-                        />
-                        {!alwaysInline ? (
-                          <Button
-                            title="Cancel"
-                            variant="secondary"
-                            size="sm"
-                            onPress={() => setEditing(false)}
-                          />
-                        ) : null}
-                      </View>
-                    </View>
-                  )}
-                </View>
-
-                {/* THE REVIEWER'S DECISION — only when the host asked for it
-                    (the workbench panel) AND there is a submitted coding to
-                    decide. Right below what it decides, same as
-                    `ReviewQueue`'s own ordering (purpose, then the verdict). */}
-                {renderReview && coding && coding.status === "submitted"
-                  ? renderReview({
-                      transactionId,
-                      coding,
-                      canReview: data?.canReview ?? false,
-                      budgetRequired: data?.budgetRequired ?? false,
-                      runAction: guard,
-                    })
-                  : null}
-
-                {/* THE OTHER HALF. Same component the editor mounts, so the
+        {/* THE OTHER HALF. Same component the editor mounts, so the
                     upload / "is this the one?" / "there is no receipt" paths
                     are identical whether somebody starts here or in the
                     editor. */}
-                <View>
-                  <RequirementHeader
-                    title="The receipt that proves it"
-                    done={hasDocumentation}
-                    hint="Our policy is stricter than the IRS's: no receipt, no coverage, every expense, any amount."
-                  />
-                  <CodingDocumentation
-                    transactionId={transactionId}
-                    amountCents={txn.amountCents}
-                    hasDocumentation={hasDocumentation}
-                    detail={{
-                      hasReceipt: txn.hasReceipt,
-                      hasApprovedException: txn.hasApprovedException,
-                      approvedReasonLabel:
-                        approvedException?.reasonLabel ?? null,
-                      pendingReasonLabel: pendingException?.reasonLabel ?? null,
-                      reminderStage: txn.reminderStage,
-                    }}
-                    runAction={guard}
-                    busy={busy}
-                  />
+        <View className="rounded-xl border border-border bg-raised p-4">
+          <RequirementHeader
+            title={hasDocumentation ? "Receipt documented" : "Add a receipt"}
+            step={1}
+            done={hasDocumentation}
+            hint={
+              hasDocumentation
+                ? undefined
+                : "Upload a photo or PDF, or choose a receipt you already sent."
+            }
+          />
+          <CodingDocumentation
+            transactionId={transactionId}
+            amountCents={txn.amountCents}
+            hasDocumentation={hasDocumentation}
+            detail={{
+              hasReceipt: txn.hasReceipt,
+              hasApprovedException: txn.hasApprovedException,
+              approvedReasonLabel: approvedException?.reasonLabel ?? null,
+              pendingReasonLabel: pendingException?.reasonLabel ?? null,
+              reminderStage: txn.reminderStage,
+            }}
+            runAction={guard}
+            busy={busy}
+          />
 
-                  {/* AMOUNT PRE-CHECK, at attach time. "Receipt must show exact
+          {/* AMOUNT PRE-CHECK, at attach time. "Receipt must show exact
                       amount" is the send-back this replaces — asking the
                       question here costs one glance and saves a whole review
                       round trip. See `receiptAmountCheck.ts` on why the number
@@ -965,72 +645,304 @@ export function FinishChargeSheetBody({
                       attached") with an explicit "Update receipt total"
                       affordance that reopens the same question on request —
                       no capability lost, just not demanded up front. */}
-                  {txn.hasReceipt ? (
-                    actionable || showReceiptCheck ? (
-                      <View className="mt-2">
-                        <TextField
-                          label="What total does the receipt show?"
-                          hint={`Check it against the charge — ${formatCents(Math.abs(txn.amountCents))}. A receipt for a different amount is the most common reason a charge gets sent back.`}
-                          value={receiptTotal}
-                          onChangeText={setReceiptTotal}
-                          placeholder={formatCents(Math.abs(txn.amountCents))}
-                          keyboardType="decimal-pad"
-                        />
-                        {mismatch ? (
-                          <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-warn/40 bg-warn-bg px-3 py-2">
-                            <Icon
-                              name="alert-triangle"
-                              size={13}
-                              color={colors.warn}
-                            />
-                            <Text className="flex-1 text-2xs text-ink">
-                              {mismatch} Attach the receipt that shows the
-                              whole charge, or say in the business purpose why
-                              this one doesn&apos;t.
-                            </Text>
-                          </View>
-                        ) : null}
-                        {!actionable ? (
-                          <Pressable
-                            onPress={() => setShowReceiptCheck(false)}
-                            accessibilityRole="button"
-                            className="mt-1.5 self-start active:opacity-70"
-                          >
-                            <Text className="text-2xs font-medium text-muted">
-                              Done checking
-                            </Text>
-                          </Pressable>
-                        ) : null}
-                      </View>
-                    ) : (
-                      <Pressable
-                        onPress={() => setShowReceiptCheck(true)}
-                        accessibilityRole="button"
-                        className="mt-2 self-start active:opacity-70"
-                      >
-                        <Text className="text-xs font-medium text-accent">
-                          Update receipt total
-                        </Text>
-                      </Pressable>
-                    )
+          {txn.hasReceipt ? (
+            showReceiptCheck ? (
+              <View className="mt-2">
+                <TextField
+                  label="Receipt total (optional check)"
+                  hint={`Check it against the charge — ${formatCents(Math.abs(txn.amountCents))}. A receipt for a different amount is the most common reason a charge gets sent back.`}
+                  value={receiptTotal}
+                  onChangeText={setReceiptTotal}
+                  placeholder={formatCents(Math.abs(txn.amountCents))}
+                  keyboardType="decimal-pad"
+                />
+                {mismatch ? (
+                  <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-warn/40 bg-warn-bg px-3 py-2">
+                    <Icon name="alert-triangle" size={13} color={colors.warn} />
+                    <Text className="flex-1 text-2xs text-ink">
+                      {mismatch} Attach the receipt that shows the whole charge,
+                      or say in the business purpose why this one doesn&apos;t.
+                    </Text>
+                  </View>
+                ) : null}
+                {!actionable ? (
+                  <Pressable
+                    onPress={() => setShowReceiptCheck(false)}
+                    accessibilityRole="button"
+                    className="mt-1.5 self-start active:opacity-70"
+                  >
+                    <Text className="text-2xs font-medium text-muted">
+                      Done checking
+                    </Text>
+                  </Pressable>
+                ) : null}
+              </View>
+            ) : (
+              <Pressable
+                onPress={() => setShowReceiptCheck(true)}
+                accessibilityRole="button"
+                className="mt-2 self-start active:opacity-70"
+              >
+                <Text className="text-xs font-medium text-accent">
+                  Update receipt total
+                </Text>
+              </Pressable>
+            )
+          ) : null}
+        </View>
+
+        <View className="rounded-xl border border-border bg-raised p-4">
+          <RequirementHeader
+            title="Explain the expense"
+            step={2}
+            done={coding != null && coding.status !== "changes_requested"}
+            optional={data?.requiresCoding === false}
+            hint={
+              data?.requiresCoding === false
+                ? "Not required for this row, but any spend can carry one."
+                : "Tell us what you bought and how it supported Public Worship."
+            }
+          />
+          {!showForm ? (
+            coding == null ? (
+              <View className="gap-2">
+                {/* SUMMARY MODE, NO CODING: this row is already
+                            squared away without one (`chargeTodo` only calls a
+                            row settled-and-uncoded when nothing required it —
+                            otherwise it would have ranked "needs coding" and
+                            `actionable` would be true, and `alwaysInline`
+                            would have shown the form instead of this button). */}
+                <Text className="text-xs text-muted">
+                  Coding is optional for this charge — add one if it needs
+                  explaining.
+                </Text>
+                <Button
+                  title="Add a coding (optional)"
+                  variant="muted"
+                  size="sm"
+                  icon="edit-3"
+                  disabled={data === undefined}
+                  onPress={startEditing}
+                />
+              </View>
+            ) : (
+              <View className="rounded-lg border border-border bg-sunken px-3 py-2.5">
+                <View className="mb-1 flex-row items-center gap-2">
+                  <Badge
+                    label={coding.statusLabel}
+                    tone={CODING_TONE[coding.status] ?? "neutral"}
+                  />
+                  <Text className="text-xs font-medium text-ink">
+                    {coding.expenseTypeLabel}
+                  </Text>
+                  {selectedCategoryOption ? (
+                    <Text className="text-2xs text-muted">
+                      · {selectedCategoryOption.label}
+                    </Text>
                   ) : null}
                 </View>
+                <Text className="text-xs text-ink">
+                  {coding.businessPurpose}
+                </Text>
+                {/* THE AUTHOR HAS TO SEE IT. If a reviewer rewrote the
+                            sentence that publishes — usually to take a name out
+                            — saying nothing would leave the public record and the
+                            author's memory of it silently disagreeing. Their own
+                            words are still the ones above, untouched. */}
+                <PublicPurposeNotice state={coding} />
+                {/* FINDING 2: lodging is ONE place, not a route —
+                            "Route: — → Chicago" would misread a stay as a
+                            half-known trip. */}
+                {coding.expenseType === "lodging" ? (
+                  coding.travelTo ? (
+                    <Text className="mt-1 text-2xs text-muted">
+                      Stayed in {coding.travelTo}
+                    </Text>
+                  ) : null
+                ) : coding.travelFrom || coding.travelTo ? (
+                  <Text className="mt-1 text-2xs text-muted">
+                    Route: {coding.travelFrom ?? "—"} → {coding.travelTo ?? "—"}
+                  </Text>
+                ) : null}
+                {coding.headcount != null ? (
+                  <Text className="mt-1 text-2xs text-muted">
+                    {coding.headcount}{" "}
+                    {coding.headcount === 1 ? "person" : "people"}
+                    {coding.groupDescription
+                      ? ` — ${coding.groupDescription}`
+                      : ""}
+                  </Text>
+                ) : null}
+                {coding.attendees != null && coding.attendees.length > 0 ? (
+                  <Text className="mt-1 text-2xs text-muted">
+                    {coding.attendees
+                      .map(
+                        (a) =>
+                          `${a.name} (${ATTENDEE_AFFILIATION_LABELS[
+                            a.affiliation as AttendeeAffiliation
+                          ].toLowerCase()})`,
+                      )
+                      .join(", ")}
+                  </Text>
+                ) : null}
+                {coding.portedFromReimbursementId ? (
+                  <Text className="mt-1 text-2xs text-muted">
+                    Ported from reimbursement request — the claimant's own
+                    approved answers.
+                  </Text>
+                ) : null}
+                {coding.status !== "approved" ? (
+                  <View className="mt-2 flex-row">
+                    <Button
+                      title={
+                        coding.status === "changes_requested"
+                          ? "Edit and resubmit"
+                          : "Edit"
+                      }
+                      variant="secondary"
+                      size="sm"
+                      onPress={startEditing}
+                    />
+                  </View>
+                ) : null}
               </View>
+            )
+          ) : (
+            <View className="gap-3">
+              {/* FINDING 1: "What the claimant already wrote" — ABOVE
+                          the form, so it's seen before typing starts, not
+                          discovered after. `null` (renders nothing) for the
+                          vast majority of charges, which aren't reimbursement
+                          payouts at all. */}
+              <ReimbursementContextBlock
+                context={data?.reimbursementContext}
+                onUseLine={(line) =>
+                  form.applyExternalLine({
+                    expenseType:
+                      (line.expenseType as ExpenseType | null) ?? "general",
+                    businessPurpose: line.businessPurpose ?? "",
+                    travelFrom: line.travelFrom,
+                    travelTo: line.travelTo,
+                    headcount: line.headcount,
+                    attendees: line.attendees?.map((a) => ({
+                      name: a.name,
+                      affiliation: a.affiliation as AttendeeAffiliation,
+                    })),
+                    groupDescription: line.groupDescription,
+                  })
+                }
+              />
 
-              {/* THE OPTIONAL EXTRAS — note + personal flag. Category moved up
+              {/* "You've coded this vendor before" — directly below
+                          the claimant's own words, ANALOGY not testimony, and
+                          only ever applied on an explicit tap. `null` for the
+                          vast majority of charges, which have no prior
+                          APPROVED coding at this merchant. */}
+              <PriorCodingBlock
+                priorCoding={data?.priorCoding}
+                onUse={(coding) =>
+                  form.applyExternalLine({
+                    expenseType: coding.expenseType as ExpenseType,
+                    businessPurpose: coding.businessPurpose,
+                    travelFrom: coding.travelFrom,
+                    travelTo: coding.travelTo,
+                    headcount: coding.headcount,
+                    attendees: coding.attendees?.map((a) => ({
+                      name: a.name,
+                      affiliation: a.affiliation as AttendeeAffiliation,
+                    })),
+                    groupDescription: coding.groupDescription,
+                  })
+                }
+              />
+
+              {/* PROVENANCE, said out loud: when the form started
+                          from the claimant's words (the prefill above), the
+                          person coding needs to know these answers came from
+                          the request — not from a machine, and not from a
+                          previous coder. */}
+              {form.prefilled ? (
+                <View className="flex-row items-start gap-1.5">
+                  <Icon name="file-text" size={12} color={colors.muted} />
+                  <Text className="flex-1 text-2xs italic text-muted">
+                    The form below started from the claimant&apos;s own words on
+                    the request — edit anything before you submit.
+                  </Text>
+                </View>
+              ) : null}
+
+              <ExpenseTypeChips form={form} category={category} />
+              <CodingFieldSet
+                form={form}
+                transactionId={transactionId}
+                minPurposeLength={data?.minPurposeLength ?? 20}
+              />
+              {isCardCharge ? (
+                <Select
+                  label="Category (optional)"
+                  hint="Choose the closest match, or let finance set it."
+                  value={catDraft ?? ""}
+                  options={categoryOptions}
+                  onChange={(v) => setCatDraft(v || null)}
+                  placeholder="No category"
+                />
+              ) : null}
+              {/* A prefilled-but-incomplete form shows its problems
+                          even before a touch — otherwise the disabled submit
+                          would have no visible reason. */}
+              <CodingProblemsList
+                problems={
+                  form.touched || form.prefilled ? form.fieldProblems : []
+                }
+              />
+            </View>
+          )}
+        </View>
+
+        {/* THE REVIEWER'S DECISION — only when the host asked for it
+                    (the workbench panel) AND there is a submitted coding to
+                    decide. Right below what it decides, same as
+                    `ReviewQueue`'s own ordering (purpose, then the verdict). */}
+        {renderReview && coding && coding.status === "submitted"
+          ? renderReview({
+              transactionId,
+              coding,
+              canReview: data?.canReview ?? false,
+              budgetRequired: data?.budgetRequired ?? false,
+              runAction: guard,
+            })
+          : null}
+      </View>
+
+      <Pressable
+        onPress={() => setShowExtras((shown) => !shown)}
+        accessibilityRole="button"
+        accessibilityState={{ expanded: showExtras }}
+        className="flex-row items-center justify-between border-t border-border py-3"
+      >
+        <Text className="text-sm font-medium text-muted">Notes & activity</Text>
+        <Icon
+          name={showExtras ? "chevron-up" : "chevron-down"}
+          size={16}
+          color={colors.muted}
+        />
+      </Pressable>
+      {showExtras ? (
+        <View className="gap-4">
+          {/* THE OPTIONAL EXTRAS — note + personal flag. Category moved up
                   into "What it was for" (2026-08-1x) since it now drives the
                   coding questions directly; what's left here is genuinely
                   optional either way. */}
-              {isCardCharge ? (
-                <View>
-                  <RequirementHeader
-                    title="Anything else (optional)"
-                    done={false}
-                    hint="Helps the finance team file it. The business purpose above is the one that publishes."
-                  />
-                  <View className="gap-3">
-                    <View className="gap-1">
-                      {/* FINDING 8 (UX audit, 2026-08-12): the cheap, honest
+          {isCardCharge ? (
+            <View className="rounded-xl border border-border bg-raised p-4">
+              <RequirementHeader
+                title="Note for finance"
+                done={false}
+                optional
+              />
+              <View className="gap-3">
+                <View className="gap-1">
+                  {/* FINDING 8 (UX audit, 2026-08-12): the cheap, honest
                           version of note provenance — full author
                           attribution needs data this table doesn't store,
                           but "this note is literally the reimbursement
@@ -1038,83 +950,168 @@ export function FinishChargeSheetBody({
                           DO have (`deriveReimbursementTxnFields`), so say
                           it rather than let it read as if a bookkeeper
                           typed it fresh. */}
-                      {noteFromReimbursementRequest ? (
-                        <View className="flex-row items-center gap-1">
-                          <Icon name="file-text" size={11} color={colors.muted} />
-                          <Text className="text-2xs italic text-muted">
-                            From the reimbursement request
-                          </Text>
-                        </View>
-                      ) : null}
-                      <TextField
-                        label="A note for the finance team"
-                        hint="Internal — unlike the business purpose, this never publishes."
-                        value={noteDraft}
-                        onChangeText={setNoteDraft}
-                        placeholder="Anything they'd otherwise have to ask you about…"
-                        multiline
-                        numberOfLines={2}
-                      />
+                  {noteFromReimbursementRequest ? (
+                    <View className="flex-row items-center gap-1">
+                      <Icon name="file-text" size={11} color={colors.muted} />
+                      <Text className="text-2xs italic text-muted">
+                        From the reimbursement request
+                      </Text>
                     </View>
-                    <View className="flex-row">
-                      <Button
-                        title="Save note"
-                        variant="secondary"
-                        size="sm"
-                        icon="check"
-                        loading={busy}
-                        onPress={() =>
-                          void guard(
-                            // Same ownership split as the category half
-                            // (`planCategoryEdit`'s reasoning): the
-                            // cardholder writes their own note via
-                            // `submitOwnCharge`; a bookkeeper reviewing
-                            // someone else's row (the Explain workbench)
-                            // needs the bookkeeper-gated twin instead, or
-                            // this throws exactly like the category bug did.
-                            () =>
-                              ownCharge
-                                ? submitOwnCharge({
-                                    transactionId,
-                                    note: noteDraft.trim() ? noteDraft.trim() : null,
-                                  })
-                                : setTransactionNote({
-                                    transactionId,
-                                    note: noteDraft.trim() ? noteDraft.trim() : null,
-                                  }),
-                            "Couldn't save that note",
-                          )
-                        }
-                      />
-                    </View>
-                  </View>
+                  ) : null}
+                  <TextField
+                    label="A note for the finance team"
+                    hint="Internal — unlike the business purpose, this never publishes."
+                    value={noteDraft}
+                    onChangeText={setNoteDraft}
+                    placeholder="Anything they'd otherwise have to ask you about…"
+                    multiline
+                    numberOfLines={2}
+                  />
                 </View>
-              ) : null}
+                <View className="flex-row">
+                  <Button
+                    title="Save note"
+                    variant="secondary"
+                    size="sm"
+                    icon="check"
+                    loading={busy}
+                    onPress={() =>
+                      void guard(
+                        // Same ownership split as the category half
+                        // (`planCategoryEdit`'s reasoning): the
+                        // cardholder writes their own note via
+                        // `submitOwnCharge`; a bookkeeper reviewing
+                        // someone else's row (the Explain workbench)
+                        // needs the bookkeeper-gated twin instead, or
+                        // this throws exactly like the category bug did.
+                        () =>
+                          ownCharge
+                            ? submitOwnCharge({
+                                transactionId,
+                                note: noteDraft.trim()
+                                  ? noteDraft.trim()
+                                  : null,
+                              })
+                            : setTransactionNote({
+                                transactionId,
+                                note: noteDraft.trim()
+                                  ? noteDraft.trim()
+                                  : null,
+                              }),
+                        "Couldn't save that note",
+                      )
+                    }
+                  />
+                </View>
+              </View>
+            </View>
+          ) : null}
 
-              {/* FINDING 4: the audit trail existed but was invisible from
+          {/* FINDING 4: the audit trail existed but was invisible from
                   here — see `TransactionHistoryCompact`'s own module doc. */}
-              <TransactionHistoryCompact transactionId={transactionId} />
+          {isCardCharge ? (
+            <PersonalChargeEscape
+              alreadyFlagged={txn.isPersonal === true}
+              onFlag={() =>
+                guard(async () => {
+                  await submitOwnCharge({
+                    transactionId,
+                    categoryId: null,
+                    note: null,
+                    flagPersonal: true,
+                  });
+                  setEditing(false);
+                  onClose?.();
+                }, "Couldn't flag this as a personal charge")
+              }
+            />
+          ) : null}
+          <TransactionHistoryCompact transactionId={transactionId} />
+        </View>
+      ) : null}
 
-              {toast ? <ToastView toast={toast} onDismiss={dismiss} /> : null}
+    </View>
+  );
+  const submitBar = showForm ? (
+    <View className="gap-2 border-t border-border bg-raised px-5 py-4">
+      <Text className="text-xs text-muted" accessibilityLiveRegion="polite">
+        {data === undefined
+          ? "Loading charge details…"
+          : !hasDocumentation
+            ? "Add a receipt or explain why there is no receipt before submitting."
+            : form.value == null
+              ? "Choose an expense type to continue."
+              : form.fieldProblems.length > 0
+                ? "Complete the expense details above to submit."
+                : "Ready to submit. Your receipt and explanation will be sent together."}
+      </Text>
+      <View className="flex-row gap-2">
+        <Button
+          // "Submit & approve" says out loud that one tap is
+          // both decisions — shown only when the server's
+          // `canSelfApprove` says this caller may single-party
+          // decide (founder, 2026-08-12).
+          title={
+            coding?.status === "changes_requested"
+              ? data?.canSelfApprove
+                ? "Resubmit & approve"
+                : "Resubmit for review"
+              : data?.canSelfApprove
+                ? "Submit & approve"
+                : "Submit for review"
+          }
+          size="sm"
+          icon="check"
+          loading={busy}
+          disabled={blocking}
+          className="flex-1"
+          onPress={() => void submitBoth()}
+        />
+        {!alwaysInline ? (
+          <Button
+            title="Cancel"
+            variant="secondary"
+            size="sm"
+            onPress={() => setEditing(false)}
+          />
+        ) : null}
       </View>
+    </View>
+  ) : null;
+  return contained ? (
+    <View className="min-h-0 flex-1">
+      <ScrollView
+        className="flex-1"
+        keyboardShouldPersistTaps="handled"
+        contentContainerStyle={{ padding: 20 }}
+      >
+        {content}
+      </ScrollView>
+      {submitBar}
+      <ToastView toast={toast} onDismiss={dismiss} />
+    </View>
+  ) : (
+    <>
+      {content}
+      {submitBar}
+      <ToastView toast={toast} onDismiss={dismiss} />
     </>
   );
 }
 
-/**
- * THE MODAL FRAME — narrow/mobile, and `coding.tsx`'s sheet (both keep the
- * exact pre-panel behavior: a click-in, click-out overlay). Wraps
- * `FinishChargeSheetBody` with the header/backdrop/footer chrome that used to
- * be inlined here; nothing about the content below changed.
- */
+/** A persistent desktop panel or a full-height drawer on smaller screens. */
 export function FinishChargeSheet({
   txn,
   todo,
   categoryOptions,
   ownCharge,
   onClose,
+  presentation = "drawer",
+  onDirtyChange,
 }: {
   txn: MyTxnRow;
+  presentation?: "panel" | "drawer";
+  onDirtyChange?: (dirty: boolean) => void;
   todo?: ChargeTodo;
   categoryOptions: CategoryOption[];
   /** Forwarded verbatim to `FinishChargeSheetBody` — see that prop's own
@@ -1126,12 +1123,14 @@ export function FinishChargeSheet({
   ownCharge: boolean;
   onClose: () => void;
 }) {
+  const desktop = useWindowDimensions().width >= 768;
+  const insets = useSafeAreaInsets();
   const actionable = todo === undefined ? true : todo.actionable;
-  const merchantLine = `${displayMerchantName(txn, "—")} · ${dateStr(txn.postedAt)}`;
   // FINDING 5 (UX audit, 2026-08-12): the raw bank/processor description —
   // shown beneath the cleaned name only when it actually says something
   // different (`null` when there's nothing to add).
   const rawLine = rawBankLine(txn);
+  const cardholderName = (txn as { cardholderName?: string | null }).cardholderName;
 
   // FINDING 10 (UX audit, 2026-08-12): "Done" used to close unconditionally —
   // a person who typed a purpose, a receipt-total check, or a note and then
@@ -1140,105 +1139,126 @@ export function FinishChargeSheet({
   // frame (the header ✕ and the footer "Done") routes through this one
   // guarded closer instead of calling `onClose` directly.
   const [dirty, setDirty] = useState(false);
+  const [confirmClose, setConfirmClose] = useState(false);
+  useEffect(() => {
+    onDirtyChange?.(dirty);
+    if (!dirty) setConfirmClose(false);
+  }, [dirty, onDirtyChange]);
   function requestClose() {
     if (!dirty) {
       onClose();
       return;
     }
-    confirmAction({
-      title: "Discard unsaved changes?",
-      message:
-        "You've typed something here that hasn't been submitted or saved yet. Closing now discards it.",
-      confirmLabel: "Discard",
-      destructive: true,
-      onConfirm: onClose,
-    });
+    setConfirmClose(true);
   }
 
+  const panel = (
+    <View
+      className="min-h-0 flex-1 bg-raised"
+      style={Platform.OS === "web" ? undefined : { paddingTop: insets.top, paddingBottom: insets.bottom }}
+      accessibilityLabel="Charge coding panel"
+    >
+      <View className="gap-3 border-b border-border px-5 py-5">
+        <View className="flex-row items-center justify-between gap-3">
+          <Text className="text-xs font-semibold uppercase tracking-wide text-muted">
+            {actionable
+              ? "Code this charge"
+              : ((todo && SUMMARY_TITLE[todo.kind]) ?? "Charge details")}
+          </Text>
+          <Pressable
+            onPress={requestClose}
+            hitSlop={8}
+            accessibilityRole="button"
+            accessibilityLabel="Close charge panel"
+            className="rounded-md p-2"
+          >
+            <Icon name="x" size={18} color={colors.muted} />
+          </Pressable>
+        </View>
+        <View className="flex-row items-start justify-between gap-4">
+          <View className="flex-1">
+            <Text className="text-lg font-semibold text-ink">
+              {displayMerchantName(txn, "—")}
+            </Text>
+            <Text className="mt-1 text-xs text-muted">
+              {dateStr(txn.postedAt)}
+              {txn.cardLast4 ? ` · Card ••${txn.cardLast4}` : ""}
+            </Text>
+            {cardholderName ? (
+              <Text className="mt-1 text-xs text-muted">Cardholder: {cardholderName}</Text>
+            ) : null}
+            {rawLine ? (
+              <Text className="mt-1 text-xs text-faint" numberOfLines={2}>{rawLine}</Text>
+            ) : null}
+          </View>
+          <Text className="text-xl font-semibold text-ink">
+            {formatCents(Math.abs(txn.amountCents))}
+          </Text>
+        </View>
+      </View>
+      {confirmClose ? (
+        <View className="gap-2 border-b border-warn/40 bg-warn-bg px-5 py-3">
+          <Text className="text-sm font-semibold text-ink">
+            Discard unsaved changes?
+          </Text>
+          <Text className="text-xs text-muted">
+            Your receipt uploads are saved. Unsubmitted expense details will be
+            lost.
+          </Text>
+          <View className="flex-row flex-wrap gap-2">
+            <Button
+              title="Keep editing"
+              variant="secondary"
+              size="sm"
+              onPress={() => setConfirmClose(false)}
+            />
+            <Button
+              title="Discard & close"
+              variant="danger"
+              size="sm"
+              onPress={onClose}
+            />
+          </View>
+        </View>
+      ) : null}
+      <FinishChargeSheetBody
+        key={txn.id}
+        txn={txn}
+        todo={todo}
+        categoryOptions={categoryOptions}
+        ownCharge={ownCharge}
+        onClose={onClose}
+        onDirtyChange={setDirty}
+        contained
+      />
+    </View>
+  );
+  if (presentation === "panel") return panel;
   return (
-    <Modal visible transparent animationType="fade" onRequestClose={requestClose}>
-      {/* ── THE KEYBOARD USED TO SIT ON TOP OF THIS SHEET ────────────────────
-          The card is vertically CENTRED in the scrim and its body is capped at
-          520px, so on a phone the business-purpose field and the Done button
-          are both in the lower half — exactly where the keyboard lands. Typing
-          a purpose meant typing blind and then hunting for a button you could
-          not see. Founder, on `/code`: it needs a keyboard-avoiding view.
-
-          `padding` on iOS, `height` on Android: the two platforms disagree
-          about what a resized window means, and this is the pairing the RN
-          docs prescribe. On web the keyboard does not overlay the viewport at
-          all, so the component is a no-op there rather than something to
-          branch around.
-
-          Fixed HERE rather than on `/code`, because this sheet is the one form
-          both `/code` and the Reconcile grid mount (see the module doc) — the
-          phone frame is the same in both, and so was the bug. */}
+    <Modal
+      visible
+      transparent
+      animationType="slide"
+      onRequestClose={requestClose}
+    >
       <KeyboardAvoidingView
         behavior={Platform.OS === "ios" ? "padding" : "height"}
-        className="flex-1"
+        className="flex-1 flex-row"
       >
-      <Pressable
-        onPress={requestClose}
-        className="flex-1 items-center justify-center bg-ink/30 p-6"
-      >
-        <Pressable
-          onPress={() => {}}
-          className="w-full max-w-lg overflow-hidden rounded-xl border border-border bg-raised shadow-pop"
+        {desktop ? (
+          <Pressable
+            onPress={requestClose}
+            accessibilityRole="button"
+            accessibilityLabel="Close charge panel"
+            className="flex-1 bg-ink/20"
+          />
+        ) : null}
+        <View
+          style={{ width: desktop ? 560 : "100%", height: "100%" }}
+          className="border-l border-border bg-raised shadow-pop"
         >
-          <View className="flex-row items-start justify-between border-b border-border px-5 py-4">
-            <View className="flex-1 pr-3">
-              <Text className="font-display text-lg text-ink">
-                {actionable
-                  ? "Code this charge"
-                  : ((todo && SUMMARY_TITLE[todo.kind]) ??
-                    "This charge is squared away")}
-              </Text>
-              {/* WHO TO ASK (founder, 2026-08-13) — same rule as
-                  `CodingWorkbenchPanel`'s header: `cardholderName` rides
-                  worklist rows (where the coder isn't the spender); two
-                  lines so the merchant identity never truncates away. */}
-              <Text className="text-2xs text-muted" numberOfLines={2}>
-                {merchantLine} · {formatCents(Math.abs(txn.amountCents))}
-                {(() => {
-                  const holder = (txn as { cardholderName?: string | null })
-                    .cardholderName;
-                  return holder != null
-                    ? ` · ${holder} · card ••${txn.cardLast4 ?? "—"}`
-                    : txn.cardLast4
-                      ? ` · card ••${txn.cardLast4}`
-                      : "";
-                })()}
-              </Text>
-              {/* FINDING 5: the raw bank line, only when it differs. */}
-              {rawLine ? (
-                <Text className="text-2xs text-faint" numberOfLines={1}>
-                  {rawLine}
-                </Text>
-              ) : null}
-            </View>
-            <Pressable onPress={requestClose} hitSlop={8} className="rounded-md p-1">
-              <Icon name="x" size={18} color={colors.muted} />
-            </Pressable>
-          </View>
-
-          <ScrollView className="max-h-[520px]">
-            <View className="px-5 py-4">
-              <FinishChargeSheetBody
-                txn={txn}
-                todo={todo}
-                categoryOptions={categoryOptions}
-                ownCharge={ownCharge}
-                onClose={onClose}
-                onDirtyChange={setDirty}
-              />
-            </View>
-          </ScrollView>
-
-          <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
-            <Button title="Done" variant="secondary" onPress={requestClose} />
-          </View>
-        </Pressable>
-      </Pressable>
+          {panel}
+        </View>
       </KeyboardAvoidingView>
     </Modal>
   );

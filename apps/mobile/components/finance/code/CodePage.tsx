@@ -51,6 +51,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { DEFAULT_CODING_REQUIRED_SINCE_MS } from "@events-os/shared";
 import {
+  Button,
   EmptyState,
   HeaderCell,
   Icon,
@@ -63,11 +64,7 @@ import {
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
-import {
-  ChargeCard,
-  ChargeRow,
-  FilterChip,
-} from "../myTransactions/ChargeRow";
+import { ChargeCard, ChargeRow, FilterChip } from "../myTransactions/ChargeRow";
 import { FinishChargeSheet } from "../myTransactions/FinishChargeSheet";
 import {
   chargeTodo,
@@ -103,7 +100,7 @@ function BrandMark() {
   const name = me?.profile?.name ?? null;
   const email = me?.email ?? null;
   return (
-    <View className="mb-6 flex-row items-center gap-2.5">
+    <View className="mb-6 flex-row flex-wrap items-center gap-2.5">
       <View className="h-9 w-9 items-center justify-center rounded-md bg-accent">
         <Icon name="calendar" size={18} color="#FFFFFF" />
       </View>
@@ -116,7 +113,7 @@ function BrandMark() {
           {/* Pushes the identity to the far end, so the mark stays put and the
               "is this me?" answer lands in one predictable place. */}
           <View className="flex-1" />
-          <View className="items-end">
+          <View className="min-w-0 shrink items-end" style={{ maxWidth: 180 }}>
             <Text className="text-xs text-ink" numberOfLines={1}>
               {name ?? email}
             </Text>
@@ -156,7 +153,9 @@ function CenteredMessage({
         <BrandMark />
         <View className="items-center gap-3 rounded-lg border border-border bg-raised p-8">
           <Icon name={icon as never} size={28} color={colors.muted} />
-          <Text className="text-center font-display text-xl text-ink">{title}</Text>
+          <Text className="text-center font-display text-xl text-ink">
+            {title}
+          </Text>
           <Text className="text-center text-sm text-muted">{message}</Text>
         </View>
       </Narrow>
@@ -245,7 +244,7 @@ export function CodePage() {
   );
 }
 
-function MyCharges() {
+export function MyCharges() {
   // `?filter=uncoded` is what every coding reminder and send-back email
   // already carries. Those inboxes don't get rewritten, so the param keeps
   // meaning what it always meant.
@@ -259,7 +258,8 @@ function MyCharges() {
   // Below this, the table's fixed cells (535px of them) overflow a phone and
   // the primary action button is clipped off the right edge — see `ChargeCard`. This
   // page is opened from an email, so the phone IS the primary device.
-  const narrow = useWindowDimensions().width < 640;
+  const width = useWindowDimensions().width;
+  const wide = width >= 1024;
 
   // `null` = nobody has chosen yet, so the page may choose for them (below).
   // A tap sets it and the page stops guessing.
@@ -272,6 +272,24 @@ function MyCharges() {
   const setFilter = setChosen;
 
   const [openId, setOpenId] = useState<string | null>(null);
+  const [dirty, setDirty] = useState(false);
+  const [pendingId, setPendingId] = useState<string | null>(null);
+  useEffect(() => {
+    if (!dirty) setPendingId(null);
+  }, [dirty]);
+  function openCharge(id: string) {
+    if (id === openId) return;
+    const select = () => {
+      setDirty(false);
+      setPendingId(null);
+      setOpenId(id);
+    };
+    if (!dirty) {
+      select();
+      return;
+    }
+    setPendingId(id);
+  }
 
   const sinceMs = policy?.sinceMs ?? DEFAULT_CODING_REQUIRED_SINCE_MS;
 
@@ -302,7 +320,8 @@ function MyCharges() {
   // with that fixed somebody may arrive at a bare `/code`. Landing on the
   // full ledger under a headline that says "3 charges need a word from you"
   // makes the page look like it's lying. If anything needs them, show that.
-  const filter: ChargeFilter = chosen ?? (actionableCount > 0 ? "uncoded" : "all");
+  const filter: ChargeFilter =
+    chosen ?? (actionableCount > 0 ? "uncoded" : "all");
   const visible = useMemo(() => {
     const subset =
       filter === "uncoded" ? rows.filter((r) => r.todo.actionable) : rows;
@@ -328,157 +347,226 @@ function MyCharges() {
 
   if (transactions === undefined) return <Screen loading />;
 
+  const panelOpen = wide && openRow != null;
+  const compactList = width < 900 || panelOpen;
   return (
-    <Screen>
-      <Narrow width={860}>
-        <BrandMark />
+    <View className="min-h-0 flex-1 flex-row bg-surface">
+      <View
+        className="min-w-0 flex-1"
+        accessibilityElementsHidden={!wide && openRow != null}
+        aria-hidden={!wide && openRow != null}
+        importantForAccessibility={
+          !wide && openRow != null ? "no-hide-descendants" : "auto"
+        }
+      >
+        <Screen maxWidth={panelOpen ? 800 : 1120}>
+          <Narrow width={panelOpen ? 720 : 1000}>
+            <BrandMark />
 
-        {/* THE HEADLINE IS THE STATE, not a fixed title. Someone opening a
+            {/* THE HEADLINE IS THE STATE, not a fixed title. Someone opening a
             link they were sent should know in one glance whether this is a
             chore or a receipt — a page that always says "Your charges" makes
             them read the list to find out. */}
-        <Text className="font-display text-2xl text-ink">
-          {actionableCount === 0
-            ? "You're all caught up"
-            : `${actionableCount} charge${actionableCount === 1 ? "" : "s"} need${
-                actionableCount === 1 ? "s" : ""
-              } a word from you`}
-        </Text>
-        <Text className="mb-5 mt-2 text-sm text-muted">
-          For each one: what it bought, which of our work it served, and{" "}
-          <Text className="text-ink">the receipt that proves it</Text> — the
-          words and the proof are one record. If there genuinely is no receipt,
-          say so right here and that counts. It&apos;s what keeps money you
-          spent from becoming taxable income to you.
-        </Text>
+            <Text className="font-display text-2xl text-ink">
+              {actionableCount === 0
+                ? "You're all caught up"
+                : `${actionableCount} charge${actionableCount === 1 ? "" : "s"} need${
+                    actionableCount === 1 ? "s" : ""
+                  } coding`}
+            </Text>
+            <Text className="mb-5 mt-2 text-sm text-muted">
+              Open a charge, add its receipt, and explain what you bought and
+              why. Submit them together for finance review.
+            </Text>
 
-        {rows.length > 0 ? (
-          <View className="mb-4 flex-row items-center gap-2">
-            <RadioGroup
-              accessibilityLabel="Which of your charges to show"
-              horizontal
-              className="flex-row items-center gap-2"
-            >
-              <FilterChip
-                label={`Needs you${actionableCount > 0 ? ` (${actionableCount})` : ""}`}
-                active={filter === "uncoded"}
-                onPress={() => setFilter("uncoded")}
-              />
-              <FilterChip
-                label={`All (${rows.length})`}
-                active={filter === "all"}
-                onPress={() => setFilter("all")}
-              />
-            </RadioGroup>
-            {actionableCount === 0 ? (
-              <View className="flex-row items-center gap-1.5">
-                <Icon name="check-circle" size={13} color={colors.success} />
-                <Text className="text-xs text-muted">
-                  Everything below is done, or with a reviewer.
+            {pendingId ? (
+              <View className="mb-4 gap-3 rounded-xl border border-warn/40 bg-warn-bg p-4">
+                <Text className="text-sm font-semibold text-ink">
+                  You have unsaved changes
                 </Text>
+                <Text className="text-xs text-muted">
+                  Keep editing this charge, or discard your changes and open the
+                  other one.
+                </Text>
+                <View className="flex-row flex-wrap gap-2">
+                  <Button
+                    title="Keep editing"
+                    variant="secondary"
+                    size="sm"
+                    onPress={() => setPendingId(null)}
+                  />
+                  <Button
+                    title="Discard & switch"
+                    variant="danger"
+                    size="sm"
+                    onPress={() => {
+                      setOpenId(pendingId);
+                      setPendingId(null);
+                      setDirty(false);
+                    }}
+                  />
+                </View>
               </View>
             ) : null}
-          </View>
-        ) : null}
 
-        {/* THE LINK HAS TO WORK FOR PEOPLE WHO ARE ALREADY DONE. A page sent
+            {rows.length > 0 ? (
+              <View className="mb-4 flex-row items-center gap-2">
+                <RadioGroup
+                  accessibilityLabel="Which of your charges to show"
+                  horizontal
+                  className="flex-row items-center gap-2"
+                >
+                  <FilterChip
+                    label={`Needs you${actionableCount > 0 ? ` (${actionableCount})` : ""}`}
+                    active={filter === "uncoded"}
+                    onPress={() => setFilter("uncoded")}
+                  />
+                  <FilterChip
+                    label={`All (${rows.length})`}
+                    active={filter === "all"}
+                    onPress={() => setFilter("all")}
+                  />
+                </RadioGroup>
+                {actionableCount === 0 ? (
+                  <View className="flex-row items-center gap-1.5">
+                    <Icon
+                      name="check-circle"
+                      size={13}
+                      color={colors.success}
+                    />
+                    <Text className="text-xs text-muted">
+                      Everything below is done, or with a reviewer.
+                    </Text>
+                  </View>
+                ) : null}
+              </View>
+            ) : null}
+
+            {/* THE LINK HAS TO WORK FOR PEOPLE WHO ARE ALREADY DONE. A page sent
             to forty people is opened by the twelve with nothing outstanding,
             and 404-ing or bouncing them is how a link stops getting clicked. */}
-        {rows.length === 0 ? (
-          <EmptyState
-            icon="check-circle"
-            title="Nothing to code"
-            message="No charges are attributed to you right now. If you spent something on a chapter card, it'll appear here once the bank posts it — usually a day or two."
-          />
-        ) : visible.length === 0 ? (
-          <EmptyState
-            icon="check-circle"
-            title="Nothing needs you right now"
-            message="Every charge of yours is coded, documented, or with a reviewer."
-            action={
-              <FilterChip
-                label={`Show all (${rows.length})`}
-                active={false}
-                onPress={() => setFilter("all")}
+            {rows.length === 0 ? (
+              <EmptyState
+                icon="check-circle"
+                title="Nothing to code"
+                message="No charges are attributed to you right now. If you spent something on a chapter card, it'll appear here once the bank posts it — usually a day or two."
               />
-            }
-          />
-        ) : narrow ? (
-          // PHONE: stacked cards. The table below cannot fit here — its fixed
-          // cells alone are 535px — and `Table` clips rather than scrolls, so
-          // the primary action button simply wasn't reachable on the device this
-          // page's emailed link is opened on.
-          <View>
-            {visible.map((r) => (
-              <ChargeCard
-                key={r.txn.id}
-                txn={r.txn}
-                todo={r.todo}
-                onOpen={() => setOpenId(r.txn.id)}
-                onUpload={async (storageId, filename) => {
-                  await run(
-                    () =>
-                      attachReceipt({
-                        transactionId: r.txn.id as Id<"transactions">,
-                        storageId,
-                        ...(filename ? { filename } : {}),
-                      }),
-                    { errorTitle: "Couldn't attach receipt" },
-                  );
-                }}
-                generateUploadUrl={generateUploadUrl}
+            ) : visible.length === 0 ? (
+              <EmptyState
+                icon="check-circle"
+                title="Nothing needs you right now"
+                message="Every charge of yours is coded, documented, or with a reviewer."
+                action={
+                  <FilterChip
+                    label={`Show all (${rows.length})`}
+                    active={false}
+                    onPress={() => setFilter("all")}
+                  />
+                }
               />
-            ))}
-          </View>
-        ) : (
-          <Table>
-            <TableHeader>
-              <HeaderCell flex={2}>Transaction</HeaderCell>
-              <HeaderCell width={110} align="right">
-                Amount
-              </HeaderCell>
-              <HeaderCell width={185}>Still needs</HeaderCell>
-              <HeaderCell width={130}>Receipt</HeaderCell>
-              <HeaderCell width={110} align="right">
-                {" "}
-              </HeaderCell>
-            </TableHeader>
-            {visible.map((r, i) => (
-              <ChargeRow
-                key={r.txn.id}
-                txn={r.txn}
-                todo={r.todo}
-                last={i === visible.length - 1}
-                onOpen={() => setOpenId(r.txn.id)}
-                onUpload={async (storageId, filename) => {
-                  await run(
-                    () =>
-                      attachReceipt({
-                        transactionId: r.txn.id as Id<"transactions">,
-                        storageId,
-                        ...(filename ? { filename } : {}),
-                      }),
-                    { errorTitle: "Couldn't attach receipt" },
-                  );
-                }}
-                generateUploadUrl={generateUploadUrl}
-              />
-            ))}
-          </Table>
-        )}
+            ) : compactList ? (
+              // PHONE: stacked cards. The table below cannot fit here — its fixed
+              // cells alone are 535px — and `Table` clips rather than scrolls, so
+              // the primary action button simply wasn't reachable on the device this
+              // page's emailed link is opened on.
+              <View>
+                {visible.map((r) => (
+                  <ChargeCard
+                    key={r.txn.id}
+                    txn={r.txn}
+                    todo={r.todo}
+                    selected={r.txn.id === openId}
+                    onOpen={() => openCharge(r.txn.id)}
+                    onUpload={async (storageId, filename) => {
+                      await run(
+                        () =>
+                          attachReceipt({
+                            transactionId: r.txn.id as Id<"transactions">,
+                            storageId,
+                            ...(filename ? { filename } : {}),
+                          }),
+                        { errorTitle: "Couldn't attach receipt" },
+                      );
+                    }}
+                    generateUploadUrl={generateUploadUrl}
+                  />
+                ))}
+              </View>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <HeaderCell flex={2}>Transaction</HeaderCell>
+                  <HeaderCell width={110} align="right">
+                    Amount
+                  </HeaderCell>
+                  <HeaderCell width={185}>Still needs</HeaderCell>
+                  <HeaderCell width={130}>Receipt</HeaderCell>
+                  <HeaderCell width={110} align="right">
+                    {" "}
+                  </HeaderCell>
+                </TableHeader>
+                {visible.map((r, i) => (
+                  <ChargeRow
+                    key={r.txn.id}
+                    txn={r.txn}
+                    todo={r.todo}
+                    last={i === visible.length - 1}
+                    selected={r.txn.id === openId}
+                    onOpen={() => openCharge(r.txn.id)}
+                    onUpload={async (storageId, filename) => {
+                      await run(
+                        () =>
+                          attachReceipt({
+                            transactionId: r.txn.id as Id<"transactions">,
+                            storageId,
+                            ...(filename ? { filename } : {}),
+                          }),
+                        { errorTitle: "Couldn't attach receipt" },
+                      );
+                    }}
+                    generateUploadUrl={generateUploadUrl}
+                  />
+                ))}
+              </Table>
+            )}
 
-        {openRow ? (
+            <ToastView toast={toast} onDismiss={dismiss} />
+          </Narrow>
+        </Screen>
+      </View>
+      {openRow ? (
+        <KeyboardAvoidingView
+          behavior={Platform.OS === "ios" ? "padding" : "height"}
+          style={
+            wide
+              ? { width: Math.min(580, width * 0.48) }
+              : {
+                  position: "absolute",
+                  top: 0,
+                  bottom: 0,
+                  left: 0,
+                  right: 0,
+                  zIndex: 50,
+                }
+          }
+          className="min-h-0 border-l border-border bg-raised"
+        >
           <FinishChargeSheet
+            key={openRow.txn.id}
             txn={openRow.txn}
             todo={openRow.todo}
             categoryOptions={categoryOptions}
-            // `personTransactions` rows are the caller's own ledger, always.
             ownCharge
-            onClose={() => setOpenId(null)}
+            presentation="panel"
+            onDirtyChange={setDirty}
+            onClose={() => {
+              setOpenId(null);
+              setDirty(false);
+              setPendingId(null);
+            }}
           />
-        ) : null}
-        <ToastView toast={toast} onDismiss={dismiss} />
-      </Narrow>
-    </Screen>
+        </KeyboardAvoidingView>
+      ) : null}
+    </View>
   );
 }

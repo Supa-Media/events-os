@@ -35,11 +35,7 @@
  */
 import { useMemo, useState } from "react";
 import { Pressable, Text, View } from "react-native";
-import {
-  useMutation,
-  useQueries,
-  type RequestForQueries,
-} from "convex/react";
+import { useMutation, useQueries, type RequestForQueries } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import type {
@@ -63,7 +59,7 @@ import {
 /** The one sentence this rule is: said the same way in the sheet and in the
  *  editor, because they are the same requirement. */
 export const DOCUMENTATION_RULE =
-  "A receipt goes in with the coding — what the money was for and how it can be proved are one record, not two errands. No receipt at all? Say so here and that counts.";
+  "Attach the receipt for this charge. If you cannot provide one, explain why below.";
 
 export interface DocumentationDetail {
   hasReceipt: boolean;
@@ -94,7 +90,10 @@ export function CodingDocumentation({
   /** The host's own error/toast plumbing — the sheet's `guard`, the reconcile
    *  panel's `run`. One prop instead of this component owning a toast that
    *  would render in the wrong place in one of the two hosts. */
-  runAction: (fn: () => Promise<unknown>, errorTitle: string) => Promise<unknown>;
+  runAction: (
+    fn: () => Promise<unknown>,
+    errorTitle: string,
+  ) => Promise<unknown>;
   busy?: boolean;
 }) {
   const attachReceipt = useMutation(api.finances.attachReceipt);
@@ -136,10 +135,13 @@ export function CodingDocumentation({
           <View className="mt-2 flex-row items-center gap-3">
             <ReceiptCell
               hasReceipt={detail.hasReceipt}
-              reminderStage={detail.reminderStage ?? "none"}
+              reminderStage="none"
               transactionId={transactionId}
               libraryPicker={false}
-              onUpload={async (storageId: Id<"_storage">, filename: string | null) => {
+              onUpload={async (
+                storageId: Id<"_storage">,
+                filename: string | null,
+              ) => {
                 await runAction(
                   () =>
                     attachReceipt({
@@ -160,7 +162,40 @@ export function CodingDocumentation({
 
   return (
     <View>
-      <Text className="text-2xs text-muted">{DOCUMENTATION_RULE}</Text>
+      <View className="mt-2 flex-row items-center gap-3">
+        <ReceiptCell
+          prominent
+          hasReceipt={false}
+          reminderStage={detail?.reminderStage ?? "none"}
+          transactionId={transactionId}
+          libraryPicker={false}
+          onUpload={async (
+            storageId: Id<"_storage">,
+            filename: string | null,
+          ) => {
+            await runAction(
+              () =>
+                attachReceipt({
+                  transactionId,
+                  storageId,
+                  ...(filename ? { filename } : {}),
+                }),
+              "Couldn't attach receipt",
+            );
+          }}
+          generateUploadUrl={generateUploadUrl}
+        />
+      </View>
+
+      <Pressable
+        onPress={() => setFiling(true)}
+        accessibilityRole="button"
+        className="mt-3 self-start rounded-md py-1 active:opacity-70"
+      >
+        <Text className="text-xs font-medium text-accent">
+          I don’t have a receipt
+        </Text>
+      </Pressable>
 
       {/* IS THIS THE ONE? Inbound receipts are never auto-attached to a
           guessed charge — a wrong guess is worse than no guess, because
@@ -169,7 +204,7 @@ export function CodingDocumentation({
       {suggestions.length > 0 ? (
         <View className="mt-2 rounded-lg border border-accent/40 bg-accent/5 px-3 py-2.5">
           <Text className="text-2xs font-semibold uppercase tracking-wide text-accent">
-            Is this the one?
+            Receipts you already sent
           </Text>
           <Text className="mt-0.5 text-2xs text-muted">
             {suggestions.length === 1 ? "A receipt" : "Receipts"} you emailed or
@@ -203,37 +238,6 @@ export function CodingDocumentation({
           </View>
         </View>
       ) : null}
-
-      <View className="mt-2 flex-row items-center gap-3">
-        <ReceiptCell
-          hasReceipt={false}
-          reminderStage={detail?.reminderStage ?? "none"}
-          transactionId={transactionId}
-              libraryPicker={false}
-          onUpload={async (storageId: Id<"_storage">, filename: string | null) => {
-            await runAction(
-              () =>
-                attachReceipt({
-                  transactionId,
-                  storageId,
-                  ...(filename ? { filename } : {}),
-                }),
-              "Couldn't attach receipt",
-            );
-          }}
-          generateUploadUrl={generateUploadUrl}
-        />
-      </View>
-
-      <Pressable
-        onPress={() => setFiling(true)}
-        accessibilityRole="button"
-        className="mt-1 self-start active:opacity-70"
-      >
-        <Text className="text-xs font-medium text-accent">
-          There is no receipt for this
-        </Text>
-      </Pressable>
 
       {filing ? (
         <ReceiptExceptionModal
@@ -280,7 +284,7 @@ function settledLine(detail?: DocumentationDetail | null): string {
     return "Documented — a receipt or a filed reason is on the record, so this coding can be submitted.";
   }
   if (detail.hasReceipt) {
-    return "Receipt attached. Attach a different one any time and it takes over.";
+    return "Receipt attached. Open it below to check the details.";
   }
   if (detail.hasApprovedException) {
     return `Documented by an approved exception${
@@ -290,7 +294,9 @@ function settledLine(detail?: DocumentationDetail | null): string {
     }. Attach a receipt any time and it takes over.`;
   }
   return `Exception filed${
-    detail.pendingReasonLabel ? ` (${detail.pendingReasonLabel.toLowerCase()})` : ""
+    detail.pendingReasonLabel
+      ? ` (${detail.pendingReasonLabel.toLowerCase()})`
+      : ""
   } — enough to submit this coding, but a Finance manager still has to approve it before the charge can be closed.`;
 }
 
@@ -325,7 +331,7 @@ function SuggestionRow({
           </Text>
         </View>
         <Button
-          title="That's the one"
+          title="Use this receipt"
           size="sm"
           onPress={onConfirm}
           loading={busy}

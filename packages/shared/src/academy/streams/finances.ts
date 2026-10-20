@@ -1337,7 +1337,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Purpose and proof are one record",
-        text: "A coding won't submit on a charge with neither a receipt nor an exception. The exception lives in the same sheet, and FILING one is enough to submit, so you aren't stuck waiting on the approver. It still has to be approved before the charge can close.",
+        text: "A coding won't submit on a charge with neither a receipt nor an exception. Open a charge on /code: the desktop side panel keeps your list visible. Add its receipt, explain the expense, choose a budget if known, then use Submit for review. No receipt? Choose I don’t have a receipt; filing the exception is enough to submit. It still has to be approved before the charge can close.",
       },
       {
         kind: "rule",

@@ -54,6 +54,7 @@ export function Button({
   return (
     <Pressable
       accessibilityRole="button"
+      accessibilityLabel={title}
       disabled={inert}
       onPress={inert ? undefined : onPress}
       onHoverIn={() => setHovered(true)}
