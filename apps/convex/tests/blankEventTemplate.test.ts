@@ -135,7 +135,7 @@ describe("events.createFromTemplate — ad-hoc Blank event (no eventTypeId)", ()
     vi.useFakeTimers();
     try {
       const s = await setupChapter(newT());
-      const ids = [];
+      const ids: Id<"events">[] = [];
       for (const name of ["Legacy blank", "Another blank", "Named template event"]) {
         ids.push(await s.as.mutation(api.events.createFromTemplate, {
           name, eventDate: tsInMonth(2026, 12),
