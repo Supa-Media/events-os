@@ -639,4 +639,36 @@ describe("work.myOpenWork", () => {
     ]);
     void owned;
   });
+
+  // Task entries carry eventId/itemId/module from the digest collector; the
+  // returns validator once omitted them and the query threw "Server Error"
+  // for anyone with a dated event task (2026-10-20).
+  test("an event task I own comes back with its event identity", async () => {
+    const s = await setupChapter(newT());
+    const me = await addPerson(s, "Me", { isTeamMember: true });
+    const now = Date.now();
+    const ev = await addEvent(s, { name: "Talent night", ownerPersonId: me });
+    const itemId = await run(s.t, (ctx) =>
+      ctx.db.insert("eventItems", {
+        eventId: ev,
+        chapterId: s.chapterId,
+        module: "planning_doc",
+        title: "Book the sound tech",
+        order: 0,
+        ownerPersonId: me,
+        dueDate: now + 2 * DAY,
+      }),
+    );
+
+    const { as } = await addUser(s, "me3@publicworship.life", { personId: me });
+    const res = await as.query(api.work.myOpenWork, {});
+    expect(res!.dueThisWeek).toHaveLength(1);
+    expect(res!.dueThisWeek[0]).toMatchObject({
+      kind: "task",
+      name: "Book the sound tech",
+      eventId: ev,
+      itemId,
+      module: "planning_doc",
+    });
+  });
 });

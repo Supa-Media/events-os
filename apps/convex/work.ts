@@ -39,6 +39,13 @@ const workEntryValidator = v.object({
       v.null(),
     ),
   ),
+  // Tasks only — `collectOpenWorkForChapter` stamps the event-item identity on
+  // every task entry. A returns validator rejects unknown fields, so leaving
+  // these out made the query throw for anyone with a dated event task
+  // (2026-10-20, a music director's Work page).
+  eventId: v.optional(v.id("events")),
+  itemId: v.optional(v.id("eventItems")),
+  module: v.optional(v.string()),
 });
 
 const myEventValidator = v.object({
