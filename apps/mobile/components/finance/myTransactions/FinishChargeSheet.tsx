@@ -15,6 +15,7 @@ import {
   View,
   useWindowDimensions,
 } from "react-native";
+import { useRouter } from "expo-router";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { useMutation, useQuery } from "convex/react";
 import {
@@ -170,7 +171,6 @@ export function FinishChargeSheetBody({
   todo,
   categoryOptions,
   ownCharge,
-  onClose,
   onDirtyChange,
   renderReview,
   contained = false,
@@ -210,12 +210,6 @@ export function FinishChargeSheetBody({
    *  row were actionable. */
   todo?: ChargeTodo;
   categoryOptions: CategoryOption[];
-  /** Called after an action that used to dismiss the whole sheet (flagging a
-   *  charge personal). The Modal wrapper passes its own `onClose`; the panel
-   *  host passes nothing — there is no sheet to close, so the row just stays
-   *  selected and shows its new state (the "quick flow" contract: no
-   *  auto-advance, ever). */
-  onClose?: () => void;
   /** FINDING 10 (UX audit, 2026-08-12): reports whether this row currently
    *  has unsent typed input — an open coding form with something typed into
    *  it, a note draft that hasn't been saved, or a receipt-total check
@@ -265,6 +259,7 @@ export function FinishChargeSheetBody({
   // as `approvalParty: "single"` so the bypass stays re-reviewable.
   const approveCoding = useMutation(api.transactionCodings.approve);
   const submitOwnCharge = useMutation(api.finances.submitOwnCharge);
+  const flagPersonalCharge = useMutation(api.cards.flagPersonalCharge);
   // The bookkeeper-gated twin of `submitOwnCharge`'s category write — same
   // field, different access rule (`requireTxnNoteReceiptCategoryAccess`:
   // bookkeeper+, or event-edit rights), reachable on ANY chapter transaction
@@ -427,7 +422,7 @@ export function FinishChargeSheetBody({
   // OTHER state (an existing coding, or a charge nobody's chasing) keeps the
   // pre-existing "click to reveal" posture; `editing` is that click.
   const alwaysInline = actionable && coding == null;
-  const showForm = alwaysInline || editing;
+  const showForm = txn.isPersonal !== true && (alwaysInline || editing);
 
   const blocking =
     data === undefined ||
@@ -452,10 +447,11 @@ export function FinishChargeSheetBody({
   // typed but never acted on. Deliberately a SIMPLE check (not a deep
   // equality against every field) — the point is catching "I typed
   // something and tapped away", not modeling every possible edit.
-  const hasUnsentInput =
+  const hasUnsentInput = txn.isPersonal !== true && (
     (showForm && (form.touched || catDraft !== txn.categoryId)) ||
     noteDraft.trim() !== (txn.note ?? "").trim() ||
-    receiptTotal.trim().length > 0;
+    receiptTotal.trim().length > 0
+  );
   useEffect(() => {
     onDirtyChange?.(hasUnsentInput);
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -550,8 +546,31 @@ export function FinishChargeSheetBody({
     );
   }
 
-  const content = (
+  const content = txn.isPersonal === true ? (
+    <PersonalChargeSummary transactionId={transactionId} ownCharge={ownCharge} />
+  ) : (
     <View className="gap-5">
+      {ownCharge && isCardCharge ? (
+        <View className="rounded-xl border border-border bg-sunken p-4">
+          <Text className="text-base font-semibold text-ink">
+            Was this a personal purchase?
+          </Text>
+          <Text className="mt-1 text-sm text-muted">
+            Personal charges don’t need a receipt or expense coding. Mark it
+            personal, then repay Public Worship through the repayment portal.
+          </Text>
+          <PersonalChargeEscape
+            alreadyFlagged={false}
+            onFlag={() =>
+              guard(async () => {
+                await flagPersonalCharge({ transactionId });
+                setEditing(false);
+              }, "Couldn't mark this as a personal charge")
+            }
+          />
+        </View>
+      ) : null}
+
       {/* FINDING 3 (UX audit, 2026-08-12): an unmistakable success
                   state — the panel deliberately doesn't auto-advance to the
                   next row after a submit, so this is what makes staying put
@@ -1009,23 +1028,6 @@ export function FinishChargeSheetBody({
 
           {/* FINDING 4: the audit trail existed but was invisible from
                   here — see `TransactionHistoryCompact`'s own module doc. */}
-          {isCardCharge ? (
-            <PersonalChargeEscape
-              alreadyFlagged={txn.isPersonal === true}
-              onFlag={() =>
-                guard(async () => {
-                  await submitOwnCharge({
-                    transactionId,
-                    categoryId: null,
-                    note: null,
-                    flagPersonal: true,
-                  });
-                  setEditing(false);
-                  onClose?.();
-                }, "Couldn't flag this as a personal charge")
-              }
-            />
-          ) : null}
           <TransactionHistoryCompact transactionId={transactionId} />
         </View>
       ) : null}
@@ -1099,6 +1101,68 @@ export function FinishChargeSheetBody({
   );
 }
 
+/** Caller-scoped repayment data; opening the portal never starts a payment. */
+function PersonalChargeSummary({
+  transactionId,
+  ownCharge,
+}: {
+  transactionId: Id<"transactions">;
+  ownCharge: boolean;
+}) {
+  const router = useRouter();
+  const repayments = useQuery(
+    api.cards.myPersonalRepayments,
+    ownCharge ? {} : "skip",
+  );
+  const repayment = repayments?.find((r) => r.transactionId === transactionId);
+  const paid = repayment?.status === "paid";
+  const processing = repayment?.status === "processing";
+  return (
+    <View className="gap-3 rounded-xl border border-border bg-raised p-5">
+      <Text className="text-lg font-semibold text-ink">Personal charge</Text>
+      <Text className="text-sm text-muted">
+        This purchase is personal. No expense coding or receipt is required.
+      </Text>
+      {ownCharge ? (
+        <>
+          <Text
+            className="text-sm font-semibold text-ink"
+            accessibilityLiveRegion="polite"
+          >
+            {paid
+              ? "Paid back — thank you."
+              : processing
+                ? "Your repayment is processing."
+                : repayment
+                  ? `${formatCents(repayment.amountCents)} to pay back`
+                  : "Your repayment details will appear in the portal."}
+          </Text>
+          <Text className="text-sm text-muted">
+            {processing
+              ? "Your balance updates when the payment clears. You don’t need to pay this charge again."
+              : paid
+                ? "You can view the payment record in your repayment portal."
+                : "Choose which charges to repay and pay by card or bank. You’ll review the total and any processing fee before paying."}
+          </Text>
+          <Button
+            title={
+              paid || processing
+                ? "View repayment portal"
+                : "Open repayment portal"
+            }
+            icon="credit-card"
+            onPress={() => router.navigate("/finances/repayments" as never)}
+          />
+        </>
+      ) : (
+        <Text className="text-sm text-muted">
+          The payer can repay this from their repayment portal.
+        </Text>
+      )}
+    </View>
+  );
+}
+
 /** A persistent desktop panel or a full-height drawer on smaller screens. */
 export function FinishChargeSheet({
   txn,
@@ -1161,9 +1225,11 @@ export function FinishChargeSheet({
       <View className="gap-3 border-b border-border px-5 py-5">
         <View className="flex-row items-center justify-between gap-3">
           <Text className="text-xs font-semibold uppercase tracking-wide text-muted">
-            {actionable
-              ? "Code this charge"
-              : ((todo && SUMMARY_TITLE[todo.kind]) ?? "Charge details")}
+            {txn.isPersonal
+              ? "Personal charge"
+              : actionable
+                ? "Code this charge"
+                : ((todo && SUMMARY_TITLE[todo.kind]) ?? "Charge details")}
           </Text>
           <Pressable
             onPress={requestClose}
@@ -1227,7 +1293,6 @@ export function FinishChargeSheet({
         todo={todo}
         categoryOptions={categoryOptions}
         ownCharge={ownCharge}
-        onClose={onClose}
         onDirtyChange={setDirty}
         contained
       />

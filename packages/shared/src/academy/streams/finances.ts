@@ -1435,7 +1435,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "If you paid out of pocket for mission work, submit a **reimbursement request**. If a personal charge hit your card, **flag it**, which records money you owe back. Paying someone for WORK is neither: that is a contractor payment, with its own lesson.",
+        text: "Paid for mission work yourself? Submit a **reimbursement request**. Personal purchase on your Public Worship card? Open it on **/code**, choose **Mark as personal**, and confirm. No receipt or coding is required. Use **Open repayment portal** to repay by card or bank. Marking personal takes no payment; the balance clears after settlement. Paying someone for work is a contractor payment.",
       },
       {
         kind: "bullets",

@@ -44,6 +44,15 @@ describe("isSpendCharge / codingRequired", () => {
 });
 
 describe("chargeTodo", () => {
+  test.each([null, "changes_requested", "submitted", "approved"] as const)(
+    "personal charges leave the coding queue even with prior state %s",
+    (codingStatus) => {
+      const todo = chargeTodo(charge({ isPersonal: true, codingStatus }), SINCE);
+      expect(todo.actionable).toBe(false);
+      expect(todo.outstanding).toEqual([]);
+      expect(todo.label).toBe("Personal — no coding needed");
+    },
+  );
   test("a send-back outranks everything and carries the danger tone", () => {
     const todo = chargeTodo(charge({ codingStatus: "changes_requested" }), SINCE);
     expect(todo.kind).toBe("sent_back");

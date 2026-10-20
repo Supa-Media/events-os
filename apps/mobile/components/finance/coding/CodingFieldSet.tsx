@@ -1279,14 +1279,8 @@ export function CodingProblemsList({
 }
 
 /**
- * "This wasn't Public Worship's" — offered beneath the business purpose,
- * because that is where people say it when they have nowhere else to. Shared
- * by `TransactionCodingModal` and `FinishChargeSheetBody`'s inline flow so
- * the one-way flag reads and behaves identically from either surface.
- *
- * Two-step on purpose. Flagging is ONE-WAY (it creates the repayment record
- * and emails the payee), so it asks once before doing it, and it says what
- * happens next, because "I'll pay it back" is a commitment, not a checkbox.
+ * Explicit personal-purchase escape from business-expense coding. Confirmation
+ * creates a repayment, so explain the consequence before recording the flag.
  */
 export function PersonalChargeEscape({
   alreadyFlagged,
@@ -1312,20 +1306,13 @@ export function PersonalChargeEscape({
 
   if (!confirming) {
     return (
-      <View className="mt-2 flex-row flex-wrap items-baseline gap-x-1.5">
-        <Text className="text-2xs text-muted">
-          Wasn&apos;t this Public Worship&apos;s money?
-        </Text>
-        <Pressable
+      <View className="mt-3 items-start gap-2">
+        <Button
+          title="Mark as personal"
+          variant="secondary"
+          size="sm"
           onPress={() => setConfirming(true)}
-          accessibilityRole="button"
-          accessibilityLabel="This was a personal charge — I'll pay it back"
-          className="active:opacity-70"
-        >
-          <Text className="text-2xs font-semibold text-accent underline">
-            It was personal — I&apos;ll pay it back
-          </Text>
-        </Pressable>
+        />
       </View>
     );
   }
@@ -1334,15 +1321,15 @@ export function PersonalChargeEscape({
     <View className="mt-2 gap-2 rounded-md border border-border bg-sunken px-3 py-2.5">
       <Text className="text-2xs text-ink">
         <Text className="font-semibold">Flag this as a personal charge?</Text>{" "}
-        It stops owing a coding, it stops counting as Public Worship&apos;s
-        spending, and it moves to what you owe back — payable from the Cards
-        tab. Don&apos;t explain a personal charge in the business purpose
-        instead: that sentence publishes, and the charge would still be counted
-        as ours.
+        No receipt or expense coding will be required. The amount becomes money
+        you owe Public Worship, and you can repay it through the repayment
+        portal. Confirming this does not take a payment. If you entered expense
+        details, they will not be submitted. Ask finance if you mark a charge by
+        mistake.
       </Text>
-      <View className="flex-row gap-2">
+      <View className="flex-row flex-wrap gap-2">
         <Button
-          title="Yes, it was personal"
+          title="Confirm personal charge"
           size="sm"
           loading={busy}
           onPress={() => {
