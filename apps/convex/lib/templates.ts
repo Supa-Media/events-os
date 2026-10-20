@@ -9,6 +9,7 @@ import {
   DEFAULT_COLUMNS,
   DAY_OFFSET_MODULES,
   DEFAULT_ROLES,
+  GRID_CORE_MODULE_KEYS,
   MODULE_READY_PHASE,
   computeDueDate,
   defaultStatusValue,
@@ -77,6 +78,59 @@ export async function seedModuleColumns(
       order: i,
     });
   }
+}
+
+/**
+ * Seed an event module's columns from the core module's DEFAULT_COLUMNS, but
+ * only when the module has none yet — idempotent, so it is safe on turn-on, on
+ * create, and in a backfill. The event-scope twin of `seedModuleColumns`.
+ */
+export async function ensureEventModuleColumns(
+  ctx: any,
+  eventId: Id<"events">,
+  module: string,
+) {
+  const existing = await ctx.db
+    .query("eventColumns")
+    .withIndex("by_event_module", (q: any) =>
+      q.eq("eventId", eventId).eq("module", module),
+    )
+    .first();
+  if (existing) return false;
+  const defaults = DEFAULT_COLUMNS[module as ModuleKey] ?? [];
+  for (let i = 0; i < defaults.length; i++) {
+    const c = defaults[i];
+    await ctx.db.insert("eventColumns", {
+      eventId,
+      module,
+      key: c.key,
+      label: c.label,
+      kind: c.kind,
+      type: c.type,
+      options: c.options,
+      config: c.config,
+      isVisible: c.isVisible,
+      order: i,
+    });
+  }
+  return defaults.length > 0;
+}
+
+/** Template-scope twin of `ensureEventModuleColumns`. */
+export async function ensureTemplateModuleColumns(
+  ctx: any,
+  eventTypeId: Id<"eventTypes">,
+  module: string,
+) {
+  const existing = await ctx.db
+    .query("templateColumns")
+    .withIndex("by_eventType_module", (q: any) =>
+      q.eq("eventTypeId", eventTypeId).eq("module", module),
+    )
+    .first();
+  if (existing) return false;
+  await seedModuleColumns(ctx, eventTypeId, module);
+  return (DEFAULT_COLUMNS[module as ModuleKey] ?? []).length > 0;
 }
 
 /** Map a templateModules / eventModules row to a shared CustomModule. */
@@ -461,10 +515,18 @@ const BLANK_TEMPLATE_DISABLED_CORE_MODULES = Object.keys(MODULE_READY_PHASE);
 
 /**
  * Get-or-create the chapter's ad-hoc "Blank event" template: a real
- * `eventTypes` row with zero roles/items/columns/modules, so
- * `instantiateEvent` clones nothing onto events spun up from it — the
- * "standard empty areas, no cloned tasks/roles" ad-hoc path reuses the exact
- * same templating engine as every named template, no forked create path.
+ * `eventTypes` row with zero roles/items/modules, so `instantiateEvent` clones
+ * no tasks or roles onto events spun up from it — the "standard empty areas,
+ * no cloned tasks/roles" ad-hoc path reuses the exact same templating engine
+ * as every named template, no forked create path.
+ *
+ * It DOES carry the default columns of its active grid areas (Tasks, Debrief),
+ * exactly like `templates.create` seeds them for a named template. Without
+ * them a blank event's Tasks grid had no columns at all — "+ Add tasks row"
+ * made a row with nothing to type into (2026-10-20). Existing rows self-heal
+ * here too, so a chapter whose blank template predates this gets its columns
+ * on its next blank event; migration 0094 repairs events already created.
+ *
  * Idempotent per chapter via the `by_chapter_slug` index (one row per
  * chapter, lazily made on first use rather than seeded up front).
  */
@@ -480,7 +542,10 @@ export async function getOrCreateBlankTemplate(
       q.eq("chapterId", chapterId).eq("slug", BLANK_TEMPLATE_SLUG),
     )
     .first();
-  if (existing) return existing;
+  if (existing) {
+    await ensureBlankTemplateColumns(ctx, existing);
+    return existing;
+  }
 
   const eventTypeId = await ctx.db.insert("eventTypes", {
     chapterId,
@@ -497,7 +562,21 @@ export async function getOrCreateBlankTemplate(
     createdAt: now,
     updatedAt: now,
   });
-  return await ctx.db.get(eventTypeId);
+  const created = await ctx.db.get(eventTypeId);
+  await ensureBlankTemplateColumns(ctx, created);
+  return created;
+}
+
+/** Default columns for every grid area the blank template leaves active. */
+export async function ensureBlankTemplateColumns(
+  ctx: any,
+  eventType: { _id: Id<"eventTypes">; disabledCoreModules?: string[] },
+) {
+  const disabled = new Set(eventType.disabledCoreModules ?? []);
+  for (const m of GRID_CORE_MODULE_KEYS) {
+    if (disabled.has(m)) continue;
+    await ensureTemplateModuleColumns(ctx, eventType._id, m);
+  }
 }
 
 /**

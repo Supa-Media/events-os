@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { runBlankEventDefaultColumns } from "../migrations/0094_blank_event_default_columns";
 
 /**
  * The ad-hoc "Blank event" creation path — fixes the live blocker where the
@@ -15,7 +16,7 @@ import type { Id } from "../_generated/dataModel";
  * `events.createFromTemplate`'s `eventTypeId` is now optional; omitting it
  * resolves (get-or-creates, idempotently) the chapter's "Blank event"
  * template via `getOrCreateBlankTemplate` — a real `eventTypes` row with zero
- * roles/items/columns/modules, so the SAME templating engine
+ * roles/items/modules (only its active areas' default columns), so the SAME templating engine
  * (`instantiateEvent`) that powers every named template also powers the
  * ad-hoc path; the blank template's emptiness is what makes the clone a
  * no-op. Money-attribution (#202) plumbing is untouched — it operates on
@@ -86,10 +87,85 @@ describe("events.createFromTemplate — ad-hoc Blank event (no eventTypeId)", ()
       ctx.db.query("eventRoles").withIndex("by_event", (q) => q.eq("eventId", eventId)).collect(),
     );
     expect(roles).toHaveLength(0);
+  });
+
+  // A blank event's Tasks and Debrief areas are active, so they need their
+  // default columns — without them "+ Add tasks row" made a row with nothing
+  // to type into (2026-10-20). The disabled, ready-gated areas get none until
+  // "+ Area" turns them on.
+  test("its active grid areas (Tasks, Debrief) get their default columns; disabled areas get none", async () => {
+    const s = await setupChapter(newT());
+    await seedSelfPerson(s);
+
+    const eventId = (await s.as.mutation(api.events.createFromTemplate, {
+      name: "Brooklyn's Got Talent",
+      eventDate: tsInMonth(2026, 12),
+    })) as Id<"events">;
+
     const columns = await run(s.t, (ctx) =>
       ctx.db.query("eventColumns").withIndex("by_event", (q) => q.eq("eventId", eventId)).collect(),
     );
-    expect(columns).toHaveLength(0);
+    const byModule = (m: string) =>
+      columns.filter((c) => c.module === m).map((c) => c.key);
+    expect(new Set(columns.map((c) => c.module))).toEqual(
+      new Set(["planning_doc", "retro"]),
+    );
+    expect(byModule("planning_doc")).toEqual(
+      expect.arrayContaining(["title", "status"]),
+    );
+    expect(byModule("retro").length).toBeGreaterThan(0);
+  });
+
+  test("migration 0094 repairs a blank template and event created before the fix, and leaves a populated module alone", async () => {
+    const s = await setupChapter(newT());
+    await seedSelfPerson(s);
+    const eventId = (await s.as.mutation(api.events.createFromTemplate, {
+      name: "Old ad-hoc",
+      eventDate: tsInMonth(2026, 8),
+    })) as Id<"events">;
+    const event = await run(s.t, (ctx) => ctx.db.get(eventId));
+    const blankId = event!.eventTypeId as Id<"eventTypes">;
+
+    // Recreate the pre-fix state: no Tasks columns anywhere, and a Debrief
+    // grid someone trimmed to a single column.
+    await run(s.t, async (ctx) => {
+      for (const c of await ctx.db
+        .query("templateColumns")
+        .withIndex("by_eventType", (q) => q.eq("eventTypeId", blankId))
+        .collect()) {
+        await ctx.db.delete(c._id);
+      }
+      const evCols = await ctx.db
+        .query("eventColumns")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId))
+        .collect();
+      const keepRetro = evCols.find((c) => c.module === "retro");
+      for (const c of evCols) {
+        if (c._id !== keepRetro?._id) await ctx.db.delete(c._id);
+      }
+    });
+
+    const res = await run(s.t, (ctx) => runBlankEventDefaultColumns(ctx));
+    expect(res).toEqual({ templates: 1, events: 1 });
+
+    const after = await run(s.t, (ctx) =>
+      ctx.db.query("eventColumns").withIndex("by_event", (q) => q.eq("eventId", eventId)).collect(),
+    );
+    expect(after.filter((c) => c.module === "planning_doc").length).toBeGreaterThan(0);
+    expect(after.filter((c) => c.module === "retro")).toHaveLength(1);
+    const tmplCols = await run(s.t, (ctx) =>
+      ctx.db
+        .query("templateColumns")
+        .withIndex("by_eventType", (q) => q.eq("eventTypeId", blankId))
+        .collect(),
+    );
+    expect(new Set(tmplCols.map((c) => c.module))).toEqual(
+      new Set(["planning_doc", "retro"]),
+    );
+
+    // Idempotent.
+    const again = await run(s.t, (ctx) => runBlankEventDefaultColumns(ctx));
+    expect(again).toEqual({ templates: 1, events: 0 });
   });
 
   test("get-or-creates ONE blank template per chapter — idempotent across repeated ad-hoc creations", async () => {

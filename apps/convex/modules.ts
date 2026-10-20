@@ -16,12 +16,10 @@ import { Id } from "./_generated/dataModel";
 import { v } from "convex/values";
 import {
   CORE_MODULES,
-  DEFAULT_COLUMNS,
   DEFAULT_CUSTOM_COLUMNS,
   RESERVED_TAB_KEYS,
   resolveActiveModules,
   disabledCoreModules as resolveDisabledCore,
-  type ModuleKey,
   type ModuleOverride,
 } from "@events-os/shared";
 import {
@@ -35,6 +33,8 @@ import {
   maxOrder,
   bumpVersion,
   seedModuleColumns,
+  ensureEventModuleColumns,
+  ensureTemplateModuleColumns,
   templateModuleState,
   eventModuleState,
   getPersonForUser,
@@ -433,13 +433,7 @@ async function ensureTemplateCoreColumns(
 ) {
   const def = CORE_MODULES.find((m) => m.key === key);
   if (!def || def.surface !== "grid") return;
-  const existing = await ctx.db
-    .query("templateColumns")
-    .withIndex("by_eventType_module", (q) =>
-      q.eq("eventTypeId", eventTypeId).eq("module", key),
-    )
-    .first();
-  if (!existing) await seedModuleColumns(ctx, eventTypeId, key);
+  await ensureTemplateModuleColumns(ctx, eventTypeId, key);
 }
 
 async function ensureEventCoreColumns(
@@ -449,29 +443,7 @@ async function ensureEventCoreColumns(
 ) {
   const def = CORE_MODULES.find((m) => m.key === key);
   if (!def || def.surface !== "grid") return;
-  const existing = await ctx.db
-    .query("eventColumns")
-    .withIndex("by_event_module", (q) =>
-      q.eq("eventId", eventId).eq("module", key),
-    )
-    .first();
-  if (existing) return;
-  const defaults = DEFAULT_COLUMNS[key as ModuleKey] ?? [];
-  for (let i = 0; i < defaults.length; i++) {
-    const c = defaults[i];
-    await ctx.db.insert("eventColumns", {
-      eventId,
-      module: key,
-      key: c.key,
-      label: c.label,
-      kind: c.kind,
-      type: c.type,
-      options: c.options,
-      config: c.config,
-      isVisible: c.isVisible,
-      order: i,
-    });
-  }
+  await ensureEventModuleColumns(ctx, eventId, key);
 }
 
 /** Delete a template module's columns + items by key. */
