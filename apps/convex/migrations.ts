@@ -42,6 +42,7 @@ import { runSplitPersonNamesPage } from "./migrations/0043_split_person_names";
 import { runReimbursementPayoutsOutflowPage } from "./migrations/0044_reimbursement_payouts_outflow";
 import { runBackfillPersonalRepaymentsPage } from "./migrations/0045_backfill_personal_repayments";
 import { runFixGenesisUtcMidnightPage } from "./migrations/0063_fix_genesis_utc_midnight";
+import { runBlankEventColumnsPage } from "./migrations/0094_blank_event_columns";
 
 /**
  * Backfill: ensure every template/event grid module has all of its current
@@ -829,6 +830,12 @@ export const continueBackfillPersonalRepayments = internalMutation({
 export const continueFixGenesisUtcMidnight = internalMutation({
   args: { cursor: v.union(v.string(), v.null()) },
   handler: async (ctx, { cursor }) => await runFixGenesisUtcMidnightPage(ctx, cursor),
+});
+
+/** Drain the bounded repair of columnless scratch-event grids. */
+export const continueBlankEventColumns = internalMutation({
+  args: { cursor: v.union(v.string(), v.null()) },
+  handler: (ctx, { cursor }) => runBlankEventColumnsPage(ctx, cursor),
 });
 
 /**

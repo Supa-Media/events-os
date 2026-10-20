@@ -642,6 +642,10 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
+        text: "Starting an event from scratch gives you an empty Tasks table with the standard columns: Task, Details, Status, Timing, Due, Role, Owner, Cost, and Notes. Select Add tasks row to enter your first task. The Columns menu lets you choose which fields to show.",
+      },
+      {
+        kind: "p",
         text: "The **Tasks** tab is the event's master to-do list. Default owner: the Event Lead. A row with no owner and no role belongs to the **tab owner**, so leaving Owner blank assigns the task to the Event Lead. Book the venue, confirm the worship leader: anything that isn't a message, an item, a recruit, paperwork, or a day-of segment. Not sure where something goes? Put it in Tasks and move it later.",
       },
       {

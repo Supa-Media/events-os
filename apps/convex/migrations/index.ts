@@ -27,6 +27,7 @@
  *    Its own header spells the reasoning out.
  */
 import type { MutationCtx } from "../_generated/server";
+import { blankEventColumns } from "./0094_blank_event_columns";
 
 import { seedLedger } from "./0000_seed_ledger";
 import { cleanupRenamedGuideSlugs } from "./0007_cleanup_renamed_guide_slugs";
@@ -581,4 +582,5 @@ export const MIGRATIONS: Migration[] = [
   // 0093: the stored form gains the required yes/no `monthly_meeting`
   // question (first-Thursday all-team meeting), after `capacity`. See the file.
   applicationFormMonthlyMeetingQuestion,
+  blankEventColumns,
 ];
