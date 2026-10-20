@@ -50,7 +50,10 @@ export function ChargeRow({
    *  (narrow screens, which keep the modal). */
   selected?: boolean;
   onOpen: () => void;
-  onUpload: (storageId: Id<"_storage">, filename: string | null) => Promise<void>;
+  onUpload: (
+    storageId: Id<"_storage">,
+    filename: string | null,
+  ) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
 }) {
   const sentBack = todo.kind === "sent_back";
@@ -82,7 +85,10 @@ export function ChargeRow({
               .join(" · ")}
           </Text>
           {txn.note ? (
-            <Text className="mt-0.5 text-xs italic text-muted" numberOfLines={2}>
+            <Text
+              className="mt-0.5 text-xs italic text-muted"
+              numberOfLines={2}
+            >
               {txn.note}
             </Text>
           ) : null}
@@ -197,15 +203,22 @@ export function ChargeCard({
   onOpen,
   onUpload,
   generateUploadUrl,
+  selected = false,
 }: {
   txn: MyTxnRow;
   todo: ChargeTodo;
+  selected?: boolean;
   onOpen: () => void;
-  onUpload: (storageId: Id<"_storage">, filename: string | null) => Promise<void>;
+  onUpload: (
+    storageId: Id<"_storage">,
+    filename: string | null,
+  ) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
 }) {
   return (
-    <View className="mb-2.5 rounded-xl border border-border bg-raised p-3.5">
+    <View
+      className={`mb-2.5 rounded-xl border p-4 ${selected ? "border-accent bg-accent/5" : "border-border bg-raised"}`}
+    >
       <View className="mb-2 flex-row items-start justify-between gap-3">
         <View className="flex-1">
           <Text className="text-base font-semibold text-ink" numberOfLines={2}>

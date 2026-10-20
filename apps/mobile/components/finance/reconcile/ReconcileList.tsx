@@ -2195,8 +2195,11 @@ export function ReceiptCell({
   readOnly,
   onExceptionFiled,
   libraryPicker,
+  prominent = false,
 }: {
   hasReceipt: boolean;
+  /** Explicit upload action in a form; overdue status is always separate. */
+  prominent?: boolean;
   /**
    * Show the "attach an existing receipt" library picker?
    *
@@ -2237,7 +2240,10 @@ export function ReceiptCell({
    *  genuinely isn't one (a native camera-roll pick). Every caller forwards it
    *  to `finances.attachReceipt` so the receipt row records what it is — see
    *  that mutation's doc. */
-  onUpload: (storageId: Id<"_storage">, filename: string | null) => Promise<void>;
+  onUpload: (
+    storageId: Id<"_storage">,
+    filename: string | null,
+  ) => Promise<void>;
   generateUploadUrl: () => Promise<string>;
   /** What actually backs this row up (`listReconcile`'s `documentation`).
    *  Absent on the call sites that only know `hasReceipt` (MoneyView), which
@@ -2267,7 +2273,11 @@ export function ReceiptCell({
   const [decideOpen, setDecideOpen] = useState(false);
   const attestException = useMutation(api.receiptExceptions.attest);
 
-  async function uploadBlob(blob: Blob, contentType: string, filename: string | null) {
+  async function uploadBlob(
+    blob: Blob,
+    contentType: string,
+    filename: string | null,
+  ) {
     setBusy(true);
     try {
       const uploadUrl = await generateUploadUrl();
@@ -2292,7 +2302,11 @@ export function ReceiptCell({
     input.onchange = () => {
       const file = input.files?.[0];
       if (file) {
-        void uploadBlob(file, file.type || "application/octet-stream", file.name || null);
+        void uploadBlob(
+          file,
+          file.type || "application/octet-stream",
+          file.name || null,
+        ).catch(alertError);
       }
     };
     input.click();
@@ -2320,7 +2334,7 @@ export function ReceiptCell({
 
   function pick() {
     if (Platform.OS === "web") pickWeb();
-    else void pickNative();
+    else void pickNative().catch(alertError);
   }
 
   if (hasReceipt) {
@@ -2338,6 +2352,8 @@ export function ReceiptCell({
       <>
         <Pressable
           onPress={() => setViewerOpen(true)}
+          accessibilityRole="button"
+          accessibilityLabel="View receipt"
           className="flex-1 flex-row items-center gap-1 px-2 py-1.5 active:opacity-70 web:hover:opacity-90"
         >
           <Icon name="check-circle" size={15} color={colors.success} />
@@ -2402,7 +2418,9 @@ export function ReceiptCell({
     return (
       <View
         className="flex-1 flex-row items-center gap-1 px-2 py-1.5"
-        accessibilityLabel={documentationExemptionLine(documentation.exemptReason)}
+        accessibilityLabel={documentationExemptionLine(
+          documentation.exemptReason,
+        )}
       >
         <Icon name="file-text" size={14} color={colors.muted} />
         <Text className="flex-1 text-sm text-muted" numberOfLines={1}>
@@ -2417,31 +2435,40 @@ export function ReceiptCell({
   // actually carries.
   const escalated = !isPersonal && reminderStage === "escalated";
   const flagged = !isPersonal && reminderStage === "flagged";
-  const tint = escalated ? colors.danger : flagged ? colors.warn : colors.muted;
-  const label = busy
-    ? "Uploading…"
-    : escalated
-      ? "Day 3 overdue"
-      : flagged
-        ? "Reminder sent"
-        : "Upload";
-
   return (
     <>
-      <View className="flex-1 flex-row items-center gap-1 px-2 py-1.5">
-        <Pressable
-          onPress={pick}
-          disabled={busy}
-          className="flex-row items-center gap-1 active:opacity-70 web:hover:opacity-90"
-        >
-          <Icon name={escalated ? "alert-triangle" : "upload"} size={14} color={tint} />
+      <View className={`flex-1 gap-2 ${prominent ? "" : "px-2 py-1.5"}`}>
+        {!busy && (escalated || flagged) ? (
           <Text
-            className={`text-sm ${escalated ? "text-danger" : flagged ? "text-warn" : "text-muted"}`}
+            className={`text-xs ${escalated ? "text-danger" : "text-warn"}`}
           >
-            {label}
+            {escalated ? "Receipt overdue · Day 3" : "Receipt reminder sent"}
           </Text>
-        </Pressable>
-        {/* Attach an EXISTING receipt instead of uploading a new one — opens
+        ) : null}
+        <View className="flex-row flex-wrap items-center gap-2">
+          {prominent ? (
+            <Button
+              title="Upload receipt"
+              icon="upload"
+              variant="secondary"
+              loading={busy}
+              onPress={pick}
+            />
+          ) : (
+            <Pressable
+              onPress={pick}
+              disabled={busy}
+              accessibilityRole="button"
+              accessibilityLabel="Upload receipt"
+              className="flex-row items-center gap-1 active:opacity-70 web:hover:opacity-90"
+            >
+              <Icon name="upload" size={14} color={colors.accent} />
+              <Text className="text-sm font-medium text-accent">
+                {busy ? "Uploading…" : "Upload"}
+              </Text>
+            </Pressable>
+          )}
+          {/* Attach an EXISTING receipt instead of uploading a new one — opens
             the searchable library picker. Only when we know which transaction
             (see the prop doc); hidden while an upload is in flight.
             ALSO hidden for a cardholder (`libraryPicker={false}`): every query
@@ -2451,49 +2478,55 @@ export function ReceiptCell({
             A cardholder reaches their own inbound receipts through the
             suggestions in the coding sheet instead, which is the member-safe
             read (`receipts.suggestedForTransaction`). */}
-        {transactionId && !busy && libraryPicker !== false ? (
-          <Pressable
-            onPress={() => setAttachOpen(true)}
-            hitSlop={6}
-            accessibilityLabel="Attach an existing receipt"
-            className="ml-1 active:opacity-70 web:hover:opacity-90"
-          >
-            <Icon name="search" size={13} color={colors.faint} />
-          </Pressable>
-        ) : null}
-        {/* "There is no receipt for this" — the third option alongside upload
+          {transactionId && !busy && libraryPicker !== false ? (
+            <Pressable
+              onPress={() => setAttachOpen(true)}
+              hitSlop={6}
+              accessibilityLabel="Attach an existing receipt"
+              className="ml-1 active:opacity-70 web:hover:opacity-90"
+            >
+              <Icon name="search" size={13} color={colors.faint} />
+            </Pressable>
+          ) : null}
+          {/* "There is no receipt for this" — the third option alongside upload
             and search, right where a bookkeeper already is. Before this it
             existed only in the dashboard drill-down's detail panel, which is
             not where anyone reconciles. */}
-        {transactionId && !busy && documentation ? (
-          documentation.pendingReason ? (
-            // Was inert text. Filing an exception worked from the grid but deciding
-            // one only existed in the dashboard drill-down's detail panel — the same
-            // asymmetry noted above for filing, and it stranded exactly the person
-            // working the receipt chase.
-            <Pressable
-              onPress={() => setDecideOpen(true)}
-              hitSlop={6}
-              accessibilityLabel={
-                readOnly ? "View this receipt exception" : "Decide this receipt exception"
-              }
-              className="ml-1 active:opacity-70 web:hover:opacity-90"
-            >
-              <Text className="text-2xs text-warn underline" numberOfLines={1}>
-                Awaiting approval
-              </Text>
-            </Pressable>
-          ) : (
-            <Pressable
-              onPress={() => setNoDocOpen(true)}
-              hitSlop={6}
-              accessibilityLabel="There is no receipt for this"
-              className="ml-1 active:opacity-70 web:hover:opacity-90"
-            >
-              <Text className="text-2xs text-faint">No receipt</Text>
-            </Pressable>
-          )
-        ) : null}
+          {transactionId && !busy && documentation ? (
+            documentation.pendingReason ? (
+              // Was inert text. Filing an exception worked from the grid but deciding
+              // one only existed in the dashboard drill-down's detail panel — the same
+              // asymmetry noted above for filing, and it stranded exactly the person
+              // working the receipt chase.
+              <Pressable
+                onPress={() => setDecideOpen(true)}
+                hitSlop={6}
+                accessibilityLabel={
+                  readOnly
+                    ? "View this receipt exception"
+                    : "Decide this receipt exception"
+                }
+                className="ml-1 active:opacity-70 web:hover:opacity-90"
+              >
+                <Text
+                  className="text-2xs text-warn underline"
+                  numberOfLines={1}
+                >
+                  Awaiting approval
+                </Text>
+              </Pressable>
+            ) : (
+              <Pressable
+                onPress={() => setNoDocOpen(true)}
+                hitSlop={6}
+                accessibilityLabel="There is no receipt for this"
+                className="ml-1 active:opacity-70 web:hover:opacity-90"
+              >
+                <Text className="text-2xs text-faint">No receipt</Text>
+              </Pressable>
+            )
+          ) : null}
+        </View>
       </View>
       {decideOpen && transactionId ? (
         <ReceiptExceptionDecideModal

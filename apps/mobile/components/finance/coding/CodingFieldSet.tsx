@@ -78,11 +78,12 @@ export type CodingCategoryContext =
  *  EXPENSE TYPE (a proof-question branch); the two vocabularies looked like
  *  they disagreed because nothing said they were the same axis. */
 export const TYPE_HINTS: Record<ExpenseType, string> = {
-  general: "Supplies, equipment, software, fees — anything without special IRS fields.",
+  general: "Supplies, equipment, software, fees, and other purchases.",
   travel:
-    "Getting somewhere — fares, gas, parking, tolls (your Transportation category lands here). Asks where from and where to.",
+    "Fares, fuel, parking, or tolls. Add the starting and destination cities.",
   meal: "Food or drinks for people — asks who was there.",
-  lodging: "A hotel or overnight stay — asks where you stayed, and always needs an itemized receipt.",
+  lodging:
+    "A hotel or overnight stay — asks where you stayed, and always needs an itemized receipt.",
 };
 
 /** The chip's own short label. Deliberately NOT `EXPENSE_TYPE_LABELS` for
@@ -116,11 +117,6 @@ export interface CodingFormValue {
  * `TransactionCodingModal`'s original module doc for the full quote; kept
  * here now that the picker itself lives in this file.
  */
-const BUDGET_GUIDANCE = [
-  "Bought for a specific event? That event's budget.",
-  "Team meeting, subscription, or general running cost? Operating.",
-  "Equipment that isn't tied to one event? The annual equipment budget.",
-];
 
 /** What a bulk-add path (`startWithTeam`/`appendAttendees`) actually did
  *  (`attendeePaste.ts#mergeBulkAttendees`) — `added < requested` only ever
@@ -270,7 +266,9 @@ export function useCodingFormState({
       categoryHint: category?.expenseTypeHint ?? null,
     }),
   );
-  const lastHintRef = useRef<ExpenseType | null>(category?.expenseTypeHint ?? null);
+  const lastHintRef = useRef<ExpenseType | null>(
+    category?.expenseTypeHint ?? null,
+  );
   useEffect(() => {
     const hint = category?.expenseTypeHint ?? null;
     if (hint === lastHintRef.current) return;
@@ -321,7 +319,11 @@ export function useCodingFormState({
     if (headcount == null) return [];
     if (namesMode !== true && !overflowPruning) return [];
     return Array.from(
-      { length: overflowPruning ? headcount : Math.min(headcount, namesMaxHeadcount) },
+      {
+        length: overflowPruning
+          ? headcount
+          : Math.min(headcount, namesMaxHeadcount),
+      },
       (_, i) => attendees[i] ?? { name: "", affiliation: "team" as const },
     );
   }, [namesMode, overflowPruning, headcount, namesMaxHeadcount, attendees]);
@@ -349,7 +351,8 @@ export function useCodingFormState({
    */
   function removeAttendeeRow(index: number) {
     const targetHeadcount = headcount;
-    const wasAtHeadcount = targetHeadcount != null && rows.length === targetHeadcount;
+    const wasAtHeadcount =
+      targetHeadcount != null && rows.length === targetHeadcount;
     // Same length rule the `rows` memo uses — uncapped while overflow-pruning
     // (every row must stay removable on the way down to the threshold).
     const rowLength =
@@ -579,26 +582,23 @@ export function ExpenseTypeChips({
   category?: CodingCategoryContext;
 }) {
   const hint = category?.expenseTypeHint;
-  const followLine =
-    category === undefined
-      ? "This only decides which questions you get asked — it isn't a category, and nothing picks it for you."
-      : hint
-        ? `Proof questions — follows your ${category?.name ?? "category"} category; change it below if that's wrong.`
-        : "Proof questions — pick whichever fits; your category doesn't set one, so nothing picks it for you.";
+  const followLine = hint
+    ? `Suggested by ${category?.name ?? "your category"}. Choose another type if needed.`
+    : "Choose what you bought. Travel, meals, and stays need a few extra details.";
 
   return (
-    <View className="mb-4">
+    <View className="mb-1">
       {/* FINDING 6 (UX audit, 2026-08-12): this used to read "What kind of
           spend?" (the category picker just above) immediately followed by
           "What kind of expense?" (this chip row) — two near-identical
           questions back to back. This one is a QUESTION-SET picker, not a
           category, so it's renamed to say what it actually decides. */}
       <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
-        Which proof questions apply?
+        Expense type
       </Text>
       <Text className="mb-2 text-2xs text-muted">{followLine}</Text>
       <RadioGroup
-        accessibilityLabel="Which proof questions apply?"
+        accessibilityLabel="Expense type"
         horizontal
         className="flex-row flex-wrap gap-1.5"
       >
@@ -611,7 +611,9 @@ export function ExpenseTypeChips({
               onSelect={() => form.setExpenseType(t)}
               accessibilityLabel={CHIP_LABELS[t]}
               className={`rounded-full border px-3 py-1.5 active:opacity-70 ${
-                selected ? "border-accent bg-accent/10" : "border-border bg-sunken"
+                selected
+                  ? "border-accent bg-accent/10"
+                  : "border-border bg-sunken"
               }`}
             >
               <Text
@@ -708,15 +710,24 @@ export function CodingFieldSet({
       ...(o.projects.length
         ? [{ value: "__g_projects", label: "Projects", header: true }]
         : []),
-      ...o.projects.map((p) => ({ value: p.budgetId as string, label: p.label })),
+      ...o.projects.map((p) => ({
+        value: p.budgetId as string,
+        label: p.label,
+      })),
       ...(chapterRecurring.length
         ? [{ value: "__g_op", label: "Operating · Chapter", header: true }]
         : []),
-      ...chapterRecurring.map((r) => ({ value: r.budgetId as string, label: r.label })),
+      ...chapterRecurring.map((r) => ({
+        value: r.budgetId as string,
+        label: r.label,
+      })),
       ...(centralRecurring.length
         ? [{ value: "__g_central", label: "Operating · Central", header: true }]
         : []),
-      ...centralRecurring.map((r) => ({ value: r.budgetId as string, label: r.label })),
+      ...centralRecurring.map((r) => ({
+        value: r.budgetId as string,
+        label: r.label,
+      })),
     ];
   }, [budgetOptions]);
 
@@ -742,42 +753,19 @@ export function CodingFieldSet({
 
       {budgetItems.length > 1 ? (
         <View className="mt-4">
-          {/* FINDING 9 (UX audit, 2026-08-12): one clause tying the three
-              buckets (events, operating, equipment) together before the
-              guidance below unpacks them — the picker used to jump straight
-              into "which of these three?" with nothing framing it as the
-              last step. */}
-          <Text className="mb-1.5 text-2xs text-muted">
-            {reviewing
-              ? "Which budget pays for it — yours to set."
-              : "Last one — which budget pays for it."}
-          </Text>
           <Select
-            label="Which budget did this come out of?"
+            label="Budget"
             value={form.budgetId || ""}
             options={budgetItems}
             onChange={form.setBudgetId}
             placeholder={reviewing ? "None yet" : "Not sure yet"}
             searchable
           />
-          <View className="mt-1.5 gap-0.5">
-            {BUDGET_GUIDANCE.map((line) => (
-              <Text key={line} className="text-2xs text-muted">
-                {line}
-              </Text>
-            ))}
-            {/* THE ONE LINE THAT INVERTS BY AUDIENCE. Telling a cardholder to
-                leave it blank is right — a guess is worse than a blank, and
-                the finance team really does set it. Telling the FINANCE TEAM
-                the same thing would point them at themselves, and as of the
-                budget gate on approval it would also be false: leaving it
-                blank is the one thing that stops them approving. */}
-            <Text className="text-2xs text-muted">
-              {reviewing
-                ? "A charge can't be approved without one — this is the step, and you don't have to send the coding back to take it."
-                : "Not sure? Leave it — the finance team will set it, and a guess is worse than a blank."}
-            </Text>
-          </View>
+          <Text className="mt-1.5 text-xs text-muted">
+            {reviewing
+              ? "Choose the budget that covers this expense before approving."
+              : "Choose the event, project, or operating budget this supported. Unsure? Leave it for finance."}
+          </Text>
         </View>
       ) : null}
 
@@ -843,15 +831,17 @@ export function CodingFieldSet({
               many?" by itself (bulk adds set headcount to the merged
               total), so demanding a number before offering the roster tools
               would put the steps in the wrong order. */}
-          {form.namesMode === true || form.overflowPruning || form.headcount == null ? (
+          {form.namesMode === true ||
+          form.overflowPruning ||
+          form.headcount == null ? (
             <View className="mt-3">
               <Text className="mb-1 text-2xs font-semibold uppercase tracking-wide text-muted">
                 Who was there?
               </Text>
               <Text className="mb-2 text-2xs text-muted">
-                The IRS requires who attended and their relationship to the
-                org — that&apos;s the business-relationship element, and
-                it&apos;s the one a receipt can never carry.
+                The IRS requires who attended and their relationship to the org
+                — that&apos;s the business-relationship element, and it&apos;s
+                the one a receipt can never carry.
               </Text>
               <View className="mb-2 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
                 <Icon name="lock" size={13} color={colors.muted} />
@@ -879,8 +869,8 @@ export function CodingFieldSet({
                 numberOfLines={2}
               />
               <Text className="mt-1 text-2xs text-muted">
-                An identifiable group is enough — no names needed. It has to
-                be identifiable, though: an auditor accepts &quot;volunteers
+                An identifiable group is enough — no names needed. It has to be
+                identifiable, though: an auditor accepts &quot;volunteers
                 writing and producing the album&quot; and rejects &quot;some
                 people&quot;. This one publishes.
               </Text>
@@ -924,51 +914,31 @@ export function CodingFieldSet({
 
   return (
     <>
-      <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
-        What was it for?
-      </Text>
       <TextField
+        label="What did you buy, and why?"
+        accessibilityLabel="What did you buy, and why?"
         value={form.businessPurpose}
         onChangeText={form.setBusinessPurpose}
         placeholder={
           expenseType === "meal"
-            ? "e.g. Meal for volunteers writing and producing the album"
-            : 'e.g. Travel to NY to film the Eden event — say what, for which event or project, and why'
+            ? "e.g. Dinner for volunteers preparing the Eden event"
+            : "e.g. Conference registration to develop our worship team"
         }
         multiline
         numberOfLines={3}
       />
-      <View className="mt-1.5 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2">
+      <Text className="mt-1 text-xs text-muted">
+        Describe the purchase and the Public Worship work it supported, in your
+        own words (at least {minPurposeLength} characters).
+      </Text>
+      <View className="mt-2 flex-row items-start gap-2 rounded-lg bg-sunken px-3 py-2">
         <Icon name="globe" size={13} color={colors.muted} />
-        {/* FINDING 7 (UX audit, 2026-08-12): "This sentence publishes" led
-            with the consequence before the reason, which lands cold. Lead
-            with the why — a public page this connects to — in one short
-            sentence, then the consequence. */}
-        <Text className="flex-1 text-2xs text-muted">
-          <Text className="font-semibold text-ink">
-            Public Worship publishes every transaction at
-            publicworship.life/finances
-          </Text>{" "}
-          — this sentence is what that page prints, word for word, so write
-          it for a stranger reading it next year. &quot;Travel to NY to film
-          the Eden event&quot;, not &quot;bus to NY&quot;. In your own words,
-          at least {minPurposeLength} characters.
-        </Text>
-      </View>
-
-      <View className="mt-1.5 flex-row items-start gap-2">
-        <Icon name="user-x" size={12} color={colors.muted} />
-        <Text className="flex-1 text-2xs text-muted">
-          <Text className="font-semibold text-ink">Keep people out of it.</Text>{" "}
-          No names, addresses, phone numbers or anything else that identifies
-          someone
+        <Text className="flex-1 text-xs text-muted">
+          This explanation appears on the public ledger. Leave out names,
+          addresses, and other personal details.
           {expenseType === "meal"
-            ? " — put who was there in the attendee list below, where names stay internal and only the breakdown (“5 volunteers, 3 community members”) is ever published."
-            : expenseType === "travel"
-              ? " — the route publishes at city level, so “to LIRR in Rosedale” is fine and “to Michael’s place” is not."
-              : expenseType === "lodging"
-                ? " — the place publishes at city level, so “Chicago” is fine and “Michael’s place” is not."
-                : " — describe the work, not the person."}
+            ? " Add attendee names in the private list below."
+            : ""}
         </Text>
       </View>
 
@@ -1068,8 +1038,8 @@ function AttendeeRosterEditor({
               {namedCount} people named — names are only needed up to{" "}
               {form.namesMaxHeadcount}.
             </Text>{" "}
-            ✕ whoever wasn&apos;t there and the list submits as names — or
-            keep the headcount and describe the group below instead.
+            ✕ whoever wasn&apos;t there and the list submits as names — or keep
+            the headcount and describe the group below instead.
           </Text>
         </View>
       ) : null}
@@ -1207,7 +1177,9 @@ function AttendeeRosterEditor({
           className="flex-row items-center gap-1.5 self-start active:opacity-70"
         >
           <Icon name="clipboard" size={13} color={colors.accent} />
-          <Text className="text-2xs font-semibold text-accent">Paste a list</Text>
+          <Text className="text-2xs font-semibold text-accent">
+            Paste a list
+          </Text>
         </Pressable>
       )}
     </View>
@@ -1365,8 +1337,8 @@ export function PersonalChargeEscape({
         It stops owing a coding, it stops counting as Public Worship&apos;s
         spending, and it moves to what you owe back — payable from the Cards
         tab. Don&apos;t explain a personal charge in the business purpose
-        instead: that sentence publishes, and the charge would still be
-        counted as ours.
+        instead: that sentence publishes, and the charge would still be counted
+        as ours.
       </Text>
       <View className="flex-row gap-2">
         <Button
