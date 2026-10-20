@@ -642,7 +642,7 @@ export const EVENTS_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "The **Tasks** tab is the event's master to-do list. Default owner: the Event Lead. A row with no owner and no role belongs to the **tab owner**, so leaving Owner blank assigns the task to the Event Lead. Book the venue, confirm the worship leader: anything that isn't a message, an item, a recruit, paperwork, or a day-of segment. Not sure where something goes? Put it in Tasks and move it later.",
+        text: "The **Tasks** tab is the event's master to-do list. Scratch events start with standard task columns. Select **Add tasks row** to enter a task; use **Columns** to show or hide fields. Default owner: the Event Lead. A row with no owner and no role belongs to the **tab owner**, so leaving Owner blank assigns the task to the Event Lead. Book the venue, confirm the worship leader: anything that isn't a message, an item, a recruit, paperwork, or a day-of segment. Not sure where something goes? Put it in Tasks and move it later.",
       },
       {
         kind: "p",

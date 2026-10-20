@@ -4,7 +4,8 @@
  * Typed loosely (`ctx: any`) so this file doesn't depend on Convex's generated
  * types — it's pure helper code, not a registered function.
  */
-import { Id } from "../_generated/dataModel";
+import { Doc, Id } from "../_generated/dataModel";
+import type { MutationCtx } from "../_generated/server";
 import {
   DEFAULT_COLUMNS,
   DAY_OFFSET_MODULES,
@@ -500,6 +501,36 @@ export async function getOrCreateBlankTemplate(
   return await ctx.db.get(eventTypeId);
 }
 
+/** Blank templates contain no content, but their event grids need editable cells.
+ * Only initialize completely columnless active core grids; preserve every
+ * existing column choice, including hidden columns and custom layouts. */
+export async function ensureBlankEventColumns(
+  ctx: MutationCtx,
+  event: Doc<"events">,
+): Promise<number> {
+  let added = 0;
+  for (const module of await eventActiveModules(ctx, event)) {
+    if (!module.isCore || module.surface !== "grid") continue;
+    const defaults = DEFAULT_COLUMNS[module.key as ModuleKey];
+    if (!defaults) continue;
+    const existing = await ctx.db.query("eventColumns")
+      .withIndex("by_event_module", (q) =>
+        q.eq("eventId", event._id).eq("module", module.key),
+      ).first();
+    if (existing) continue;
+    for (const [order, column] of defaults.entries()) {
+      await ctx.db.insert("eventColumns", {
+        eventId: event._id,
+        module: module.key,
+        ...column,
+        order,
+      });
+      added++;
+    }
+  }
+  return added;
+}
+
 /**
  * THE TEMPLATING ENGINE. Snapshot a template into a live event: insert the
  * event, clone its columns onto the event, then clone its items (back-
@@ -615,6 +646,10 @@ export async function instantiateEvent(
   for (const c of cols) {
     const { _id, _creationTime, eventTypeId: _e, ...rest } = c as any;
     await ctx.db.insert("eventColumns", { eventId, ...rest });
+  }
+
+  if (opts.eventType.isBlank || opts.eventType.slug === BLANK_TEMPLATE_SLUG) {
+    await ensureBlankEventColumns(ctx, (await ctx.db.get(eventId))!);
   }
 
   const items = await ctx.db

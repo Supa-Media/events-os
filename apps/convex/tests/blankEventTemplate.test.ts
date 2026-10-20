@@ -1,9 +1,11 @@
 /// <reference types="vite/client" />
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { DEFAULT_COLUMNS } from "@events-os/shared";
+import { runBlankEventColumnsPage } from "../migrations/0094_blank_event_columns";
 
 /**
  * The ad-hoc "Blank event" creation path — fixes the live blocker where the
@@ -17,8 +19,8 @@ import type { Id } from "../_generated/dataModel";
  * template via `getOrCreateBlankTemplate` — a real `eventTypes` row with zero
  * roles/items/columns/modules, so the SAME templating engine
  * (`instantiateEvent`) that powers every named template also powers the
- * ad-hoc path; the blank template's emptiness is what makes the clone a
- * no-op. Money-attribution (#202) plumbing is untouched — it operates on
+ * ad-hoc path. Event instances get standard columns for their active grids,
+ * while the template remains empty. Money-attribution (#202) operates on
  * `eventType.chapterId` regardless of which template resolved it.
  */
 
@@ -89,7 +91,82 @@ describe("events.createFromTemplate — ad-hoc Blank event (no eventTypeId)", ()
     const columns = await run(s.t, (ctx) =>
       ctx.db.query("eventColumns").withIndex("by_event", (q) => q.eq("eventId", eventId)).collect(),
     );
-    expect(columns).toHaveLength(0);
+    for (const module of ["planning_doc", "retro"] as const) {
+      expect(columns.filter((c) => c.module === module).map((c) => c.key))
+        .toEqual(DEFAULT_COLUMNS[module]!.map((c) => c.key));
+    }
+    expect(new Set(columns.map((c) => c.module)))
+      .toEqual(new Set(["planning_doc", "retro"]));
+    const itemId = await s.as.mutation(api.items.addEventItem, {
+      eventId, module: "planning_doc", title: "Book the venue", offsetDays: -7,
+    });
+    expect(await run(s.t, (ctx) => ctx.db.get(itemId)))
+      .toMatchObject({ title: "Book the venue", dueDate: tsInMonth(2026, 8) - 7 * 86400000 });
+  });
+
+  test("repairs existing blank events once, preserving rows and configured columns", async () => {
+    const s = await setupChapter(newT());
+    const eventId = await s.as.mutation(api.events.createFromTemplate, {
+      name: "Existing scratch event", eventDate: tsInMonth(2026, 12),
+    });
+    await run(s.t, async (ctx) => {
+      const columns = await ctx.db.query("eventColumns")
+        .withIndex("by_event", (q) => q.eq("eventId", eventId)).collect();
+      for (const c of columns) {
+        if (c.module === "planning_doc") await ctx.db.delete(c._id);
+        else await ctx.db.patch(c._id, { isVisible: false, label: "Customized" });
+      }
+    });
+    const itemId = await s.as.mutation(api.items.addEventItem, {
+      eventId, module: "planning_doc", title: "Existing task",
+    });
+    expect(await run(s.t, (ctx) => runBlankEventColumnsPage(ctx, null)))
+      .toMatchObject({ added: DEFAULT_COLUMNS.planning_doc!.length, isDone: true });
+    expect(await run(s.t, (ctx) => runBlankEventColumnsPage(ctx, null)))
+      .toMatchObject({ added: 0 });
+    expect(await run(s.t, (ctx) => ctx.db.get(itemId)))
+      .toMatchObject({ title: "Existing task" });
+    const retro = await run(s.t, (ctx) => ctx.db.query("eventColumns")
+      .withIndex("by_event_module", (q) => q.eq("eventId", eventId).eq("module", "retro")).collect());
+    expect(retro.every((c) => !c.isVisible && c.label === "Customized")).toBe(true);
+  });
+
+  test("repair drains multiple pages, recognizes legacy blanks, and skips named templates", async () => {
+    vi.useFakeTimers();
+    try {
+      const s = await setupChapter(newT());
+      const ids: Id<"events">[] = [];
+      for (const name of ["Legacy blank", "Another blank", "Named template event"]) {
+        ids.push(await s.as.mutation(api.events.createFromTemplate, {
+          name, eventDate: tsInMonth(2026, 12),
+        }));
+      }
+      await run(s.t, async (ctx) => {
+        const first = (await ctx.db.get(ids[0]))!;
+        await ctx.db.patch(first.eventTypeId, { isBlank: undefined });
+        const namedId = await ctx.db.insert("eventTypes", {
+          chapterId: s.chapterId, name: "Named", slug: "named", version: 1,
+          createdBy: s.userId, createdAt: Date.now(), updatedAt: Date.now(),
+        });
+        await ctx.db.patch(ids[2], { eventTypeId: namedId });
+        for (const eventId of ids) {
+          const columns = await ctx.db.query("eventColumns")
+            .withIndex("by_event", (q) => q.eq("eventId", eventId)).collect();
+          for (const c of columns) await ctx.db.delete(c._id);
+        }
+      });
+      expect(await run(s.t, (ctx) => runBlankEventColumnsPage(ctx, null, 1)))
+        .toMatchObject({ isDone: false });
+      await s.t.finishAllScheduledFunctions(() => vi.runAllTimers());
+      for (const [index, eventId] of ids.entries()) {
+        const columns = await run(s.t, (ctx) => ctx.db.query("eventColumns")
+          .withIndex("by_event", (q) => q.eq("eventId", eventId)).collect());
+        expect(columns.length).toBe(index === 2 ? 0 :
+          DEFAULT_COLUMNS.planning_doc!.length + DEFAULT_COLUMNS.retro!.length);
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   test("get-or-creates ONE blank template per chapter — idempotent across repeated ad-hoc creations", async () => {

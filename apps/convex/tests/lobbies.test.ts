@@ -583,6 +583,37 @@ describe("events.myBriefing", () => {
 });
 
 describe("work.myOpenWork", () => {
+  test("a role holder's overdue and upcoming event tasks satisfy the response validator", async () => {
+    const s = await setupChapter(newT());
+    const me = await addPerson(s, "Music Director", { isTeamMember: true });
+    const other = await addPerson(s, "Other", { isTeamMember: true });
+    const eventId = await addEvent(s);
+    const roleId = await addRoleAssignment(s, eventId, me);
+    const now = Date.now();
+    const itemIds = await run(s.t, async (ctx) => {
+      const ids = [];
+      for (const [title, dueDate, ownerPersonId] of [
+        ["Choose songs", now - 2 * DAY, undefined],
+        ["Rehearse", now + 2 * DAY, undefined],
+        ["Someone else's task", now - DAY, other],
+      ] as const) {
+        ids.push(await ctx.db.insert("eventItems", {
+          eventId, chapterId: s.chapterId, module: "planning_doc", roleId,
+          title, dueDate, ownerPersonId, order: ids.length,
+        }));
+      }
+      return ids;
+    });
+    const { as } = await addUser(s, "music@publicworship.life", { personId: me });
+    const result = await as.query(api.work.myOpenWork, {});
+    expect(result?.overdue).toEqual([expect.objectContaining({
+      name: "Choose songs", eventId, itemId: itemIds[0], module: "planning_doc",
+    })]);
+    expect(result?.dueThisWeek).toEqual([expect.objectContaining({
+      name: "Rehearse", eventId, itemId: itemIds[1], module: "planning_doc",
+    })]);
+  });
+
   test("unlinked caller → null", async () => {
     const s = await setupChapter(newT());
     const { as } = await addUser(s, "nobody2@publicworship.life");
