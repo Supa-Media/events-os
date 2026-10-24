@@ -1117,7 +1117,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Emailing captures; tapping attaches",
-        text: "Emailing a receipt CAPTURES it, which you can do at the counter, often before the charge has posted. It doesn't say which charge the receipt belongs to. You attach it with one tap at **/code**, your own page for receipts, coding and flagging your charges. It needs no finance seat and works even if you've never opened the rest of the app.",
+        text: "Emailing a receipt CAPTURES it, which you can do at the counter, often before the charge has posted. It doesn't say which charge the receipt belongs to. You attach it with one tap at **/code**, your own page for receipts, coding and flagging your charges. It needs no finance seat and works even if you've never opened the rest of the app. A charge can hold more than one receipt, and if you attach the wrong file you can remove it there yourself until the coding is approved.",
       },
       {
         kind: "rule",
