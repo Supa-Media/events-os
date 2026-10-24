@@ -18,20 +18,26 @@
  *    `duplicateOfReceiptId` set), an "Archived" flag, and a "linked to N
  *    charges" note when the SAME receipt document backs more than one
  *    transaction.
- *  - per-receipt Detach (confirm first, mirrors `CardholderRow`'s own
- *    destructive-confirm `Alert.alert` idiom) and Replace (upload a new file →
+ *  - per-receipt Remove (confirm first, `confirmAction` — `Alert.alert` is a
+ *    no-op on web, so the old Detach did nothing there) through
+ *    `transactionReceipts.removeReceipt`, and Replace (upload a new file →
  *    `submitUploadedReceipts` → link the new one → detach the old one — a
  *    plain sequential handler, not a single backend call).
  *  - modal-level "Attach an existing receipt" (`ReceiptAttachPicker`) and
- *    "Upload a new receipt" — a transaction can always gain another link,
- *    even from an otherwise-empty state (every receipt just detached).
+ *    "Upload" (several files at once) — a transaction can always gain another
+ *    link, even from an otherwise-empty state (every receipt just removed).
  *
  * `readOnly` (peek / below-bookkeeper role, mirrors `TransactionDetailModal`'s
- * own gate) hides every action below — viewing stays available, nothing here
- * ever renders a dead disabled button.
+ * own gate) hides the bookkeeper actions — Replace, the library picker, the
+ * OCR'd upload pipeline. It does NOT hide what the charge's own person may do
+ * on their own charge (founder, 2026-10-24: "make it so that attachments to
+ * transactions are removeable in case it's the wrong one"): Remove and Upload
+ * follow `transactionReceipts.permissions` instead — whoever may attach may
+ * remove, until the coding is approved (`lib/transactionReceiptAccess.ts`).
+ * Viewing stays available, and nothing here ever renders a dead button.
  */
 import { useMemo, useState } from "react";
-import { Alert, Modal, Platform, Pressable, ScrollView, Text, View } from "react-native";
+import { Modal, Pressable, ScrollView, Text, View } from "react-native";
 import {
   useMutation,
   useQueries,
@@ -40,20 +46,20 @@ import {
 import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-// expo-image-picker is Expo Go-safe (classified `core`); only used on native.
-import * as ImagePicker from "expo-image-picker";
 import { formatCents, type ReceiptSenderClass, type ReceiptSource } from "@events-os/shared";
 import { Badge, type BadgeTone, Button, FileThumbnail, FileViewer, Icon, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { confirmAction } from "../../../lib/confirmAction";
 import { shortDate } from "../reconcile/helpers";
 import { ReceiptAttachPicker } from "./ReceiptAttachPicker";
+import {
+  pickReceiptFiles,
+  uploadReceiptFile,
+  type PickedReceiptFile,
+} from "./pickReceiptFiles";
 
 const TABULAR = { fontVariant: ["tabular-nums" as const] };
-
-/** One file the human picked, on the way to storage. `filename` is `null` only
- *  when there genuinely isn't one (a native camera-roll pick). */
-type Picked = { blob: Blob; contentType: string; filename: string | null };
 
 type ReceiptRow = FunctionReturnType<typeof api.receipts.listForTransaction>[number];
 
@@ -87,8 +93,8 @@ export function ReceiptViewerModal({
 }: {
   transactionId: Id<"transactions">;
   onClose: () => void;
-  /** Peek / below-bookkeeper role — see module doc. Hides every mutating
-   *  action; the receipt list itself always renders. */
+  /** Peek / below-bookkeeper role — see module doc. Hides the bookkeeper
+   *  actions; Remove/Upload follow the caller's own receipt permissions. */
   readOnly?: boolean;
 }) {
   // READ THROUGH `useQueries`, NEVER `useQuery`. `useQuery` THROWS a refusal
@@ -109,6 +115,10 @@ export function ReceiptViewerModal({
         query: api.receipts.listForTransaction,
         args: { transactionId },
       },
+      perms: {
+        query: api.transactionReceipts.permissions,
+        args: { transactionId },
+      },
     }),
     [transactionId],
   );
@@ -118,7 +128,16 @@ export function ReceiptViewerModal({
   const receipts = (Array.isArray(raw) ? raw : undefined) as
     | ReceiptRow[]
     | undefined;
+  const perms = results.perms instanceof Error ? undefined : (results.perms as
+    | FunctionReturnType<typeof api.transactionReceipts.permissions>
+    | undefined);
+  // Bookkeeper hosts keep every action; a member host gets the ones their
+  // own receipt permissions allow.
+  const canRemove = !readOnly || perms?.canRemove === true;
+  const canUpload = !readOnly || perms?.canAttach === true;
   const unlinkReceipt = useMutation(api.receipts.unlinkReceipt);
+  const removeReceipt = useMutation(api.transactionReceipts.removeReceipt);
+  const attachReceipt = useMutation(api.finances.attachReceipt);
   const linkReceipt = useMutation(api.receipts.linkReceipt);
   const submitUploadedReceipts = useMutation(api.receipts.submitUploadedReceipts);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
@@ -130,73 +149,20 @@ export function ReceiptViewerModal({
   const [attachPickerOpen, setAttachPickerOpen] = useState(false);
   const busy = detachingId != null || replacingId != null || uploadingNew;
 
-  // ── Upload plumbing — mirrors `CoverPhotoPicker`/`RequestForm`'s own
-  // web-input / expo-image-picker split, then hands the resulting file to the
-  // receipts pipeline (`submitUploadedReceipts`) rather than a bare attach —
-  // a mass-upload-shaped receipt gets OCR'd/dup-checked like every other one. ──
-  function pickWeb(onPicked: (picked: Picked) => void) {
-    if (typeof document === "undefined") return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*,application/pdf";
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (!file) return;
-      // ONE PICKED FILE = ONE RECEIPT — upload exactly what was picked. This
-      // used to rasterize a scanned PDF client-side and then take
-      // `expanded[0]`, which silently threw away pages 2..N of a multi-page
-      // receipt. Rasterization is the server's job now (see `UploadZone`'s
-      // module doc for the full reasoning).
-      onPicked({
-        blob: file as Blob,
-        contentType: file.type || "application/octet-stream",
-        filename: file.name || null,
-      });
-    };
-    input.click();
-  }
-
-  async function pickNative(onPicked: (picked: Picked) => void) {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.9,
-    });
-    if (result.canceled || !result.assets?.length) return;
-    const asset = result.assets[0];
-    const resp = await fetch(asset.uri);
-    const blob = await resp.blob();
-    onPicked({
-      blob,
-      contentType: asset.mimeType || blob.type || "image/jpeg",
-      filename: asset.fileName ?? null,
-    });
-  }
-
-  function pickFile(onPicked: (picked: Picked) => void) {
-    if (Platform.OS === "web") pickWeb(onPicked);
-    else void pickNative(onPicked);
-  }
-
-  async function uploadReceipt({
-    blob,
-    contentType,
-    filename,
-  }: Picked): Promise<Id<"receipts"> | undefined> {
+  // A bookkeeper host hands each file to the receipts pipeline
+  // (`submitUploadedReceipts`) rather than a bare attach, so it gets OCR'd and
+  // dup-checked like every other receipt. A member host attaches directly
+  // (`finances.attachReceipt`, the own-charge path) — the pipeline's linking
+  // step is bookkeeper-gated.
+  async function uploadReceipt(
+    picked: PickedReceiptFile,
+  ): Promise<Id<"receipts"> | undefined> {
     return run(
       async () => {
-        const uploadUrl = await generateUploadUrl();
-        const res = await fetch(uploadUrl, {
-          method: "POST",
-          headers: { "Content-Type": contentType },
-          body: blob,
-        });
-        const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
+        const storageId = await uploadReceiptFile(picked, generateUploadUrl);
         const [outcome] = await submitUploadedReceipts({
           storageIds: [storageId],
-          // The picked file's real name. Both callers used to omit it, so this
-          // always sent `[null]` — every receipt uploaded from this modal
-          // landed nameless.
-          filenames: [filename],
+          filenames: [picked.filename],
         });
         return outcome.receiptId;
       },
@@ -204,55 +170,72 @@ export function ReceiptViewerModal({
     );
   }
 
-  function handleUploadNew() {
-    pickFile(async (picked) => {
-      setUploadingNew(true);
-      const receiptId = await uploadReceipt(picked);
-      if (receiptId) {
-        await run(() => linkReceipt({ receiptId, transactionId }), {
-          errorTitle: "Couldn't attach receipt",
-        });
-      }
-      setUploadingNew(false);
-    });
-  }
-
-  function handleReplace(oldReceiptId: Id<"receipts">) {
-    pickFile(async (picked) => {
-      setReplacingId(oldReceiptId);
-      const newReceiptId = await uploadReceipt(picked);
-      if (newReceiptId) {
-        const linked = await run(() => linkReceipt({ receiptId: newReceiptId, transactionId }), {
-          errorTitle: "Couldn't attach the replacement",
-        });
-        if (linked !== undefined) {
-          await run(() => unlinkReceipt({ receiptId: oldReceiptId, transactionId }), {
-            errorTitle: "Attached the replacement, but couldn't detach the old receipt",
+  async function handleUploadNew() {
+    const files = await pickReceiptFiles();
+    if (files.length === 0) return;
+    setUploadingNew(true);
+    try {
+      for (const picked of files) {
+        if (!readOnly) {
+          const receiptId = await uploadReceipt(picked);
+          if (!receiptId) break;
+          const linked = await run(() => linkReceipt({ receiptId, transactionId }), {
+            errorTitle: "Couldn't attach receipt",
           });
+          if (linked === undefined) break;
+        } else {
+          const done = await run(
+            async () => {
+              const storageId = await uploadReceiptFile(picked, generateUploadUrl);
+              await attachReceipt({
+                transactionId,
+                storageId,
+                ...(picked.filename ? { filename: picked.filename } : {}),
+              });
+              return true;
+            },
+            { errorTitle: "Couldn't attach receipt" },
+          );
+          if (!done) break;
         }
       }
-      setReplacingId(null);
-    });
+    } finally {
+      setUploadingNew(false);
+    }
   }
 
-  function confirmDetach(receiptId: Id<"receipts">) {
-    Alert.alert(
-      "Detach this receipt?",
-      "This removes it from this transaction — the receipt itself stays in the library and can be re-attached later.",
-      [
-        { text: "Cancel", style: "cancel" },
-        {
-          text: "Detach",
-          style: "destructive",
-          onPress: () => {
-            setDetachingId(receiptId);
-            void run(() => unlinkReceipt({ receiptId, transactionId }), {
-              errorTitle: "Couldn't detach receipt",
-            }).finally(() => setDetachingId(null));
-          },
-        },
-      ],
-    );
+  async function handleReplace(oldReceiptId: Id<"receipts">) {
+    const [picked] = await pickReceiptFiles();
+    if (!picked) return;
+    setReplacingId(oldReceiptId);
+    const newReceiptId = await uploadReceipt(picked);
+    if (newReceiptId) {
+      const linked = await run(() => linkReceipt({ receiptId: newReceiptId, transactionId }), {
+        errorTitle: "Couldn't attach the replacement",
+      });
+      if (linked !== undefined) {
+        await run(() => unlinkReceipt({ receiptId: oldReceiptId, transactionId }), {
+          errorTitle: "Attached the replacement, but couldn't detach the old receipt",
+        });
+      }
+    }
+    setReplacingId(null);
+  }
+
+  function confirmRemove(receiptId: Id<"receipts">) {
+    confirmAction({
+      title: "Remove this receipt?",
+      message:
+        "It comes off this charge. The file itself stays in the receipt library, so it can still be attached to the right charge.",
+      confirmLabel: "Remove",
+      destructive: true,
+      onConfirm: () => {
+        setDetachingId(receiptId);
+        void run(() => removeReceipt({ receiptId, transactionId }), {
+          errorTitle: "Couldn't remove receipt",
+        }).finally(() => setDetachingId(null));
+      },
+    });
   }
 
   return (
@@ -291,12 +274,13 @@ export function ReceiptViewerModal({
                   <View key={r._id}>
                     <ReceiptDetail
                       receipt={r}
-                      readOnly={readOnly}
+                      canReplace={!readOnly}
+                      canRemove={canRemove}
                       busy={busy}
                       detaching={detachingId === r._id}
                       replacing={replacingId === r._id}
-                      onDetach={() => confirmDetach(r._id)}
-                      onReplace={() => handleReplace(r._id)}
+                      onDetach={() => confirmRemove(r._id)}
+                      onReplace={() => void handleReplace(r._id)}
                     />
                     {i < receipts.length - 1 ? (
                       <View className="mt-4 border-b border-border" />
@@ -306,6 +290,13 @@ export function ReceiptViewerModal({
               </View>
             )}
 
+            {perms?.removeLockedByApproval && receipts?.length ? (
+              <Text className="mt-4 text-xs text-muted">
+                This charge&apos;s coding is approved, so its receipts are
+                locked. Ask a bookkeeper if one is wrong.
+              </Text>
+            ) : null}
+
             {toast ? (
               <View className="mt-4">
                 <ToastView toast={toast} onDismiss={dismiss} />
@@ -313,23 +304,25 @@ export function ReceiptViewerModal({
             ) : null}
           </ScrollView>
 
-          {!readOnly ? (
+          {canUpload ? (
             <View className="flex-row justify-end gap-2 border-t border-border px-5 py-4">
+              {!readOnly ? (
+                <Button
+                  title="Attach existing"
+                  variant="secondary"
+                  size="sm"
+                  icon="link"
+                  disabled={busy}
+                  onPress={() => setAttachPickerOpen(true)}
+                />
+              ) : null}
               <Button
-                title="Attach existing"
-                variant="secondary"
-                size="sm"
-                icon="link"
-                disabled={busy}
-                onPress={() => setAttachPickerOpen(true)}
-              />
-              <Button
-                title="Upload new"
+                title="Upload receipts"
                 size="sm"
                 icon="upload"
                 loading={uploadingNew}
                 disabled={busy && !uploadingNew}
-                onPress={handleUploadNew}
+                onPress={() => void handleUploadNew()}
               />
             </View>
           ) : null}
@@ -346,10 +339,11 @@ export function ReceiptViewerModal({
   );
 }
 
-/** One receipt's preview + fields + (non-readOnly) actions. */
+/** One receipt's preview + fields + whichever actions the caller holds. */
 function ReceiptDetail({
   receipt: r,
-  readOnly,
+  canReplace,
+  canRemove,
   busy,
   detaching,
   replacing,
@@ -357,7 +351,8 @@ function ReceiptDetail({
   onReplace,
 }: {
   receipt: ReceiptRow;
-  readOnly: boolean;
+  canReplace: boolean;
+  canRemove: boolean;
   busy: boolean;
   detaching: boolean;
   replacing: boolean;
@@ -419,26 +414,30 @@ function ReceiptDetail({
         {r.linkCount > 1 ? <Badge label={`Linked to ${r.linkCount} charges`} tone="info" /> : null}
       </View>
 
-      {!readOnly ? (
+      {canReplace || canRemove ? (
         <View className="flex-row justify-end gap-2">
-          <Button
-            title="Replace"
-            size="sm"
-            variant="secondary"
-            icon="repeat"
-            loading={replacing}
-            disabled={busy && !replacing}
-            onPress={onReplace}
-          />
-          <Button
-            title="Detach"
-            size="sm"
-            variant="danger"
-            icon="x-circle"
-            loading={detaching}
-            disabled={busy && !detaching}
-            onPress={onDetach}
-          />
+          {canReplace ? (
+            <Button
+              title="Replace"
+              size="sm"
+              variant="secondary"
+              icon="repeat"
+              loading={replacing}
+              disabled={busy && !replacing}
+              onPress={onReplace}
+            />
+          ) : null}
+          {canRemove ? (
+            <Button
+              title="Remove"
+              size="sm"
+              variant="danger"
+              icon="x-circle"
+              loading={detaching}
+              disabled={busy && !detaching}
+              onPress={onDetach}
+            />
+          ) : null}
         </View>
       ) : null}
     </View>

@@ -144,12 +144,10 @@
  * the server's own OR-gate. Server authz stays the source of truth either way.
  */
 import { useEffect, useRef, useState, type ReactNode } from "react";
-import { View, Text, Pressable, Platform, ScrollView, TextInput } from "react-native";
+import { View, Text, Pressable, ScrollView, TextInput } from "react-native";
 import { useMutation, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-// expo-image-picker is Expo Go-safe (classified `core`); only used on native.
-import * as ImagePicker from "expo-image-picker";
 import {
   Avatar,
   Badge,
@@ -189,6 +187,7 @@ import { ExcludeReasonModal } from "../modals/ExcludeReasonModal";
 import { MarkPersonalModal } from "../modals/MarkPersonalModal";
 import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
 import { ReceiptAttachPicker } from "../receipts/ReceiptAttachPicker";
+import { pickReceiptFiles, uploadReceiptFile } from "../receipts/pickReceiptFiles";
 import {
   STATUS_OPTIONS,
   signedMoney,
@@ -2273,68 +2272,23 @@ export function ReceiptCell({
   const [decideOpen, setDecideOpen] = useState(false);
   const attestException = useMutation(api.receiptExceptions.attest);
 
-  async function uploadBlob(
-    blob: Blob,
-    contentType: string,
-    filename: string | null,
-  ) {
-    setBusy(true);
+  // Every file picked becomes its own receipt on this charge — the picker
+  // takes several at once (`pickReceiptFiles`), uploaded one after another so
+  // a failure names the file it stopped at.
+  async function pick() {
     try {
-      const uploadUrl = await generateUploadUrl();
-      const res = await fetch(uploadUrl, {
-        method: "POST",
-        headers: { "Content-Type": contentType },
-        body: blob,
-      });
-      const { storageId } = await res.json();
-      await onUpload(storageId as Id<"_storage">, filename);
+      const files = await pickReceiptFiles();
+      if (files.length === 0) return;
+      setBusy(true);
+      for (const file of files) {
+        const storageId = await uploadReceiptFile(file, generateUploadUrl);
+        await onUpload(storageId, file.filename);
+      }
+    } catch (err) {
+      alertError(err);
     } finally {
       setBusy(false);
     }
-  }
-
-  // Web file input → R2 upload → attach (mirrors the People avatar upload flow).
-  function pickWeb() {
-    if (typeof document === "undefined") return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*,application/pdf";
-    input.onchange = () => {
-      const file = input.files?.[0];
-      if (file) {
-        void uploadBlob(
-          file,
-          file.type || "application/octet-stream",
-          file.name || null,
-        ).catch(alertError);
-      }
-    };
-    input.click();
-  }
-
-  // Native picker (`expo-image-picker`) — mirrors `CoverPhotoPicker`/
-  // `RequestForm`'s own pick → blob → upload dance. Images only on native (no
-  // PDF picker available there — the same limitation those two call sites
-  // already accept); the web `pickWeb()` above still takes PDFs too.
-  async function pickNative() {
-    const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
-      quality: 0.9,
-    });
-    if (result.canceled || !result.assets?.length) return;
-    const asset = result.assets[0];
-    const resp = await fetch(asset.uri);
-    const blob = await resp.blob();
-    await uploadBlob(
-      blob,
-      asset.mimeType || blob.type || "image/jpeg",
-      asset.fileName ?? null,
-    );
-  }
-
-  function pick() {
-    if (Platform.OS === "web") pickWeb();
-    else void pickNative().catch(alertError);
   }
 
   if (hasReceipt) {
@@ -2452,11 +2406,11 @@ export function ReceiptCell({
               icon="upload"
               variant="secondary"
               loading={busy}
-              onPress={pick}
+              onPress={() => void pick()}
             />
           ) : (
             <Pressable
-              onPress={pick}
+              onPress={() => void pick()}
               disabled={busy}
               accessibilityRole="button"
               accessibilityLabel="Upload receipt"

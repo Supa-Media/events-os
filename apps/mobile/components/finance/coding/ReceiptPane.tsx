@@ -52,15 +52,34 @@
  * `explain.tsx`'s original behavior (always attempt the fetch, let the
  * boundary above catch the rare below-bookkeeper case) — that host never
  * needs to compute or pass this.
+ *
+ * ── More than one receipt, and taking one off ────────────────────────────────
+ * Founder, 2026-10-24, looking at a storage-unit invoice attached to a Google
+ * charge in this pane: "I need to be able to remove this attachment (I
+ * uploaded it by mistake)… We also need to be able to attach more than one
+ * receipt at a time." A charge can carry several receipts (`receiptLinks` is
+ * many-to-many), so the pane pages through them, and under the frame offers
+ * Remove (this receipt) and Add receipts (several files at once) — each drawn
+ * only when `transactionReceipts.permissions` says the caller holds it.
  */
-import { Component, useState, type ReactNode } from "react";
+import { Component, useMemo, useState, type ReactNode } from "react";
 import { Pressable, Text, View } from "react-native";
-import { useMutation, useQuery } from "convex/react";
+import {
+  useMutation,
+  useQueries,
+  useQuery,
+  type RequestForQueries,
+} from "convex/react";
+import type { FunctionReturnType } from "convex/server";
 import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
-import { Icon, FileViewerFrame } from "../../ui";
+import { Button, Icon, FileViewerFrame, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
+import { confirmAction } from "../../../lib/confirmAction";
+import { useActionRunner } from "../../../lib/useActionToast";
 import { ReceiptCell } from "../reconcile/ReconcileList";
+import { ReceiptViewerModal } from "../receipts/ReceiptViewerModal";
+import { pickReceiptFiles, uploadReceiptFile } from "../receipts/pickReceiptFiles";
 
 /** Local, tiny error boundary — a FORBIDDEN/NOT_FOUND from the receipts query
  *  degrades this ONE pane, not the panel or the screen around it. Mirrors
@@ -155,14 +174,33 @@ function UploadStateRegion({
 }) {
   const attachReceipt = useMutation(api.finances.attachReceipt);
   const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const [viewerOpen, setViewerOpen] = useState(false);
 
   if (hasReceipt) {
+    // The viewer reads through `useQueries` (a refusal costs only its own
+    // contents), and `listForTransaction` admits the charge's own spender —
+    // so this is where that caller sees, adds to, or removes their receipts.
     return (
-      <NoReceiptState
-        icon="file"
-        title="Receipt attached"
-        detail="You don't hold a finance seat that unlocks the preview here — open it from the record below."
-      />
+      <View className="h-full w-full items-center justify-center gap-3 px-8 py-16">
+        <Icon name="file" size={26} color={colors.faint} />
+        <Text className="text-center text-sm font-semibold text-ink">
+          Receipt attached
+        </Text>
+        <Button
+          title="View or change receipts"
+          size="sm"
+          variant="secondary"
+          icon="file"
+          onPress={() => setViewerOpen(true)}
+        />
+        {viewerOpen ? (
+          <ReceiptViewerModal
+            transactionId={transactionId}
+            readOnly
+            onClose={() => setViewerOpen(false)}
+          />
+        ) : null}
+      </View>
     );
   }
   if (hasApprovedException) {
@@ -201,39 +239,211 @@ function UploadStateRegion({
   );
 }
 
+type ReceiptPermissions = FunctionReturnType<
+  typeof api.transactionReceipts.permissions
+>;
+
 function LoadedReceipt({ transactionId }: { transactionId: Id<"transactions"> }) {
   const receipts = useQuery(api.receipts.listForTransaction, { transactionId });
-  const [index] = useState(0);
+  // Permissions read through `useQueries` so a refusal hides the buttons
+  // rather than throwing into this pane's boundary.
+  const request = useMemo<RequestForQueries>(
+    () => ({
+      perms: {
+        query: api.transactionReceipts.permissions,
+        args: { transactionId },
+      },
+    }),
+    [transactionId],
+  );
+  const permsRaw = useQueries(request).perms;
+  const perms =
+    permsRaw instanceof Error
+      ? undefined
+      : (permsRaw as ReceiptPermissions | undefined);
+  const [picked, setPicked] = useState(0);
+  // Clamp: a receipt just removed can leave the index past the end.
+  const index =
+    receipts && receipts.length > 0 ? Math.min(picked, receipts.length - 1) : 0;
+  const current = receipts?.[index];
 
-  // Near-opaque dark backdrop, matching `ReceiptViewerModal`'s own viewer —
-  // deliberately NOT the light `NoReceiptState` background: a photo or PDF
-  // page reads best against dark, the same reason the full-screen modal uses
-  // it. Only mounted here, once there's real image content to show against it.
   return (
-    <View className="flex-1" style={{ backgroundColor: "rgba(20, 6, 6, 0.985)" }}>
-      {receipts === undefined ? (
-        <View className="flex-1 items-center justify-center">
-          <Text className="text-sm text-raised/80">Loading…</Text>
-        </View>
-      ) : !receipts[index] ? (
-        <View className="flex-1 items-center justify-center px-8">
-          <Text className="text-center text-sm text-raised">
-            The row says a receipt is attached, but it couldn&apos;t be found.
-            Open it from the record below.
-          </Text>
-        </View>
-      ) : (
-        <FileViewerFrame
-          uri={receipts[index].url ?? ""}
-          contentType={receipts[index].contentType}
-          filename={receipts[index].filename}
-          caption={
-            receipts.length > 1
-              ? `${receipts[index].filename ?? "Receipt"} (1 of ${receipts.length})`
-              : (receipts[index].filename ?? undefined)
-          }
-        />
-      )}
+    <View className="flex-1">
+      {/* Near-opaque dark backdrop, matching `ReceiptViewerModal`'s own
+          viewer — deliberately NOT the light `NoReceiptState` background: a
+          photo or PDF page reads best against dark, the same reason the
+          full-screen modal uses it. */}
+      <View className="flex-1" style={{ backgroundColor: "rgba(20, 6, 6, 0.985)" }}>
+        {receipts === undefined ? (
+          <View className="flex-1 items-center justify-center">
+            <Text className="text-sm text-raised/80">Loading…</Text>
+          </View>
+        ) : !current ? (
+          <View className="flex-1 items-center justify-center px-8">
+            <Text className="text-center text-sm text-raised">
+              No receipt is attached to this charge any more.
+            </Text>
+          </View>
+        ) : (
+          <FileViewerFrame
+            // Keyed so paging to another receipt resets zoom and page.
+            key={current._id}
+            uri={current.url ?? ""}
+            contentType={current.contentType}
+            filename={current.filename}
+            caption={
+              receipts.length > 1
+                ? `${current.filename ?? "Receipt"} (${index + 1} of ${receipts.length})`
+                : (current.filename ?? undefined)
+            }
+          />
+        )}
+      </View>
+      <ReceiptActions
+        transactionId={transactionId}
+        current={current ?? null}
+        count={receipts?.length ?? 0}
+        index={index}
+        onIndex={setPicked}
+        perms={perms}
+      />
+    </View>
+  );
+}
+
+/** The strip under the big frame: page between receipts, remove this one,
+ *  add more. Renders nothing a caller couldn't use. */
+function ReceiptActions({
+  transactionId,
+  current,
+  count,
+  index,
+  onIndex,
+  perms,
+}: {
+  transactionId: Id<"transactions">;
+  current: { _id: Id<"receipts">; filename: string | null } | null;
+  count: number;
+  index: number;
+  onIndex: (i: number) => void;
+  perms: ReceiptPermissions | undefined;
+}) {
+  const removeReceipt = useMutation(api.transactionReceipts.removeReceipt);
+  const attachReceipt = useMutation(api.finances.attachReceipt);
+  const generateUploadUrl = useMutation(api.storage.generateUploadUrl);
+  const { run, toast, dismiss } = useActionRunner();
+  const [removing, setRemoving] = useState(false);
+  const [adding, setAdding] = useState(false);
+
+  const canRemove = perms?.canRemove === true && current != null;
+  const canAttach = perms?.canAttach === true;
+  if (count <= 1 && !canRemove && !canAttach && !perms?.removeLockedByApproval) {
+    return null;
+  }
+
+  function remove() {
+    if (!current) return;
+    const receiptId = current._id;
+    confirmAction({
+      title: "Remove this receipt?",
+      message: `${current.filename ?? "This receipt"} comes off this charge. The file stays in the receipt library, so it can still be attached to the right charge.`,
+      confirmLabel: "Remove",
+      destructive: true,
+      onConfirm: () => {
+        setRemoving(true);
+        void run(() => removeReceipt({ transactionId, receiptId }), {
+          errorTitle: "Couldn't remove receipt",
+        }).finally(() => setRemoving(false));
+      },
+    });
+  }
+
+  async function add() {
+    const files = await pickReceiptFiles();
+    if (files.length === 0) return;
+    setAdding(true);
+    try {
+      for (const file of files) {
+        const done = await run(
+          async () => {
+            const storageId = await uploadReceiptFile(file, generateUploadUrl);
+            await attachReceipt({
+              transactionId,
+              storageId,
+              ...(file.filename ? { filename: file.filename } : {}),
+            });
+            return true;
+          },
+          { errorTitle: "Couldn't attach receipt" },
+        );
+        if (!done) break;
+      }
+    } finally {
+      setAdding(false);
+    }
+  }
+
+  return (
+    <View className="gap-2 border-t border-border bg-raised px-3 py-2">
+      <View className="flex-row flex-wrap items-center gap-2">
+        {count > 1 ? (
+          <View className="flex-row items-center gap-1">
+            <Pressable
+              onPress={() => onIndex(Math.max(0, index - 1))}
+              disabled={index === 0}
+              accessibilityRole="button"
+              accessibilityLabel="Previous receipt"
+              hitSlop={6}
+              className="rounded-md p-1 active:opacity-70 disabled:opacity-40"
+            >
+              <Icon name="chevron-left" size={16} color={colors.muted} />
+            </Pressable>
+            <Text className="text-xs text-muted">
+              {index + 1} of {count}
+            </Text>
+            <Pressable
+              onPress={() => onIndex(Math.min(count - 1, index + 1))}
+              disabled={index >= count - 1}
+              accessibilityRole="button"
+              accessibilityLabel="Next receipt"
+              hitSlop={6}
+              className="rounded-md p-1 active:opacity-70 disabled:opacity-40"
+            >
+              <Icon name="chevron-right" size={16} color={colors.muted} />
+            </Pressable>
+          </View>
+        ) : null}
+        <View className="flex-1" />
+        {canRemove ? (
+          <Button
+            title="Remove"
+            size="sm"
+            variant="danger"
+            icon="x-circle"
+            loading={removing}
+            disabled={adding}
+            onPress={remove}
+          />
+        ) : null}
+        {canAttach ? (
+          <Button
+            title="Add receipts"
+            size="sm"
+            variant="secondary"
+            icon="upload"
+            loading={adding}
+            disabled={removing}
+            onPress={() => void add()}
+          />
+        ) : null}
+      </View>
+      {perms?.removeLockedByApproval ? (
+        <Text className="text-2xs text-muted">
+          Coding approved, so these receipts are locked. Ask a bookkeeper if
+          one is wrong.
+        </Text>
+      ) : null}
+      {toast ? <ToastView toast={toast} onDismiss={dismiss} /> : null}
     </View>
   );
 }

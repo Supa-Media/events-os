@@ -152,7 +152,10 @@ import {
   type TransferDirection,
 } from "./lib/transferPair";
 import { viewerPerson, callerHasEventEditRights } from "./lib/org";
-import { ownChargeActor } from "./lib/ownChargeAccess";
+import {
+  eventForTxn,
+  requireAttachTransactionReceipt,
+} from "./lib/transactionReceiptAccess";
 import { codingForTransaction, codingPolicy } from "./lib/transactionCoding";
 import {
   chargeOutstanding,
@@ -11675,36 +11678,6 @@ export const financeAuditTrail = query({
 });
 
 /**
- * The single EVENT a transaction's budget is scoped to, if any — `null` for
- * a txn attributed to no budget, or one whose budget isn't a one_time EVENT
- * budget (a project/recurring/central budget has no single event to scope an
- * "event lead" gate to). Used ONLY by the note/receipt/category scoped
- * carve-out below — never widens what a project's or a recurring budget's
- * txns are reachable by. Checks `type === "one_time"` alongside
- * `refKind === "event"` — today every `refKind:"event"` budget is also
- * `type:"one_time"` (a real event has no OTHER reason to carry `refKind`),
- * so this is defensive belt-and-suspenders against that schema invariant
- * ever drifting, not a behavior change against current data (Opus review,
- * PR #218).
- */
-async function eventForTxn(
-  ctx: MutationCtx,
-  txn: Doc<"transactions">,
-): Promise<Doc<"events"> | null> {
-  if (!txn.budgetId) return null;
-  const budget = await ctx.db.get(txn.budgetId);
-  if (
-    !budget ||
-    budget.type !== "one_time" ||
-    budget.refKind !== "event" ||
-    !budget.scopeRefId
-  ) {
-    return null;
-  }
-  return await ctx.db.get(budget.scopeRefId as Id<"events">);
-}
-
-/**
  * NOTE / RECEIPT / CATEGORY scoped gate (owner decision, 2026-07-17,
  * verbatim: "they shouldn't be able to change the budget bucket, but they
  * should be able to do everything else like write notes, add receipts,
@@ -12285,61 +12258,10 @@ export const attachReceipt = mutation({
   returns: v.null(),
   handler: async (ctx, args) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const txn = (await ctx.db.get(args.transactionId)) as Doc<"transactions"> | null;
-    if (!txn) {
-      throw new ConvexError({
-        code: "NOT_FOUND",
-        message: "Transaction not found in your chapter.",
-      });
-    }
-    // THE OWN-CHARGE ARM, ASKED FIRST AND IN BOTH BOOKS. Central had none —
-    // "no cardholder 'own txn' path, central issues no cards" — which stopped
-    // being true when `increaseCardSync.ts` started scoping a member's card to
-    // the central Increase ACCOUNT it draws on. That left a cardholder shown
-    // their own central-book charge on `/code`, chased for its receipt by
-    // `lib/codingReminders.ts`, and refused when they went to attach one. See
-    // `lib/ownChargeAccess.ts`.
-    const ownerPersonId = await ownChargeActor(ctx, txn, chapterId);
-    if (txn.chapterId === CENTRAL) {
-      // A central-owned txn NOBODY spent on a card is central-desk territory.
-      // Gate on central reach AND the bookkeeper rank (requireFinanceCentral
-      // alone only checks reach, not role — see requireReconcileTxn for the
-      // same fix) — UNLESS the caller has event edit rights on the event this
-      // (possibly central-moved) budget still belongs to (owner decision,
-      // 2026-07-17 — see `requireTxnNoteReceiptCategoryAccess`'s own doc
-      // comment; kept as a parallel inline check here since `attachReceipt`'s
-      // own-txn carve-out doesn't compose with that helper's
-      // `requireReconcileTxn`-first shape).
-      const access = await getFinanceRole(ctx, chapterId);
-      const isBookkeeperCentral = access.isCentral && financeRoleAtLeast(access.role, "bookkeeper");
-      if (ownerPersonId == null && !isBookkeeperCentral) {
-        const event = await eventForTxn(ctx, txn);
-        if (!event || !(await callerHasEventEditRights(ctx, event))) {
-          throw new ConvexError({
-            code: "FORBIDDEN",
-            message: `This action needs at least the ${FINANCE_ROLE_LABELS.bookkeeper} finance role, or edit rights on the event this transaction belongs to.`,
-          });
-        }
-      }
-    } else {
-      if (txn.chapterId !== chapterId) {
-        throw new ConvexError({
-          code: "NOT_FOUND",
-          message: "Transaction not found in your chapter.",
-        });
-      }
-      const access = await getFinanceRole(ctx, chapterId);
-      if (ownerPersonId == null && !financeRoleAtLeast(access.role, "bookkeeper")) {
-        const event = await eventForTxn(ctx, txn);
-        if (!event || !(await callerHasEventEditRights(ctx, event))) {
-          throw new ConvexError({
-            code: "FORBIDDEN",
-            message:
-              "Only the transaction's own person, a bookkeeper, or someone with edit rights on the event this transaction belongs to can attach a receipt.",
-          });
-        }
-      }
-    }
+    // The own-charge / bookkeeper / event-editor gate lives in ONE resolver,
+    // shared with `transactionReceipts.removeReceipt` — see
+    // `lib/transactionReceiptAccess.ts`.
+    const { txn } = await requireAttachTransactionReceipt(ctx, args.transactionId);
     // First-class document + link (the receipts layer is now the source of
     // truth; `transactions.receiptStorageId` is the denormalized cache the link
     // maintains — see lib/receiptLinks.ts). The reminder-clear + card-unlock
