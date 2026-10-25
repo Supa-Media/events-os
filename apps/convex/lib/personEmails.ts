@@ -22,7 +22,7 @@
  *    `isPrimary` on an existing one).
  */
 import { Doc, Id } from "../_generated/dataModel";
-import { MutationCtx } from "../_generated/server";
+import { MutationCtx, QueryCtx } from "../_generated/server";
 import { normalizeEmail } from "./access";
 import { PERSON_EMAIL_SOURCES } from "../schema/people";
 
@@ -128,6 +128,68 @@ export function resolveSendAddress(
   }
 
   return null;
+}
+
+/**
+ * The `ctx`-taking form of `resolveSendAddress` — reads the person's
+ * `personEmails` ledger and applies the exact same precedence. Use this
+ * ANYWHERE the app decides where to mail a ROSTER PERSON (as opposed to an
+ * address a form captured, like `reimbursementRequests.payeeEmail`, which is
+ * already the address the claimant asked to be reached at).
+ *
+ * Reading `person.email` directly is the bug this exists to prevent. That
+ * field is the person's PERSONAL address; a core-team member works out of
+ * their Public Worship address in `person.pwEmail` (see `schema/people.ts`),
+ * and either one can also be absent while a verified `personEmails` row
+ * carries the address the org actually reaches them at. Campaign/audience
+ * sends have always gone through `resolveSendAddress`
+ * (`lib/audienceResolve.ts`), so a `person.email`-only notification path
+ * produces the exact failure the founder hit on 2026-09-01: the org's
+ * Financial Manager saw a reimbursement waiting on her in the app, received
+ * every campaign email, and never got the "new reimbursement to review"
+ * notice — it had been addressed to a personal inbox she doesn't work from.
+ *
+ * Returns `null` when nothing usable is on file; every caller is a
+ * best-effort notice that skips the recipient rather than throwing.
+ */
+export async function personSendAddress(
+  ctx: QueryCtx,
+  person: Doc<"people">,
+): Promise<string | null> {
+  return (await personAddresses(ctx, person)).send;
+}
+
+/**
+ * `personSendAddress` plus the FULL set of normalized addresses this person is
+ * known by (`pwEmail`, `email`, and every `personEmails` row — verified or
+ * not).
+ *
+ * The second half is for "is this person the same human as this address?"
+ * checks, where a single send address is too narrow: a reimbursement's
+ * separation-of-duties exclusion has to recognize a manager who filed the
+ * request from her personal address even though the notice would go to her PW
+ * one (`reimbursements.ts#getReimbursementSubmittedEmailPayload`). Never use
+ * `all` to pick where to SEND — that's `send`'s job, and only `send` respects
+ * the precedence.
+ */
+export async function personAddresses(
+  ctx: QueryCtx,
+  person: Doc<"people">,
+): Promise<{ send: string | null; all: Set<string> }> {
+  const emails = await ctx.db
+    .query("personEmails")
+    .withIndex("by_person", (q) => q.eq("personId", person._id))
+    .collect();
+  const all = new Set<string>();
+  for (const candidate of [
+    person.pwEmail,
+    person.email,
+    ...emails.map((e) => e.email),
+  ]) {
+    const normalized = normalizeEmail(candidate);
+    if (normalized) all.add(normalized);
+  }
+  return { send: resolveSendAddress(person, emails), all };
 }
 
 /**
