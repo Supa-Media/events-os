@@ -1,17 +1,21 @@
 import { Alert, Platform } from "react-native";
 import { ConvexError } from "convex/values";
+import { cleanConvexMessage } from "./convexErrorText";
 
 /**
  * Surface a human-readable message from a thrown error. ConvexError payloads
  * (the app throws `{ code, message }`) are unwrapped so the user sees the real
- * reason; falls back to the provided default otherwise.
+ * reason; a raw Convex server error is trimmed to its reason, or the default
+ * when prod redacted it (see `convexErrorText`).
  */
 export function errorMessage(err: unknown, fallback = "Something went wrong."): string {
   if (err instanceof ConvexError) {
     const data = err.data as { message?: string } | undefined;
     if (data?.message) return data.message;
   }
-  if (err instanceof Error && err.message) return err.message;
+  if (err instanceof Error && err.message) {
+    return cleanConvexMessage(err.message) ?? fallback;
+  }
   return fallback;
 }
 
