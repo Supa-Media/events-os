@@ -1027,7 +1027,7 @@ ${pubbar(chapter.name)}
  * sentence a staffer wrote is still the person whose payment publishes; if the
  * description names their street, this is the last moment anyone can catch it.
  *
- * `changes_requested` lands here too (`contractorCanEdit` covers both `sent`
+ * `changes_requested` lands here too (`contractorCanEdit` covers `draft`, `sent`
  * and `changes_requested`), with the reviewer's note at the top — that state is
  * a conversation, not a verdict, and the page says so.
  */

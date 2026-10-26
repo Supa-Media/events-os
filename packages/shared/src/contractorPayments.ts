@@ -98,12 +98,18 @@ export const CONTRACTOR_PAYMENT_REVIEW_STATUSES: ContractorPaymentStatus[] = [
   "submitted",
 ];
 
-/** Can the contractor still edit their half through the public link? `sent` is
- *  their first pass; `changes_requested` is the reviewer handing it back. Once
- *  it is `submitted` or beyond, the link renders read-only status instead — the
- *  server enforces this, the page merely reflects it. */
+/** Can the contractor still edit their half through the public link? `draft`
+ *  and `sent` are their first pass; `changes_requested` is the reviewer handing
+ *  it back. Once it is `submitted` or beyond, the link renders read-only status
+ *  instead — the server enforces this, the page merely reflects it.
+ *
+ *  `draft` is open because the staff screen offers Copy link on a draft and
+ *  says it works "either way": pasting it into a text without pressing Send is
+ *  a normal way to reach someone. Closing the link on a draft showed the
+ *  contractor a "We've got it" status page for details they never gave
+ *  (2026-10-26). */
 export function contractorCanEdit(status: ContractorPaymentStatus): boolean {
-  return status === "sent" || status === "changes_requested";
+  return status === "draft" || status === "sent" || status === "changes_requested";
 }
 
 // ── How the money is described ──────────────────────────────────────────────

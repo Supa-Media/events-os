@@ -2480,6 +2480,10 @@ export const completeAgreement = mutation({
       acceptedSignature: signature,
       ...(args.clientIp ? { acceptedIp: cap(args.clientIp, 100) } : {}),
       submittedAt: now,
+      // A draft whose link was copied rather than sent still reached them —
+      // record that it went out, so `sentAt` never reads "never sent" on an
+      // agreement they signed.
+      sentAt: row.sentAt ?? now,
       // A resubmission after a send-back clears the note it is answering.
       reviewNote: undefined,
       // AND the nudge stamps. They mark "we have already chased the treasurer
