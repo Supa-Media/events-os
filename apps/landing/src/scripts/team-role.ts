@@ -19,7 +19,13 @@ import {
   roleAcceptsApplications,
   type PublicJobListing,
 } from "@events-os/shared/src/hiring";
-import { statusLabel, statusChipClass, applyPath } from "../lib/roles";
+import {
+  statusLabel,
+  statusChipClass,
+  applyPath,
+  roleDeadline,
+  DEADLINE_CHIP_CLASS,
+} from "../lib/roles";
 
 // The primary Button's classes (md size), hardcoded because these apply CTAs
 // are built in JS and can't use the Astro <Button> component. Kept in sync
@@ -69,6 +75,7 @@ function hide(el: Element | null): void {
 function renderRole(d: PublicJobListing): string {
   const accepting = roleAcceptsApplications(d.status);
   const applyHref = applyPath(d);
+  const deadline = roleDeadline(d);
 
   const facts: { label: string; value: string }[] = [
     { label: "Team", value: d.team },
@@ -144,6 +151,7 @@ function renderRole(d: PublicJobListing): string {
     <header class="mt-6 flex flex-col items-start gap-3">
       <div class="flex flex-wrap items-center gap-3">
         <span class="inline-flex items-center rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide ${statusChipClass(d.status)}">${esc(statusLabel(d.status))}</span>
+        ${deadline ? `<span class="${DEADLINE_CHIP_CLASS}">${esc(deadline)}</span>` : ""}
         <span class="text-xs uppercase tracking-wide text-ink/55">${esc(d.team)}</span>
       </div>
       <h1 class="font-display font-normal leading-[1.08] text-3xl sm:text-[42px] md:text-[52px]">${esc(d.title)}</h1>

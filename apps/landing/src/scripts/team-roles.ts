@@ -31,6 +31,8 @@ import {
   statusChipClass,
   rolePath,
   applyPath,
+  roleDeadline,
+  DEADLINE_CHIP_CLASS,
 } from "../lib/roles";
 
 /** Port of `RoleCard.astro`: enough of a seat to self-select out of, and no
@@ -41,6 +43,7 @@ import {
 function buildCard(role: PublicJobListing): HTMLLIElement {
   const li = document.createElement("li");
   const href = rolePath(role.slug);
+  const deadline = roleDeadline(role);
   // Trusted source (our own published listings), but escaping via textContent
   // rather than innerHTML is the cheap correct default for any interpolated
   // string — done here by assembling with createElement.
@@ -48,6 +51,7 @@ function buildCard(role: PublicJobListing): HTMLLIElement {
     <article class="rounded-2xl border border-ink/12 bg-cream-soft p-6 transition-all hover:border-red-500 hover:shadow-soft sm:p-7">
       <div class="flex flex-wrap items-center gap-3">
         <span class="inline-flex items-center rounded-full px-3 py-1 text-xs font-bold uppercase tracking-wide ${statusChipClass(role.status)}">${esc(statusLabel(role.status))}</span>
+        ${deadline ? `<span class="${DEADLINE_CHIP_CLASS}">${esc(deadline)}</span>` : ""}
         <span class="text-xs uppercase tracking-wide text-ink/55">${esc(role.team)}</span>
       </div>
       <h3 class="mt-3 font-display text-2xl font-normal leading-tight">
