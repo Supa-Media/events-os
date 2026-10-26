@@ -364,6 +364,111 @@ describe("the books follow the budget", () => {
     // in the first place.
     expect(chapter.budgets.map((b) => b.id)).toEqual([chapterBudgetId]);
   });
+
+  // Founder, 2026-10-26: "It shows tasks instead of all the budgets we've
+  // created. I'm trying to set up a contract for the Brooklyn's Got Talent
+  // event." Central's picker listed central PROJECT budgets under "Budgets" as
+  // "<project> · Per instance" (they read as tasks), and a chapter's event was
+  // nowhere to be found from the "Central — all chapters" desk.
+  test("central's own project budgets are offered as projects, not as budget lines", async () => {
+    const { s, centralBudgetId } = await setup();
+    const projectId = await run(s.t, (ctx) =>
+      ctx.db.insert("projects", {
+        chapterId: s.chapterId,
+        name: "Reach out to Top 5 Donors",
+        status: "in_progress",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      }),
+    );
+    await run(s.t, (ctx) =>
+      ctx.db.insert("budgets", {
+        chapterId: "central",
+        amountCents: 10_000,
+        type: "one_time",
+        refKind: "project",
+        scopeRefId: projectId,
+        cadence: "per_instance",
+        year: 2026,
+        label: "Reach out to Top 5 Donors",
+        createdAt: Date.now(),
+      }),
+    );
+
+    const central = await s.as.query(
+      api.contractorPayments.codingOptionsForScope,
+      { scope: "central" },
+    );
+    expect(central.budgets.map((b) => b.id)).toEqual([centralBudgetId]);
+    expect(central.projects).toEqual([
+      { id: projectId, label: "Reach out to Top 5 Donors" },
+    ]);
+  });
+
+  test("the central composer can find a chapter's event, and coding to it is that chapter's agreement", async () => {
+    const { s } = await setup();
+    const eventId = await run(s.t, async (ctx) => {
+      const eventTypeId = await ctx.db.insert("eventTypes", {
+        chapterId: s.chapterId,
+        name: "Showcase",
+        slug: "showcase",
+        version: 1,
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      const id = await ctx.db.insert("events", {
+        chapterId: s.chapterId,
+        eventTypeId,
+        templateVersion: 1,
+        name: "Brooklyn's Got Talent",
+        eventDate: Date.UTC(2026, 10, 14, 23),
+        status: "planning",
+        createdBy: s.userId,
+        createdAt: Date.now(),
+        updatedAt: Date.now(),
+      });
+      await ctx.db.insert("budgets", {
+        chapterId: s.chapterId,
+        amountCents: 300_000,
+        type: "one_time",
+        refKind: "event",
+        scopeRefId: id,
+        cadence: "per_instance",
+        year: 2026,
+        label: "Brooklyn's Got Talent",
+        createdAt: Date.now(),
+      });
+      return id;
+    });
+
+    // The edit screens don't ask, so an existing agreement is never offered
+    // something it can't be re-coded to.
+    const plain = await s.as.query(
+      api.contractorPayments.codingOptionsForScope,
+      { scope: "central" },
+    );
+    expect(plain.events).toEqual([]);
+    expect(plain.chapters).toEqual([]);
+
+    const composer = await s.as.query(
+      api.contractorPayments.codingOptionsForScope,
+      { scope: "central", includeChapters: true },
+    );
+    const book = composer.chapters.find((c) => c.scope === s.chapterId);
+    expect(book?.events.map((e) => e.id)).toEqual([eventId]);
+
+    // The screen composes it at the funding chapter, which the server accepts.
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      { ...AGREEMENT, scope: s.chapterId, eventId },
+    );
+    const detail = await s.as.query(api.contractorPayments.get, {
+      contractorPaymentId,
+    });
+    expect(detail.scope).toBe(s.chapterId);
+  });
 });
 
 // ── 3. Central has a public page ────────────────────────────────────────────

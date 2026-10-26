@@ -131,6 +131,7 @@ export async function gatherForPickerCandidates(
     centralBudgets.length === scanLimit;
 
   const projectIds = new Set(projects.map((p) => p._id as string));
+  const orgLevel = homeChapterId === null;
 
   const eventBudgetByRef = new Map<string, Doc<"budgets">>();
   const projectBudgetByRef = new Map<string, Doc<"budgets">>();
@@ -163,10 +164,25 @@ export async function gatherForPickerCandidates(
     }
   }
   for (const b of centralBudgets) {
+    // AT THE ORG LEVEL a central one_time budget is one of central's own
+    // events or projects (`transferEventScope` / `transferProjectScope` moved
+    // it there), so it is offered as that event or project — by its name and
+    // date — never as a cadence line. Lumping these into `recurring` is how the
+    // central contract picker came to list "Reach out to Top 5 Donors · Per
+    // instance" under BUDGETS: real central project budgets, mislabelled as
+    // standing ones. The refs are loaded below.
+    if (orgLevel && b.type === "one_time" && b.refKind && b.scopeRefId) {
+      setPreferOldest(
+        b.refKind === "event" ? eventBudgetByRef : projectBudgetByRef,
+        b.scopeRefId,
+        b,
+      );
+      continue;
+    }
     // A central one_time PROJECT budget only belongs to this chapter's
     // groups when it's THIS chapter's project (post-`transferProjectScope`)
     // — a central budget for some other chapter's project stays invisible
-    // here (events never carry a central budget — see the schema doc).
+    // here.
     if (
       b.type === "one_time" &&
       b.refKind === "project" &&
@@ -179,8 +195,18 @@ export async function gatherForPickerCandidates(
     }
   }
 
+  // There is no chapter to scan at the org level, so the events and projects
+  // are exactly the ones central's own budgets point at. A ref that no longer
+  // exists is dropped rather than offered as a name nobody can find.
+  const allEvents: Doc<"events">[] = orgLevel
+    ? await loadRefs(ctx, "events", eventBudgetByRef.keys())
+    : events;
+  const allProjects: Doc<"projects">[] = orgLevel
+    ? await loadRefs(ctx, "projects", projectBudgetByRef.keys())
+    : projects;
+
   const candidates: PickerCandidate[] = [];
-  for (const e of events) {
+  for (const e of allEvents) {
     if (e.isTraining) continue;
     // `events.eventDate` is a REQUIRED field (`v.number()`, not optional) —
     // every event row always has a real date, so there is no fallback to
@@ -194,7 +220,7 @@ export async function gatherForPickerCandidates(
       level: null,
     });
   }
-  for (const p of projects) {
+  for (const p of allProjects) {
     // NO FABRICATED DATES: the label's date must come from the exact same
     // field date-proximity ranking uses (`projects.deadline` — the one real,
     // directly-editable field the app's own Project screen reads/writes; it
@@ -222,4 +248,18 @@ export async function gatherForPickerCandidates(
     });
   }
   return { candidates, truncated };
+}
+
+async function loadRefs<T extends "events" | "projects">(
+  ctx: QueryCtx,
+  table: T,
+  ids: Iterable<string>,
+): Promise<Doc<T>[]> {
+  const docs: Doc<T>[] = [];
+  for (const raw of ids) {
+    const id = ctx.db.normalizeId(table, raw);
+    const doc = id ? ((await ctx.db.get(id)) as Doc<T> | null) : null;
+    if (doc) docs.push(doc);
+  }
+  return docs;
 }

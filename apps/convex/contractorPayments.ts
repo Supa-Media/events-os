@@ -126,10 +126,7 @@ import {
   touchUnpaidTaxDoc,
 } from "./contractorProfiles";
 import { loadSchedule, hasSchedule } from "./lib/contractorSchedule";
-import {
-  gatherForPickerCandidates,
-  budgetDisplayNameFor,
-} from "./lib/forPickerCandidates";
+import { codingBookFor, chapterCodingBooks } from "./lib/contractorCodingOptions";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
 import {
   scopePublicName,
@@ -1829,52 +1826,22 @@ async function assertContractNotRateLimited(
  * reimbursements do not have.
  */
 export const codingOptionsForScope = query({
-  args: { scope: v.union(v.id("chapters"), v.literal(CENTRAL)) },
-  handler: async (ctx, { scope }) => {
+  args: {
+    scope: v.union(v.id("chapters"), v.literal(CENTRAL)),
+    /** Central composer only: also list every chapter's book, so a chapter's
+     *  event can be picked from the "Central — all chapters" desk. The edit
+     *  screens leave it off — an existing agreement's scope doesn't move. */
+    includeChapters: v.optional(v.boolean()),
+  },
+  handler: async (ctx, { scope, includeChapters }) => {
     await requireContractorPaymentsView(ctx, scope);
-    const { candidates } = await gatherForPickerCandidates(
-      ctx,
-      // The picker scans a chapter's events/projects; at the org level there is
-      // no chapter of events to scan, so central offers its recurring budgets
-      // and nothing else. A central ONE-TIME budget is attached to a chapter's
-      // project and is already reachable from that chapter's own picker.
-      scope === CENTRAL ? null : (scope as Id<"chapters">),
-      ROLLUP_SCAN_LIMIT,
-    );
-    const wanted = scope === CENTRAL ? "central" : "chapter";
+    const own = await codingBookFor(ctx, scope, ROLLUP_SCAN_LIMIT);
     return {
-      // An event or project is offered only when the budget BEHIND it belongs to
-      // this scope. That filter is the picker-side half of
-      // `assertCodingMatchesScope`: a chapter's event funded by a central budget
-      // is central's to pay, and offering it here is exactly how an agreement
-      // came to say "New York's books" over central's money.
-      events:
-        scope === CENTRAL
-          ? []
-          : candidates.flatMap((c) =>
-              c.refKind === "event" && c.budget?.chapterId === scope
-                ? [{ id: c.refId, label: c.label }]
-                : [],
-            ),
-      projects:
-        scope === CENTRAL
-          ? []
-          : candidates.flatMap((c) =>
-              c.refKind === "project" && c.budget?.chapterId === scope
-                ? [{ id: c.refId, label: c.label }]
-                : [],
-            ),
-      budgets: candidates.flatMap((c) =>
-        c.refKind === "recurring" && c.level === wanted && c.budget
-          ? [
-              {
-                id: c.budget._id,
-                label: budgetDisplayNameFor(c.budget),
-                cadence: c.budget.cadence,
-              },
-            ]
+      ...own,
+      chapters:
+        includeChapters && scope === CENTRAL
+          ? await chapterCodingBooks(ctx, ROLLUP_SCAN_LIMIT)
           : [],
-      ),
     };
   },
 });
