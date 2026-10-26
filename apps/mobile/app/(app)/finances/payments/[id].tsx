@@ -704,6 +704,32 @@ function StatusNote({ payment }: { payment: ContractorPaymentDetail }) {
       </View>
     );
   }
+  // A draft has no approve button on purpose: approval comes AFTER the
+  // contractor signs, so there is nothing to approve yet. Without this line a
+  // staffer looking at Copy link / Send it went hunting for the step they
+  // thought they'd missed.
+  if (payment.status === "draft") {
+    return (
+      <View className="mb-3 flex-row items-start gap-2 rounded-md border border-border bg-sunken px-3 py-2.5">
+        <Icon name="info" size={14} color={colors.muted} />
+        <Text className="flex-1 text-xs text-muted">
+          Nothing to approve yet. Send them the link first. Once they sign and
+          file their tax form it moves to Needs review, where someone other
+          than whoever wrote the terms approves it. Then the money can go out.
+        </Text>
+      </View>
+    );
+  }
+  if (payment.status === "submitted" && !payment.canApprove) {
+    return (
+      <View className="mb-3 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2.5">
+        <Icon name="clock" size={14} color={colors.muted} />
+        <Text className="flex-1 text-xs text-muted">
+          Waiting for someone with approval rights to review it.
+        </Text>
+      </View>
+    );
+  }
   return null;
 }
 

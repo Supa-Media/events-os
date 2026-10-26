@@ -128,7 +128,10 @@ export const CONTRACTOR_PAYMENT_ORIGIN_LABELS: Record<
   ContractorPaymentOrigin,
   string
 > = {
-  staff_prefilled: "Agreement sent",
+  // Not "Agreement sent": this badge sits beside the status badge, and on a
+  // draft that has gone nowhere it read as a contradiction ("Draft" + "sent").
+  // It says who wrote the terms, never where the record is.
+  staff_prefilled: "Our agreement",
   self_serve: "Payment requested",
 };
 
