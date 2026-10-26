@@ -17,9 +17,15 @@ import { listActiveChapters } from "./chapters";
 import { hasContractorPaymentsCompose } from "./contractorPaymentsAccess";
 import type { FinanceScope } from "./finance";
 
+/** `budgetId` is set when the row must be coded by its BUDGET rather than by
+ *  the event/project id: central's own events and projects live in a
+ *  chapter's table, so coding a central agreement to the event id would fail
+ *  the create path's same-scope check, while central's budget id passes it. */
+type RefRow = { id: string; label: string; budgetId?: Id<"budgets"> };
+
 export type CodingBook = {
-  events: { id: string; label: string }[];
-  projects: { id: string; label: string }[];
+  events: RefRow[];
+  projects: RefRow[];
   budgets: { id: Id<"budgets">; label: string; cadence: BudgetCadence }[];
 };
 
@@ -39,8 +45,13 @@ export async function codingBookFor(
   const book: CodingBook = { events: [], projects: [], budgets: [] };
   for (const c of candidates) {
     if (!c.budget || c.budget.chapterId !== scope) continue;
-    if (c.refKind === "event") book.events.push({ id: c.refId, label: c.label });
-    else if (c.refKind === "project") book.projects.push({ id: c.refId, label: c.label });
+    const ref: RefRow = {
+      id: c.refId,
+      label: c.label,
+      ...(scope === CENTRAL ? { budgetId: c.budget._id } : {}),
+    };
+    if (c.refKind === "event") book.events.push(ref);
+    else if (c.refKind === "project") book.projects.push(ref);
     else {
       book.budgets.push({
         id: c.budget._id,
