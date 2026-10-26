@@ -52,7 +52,14 @@ import { descriptionProblems } from "./contractorHelpers";
 export type NewRequestOptions = FunctionReturnType<
   typeof api.reimbursements.newRequestOptions
 >;
-export type ForOptions = NewRequestOptions["forOptions"];
+/** The coding vocabulary. `chapters` is only ever filled at the central
+ *  composer (`codingOptionsForScope`'s `includeChapters`): every chapter's own
+ *  book, picked from the "Central — all chapters" desk. */
+export type ForOptions = NewRequestOptions["forOptions"] & {
+  chapters?: FunctionReturnType<
+    typeof api.contractorPayments.codingOptionsForScope
+  >["chapters"];
+};
 export type CategoryOptions = FunctionReturnType<
   typeof api.finances.myChargeCategories
 >;
@@ -176,28 +183,63 @@ export function buildForOptions(options: ForOptions | undefined) {
     { value: "", label: "None" },
   ];
   if (!options) return items;
-  if (options.events.length > 0) {
-    items.push({ value: "__grp_events", label: "Events", header: true });
-    for (const e of options.events) {
+  const chapters = options.chapters ?? [];
+  // With chapters listed alongside, the desk's own groups say whose they are.
+  pushBook(items, options, chapters.length > 0 ? "Central" : null, "own");
+  for (const c of chapters) pushBook(items, c, c.name, String(c.scope));
+  return items;
+}
+
+type Book = Pick<ForOptions, "events" | "projects" | "budgets">;
+
+function pushBook(
+  items: { value: string; label: string; header?: boolean }[],
+  book: Book,
+  owner: string | null,
+  key: string,
+) {
+  const header = (word: string) => (owner ? `${owner} · ${word}` : word);
+  if (book.events.length > 0) {
+    items.push({ value: `__grp_events_${key}`, label: header("Events"), header: true });
+    for (const e of book.events) {
       items.push({ value: `event:${e.id}`, label: e.label });
     }
   }
-  if (options.projects.length > 0) {
-    items.push({ value: "__grp_projects", label: "Projects", header: true });
-    for (const p of options.projects) {
+  if (book.projects.length > 0) {
+    items.push({ value: `__grp_projects_${key}`, label: header("Projects"), header: true });
+    for (const p of book.projects) {
       items.push({ value: `project:${p.id}`, label: p.label });
     }
   }
-  if (options.budgets.length > 0) {
-    items.push({ value: "__grp_budgets", label: "Budgets", header: true });
-    for (const b of options.budgets) {
+  if (book.budgets.length > 0) {
+    items.push({ value: `__grp_budgets_${key}`, label: header("Budgets"), header: true });
+    for (const b of book.budgets) {
       items.push({
         value: `budget:${b.id}`,
         label: `${b.label} · ${BUDGET_CADENCE_LABELS[b.cadence]}`,
       });
     }
   }
-  return items;
+}
+
+/** The chapter whose book the picked item came from, when it came from one of
+ *  the central composer's chapter groups — the agreement is then THAT
+ *  chapter's, because the spend must book where the money comes from. `null`
+ *  for the desk's own items and for "None". */
+export function fundingChapterFor(
+  options: ForOptions | undefined,
+  forValue: string,
+): { scope: Id<"chapters">; name: string } | null {
+  if (!forValue) return null;
+  const id = forValue.slice(forValue.indexOf(":") + 1);
+  for (const c of options?.chapters ?? []) {
+    const has =
+      c.events.some((e) => e.id === id) ||
+      c.projects.some((p) => p.id === id) ||
+      c.budgets.some((b) => b.id === id);
+    if (has) return { scope: c.scope, name: c.name };
+  }
+  return null;
 }
 
 export function buildCategoryOptions(categories: CategoryOptions | undefined) {
@@ -230,6 +272,7 @@ export function AgreementFields({
   // Shown only once there is something to judge: telling somebody their empty
   // field is too short is nagging, not helping. The submit path still refuses
   // an empty one (`draftProblems`).
+  const fundingChapter = fundingChapterFor(forOptions, value.forValue);
   const descProblem =
     value.serviceDescription.trim().length > 0
       ? (descriptionProblems(value.serviceDescription)[0] ?? null)
@@ -341,7 +384,11 @@ export function AgreementFields({
 
       <Select
         label="What's this for?"
-        hint="An event, a project, or one of the chapter's recurring budgets. It can't be approved until this is set."
+        hint={
+          fundingChapter
+            ? `That's funded by ${fundingChapter.name}'s budget, so this becomes ${fundingChapter.name}'s agreement — reviewed by and paid from ${fundingChapter.name}'s books.`
+            : "An event, a project, or one of the chapter's recurring budgets. It can't be approved until this is set."
+        }
         value={value.forValue}
         options={buildForOptions(forOptions)}
         onChange={(v) => onChange({ forValue: v })}
