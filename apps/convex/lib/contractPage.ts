@@ -731,13 +731,19 @@ function confirmChoice(opts: {
  * page states the opposite in the same breath as the convenience, before they
  * have scrolled far enough to assume otherwise.
  */
+/** The name we greet the payee by: the WHOLE name on the agreement. Payees
+ *  are often businesses and churches, and the first word of "Bible Faith
+ *  Tabernacle" is not a name (2026-10-26). */
+function greetingName(view: ContractPublicView): string {
+  return view.payeeName.trim() || "there";
+}
+
 function welcomeBackCard(
   view: ContractPublicView,
   reuseTax: boolean,
   reuseBank: boolean,
 ): string {
-  const firstName =
-    view.payeeName.trim().split(/\s+/)[0] || view.payeeName || "there";
+  const greetName = greetingName(view);
   const have =
     reuseTax && reuseBank
       ? "your tax form and your bank details"
@@ -746,7 +752,7 @@ function welcomeBackCard(
         : "your bank details";
   return `<section class="card">
   <div class="row gap8 wrap"><svg ${ICON_ATTRS} width="18" height="18" style="stroke:var(--success);flex:0 0 18px"><use href="#i-check-circle"/></svg><span class="semi">Welcome back, ${esc(
-    firstName,
+    greetName,
   )}.</span></div>
   <p class="small muted mt8">${esc(
     view.chapterName,
@@ -1064,8 +1070,7 @@ export function renderContractAgreement(
   }).replace(/</g, "\\u003c");
 
   const sentBack = view.status === "changes_requested";
-  const firstName =
-    view.payeeName.trim().split(/\s+/)[0] || view.payeeName || "there";
+  const greetName = greetingName(view);
 
   const reviewCallout = sentBack
     ? `<div class="callout mt16"><b>A reviewer sent this back.</b> ${esc(
@@ -1099,7 +1104,7 @@ ${pubbar(view.chapterName)}
   <div class="hero">
     <span class="ic"><svg ${ICON_ATTRS}><use href="#i-pen"/></svg></span>
     <h1>${sentBack ? "One more thing" : welcome ? "Welcome back" : "Your agreement"}</h1>
-    <p>Hi ${esc(firstName)} — ${esc(view.chapterName)} would like to pay you ${esc(
+    <p>Hi ${esc(greetName)} — ${esc(view.chapterName)} would like to pay you ${esc(
       money(view.agreedAmountCents),
     )}. Read the terms, add your details, and sign. Reference <b class="ink">#${esc(
       view.reference,
@@ -1273,8 +1278,7 @@ export function renderContractStatus(
   view: ContractPublicView,
   chapterSlug: string,
 ): string {
-  const firstName =
-    view.payeeName.trim().split(/\s+/)[0] || view.payeeName || "there";
+  const greetName = greetingName(view);
   const rejected = view.status === "rejected";
   const canceled = view.status === "canceled";
   const paid = view.status === "paid";
@@ -1315,12 +1319,12 @@ export function renderContractStatus(
   const heroTint = paid || !stopped ? "var(--success)" : "var(--accent)";
 
   const heroSub = paid
-    ? `Thanks, ${esc(firstName)}. ${esc(money(settledCents(view)))} was sent to your bank${
+    ? `Thanks, ${esc(greetName)}. ${esc(money(settledCents(view)))} was sent to your bank${
         view.bankAccountLast4 ? ` (account ending ${esc(view.bankAccountLast4)})` : ""
       }. Reference <b class="ink">#${esc(view.reference)}</b>.`
     : stopped
       ? `Reference <b class="ink">#${esc(view.reference)}</b> is closed. See the note below.`
-      : `Thanks, ${esc(firstName)}. Reference <b class="ink">#${esc(
+      : `Thanks, ${esc(greetName)}. Reference <b class="ink">#${esc(
           view.reference,
         )}</b>. We'll email you at each step — reopen this link any time to check where it is.`;
 
