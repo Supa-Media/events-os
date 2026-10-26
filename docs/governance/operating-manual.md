@@ -399,10 +399,9 @@ central budget must be composed at the central desk and is paid by central; one
 coded to a chapter's budget is that chapter's. Mismatched coding is refused
 rather than silently re-scoped — moving an agreement between scopes changes who
 may approve it, and that is not a decision software should make on someone's
-behalf. The central desk can pick a chapter's event, project, or budget, and
-the form says up front that this makes the agreement that chapter's, reviewed
-and paid from that chapter's books; the person composing makes that call, not
-the software. Central agreements are served to the contractor at `/contract/central`
+behalf. The central desk lists every chapter's events, projects, and budgets
+so nothing looks missing, but greys them out: to pay a chapter's event from
+central, move the event to Central ("Belongs to") first. Central agreements are served to the contractor at `/contract/central`
 under the organization's own name; the word "central" is internal vocabulary and
 never appears to a payee.
 

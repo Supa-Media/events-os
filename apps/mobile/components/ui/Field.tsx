@@ -118,6 +118,10 @@ type Option = {
   label: string;
   /** Renders as a non-selectable section heading (for grouping options). */
   header?: boolean;
+  /** Shown greyed out and unpickable — something that exists but can't be
+   *  chosen here, with `note` saying why. */
+  disabled?: boolean;
+  note?: string;
 };
 
 /**
@@ -150,7 +154,7 @@ export function Select({
   const [open, setOpen] = useState(false);
   const [hovered, setHovered] = useState(false);
   const [filterText, setFilterText] = useState("");
-  const current = options.find((o) => !o.header && o.value === value);
+  const current = options.find((o) => !o.header && !o.disabled && o.value === value);
 
   // Start each open with a clean filter rather than whatever was left typed
   // from the last time this Select was opened.
@@ -202,6 +206,11 @@ export function Select({
                   <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
                     {o.label}
                   </Text>
+                </View>
+              ) : o.disabled ? (
+                <View key={o.value} className="px-3 py-2" accessibilityState={{ disabled: true }}>
+                  <Text className="text-base text-faint">{o.label}</Text>
+                  {o.note ? <Text className="mt-0.5 text-xs text-faint">{o.note}</Text> : null}
                 </View>
               ) : (
                 <SelectRow

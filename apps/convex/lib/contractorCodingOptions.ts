@@ -67,11 +67,12 @@ export async function codingBookFor(
  * Every chapter's book, for the CENTRAL composer.
  *
  * The central desk reads "Central — all chapters", and the person sitting at it
- * looks for a chapter's event the same way they find it on the Budgets tab.
- * Picking one composes the agreement at THAT chapter's scope — the screen says
- * so before anything is created — rather than refusing it here and leaving them
- * to discover they should have switched desks. Only chapters the caller may
- * compose for are listed.
+ * looks for a chapter's event the same way they find it on the Budgets tab. The
+ * screen lists these greyed out, never pickable (founder, 2026-10-26): an
+ * agreement is paid from the books that fund it, so a chapter's event has to be
+ * moved to Central before central can pay for it. Listing it beats leaving it
+ * silently missing, which reads as a bug. Only chapters the caller may compose
+ * for are listed.
  */
 export async function chapterCodingBooks(
   ctx: QueryCtx,

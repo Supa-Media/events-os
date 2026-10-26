@@ -58,7 +58,6 @@ import { FinanceBoundary } from "../../../../components/finance/dashboard/parts"
 import {
   AgreementFields,
   decodeForValue,
-  fundingChapterFor,
   draftAmountCents,
   draftProblems,
   emptyDraft,
@@ -103,9 +102,9 @@ function NewAgreementScreen() {
   // and at a chapter desk only the events/projects that chapter's budgets
   // actually fund. `newRequestOptions` above still supplies the funds and the
   // coding policy, which are the same question at either scope.
-  // At the central desk this also lists every chapter's book — the desk reads
-  // "Central — all chapters", and a chapter's event is found here the same way
-  // it is on the Budgets tab. Picking one makes it that chapter's agreement.
+  // At the central desk this also lists every chapter's book, greyed out: the
+  // desk reads "Central — all chapters", so a chapter's event has to be visible
+  // here with the reason it can't be picked, not silently missing.
   const scopedFor = useQuery(
     api.contractorPayments.codingOptionsForScope,
     scope ? { scope, includeChapters: scope === "central" } : "skip",
@@ -190,10 +189,6 @@ function NewAgreementScreen() {
       return;
     }
     const ids = decodeForValue(draft.forValue);
-    // A chapter-funded pick from the central desk is that chapter's agreement;
-    // the field's hint already said so.
-    const payingScope =
-      fundingChapterFor(scopedFor, draft.forValue)?.scope ?? scope;
     setBusy(alsoSend ? "send" : "draft");
 
     const result = await run(
@@ -217,7 +212,7 @@ function NewAgreementScreen() {
             ? { serviceDate: draft.serviceDate }
             : {}),
           agreedAmountCents: cents,
-          ...(payingScope ? { scope: payingScope } : {}),
+          ...(scope ? { scope } : {}),
           ...(draft.additionalTerms.trim()
             ? { additionalTerms: draft.additionalTerms.trim() }
             : {}),

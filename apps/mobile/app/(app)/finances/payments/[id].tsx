@@ -57,7 +57,6 @@ import { FinanceBoundary } from "../../../../components/finance/dashboard/parts"
 import {
   AgreementFields,
   decodeForValue,
-  fundingChapterFor,
   draftAmountCents,
   draftFromPayment,
   draftProblems,
@@ -101,15 +100,14 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
   // with "not found in your chapter" (the same bug the composer had, fixed the
   // same way — `new.tsx` uses this exact query).
   //
-  // A central DRAFT also gets every chapter's book: nothing has gone out yet,
-  // so re-coding it to a chapter's event moves it to that chapter (the field
-  // says so before the save). Once sent, its scope is fixed.
+  // A central agreement also gets every chapter's book, greyed out — the same
+  // "you can see it, here's why you can't pick it" list the composer shows.
   const scopedFor = useQuery(
     api.contractorPayments.codingOptionsForScope,
     payment?.scope
       ? {
           scope: payment.scope,
-          includeChapters: payment.scope === "central" && payment.status === "draft",
+          includeChapters: payment.scope === "central",
         }
       : "skip",
   );
@@ -190,7 +188,6 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
     }
     const ids = decodeForValue(draft.forValue);
     const clearing = draft.forValue === "";
-    const movingTo = fundingChapterFor(scopedFor, draft.forValue);
     setBusy("edit");
     const result = await run(
       () =>
@@ -212,7 +209,6 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
           // An absent key means "unchanged", so saying "none" has to be said
           // explicitly — that's what `clearAttribution` is for.
           ...(clearing ? { clearAttribution: true } : ids),
-          ...(movingTo ? { scope: movingTo.scope } : {}),
           ...(draft.categoryId
             ? { categoryId: draft.categoryId as Id<"budgetCategories"> }
             : { clearCategory: true }),
