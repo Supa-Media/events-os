@@ -376,6 +376,7 @@ const REGISTRY_NAMES = [
   "0092_application_form_drop_trial_question",
   "0093_application_form_monthly_meeting_question",
   "0094_blank_event_columns",
+  "0095_nyc_listings_apply_by_nov_1",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",
