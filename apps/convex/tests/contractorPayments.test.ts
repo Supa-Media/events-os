@@ -1061,6 +1061,37 @@ describe("the state machine refuses illegal moves", () => {
     expect(after!.reviewNote).toBeUndefined();
   });
 
+  test("a copied draft link opens for the contractor and can be completed", async () => {
+    // Staff can Copy link on a draft without pressing Send. The contractor must
+    // get the agreement form, not a status page claiming we have their details.
+    const { s, budgetId } = await setup();
+    const { contractorPaymentId: id } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      { ...AGREEMENT, budgetId },
+    );
+    const token = await run(s.t, async (ctx) => (await ctx.db.get(id))!.token);
+    const view = await s.t.query(api.contractorPayments.publicByToken, {
+      token,
+    });
+    expect(view?.status).toBe("draft");
+    expect(view?.canEdit).toBe(true);
+
+    const storageId = await storeBlob(s.t);
+    await s.t.mutation(api.contractorPayments.completeAgreement, {
+      token,
+      payeeName: AGREEMENT.payeeName,
+      payeeEmail: AGREEMENT.payeeEmail,
+      taxDocStorageId: storageId,
+      taxDocKind: "w9",
+      externalAccountId: "extacct_test",
+      bankAccountLast4: "6789",
+      signature: "Jane Contractor",
+    });
+    const after = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(after!.status).toBe("submitted");
+    expect(after!.sentAt).toBeDefined();
+  });
+
   test("sending refuses when the chapter has no public slug", async () => {
     // `chapters.slug` is optional. Without one the contractor's URL builds as
     // `/contract/?token=…`, which the route 404s — so `send` would succeed,
