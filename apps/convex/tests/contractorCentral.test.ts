@@ -414,7 +414,7 @@ describe("the books follow the budget", () => {
     });
   });
 
-  test("the central composer can find a chapter's event, and coding to it is that chapter's agreement", async () => {
+  test("the central desk sees a chapter's event, and still can't attach it", async () => {
     const { s } = await setup();
     const eventId = await run(s.t, async (ctx) => {
       const eventTypeId = await ctx.db.insert("eventTypes", {
@@ -467,45 +467,13 @@ describe("the books follow the budget", () => {
     const book = composer.chapters.find((c) => c.scope === s.chapterId);
     expect(book?.events.map((e) => e.id)).toEqual([eventId]);
 
-    // The screen composes it at the funding chapter, which the server accepts.
-    const { contractorPaymentId } = await s.as.mutation(
-      api.contractorPayments.createAgreement,
-      { ...AGREEMENT, scope: s.chapterId, eventId },
-    );
-    const detail = await s.as.query(api.contractorPayments.get, {
-      contractorPaymentId,
-    });
-    expect(detail.scope).toBe(s.chapterId);
-
-    // A central DRAFT re-coded to the chapter's event moves with it.
-    const draft = await s.as.mutation(api.contractorPayments.createAgreement, {
-      ...AGREEMENT,
-      scope: "central",
-    });
-    await s.as.mutation(api.contractorPayments.updateTerms, {
-      contractorPaymentId: draft.contractorPaymentId,
-      eventId,
-      scope: s.chapterId,
-    });
-    const moved = await s.as.query(api.contractorPayments.get, {
-      contractorPaymentId: draft.contractorPaymentId,
-    });
-    expect(moved.scope).toBe(s.chapterId);
-    expect(moved.eventId).toBe(eventId);
-
-    // Once sent, it stays where the contractor was told it is.
-    const sent = await s.as.mutation(api.contractorPayments.createAgreement, {
-      ...AGREEMENT,
-      scope: "central",
-    });
-    await s.as.mutation(api.contractorPayments.send, {
-      contractorPaymentId: sent.contractorPaymentId,
-    });
+    // Listed so the person can see it exists — the screen greys it out — but
+    // never attachable from central: it is New York's money.
     await expect(
-      s.as.mutation(api.contractorPayments.updateTerms, {
-        contractorPaymentId: sent.contractorPaymentId,
+      s.as.mutation(api.contractorPayments.createAgreement, {
+        ...AGREEMENT,
+        scope: "central",
         eventId,
-        scope: s.chapterId,
       }),
     ).rejects.toThrow(ConvexError);
   });
