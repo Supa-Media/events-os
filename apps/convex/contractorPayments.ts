@@ -821,6 +821,33 @@ export const send = mutation({
  * signature because a bookkeeper moved a category would train people to click
  * through acceptance without reading.
  */
+/** Refuses a scope move `updateTerms` can't make safely: anything already
+ *  sent, a scope the caller can't compose at, or a roster payee who isn't on
+ *  the new chapter's roster. */
+async function assertDraftCanMove(
+  ctx: QueryCtx,
+  row: Doc<"contractorPayments">,
+  target: FinanceScope,
+): Promise<void> {
+  if (row.status !== "draft") {
+    throw new ConvexError({
+      code: "SCOPE_LOCKED",
+      message:
+        "This agreement has already been sent, so it can't move to another chapter's books. Cancel it and write a new one there.",
+    });
+  }
+  await requireContractorPaymentsCompose(ctx, target);
+  if (row.personId && target !== CENTRAL) {
+    const person = await ctx.db.get(row.personId);
+    if (person?.chapterId !== target) {
+      throw new ConvexError({
+        code: "SCOPE_MISMATCH",
+        message: `${row.payeeName} isn't on ${await scopeInternalName(ctx, target)}'s roster, so this draft can't move there. Write a new agreement from that chapter's desk.`,
+      });
+    }
+  }
+}
+
 export const updateTerms = mutation({
   args: {
     contractorPaymentId: v.id("contractorPayments"),
@@ -857,6 +884,14 @@ export const updateTerms = mutation({
     // call fails first. Inside one, the new plan is simply checked against the
     // new total.
     installments: v.optional(v.array(installmentDraftValidator)),
+    // MOVE A DRAFT TO ANOTHER SCOPE — the central desk re-coding a draft to a
+    // chapter's event (founder, 2026-10-26: setting up the Brooklyn's Got
+    // Talent contract from the central desk). Only while it is a draft: once
+    // the link has gone out, the contractor has been told whose agreement this
+    // is, and a different reviewer and bank account is a new agreement. The
+    // screen says where it is moving before the save, so this is the person's
+    // decision, never a silent re-scope.
+    scope: v.optional(v.union(v.id("chapters"), v.literal(CENTRAL))),
   },
   handler: async (ctx, args) => {
     const {
@@ -865,6 +900,7 @@ export const updateTerms = mutation({
       clearServiceDate,
       clearCategory,
       installments,
+      scope: requestedScope,
       ...rest
     } = args;
     const row = await ctx.db.get(contractorPaymentId);
@@ -876,12 +912,23 @@ export const updateTerms = mutation({
     }
     // At the RECORD's own scope — see `loadForManage`. Resolving the caller's
     // roster chapter instead made every central agreement unreachable.
-    const chapterId: FinanceScope = row.chapterId;
-    await requireContractorPaymentsCompose(ctx, chapterId);
+    await requireContractorPaymentsCompose(ctx, row.chapterId);
     assertTransition(row.status, TERMS_EDITABLE_STATUSES, "edit");
+    // Where the agreement lands — its own scope unless this edit moves it.
+    // Every check below runs against THIS scope.
+    const chapterId: FinanceScope = requestedScope ?? row.chapterId;
+    const moving = chapterId !== row.chapterId;
+    if (moving) await assertDraftCanMove(ctx, row, chapterId);
     const callerPersonId = await resolveActorPersonId(ctx, chapterId);
 
     const patch: Partial<Doc<"contractorPayments">> = {};
+    if (moving) {
+      patch.chapterId = chapterId;
+      // A fund is a chapter's pot of money; the old scope's can't follow.
+      if (rest.fundId === undefined) {
+        patch.fundId = (await defaultFundId(ctx, chapterId)) ?? undefined;
+      }
+    }
     // Which of the three AGREED terms actually changed — the set that voids an
     // acceptance. Compared by value, so a no-op save doesn't void anything.
     let termsChanged = false;
@@ -1005,7 +1052,7 @@ export const updateTerms = mutation({
     // Re-coding faces the same rule the create path does: an edit that points
     // the payment at a differently-funded budget would otherwise book a
     // chapter's spend against central's money, or the reverse.
-    await assertCodingMatchesScope(ctx, row!.chapterId, {
+    await assertCodingMatchesScope(ctx, chapterId, {
       eventId: patch.eventId ?? (clearAttribution ? undefined : row!.eventId),
       projectId: patch.projectId ?? (clearAttribution ? undefined : row!.projectId),
       budgetId: patch.budgetId ?? (clearAttribution ? undefined : row!.budgetId),
@@ -1022,6 +1069,11 @@ export const updateTerms = mutation({
       // schedule — which the detail screen does on every terms save — does not
       // cost somebody their signature for nothing.
       if (scheduleChanged(before, installments)) termsChanged = true;
+    } else if (moving) {
+      // The schedule mirrors its agreement's scope.
+      for (const tranche of await loadSchedule(ctx, contractorPaymentId)) {
+        await ctx.db.patch(tranche._id, { chapterId });
+      }
     }
 
     const now = Date.now();

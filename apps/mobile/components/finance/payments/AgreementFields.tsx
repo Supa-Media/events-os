@@ -202,13 +202,13 @@ function pushBook(
   if (book.events.length > 0) {
     items.push({ value: `__grp_events_${key}`, label: header("Events"), header: true });
     for (const e of book.events) {
-      items.push({ value: `event:${e.id}`, label: e.label });
+      items.push({ value: refValue("event", e), label: e.label });
     }
   }
   if (book.projects.length > 0) {
     items.push({ value: `__grp_projects_${key}`, label: header("Projects"), header: true });
     for (const p of book.projects) {
-      items.push({ value: `project:${p.id}`, label: p.label });
+      items.push({ value: refValue("project", p), label: p.label });
     }
   }
   if (book.budgets.length > 0) {
@@ -220,6 +220,15 @@ function pushBook(
       });
     }
   }
+}
+
+/** Central's own events and projects are coded by their budget — see
+ *  `RefRow` in `lib/contractorCodingOptions.ts`. */
+function refValue(
+  kind: "event" | "project",
+  row: { id: string; budgetId?: string },
+): string {
+  return row.budgetId ? `budget:${row.budgetId}` : `${kind}:${row.id}`;
 }
 
 /** The chapter whose book the picked item came from, when it came from one of

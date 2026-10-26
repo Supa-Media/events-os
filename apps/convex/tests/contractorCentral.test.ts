@@ -401,9 +401,17 @@ describe("the books follow the budget", () => {
       { scope: "central" },
     );
     expect(central.budgets.map((b) => b.id)).toEqual([centralBudgetId]);
+    // Coded by central's budget: the project row itself lives in a chapter, so
+    // a central agreement coded to the project id would fail the scope check.
+    const budgetId = central.projects[0]?.budgetId;
     expect(central.projects).toEqual([
-      { id: projectId, label: "Reach out to Top 5 Donors" },
+      { id: projectId, label: "Reach out to Top 5 Donors", budgetId },
     ]);
+    await s.as.mutation(api.contractorPayments.createAgreement, {
+      ...AGREEMENT,
+      scope: "central",
+      budgetId: budgetId!,
+    });
   });
 
   test("the central composer can find a chapter's event, and coding to it is that chapter's agreement", async () => {
@@ -468,6 +476,38 @@ describe("the books follow the budget", () => {
       contractorPaymentId,
     });
     expect(detail.scope).toBe(s.chapterId);
+
+    // A central DRAFT re-coded to the chapter's event moves with it.
+    const draft = await s.as.mutation(api.contractorPayments.createAgreement, {
+      ...AGREEMENT,
+      scope: "central",
+    });
+    await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: draft.contractorPaymentId,
+      eventId,
+      scope: s.chapterId,
+    });
+    const moved = await s.as.query(api.contractorPayments.get, {
+      contractorPaymentId: draft.contractorPaymentId,
+    });
+    expect(moved.scope).toBe(s.chapterId);
+    expect(moved.eventId).toBe(eventId);
+
+    // Once sent, it stays where the contractor was told it is.
+    const sent = await s.as.mutation(api.contractorPayments.createAgreement, {
+      ...AGREEMENT,
+      scope: "central",
+    });
+    await s.as.mutation(api.contractorPayments.send, {
+      contractorPaymentId: sent.contractorPaymentId,
+    });
+    await expect(
+      s.as.mutation(api.contractorPayments.updateTerms, {
+        contractorPaymentId: sent.contractorPaymentId,
+        eventId,
+        scope: s.chapterId,
+      }),
+    ).rejects.toThrow(ConvexError);
   });
 });
 
