@@ -45,3 +45,14 @@ export function initialGuestState(
   const email = guestEmailParam?.trim() ?? "";
   return email ? { mode: "guest", guestEmail: email } : { mode: "member", guestEmail: "" };
 }
+
+/**
+ * What to show when verifying a code fails. @convex-dev/auth rejects a wrong,
+ * expired or rate-limited code with a plain server Error, which prod redacts
+ * to "[CONVEX A(auth:signIn)] [Request ID: …] Server Error" — so the client
+ * can't tell those apart, and the raw text reads like the app broke. Almost
+ * every failure here is a mistyped or stale code, so say that and point at
+ * the way out.
+ */
+export const BAD_CODE_MESSAGE =
+  "That code didn't match. Check the most recent email and try again, or tap Resend code for a new one.";

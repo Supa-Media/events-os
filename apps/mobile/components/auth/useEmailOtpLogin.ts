@@ -3,7 +3,7 @@ import { useConvex } from "convex/react";
 import { useAuthActions } from "@convex-dev/auth/react";
 import { api } from "@events-os/convex/_generated/api";
 import { useActionRunner } from "../../lib/useActionToast";
-import { Mode, isValidEmail, toEmail } from "./loginHelpers";
+import { BAD_CODE_MESSAGE, Mode, isValidEmail, toEmail } from "./loginHelpers";
 
 type Step = "request" | "verify";
 
@@ -111,12 +111,16 @@ export function useEmailOtpLogin(
   async function verifyCode() {
     setError(null);
     setSubmitting(true);
-    const ok = await run(() => signIn("email", { email, code: code.trim() }), {
-      errorTitle: "That code didn't work",
-    });
-    // Navigation happens once `isAuthenticated` flips (see the screen effect);
-    // keep the spinner until then, and only clear it when verification failed.
-    if (ok === undefined) setSubmitting(false);
+    try {
+      await signIn("email", { email, code: code.trim() });
+      // Navigation happens once `isAuthenticated` flips (see the screen
+      // effect); keep the spinner until then.
+    } catch {
+      // Inline, not the action toast: the server's error is redacted to a raw
+      // "Server Error" string (see BAD_CODE_MESSAGE).
+      setError(BAD_CODE_MESSAGE);
+      setSubmitting(false);
+    }
   }
 
   function changeUsername(next: string) {
