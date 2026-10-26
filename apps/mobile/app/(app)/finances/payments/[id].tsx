@@ -75,6 +75,10 @@ import {
 } from "../../../../components/finance/payments/ScheduleBuilder";
 import { TaxDocumentCard } from "../../../../components/finance/payments/TaxDocumentCard";
 import {
+  termsDocumentsMoved,
+  toTermsDocumentArgs,
+} from "../../../../components/finance/payments/TermsDocumentsField";
+import {
   ORIGIN_BADGE,
   STATUS_BADGE,
   canCancel,
@@ -205,6 +209,9 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
           // An empty string is an explicit clear server-side, for both — but
           // only `additionalTerms` is an agreed term that can void a signature.
           additionalTerms: draft.additionalTerms.trim(),
+          // The whole list, always — the server keeps what's still here,
+          // attaches what's new, and deletes what was removed.
+          termsDocuments: toTermsDocumentArgs(draft.termsDocuments),
           agreementNotes: draft.agreementNotes.trim(),
           // An absent key means "unchanged", so saying "none" has to be said
           // explicitly — that's what `clearAttribution` is for.
@@ -236,12 +243,13 @@ function PaymentDetail({ id }: { id: Id<"contractorPayments"> }) {
         (draftAmountCents(draft) ?? -1) !== p.agreedAmountCents ||
         (draft.serviceDate ?? undefined) !== p.serviceDate ||
         (draft.additionalTerms.trim() || undefined) !==
-          (p.additionalTerms ?? undefined));
+          (p.additionalTerms ?? undefined) ||
+        termsDocumentsMoved(draft.termsDocuments, p.termsDocuments));
     if (p.acceptedAt != null && termsMoved) {
       confirmAction({
         title: "This voids their acceptance",
         message:
-          "They've already signed these terms. Saving a different amount, service, date, or additional terms cancels that signature and asks them to sign again — the payment goes back to waiting on them.",
+          "They've already signed these terms. Saving a different amount, service, date, or additional terms (text or documents) cancels that signature and asks them to sign again — the payment goes back to waiting on them.",
         confirmLabel: "Save and re-ask",
         destructive: true,
         onConfirm: () => void saveTerms(p),
@@ -742,6 +750,24 @@ function TermsCard({
           label="Additional terms"
           value={payment.additionalTerms}
         />
+      ) : null}
+      {payment.termsDocuments.length ? (
+        <View className="flex-row flex-wrap items-start gap-2 border-b border-border py-2">
+          <Text className="w-32 text-xs font-semibold text-muted">
+            Terms documents
+          </Text>
+          <View className="flex-1 gap-1">
+            {payment.termsDocuments.map((doc, i) => (
+              <Text
+                key={doc.storageId}
+                className="text-sm text-accent underline"
+                onPress={doc.url ? () => void Linking.openURL(doc.url!) : undefined}
+              >
+                {doc.fileName ?? `Document ${i + 1}`}
+              </Text>
+            ))}
+          </View>
+        </View>
       ) : null}
       {payment.agreementNotes ? (
         <DetailRow

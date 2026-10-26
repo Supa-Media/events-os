@@ -137,6 +137,9 @@ export type ContractPublicView = {
    *  NOT `agreementNotes` — that field is the finance team's private file
    *  note and never reaches this page. */
   additionalTerms?: string | null;
+  /** The same agreed terms as attached files — a name and a download link
+   *  each. Covered by their signature like the text above. */
+  termsDocuments?: Array<{ fileName?: string | null; url?: string | null }>;
   /** The invoice they attached, when they did — filename only, echoed back on
    *  their own tokened page so they can see we hold it. */
   invoiceFileName?: string | null;
@@ -175,6 +178,27 @@ export type ContractPublicView = {
 };
 
 // ── Formatting ───────────────────────────────────────────────────────────────
+
+/** The "Additional terms" row(s) of a terms summary: the typed text and any
+ *  attached documents, each a download link. Empty when there are neither. */
+function additionalTermsRows(view: ContractPublicView): string {
+  const text = view.additionalTerms
+    ? `<div class="sr"><span class="k">Additional terms</span><span class="v terms-note">${esc(view.additionalTerms)}</span></div>`
+    : "";
+  const docs = (view.termsDocuments ?? []).filter((d) => d.url);
+  if (docs.length === 0) return text;
+  const links = docs
+    .map(
+      (d, i) =>
+        `<a class="terms-doc" href="${esc(d.url!)}" target="_blank" rel="noopener"><svg ${ICON_ATTRS}><use href="#i-file"/></svg><span>${esc(
+          d.fileName || `Document ${i + 1}`,
+        )}</span></a>`,
+    )
+    .join("");
+  return `${text}<div class="sr"><span class="k">${
+    docs.length === 1 ? "Terms document" : "Terms documents"
+  }</span><span class="v terms-docs">${links}</span></div>`;
+}
 
 function money(cents: number): string {
   return `$${((cents || 0) / 100).toLocaleString("en-US", {
@@ -377,6 +401,9 @@ input[type=file].forminput{padding:9px 10px;font-size:13px;}
 .chip{display:inline-flex;align-items:center;gap:6px;background:var(--success-bg);color:var(--success);border-radius:var(--r-sm);padding:4px 9px;font-size:12px;font-weight:600;overflow-wrap:anywhere;}
 .chip svg{width:12px;height:12px;stroke:currentColor;flex:0 0 12px;}
 .terms-note{white-space:pre-wrap;overflow-wrap:anywhere;}
+.terms-docs{display:flex;flex-direction:column;gap:6px;align-items:flex-end;}
+.terms-doc{display:inline-flex;align-items:center;gap:6px;color:var(--accent);font-weight:600;text-decoration:underline;overflow-wrap:anywhere;}
+.terms-doc svg{width:14px;height:14px;stroke:currentColor;flex-shrink:0;}
 .agree{display:flex;gap:10px;align-items:flex-start;font-size:13px;line-height:19px;}
 .agree input{margin:2px 0 0;flex:0 0 auto;width:18px;height:18px;accent-color:var(--accent);}
 /* The returning-contractor confirmations. A real <fieldset>/<legend> so the
@@ -1090,11 +1117,7 @@ ${pubbar(view.chapterName)}
           view.serviceDate != null ? esc(fmtDay(view.serviceDate)) : "Not specified"
         }</span></div>
         <div class="sr"><span class="k">Paid by</span><span class="v">Direct deposit, after a treasurer approves</span></div>
-        ${
-          view.additionalTerms
-            ? `<div class="sr"><span class="k">Additional terms</span><span class="v terms-note">${esc(view.additionalTerms)}</span></div>`
-            : ""
-        }
+        ${additionalTermsRows(view)}
       </div>
       <p class="xs muted mt8">These terms are set by ${esc(view.chapterName)} and can't be changed here. If any of them change later, your signature is voided and we'll ask you to read and sign again.</p>
     </section>
@@ -1328,11 +1351,7 @@ ${pubbar(view.chapterName)}
       <span class="fl">What we have</span>
       <div class="summ mt12">
         <div class="sr"><span class="k">The work</span><span class="v terms-note">${esc(view.serviceDescription)}</span></div>
-        ${
-          view.additionalTerms
-            ? `<div class="sr"><span class="k">Additional terms</span><span class="v terms-note">${esc(view.additionalTerms)}</span></div>`
-            : ""
-        }
+        ${additionalTermsRows(view)}
         <div class="sr"><span class="k">Amount</span><span class="v money">${esc(money(settledCents(view)))}</span>${
           view.approvedCents != null && view.approvedCents !== view.agreedAmountCents
             ? `<span class="note">Approved for less than the agreed ${esc(money(view.agreedAmountCents))} — the note below says why.</span>`

@@ -1278,6 +1278,103 @@ describe("additional terms are signed; the file note stays private", () => {
   });
 });
 
+// ── 8b. Terms documents ────────────────────────────────────────────────────
+/**
+ * Founder, 2026-10-26: attach a document to the additional terms instead of
+ * only typing them. The files are the same promise as the text: the contractor
+ * can open them on their page, their signature covers them, and changing the
+ * set after they signed voids it.
+ */
+describe("terms documents are shown to the contractor and signed", () => {
+  function storePdf(s: ChapterSetup): Promise<Id<"_storage">> {
+    return run(s.t, (ctx) =>
+      (ctx.storage as unknown as {
+        store: (b: Blob) => Promise<Id<"_storage">>;
+      }).store(new Blob(["%PDF-1.4"], { type: "application/pdf" })),
+    );
+  }
+
+  test("attached at compose time, listed with a link on the public view", async () => {
+    const { s, budgetId } = await setup();
+    const docId = await storePdf(s);
+    const { contractorPaymentId } = await s.as.mutation(
+      api.contractorPayments.createAgreement,
+      {
+        ...AGREEMENT,
+        budgetId,
+        termsDocuments: [{ storageId: docId, fileName: "Rider.pdf" }],
+      },
+    );
+    await s.as.mutation(api.contractorPayments.send, { contractorPaymentId });
+    const token = await run(
+      s.t,
+      async (ctx) => (await ctx.db.get(contractorPaymentId))!.token,
+    );
+    const view = await s.t.query(api.contractorPayments.publicByToken, {
+      token,
+    });
+    expect(view?.termsDocuments).toHaveLength(1);
+    expect(view?.termsDocuments[0].fileName).toBe("Rider.pdf");
+    expect(view?.termsDocuments[0].url).toBeTruthy();
+
+    const detail = await s.as.query(api.contractorPayments.get, {
+      contractorPaymentId,
+    });
+    expect(detail.termsDocuments.map((d) => d.storageId)).toEqual([docId]);
+  });
+
+  test("more than ten documents is refused", async () => {
+    const { s, budgetId } = await setup();
+    const ids: Id<"_storage">[] = [];
+    for (let i = 0; i < 11; i++) ids.push(await storePdf(s));
+    await expect(
+      s.as.mutation(api.contractorPayments.createAgreement, {
+        ...AGREEMENT,
+        budgetId,
+        termsDocuments: ids.map((storageId) => ({ storageId })),
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("re-saving the same files voids nothing; adding or removing one voids", async () => {
+    const { s, budgetId } = await setup();
+    const id = await sendAndComplete(s, budgetId);
+    const first = await storePdf(s);
+
+    // Saving "no documents" over no documents is not a change to the terms.
+    const none = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: id,
+      termsDocuments: [],
+    });
+    expect(none.acceptanceVoided).toBe(false);
+
+    const added = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: id,
+      termsDocuments: [{ storageId: first, fileName: "Rider.pdf" }],
+    });
+    expect(added.acceptanceVoided).toBe(true);
+    const afterAdd = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(afterAdd!.status).toBe("sent");
+    expect(afterAdd!.termsDocuments?.map((d) => d.storageId)).toEqual([first]);
+
+    const noop = await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: id,
+      termsDocuments: [{ storageId: first, fileName: "Rider.pdf" }],
+    });
+    expect(noop.acceptanceVoided).toBe(false);
+
+    await s.as.mutation(api.contractorPayments.updateTerms, {
+      contractorPaymentId: id,
+      termsDocuments: [],
+    });
+    const afterRemove = await run(s.t, (ctx) => ctx.db.get(id));
+    expect(afterRemove!.termsDocuments).toBeUndefined();
+    // A dropped file belonged to this agreement alone, so it goes too.
+    const stored = await run(s.t, (ctx) => ctx.db.system.get(first));
+    expect(stored).toBeNull();
+  });
+});
+
 // ── 9. The contractor's invoice ─────────────────────────────────────────────
 describe("the contractor's invoice", () => {
   /** Complete a sent agreement WITH an invoice attached. */

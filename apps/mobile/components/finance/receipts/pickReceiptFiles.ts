@@ -23,12 +23,14 @@ export type PickedReceiptFile = {
   filename: string | null;
 };
 
-function pickWeb(): Promise<PickedReceiptFile[]> {
+const RECEIPT_ACCEPT = "image/*,application/pdf";
+
+function pickWeb(accept: string): Promise<PickedReceiptFile[]> {
   return new Promise((resolve) => {
     if (typeof document === "undefined") return resolve([]);
     const input = document.createElement("input");
     input.type = "file";
-    input.accept = "image/*,application/pdf";
+    input.accept = accept;
     input.multiple = true;
     input.onchange = () => {
       resolve(
@@ -66,9 +68,14 @@ async function pickNative(): Promise<PickedReceiptFile[]> {
 
 /** Open the platform's file picker. Resolves `[]` when the human cancels
  *  (on web a cancelled dialog may simply never resolve — callers must not
- *  hold a busy state across the pick itself). */
-export function pickReceiptFiles(): Promise<PickedReceiptFile[]> {
-  return Platform.OS === "web" ? pickWeb() : pickNative();
+ *  hold a busy state across the pick itself). `accept` widens the web
+ *  picker's file types (agreement terms also take Word files). */
+export function pickReceiptFiles(
+  options: { accept?: string } = {},
+): Promise<PickedReceiptFile[]> {
+  return Platform.OS === "web"
+    ? pickWeb(options.accept ?? RECEIPT_ACCEPT)
+    : pickNative();
 }
 
 /** Upload one picked file to Convex storage. */

@@ -63,6 +63,7 @@ import {
   emptyDraft,
   type AgreementDraft,
 } from "../../../../components/finance/payments/AgreementFields";
+import { toTermsDocumentArgs } from "../../../../components/finance/payments/TermsDocumentsField";
 import {
   ScheduleBuilder,
   scheduleProblem,
@@ -215,6 +216,9 @@ function NewAgreementScreen() {
           ...(scope ? { scope } : {}),
           ...(draft.additionalTerms.trim()
             ? { additionalTerms: draft.additionalTerms.trim() }
+            : {}),
+          ...(draft.termsDocuments.length
+            ? { termsDocuments: toTermsDocumentArgs(draft.termsDocuments) }
             : {}),
           ...(draft.agreementNotes.trim()
             ? { agreementNotes: draft.agreementNotes.trim() }
