@@ -14,7 +14,7 @@
  * `submitted`). From `submitted` on they are indistinguishable and take the
  * identical approval → payout route, which is the point — a treasurer reviews
  * ONE queue, not two. The origin badge on every row is what keeps that
- * legible: "Agreement sent" is the org's own testimony, "Payment requested" is
+ * legible: "Our agreement" is the org's own testimony, "Payment requested" is
  * somebody's claim, and the second one always arrives uncoded.
  *
  * THE SCREEN'S ONE JOB is the "needs review" band at the top. Everything else

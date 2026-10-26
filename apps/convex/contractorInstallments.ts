@@ -443,7 +443,10 @@ export const listForPayment = query({
         // Derived, never stored: a date that has passed makes a tranche due,
         // and storing that would mean a cron writing rows to keep a clock
         // honest. `on_milestone` never answers true — a person decides that.
-        due: contractorInstallmentIsDue(i, now),
+        // Nothing is due before the agreement is approved: a deposit "on
+        // signing" on a draft nobody has signed is not owed, and flagging it
+        // "Due now" told staff to release money that can't be paid yet.
+        due: row!.status === "approved" && contractorInstallmentIsDue(i, now),
       })),
     };
   },
