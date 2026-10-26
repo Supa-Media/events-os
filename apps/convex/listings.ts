@@ -32,6 +32,7 @@ import type { MutationCtx } from "./_generated/server";
 import type { Doc } from "./_generated/dataModel";
 import {
   ROLE_STATUSES,
+  isValidApplyBy,
   roleSlugFromTitle,
   type PublicJobListing,
   type RoleStatus,
@@ -76,6 +77,7 @@ function serialize(doc: Doc<"jobListings">): PublicJobListing {
     trialTrack: doc.trialTrack,
     ...(doc.seatId ? { seatId: doc.seatId } : {}),
     order: doc.order,
+    ...(doc.applyBy ? { applyBy: doc.applyBy } : {}),
     summary: doc.summary,
     whyThisSeatExists: doc.whyThisSeatExists,
     outcomes: doc.outcomes,
@@ -233,6 +235,8 @@ export const upsertListing = mutation({
     ),
     seatId: v.optional(v.union(v.string(), v.null())),
     order: v.optional(v.number()),
+    /** `YYYY-MM-DD`; null or "" clears it. */
+    applyBy: v.optional(v.union(v.string(), v.null())),
     summary: v.optional(v.string()),
     whyThisSeatExists: v.optional(v.string()),
     outcomes: v.optional(v.array(outcomeValidator)),
@@ -251,6 +255,13 @@ export const upsertListing = mutation({
   handler: async (ctx, args) => {
     await requireListingManage(ctx);
     const now = Date.now();
+    const applyBy = args.applyBy?.trim() || undefined;
+    if (applyBy && !isValidApplyBy(applyBy)) {
+      throw new ConvexError({
+        code: "INVALID_INPUT",
+        message: "Write the apply-by date as YYYY-MM-DD, e.g. 2026-11-01.",
+      });
+    }
 
     if (args.listingId) {
       const existing = await ctx.db.get(args.listingId);
@@ -291,6 +302,7 @@ export const upsertListing = mutation({
           ? { seatId: args.seatId?.trim() || undefined }
           : {}),
         ...(args.order !== undefined ? { order: args.order } : {}),
+        ...(args.applyBy !== undefined ? { applyBy } : {}),
         ...(args.summary !== undefined
           ? { summary: args.summary.trim() }
           : {}),
@@ -372,6 +384,7 @@ export const upsertListing = mutation({
       trialTrack: args.trialTrack ?? "team_member",
       ...(args.seatId?.trim() ? { seatId: args.seatId.trim() } : {}),
       order: args.order ?? 100,
+      ...(applyBy ? { applyBy } : {}),
       summary: (args.summary ?? "").trim(),
       whyThisSeatExists: (args.whyThisSeatExists ?? "").trim(),
       outcomes: cleanOutcomes(args.outcomes ?? []),

@@ -16,6 +16,7 @@ import {
   type PublicJobListing,
   type RoleStatus,
 } from "@events-os/shared/src/hiring";
+import { applyByNotice } from "@events-os/shared/src/applyBy";
 import { asset } from "./asset";
 
 /** The role shape both `/team` pages render — the OS wire contract. */
@@ -37,6 +38,19 @@ export function statusChipClass(status: string): string {
       return "bg-ink/5 text-ink/70";
   }
 }
+
+/** "Apply by Nov 1" for a seat taking applications whose deadline hasn't
+ *  passed; null otherwise. Display only — nothing closes on the day. */
+export function roleDeadline(
+  role: Pick<PublicJobListing, "status" | "applyBy">,
+): string | null {
+  if (!roleAcceptsApplications(role.status)) return null;
+  return applyByNotice(role.applyBy);
+}
+
+/** Tailwind classes for the deadline chip that sits beside the status chip. */
+export const DEADLINE_CHIP_CLASS =
+  "inline-flex items-center rounded-full border border-red-500 px-3 py-1 text-xs font-bold uppercase tracking-wide text-red-500";
 
 /** The detail page for a role. A query param rather than a path segment
  *  because slugs are minted in the OS and unknown at build time, so there is

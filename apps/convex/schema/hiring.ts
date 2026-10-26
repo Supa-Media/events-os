@@ -303,6 +303,10 @@ export const jobListings = defineTable({
   seatId: v.optional(v.string()),
   /** Index sort order; lower first. */
   order: v.number(),
+  /** The day the public page asks people to apply by, `YYYY-MM-DD` (read in
+   *  Eastern time). Display only — applications stay open after it, and the
+   *  line drops off the page once it passes (`applyByNotice`). */
+  applyBy: v.optional(v.string()),
 
   // ── The role's body, section for section (the old markdown front-matter) ──
   summary: v.string(),

@@ -11,6 +11,7 @@ import { describe, expect, test } from "vitest";
 import { api, internal } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
+import { runNycListingsApplyBy } from "../migrations/0095_nyc_listings_apply_by_nov_1";
 
 /** Give the test's user a central seat carrying `capabilities`. Mirrors the
  *  helper in `hiring.test.ts` (kept local rather than shared — a seat fixture
@@ -205,5 +206,71 @@ describe("job listings", () => {
     const feed = await t.query(internal.listings.publicListings, {});
     expect(feed).toHaveLength(1);
     expect(feed[0].slug).toBe("people-director");
+  });
+});
+
+describe("a listing's apply-by date", () => {
+  test("is saved, served on the public feed, validated, and clearable", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["hiring.edit"]);
+
+    const id = await s.as.mutation(
+      api.listings.upsertListing,
+      completeArgs({ status: "open", applyBy: "2026-11-01" }),
+    );
+    await s.as.mutation(api.listings.setListingPublished, {
+      listingId: id,
+      published: true,
+    });
+    let feed = await t.query(internal.listings.publicListings, {});
+    expect(feed[0].applyBy).toBe("2026-11-01");
+
+    await expect(
+      s.as.mutation(api.listings.upsertListing, { listingId: id, applyBy: "Nov 1" }),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+    await expect(
+      s.as.mutation(api.listings.upsertListing, { listingId: id, applyBy: "2026-02-30" }),
+    ).rejects.toThrow(/YYYY-MM-DD/);
+
+    await s.as.mutation(api.listings.upsertListing, { listingId: id, applyBy: null });
+    feed = await t.query(internal.listings.publicListings, {});
+    expect(feed[0]).not.toHaveProperty("applyBy");
+  });
+
+  test("0095 dates the open NYC-only seats, once", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await seedSeat(s, ["hiring.edit"]);
+    const nyc = await s.as.mutation(
+      api.listings.upsertListing,
+      completeArgs({ title: "NYC Chapter Director", location: "Brooklyn, NYC", status: "open" }),
+    );
+    const remote = await s.as.mutation(
+      api.listings.upsertListing,
+      completeArgs({ title: "Remote seat", location: "Remote, or NYC-based preferred", status: "open" }),
+    );
+    const dmv = await s.as.mutation(
+      api.listings.upsertListing,
+      completeArgs({ title: "DMV seat", location: "Washington, DC", status: "open" }),
+    );
+    const notOpen = await s.as.mutation(
+      api.listings.upsertListing,
+      completeArgs({ title: "Later NYC seat", location: "NYC", status: "not_open" }),
+    );
+    const own = await s.as.mutation(
+      api.listings.upsertListing,
+      completeArgs({ title: "Dated NYC seat", location: "NYC", status: "filling", applyBy: "2026-11-15" }),
+    );
+
+    expect(await run(t, runNycListingsApplyBy)).toEqual({ changed: 1 });
+    const applyBy = async (id: Id<"jobListings">) =>
+      (await run(t, (ctx) => ctx.db.get(id)))?.applyBy;
+    expect(await applyBy(nyc)).toBe("2026-11-01");
+    expect(await applyBy(remote)).toBeUndefined();
+    expect(await applyBy(dmv)).toBeUndefined();
+    expect(await applyBy(notOpen)).toBeUndefined();
+    expect(await applyBy(own)).toBe("2026-11-15");
+    expect(await run(t, runNycListingsApplyBy)).toEqual({ changed: 0 });
   });
 });

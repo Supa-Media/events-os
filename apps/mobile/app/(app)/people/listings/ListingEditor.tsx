@@ -14,7 +14,11 @@ import { View, Text, Pressable } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
-import { ROLE_STATUSES, ROLE_STATUS_LABELS } from "@events-os/shared";
+import {
+  ROLE_STATUSES,
+  ROLE_STATUS_LABELS,
+  isValidApplyBy,
+} from "@events-os/shared";
 import { Button, Card, Icon, TextField, Select } from "../../../../components/ui";
 
 type Listing = Doc<"jobListings">;
@@ -62,6 +66,7 @@ export function ListingEditor({
   const [order, setOrder] = useState(
     existing?.order != null ? String(existing.order) : "100",
   );
+  const [applyBy, setApplyBy] = useState(existing?.applyBy ?? "");
 
   // ── prose ──
   const [summary, setSummary] = useState(existing?.summary ?? "");
@@ -107,6 +112,10 @@ export function ListingEditor({
       setError("Give the listing a title to start.");
       return;
     }
+    if (applyBy.trim() && !isValidApplyBy(applyBy.trim())) {
+      setError("Write the apply-by date as YYYY-MM-DD, e.g. 2026-11-01.");
+      return;
+    }
     setSaving(true);
     try {
       const id = await upsert({
@@ -125,6 +134,7 @@ export function ListingEditor({
         order: Number.isNaN(Number.parseInt(order, 10))
           ? 100
           : Number.parseInt(order, 10),
+        applyBy: applyBy.trim() || null,
         summary,
         whyThisSeatExists: why,
         growthPath: growthPath.trim() || null,
@@ -227,6 +237,13 @@ export function ListingEditor({
           value={order}
           onChangeText={setOrder}
           keyboardType="number-pad"
+        />
+        <TextField
+          label="Apply by (optional)"
+          hint="Shows as “Apply by Nov 1” on /team until the day passes. Nothing closes; leave blank for no deadline."
+          value={applyBy}
+          onChangeText={setApplyBy}
+          placeholder="2026-11-01"
         />
       </Card>
 

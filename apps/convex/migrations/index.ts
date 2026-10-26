@@ -112,6 +112,7 @@ import { applicationFormKingdomCity } from "./0090_application_form_kingdom_city
 import { applicationFormLeadershipQuestion } from "./0091_application_form_leadership_question";
 import { applicationFormDropTrialQuestion } from "./0092_application_form_drop_trial_question";
 import { applicationFormMonthlyMeetingQuestion } from "./0093_application_form_monthly_meeting_question";
+import { nycListingsApplyBy } from "./0095_nyc_listings_apply_by_nov_1";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -583,4 +584,7 @@ export const MIGRATIONS: Migration[] = [
   // question (first-Thursday all-team meeting), after `capacity`. See the file.
   applicationFormMonthlyMeetingQuestion,
   blankEventColumns,
+  // 0095: open NYC-only seats get an "Apply by Nov 1" date (display only).
+  // See the file.
+  nycListingsApplyBy,
 ];

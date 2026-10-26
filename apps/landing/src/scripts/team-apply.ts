@@ -21,6 +21,7 @@ import {
   type ApplicationFormConfig,
   type PublicJobListing,
 } from "@events-os/shared/src/hiring";
+import { roleDeadline } from "../lib/roles";
 
 const API = "/api/team/apply";
 
@@ -154,6 +155,16 @@ async function hydrateQuestions(): Promise<void> {
   }
 }
 
+/** Under the heading, the seat's "Apply by Nov 1" line, when it has one. */
+function showDeadline(roles: PublicJobListing[], appliedFor: string): void {
+  const el = document.querySelector<HTMLElement>("[data-apply-deadline]");
+  const role = roles.find((r) => r.slug === appliedFor);
+  const deadline = role ? roleDeadline(role) : null;
+  if (!el || !deadline) return;
+  el.textContent = deadline;
+  el.classList.replace("hidden", "inline-flex");
+}
+
 /** List every OTHER role that's taking applications as a checkbox, so someone
  *  applying for one seat can say which others they'd also take. Best-effort:
  *  no backend, no roles, or only the one they're applying for → the block
@@ -181,6 +192,8 @@ async function hydrateOtherRoles(): Promise<void> {
   } catch {
     return;
   }
+
+  showDeadline(roles, appliedFor);
 
   const others = roles.filter(
     (r) => roleAcceptsApplications(r.status) && r.slug !== appliedFor,

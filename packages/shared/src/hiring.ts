@@ -926,6 +926,9 @@ export interface PublicJobListing {
   /** The role's closing prose (the old markdown body). Plain text; blank lines
    *  are paragraph breaks. Absent when the role has no coda. */
   body?: string;
+  /** The day the desk asks people to apply by, `YYYY-MM-DD`. Display only —
+   *  applications stay open after it. Absent when there's no deadline. */
+  applyBy?: string;
   /** ISO date string (YYYY-MM-DD or full ISO). */
   postedAt: string;
   /** ISO date string; absent when the listing has never been edited. */
