@@ -126,6 +126,13 @@ import {
   touchUnpaidTaxDoc,
 } from "./contractorProfiles";
 import { loadSchedule, hasSchedule } from "./lib/contractorSchedule";
+import {
+  termsDocumentInput,
+  resolveTermsDocuments,
+  deleteTermsDocuments,
+  termsDocumentsWithUrls,
+  type TermsDocumentInput,
+} from "./lib/contractorTermsDocuments";
 import { codingBookFor, chapterCodingBooks } from "./lib/contractorCodingOptions";
 import { ROLLUP_SCAN_LIMIT } from "./finances";
 import {
@@ -580,6 +587,7 @@ async function createContractorPayment(
     agreedAmountCents: number;
     agreementNotes?: string;
     additionalTerms?: string;
+    termsDocuments?: TermsDocumentInput[];
     eventId?: Id<"events">;
     projectId?: Id<"projects">;
     budgetId?: Id<"budgets">;
@@ -623,6 +631,12 @@ async function createContractorPayment(
   // The spend books where the money comes from — see `assertCodingMatchesScope`.
   await assertCodingMatchesScope(ctx, args.chapterId, args);
 
+  const { docs: termsDocuments } = await resolveTermsDocuments(
+    ctx,
+    undefined,
+    args.termsDocuments ?? [],
+  );
+
   const now = Date.now();
   const token = mintToken();
   const fundId = args.fundId ?? (await defaultFundId(ctx, args.chapterId));
@@ -652,6 +666,7 @@ async function createContractorPayment(
     ...(capOptional(args.additionalTerms, 4000)
       ? { additionalTerms: capOptional(args.additionalTerms, 4000) }
       : {}),
+    ...(termsDocuments.length ? { termsDocuments } : {}),
     agreementTermsVersion: 1,
     ...(args.eventId ? { eventId: args.eventId } : {}),
     ...(args.projectId ? { projectId: args.projectId } : {}),
@@ -700,6 +715,8 @@ export const createAgreement = mutation({
     // Extra AGREED terms, shown to the contractor and covered by their
     // signature — unlike `agreementNotes`, which stays finance-private.
     additionalTerms: v.optional(v.string()),
+    // The same, as attached files (uploaded via `storage.generateUploadUrl`).
+    termsDocuments: v.optional(v.array(termsDocumentInput)),
     eventId: v.optional(v.id("events")),
     projectId: v.optional(v.id("projects")),
     budgetId: v.optional(v.id("budgets")),
@@ -833,6 +850,10 @@ export const updateTerms = mutation({
     // An AGREED term (see the schema) — an empty string clears it, and a real
     // change voids an acceptance exactly as changing the amount does.
     additionalTerms: v.optional(v.string()),
+    // The FULL list of documents to keep on the terms — absent means
+    // unchanged, `[]` removes them all. A different set is an agreed-term
+    // change and voids an acceptance; dropped files are deleted.
+    termsDocuments: v.optional(v.array(termsDocumentInput)),
     eventId: v.optional(v.id("events")),
     projectId: v.optional(v.id("projects")),
     budgetId: v.optional(v.id("budgets")),
@@ -940,6 +961,20 @@ export const updateTerms = mutation({
         termsChanged = true;
       }
     }
+    let removedDocuments: Id<"_storage">[] = [];
+    if (rest.termsDocuments !== undefined) {
+      // Same bucket as the text: the files are terms they read and sign.
+      const resolved = await resolveTermsDocuments(
+        ctx,
+        row!.termsDocuments,
+        rest.termsDocuments,
+      );
+      if (resolved.changed) {
+        patch.termsDocuments = resolved.docs.length ? resolved.docs : undefined;
+        removedDocuments = resolved.removed;
+        termsChanged = true;
+      }
+    }
 
     // Non-agreed fields — editable without voiding anything.
     if (rest.payeeName !== undefined) {
@@ -1039,6 +1074,7 @@ export const updateTerms = mutation({
     }
 
     await ctx.db.patch(contractorPaymentId, { ...patch, updatedAt: now });
+    await deleteTermsDocuments(ctx, removedDocuments);
     await recordApproval(
       ctx,
       chapterId,
@@ -1194,6 +1230,9 @@ export const get = query({
       agreedAmountCents: row!.agreedAmountCents,
       agreementNotes: row!.agreementNotes,
       additionalTerms: row!.additionalTerms,
+      // Agreed terms as files — the composer's own attachments, so a URL is
+      // fine here (unlike the tax document, nothing sensitive rides on them).
+      termsDocuments: await termsDocumentsWithUrls(ctx, row!.termsDocuments),
       agreementTermsVersion: row!.agreementTermsVersion,
       acceptedAt: row!.acceptedAt,
       acceptedTermsVersion: row!.acceptedTermsVersion,
@@ -1958,6 +1997,11 @@ export const publicByToken = query({
       // ("never shown to the contractor or published"), and until 2026-08-28
       // this projection broke that promise by feeding it to the terms card.
       additionalTerms: row.additionalTerms,
+      // The same terms as attached files, each with a link to download it —
+      // they can't sign a document they can't open. Name + URL only.
+      termsDocuments: (
+        await termsDocumentsWithUrls(ctx, row.termsDocuments)
+      ).map((d) => ({ fileName: d.fileName, url: d.url })),
       // Their own invoice's filename, so the page can confirm we hold it.
       invoiceFileName: row.invoiceFileName,
       agreementTermsVersion: row.agreementTermsVersion,

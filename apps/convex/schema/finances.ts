@@ -1178,6 +1178,20 @@ export const contractorPayments = defineTable({
   // voids the signature exactly as editing the amount does (`updateTerms`).
   // Never published to the public ledger.
   additionalTerms: v.optional(v.string()),
+  // The same agreed terms as FILES — a rider, an SOW, a licensing PDF — shown
+  // to the contractor with a download link and covered by their signature.
+  // Changing the set after acceptance voids it, exactly like the text above.
+  // Each file belongs to this agreement alone; see
+  // `lib/contractorTermsDocuments.ts`.
+  termsDocuments: v.optional(
+    v.array(
+      v.object({
+        storageId: v.id("_storage"),
+        fileName: v.optional(v.string()),
+        uploadedAt: v.number(),
+      }),
+    ),
+  ),
 
   // Bumped every time a term the contractor agreed to (amount, description,
   // service date) is edited after they accepted. Bumping CLEARS the acceptance

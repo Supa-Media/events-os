@@ -145,6 +145,7 @@ import type * as lib_sponsorPortalEmails from "../lib/sponsorPortalEmails.js";
 import type * as lib_contractPage from "../lib/contractPage.js";
 import type * as lib_contractorPaymentEmails from "../lib/contractorPaymentEmails.js";
 import type * as lib_contractorPaymentsAccess from "../lib/contractorPaymentsAccess.js";
+import type * as lib_contractorTermsDocuments from "../lib/contractorTermsDocuments.js";
 import type * as lib_contractorTxnFields from "../lib/contractorTxnFields.js";
 import type * as lib_dataExportAccess from "../lib/dataExportAccess.js";
 import type * as lib_donorIdentity from "../lib/donorIdentity.js";
@@ -640,6 +641,7 @@ declare const fullApi: ApiFromModules<{
   "lib/contractPage": typeof lib_contractPage;
   "lib/contractorPaymentEmails": typeof lib_contractorPaymentEmails;
   "lib/contractorPaymentsAccess": typeof lib_contractorPaymentsAccess;
+  "lib/contractorTermsDocuments": typeof lib_contractorTermsDocuments;
   "lib/contractorTxnFields": typeof lib_contractorTxnFields;
   "lib/dataExportAccess": typeof lib_dataExportAccess;
   "lib/donorIdentity": typeof lib_donorIdentity;

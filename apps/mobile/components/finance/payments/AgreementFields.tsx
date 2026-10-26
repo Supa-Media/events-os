@@ -48,6 +48,10 @@ import { formatDate } from "../../../lib/format";
 import { parseDollars } from "../../event/ticketing/helpers";
 import { centsToAmountText } from "./helpers";
 import { descriptionProblems } from "./contractorHelpers";
+import {
+  TermsDocumentsField,
+  type TermsDocumentDraft,
+} from "./TermsDocumentsField";
 
 export type NewRequestOptions = FunctionReturnType<
   typeof api.reimbursements.newRequestOptions
@@ -78,6 +82,8 @@ export type AgreementDraft = {
   /** Extra AGREED terms — shown to the contractor and covered by their
    *  signature, unlike `agreementNotes` below, which never leaves finance. */
   additionalTerms: string;
+  /** The same agreed terms as attached files. */
+  termsDocuments: TermsDocumentDraft[];
   agreementNotes: string;
   /** `""` | `event:<id>` | `project:<id>` | `budget:<id>`. */
   forValue: string;
@@ -94,6 +100,7 @@ export function emptyDraft(): AgreementDraft {
     serviceDate: null,
     amountText: "",
     additionalTerms: "",
+    termsDocuments: [],
     agreementNotes: "",
     forValue: "",
     categoryId: "",
@@ -110,6 +117,7 @@ export function draftFromPayment(payment: {
   serviceDate?: number;
   agreedAmountCents: number;
   additionalTerms?: string;
+  termsDocuments?: TermsDocumentDraft[];
   agreementNotes?: string;
   eventId?: Id<"events">;
   projectId?: Id<"projects">;
@@ -124,6 +132,11 @@ export function draftFromPayment(payment: {
     serviceDate: payment.serviceDate ?? null,
     amountText: centsToAmountText(payment.agreedAmountCents),
     additionalTerms: payment.additionalTerms ?? "",
+    termsDocuments: (payment.termsDocuments ?? []).map((d) => ({
+      storageId: d.storageId,
+      fileName: d.fileName,
+      url: d.url,
+    })),
     agreementNotes: payment.agreementNotes ?? "",
     forValue: payment.eventId
       ? `event:${payment.eventId}`
@@ -380,13 +393,17 @@ export function AgreementFields({
         multiline
         numberOfLines={3}
       />
+      <TermsDocumentsField
+        value={value.termsDocuments}
+        onChange={(termsDocuments) => onChange({ termsDocuments })}
+      />
 
       {accepted ? (
         <View className="mb-3 flex-row items-start gap-2 rounded-md bg-warn-bg px-3 py-2.5">
           <Icon name="alert-triangle" size={14} color={colors.warn} />
           <Text className="flex-1 text-xs text-warn">
             They&apos;ve already accepted these terms. Changing the work, the
-            amount, the service date, or the additional terms will VOID their
+            amount, the service date, or the additional terms (text or documents) will VOID their
             acceptance and ask them to sign again. Changing the coding or your
             private notes won&apos;t.
           </Text>
