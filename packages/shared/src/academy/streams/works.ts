@@ -229,6 +229,10 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
         text: "Recurring work kept in someone's head gets done only while that person remembers and stays. Written as a duty with a cadence, it survives vacations, handoffs, and growth.",
       },
       {
+        kind: "tip",
+        text: "Managers: the Duties tab's **Needs attention** view lists duties sitting on a vacant seat or reaching nobody. Check it whenever someone leaves a seat.",
+      },
+      {
         kind: "reveal",
         prompt:
           '"Every month someone should check the storage unit and restock." Project, duty, or task?',
