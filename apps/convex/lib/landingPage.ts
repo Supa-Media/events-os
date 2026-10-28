@@ -6,6 +6,11 @@ import {
 } from "./landingPageStyles";
 import { LANDING_SCRIPT } from "./landingPageClient";
 import { rsvpPath } from "./siteUrl";
+import {
+  normalizeRsvpPageLinkUrl,
+  rsvpPageLinkHost,
+  rsvpTitleFont,
+} from "@events-os/shared";
 
 /**
  * Public RSVP page (the guest-facing event page) — server-rendered HTML
@@ -27,7 +32,12 @@ type PublicPage = {
   startDate: number;
   endDate: number | null;
   tagline: string | null;
+  // Big-title font id (RSVP_TITLE_FONT_IDS); null = classic Corben. Optional,
+  // like `myTickets`, so a renderer ahead of getPublicPage still works.
+  titleFont?: string | null;
   description: string | null;
+  // Organizer-added link cards (e.g. a questionnaire form).
+  links?: Array<{ label: string; url: string }>;
   hostName: string;
   venueName: string | null;
   address: string | null;
@@ -163,6 +173,19 @@ export function renderLandingPage(
   // Initial data for the client script; <-escape to survive </script>.
   const initialJson = JSON.stringify(p).replace(/</g, "\\u003c");
 
+  const titleFont = rsvpTitleFont(p.titleFont);
+  const titleStyle = `font-family:${titleFont.family};font-weight:${titleFont.weight};letter-spacing:${titleFont.letterSpacing}`;
+  // URLs were normalized on write; re-check here because this is an href on
+  // a public page and a row edited outside updatePage never got that check.
+  const linkCards = (p.links ?? [])
+    .map((l) => ({ label: l.label, url: normalizeRsvpPageLinkUrl(l.url) }))
+    .filter((l): l is { label: string; url: string } => l.url !== null)
+    .map(
+      (l) =>
+        `<a class="metacard linkcard" href="${esc(l.url)}" target="_blank" rel="noopener noreferrer"><div class="ic">🔗</div><div class="lc"><div class="t">${esc(l.label || rsvpPageLinkHost(l.url))}</div><div class="s">${esc(rsvpPageLinkHost(l.url))}</div></div><div class="go">↗</div></a>`,
+    )
+    .join("");
+
   const initials = p.eventName
     .split(/\s+/)
     .slice(0, 2)
@@ -200,7 +223,7 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');b
     <div class="left">
       <div class="card" id="myticketscard" style="display:none"></div>
       <span class="hostchip"><span class="dot">${esc(p.hostName[0] ?? "P")}</span> Hosted by ${esc(p.hostName)}</span>
-      <h1 class="title serif">${esc(p.eventName)}</h1>
+      <h1 class="title" style="${titleStyle}">${esc(p.eventName)}</h1>
       ${p.tagline ? `<p class="tagline">${esc(p.tagline)}</p>` : ""}
 
       <div id="socialproof" class="proofrow" style="display:none"></div>
@@ -227,6 +250,8 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');b
           }</div>
         </div>
       </div>
+
+      ${linkCards ? `<div class="links">${linkCards}</div>` : ""}
 
       <section id="guestsec">
         <div class="sectitle serif">Guest list</div>

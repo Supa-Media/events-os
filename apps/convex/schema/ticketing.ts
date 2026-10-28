@@ -34,10 +34,19 @@ export const eventPages = defineTable({
   // legacy default) = centered (50/50).
   coverFocalX: v.optional(v.number()),
   coverFocalY: v.optional(v.number()),
+  // Font for the big event title (an RSVP_TITLE_FONT_IDS value from
+  // @events-os/shared). Unset = "classic" (Corben).
+  titleFont: v.optional(
+    v.union(v.literal("classic"), v.literal("sans"), v.literal("helvetica")),
+  ),
   // Short line under the title (e.g. "A night of worship on the rooftop").
   tagline: v.optional(v.string()),
   // Longer "About this event" body (plain text, newlines preserved).
   description: v.optional(v.string()),
+  // Extra links shown as cards on the page (e.g. a talent questionnaire).
+  // URLs are normalized to absolute http(s) on write; see
+  // `normalizeRsvpPageLinkUrl` in @events-os/shared.
+  links: v.optional(v.array(v.object({ label: v.string(), url: v.string() }))),
   // Host label shown on the page; defaults to the chapter/brand name.
   hostName: v.optional(v.string()),
   // Optional end time (start time lives on events.eventDate).

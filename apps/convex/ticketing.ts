@@ -48,6 +48,7 @@ import { linkRsvpToPerson } from "./lib/rsvpPeople";
 import { createPaidDonationForOrder } from "./giving";
 import { RSVP_STATUSES } from "./schema/ticketing";
 import { listUpcomingEventPages } from "./lib/upcomingEvents";
+import { cleanPageLinks } from "./lib/pageLinks";
 
 // ── Small helpers ────────────────────────────────────────────────────────────
 
@@ -255,7 +256,14 @@ export const updatePage = triggerMutation({
       published: v.optional(v.boolean()),
       coverImage: v.optional(v.union(v.id("_storage"), v.null())),
       tagline: v.optional(v.string()),
+      titleFont: v.optional(
+        v.union(v.literal("classic"), v.literal("sans"), v.literal("helvetica")),
+      ),
       description: v.optional(v.string()),
+      // The whole list, replaced on every save (empty clears it).
+      links: v.optional(
+        v.array(v.object({ label: v.string(), url: v.string() })),
+      ),
       hostName: v.optional(v.string()),
       endDate: v.optional(v.union(v.number(), v.null())),
       venueName: v.optional(v.string()),
@@ -327,6 +335,9 @@ export const updatePage = triggerMutation({
         message: "The goal must be a whole number of cents ≥ 0.",
       });
     }
+
+    // Links: trimmed, URLs normalized to http(s), capped (throws INVALID_LINK).
+    if (patch.links !== undefined) patch.links = cleanPageLinks(patch.links);
 
     // Focal point percents are clamped to 0–100 (null resets to centered).
     for (const key of ["coverFocalX", "coverFocalY"] as const) {
@@ -1050,7 +1061,9 @@ export const getPublicPage = query({
       startDate: event.eventDate,
       endDate: page.endDate ?? null,
       tagline: page.tagline ?? null,
+      titleFont: page.titleFont ?? null,
       description: page.description ?? null,
+      links: page.links ?? [],
       hostName: page.hostName ?? "Public Worship",
       venueName: page.venueName ?? null,
       address: addressLocked ? null : (page.address ?? null),

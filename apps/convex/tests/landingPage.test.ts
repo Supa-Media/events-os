@@ -85,6 +85,65 @@ describe("renderLandingPage", () => {
   });
 });
 
+describe("renderLandingPage title font + links", () => {
+  test("defaults the title to Corben when no font is set", () => {
+    const html = renderLandingPage(samplePage() as never, SITE);
+    expect(html).toContain(
+      `<h1 class="title" style="font-family:'Corben',Georgia,serif;font-weight:700;`,
+    );
+  });
+
+  test("applies the chosen title font", () => {
+    const html = renderLandingPage(
+      samplePage({ titleFont: "helvetica" }) as never,
+      SITE,
+    );
+    expect(html).toContain("font-family:'Helvetica Neue',Helvetica,Arial,sans-serif");
+    const sans = renderLandingPage(samplePage({ titleFont: "sans" }) as never, SITE);
+    expect(sans).toContain("font-weight:800");
+  });
+
+  test("an unknown font id falls back to the default", () => {
+    const html = renderLandingPage(
+      samplePage({ titleFont: "comic-sans" }) as never,
+      SITE,
+    );
+    expect(html).toContain("font-family:'Corben',Georgia,serif;font-weight:700");
+  });
+
+  test("renders link cards that open in a new tab", () => {
+    const html = renderLandingPage(
+      samplePage({
+        links: [{ label: "Talent questionnaire", url: "https://forms.gle/abc" }],
+      }) as never,
+      SITE,
+    );
+    expect(html).toContain('href="https://forms.gle/abc" target="_blank" rel="noopener noreferrer"');
+    expect(html).toContain("Talent questionnaire");
+    expect(html).toContain('<div class="s">forms.gle</div>');
+  });
+
+  test("drops non-http links and escapes labels", () => {
+    const html = renderLandingPage(
+      samplePage({
+        links: [
+          { label: "bad", url: "javascript:alert(1)" },
+          { label: "<b>x</b>", url: "https://example.org/a?b=1&c=2" },
+        ],
+      }) as never,
+      SITE,
+    );
+    expect(html).not.toContain("javascript:alert");
+    expect(html).toContain("&lt;b&gt;x&lt;/b&gt;");
+    expect(html).toContain('href="https://example.org/a?b=1&amp;c=2"');
+  });
+
+  test("no links section when there are none", () => {
+    const html = renderLandingPage(samplePage() as never, SITE);
+    expect(html).not.toContain('class="links"');
+  });
+});
+
 describe("renderTicketPage & renderNotFound", () => {
   test("ticket page shows the code and embeds a QR script", () => {
     const html = renderTicketPage(

@@ -1,9 +1,9 @@
 /**
  * The Design phase — "shape the page guests will see". Opens with a live guest
  * preview, then a short checklist of collapsible setup cards (cover & story,
- * location, RSVP & guests, tickets, giving) with one open at a time. This is the
+ * location, links, RSVP & guests, tickets, giving) with one open at a time. This is the
  * old flat PageSetupCard, reorganized so the phase reads as a preview + a
- * five-item checklist instead of ~15 stacked inputs.
+ * short checklist instead of ~15 stacked inputs.
  *
  * Editing model is unchanged from before: text fields buffer locally and commit
  * on the single "Save page" button; switches and the visibility pills save
@@ -14,6 +14,12 @@ import { Text, View } from "react-native";
 import { useMutation } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
 import type { Doc, Id } from "@events-os/convex/_generated/dataModel";
+import {
+  RSVP_TITLE_FONTS,
+  RSVP_TITLE_FONT_IDS,
+  rsvpTitleFont,
+  type RsvpPageLink,
+} from "@events-os/shared";
 import { Button, Pill, TextField, Field, LocationAutocomplete } from "../../ui";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { CoverPhotoPicker } from "./CoverPhotoPicker";
@@ -22,9 +28,10 @@ import { SetupCard } from "./SetupCard";
 import { EventPagePreview } from "./EventPagePreview";
 import { TicketTypesCard } from "./TicketTypesCard";
 import { GivebutterSyncCard } from "./GivebutterSyncCard";
+import { PageLinksEditor } from "./PageLinksEditor";
 import { parseDollars } from "./helpers";
 
-type CardKey = "cover" | "location" | "rsvp" | "tickets" | "giving";
+type CardKey = "cover" | "location" | "links" | "rsvp" | "tickets" | "giving";
 
 type Props = {
   eventId: Id<"events">;
@@ -50,6 +57,7 @@ export function DesignPhase({
   // Local edit buffers, seeded from the server row once.
   const [tagline, setTagline] = useState(page.tagline ?? "");
   const [description, setDescription] = useState(page.description ?? "");
+  const [links, setLinks] = useState<RsvpPageLink[]>(page.links ?? []);
   const [venueName, setVenueName] = useState(page.venueName ?? "");
   const [address, setAddress] = useState(page.address ?? "");
   const [givingPrompt, setGivingPrompt] = useState(page.givingPrompt ?? "");
@@ -81,6 +89,7 @@ export function DesignPhase({
     await patchPage({
       tagline: tagline.trim(),
       description: description.trim(),
+      links,
       venueName: venueName.trim(),
       address: address.trim(),
       givingPrompt: givingPrompt.trim() || null,
@@ -106,6 +115,7 @@ export function DesignPhase({
       <EventPagePreview
         name={eventName}
         tagline={tagline}
+        titleFont={page.titleFont ?? null}
         venue={venueName}
         dateLabel={dateLabel}
         coverUrl={coverUrl}
@@ -125,6 +135,18 @@ export function DesignPhase({
           onToggleOpen={() => toggle("cover")}
         >
           <CoverPhotoPicker page={page} coverUrl={coverUrl} run={run} />
+          <Field label="Title font">
+            <View className="flex-row flex-wrap gap-2">
+              {RSVP_TITLE_FONT_IDS.map((id) => (
+                <Pill
+                  key={id}
+                  label={RSVP_TITLE_FONTS[id].label}
+                  selected={rsvpTitleFont(page.titleFont).id === id}
+                  onPress={() => void patchPage({ titleFont: id })}
+                />
+              ))}
+            </View>
+          </Field>
           <TextField
             label="Tagline"
             value={tagline}
@@ -184,6 +206,21 @@ export function DesignPhase({
               />
             </View>
           </Field>
+        </SetupCard>
+
+        {/* Links */}
+        <SetupCard
+          icon="link"
+          title="Links"
+          status={
+            links.length > 0
+              ? { label: `${links.length} added`, tone: "done" }
+              : { label: "Optional", tone: "opt" }
+          }
+          open={openCard === "links"}
+          onToggleOpen={() => toggle("links")}
+        >
+          <PageLinksEditor links={links} onChange={setLinks} />
         </SetupCard>
 
         {/* RSVP & guests */}

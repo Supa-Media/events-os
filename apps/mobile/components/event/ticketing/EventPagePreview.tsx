@@ -4,25 +4,42 @@
  * see, not filling in a form. Cover, title, tagline and venue bind to the edit
  * buffers as you type, so every change lands somewhere visible.
  */
-import { Image, Text, View } from "react-native";
+import { Image, Platform, Text, View } from "react-native";
+import { rsvpTitleFont, type RsvpTitleFontId } from "@events-os/shared";
 import { Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
+
+// The app's own approximation of each public-page title font: Corben and
+// DM Sans are loaded app fonts; Helvetica uses the platform's system face.
+const TITLE_FONT_CLASS: Record<RsvpTitleFontId, string> = {
+  classic: "font-display",
+  sans: "font-bold",
+  helvetica: "",
+};
+const HELVETICA = Platform.select({
+  web: "'Helvetica Neue',Helvetica,Arial,sans-serif",
+  ios: "Helvetica Neue",
+  default: "sans-serif",
+});
 
 export function EventPagePreview({
   name,
   tagline,
+  titleFont,
   venue,
   dateLabel,
   coverUrl,
 }: {
   name: string;
   tagline: string;
+  titleFont: string | null;
   venue: string;
   dateLabel: string | null;
   coverUrl: string | null;
 }) {
   const hasVenue = venue.trim().length > 0;
   const hasTagline = tagline.trim().length > 0;
+  const font = rsvpTitleFont(titleFont).id;
 
   return (
     <View className="mb-4 overflow-hidden rounded-2xl border border-border bg-raised shadow-card">
@@ -59,9 +76,13 @@ export function EventPagePreview({
       {/* Copy */}
       <View className="px-4 py-3.5">
         <Text
-          className="font-display text-2xl text-ink"
+          className={`${TITLE_FONT_CLASS[font]} text-2xl text-ink`}
           numberOfLines={1}
-          style={{ letterSpacing: -0.3 }}
+          style={
+            font === "helvetica"
+              ? { letterSpacing: -0.4, fontFamily: HELVETICA, fontWeight: "700" }
+              : { letterSpacing: -0.3 }
+          }
         >
           {name}
         </Text>
