@@ -76,7 +76,6 @@ update these tables, `governance.test.ts` fails.
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
 | Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit`, `marketing.blog.publish`, `marketing.designs.edit`, `people.academy.edit` |
-| Financial Manager | Executive Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
 | Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
 | Fundraising Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
@@ -89,9 +88,11 @@ update these tables, `governance.test.ts` fails.
 | Social Media Manager | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.list.view`, `marketing.blog.edit`, `marketing.designs.edit` |
 | Graphic Designer | Marketing Director | 1 | `email.assets.edit`, `marketing.site.edit`, `marketing.designs.edit` |
 | Marketing Associate | Marketing Director | many | `marketing.list.view`, `marketing.blog.edit` |
+| Operations Director | Executive Director | 1 | — |
+| Financial Manager | Operations Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view`, `email.campaigns.approve`, `data.export` |
+| People Associate | Operations Director | many | `hiring.edit` |
 | Expansion Director | Executive Director | 1 | `giving.view`, `data.export`, `hiring.approve`, `people.academy.edit` |
 | Chapter Directors | Expansion Director | many | — |
-| Recruiting Associate | Expansion Director | many | `hiring.edit` |
 | Training Associate | Expansion Director | many | `people.academy.edit` |
 
 <!-- /seat-chart -->
@@ -151,6 +152,13 @@ its own distinguishes nothing. Two commitments do:
 The **People Director owns both.** They are deliberately not run the same way:
 a trial project to hand out lanyards would be absurd, and a raised hand is not
 enough to hand someone a chapter.
+
+The **People Associate** runs the day-to-day People work: recruiting admin and
+trial check-ins, onboarding and offboarding, the monthly all-team meeting (first
+Thursday, in person, in each chapter's city) and team hangs. People, recruiting
+and finance sit together in the **Operations team**, led by the **Operations
+Director**, which also sets up Public Worship email accounts, adds people to
+Google Workspace groups and Chat spaces, and makes changes to Chapter OS.
 
 ### 2.5 How someone gets into a seat
 

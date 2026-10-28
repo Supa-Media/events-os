@@ -164,7 +164,7 @@ any more, and a missed rung is no longer possible.
 | `data.export` | Bulk-export a dataset you can already see |
 
 Hiring's three rungs are the clearest live example of why an `approve` action
-exists: a Recruiting Associate holds `hiring.edit` and runs the whole funnel
+exists: a People Associate holds `hiring.edit` and runs the whole funnel
 without being able to end anyone's process, while `hiring.approve` — the call
 itself — stays with the People Director and the ED. See
 `docs/guides/recruiting.md`.

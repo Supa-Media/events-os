@@ -8,7 +8,7 @@
  *
  *   `hiring.view`     read the desk — applications, rubric cards, timelines.
  *   `hiring.edit`     RUN the funnel — move a candidate, file a review, start
- *                     an Empowerment Trial. What a Recruiting Associate does.
+ *                     an Empowerment Trial. What a People Associate does.
  *   `hiring.approve`  make the CALL — close a file with an outcome and send
  *                     the message. The Director's, and only the Director's:
  *                     "the Director has the final say — this process supports

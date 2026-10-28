@@ -59,11 +59,14 @@ describe("importing the 2027 One Pager", () => {
   test("creates the teams once and matches NYC to its chapter", async () => {
     const { s } = await importedPlan();
     const { teams } = await s.as.query(api.goals.teams, {});
-    expect(teams).toHaveLength(10);
+    expect(teams).toHaveLength(11);
     const nyc = teams.find((tm) => tm.name === "NYC chapter");
     expect(nyc?.chapterId).toBe(s.chapterId);
     const fellowship = teams.find((tm) => tm.name === "Public Fellowship");
     expect(fellowship?.parentName).toBe("Central Events");
+    // People, recruiting and finance sit under Operations (2026-10-28).
+    expect(teams.find((tm) => tm.name === "People team")?.parentName).toBe("Operations team");
+    expect(teams.find((tm) => tm.name === "Finance team")?.parentName).toBe("Operations team");
   });
 
   test("refuses a second import rather than overwrite edits", async () => {
@@ -106,7 +109,7 @@ describe("who may change what", () => {
     const [first, second] = plan.objectives[0].keyResults;
     await s.as.mutation(api.goalsEdit.updateKeyResult, {
       keyResultId: first._id,
-      title: "Recruit two recruiting associates.",
+      title: "Recruit two People Associates.",
       target: 2,
       timing: null,
     });
@@ -114,7 +117,7 @@ describe("who may change what", () => {
     const after = await s.as.query(api.goals.plan, { planId });
     const krs = after!.objectives[0].keyResults;
     expect(krs[0]._id).toBe(second._id);
-    expect(krs[1]).toMatchObject({ code: "1.2", title: "Recruit two recruiting associates.", target: 2 });
+    expect(krs[1]).toMatchObject({ code: "1.2", title: "Recruit two People Associates.", target: 2 });
     expect(krs[1].timing).toBeUndefined();
   });
 });

@@ -175,7 +175,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
           [
             "**Central** (org-wide, exists once)",
             "Executive Director",
-            "Financial Manager, Development Director, Music Director, Marketing Director, Expansion Director",
+            "Operations Director, Development Director, Music Director, Marketing Director, Expansion Director",
           ],
           [
             "**Chapter** (stamped onto every chapter)",
@@ -276,14 +276,16 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Central exists once, for the whole org, under the Executive Director. The **Financial Manager** runs central accounts and closes the books. The **Development Director** (with Partnership and Fundraising Associates) builds the relationships and funding that sustain the mission. The **Music Director** (with A&R, Artists, Musicians, and Songwriters) crafts the sound and spiritual atmosphere of every gathering. The **Marketing Director** (with a Social Media Manager, Graphic Designer, and Marketing Associates) tells the story and invites people in. The **Expansion Director** finds and launches new chapters, and every Chapter Director rolls up under that seat.",
+        text: "Central exists once, under the Executive Director. The **Operations Director** leads people, recruiting and finance, and sets up your accounts. Under them, the **Financial Manager** closes the books and the **People Associate** runs recruiting, onboarding, the monthly meeting and team hangs. The **Development Director** (with Partnership and Fundraising Associates) raises the funding that sustains the mission. The **Music Director** (with A&R, Artists, Musicians, and Songwriters) shapes the sound of every gathering. The **Marketing Director** (with a Social Media Manager, Graphic Designer, and Marketing Associates) tells the story and invites people in. The **Expansion Director** launches new chapters, and every Chapter Director rolls up to that seat.",
       },
       {
         kind: "tree",
         caption: "Central: org-wide, one instance for the whole org",
         nodes: [
           { label: "Executive Director", depth: 0 },
-          { label: "Financial Manager", depth: 1 },
+          { label: "Operations Director", depth: 1 },
+          { label: "Financial Manager", depth: 2 },
+          { label: "People Associate", depth: 2 },
           { label: "Development Director", depth: 1 },
           { label: "Music Director", depth: 1 },
           { label: "Marketing Director", depth: 1 },
@@ -292,7 +294,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Events belong to the chapters. Each chapter runs its own (Worship With Strangers, flagship gatherings, whatever it hosts) under its Chapter Director. The **Event Lead** (with Event Organizers and a Production Coordinator) turns an idea into a running gathering: the timeline, the volunteers, the run-of-show. The chapter's **Music Lead** books rehearsals and sets the setlist for its events. The **Marketing Lead** promotes them locally. The **Treasurer** records and reconciles the chapter's money.",
+        text: "Events belong to the chapters. Each chapter runs its own under its Chapter Director. The **Event Lead** (with Event Organizers and a Production Coordinator) turns an idea into a running gathering: the timeline, the volunteers, the run-of-show. The chapter's **Music Lead** books rehearsals and sets the setlist for its events. The **Marketing Lead** promotes them locally. The **Treasurer** records and reconciles the chapter's money.",
       },
       {
         kind: "tree",
@@ -315,7 +317,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
         items: [
           "**Music's weekly rhythm is central.** The Music Director's team runs weekly studio sessions, songwriting, and recorded collaborations with artists and producers. Chapters don't each run one.",
           "**Projects cross both charts.** A project (a worship night, a video series, a campaign) has a start and an end. Its Project Lead pulls whoever the work needs from any seat.",
-          "**Anyone can be a Project Lead**, from a central Director to someone who just got here. The job is owning the timeline and communication and holding the work to Public Worship's standard, not doing every task.",
+          "**Anyone can be a Project Lead**, from a central Director to someone who just got here. The job is owning the timeline and holding the work to our standard, not doing every task.",
         ],
       },
       {
@@ -557,7 +559,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "p",
-        text: "Chat spaces come with your Google Workspace group memberships; they aren't handed out one at a time. Missing a space you should have? Check your group memberships at groups.google.com first. If it's still wrong, contact Operations.",
+        text: "Chat spaces come with your Google Workspace group memberships; they aren't handed out one at a time. Missing a space you should have? Check your group memberships at groups.google.com first. If it's still wrong, contact the Operations team.",
       },
       {
         kind: "link",
@@ -655,7 +657,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "bullets",
         items: [
-          "**Monthly all-team meetings are part of being on the active team.** They meet in person in each chapter's city on the first Thursday of every month. The whole team prays, aligns, makes decisions, and builds trust there. Don't skip one because the agenda looks thin.",
+          "**Monthly all-team meetings are part of being on the active team.** They meet in person in each chapter's city on the first Thursday of every month. The People Associate organizes them. The whole team prays, aligns, makes decisions, and builds trust there. Don't skip one because the agenda looks thin.",
           "**Everyone gets a recurring 1:1 with their Director.** It happens at least every other week, and weekly is encouraged while a project is running. That's where alignment and course-correction happen.",
           "**Both sides own the 1:1.** If it keeps slipping, either the Director or the team member can, and should, get it back on the calendar.",
           "**Raise serious conflict early**, the same way you'd raise a blocker, while there's still time to work with it.",

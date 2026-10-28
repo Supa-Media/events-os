@@ -165,7 +165,7 @@ describe("0022_seed_seat_defs", () => {
 });
 
 describe("seats.chart", () => {
-  test("central scope returns all 18 central defs, all vacant", async () => {
+  test("central scope returns all 19 central defs, all vacant", async () => {
     const t = newT();
     await run(t, (ctx) => runSeedSeatDefs(ctx));
     const s = await setupChapter(t);
@@ -174,7 +174,7 @@ describe("seats.chart", () => {
     expect(result.kind).toBe("central");
     if (result.kind !== "central") throw new Error("expected central");
     expect(result.seats).toHaveLength(CENTRAL_COUNT);
-    expect(CENTRAL_COUNT).toBe(18);
+    expect(CENTRAL_COUNT).toBe(19);
     expect(result.seats.every((n) => n.vacant)).toBe(true);
     expect(result.seats.every((n) => n.holders.length === 0)).toBe(true);
     // Sorted by declaration order.

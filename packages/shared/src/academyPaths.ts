@@ -551,7 +551,7 @@ export const ROLE_PATHS: RolePath[] = [
   {
     seatSlug: "recruiting_associate",
     kind: "seat",
-    title: "Recruiting Associate",
+    title: "People Associate",
     icon: "user-plus",
     courseSlugs: [
       "welcome-to-public-worship",

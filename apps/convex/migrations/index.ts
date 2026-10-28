@@ -113,6 +113,7 @@ import { applicationFormLeadershipQuestion } from "./0091_application_form_leade
 import { applicationFormDropTrialQuestion } from "./0092_application_form_drop_trial_question";
 import { applicationFormMonthlyMeetingQuestion } from "./0093_application_form_monthly_meeting_question";
 import { nycListingsApplyBy } from "./0095_nyc_listings_apply_by_nov_1";
+import { peopleAssociateAndOperationsTeam } from "./0096_people_associate_and_operations_team";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -587,4 +588,8 @@ export const MIGRATIONS: Migration[] = [
   // 0095: open NYC-only seats get an "Apply by Nov 1" date (display only).
   // See the file.
   nycListingsApplyBy,
+  // 0096: the Recruiting Associate seat becomes the People Associate (title,
+  // duties), and People + Finance go under a new Operations team. Replaces
+  // old values only; reporting lines are left as the live chart has them.
+  peopleAssociateAndOperationsTeam,
 ];

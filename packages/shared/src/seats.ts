@@ -97,6 +97,7 @@ export const SEAT_IDS = [
   "social_media_manager",
   "graphic_designer",
   "marketing_associate",
+  "operations_director",
   "expansion_director",
   "chapter_directors",
   "recruiting_associate",
@@ -191,11 +192,12 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     ],
     legacyTitle: "executive_director",
   },
+  // 2026-10-28: finance sits in the Operations team, under its Director.
   financial_manager: {
     id: "financial_manager",
     title: "Financial Manager",
     chart: "central",
-    parentId: "executive_director",
+    parentId: "operations_director",
     maxHolders: 1,
     duties: [
       "Manage central accounts & bookkeeping",
@@ -434,6 +436,24 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // ordinary case; deciding it goes live under the org's name is not.
     capabilities: ["marketing.list.view", "marketing.blog.edit"],
   },
+  // Founder decision (2026-10-28): People, Recruiting and Finance sit under
+  // one Operations team, which also sets up team email accounts, Google
+  // Workspace groups and Chat spaces, and makes changes to Chapter OS. The
+  // Financial Manager and People Associate report here. No powers by
+  // default: what the seat may change in Chapter OS is granted on the chart.
+  operations_director: {
+    id: "operations_director",
+    title: "Operations Director",
+    chart: "central",
+    parentId: "executive_director",
+    maxHolders: 1,
+    duties: [
+      "Lead people, recruiting and finance",
+      "Set up team email accounts, Google groups and Chat spaces",
+      "Make and track changes to Chapter OS",
+    ],
+    capabilities: [],
+  },
   expansion_director: {
     id: "expansion_director",
     title: "Expansion Director",
@@ -476,13 +496,22 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     capabilities: [],
     derived: true,
   },
+  // Founder rename (2026-10-28): the Recruiting Associate is now the People
+  // Associate. The slug stays `recruiting_associate`: live seat rows, team
+  // rosters, listings and assignments key on it, and a slug is never shown.
+  // The seat sits in the Operations team and reports to its Director.
   recruiting_associate: {
     id: "recruiting_associate",
-    title: "Recruiting Associate",
+    title: "People Associate",
     chart: "central",
-    parentId: "expansion_director",
+    parentId: "operations_director",
     maxHolders: MULTI_HOLDER_CAP,
-    duties: [],
+    duties: [
+      "Run recruiting: candidates, interviews and trial check-ins",
+      "Onboard and offboard team members",
+      "Run the monthly all-team meeting (first Thursday, in person)",
+      "Plan team hangs and team care",
+    ],
     // Runs the funnel — reads applications, books and files interviews, starts
     // trials — and deliberately CANNOT close a file. `hiring.approve` is the
     // Director's; this is the separation the third rung exists for.
