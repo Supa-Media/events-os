@@ -49,6 +49,25 @@ nothing you own is unmerged. For one-shot waits use Bash
 run_in_background with an `until` loop. Stop the ticker when nothing is
 outstanding.
 
+## Production data access
+
+Run production data commands from `apps/convex` with `CONVEX_DEPLOY_KEY`
+provided through the cloud environment's secret settings. Never print, log,
+or commit `CONVEX_DEPLOY_KEY`, and never paste its value into notes, mail,
+chat, or PRs.
+
+- Production reads are allowed at any time: `npx convex data <table>`
+  (for example, `npx convex data seatDefs --limit 5`) or internal queries
+  through `npx convex run --prod <queryName> [args]`. Verify the target is
+  the production deployment `vivid-rhinoceros-688`; `convex run` also runs
+  mutations and actions, so confirm the function is a query before using it
+  as a read.
+- A data change that should hold for every organization belongs in a
+  numbered migration in `apps/convex/migrations/`, following the existing
+  migration conventions and the PR/CI workflow above.
+- A one-off production edit requires Dev2's explicit go-ahead in the thread.
+  Record what changed after the edit, without including credentials.
+
 ## Gate It Behind a Power, Even When It's Open Today
 
 **Whenever a capability might one day need to be restricted, put it behind a
