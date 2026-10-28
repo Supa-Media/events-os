@@ -2327,6 +2327,9 @@ export * from "./volunteers";
 export * from "./hiring";
 export * from "./applyBy";
 
+// ── RSVP page title font + extra links ──────────────────────────────────────
+export * from "./rsvpPageStyle";
+
 // ── Marketing: the homepage's editable copy, cards, and impact numbers ───────
 // The wire contract three things share and must not drift on — the OS's
 // serializer, `GET /api/site/home`, and the landing renderer. Read this next to

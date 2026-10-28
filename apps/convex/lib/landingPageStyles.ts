@@ -6,7 +6,7 @@
 export const FONTS = `
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Corben:wght@400;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700&display=swap" rel="stylesheet">`;
+<link href="https://fonts.googleapis.com/css2?family=Corben:wght@400;700&family=DM+Sans:opsz,wght@9..40,400;9..40,500;9..40,600;9..40,700;9..40,800&display=swap" rel="stylesheet">`;
 
 export const FAVICON = `<link rel="icon" href="data:image/svg+xml,${encodeURIComponent(
   `<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'><rect width='64' height='64' rx='16' fill='#D23B3A'/><text x='32' y='43' font-family='Georgia,serif' font-weight='bold' font-size='30' fill='#FDF6F6' text-anchor='middle'>pw</text></svg>`,
@@ -102,6 +102,11 @@ h1.title{font-size:clamp(38px,6.5vw,60px);line-height:1.08;font-weight:700;margi
 .metacard .t{font-weight:600;font-size:15px}
 .metacard .s{font-size:13.5px;color:var(--muted);margin-top:1px}
 .metacard .s a{font-weight:500}
+.linkcard{text-decoration:none;color:inherit;margin:0 0 12px;align-items:center;transition:border-color .15s}
+.linkcard:hover{border-color:var(--accent)}
+.linkcard .lc{flex:1;min-width:0}
+.linkcard .t{overflow-wrap:break-word}
+.linkcard .go{color:var(--accent);font-weight:700;font-size:18px}
 .lockpill{display:inline-flex;align-items:center;gap:6px;background:var(--sunken);
   border:1px dashed var(--border-strong);border-radius:999px;padding:3px 12px;
   font-size:12.5px;color:var(--muted);margin-top:4px}
