@@ -141,6 +141,28 @@ describe("renderLandingPage title font + links", () => {
     expect(html).toContain('href="https://example.org/a?b=1&amp;c=2"');
   });
 
+  test("turns web addresses in the description into links", () => {
+    const html = renderLandingPage(
+      samplePage({
+        description:
+          "Sign up at https://forms.gle/abc. Or see www.example.org/info, <b>bold</b>",
+      }) as never,
+      SITE,
+    );
+    expect(html).toContain(
+      '<div class="about">Sign up at <a href="https://forms.gle/abc" target="_blank" rel="noopener noreferrer">https://forms.gle/abc</a>. Or see <a href="https://www.example.org/info" target="_blank" rel="noopener noreferrer">www.example.org/info</a>, &lt;b&gt;bold&lt;/b&gt;</div>',
+    );
+  });
+
+  test("description links can't break out of the href", () => {
+    const html = renderLandingPage(
+      samplePage({ description: "x https://a.co/?q=\"onmouseover=alert(1) javascript:alert(2)" }) as never,
+      SITE,
+    );
+    expect(html).toContain('<a href="https://a.co/?q=" target="_blank"');
+    expect(html).not.toContain('href="javascript:');
+  });
+
   test("no links section when there are none", () => {
     const html = renderLandingPage(samplePage() as never, SITE);
     expect(html).not.toContain('class="links"');

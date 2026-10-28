@@ -114,7 +114,8 @@ section{margin-top:36px}
 .sectitle{font-family:'Corben',Georgia,serif;font-size:21px;font-weight:400;
   display:flex;align-items:center;gap:10px;margin-bottom:14px}
 .sectitle::after{content:"";height:1px;flex:1;background:var(--border)}
-.about{white-space:pre-wrap;color:#4A2E2E;font-size:15.5px;line-height:1.65}
+.about{white-space:pre-wrap;color:#4A2E2E;font-size:15.5px;line-height:1.65;overflow-wrap:anywhere}
+.about a{font-weight:500}
 /* guests */
 .avatars{display:flex;align-items:center}
 .av{width:42px;height:42px;border-radius:50%;border:2.5px solid var(--cream);

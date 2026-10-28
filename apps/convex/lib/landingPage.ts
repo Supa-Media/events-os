@@ -104,6 +104,28 @@ function esc(s: string): string {
     .replace(/'/g, "&#39;");
 }
 
+/**
+ * Escape plain text and turn the web addresses in it into links that open in
+ * a new tab ("https://…", "http://…", or a bare "www.…"). Trailing sentence
+ * punctuation stays outside the link. Each address goes through the same
+ * http(s) check as the page's link cards before it becomes an href.
+ */
+function linkify(text: string): string {
+  const re = /\b(?:https?:\/\/|www\.)[^\s<>"]+/gi;
+  let out = "";
+  let last = 0;
+  for (const m of text.matchAll(re)) {
+    const start = m.index ?? 0;
+    const raw = m[0].replace(/[.,;:!?)\]'"]+$/, "");
+    const url = normalizeRsvpPageLinkUrl(raw);
+    if (!url) continue;
+    out += esc(text.slice(last, start));
+    out += `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(raw)}</a>`;
+    last = start + raw.length;
+  }
+  return out + esc(text.slice(last));
+}
+
 const TZ = "America/New_York";
 
 function fmtDateLine(ts: number): string {
@@ -258,7 +280,7 @@ ${coverUrl ? `<div class="backdrop" style="background-image:url('${coverUrl}');b
         <div id="guests"></div>
       </section>
 
-      ${p.description ? `<section><div class="sectitle serif">About</div><div class="about">${esc(p.description)}</div></section>` : ""}
+      ${p.description ? `<section><div class="sectitle serif">About</div><div class="about">${linkify(p.description)}</div></section>` : ""}
 
       <section id="activitysec">
         <div class="sectitle serif">Activity</div>
