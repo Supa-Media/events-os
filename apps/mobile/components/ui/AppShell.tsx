@@ -45,14 +45,16 @@ type NavEntry = {
 
 // Fixed order — tabs appear/disappear by tier but NEVER reorder. Briefing sits
 // right after Events so a volunteer (who sees Briefing, not Events) still gets
-// a stable leading tab. Duties and Templates are gone from the nav (folded into
-// Work and Events respectively); their routes survive for deep links.
+// a stable leading tab. Templates is gone from the nav (folded into Events);
+// its route survives for deep links. Projects and Duties are separate entries
+// (2026-10-28: they used to be two segments of one "Work" page).
 //
 // `group` is a subtle PARA (Tiago Forte) label the desktop Sidebar renders
 // above each cluster — see `groupForSidebar` below. It does NOT change this
 // array's order (the phone dock and nav sheet read `NAV` in order too) and it
 // is NOT access control, same as everything else here.
-//   P — project-oriented: what you're actively doing (Events/Briefing, Work).
+//   P — project-oriented: what you're actively doing (Events/Briefing,
+//       Projects, Duties).
 //   A — areas of ongoing responsibility: People, Songs, Inventory, Finances.
 //   R — resources: reference material anyone can consult (Academy, Org Chart).
 //   Archive (the 2nd "A") has no nav items yet, so it never renders.
@@ -60,8 +62,13 @@ const NAV: NavEntry[] = [
   { label: "Events", icon: "layout", path: "/", group: "P" },
   { label: "Briefing", icon: "clipboard", path: "/briefing", group: "P" },
   { label: "People", icon: "users", path: "/people", group: "A" },
-  { label: "Work", icon: "git-branch", path: "/team", group: "P" },
+  { label: "Projects", icon: "git-branch", path: "/team", group: "P" },
   { label: "Songs", icon: "music", path: "/song-library", group: "A" },
+  // Duties — the chapter's recurring-duty catalog. Declared AFTER Songs so it
+  // doesn't push Songs out of a lead's phone dock (the dock is NAV's prefix);
+  // the sidebar still shows it right under Projects since both are group P.
+  // Gated on `org.nav.canManage`, the same check the route's own guard uses.
+  { label: "Duties", icon: "check-square", path: "/responsibilities", group: "P" },
   // Inventory — the chapter gear registry (logistics-lead domain). Gated
   // admin-or-lead in useNav, right after Songs.
   { label: "Inventory", icon: "package", path: "/inventory", group: "A" },
@@ -115,7 +122,7 @@ const NAV: NavEntry[] = [
   },
   // Goals — the year plan (objectives + key results). Whole-org reading, so
   // shown to every member like Work; placed after the desks so it never takes
-  // a phone dock slot from Events/People/Work (the dock is NAV's prefix).
+  // a phone dock slot from Events/People/Projects (the dock is NAV's prefix).
   { label: "Goals", icon: "target", path: "/goals", group: "P" },
   // The Academy is for everyone — never permission-gated (see useNav).
   { label: "Academy", icon: "award", path: "/academy", group: "R" },
@@ -185,8 +192,10 @@ function useNav(): NavEntry[] {
         return marketing?.canViewDesk === true;
       case "/team":
         // Work: everyone except volunteer — but keep the teamView nuance so a
-        // caller with no roster row isn't shown an empty Work tab.
+        // caller with no roster row isn't shown an empty Projects tab.
         return tier != null && tier !== "volunteer" && org?.teamView != null;
+      case "/responsibilities":
+        return org?.canManage === true;
       case "/goals":
         return tier != null && tier !== "volunteer";
       case "/song-library":

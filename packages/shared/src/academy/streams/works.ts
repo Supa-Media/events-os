@@ -24,7 +24,7 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Not everything the chapter does is an event. Redesigning the welcome cards, setting up the giving page, or finding a winter venue is a **project**: work the team drives outside events, or wrapped around them. Projects live on the **Work** tab, next to Duties.",
+        text: "Not everything the chapter does is an event. Redesigning the welcome cards, setting up the giving page, or finding a winter venue is a **project**: work the team drives outside events, or wrapped around them. Projects live on the **Projects** tab; Duties have their own tab.",
       },
       {
         kind: "table",
@@ -208,7 +208,7 @@ export const WORKS_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Some work has no finish line: making event flyers, meeting with your directs, reconciling giving. That's a **duty**: ongoing, recurring work. Projects finish; duties *recur*. Both live on the Work tab.",
+        text: "Some work has no finish line: making event flyers, meeting with your directs, reconciling giving. That's a **duty**: ongoing, recurring work. Projects finish; duties *recur*. Each has its own tab in the menu: Projects and Duties.",
       },
       {
         kind: "table",

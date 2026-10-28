@@ -195,7 +195,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
           "**Everyone can see the whole chart.** The Org Chart tab shows the central chart and every chapter's chart. It isn't leadership-only.",
           "**The chart shows who holds each seat today.** This lesson teaches its shape, not names. Look names up there instead of memorizing them.",
           "**Vacancy is normal and visible.** An empty seat shows as empty. It isn't hidden or silently auto-filled.",
-          "**A seat's duties are on the chart too.** Tap a seat to read its recurring work. Managers and chapter admins can add a duty, reword it, or change its cadence there. It's the same catalog as Work → Duties.",
+          "**A seat's duties are on the chart too.** Tap a seat to read its recurring work. Managers and chapter admins can add a duty, reword it, or change its cadence there. It's the same catalog as the Duties tab.",
         ],
       },
       {
@@ -755,7 +755,7 @@ export const FOUNDATIONS_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "table",
         headers: ["Folder", "Used for"],
         rows: [
-          ["**Projects**", "Dated work with an end, like an event or a campaign. In the app: **Work** and **Events**"],
+          ["**Projects**", "Dated work with an end, like an event or a campaign. In the app: **Projects** and **Events**"],
           ["**Areas**", "Ongoing responsibilities with no end date. In the app: **Songs**, **Inventory**, **Finances**"],
           ["**Resources**", "Reference material you look up, not act on. In the app: the **Academy** and the **Org Chart**"],
           ["**Archive**", "Completed or inactive content. Reserved for a future release; nothing lives here yet"],

@@ -1,12 +1,11 @@
 /**
  * DUTIES GRID — the chapter's recurring duties as a database grid.
  *
- * Extracted from the Duties screen so it can render both there (its own route,
- * kept for deep links) and inside the Work tab's Duties segment. Each row is a
- * DEFINITION that fans out: assign it to org-chart SEATS ("Chapter Director")
- * and every person holding one of those seats gets it as an individual duty on
- * their Work page; assign specific people when no seat fits. The How-to column
- * is the handoff documentation; cadence says how often (daily … yearly, or ad
+ * The body of the Duties screen (`/responsibilities`, its own nav entry). Each
+ * row is a DEFINITION that fans out: assign it to org-chart SEATS ("Chapter
+ * Director") and every person holding one of those seats gets it as an
+ * individual duty on their Projects page; assign specific people when no seat
+ * fits. The How-to column is the handoff documentation; cadence says how often (daily … yearly, or ad
  * hoc).
  *
  * The Roles column is a TRANSITION surface: a duty created before seats
@@ -174,17 +173,7 @@ function guardedSeatChange({
   commit();
 }
 
-export function DutiesGrid({
-  header = "full",
-}: {
-  /**
-   * "full" renders the standalone route's own title block; "compact" renders
-   * just the search + count row for embedding under the Work tab's header
-   * (which already says where you are — a second title read as two screens
-   * stacked on top of each other).
-   */
-  header?: "full" | "compact";
-} = {}) {
+export function DutiesGrid() {
   const responsibilities = useQuery(api.responsibilities.list);
   const people = useQuery(api.people.list, {});
   const seatOptions = useQuery(api.responsibilities.seatOptions);
@@ -294,34 +283,19 @@ export function DutiesGrid({
   return (
     <>
       <Narrow>
-        {header === "full" ? (
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "baseline",
-              justifyContent: "space-between",
-              marginBottom: spacing.md,
-            }}
-          >
-            <Text className="font-display text-2xl text-ink">Duties</Text>
-            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-              {responsibilities.length} ongoing
-            </Text>
-          </View>
-        ) : (
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "flex-end",
-              marginBottom: spacing.sm,
-            }}
-          >
-            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-              {responsibilities.length} ongoing
-            </Text>
-          </View>
-        )}
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "baseline",
+            justifyContent: "space-between",
+            marginBottom: spacing.md,
+          }}
+        >
+          <Text className="font-display text-2xl text-ink">Duties</Text>
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            {responsibilities.length} ongoing
+          </Text>
+        </View>
         <TextField
           placeholder="Search by title or role…"
           value={search}

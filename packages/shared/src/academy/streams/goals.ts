@@ -28,7 +28,7 @@ export const GOALS_SECTIONS: Omit<AcademySection, "order">[] = [
         kind: "table",
         headers: ["If the key result is…", "The work lives in"],
         rows: [
-          ["Done once (launch the EP, publish the reel)", "One **project** on Work, linked to the key result"],
+          ["Done once (launch the EP, publish the reel)", "One **project** on Projects, linked to the key result"],
           ["A count of gatherings (15 WWS)", "**Events** on the calendar, counted automatically when completed"],
           ["Something every event does", "A row on the event **template**"],
           ["A rhythm (monthly newsletter)", "A **duty** on the seat that owns it"],

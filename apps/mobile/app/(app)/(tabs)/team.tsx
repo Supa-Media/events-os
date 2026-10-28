@@ -22,10 +22,8 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import {
   Screen,
   Narrow,
-  FULL_WIDTH,
   Avatar,
   Icon,
-  type IconName,
   Button,
   EmptyState,
   SectionHeader,
@@ -40,7 +38,6 @@ import {
   ScopeToggle,
   type ProjectScopeChoice,
 } from "../../../components/team/ScopeToggle";
-import { DutiesGrid } from "../../../components/work/DutiesGrid";
 import { MineSection } from "../../../components/work/MineSection";
 import { colors, spacing } from "../../../lib/theme";
 import { alertError } from "../../../lib/errors";
@@ -71,9 +68,6 @@ export default function TeamScreen() {
   // changes for them.
   const scopeOptions = useQuery(api.projects.scopeOptions);
   const [scopePickerOpen, setScopePickerOpen] = useState(false);
-  // Top-level Work segments: the org's Projects vs the chapter's Duties catalog
-  // (leads/admins only — this whole branch is gated on teamView === "org").
-  const [section, setSection] = useState<"projects" | "duties">("projects");
 
   // Seat titles held, by person — the tree's row-title mirror of the People
   // tab's Title column (#188).
@@ -199,54 +193,27 @@ export default function TeamScreen() {
   const hasHierarchy = org.childrenOf.size > 0;
 
   return (
-    <Screen maxWidth={section === "duties" ? FULL_WIDTH : undefined}>
+    <Screen>
       <Narrow>
+        {/* Duties used to be a segment of this screen; it has its own nav
+            entry now (`/responsibilities`), so this page is Projects only. */}
+        <Text className="mb-4 font-display text-2xl text-ink">Projects</Text>
+        {/* Every pillar leads with your slice — the caller's own due work and
+            events, above the org-wide sections. */}
+        <MineSection />
+
         <View
           style={{
             flexDirection: "row",
             alignItems: "center",
-            justifyContent: "space-between",
+            justifyContent: "flex-end",
             marginBottom: spacing.md,
           }}
         >
-          <Text className="font-display text-2xl text-ink">Work</Text>
-          {/* Top-level Projects ⇄ Duties segments — the Duties catalog is a
-              management tool, so only managers/admins get the toggle. Everyone
-              else sees the transparent org tree (Projects view). */}
-          {nav.canManage ? (
-            <Segmented
-              options={[
-                { key: "projects", icon: "git-branch", label: "Projects" },
-                { key: "duties", icon: "check-square", label: "Duties" },
-              ]}
-              value={section}
-              onChange={setSection}
-            />
-          ) : null}
+          <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
+            {org.included.length} people
+          </Text>
         </View>
-        {/* Every pillar leads with your slice — the caller's own due work and
-            events, above the org-wide sections. */}
-        <MineSection />
-      </Narrow>
-
-      {section === "duties" ? (
-        // compact: this screen already owns the header — a second "Duties"
-        // title block here is the founder-reported "overlaid screens" bug.
-        <DutiesGrid header="compact" />
-      ) : (
-        <Narrow>
-          <View
-            style={{
-              flexDirection: "row",
-              alignItems: "center",
-              justifyContent: "flex-end",
-              marginBottom: spacing.md,
-            }}
-          >
-            <Text className="text-2xs font-bold uppercase tracking-wider text-muted">
-              {org.included.length} people
-            </Text>
-          </View>
 
         {org.included.length === 0 ? (
           <EmptyState
@@ -315,8 +282,7 @@ export default function TeamScreen() {
             />
           </View>
         ) : null}
-        </Narrow>
-      )}
+      </Narrow>
 
       <NewProjectScopeModal
         visible={scopePickerOpen}
@@ -326,55 +292,6 @@ export default function TeamScreen() {
         onCreate={handleCreateWithScope}
       />
     </Screen>
-  );
-}
-
-/**
- * The compact segmented toggle used across the Work tab (Projects⇄Duties and
- * List⇄Chart). Generic over its option keys so both callers reuse one pattern.
- */
-function Segmented<T extends string>({
-  options,
-  value,
-  onChange,
-}: {
-  options: { key: T; icon: IconName; label: string }[];
-  value: T;
-  onChange: (key: T) => void;
-}) {
-  return (
-    <View
-      className="flex-row rounded-lg bg-sunken"
-      style={{ padding: 3, gap: spacing.xs }}
-    >
-      {options.map((v) => {
-        const active = value === v.key;
-        return (
-          <Pressable
-            key={v.key}
-            onPress={() => onChange(v.key)}
-            accessibilityRole="tab"
-            accessibilityState={{ selected: active }}
-            className={`flex-row items-center gap-1.5 rounded-md px-2.5 py-1 active:opacity-80 ${
-              active ? "bg-raised shadow-sm" : ""
-            }`}
-          >
-            <Icon
-              name={v.icon}
-              size={13}
-              color={active ? colors.ink : colors.muted}
-            />
-            <Text
-              className={`text-xs font-semibold ${
-                active ? "text-ink" : "text-muted"
-              }`}
-            >
-              {v.label}
-            </Text>
-          </Pressable>
-        );
-      })}
-    </View>
   );
 }
 

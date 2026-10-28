@@ -5,7 +5,7 @@
  *   Overview  reports-to, seat size, courses, remove    `SeatOverviewTab`
  *   Powers    what the seat can do + the picker          `SeatPowersTab`
  *   People    holders, open spots, proposals             `SeatPeopleTab`
- *   Duties    the real duties from Work → Duties         `SeatDuties`
+ *   Duties    the real duties from the Duties tab         `SeatDuties`
  *   History   the structure log for this seat            `SeatHistoryTab`
  *
  * This replaced one long scroll that mixed all of those with a separate

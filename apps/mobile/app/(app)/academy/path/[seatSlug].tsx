@@ -215,7 +215,7 @@ export default function RolePathScreen() {
         </View>
       </Card>
 
-      {/* Duties — live from Work → Duties, seat paths only (event hats aren't
+      {/* Duties — live from the Duties tab, seat paths only (event hats aren't
           org-chart seats). */}
       {isSeat ? (
         <>
@@ -227,7 +227,7 @@ export default function RolePathScreen() {
               </View>
             ) : duties.length === 0 ? (
               <Text className="text-sm text-muted">
-                No duties mapped yet — attach them in Work → Duties.
+                No duties mapped yet — attach them in the Duties tab.
               </Text>
             ) : (
               <View className="gap-1.5">

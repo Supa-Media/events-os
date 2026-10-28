@@ -12,7 +12,7 @@
  * (`SeatDetailPanel`), where each of those now happens in place.
  *
  * Duties are NOT set here — `seatDefs.duties` is a seeded template list
- * superseded by Work → Duties (`responsibilities.ts`); a new seat starts with
+ * superseded by the Duties tab (`responsibilities.ts`); a new seat starts with
  * none, and its Duties tab is where they're added.
  *
  * Failures surface the backend's `ConvexError` message VERBATIM
