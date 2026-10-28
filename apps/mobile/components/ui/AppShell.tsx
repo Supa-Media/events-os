@@ -103,7 +103,7 @@ const NAV: NavEntry[] = [
   // at a gathering (`/people/volunteers`). Not called "Hiring": nobody here is
   // paid, and the word was already wrong on the public side. Sits under
   // /people/* because it is the same domain as the roster tab, but keeps its
-  // own nav entry so a recruiting associate can reach their work without the
+  // own nav entry so a People Associate can reach their work without the
   // admin-or-lead People tab. Gated by `hiring.myHiringAccess.canView`; the
   // in-screen gates are the real ones.
   {

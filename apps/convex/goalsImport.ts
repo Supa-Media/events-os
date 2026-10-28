@@ -50,7 +50,7 @@ async function ensureTeams(
       description:
         seed.scope !== "central" && !chapterId
           ? "This chapter isn't set up in Chapter OS yet. Pick it here once it is."
-          : undefined,
+          : seed.description,
       sortOrder: sortOrder++,
       createdAt: now,
       updatedAt: now,

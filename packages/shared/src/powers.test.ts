@@ -416,7 +416,7 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
    * check being loosened.
    *
    *  - `hiring` (2026-08-23, careers page + application pipeline): the People
-   *    seat and the ED hold the call; the recruiting associate runs the
+   *    seat and the ED hold the call; the People Associate runs the
    *    funnel without being able to close a file.
    *  - `marketing` (2026-08-28, the Marketing desk): the marketing chain gets
    *    the homepage's words and cards; the Director and the ED also get the

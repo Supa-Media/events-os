@@ -3407,7 +3407,9 @@ describe("a digest reports the money that arrived, not the rows that were writte
       expect(html).not.toContain("Nov 4, 2025");
       expect(html).not.toContain("Dec 31, 2025");
       expect(html).not.toContain("Mar 26, 2026");
-      expect(html).not.toContain("35");
+      // As a number in the text. A document id in a donor link can contain
+      // the digits, and depends only on how many rows the setup wrote.
+      expect(html).not.toMatch(/(?<![\w/])35(?!\w)/);
     } finally {
       cap.restore();
     }

@@ -84,7 +84,7 @@ describe("parent/child tree shape", () => {
   });
 
   test("seatAncestors walks parentId up to (not including) SEAT_ROOT", () => {
-    expect(seatAncestors("financial_manager")).toEqual(["executive_director"]);
+    expect(seatAncestors("financial_manager")).toEqual(["operations_director", "executive_director"]);
     expect(seatAncestors("executive_director")).toEqual([]);
     expect(seatAncestors("vocal_lead")).toEqual(["music_lead", "chapter_director"]);
   });
@@ -97,7 +97,7 @@ describe("parent/child tree shape", () => {
     }
     expect(seatChildren("executive_director")).toEqual(
       expect.arrayContaining([
-        "financial_manager",
+        "operations_director",
         "development_director",
         "music_director",
         "marketing_director",
@@ -131,7 +131,13 @@ describe("parent/child tree shape", () => {
 
   test("seatChartOrder puts a subtree together — a director is followed by their own associates", () => {
     const ids = seatChartOrder("central").map((d) => d.id);
-    expect(ids.slice(0, 2)).toEqual(["executive_director", "financial_manager"]);
+    expect(ids.slice(0, 2)).toEqual(["executive_director", "development_director"]);
+    const od = ids.indexOf("operations_director");
+    expect(ids.slice(od, od + 3)).toEqual([
+      "operations_director",
+      "financial_manager",
+      "recruiting_associate",
+    ]);
     const dd = ids.indexOf("development_director");
     expect(ids.slice(dd, dd + 3)).toEqual([
       "development_director",
@@ -308,6 +314,8 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
       "people.academy.edit",
     ],
     chapter_directors: [],
+    // 2026-10-28: leads the Operations team. Powers are granted on the chart.
+    operations_director: [],
     recruiting_associate: ["hiring.edit"],
     training_associate: ["people.academy.edit"],
     // A CHAPTER seat: `finance.view` is read of the whole finance domain at
@@ -351,8 +359,8 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     marketing_lead: ["marketing.list.view"],
   };
 
-  test("SEAT_IDS has exactly 27 seats", () => {
-    expect(SEAT_IDS).toHaveLength(27);
+  test("SEAT_IDS has exactly 28 seats", () => {
+    expect(SEAT_IDS).toHaveLength(28);
   });
 
   test("EXPECTED_CAPABILITIES_BY_SEAT covers every seat id (snapshot itself hasn't drifted)", () => {

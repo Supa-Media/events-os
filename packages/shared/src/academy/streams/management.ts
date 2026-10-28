@@ -1029,7 +1029,7 @@ export const MANAGEMENT_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "What the desk won't let you skip",
-        text: "You can't **place** someone on one person's read: it takes two people's rubric reviews, or the button refuses. A **not-now** needs a date to come back. You can't close a file without writing **why** (for us, never sent); the candidate gets a warm, editable message instead. Only a director (the People Director or the ED) can close a file. A recruiting associate can read applications, book and file interviews, and start a trial.",
+        text: "You can't **place** someone on one person's read: it takes two people's rubric reviews, or the button refuses. A **not-now** needs a date to come back. You can't close a file without writing **why** (for us, never sent); the candidate gets a warm, editable message instead. Only a director (the People Director or the ED) can close a file. A People Associate can read applications, book and file interviews, and start a trial.",
       },
       {
         kind: "p",

@@ -190,7 +190,7 @@ Two deliberate details:
 |---|---|---|---|
 | Executive Director | ✓ | ✓ | ✓ |
 | People Director (Expansion Director seat) | ✓ | ✓ | ✓ |
-| Recruiting Associate | ✓ | ✓ | — |
+| People Associate | ✓ | ✓ | — |
 
 The powers are `hiring.view`, `hiring.edit`, and `hiring.approve`
 (`packages/shared/src/powers.ts`), granted on the seat chart and editable from

@@ -416,7 +416,7 @@ export const POWER_DEFS: Record<Power, PowerDef> = {
    *  reason this is a domain rather than a `people.*` area: the Academy's
    *  pipeline ends with "the Director decides," so the person who RUNS a
    *  candidate through screening and interviews must be able to do that
-   *  without also being able to close the file. A recruiting associate holds
+   *  without also being able to close the file. A People Associate holds
    *  `hiring.edit`; only the People Director and the ED hold the call.
    *
    *  Central-scope only (`scope: "central"` on all three): the org runs ONE

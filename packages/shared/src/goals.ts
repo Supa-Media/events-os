@@ -146,7 +146,17 @@ export interface SeedTeam {
   leadSeat?: string;
   seats?: string[];
   parent?: string;
+  description?: string;
 }
+
+/** What the Operations team owns. Shared with the migration that adds the
+ *  team to a plan already imported. */
+export const OPERATIONS_TEAM_DESCRIPTION =
+  "People, recruiting and finance. Sets up Public Worship email accounts, adds people to Google Workspace groups and Chat spaces, and makes changes to Chapter OS.";
+
+/** What the People team owns, led day to day by the People Associate. */
+export const PEOPLE_TEAM_DESCRIPTION =
+  "Recruiting, onboarding and offboarding, the monthly all-team meeting (first Thursday, in person) and team hangs.";
 export interface SeedTarget {
   label: string;
   target: number;
@@ -212,13 +222,16 @@ export const ONE_PAGER_2027: SeedPlan = {
     },
   ],
   teams: [
-    { name: "People team", scope: "central", leadSeat: "expansion_director", seats: ["recruiting_associate", "training_associate"] },
+    // Founder (2026-10-28): People, Recruiting and Finance sit under one
+    // Operations team, which also owns team setup across tools.
+    { name: "Operations team", scope: "central", leadSeat: "operations_director", description: OPERATIONS_TEAM_DESCRIPTION },
+    { name: "People team", scope: "central", leadSeat: "expansion_director", seats: ["recruiting_associate", "training_associate"], parent: "Operations team", description: PEOPLE_TEAM_DESCRIPTION },
     { name: "Central Events", scope: "central" },
     { name: "Public Fellowship", scope: "central", parent: "Central Events" },
     { name: "Music team", scope: "central", leadSeat: "music_director", seats: ["a_and_r", "artists", "musicians", "songwriters"] },
     { name: "Marketing team", scope: "central", leadSeat: "marketing_director", seats: ["social_media_manager", "graphic_designer", "marketing_associate"] },
     { name: "Development team", scope: "central", leadSeat: "development_director", seats: ["partnership_associate", "fundraising_associate"] },
-    { name: "Finance team", scope: "central", leadSeat: "financial_manager" },
+    { name: "Finance team", scope: "central", leadSeat: "financial_manager", parent: "Operations team" },
     { name: "All teams", scope: "central" },
     { name: "NYC chapter", scope: "nyc", leadSeat: "chapter_director", seats: ["treasurer", "music_lead", "event_lead", "marketing_lead"] },
     { name: "DMV chapter", scope: "dmv", leadSeat: "chapter_director", seats: ["treasurer", "music_lead", "event_lead", "marketing_lead"] },
@@ -228,7 +241,7 @@ export const ONE_PAGER_2027: SeedPlan = {
       title: "Build healthy Central, NYC, and DMV teams",
       owner: "People team",
       keyResults: [
-        { title: "Recruit a recruiting associate.", owner: "People team", timing: "Oct 31, 2026", due: "2026-10-31", measure: { kind: "manual", target: 1, unit: "people" } },
+        { title: "Recruit a People Associate.", owner: "People team", timing: "Oct 31, 2026", due: "2026-10-31", measure: { kind: "manual", target: 1, unit: "people" } },
         { title: "Recruit the NYC Chapter Director.", owner: "People team", timing: "Nov 15, 2026", due: "2026-11-15", measure: { kind: "manual", target: 1, unit: "people" } },
         { title: "Recruit four remaining NYC chapter leads.", owner: "People team", contributors: ["NYC chapter"], timing: "Dec 31, 2026", due: "2026-12-31", measure: { kind: "manual", target: 4, unit: "count" } },
         { title: "Recruit the DMV Chapter Director.", owner: "People team", timing: "Apr 30, 2027", due: "2027-04-30", measure: { kind: "manual", target: 1, unit: "people" } },
