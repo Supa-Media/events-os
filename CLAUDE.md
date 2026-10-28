@@ -51,39 +51,57 @@ outstanding.
 
 ## Production data access
 
-Run production data commands from `apps/convex`. Public OS uses the
-`Public OS production data` cloud environment: its Network secret adds the
-real deploy key to requests for `vivid-rhinoceros-688.convex.cloud` as an
-`Authorization: Convex …` header. The session cannot read the real key.
+Public OS uses the `Public OS production data` cloud environment. Its
+Network secret adds the real deploy key to HTTPS requests for
+`vivid-rhinoceros-688.convex.cloud` as an `Authorization: Convex …` header.
+The session cannot read the real key.
 
-The environment provides these **non-secret** CLI targeting values:
+Production reads are allowed at any time. **In a cloud session, use the
+HTTPS API.** This read returned production rows in a new cloud session:
+
+```sh
+curl --fail-with-body -sS \
+  -X POST https://vivid-rhinoceros-688.convex.cloud/api/query \
+  -H 'Content-Type: application/json' \
+  -d '{"path":"_system/cli/tableData","args":{"table":"seatDefs","order":"desc","paginationOpts":{"numItems":5,"cursor":null}},"format":"json"}'
+```
+
+For another table, replace `seatDefs`. For an internal query, use its
+`module:function` path and arguments at `/api/query`. Confirm the function
+is a query before treating it as a read. Writes through `/api/mutation`
+or actions require the approvals below.
+
+**`npx convex data` does not work with this cloud Network secret.** It
+authenticates inside a WebSocket message, where the proxy cannot inject
+the key. CLI watch/subscription modes have the same limitation. Use the
+HTTPS query above instead of copying the real key into the session.
+
+The environment retains these **non-secret** CLI targeting values:
 
 ```dotenv
 CONVEX_SELF_HOSTED_URL=https://vivid-rhinoceros-688.convex.cloud
 CONVEX_SELF_HOSTED_ADMIN_KEY=proxy-injected
 ```
 
-These variables select the explicit URL/admin-key path in the CLI; the
-backend is still Convex Cloud. The proxy replaces the placeholder header
-with the real key. Do not set `CONVEX_DEPLOY_KEY` in this cloud environment:
-that path sends the key in control-plane request bodies, which header
-injection cannot replace. For a local check, load the real
-`CONVEX_DEPLOY_KEY` securely from 1Password into the process environment.
+They select the explicit URL/admin-key path in the CLI; the backend is
+still Convex Cloud. They do not enable WebSocket authentication. Do not
+set `CONVEX_DEPLOY_KEY` in this cloud environment: that path sends the key
+in control-plane request bodies, which header injection cannot replace.
 
-Never print, log, or commit `CONVEX_DEPLOY_KEY` or the real deploy key,
-and never paste the value into notes, mail, chat, or PRs.
+Locally, run commands from `apps/convex` with the real `CONVEX_DEPLOY_KEY`
+loaded securely from 1Password into the process environment. Reads are
+allowed with `npx convex data <table>` (for example,
+`npx convex data seatDefs --limit 5`) and internal queries through
+`npx convex run --prod <queryName> [args]`. Verify the target is production
+`vivid-rhinoceros-688`; `convex run` also runs mutations and actions.
 
-- Production reads are allowed at any time: `npx convex data <table>`
-  (for example, `npx convex data seatDefs --limit 5`) or internal queries
-  through `npx convex run --prod <queryName> [args]`. Verify the target is
-  the production deployment `vivid-rhinoceros-688`; `convex run` also runs
-  mutations and actions, so confirm the function is a query before using it
-  as a read.
 - A data change that should hold for every organization belongs in a
   numbered migration in `apps/convex/migrations/`, following the existing
   migration conventions and the PR/CI workflow above.
 - A one-off production edit requires Dev2's explicit go-ahead in the thread.
   Record what changed after the edit, without including credentials.
+- Never print, log, or commit `CONVEX_DEPLOY_KEY` or the real deploy key,
+  and never paste the value into notes, mail, chat, or PRs.
 
 ## Gate It Behind a Power, Even When It's Open Today
 
