@@ -1,10 +1,9 @@
 /**
  * DUTIES — the chapter's recurring duties as a database grid.
  *
- * This route is kept for deep links; it's dropped from the nav (Duties now lives
- * inside the Work tab's Duties segment). It's a thin wrapper: the in-screen
- * `canManage` guard stays (nav hiding is not access control), and the grid body
- * lives in `components/work/DutiesGrid`, shared with the Work tab.
+ * Its own left-nav entry ("Duties", shown when `org.nav.canManage`). A thin
+ * wrapper: the in-screen `canManage` guard stays (nav hiding is not access
+ * control), and the grid body lives in `components/work/DutiesGrid`.
  */
 import { useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -23,7 +22,7 @@ export default function ResponsibilitiesScreen() {
         <Narrow>
           <EmptyState
             title="Duties are managed by team leads"
-            message="The duty catalog is only visible to managers and admins. Your own duties are listed on your Work page."
+            message="The duty catalog is only visible to managers and admins. Your own duties are listed on your Projects page."
           />
         </Narrow>
       </Screen>

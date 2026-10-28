@@ -1,10 +1,10 @@
 /**
  * The seat panel's DUTIES section — the real duties mapped to this seat in
- * Work → Duties, editable in place.
+ * the Duties tab, editable in place.
  *
  * Until now this was a read-only bullet list, and the org chart was where
  * people actually go to ask "what does this seat do?" — so the answer to
- * "that's wrong / that's missing" was "leave the chart, open Work → Duties,
+ * "that's wrong / that's missing" was "leave the chart, open the Duties tab,
  * find the row in a grid of every duty in the org, edit it there". This makes
  * the chart the place you FIX it too: rename a duty, change its cadence, add
  * one to the seat, or take one off the seat, without leaving the panel.
@@ -111,7 +111,7 @@ export function SeatDuties({
             ? "This seat mirrors each chapter — its duties live on the chapter seat it rolls up."
             : canManage
               ? `No duties yet — add what whoever holds ${seatTitle} is expected to do.`
-              : "No duties mapped yet — attach them in Work → Duties."}
+              : "No duties mapped yet — attach them in the Duties tab."}
         </Text>
       ) : (
         <View className="gap-1.5">
@@ -169,7 +169,7 @@ function DutyRow({
     confirmAction({
       title: `Take "${duty.title}" off ${seatTitle}?`,
       message:
-        "It stops applying to whoever holds this seat. The duty itself stays in Work → Duties, where it can be mapped to another seat.",
+        "It stops applying to whoever holds this seat. The duty itself stays in the Duties tab, where it can be mapped to another seat.",
       confirmLabel: "Remove from seat",
       destructive: true,
       onConfirm: () => {
