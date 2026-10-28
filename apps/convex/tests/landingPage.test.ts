@@ -133,7 +133,10 @@ describe("renderLandingPage title font + links", () => {
       }) as never,
       SITE,
     );
-    expect(html).not.toContain("javascript:alert");
+    // (The raw value may still appear in the inline __INIT__ JSON, which is
+    // data, never markup.)
+    expect(html).not.toContain('href="javascript:');
+    expect(html.match(/class="metacard linkcard"/g)).toHaveLength(1);
     expect(html).toContain("&lt;b&gt;x&lt;/b&gt;");
     expect(html).toContain('href="https://example.org/a?b=1&amp;c=2"');
   });
