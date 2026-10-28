@@ -51,10 +51,27 @@ outstanding.
 
 ## Production data access
 
-Run production data commands from `apps/convex` with `CONVEX_DEPLOY_KEY`
-provided through the cloud environment's secret settings. Never print, log,
-or commit `CONVEX_DEPLOY_KEY`, and never paste its value into notes, mail,
-chat, or PRs.
+Run production data commands from `apps/convex`. Public OS uses the
+`Public OS production data` cloud environment: its Network secret adds the
+real deploy key to requests for `vivid-rhinoceros-688.convex.cloud` as an
+`Authorization: Convex …` header. The session cannot read the real key.
+
+The environment provides these **non-secret** CLI targeting values:
+
+```dotenv
+CONVEX_SELF_HOSTED_URL=https://vivid-rhinoceros-688.convex.cloud
+CONVEX_SELF_HOSTED_ADMIN_KEY=proxy-injected
+```
+
+These variables select the explicit URL/admin-key path in the CLI; the
+backend is still Convex Cloud. The proxy replaces the placeholder header
+with the real key. Do not set `CONVEX_DEPLOY_KEY` in this cloud environment:
+that path sends the key in control-plane request bodies, which header
+injection cannot replace. For a local check, load the real
+`CONVEX_DEPLOY_KEY` securely from 1Password into the process environment.
+
+Never print, log, or commit `CONVEX_DEPLOY_KEY` or the real deploy key,
+and never paste the value into notes, mail, chat, or PRs.
 
 - Production reads are allowed at any time: `npx convex data <table>`
   (for example, `npx convex data seatDefs --limit 5`) or internal queries
