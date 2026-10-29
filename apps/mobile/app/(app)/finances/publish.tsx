@@ -9,8 +9,8 @@
  * ── THE SCREEN'S ONE JOB IS TO MAKE THE STAKES OBVIOUS ──────────────────────
  * Every other finance screen edits the org's own books, where a mistake is
  * caught at the next close. This one talks to the whole city, and a published
- * number cannot be un-seen — only amended in public. So the month's numbers
- * are not optional decoration: the figures a publisher is about to stand behind, and
+ * number cannot be un-seen — only amended in public. So the preview is not
+ * optional decoration: the figures a publisher is about to stand behind, and
  * the disclosures that will publish beside them (rows with no receipt, rows
  * with no approved explanation, rows rebuilt from spreadsheets), are on
  * screen before the button is reachable.
@@ -37,8 +37,8 @@
  * ── THIS ROUTE IS ONE OF TWO FRAMES NOW ──────────────────────────────────────
  * The month body moved to `components/finance/publish/PublishMonth.tsx` so the
  * Transactions grid can open the SAME flow in a modal over a month band
- * (founder, 2026-08-14: "publish here takes me to a different page
- * entirely"). Nothing about the act changed or thinned — one implementation,
+ * (founder, 2026-08-14: "I want to be able to preview and publish from the
+ * same page"). Nothing about the act changed or thinned — one implementation,
  * two frames.
  *
  * THE ROUTE STAYS, and not only for old links: it is what the Dashboard's

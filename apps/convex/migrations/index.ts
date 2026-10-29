@@ -115,6 +115,7 @@ import { applicationFormMonthlyMeetingQuestion } from "./0093_application_form_m
 import { nycListingsApplyBy } from "./0095_nyc_listings_apply_by_nov_1";
 import { peopleAssociateAndOperationsTeam } from "./0096_people_associate_and_operations_team";
 import { ledgerPublishToTreasurers } from "./0097_ledger_publish_to_treasurers";
+import { restoreLedgerPublishEdCd } from "./0098_restore_ledger_publish_ed_cd";
 
 /** One registered migration: a stable `name` (the ledger key) + its effect. */
 export type Migration = {
@@ -596,4 +597,7 @@ export const MIGRATIONS: Migration[] = [
   // 0097: `finance.ledger.publish` onto chapter Treasurers, off the Executive
   // Director and Chapter Director. See the file.
   ledgerPublishToTreasurers,
+  // 0098: puts `finance.ledger.publish` back on the Executive Director and
+  // Chapter Director rows that 0097 took it from. See the file.
+  restoreLedgerPublishEdCd,
 ];

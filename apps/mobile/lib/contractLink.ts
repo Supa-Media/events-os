@@ -9,7 +9,8 @@
  *
  * The base comes from `publicSiteUrl()` (`components/event/ticketing/helpers.ts`),
  * the app's one resolver for "where do the PUBLIC pages live" (branded domain
- * in prod, `.convex.site` elsewhere, local port+1 in dev). It is deliberately NOT
+ * in prod, `.convex.site` elsewhere, local port+1 in dev) — the same helper
+ * `useLedgerPreview` uses to open a month's public page. It is deliberately NOT
  * `lib/appUrl.ts#webAppUrl`: that builds links into the AUTHENTICATED Expo app
  * under `/os`, and a contractor has no account and never sees that app.
  *

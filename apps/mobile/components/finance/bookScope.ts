@@ -61,7 +61,7 @@ export type ResolvedBookScope = {
    *  every one of these queries takes `v.optional(scope)` and falls back to
    *  the caller's own book server-side, which is the same thing passing
    *  nothing has always meant. Never send `null` as a value: an explicit
-   *  `null` fails the optional validator. */
+   *  `null` fails the optional validator (see `useLedgerPreview`'s doc). */
   scope: SingleBookScope | null;
   /** Set only when something WAS asked for and could not be honored. The
    *  screen owes the user a sentence when this is non-null — it is now

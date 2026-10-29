@@ -132,6 +132,8 @@ export function previousPeriodKey(key: string): string | null {
  *
  *   draft             → being assembled. Never public.
  *   in_review         → submitted; waiting on a `finance.publish` holder.
+ *                       Optional: a holder may publish draft, sent-back or
+ *                       amending months directly (2026-10-29).
  *   changes_requested → sent back with a note. Same "never public" as draft.
  *   published         → the working copy IS the live copy. Nothing in flight.
  *   amending          → a correction is being prepared; revision N stays live.

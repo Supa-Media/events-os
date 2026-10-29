@@ -18,6 +18,17 @@
  */
 export const LEDGER_CSS = `
 main{max-width:1120px;margin:0 auto;padding:20px 20px 120px;position:relative}
+/* ── Draft preview (publicLedgerPage.ts's shell({preview:true})) ── */
+/* Fixed to the viewport, not merely sticky to main's scroll — a reviewer
+   scrolling a long month must never lose the one signal that this isn't the
+   live public page. */
+.previewbanner{position:fixed;top:0;left:0;right:0;z-index:50;padding:11px 20px;
+  background:#b45309;color:#fff;font-weight:700;font-size:13.5px;letter-spacing:.01em;
+  text-align:center;box-shadow:0 2px 8px rgba(0,0,0,.18)}
+/* Pushes content clear of the fixed banner above. Applied via an inline
+   class on main (see shell) rather than main:has(.previewbanner) so it
+   doesn't depend on :has() support. */
+main.haspreview{padding-top:76px}
 .topbar{display:flex;justify-content:space-between;align-items:center;gap:12px;padding:14px 0 8px;flex-wrap:wrap}
 .wordmark{font-weight:700;font-size:12px;letter-spacing:.22em;color:var(--accent);text-decoration:none}
 .topnav{display:flex;gap:8px;flex-wrap:wrap}

@@ -626,8 +626,8 @@ donor, an employee's compensation other than as required by law, or a minor.
 The obligation to publish never overrides the obligation to protect people.
 
 **11.5 Who publishes.** Authority to publish a period is a named power held by
-seats designated in the Operating Manual, and shall not be held by the same
-person who prepared the period.
+seats designated in the Operating Manual. Each published revision shall record
+whether a person other than its preparer reviewed it.
 
 **11.6 Records available on request.** The Corporation shall make available for
 public inspection its application for exemption, its determination letter, and

@@ -4,6 +4,7 @@ import { ConvexError } from "convex/values";
 import { newT, run, setupChapter, type ChapterSetup } from "./setup.helpers";
 import { api } from "../_generated/api";
 import type { Id } from "../_generated/dataModel";
+import { PREVIEW_BANNER_TEXT } from "../lib/publicLedgerPage";
 import { assertPublishable } from "../publicLedger";
 import type { Snapshot } from "../lib/publicLedgerSnapshot";
 import { runSeedSeatDefs } from "../migrations/0022_seed_seat_defs";
@@ -624,12 +625,27 @@ describe("everything publishes; not everything counts", () => {
 // ── 5. Nothing publishes by accident ─────────────────────────────────────────
 
 describe("the lifecycle refuses shortcuts", () => {
-  test("a month cannot be published without going through review", async () => {
-    const s = await asPublisher();
+  test("a publisher can publish a month directly, without review", async () => {
+    // Founder, 2026-10-29: "Let us be able to publish without someone
+    // reviewing." Deliberately NOT a superuser: any publish-seat holder can.
+    const s = await setupChapter(newT(), { email: "fm@publicworship.life" });
+    const personId = await seedPerson(s, "Financial Manager");
+    await grantRole(s, personId, "manager", "central");
+    await seedPublishSeat(s, personId, "central");
     await insertTxn(s);
-    await expect(
-      s.as.mutation(api.publicLedger.publish, { periodKey: AUG_KEY }),
-    ).rejects.toThrow(ConvexError);
+
+    const { revision } = await s.as.mutation(api.publicLedger.publish, {
+      periodKey: AUG_KEY,
+    });
+    expect(revision).toBe(1);
+
+    const row = await run(s.t, (ctx) =>
+      ctx.db.query("financePublicationRevisions").first(),
+    );
+    // No reviewer, so the publisher is also the preparer — and the revision
+    // says so.
+    expect(row!.approvalParty).toBe("single");
+    expect(row!.preparedByPersonId).toBe(personId);
   });
 
   test("a finance manager without the publish seat cannot publish", async () => {
@@ -646,7 +662,7 @@ describe("the lifecycle refuses shortcuts", () => {
     ).rejects.toThrow(ConvexError);
   });
 
-  test("a non-superuser cannot publish their own preparation", async () => {
+  test("a non-superuser may publish a month they sent for review, recorded as single-party", async () => {
     const s = await setupChapter(newT(), { email: "cd@publicworship.life" });
     const personId = await seedPerson(s, "Chapter Director");
     await grantRole(s, personId, "manager", "central");
@@ -654,10 +670,12 @@ describe("the lifecycle refuses shortcuts", () => {
     await insertTxn(s);
 
     await s.as.mutation(api.publicLedger.submit, { periodKey: AUG_KEY });
-    // Separation of duties: the reviewer must be a second pair of eyes.
-    await expect(
-      s.as.mutation(api.publicLedger.publish, { periodKey: AUG_KEY }),
-    ).rejects.toThrow(ConvexError);
+    await s.as.mutation(api.publicLedger.publish, { periodKey: AUG_KEY });
+
+    const row = await run(s.t, (ctx) =>
+      ctx.db.query("financePublicationRevisions").first(),
+    );
+    expect(row!.approvalParty).toBe("single");
   });
 
   test("a superuser self-publish is allowed but RECORDED as single-party", async () => {
@@ -1419,60 +1437,27 @@ describe("republish (one-action correction)", () => {
     ).rejects.toThrow(/Describe what's being corrected/);
   });
 
-  test("cannot be used to escape two-party review", async () => {
-    // The guarantee is inherited, not re-implemented: `resolveApprovalParty`
-    // is called with the caller as BOTH preparer and publisher, which is
-    // exactly what `assertSeparationOfDuties` already refuses for anyone but
-    // a superuser. A non-superuser holding both powers still has to hand the
-    // correction to a second person.
-    //
-    // Two real people, because one non-superuser cannot get a month published
-    // in the first place — the same rule, firing one step earlier.
-    const s = await setupChapter(newT());
-    const alice = await seedPerson(s);
-    await grantRole(s, alice, "manager", "central");
-    await seedPublishSeat(s, alice, "central");
-
-    const bobUserId = await run(s.t, (ctx) =>
-      ctx.db.insert("users", { email: "bob@publicworship.life" }),
-    );
-    await run(s.t, (ctx) =>
-      ctx.db.insert("userChapters", {
-        userId: bobUserId,
-        chapterId: s.chapterId,
-        role: "admin",
-        isActive: true,
-        joinedAt: Date.now(),
-      }),
-    );
-    const bobPersonId = await run(s.t, (ctx) =>
-      ctx.db.insert("people", {
-        chapterId: s.chapterId,
-        name: "Bob",
-        userId: bobUserId,
-        createdAt: Date.now(),
-      }),
-    );
-    await grantRole(s, bobPersonId, "manager", "central");
-    await seedPublishSeat(s, bobPersonId, "central");
-    const asBob = s.t.withIdentity({
-      subject: `${bobUserId}|session`,
-      issuer: "test",
-    });
-
+  test("a non-superuser publisher can correct a month alone, recorded as single-party", async () => {
+    // Founder, 2026-10-29: publishing no longer needs a second person, so a
+    // publish-seat holder may do both halves of a correction too.
+    const s = await setupChapter(newT(), { email: "fm@publicworship.life" });
+    const personId = await seedPerson(s, "Financial Manager");
+    await grantRole(s, personId, "manager", "central");
+    await seedPublishSeat(s, personId, "central");
     await insertTxn(s, { amountCents: 1_000, postedAt: AUG_2026 });
-    // Alice prepares, Bob publishes — a legitimate two-party publication.
-    await s.as.mutation(api.publicLedger.submit, { periodKey: AUG_KEY });
-    await asBob.mutation(api.publicLedger.publish, { periodKey: AUG_KEY });
+    await s.as.mutation(api.publicLedger.publish, { periodKey: AUG_KEY });
 
-    // Now Bob alone tries to do BOTH halves of a correction.
-    await expect(
-      asBob.mutation(api.publicLedger.republish, {
-        periodKey: AUG_KEY,
-        reason: "other",
-        note: "A correction one non-superuser should not be able to make alone.",
-      }),
-    ).rejects.toThrow(/different from the requester/);
+    const { revision } = await s.as.mutation(api.publicLedger.republish, {
+      periodKey: AUG_KEY,
+      reason: "other",
+      note: "A correction one publisher is now allowed to make alone.",
+    });
+    expect(revision).toBe(2);
+
+    const rows = await run(s.t, (ctx) =>
+      ctx.db.query("financePublicationRevisions").collect(),
+    );
+    expect(rows.find((r) => r.revision === 2)!.approvalParty).toBe("single");
   });
 });
 
@@ -2128,6 +2113,143 @@ describe("explaining a month", () => {
         central.otherBooks!.findIndex((b) => b.scopeName === "New York"),
       );
     });
+  });
+});
+
+// ── The full-page draft preview ──────────────────────────────────────────────
+// `?preview=<token>` (`http.ts`) — the publish console's "see the full page
+// before you publish" button. Everything here is about the one property that
+// matters: a stranger with the URL but no token learns nothing, and a
+// publisher with a token sees EXACTLY what publishing right now would put in
+// front of that stranger — built from the live books, never written anywhere.
+
+describe("the full-page draft preview", () => {
+  test("minting a preview token requires console access", async () => {
+    // A plain chapter member — no finance role, no finance seat, nothing
+    // `requireLedgerConsole` recognizes.
+    const s = await setupChapter(newT(), { email: "nobody@publicworship.life" });
+    await expect(
+      s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+        periodKey: AUG_KEY,
+      }),
+    ).rejects.toThrow(ConvexError);
+  });
+
+  test("a valid token renders the live, unpublished month — including a draft-only line", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, {
+      amountCents: 4783,
+      merchantName: "Costco Wholesale",
+    });
+    await approveCoding(s, txnId, {
+      businessPurpose: "Water and cups for the WWS setup team",
+    });
+    // Never submitted, never published — this line exists only in the live
+    // books. A preview built from `financePublicationEntries` (there are
+    // none) would render an empty month instead.
+    const { token } = await s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+      periodKey: AUG_KEY,
+    });
+
+    const res = await s.t.fetch(`/finances/${AUG_KEY}?preview=${token}`, {});
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).toContain("Costco Wholesale");
+    expect(body).toContain(PREVIEW_BANNER_TEXT);
+    expect(body).toContain('<meta name="robots" content="noindex">');
+    // Never cached — a draft preview must not be served stale to a second
+    // viewer of the same link.
+    expect(res.headers.get("cache-control")).toContain("no-store");
+  });
+
+  test("a garbage token, and a real token past its expiry, both 404 with no page", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, { merchantName: "Costco" });
+    await approveCoding(s, txnId, { businessPurpose: "Supplies" });
+    const { token } = await s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+      periodKey: AUG_KEY,
+    });
+
+    const garbage = await s.t.fetch(
+      `/finances/${AUG_KEY}?preview=not-a-real-token`,
+      {},
+    );
+    expect(garbage.status).toBe(404);
+    expect(await garbage.text()).not.toContain("Costco");
+
+    // A token minted for August must not render September, or vice versa —
+    // a token is single-scope+period, not a general bypass.
+    const wrongPeriod = await s.t.fetch(`/finances/2026-09?preview=${token}`, {});
+    expect(wrongPeriod.status).toBe(404);
+
+    await run(s.t, async (ctx) => {
+      const row = await ctx.db.query("financePublicationPreviewTokens").first();
+      await ctx.db.patch(row!._id, { expiresAt: Date.now() - 1 });
+    });
+    const expired = await s.t.fetch(`/finances/${AUG_KEY}?preview=${token}`, {});
+    expect(expired.status).toBe(404);
+    expect(await expired.text()).not.toContain("Costco");
+  });
+
+  test("a preview token never reaches a publicly-cacheable 404, even off an early-reject branch", async () => {
+    // Regression for a MEDIUM finding: four early-reject branches (empty/
+    // too-many path segments, an unrecognized sub-path, a malformed period,
+    // giving.csv on a year) used to 404 through the PUBLIC `notFound`
+    // (`Cache-Control: public, max-age=60`) before the handler ever looked
+    // at `?preview=` — putting a live preview token's URL into a
+    // publicly-cacheable response. Both proven URLs, pinned here.
+    const s = await asPublisher();
+    const { token } = await s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+      periodKey: AUG_KEY,
+    });
+
+    // An unrecognized sub-path — `sub != null && !wantsGivingCsv`.
+    const bogusSub = await s.t.fetch(
+      `/finances/${AUG_KEY}/bogus?preview=${token}`,
+      {},
+    );
+    expect(bogusSub.status).toBe(404);
+    expect(bogusSub.headers.get("cache-control")).toBe("no-store, private");
+
+    // The bare `/finances/` (trailing slash, no period at all) — the
+    // "empty raw" early-reject branch.
+    const bare = await s.t.fetch(`/finances/?preview=${token}`, {});
+    expect(bare.status).toBe(404);
+    expect(bare.headers.get("cache-control")).toBe("no-store, private");
+  });
+
+  test("the public published route is unaffected — no banner, and the public cache header", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, { merchantName: "Costco" });
+    await approveCoding(s, txnId, { businessPurpose: "Supplies for the team" });
+    await publishMonth(s);
+
+    const res = await s.t.fetch(`/finances/${AUG_KEY}`, {});
+    expect(res.status).toBe(200);
+    const body = await res.text();
+    expect(body).not.toContain(PREVIEW_BANNER_TEXT);
+    expect(body).not.toContain('name="robots"');
+    expect(res.headers.get("cache-control")).toBe("public, max-age=60");
+  });
+
+  test("minting and viewing a preview writes no publication, revision, or entry row", async () => {
+    const s = await asPublisher();
+    const txnId = await insertTxn(s, { amountCents: 4783 });
+    await approveCoding(s, txnId, { businessPurpose: "Snacks for the team" });
+
+    const { token } = await s.as.mutation(api.publicLedger.mintLedgerPreviewToken, {
+      periodKey: AUG_KEY,
+    });
+    await s.t.fetch(`/finances/${AUG_KEY}?preview=${token}`, {});
+
+    const [pubs, revisions, entries] = await Promise.all([
+      run(s.t, (ctx) => ctx.db.query("financePublications").collect()),
+      run(s.t, (ctx) => ctx.db.query("financePublicationRevisions").collect()),
+      run(s.t, (ctx) => ctx.db.query("financePublicationEntries").collect()),
+    ]);
+    expect(pubs).toHaveLength(0);
+    expect(revisions).toHaveLength(0);
+    expect(entries).toHaveLength(0);
   });
 });
 
