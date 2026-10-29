@@ -2,8 +2,9 @@
  * PUBLISHING A MONTH WITHOUT LEAVING THE GRID.
  *
  * The second frame for `PublishMonthBody` — the first being the publish
- * console route. Founder, 2026-08-14: "publish here takes me to a different
- * page entirely."
+ * console route. Founder, 2026-08-14: "I want to be able to preview and
+ * publish from the same page — publish here takes me to a different page
+ * entirely." Preview already happened on the band; this is the other half.
  *
  * ── NOTHING IS RE-IMPLEMENTED HERE ───────────────────────────────────────────
  * This file is a frame and a header. The flow inside it is the console's own

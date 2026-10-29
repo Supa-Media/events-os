@@ -75,7 +75,7 @@ update these tables, `governance.test.ts` fails.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit`, `marketing.blog.publish`, `marketing.designs.edit`, `people.academy.edit` |
+| Executive Director | — (chart root) | 1 | `finance.accounts.view`, `finance.budgets.approve`, `finance.ledger.publish`, `org.chart.edit`, `giving.edit`, `email.campaigns.approve`, `data.export`, `hiring.approve`, `marketing.site.edit`, `marketing.list.edit`, `marketing.blog.publish`, `marketing.designs.edit`, `people.academy.edit` |
 | Development Director | Executive Director | 1 | `giving.edit`, `data.export` |
 | Partnership Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
 | Fundraising Associate | Development Director | many | `giving.view`, `giving.partners.edit` |
@@ -109,7 +109,7 @@ Every chapter is stamped with this chart.
 
 | Seat | Reports to | Holders | Powers granted |
 |---|---|---|---|
-| Chapter Director | — (chart root) | 1 | `finance.view`, `finance.budgets.approve`, `giving.view`, `data.export`, `events.checkin`, `marketing.designs.edit` |
+| Chapter Director | — (chart root) | 1 | `finance.view`, `finance.budgets.approve`, `finance.ledger.publish`, `giving.view`, `data.export`, `events.checkin`, `marketing.designs.edit` |
 | Treasurer | Chapter Director | 1 | `finance.edit`, `finance.ledger.publish`, `giving.view` |
 | Music Lead | Chapter Director | 1 | — |
 | Vocal Lead | Music Lead | 1 | — |
@@ -462,15 +462,12 @@ is to rewrite the version that PUBLISHES, with the original kept beside it — a
 the correction never moves authorship, so the second pair of eyes stays a second
 pair of eyes.
 
-Only three people may publish the books: the **Financial Manager** (any
-book), a chapter's **Treasurer** (their own chapter's book), and the
-**founder**. The Treasurer prepares a chapter's month and the Financial
-Manager or the founder publishes it; at central, the Financial Manager
-prepares and the founder publishes. Preparer and publisher are two different
-people by design — that is the two-party rule applied to the public record,
-and the app refuses anyone who tries to publish a month they sent for review.
-There is no separate preview step: the publish panel shows the month's
-figures and every disclosure before its Publish button.
+The chapter **Treasurer** prepares the month, and the **Treasurer** or the
+**Chapter Director** publishes it. At central, the **Financial Manager**
+prepares and the **Executive Director** or Financial Manager publishes. Review
+by a second person is available but not required: anyone holding the publish
+power may publish a month they prepared themselves, and every published
+revision records whether a second person reviewed it.
 
 **What is published is frozen.** The public page shows the copy that was
 approved at publication, not a live view of the books. An edit made afterward
@@ -893,10 +890,10 @@ separate ledgers on purpose.
 | Contracts over the Board's threshold, borrowing, real property | Board |
 | Org-wide priorities, seat chart, launching or closing a chapter | Executive Director |
 | Central spending within budget, staff and contractor hiring | Executive Director |
-| Publishing central's books | Financial Manager / founder |
+| Publishing central's books | Executive Director / Financial Manager |
 | Placing, declining, or deferring a candidate | People Director, or the Executive Director |
 | Chapter budget approval, chapter leadership proposals | Chapter Director |
-| Publishing a chapter's month | Treasurer / Financial Manager / founder |
+| Publishing a chapter's month | Chapter Director / Treasurer |
 | Recording and reconciling chapter money, preparing the close | Treasurer |
 | Donor records, gift entry, giving configuration | Development Director |
 | Brand, campaign approval | Marketing Director |

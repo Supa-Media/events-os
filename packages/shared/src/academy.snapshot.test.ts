@@ -2118,7 +2118,7 @@ const EXPECTED_COURSES: {
     // `finance-publishing-the-books` (2026-08-11) lands in the SHARED
     // foundation course rather than Treasurer or ED: a module belongs to
     // exactly one course, and this lesson has both audiences — the Treasurer
-    // prepares a month, the FM or the founder publishes it. All four
+    // prepares a month, the ED / FM / Chapter Director publishes it. All four
     // finance paths carry this course.
     moduleSlugs: [
       "finance-tiers-and-skim",

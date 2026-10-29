@@ -2,61 +2,45 @@ import type { MutationCtx } from "../_generated/server";
 import type { Migration } from "./index";
 
 /**
- * Founder ask (2026-10-29): "Make it so that only the financial manager,
- * treasurer of chapters and the founder can publish financials publicly."
+ * Founder ask (2026-10-29): chapter Treasurers may publish their chapter's
+ * month. The seat template (`packages/shared/src/seats.ts`) grants
+ * `finance.ledger.publish` to the Treasurer, and a template change never
+ * reaches an org already stamped by `0022_seed_seat_defs`, so this carries it
+ * onto the live `seatDefs` rows.
  *
- * The seat template (`packages/shared/src/seats.ts`) now grants
- * `finance.ledger.publish` to the Financial Manager (unchanged) and the
- * chapter Treasurer, and no longer to the Executive Director or the Chapter
- * Director. The founder publishes through the superuser short-circuit in
- * `lib/publicLedgerAccess.ts#hasLedgerPublish`, not through a seat.
+ * HISTORY. As first shipped (events-os #884) this also REMOVED the power from
+ * the Executive Director and Chapter Director rows, and it ran on production
+ * that way. The founder corrected the ask the same evening, so the revoke
+ * half was taken out of this body (a fresh database now only gets the grant)
+ * and `0098_restore_ledger_publish_ed_cd` puts the power back on the rows
+ * production had already lost it from.
  *
- * A template change never reaches an org already stamped by
- * `0022_seed_seat_defs`, so this carries it onto the live `seatDefs` rows.
- * Unlike the purely additive power migrations (`0089`), this one also
- * REMOVES the power from two seats, because the ask is a restriction: leaving
- * it on the ED's live row would leave a second way to publish that the
- * founder said shouldn't exist. Only this one power is touched, so any other
- * power an editor has set on these seats since is left alone. The legacy
- * spelling `finance.publish` is removed too, since `expandPowers` reads it as
- * the same power. Idempotent: a second run finds nothing to change.
+ * Additive and content-idempotent: it only APPENDS the power to a row that
+ * lacks it (in either spelling — `expandPowers` reads the legacy
+ * `finance.publish` as the same power) and never removes anything.
  */
 const PUBLISH = "finance.ledger.publish";
 const PUBLISH_SPELLINGS = new Set([PUBLISH, "finance.publish"]);
 
-const GRANT_SLUGS = ["treasurer"] as const;
-const REVOKE_SLUGS = ["executive_director", "chapter_director"] as const;
-
 export async function runLedgerPublishToTreasurers(ctx: MutationCtx) {
   let granted = 0;
-  let revoked = 0;
-  for (const slug of GRANT_SLUGS) {
-    const rows = await ctx.db
-      .query("seatDefs")
-      .withIndex("by_slug", (q) => q.eq("slug", slug))
-      .collect();
-    for (const row of rows) {
-      if (row.capabilities.some((c) => PUBLISH_SPELLINGS.has(c))) continue;
-      await ctx.db.patch(row._id, {
-        capabilities: [...row.capabilities, PUBLISH],
-        updatedAt: Date.now(),
-      });
-      granted++;
+  let skipped = 0;
+  const rows = await ctx.db
+    .query("seatDefs")
+    .withIndex("by_slug", (q) => q.eq("slug", "treasurer"))
+    .collect();
+  for (const row of rows) {
+    if (row.capabilities.some((c) => PUBLISH_SPELLINGS.has(c))) {
+      skipped++;
+      continue;
     }
+    await ctx.db.patch(row._id, {
+      capabilities: [...row.capabilities, PUBLISH],
+      updatedAt: Date.now(),
+    });
+    granted++;
   }
-  for (const slug of REVOKE_SLUGS) {
-    const rows = await ctx.db
-      .query("seatDefs")
-      .withIndex("by_slug", (q) => q.eq("slug", slug))
-      .collect();
-    for (const row of rows) {
-      const kept = row.capabilities.filter((c) => !PUBLISH_SPELLINGS.has(c));
-      if (kept.length === row.capabilities.length) continue;
-      await ctx.db.patch(row._id, { capabilities: kept, updatedAt: Date.now() });
-      revoked++;
-    }
-  }
-  return { granted, revoked };
+  return { granted, skipped };
 }
 
 export const ledgerPublishToTreasurers: Migration = {
