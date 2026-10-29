@@ -18,6 +18,7 @@ async function seedSeat(
       slug,
       title: slug,
       chart: "central",
+      parentSlug: "root",
       maxHolders: 1,
       duties: [],
       capabilities,

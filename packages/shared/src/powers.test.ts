@@ -395,13 +395,26 @@ describe("ACCESS PRESERVATION — standardizing cost nobody a power", () => {
     production_coordinator: ["events.checkin"],
   };
 
+  /**
+   * Powers taken away ON PURPOSE after standardization, by a later decision —
+   * not by the migration this suite guards. Each entry names the decision.
+   */
+  const DELIBERATELY_REMOVED: Partial<Record<(typeof SEAT_IDS)[number], string[]>> = {
+    // Founder, 2026-10-29: "only the financial manager, treasurer of chapters
+    // and the founder can publish financials publicly".
+    executive_director: ["finance.ledger.publish"],
+    chapter_director: ["finance.ledger.publish"],
+  };
+
   test("no seat lost a power it used to hold", () => {
     for (const seatId of SEAT_IDS) {
       const legacy = LEGACY_BY_SEAT[seatId] ?? [];
+      const removed = new Set(DELIBERATELY_REMOVED[seatId] ?? []);
       // What the OLD strings mean once translated, vs. what the seat grants now.
       const expected = expandPowers(migrateLegacyPowers(legacy));
       const actual = expandPowers(SEAT_DEFS[seatId].capabilities);
       for (const power of expected) {
+        if (removed.has(power)) continue;
         expect(actual.has(power), `${seatId} lost ${power}`).toBe(true);
       }
     }
