@@ -378,6 +378,7 @@ const REGISTRY_NAMES = [
   "0094_blank_event_columns",
   "0095_nyc_listings_apply_by_nov_1",
   "0096_people_associate_and_operations_team",
+  "0097_ledger_publish_to_treasurers",
 ];
 const SEEDED_HISTORICAL = [
   "backfillMissingDefaultColumns",

@@ -154,13 +154,17 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     ],
     // A CENTRAL seat, so every power here reaches central AND every chapter
     // (scope rule 2 — this is what the deleted `finance.central` used to say).
-    // Deliberately NOT `finance.edit`: the ED approves and publishes, they
-    // don't keep the books. That stays the Financial Manager's desk.
+    // Deliberately NOT `finance.edit`: the ED approves, they don't keep the
+    // books. That stays the Financial Manager's desk.
+    //
+    // Deliberately NOT `finance.ledger.publish` either (founder, 2026-10-29:
+    // "only the financial manager, treasurer of chapters and the founder can
+    // publish financials publicly"). The founder publishes through the
+    // superuser short-circuit in `lib/publicLedgerAccess.ts#hasLedgerPublish`,
+    // not through this seat, so a future ED who isn't the founder can't.
     capabilities: [
       "finance.accounts.view",
       "finance.budgets.approve",
-      // The ED speaks for the org, so the ED may publish its books.
-      "finance.ledger.publish",
       "org.chart.edit",
       // F-6 P1: the ED oversees the whole org's giving, including central's.
       "giving.edit",
@@ -217,7 +221,9 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     capabilities: [
       "finance.edit",
       // The FM closes the books monthly (see the duties above), so the FM
-      // publishes them. Its own leaf — `finance.edit` never grants it.
+      // publishes them. Its own leaf — `finance.edit` never grants it. A
+      // CENTRAL seat, so this reaches central's book and every chapter's: the
+      // FM is the second party for a month a Treasurer prepared.
       "finance.ledger.publish",
       "giving.view",
       // Founder requirement (2026-07-24): the FM is one of the org's
@@ -555,13 +561,13 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // rule 1). `finance.view` is read of the whole finance domain at that
     // scope — which is why it needs no carve-out for the org's bank accounts:
     // those live at central, where a chapter grant never reaches (scope rule 3).
+    // No `finance.ledger.publish`: since 2026-10-29 the chapter's Treasurer
+    // publishes its month, not the CD (founder: "only the financial manager,
+    // treasurer of chapters and the founder can publish financials
+    // publicly").
     capabilities: [
       "finance.view",
       "finance.budgets.approve",
-      // Publishes their OWN chapter's month. Pairs with the Treasurer
-      // PREPARING it — the two seats are the two parties, which is exactly
-      // why the Treasurer does not carry this one.
-      "finance.ledger.publish",
       "giving.view",
       "data.export",
       // 2026-08-06: door check-in access for the QR scanner — the CD is one
@@ -573,8 +579,8 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
       // not minting their chapter one; there is exactly one kit and it has no
       // per-chapter copy. That is why this is not a contradiction of "central
       // owns the design system": the CD is trusted with the org's brand, the
-      // way they are already trusted to publish their chapter's month to the
-      // public ledger. The power had to lose `scope: "central"` for this grant
+      // way they are already trusted with their chapter's budgets. The power
+      // had to lose `scope: "central"` for this grant
       // to reach anything at all — see `powers.ts`.
       "marketing.designs.edit",
     ],
@@ -596,7 +602,13 @@ export const SEAT_DEFS: Record<SeatId, SeatDef> = {
     // chapter and nothing beyond it. The org's bank accounts sit at central,
     // so the Treasurer never reaches them — stopped by scope, not by an
     // exception carved into the power (see `powers.ts`'s scope rules).
-    capabilities: ["finance.edit", "giving.view"],
+    //
+    // `finance.ledger.publish` (founder, 2026-10-29): the Treasurer publishes
+    // THIS chapter's month. A chapter seat, so it never reaches another
+    // book. Separation of duties still holds per PERSON — a Treasurer can't
+    // publish a month they submitted, so the Financial Manager (or the
+    // founder) is the second party for those.
+    capabilities: ["finance.edit", "finance.ledger.publish", "giving.view"],
     legacyTitle: "finance_manager",
   },
   music_lead: {

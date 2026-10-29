@@ -36,7 +36,7 @@
  * about a specific row rather than about a person.
  */
 import { v, ConvexError, type Infer } from "convex/values";
-import { internalQuery, mutation, query } from "./_generated/server";
+import { mutation, query } from "./_generated/server";
 import type { MutationCtx, QueryCtx } from "./_generated/server";
 import type { Doc, Id } from "./_generated/dataModel";
 import {
@@ -86,7 +86,6 @@ import type {
   PublicLedgerGift,
 } from "./lib/publicLedgerPage";
 import { isSuperuser } from "./lib/superuser";
-import { newGuestToken } from "./ticketing";
 
 const scopeValidator = v.union(v.id("chapters"), v.literal(CENTRAL));
 const statusValidator = v.union(
@@ -108,19 +107,6 @@ export const PUBLIC_PAGE_ENTRY_LIMIT = 1200;
  *  window itself is derived from the book's earliest transaction — see that
  *  query — so this only bounds a pathological book, never a real calendar. */
 const TEAM_LEDGER_MONTH_CEILING = 60;
-
-/**
- * How long a minted preview token (`mintLedgerPreviewToken`) stays valid.
- *
- * The RSVP admin draft-preview token (`ticketing.ts#ensurePreviewToken`)
- * never expires — it's a permanent secret stamped once on the page and
- * reused on every "Open preview" tap. This one is minted FRESH on every tap
- * of "Preview the page" instead, so there is no reuse to protect, and a
- * short lifetime shrinks what a copied or forwarded preview link is worth.
- * An hour is generous for "look at what I'm about to publish" and short
- * enough that a stale link left in a Slack thread stops working on its own.
- */
-export const LEDGER_PREVIEW_TOKEN_TTL_MS = 60 * 60 * 1000;
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -434,54 +420,6 @@ export const preview = query({
     await requireLedgerConsole(ctx, homeChapterId, scope);
     const sandboxMode = await readSandbox(ctx);
     return totalsOf(await buildSnapshot(ctx, scope, args.periodKey, sandboxMode));
-  },
-});
-
-/**
- * MINT A PREVIEW TOKEN — the door to the FULL rendered page for a working
- * (unpublished) month, not just its totals.
- *
- * `preview` above answers "what are the numbers?"; this is for "show me the
- * actual page." Gated identically (`requireLedgerConsole`) — anyone who can
- * already see the working totals may also see the rendered page, since it
- * carries no information the totals don't already imply. What this adds is a
- * short-lived, unguessable, single-scope+period secret
- * (`LEDGER_PREVIEW_TOKEN_TTL_MS`) that `http.ts`'s `/finances/<month>
- * ?preview=<token>` route can resolve WITHOUT authentication — an HTTP GET
- * carries no Convex session, so the token is what stands in for one, exactly
- * the way `ticketing.ts#ensurePreviewToken`'s draft-preview token does for
- * the RSVP page.
- *
- * Mints a NEW row every call, deliberately not reusing an unexpired one the
- * way `ensurePreviewToken` reuses its permanent token: this one is meant to
- * be minted fresh on every tap, so there's nothing to gain from reuse and
- * one less thing this function needs to look up.
- */
-export const mintLedgerPreviewToken = mutation({
-  args: { scope: v.optional(scopeValidator), periodKey: v.string() },
-  returns: v.object({ token: v.string(), expiresAt: v.number() }),
-  handler: async (ctx, args) => {
-    assertPeriodKey(args.periodKey);
-    const homeChapterId = await requireHomeChapter(ctx);
-    const scope: FinanceScope = args.scope ?? homeChapterId;
-    await requireLedgerConsole(ctx, homeChapterId, scope);
-    // Requires a roster person — safe to call here because
-    // `requireLedgerConsole` above only succeeds when one already exists
-    // (`getFinanceRole` resolves through `viewerPerson`).
-    const personId = await resolveCallerPersonId(ctx, homeChapterId);
-
-    const token = newGuestToken();
-    const now = Date.now();
-    const expiresAt = now + LEDGER_PREVIEW_TOKEN_TTL_MS;
-    await ctx.db.insert("financePublicationPreviewTokens", {
-      token,
-      scope,
-      periodKey: args.periodKey,
-      expiresAt,
-      createdAt: now,
-      createdByPersonId: personId,
-    });
-    return { token, expiresAt };
   },
 });
 
@@ -1465,10 +1403,8 @@ export const publishedYears = query({
   },
 });
 
-/** Every active chapter plus central. Shared by `publicBookCount` (the
- *  public "X of Y books published" disclosure) and the preview route below,
- *  which needs the identical number for the identical disclosure on a month
- *  that hasn't published yet. */
+/** Every active chapter plus central — `publicBookCount`'s answer for the
+ *  public "X of Y books published" disclosure. */
 async function countActiveBooks(ctx: QueryCtx): Promise<number> {
   const chapters = await listActiveChapters(ctx, ROLLUP_SCAN_LIMIT);
   return chapters.length + 1; // + central
@@ -1503,17 +1439,12 @@ export const publicPositionHeadcount = query({
   handler: async (ctx) => positionHeadcount(ctx),
 });
 
-// ── Full-page preview: token → the same HTML publishing would produce ───────
-// `http.ts`'s `/finances/<month>?preview=<token>` route is the only caller.
-// No auth here — the TOKEN is the credential (minted by
-// `mintLedgerPreviewToken`, behind `requireLedgerConsole`), the same
-// arrangement `ticketing.getPublicPage`'s `previewToken` arg uses for the
-// RSVP draft preview.
+// ── Live projection: a draft entry as the public page would print it ────────
 
 /** One `EntryDraft` (the live, unpersisted shape `buildSnapshot` returns) as
  *  a `financePublicationEntries` row would freeze it — same field-by-field
  *  mapping as `toPublicEntry` above, just from the draft instead of the
- *  stored document, because a preview has no stored document to read. */
+ *  stored document, because a live statement has no stored document to read. */
 function draftToPublicEntry(e: EntryDraft): PublicLedgerEntry {
   return {
     occurredAt: e.occurredAt,
@@ -1552,148 +1483,6 @@ function draftToPublicGift(e: EntryDraft): PublicLedgerGift {
   };
 }
 
-/**
- * Resolve a preview token to the SAME shape `publicStatement` returns for a
- * published month — built from `buildSnapshot` against the LIVE books,
- * never from `financePublicationEntries`. `null` for an unknown, expired, or
- * period-mismatched token, indistinguishably, so `http.ts`'s 404 leaks
- * nothing about which case it was.
- *
- * ── FIDELITY TO "WHAT PUBLISHING NOW WOULD PRODUCE" ──────────────────────────
- * The `books[0]` entry mirrors what `publish` would actually write: the next
- * revision number (`(pub.liveRevision ?? 0) + 1`), and — when the month is
- * mid-amendment — the in-flight amendment's reason/note prepended to the
- * REAL amendment log already on record, so a reviewer previewing an
- * amendment sees the exact log the published page would carry, not just the
- * numbers.
- *
- * ── NEVER MORE RESTRICTIVE THAN PUBLISHING'S OWN REFUSAL ─────────────────────
- * Unlike `submit`/`publish`, this does NOT call `assertPublishable`. A
- * `truncated`/`overCap` snapshot still renders — the publish button stays
- * blocked by its own gate (`publish.tsx` already shows that refusal from the
- * numbers-only `preview` query), but LOOKING is never blocked.
- */
-export const previewByToken = internalQuery({
-  args: { token: v.string(), periodKey: v.string() },
-  returns: v.union(
-    v.null(),
-    v.object({
-      periodKey: v.string(),
-      label: v.string(),
-      ...statementShape,
-      totalBooks: v.number(),
-    }),
-  ),
-  handler: async (ctx, args) => {
-    const row = await ctx.db
-      .query("financePublicationPreviewTokens")
-      .withIndex("by_token", (q) => q.eq("token", args.token))
-      .unique();
-    if (!row || row.expiresAt < Date.now()) return null;
-    // A token is minted for exactly one scope+period; a URL naming a
-    // different period than the token was minted for is treated the same as
-    // no token at all rather than silently rendering the token's own period.
-    if (row.periodKey !== args.periodKey) return null;
-
-    const sandboxMode = await readSandbox(ctx);
-    const snapshot = await buildSnapshot(ctx, row.scope, args.periodKey, sandboxMode);
-    const pub = await findPublication(ctx, row.scope, args.periodKey);
-    const bookLabel =
-      row.scope === CENTRAL
-        ? "Central"
-        : ((await ctx.db.get(row.scope))?.name ?? "Chapter");
-    const totalBooks = await countActiveBooks(ctx);
-
-    // Same cap + truncation signal the PUBLIC read applies
-    // (`PUBLIC_PAGE_ENTRY_LIMIT`, via `mergeLive`) — a preview should look
-    // like the page it's a preview OF. `snapshot.entries` is already sorted
-    // ascending by `buildSnapshot`, matching the order the public read's
-    // `by_revision` index would return.
-    const entriesTruncated = snapshot.entries.length > PUBLIC_PAGE_ENTRY_LIMIT;
-    const capped = snapshot.entries.slice(0, PUBLIC_PAGE_ENTRY_LIMIT);
-    const entries = capped
-      .filter((e) => e.kind === "ledger")
-      .map(draftToPublicEntry);
-    const gifts = capped.filter((e) => e.kind === "gift").map(draftToPublicGift);
-
-    const spendByBudget: BudgetRow[] = snapshot.spendByBudget.map((b) => ({
-      label: b.label,
-      allocatedCents: b.allocatedCents ?? null,
-      spentCents: b.spentCents,
-      count: b.count,
-    }));
-
-    const revisions = pub
-      ? await ctx.db
-          .query("financePublicationRevisions")
-          .withIndex("by_publication", (q) => q.eq("publicationId", pub._id))
-          .take(200)
-      : [];
-    const priorAmendments = revisions
-      .filter((r) => r.revision > 1)
-      .sort((a, b) => b.revision - a.revision)
-      .map((r) => ({
-        revision: r.revision,
-        publishedAt: r.publishedAt,
-        reason: r.amendmentReason ?? null,
-        note: r.note ?? null,
-      }));
-    const nextRevision = (pub?.liveRevision ?? 0) + 1;
-    // The in-flight amendment (status `amending`) hasn't published yet, so
-    // it has no row in `financePublicationRevisions` — its reason/note still
-    // live on the publication itself until `publish` moves them.
-    const upcomingAmendment =
-      nextRevision > 1 && pub?.amendmentReason
-        ? [
-            {
-              revision: nextRevision,
-              publishedAt: Date.now(),
-              reason: pub.amendmentReason,
-              note: pub.amendmentNote?.trim() ?? null,
-            },
-          ]
-        : [];
-
-    return {
-      periodKey: args.periodKey,
-      label: periodLabel(args.periodKey),
-      incomeCents: snapshot.incomeCents,
-      expenseCents: snapshot.expenseCents,
-      netCents: snapshot.netCents,
-      incomeByStream: snapshot.incomeByStream,
-      expenseByCategory: snapshot.expenseByCategory,
-      expenseByProject: snapshot.expenseByProject,
-      spendByBudget,
-      reconstructedCount: snapshot.reconstructedCount,
-      reconstructedCents: snapshot.reconstructedCents,
-      undocumentedCount: snapshot.undocumentedCount,
-      undocumentedCents: snapshot.undocumentedCents,
-      uncodedCount: snapshot.uncodedCount,
-      uncodedCents: snapshot.uncodedCents,
-      unexplainedCount: snapshot.unexplainedCount,
-      unexplainedCents: snapshot.unexplainedCents,
-      entryCount: snapshot.entryCount,
-      giftCount: snapshot.giftCount,
-      giverCount: snapshot.giverCount,
-      backerCount: snapshot.backerCount,
-      entriesTruncated,
-      books: [
-        {
-          bookLabel,
-          periodKey: args.periodKey,
-          label: periodLabel(args.periodKey),
-          revision: nextRevision,
-          publishedAt: Date.now(),
-          amendments: [...upcomingAmendment, ...priorAmendments],
-        },
-      ],
-      entries,
-      gifts,
-      totalBooks,
-    };
-  },
-});
-
 // ── The TEAM statement: the same ledger, in-app, for everyone on the roster ──
 /**
  * THE BOOKS, FOR THE TEAM (2026-08-30).
@@ -1704,10 +1493,10 @@ export const previewByToken = internalQuery({
  *
  * ── WHY THIS REUSES THE PUBLIC PROJECTION EXACTLY ───────────────────────────
  *
- * This is `previewByToken`'s twin: the same `buildSnapshot` over the LIVE
- * books, the same `draftToPublicEntry` mapping, the same `statementShape`. The
- * only difference is the credential — a roster profile instead of a minted
- * token.
+ * The same `buildSnapshot` over the LIVE books that `publish` freezes, the
+ * same `draftToPublicEntry` mapping, the same `statementShape` the public
+ * page reads. (The publish console's full-page draft preview used to share
+ * this projection too; it was removed on 2026-10-29.)
  *
  * That reuse IS the redaction guarantee, and it is the reason this query lives
  * here rather than in a new member-facing module with a hand-written

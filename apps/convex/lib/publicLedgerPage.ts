@@ -219,29 +219,13 @@ const money = (cents: number) => formatCents(cents, { showCents: true });
 
 // ── Page shell ───────────────────────────────────────────────────────────────
 
-/** The banner text a preview render is required to carry, unmodified — the
- *  test suite pins this exact string. */
-export const PREVIEW_BANNER_TEXT =
-  "PREVIEW — not published. This is what the page will look like; numbers reflect the books right now.";
-
 function shell(opts: {
   title: string;
   description: string;
   body: string;
   canonicalPath: string;
-  /** Draft-preview mode (`renderLedgerPage`'s `opts.preview`): stamps
-   *  `noindex` and a fixed banner, and is the ONLY thing this function
-   *  changes about its output — absent, the page is byte-identical to before
-   *  this option existed. */
-  preview?: boolean;
 }): string {
   const url = `${siteUrl()}${opts.canonicalPath}`;
-  const robots = opts.preview
-    ? `\n<meta name="robots" content="noindex">`
-    : "";
-  const banner = opts.preview
-    ? `<div class="previewbanner">${esc(PREVIEW_BANNER_TEXT)}</div>`
-    : "";
   return `<!doctype html><html lang="en"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
@@ -252,12 +236,12 @@ function shell(opts: {
 <meta property="og:title" content="${esc(opts.title)}">
 <meta property="og:description" content="${esc(opts.description)}">
 <meta property="og:url" content="${esc(url)}">
-<meta name="twitter:card" content="summary">${robots}
+<meta name="twitter:card" content="summary">
 ${FAVICON}${FONTS}
 <style>${BASE_CSS}${LEDGER_CSS}</style>
 </head><body>
-<main${opts.preview ? ` class="haspreview"` : ""}>
-${banner}<div class="topbar">
+<main>
+<div class="topbar">
   <a class="wordmark" href="/">PUBLIC WORSHIP</a>
   <nav class="topnav">
     <a href="/give">Give</a>
@@ -968,14 +952,6 @@ function howToReadHtml(): string {
 /**
  * The statement page for one month.
  *
- * `opts.preview` is the publish console's "see the full page before you
- * commit" mode (`http.ts`'s `?preview=<token>` route): it stamps the fixed
- * PREVIEW banner + `noindex` (via `shell`) and drops the period picker,
- * whose form would otherwise offer to navigate to a neighboring month that
- * likely isn't published yet — the simplest way to not invite a 404 rather
- * than teaching the picker a second, preview-aware mode. Omitted, this
- * function's output is byte-identical to before `opts` existed.
- *
  * `headcount` is required, not defaulted: a caller that forgot to wire it
  * would otherwise publish a confident grid of zero-holder positions, which is
  * a false statement about the org rather than a missing feature.
@@ -986,24 +962,18 @@ export function renderLedgerPage(
   years: PublishedYear[],
   totalBooks: number,
   headcount: PositionHeadcount,
-  opts: { preview?: boolean } = {},
 ): string {
-  const preview = opts.preview ?? false;
   const body = `
 <div class="hero">
   <h1 class="title serif">Where the money goes</h1>
   <p class="lede">Every dollar Public Worship received and spent in <strong>${esc(statement.label)}</strong> — not a summary of it. Each line shows what we bought, who we bought it from, what it was for, and whether we can produce the receipt.</p>
 </div>
-${
-  preview
-    ? ""
-    : periodPickerHtml({
-        years,
-        months,
-        selectedYear: statement.periodKey.slice(0, 4),
-        selectedMonth: statement.periodKey.slice(5, 7),
-      })
-}
+${periodPickerHtml({
+  years,
+  months,
+  selectedYear: statement.periodKey.slice(0, 4),
+  selectedMonth: statement.periodKey.slice(5, 7),
+})}
 ${statsHtml(statement)}
 ${compensationHtml(headcount)}
 ${disclosuresHtml(statement, totalBooks)}
@@ -1028,7 +998,6 @@ ${howToReadHtml()}
     description: `Every transaction Public Worship made in ${statement.label}: ${money(statement.incomeCents)} in, ${money(statement.expenseCents)} out, published line by line.`,
     canonicalPath: ledgerPath(statement.periodKey),
     body,
-    preview,
   });
 }
 

@@ -849,6 +849,20 @@
  * "what's the FM's actual relationship to a chapter's spending", whose answer
  * the "Trust, not permission" rule two blocks above states verbatim; its
  * content is carried in the new question's explanation, so nothing is lost.
+ *
+ * 2026-10-29, NO PREVIEW, AND FEWER PUBLISHERS (founder: "only the financial
+ * manager, treasurer of chapters and the founder can publish financials
+ * publicly but remove the preview provision altogether"). The full-page
+ * Preview is gone from the month band and the publish panel, and the
+ * Publish finances power moved off the Executive Director and Chapter
+ * Director seats onto each chapter's Treasurer (the Financial Manager keeps
+ * it; the founder publishes as a superuser). Content-only edits:
+ *  - `finance-reconcile-grid`'s "Group by" rule no longer says a band carries
+ *    Preview.
+ *  - `finance-publishing-the-books`'s seat-power rule and its "Who can
+ *    publish a month you prepared?" explanation name the new three. The
+ *    question, options and answer are unchanged: it is still "someone else
+ *    holding the Publish finances power".
  */
 
 import type {
@@ -1774,7 +1788,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Group by is how you get everywhere else",
-        text: "**Group by: Month or Person** bands the rows without filtering anything. A month band carries Preview and Publish. A person band carries Chase. Add **State → Owes a receipt or coding** and you have your chase list, one cardholder per band.",
+        text: "**Group by: Month or Person** bands the rows without filtering anything. A month band carries the month's publication status and Publish. A person band carries Chase. Add **State → Owes a receipt or coding** and you have your chase list, one cardholder per band.",
       },
       {
         kind: "rule",
@@ -2064,9 +2078,10 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
   // ── 36b · Publishing the books ─────────────────────────────────────────────
   // Added 2026-08-11 with the public finances page. It sits immediately after
   // the monthly close because it IS the step after it: close the month, then
-  // decide whether it is ready to be read by strangers. Taught in the
-  // Treasurer course (they prepare it) and the ED course (they publish it),
-  // which is the same two-party split the feature enforces.
+  // decide whether it is ready to be read by strangers. Taught in the shared
+  // `chapter-money-model` course, because it has both audiences: the people
+  // who prepare a month and the people who publish it (since 2026-10-29 the
+  // Financial Manager, a chapter's Treasurer, and the founder).
   {
     slug: "finance-publishing-the-books",
     title: "Publishing the books",
@@ -2085,7 +2100,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "Publishing is its own seat power",
-        text: "It is separate from reconciling, because its audience is outside the org and a published number can't be un-seen. The Executive Director and Financial Manager carry it centrally; a Chapter Director carries it for their own book. The Treasurer, who prepares it, does not. It refuses a self-approval wherever you publish from.",
+        text: "It is separate from reconciling, because its audience is outside the org and a published number can't be un-seen. Only three people can publish: the Financial Manager (any book), a chapter's Treasurer (their own chapter's book), and the founder. Nobody publishes a month they sent for review themselves, so a Treasurer's month goes out under the Financial Manager or the founder.",
       },
       {
         kind: "rule",
@@ -2141,7 +2156,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 2,
         explanation:
-          "Publishing is a separate seat power from reconciling, because a published number can't be un-seen. The ED and Financial Manager carry it centrally; a Chapter Director carries it for their own chapter's book. The Treasurer, who prepares it, does not. The flow that opens over a month band on Transactions is the console's own flow, so it refuses a self-approval the same way.",
+          "Publishing is a separate seat power from reconciling, because a published number can't be un-seen. The Financial Manager carries it for every book, a Treasurer for their own chapter's book, and the founder can always publish. Even a Treasurer can't publish a month they sent for review. The flow that opens over a month band on Transactions is the console's own flow, so it refuses a self-approval the same way.",
       },
       {
         prompt:
@@ -3231,8 +3246,9 @@ export const FINANCES_COURSES: Course[] = [
       // Publishing the books lands HERE rather than in the Treasurer or ED
       // course because it has two audiences and a module belongs to exactly
       // one course (the catalog's keystone invariant). The Treasurer prepares
-      // a month and the ED / FM / Chapter Director publishes it — the
-      // two-party split `finance.ledger.publish` enforces — and all four paths carry
+      // a month and the FM or the founder publishes it (a Treasurer may also
+      // publish a month someone else prepared) — the two-party split
+      // `finance.ledger.publish` enforces — and all four paths carry
       // this shared-foundation course, so one authoring of the rules reaches
       // both sides of that split.
       "finance-publishing-the-books",

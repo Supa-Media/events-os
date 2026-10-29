@@ -18,7 +18,7 @@
  * mutations, same server refusals — one implementation, two frames, exactly
  * the way a row's record is a side panel when wide and a modal otherwise
  * (`ReconcileList.tsx#openRecord`). So the founder publishes from the grid
- * ("preview and publish from the same page") without a second, thinner
+ * ("publish here takes me to a different page entirely") without a second, thinner
  * publish path existing anywhere.
  *
  * TWO CASES STILL ROUTE, and both are about the band being unable to name its

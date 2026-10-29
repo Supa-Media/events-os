@@ -5,9 +5,12 @@
  * This was the body of the publish console (`app/(app)/finances/publish.tsx`)
  * and it still is: the route renders it under its month list, and the
  * Transactions grid renders the SAME component in a modal over a month band
- * (`PublishMonthModal`). Founder, 2026-08-14: "I want to be able to preview
- * and publish from the same page — publish here takes me to a different page
- * entirely."
+ * (`PublishMonthModal`). Founder, 2026-08-14: "publish here takes me to a
+ * different page entirely."
+ *
+ * There is no full-page Preview step (founder, 2026-10-29: "remove the
+ * preview provision altogether"). The figures and disclosures below are not
+ * a preview; they are what a publisher must read before the button.
  *
  * ── WHY EXTRACT RATHER THAN GIVE THE BAND A PUBLISH BUTTON ───────────────────
  * Because the ceremony IS the act. The two-approver handoff and its
@@ -47,7 +50,6 @@ import {
 import { Button, Icon, Select, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
-import { useLedgerPreview } from "../useLedgerPreview";
 import { byMonthHref } from "../byMonthHref";
 
 /** A real chapter's book, or central's — whatever `console_` answered about. */
@@ -104,7 +106,7 @@ export function PublishMonthBody({
    */
   onLeave?: () => void;
 }) {
-  // EVERY call below carries the scope the host resolved. A preview or a
+  // EVERY call below carries the scope the host resolved. A read or a
   // publish that silently retargeted the caller's own chapter would be the
   // worst possible bug on this screen: it would publish one book's money under
   // another book's name.
@@ -117,9 +119,6 @@ export function PublishMonthBody({
   const requestChanges = useMutation(api.publicLedger.requestChanges);
   const startAmendment = useMutation(api.publicLedger.startAmendment);
   const republish = useMutation(api.publicLedger.republish);
-  // Mint-and-open lives in `useLedgerPreview` now — the Explain screen wants
-  // the same button, and this was about to be its second copy.
-  const previewPage = useLedgerPreview();
 
   const router = useRouter();
   const [busy, setBusy] = useState(false);
@@ -148,27 +147,14 @@ export function PublishMonthBody({
     }
   };
 
-  /**
-   * "Preview the page" — the FULL public render of this month, built from the
-   * live books, in a new tab. Works in every working status (draft, in
-   * review, sent back, mid-amendment): the mint only needs console access,
-   * never a publishable snapshot, because looking is not the same commitment
-   * publishing is. Mechanics (and why scope is omitted rather than sent as
-   * `null`) live in `useLedgerPreview`; its own `loading` is deliberately
-   * separate from `busy` so tapping it never looks like it queued behind a
-   * submit/publish that's mid-flight.
-   */
-  const openPreviewPage = () =>
-    previewPage.open({ scope, periodKey: month.periodKey });
-
   const noteTooShort = note.trim().length < MIN_AMENDMENT_NOTE_LENGTH;
 
   return (
     <View className="mt-3 border-t border-border pt-3">
       {preview === undefined ? (
-        <Text className="text-sm text-muted">Building the preview…</Text>
+        <Text className="text-sm text-muted">Adding up the month…</Text>
       ) : preview === null ? (
-        <Text className="text-sm text-muted">Nothing to preview.</Text>
+        <Text className="text-sm text-muted">Nothing to show for this month.</Text>
       ) : (
         <>
           <Figures
@@ -273,26 +259,7 @@ export function PublishMonthBody({
         </>
       )}
 
-      {/* Full page, not just the figures above — works in EVERY working
-          status, because "see what this would look like" is a weaker ask
-          than "publish it" and shouldn't wait for the same readiness. */}
-      <Button
-        title="Preview the page"
-        icon="eye"
-        variant="secondary"
-        size="sm"
-        loading={previewPage.loading}
-        onPress={() => void openPreviewPage()}
-      />
-
-      {/* Two independent failure channels, rendered the same way: the action
-          runner's (`error`) and the preview mint's. They can't both be set by
-          one tap — the preview clears its own on each attempt and never
-          touches `error`. */}
       {error ? <Text className="mt-3 text-sm text-danger">{error}</Text> : null}
-      {previewPage.error ? (
-        <Text className="mt-3 text-sm text-danger">{previewPage.error}</Text>
-      ) : null}
 
       <View className="mt-3 gap-2">
         {(month.status === "draft" ||
@@ -338,8 +305,9 @@ export function PublishMonthBody({
 
         {month.status === "in_review" && !canPublish && (
           <Text className="text-sm text-muted">
-            Waiting on someone with the Publish finances power. You can&apos;t
-            approve a month you prepared.
+            Waiting on someone with the Publish finances power: the Financial
+            Manager, the chapter&apos;s Treasurer, or the founder. Nobody can
+            publish a month they sent for review.
           </Text>
         )}
 

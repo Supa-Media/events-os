@@ -12,8 +12,8 @@ const BOOK = "k17abcdefghijklmnopqrstuvwx" as Id<"chapters">;
 
 describe("publishBandAction", () => {
   test("a named book and a real month publish IN PLACE — the console's flow, over the grid", () => {
-    // THE FOUNDER'S ASK, in one assertion: "I want to be able to preview and
-    // publish from the same page." `in_place` is what mounts
+    // THE FOUNDER'S ASK, in one assertion: "publish here takes me to a
+    // different page entirely." `in_place` is what mounts
     // `PublishMonthModal`, which renders the console's own `PublishMonthBody`
     // — same mutations, same server refusals, no second publish path.
     const action = publishBandAction({

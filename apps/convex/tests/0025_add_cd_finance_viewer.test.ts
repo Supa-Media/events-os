@@ -99,9 +99,8 @@ describe("0025_add_cd_finance_viewer", () => {
     expect(seeded?.capabilities).toEqual([
       "finance.view",
       "finance.budgets.approve",
-      // 2026-08-11: publishes their own chapter's month to the public
-      // finances page.
-      "finance.ledger.publish",
+      // `finance.ledger.publish` left the CD template on 2026-10-29 (the
+      // chapter's Treasurer publishes instead).
       // F-6 P1: chapter-lens giving read on the template.
       "giving.view",
       // 2026-07-31: bulk data export.
@@ -157,7 +156,6 @@ describe("0025_add_cd_finance_viewer", () => {
     expect(def?.capabilities).toEqual([
       "finance.view",
       "finance.budgets.approve",
-      "finance.ledger.publish",
       "giving.view",
       "data.export",
       "events.checkin",
