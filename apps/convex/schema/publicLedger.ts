@@ -489,31 +489,16 @@ export const financePublicationGiverKeys = defineTable({
   .index("by_revision", ["publicationId", "revision"])
   .index("by_year", ["year"]);
 
-// ── Preview tokens: short-lived, single-scope+period, console-only ───────────
+// ── Preview tokens: RETIRED 2026-10-29 ───────────────────────────────────────
 /**
- * Lets the publish console show EXACTLY what publishing right now would
- * produce — the full public page, built from the LIVE books — before a human
- * commits to freezing it.
+ * Backed the publish console's full-page "Preview" of an unpublished month.
+ * Founder, 2026-10-29: "remove the preview provision altogether" — the mint
+ * mutation, the `?preview=<token>` route and both Preview buttons are gone,
+ * and nothing reads or writes this table any more.
  *
- * Modelled on `eventPages.previewToken` (the RSVP admin draft-preview token,
- * `ticketing.ts#ensurePreviewToken`), with one deliberate difference: an RSVP
- * token is a permanent secret stamped once on the page and reused forever. A
- * finance preview token is minted fresh on every tap of "Preview the page"
- * (`publicLedger.ts#mintLedgerPreviewToken`), so there is no reuse to
- * protect, and `expiresAt` (~1 hour, `LEDGER_PREVIEW_TOKEN_TTL_MS`) shrinks
- * what a copied/forwarded preview link is worth.
- *
- * `requireLedgerConsole` gates minting — nothing here is reachable without
- * console access to the book being previewed. The row carries no draft data
- * itself, only the coordinates (`scope`, `periodKey`) the HTTP route needs to
- * rebuild the SAME live snapshot `buildSnapshot` would freeze at publish
- * time. Resolving one never touches `financePublicationEntries` — a preview
- * is read-only and writes nothing, anywhere.
- *
- * An expired row is left in place rather than swept — the route treats
- * "expired" and "never existed" identically (404, no information leak about
- * which), so there is nothing an eager cleanup would buy, and the table is
- * as cheap to leave as `eventPages.previewToken` already is.
+ * The definition stays only because production still holds (expired) rows,
+ * and dropping a non-empty table is a separate, deliberate step: delete the
+ * rows, then this definition, in a later change.
  */
 export const financePublicationPreviewTokens = defineTable({
   /** Crypto-random, unguessable (`newGuestToken`, `ticketing.ts`). The only

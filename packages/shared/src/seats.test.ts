@@ -221,13 +221,14 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
   //     by rule now), `finance.record` was read by nothing, and `nav.*` is
   //     derived from holding any power in the domain.
   const EXPECTED_CAPABILITIES_BY_SEAT: Record<SeatId, readonly string[]> = {
-    // The ED approves and publishes; they deliberately do NOT keep the books
-    // (no `finance.edit` — that is the Financial Manager's desk). Being a
-    // CENTRAL seat, each of these reaches every chapter as well as central.
+    // The ED approves; they deliberately do NOT keep the books (no
+    // `finance.edit` — that is the Financial Manager's desk) and, since
+    // 2026-10-29, do not publish them either (the founder publishes as a
+    // superuser, not through this seat). Being a CENTRAL seat, each of these
+    // reaches every chapter as well as central.
     executive_director: [
       "finance.accounts.view",
       "finance.budgets.approve",
-      "finance.ledger.publish",
       "org.chart.edit",
       "giving.edit",
       "email.campaigns.approve",
@@ -321,9 +322,8 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     // A CHAPTER seat: `finance.view` is read of the whole finance domain at
     // THIS chapter. It needs no carve-out for the org's bank accounts because
     // those live at central, which a chapter grant never reaches.
-    // `finance.ledger.publish` publishes their own chapter's month — paired
-    // with the Treasurer PREPARING it, which is exactly why the Treasurer
-    // below does not carry it.
+    // No `finance.ledger.publish` since 2026-10-29: the chapter's Treasurer
+    // publishes instead.
     // 2026-08-28: `marketing.designs.edit` — founder instruction ("me as
     // executive director and even Chapter Directors can also edit [the brand
     // kit]"). Still ONE brand: the CD edits the org's kit, not a chapter copy,
@@ -333,15 +333,15 @@ describe("spec snapshot (owner-approved taxonomy, 2026-07-16; chapter_director f
     chapter_director: [
       "finance.view",
       "finance.budgets.approve",
-      "finance.ledger.publish",
       "giving.view",
       "data.export",
       "events.checkin",
       "marketing.designs.edit",
     ],
     // `finance.edit` at CHAPTER scope — the whole finance domain for this
-    // chapter and nothing beyond it.
-    treasurer: ["finance.edit", "giving.view"],
+    // chapter and nothing beyond it. `finance.ledger.publish` (2026-10-29):
+    // publishes this chapter's month, never one they submitted themselves.
+    treasurer: ["finance.edit", "finance.ledger.publish", "giving.view"],
     music_lead: [],
     vocal_lead: [],
     band_lead: [],

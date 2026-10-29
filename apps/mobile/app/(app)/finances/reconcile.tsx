@@ -114,7 +114,6 @@ import {
 import { GroupByControl } from "../../../components/finance/reconcile/GroupByControl";
 import { ColumnsControl } from "../../../components/finance/reconcile/ColumnsControl";
 import { UNATTRIBUTED_GROUP_KEY } from "../../../components/finance/reconcile/gridView";
-import { useLedgerPreview } from "../../../components/finance/useLedgerPreview";
 import type { SingleBookScope } from "../../../components/finance/bookScope";
 import { PublishMonthModal } from "../../../components/finance/publish/PublishMonthModal";
 import type { PublishMonthSummary } from "../../../components/finance/publish/PublishMonth";
@@ -807,16 +806,15 @@ function ReconcileGrid() {
   // a place to publish. I should see whether it's published when I look at
   // things by month."
   //
-  // So each month band carries that month's publication STATUS and the two
-  // acts that belong beside it, and BOTH now happen here:
+  // So each month band carries that month's publication STATUS and its
+  // Publish action, which opens the console's OWN month flow in a modal
+  // (`PublishMonthModal` → `PublishMonthBody`). Founder, 2026-08-14: "publish
+  // here takes me to a different page entirely."
   //
-  //  - PREVIEW mints a scoped token and opens the month's real public page.
-  //    It needs only console access and changes nothing. `useLedgerPreview` is
-  //    the same hook the console uses, so the artifact is identical.
-  //  - PUBLISH opens the console's OWN month flow in a modal
-  //    (`PublishMonthModal` → `PublishMonthBody`). Founder, 2026-08-14: "I
-  //    want to be able to preview and publish from the same page — publish
-  //    here takes me to a different page entirely."
+  // There is no Preview beside it any more. Founder, 2026-10-29: "remove the
+  // preview provision altogether." The modal still shows the month's figures
+  // and every disclosure before its Publish button is reachable — that is
+  // the publish ceremony, not a preview of it.
   //
   // Publish used to ROUTE to `/finances/publish`, on the reasoning that the
   // two-approver state machine — separation of duties (the submitter may not
@@ -840,7 +838,7 @@ function ReconcileGrid() {
   // the failure that locked the founder out for a night (2026-08-11/12).
   const canUseLedgerConsole = reconcile?.viewerCanUseLedgerConsole ?? false;
   // ── A FILTERED BAND IS MADE TRUTHFUL, NOT MUTE ────────────────────────────
-  // #707 WITHHELD Preview and Publish whenever the grid was narrowed, and the
+  // #707 WITHHELD the band's actions whenever the grid was narrowed, and the
   // reasoning was sound as far as it went: a band's count and total describe
   // the MATCH SET, publishing acts on the WHOLE MONTH, and "March 2025 · 12
   // charges · -$4,102" beside a button that puts ~300 rows and -$88,201 on
@@ -866,17 +864,15 @@ function ReconcileGrid() {
   // ── THE ONE BOOK THE CONSOLE IS ABOUT ─────────────────────────────────────
   // `null` means "this grid is showing several books at once", and ONLY that.
   //
-  // It used to mean "the caller's own desk", because `console_` and the
-  // preview mint both default to the caller's home chapter when handed no
-  // scope. That was fine while `null` only fed those defaults — and became a
+  // It used to mean "the caller's own desk", because `console_` defaults to
+  // the caller's home chapter when handed no scope. That was fine while `null` only fed those defaults — and became a
   // bug the moment the month band started BRANCHING on it (#724, to stop the
   // merged queue printing one book's publication status over rows from
   // several). A treasurer standing on their own chapter has
   // `centralScope === false` and `targetChapterId === null` — the peek param
   // is only set when looking at SOMEBODY ELSE's chapter — so the band read
-  // them as the ambiguous case and withheld the status badge and Preview from
-  // the commonest scope in the app. Founder: "I can't see a quick preview
-  // button anymore."
+  // them as the ambiguous case and withheld the status badge from the
+  // commonest scope in the app.
   //
   // So the caller's own chapter is now named explicitly. The only scope that
   // still resolves to `null` is the merged all-books queue, where a month band
@@ -905,7 +901,6 @@ function ReconcileGrid() {
     for (const month of ledgerConsole?.months ?? []) m.set(month.periodKey, month);
     return m;
   }, [ledgerConsole]);
-  const previewPage = useLedgerPreview();
   /**
    * WHICH MONTH IS BEING PUBLISHED, if any — a period key, never a copy of the
    * month. The modal re-reads `publicationByPeriod` on every render, so a
@@ -1028,8 +1023,7 @@ function ReconcileGrid() {
    *   Chase receipts                    →  Group by Person, and the band's own
    *                                        "Send reminder" per cardholder
    *   Publish a month                   →  Group by Month, where each band
-   *                                        carries its status, Preview and
-   *                                        Publish
+   *                                        carries its status and Publish
    *
    * EVERY URL STILL RESOLVES. `?filters=`, `?group=`, `?sort=`, `?dir=` are
    * read exactly as before, so the `/finances/explain` redirect and the
@@ -2443,7 +2437,7 @@ function ReconcileGrid() {
                   // ── A MONTH WITH NO PUBLICATION ROW IS THE COMMONEST MONTH,
                   // NOT AN ERROR ────────────────────────────────────────────
                   // This used to `return null` when the console had no entry
-                  // for the band's period, which took Preview and Publish away
+                  // for the band's period, which took Publish away
                   // from precisely the months that have never been published —
                   // the ones the buttons exist for. Founder, on the deployed
                   // build: "when I go to the month view, somehow some way all
@@ -2451,7 +2445,7 @@ function ReconcileGrid() {
                   //
                   // A missing row means `draft`: nothing has been built, so
                   // there is no revision and nothing is live. That is a real
-                  // status the badge can state, and both actions still apply.
+                  // status the badge can state, and Publish still applies.
                   const pub = publicationByPeriod.get(group.key) ?? null;
                   const status: PublicationStatus = pub?.status ?? "draft";
                   const badge = publicationBadge({
@@ -2486,34 +2480,6 @@ function ReconcileGrid() {
                       {consoleScope ? (
                         <Badge label={badge.label} tone={badge.tone} />
                       ) : null}
-                      {/* LOOKING, not committing — a mint and an open, which
-                          is why it can happen right here, and why it is offered
-                          on a narrowed grid too: the preview renders the WHOLE
-                          month, which is exactly what the band beside it says
-                          it is about.
-
-                          SINGLE BOOK ONLY, for the same reason the badge is:
-                          a preview renders ONE book's page, and on the merged
-                          queue this band's rows come from several. Minting one
-                          anyway would open a page that silently answered about
-                          the caller's own desk while the reader was looking at
-                          everyone's rows. Publish stays there because it
-                          travels to the console, where a book is named. */}
-                      {consoleScope ? (
-                        <Button
-                          title="Preview"
-                          variant="ghost"
-                          size="sm"
-                          icon="eye"
-                          loading={previewPage.loading}
-                          onPress={() =>
-                            void previewPage.open({
-                              scope: consoleScope,
-                              periodKey: group.key,
-                            })
-                          }
-                        />
-                      ) : null}
                       {/* ── COMMITTING, WITHOUT LEAVING THE PAGE ──────────
                           The console's month flow opens right here
                           (`PublishMonthModal`), because it is the console's
@@ -2521,9 +2487,8 @@ function ReconcileGrid() {
                           amendment reason on a re-publish, the
                           SNAPSHOT_TRUNCATED refusal and every other refusal
                           `publicLedger` raises come with it. Founder,
-                          2026-08-14: "I want to be able to preview and publish
-                          from the same page — publish here takes me to a
-                          different page entirely."
+                          2026-08-14: "publish here takes me to a different
+                          page entirely."
 
                           It used to route, and the reasoning was that the
                           ceremony IS the act and a band-local Publish would

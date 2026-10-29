@@ -30,7 +30,11 @@
  *    grantable and revocable per SEAT at runtime rather than implied by
  *    holding the finance-manager ladder. Same reasoning — and the same
  *    mechanism — as `campaigns.approve`, the other power that publishes to an
- *    outside audience.
+ *    outside audience. Who holds it (founder, 2026-10-29: "only the financial
+ *    manager, treasurer of chapters and the founder can publish financials
+ *    publicly"): the Financial Manager seat (central, so every book), each
+ *    chapter's Treasurer seat (their own book only), and the founder via the
+ *    superuser short-circuit in `hasLedgerPublish`.
  *
  *  - CONSOLE (`requireLedgerConsole`) — read the publish console: statuses,
  *    working snapshots, the amendment log. Finance VIEWER+ at the book, so
@@ -192,10 +196,12 @@ async function holdsPublishSeatAt(
  * central reach means here. A chapter-scope publish seat authorizes only that
  * chapter's own book.
  *
- * Superusers short-circuit, the same solo-operator relaxation `getFinanceRole`
- * already applies — the org has one person in it today, and a two-party gate
- * with nobody to be the second party is a gate that stops the work rather
- * than a gate that protects anything. `assertLedgerSeparationOfDuties` in
+ * Superusers short-circuit. That is how the FOUNDER publishes — deliberately
+ * not through the Executive Director seat, so the power stays with the
+ * founder rather than with whoever holds that seat next. It is also the same
+ * solo-operator relaxation `getFinanceRole` already applies: a two-party
+ * gate with nobody to be the second party is a gate that stops the work
+ * rather than a gate that protects anything. `assertLedgerSeparationOfDuties` in
  * `publicLedger.ts` records which way each decision went (`approvalParty`), so
  * the relaxation is a stated fact on every revision rather than a silent one.
  */
