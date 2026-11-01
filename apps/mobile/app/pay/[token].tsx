@@ -23,7 +23,7 @@
  * repayments page: same job, deliberately less to say.
  */
 import { useMemo, useState } from "react";
-import { Linking, Pressable, ScrollView, Text, View } from "react-native";
+import { Pressable, ScrollView, Text, View } from "react-native";
 import { Stack, useLocalSearchParams } from "expo-router";
 import { useAction, useQuery } from "convex/react";
 import { api } from "@events-os/convex/_generated/api";
@@ -32,6 +32,7 @@ import { formatCents } from "@events-os/shared";
 import { Icon } from "../../components/ui";
 import { colors } from "../../lib/theme";
 import { formatDate } from "../../lib/format";
+import { openCheckoutUrl } from "../../lib/openCheckout";
 
 export default function PublicRepaymentScreen() {
   const { token, paid } = useLocalSearchParams<{ token: string; paid?: string }>();
@@ -156,7 +157,7 @@ function PayBody({
         repaymentIds: selectedIds as Id<"personalRepayments">[],
         method: rail,
       });
-      void Linking.openURL(result.url);
+      await openCheckoutUrl(result.url);
     } catch {
       // No toast machinery on a public page, and nothing useful to say about
       // the internals — one honest line and the button stays live to retry.

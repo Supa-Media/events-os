@@ -57,7 +57,7 @@
  * payer has.
  */
 import { useMemo, useState } from "react";
-import { Linking, Pressable, Text, View } from "react-native";
+import { Platform, Pressable, Text, View } from "react-native";
 import { useAction, useQuery } from "convex/react";
 import { useLocalSearchParams } from "expo-router";
 import type { FunctionReturnType } from "convex/server";
@@ -78,6 +78,7 @@ import {
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { openCheckoutUrl } from "../../../lib/openCheckout";
 
 type Repayment = FunctionReturnType<
   typeof api.cards.myPersonalRepayments
@@ -158,17 +159,21 @@ export default function RepaymentsScreen() {
   async function paySelected() {
     if (selectedIds.length === 0) return;
     setBusy(true);
-    const result = await run(
-      () =>
-        createRepaymentCheckout({
+    // Creating the session and leaving for it are one step, so a failure in
+    // either is surfaced. On web the page navigates away on success, so the
+    // button stays busy rather than flashing back to "Pay" first.
+    const ok = await run(
+      async () => {
+        const result = await createRepaymentCheckout({
           repaymentIds: selectedIds as Id<"personalRepayments">[],
           method: rail,
-        }),
+        });
+        await openCheckoutUrl(result.url);
+        return true;
+      },
       { errorTitle: "Couldn't start checkout" },
     );
-    setBusy(false);
-    if (!result) return;
-    void Linking.openURL(result.url);
+    if (!ok || Platform.OS !== "web") setBusy(false);
   }
 
   if (repayments === undefined) return <Screen loading />;
