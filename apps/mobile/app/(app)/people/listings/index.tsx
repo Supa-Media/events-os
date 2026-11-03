@@ -17,6 +17,7 @@ import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import { ROLE_STATUS_LABELS, type RoleStatus } from "@events-os/shared";
 import { PipelineTabs } from "../../../../components/people/PipelineTabs";
+import { PipelineExportButton } from "../../../../components/people/PipelineExportButton";
 import {
   Badge,
   Button,
@@ -71,6 +72,37 @@ export default function ListingsScreen() {
         <SectionHeader
           title="Job listings"
           count={`${listings.length} posting${listings.length === 1 ? "" : "s"}`}
+          right={
+            <PipelineExportButton
+              build={() => ({
+                name: "job-listings",
+                headers: [
+                  "Title",
+                  "Team",
+                  "Location",
+                  "Status",
+                  "Published",
+                  "Commitment",
+                  "Hours per week",
+                  "Reports to",
+                  "Apply by",
+                  "Link",
+                ],
+                rows: listings.map((l) => [
+                  l.title,
+                  l.team,
+                  l.location,
+                  ROLE_STATUS_LABELS[l.status],
+                  l.published ? "Live" : "Draft",
+                  l.commitment,
+                  l.hoursPerWeek,
+                  l.reportsTo,
+                  l.applyBy ?? "",
+                  `/team/${l.slug}`,
+                ]),
+              })}
+            />
+          }
         />
         <Text className="mb-3 text-sm text-muted">
           What's advertised on the public /team page. Edits go live there

@@ -23,6 +23,7 @@ import { useRouter } from "expo-router";
 import { api } from "@events-os/convex/_generated/api";
 import {
   CLOSED_HIRING_STAGES,
+  HIRING_OUTCOME_DEFS,
   HIRING_STAGE_DEFS,
   OPEN_HIRING_STAGES,
   isStale,
@@ -30,6 +31,10 @@ import {
 } from "@events-os/shared";
 import { stageTone } from "../../../../lib/hiringStage";
 import { PipelineTabs } from "../../../../components/people/PipelineTabs";
+import {
+  PipelineExportButton,
+  csvDate,
+} from "../../../../components/people/PipelineExportButton";
 import {
   Badge,
   Card,
@@ -115,7 +120,51 @@ function PipelineBody() {
     <Screen>
       <Narrow>
         <PipelineTabs />
-        <SectionHeader title="Team applications" count={`${summary.open} open`} />
+        <SectionHeader
+          title="Team applications"
+          count={`${summary.open} open`}
+          right={
+            <PipelineExportButton
+              build={() => ({
+                name: "team-applications",
+                headers: [
+                  "Name",
+                  "Email",
+                  "Phone",
+                  "Location",
+                  "Role",
+                  "Stage",
+                  "Stage since",
+                  "Owner",
+                  "Reviews",
+                  "Open to other roles",
+                  "Other roles ticked",
+                  "Source",
+                  "Outcome",
+                  "Revisit",
+                  "Applied",
+                ],
+                rows: visible.map((r) => [
+                  r.name,
+                  r.email,
+                  r.phone,
+                  r.location,
+                  r.roleTitle,
+                  HIRING_STAGE_DEFS[r.stage as HiringStage].label,
+                  csvDate(r.stageChangedAt),
+                  r.assignedToName ?? "",
+                  r.reviewCount,
+                  r.openToOtherRoles ? "Yes" : "No",
+                  r.otherRoleCount,
+                  r.source,
+                  r.outcome ? HIRING_OUTCOME_DEFS[r.outcome].label : "",
+                  csvDate(r.revisitAt),
+                  csvDate(r.createdAt),
+                ]),
+              })}
+            />
+          }
+        />
         <Text className="mb-3 text-sm text-muted">
           Everyone applying for a SEAT comes through here — one funnel, one
           standard. (Volunteers who just want to help at a gathering are the
