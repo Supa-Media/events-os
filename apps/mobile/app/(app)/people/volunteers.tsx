@@ -34,6 +34,10 @@ import {
   SectionHeader,
 } from "../../../components/ui";
 import { PipelineTabs } from "../../../components/people/PipelineTabs";
+import {
+  PipelineExportButton,
+  csvDate,
+} from "../../../components/people/PipelineExportButton";
 
 const AREA_LABELS: Record<string, string> = Object.fromEntries(
   VOLUNTEER_AREAS.map((a) => [a.id, a.label]),
@@ -141,6 +145,39 @@ function SignupsBody({ canManage }: { canManage: boolean }) {
         <SectionHeader
           title="Volunteer signups"
           count={`${summary.open} open`}
+          right={
+            <PipelineExportButton
+              build={() => ({
+                name: "volunteer-signups",
+                headers: [
+                  "Name",
+                  "Email",
+                  "Phone",
+                  "Location",
+                  "Areas",
+                  "Availability",
+                  "Message",
+                  "Stage",
+                  "Stage since",
+                  "On roster",
+                  "Signed up",
+                ],
+                rows: rows.map((r) => [
+                  r.name,
+                  r.email,
+                  r.phone,
+                  r.location,
+                  r.areas.map((a) => AREA_LABELS[a] ?? a).join("; "),
+                  r.availability,
+                  r.message,
+                  VOLUNTEER_STAGE_DEFS[r.stage as VolunteerStage].label,
+                  csvDate(r.stageChangedAt),
+                  r.personId ? "Yes" : "No",
+                  csvDate(r.createdAt),
+                ]),
+              })}
+            />
+          }
         />
         <Text className="mb-3 text-sm text-muted">
           People who want to help at a gathering, not hold a seat. Reply,
