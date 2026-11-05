@@ -5,8 +5,8 @@
  * it lived at `/finances/my-transactions`, which appeared in the tab bar only
  * for members with NO finance seat. Anyone holding a seat — which is everyone
  * who would ever look at this — could reach it by URL and no other way. So the
- * two halves are one tab now, and `/finances/my-transactions` redirects here
- * rather than the two both existing (CLAUDE.md: remove, don't deprecate).
+ * two halves were made one tab. Since 2026-11-05 `/finances/my-transactions`
+ * is a tab again, on every bar, showing the same list as `/code`.
  *
  * The two audiences, in the order they matter to whoever is looking:
  *

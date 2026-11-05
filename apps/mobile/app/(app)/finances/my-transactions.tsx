@@ -1,30 +1,17 @@
 /**
- * FINANCES · MY TRANSACTIONS — now a redirect to `/finances/coding`.
+ * FINANCES · MY TRANSACTIONS — your own card charges, inside Finances.
  *
- * This screen was the cardholder's desk, and it was invisible: it appeared in
- * the tab bar only for members with NO finance seat, so anyone holding one
- * could reach it by URL and no other way. That's why the owner had never seen
- * it. Its content is now the first half of the Coding tab, alongside the
- * reviewer's queue — one screen, two audiences.
+ * Founder, 2026-11-05: "there is also no finances -> my transaction tab, but
+ * it should probably exist." The chase text told people to open a tab that
+ * wasn't there. This renders the same `MyCharges` list `/code` shows (one
+ * form, see `CodePage`'s doc), so a cardholder already in the app finds it
+ * under Finances. `/code` stays the link we send, since it needs no app chrome.
  *
- * A redirect rather than two screens (CLAUDE.md: remove, don't deprecate). It
- * has to exist because the path is already out in the world: every coding
- * reminder and every send-back email sent to date links to
- * `/finances/my-transactions?filter=uncoded`, and those inboxes don't get
- * rewritten. The query string is carried across so the deep link still lands
- * on the filtered list it promised. New emails point at `/finances/coding`.
+ * `?filter=uncoded` from older reminder emails still works: `MyCharges` reads
+ * it itself.
  */
-import { Redirect, useLocalSearchParams } from "expo-router";
+import { MyCharges } from "../../../components/finance/code/CodePage";
 
-export default function MyTransactionsRedirect() {
-  const params = useLocalSearchParams<{ filter?: string }>();
-  return (
-    <Redirect
-      href={
-        params.filter
-          ? `/finances/coding?filter=${encodeURIComponent(params.filter)}`
-          : "/finances/coding"
-      }
-    />
-  );
+export default function MyTransactionsScreen() {
+  return <MyCharges />;
 }

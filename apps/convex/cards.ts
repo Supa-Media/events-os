@@ -6462,15 +6462,10 @@ export const getManualNudgeStatus = query({
   },
 });
 
-/** Best-effort SMS alongside the chase email, pointing at the text-to-receipt
- *  number (`smsReceipts.ts`) — mirrors `replyToSmsSender`'s shape (no-op
- *  without Twilio configured, swallows its own failures, never throws).
- *  Returns whether it actually attempted (and didn't error on) a send.
- *
- *  The reply-with-a-photo instruction is only appended when a RECEIPT is
- *  actually part of what's missing: texting a photo can't write a business
- *  purpose, and telling someone it will is how a channel loses its
- *  credibility. Coding-only debts point at the app instead. */
+/** Best-effort SMS alongside the chase email, ending in a link to `/code` —
+ *  mirrors `replyToSmsSender`'s shape (no-op without Twilio configured,
+ *  swallows its own failures, never throws). Returns whether it actually
+ *  attempted (and didn't error on) a send. */
 async function sendCodingChaseSms(
   ctx: ActionCtx,
   phone: string,
@@ -6485,9 +6480,12 @@ async function sendCodingChaseSms(
   const count = charges.length;
   const fmt = (c: { amountCents: number; merchantName: string | null }) =>
     `$${(c.amountCents / 100).toFixed(2)}${c.merchantName ? ` at ${c.merchantName}` : ""}`;
-  const closer = charges.some((c) => c.missingReceipt)
-    ? "Reply here with a photo to file a receipt, or open Finances → My Transactions in the app to finish the coding."
-    : "Open Finances → My Transactions in the app to finish the coding.";
+  // A LINK, not "reply with a photo": texted receipts don't reliably land
+  // (founder, 2026-11-05), and the link signs them in and returns them here.
+  const link = appUrl("/code?filter=uncoded");
+  const closer = link
+    ? `Finish them here: ${link}`
+    : "Open Finances → My transactions in the app to finish them.";
   const lead =
     count === 1
       ? `Reminder: ${fmt(charges[0])} ${charges[0].outstanding}.`
