@@ -800,6 +800,56 @@ describe("the chase email itself", () => {
     }
   });
 
+  test("after five follow-ups the chaser is told, once", async () => {
+    const prevResendKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await armCodingPolicy(s);
+      await asManager(s);
+      const ada = await seedCardholder(s, "Ada", {
+        pwEmail: "ada@publicworship.life",
+      });
+      await seedCharge(s, { cardId: ada.cardId, merchantName: "Uber" });
+
+      const sent: { to: string; subject: string }[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        sent.push({ to: body.to, subject: body.subject });
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await s.as.action(api.cards.sendCodingChase, {});
+      // Four follow-ups already went out.
+      await run(t, async (ctx) => {
+        const row = await ctx.db.query("codingChaseFollowUps").first();
+        await ctx.db.patch(row!._id, {
+          chasedAt: Date.now() - 6 * DAY_MS,
+          reminderCount: 4,
+        });
+      });
+      sent.length = 0;
+
+      // The fifth: Ada is reminded and the chaser is told.
+      await t.action(internal.chaseFollowUps.sendDaily, {});
+      expect(sent.map((m) => m.to).sort()).toEqual(
+        ["ada@publicworship.life", s.email].sort(),
+      );
+      expect(sent.find((m) => m.to === s.email)!.subject).toContain(
+        "Ada still hasn't coded",
+      );
+
+      // The sixth: Ada still reminded, the chaser not told again.
+      sent.length = 0;
+      await t.action(internal.chaseFollowUps.sendDaily, {});
+      expect(sent.map((m) => m.to)).toEqual(["ada@publicworship.life"]);
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.RESEND_API_KEY = prevResendKey;
+    }
+  });
+
   test("nothing to chase sends nothing at all", async () => {
     const prevResendKey = process.env.RESEND_API_KEY;
     process.env.RESEND_API_KEY = "resend_test_key";

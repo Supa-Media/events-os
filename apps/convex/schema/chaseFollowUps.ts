@@ -20,6 +20,13 @@ export const codingChaseFollowUps = defineTable({
   chasedAt: v.number(),
   /** Last automatic follow-up sent, if any. */
   lastRemindedAt: v.optional(v.number()),
+  /** Follow-ups sent since the last chase. A new chase resets it. */
+  reminderCount: v.optional(v.number()),
+  /** Who chased: told by email once the charge has had
+   *  `ESCALATE_AFTER_REMINDERS` follow-ups and is still open. */
+  chasedByUserId: v.optional(v.id("users")),
+  /** When the chaser was told, so they are told once per chase. */
+  escalatedAt: v.optional(v.number()),
   /** What the manager said when chasing, repeated in each follow-up. */
   reasons: v.optional(v.array(v.string())),
   note: v.optional(v.string()),

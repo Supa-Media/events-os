@@ -1898,7 +1898,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "The chase is two controls, not a screen",
-        text: "There is no Chase Receipts page or menu entry. Put **State → Owes a receipt or coding** on top of **Group by → Person**, and each cardholder's band gets a Chase button. The chase acts on your current view: filters, search, and any ticked rows. Ticked rows are the narrowest, so they win. Pressing Chase asks why first: tick reasons like Receipt missing or Explanation too vague, and add a note. They go into the email and text, and a reminder follows every day until each charge is coded. You get one chase per cardholder per 24 hours, so narrow it before you press.",
+        text: "There is no Chase Receipts page or menu entry. Put **State → Owes a receipt or coding** on top of **Group by → Person**, and each cardholder's band gets a Chase button. The chase acts on your current view: filters, search, and any ticked rows. Ticked rows are the narrowest, so they win. Pressing Chase asks why first: tick reasons like Receipt missing or Explanation too vague, and add a note. They go into the email and text, and a reminder follows every day until each charge is coded. After five reminders, you get an email naming who is still open. You get one chase per cardholder per 24 hours, so narrow it before you press.",
       },
       {
         kind: "rule",
