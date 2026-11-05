@@ -84,6 +84,8 @@ const followUpTargetValidator = v.object({
   rowIds: v.array(v.id("codingChaseFollowUps")),
 });
 
+type FollowUpTarget = typeof followUpTargetValidator.type;
+
 /** Who gets a follow-up today, and which rows are settled and can go. */
 export const gather = internalQuery({
   args: {},
@@ -184,11 +186,14 @@ export const finish = internalMutation({
 export const sendDaily = internalAction({
   args: {},
   returns: v.object({ reminded: v.number(), settled: v.number() }),
-  handler: async (ctx) => {
-    const { targets, settledIds } = await ctx.runQuery(
-      internal.chaseFollowUps.gather,
-      {},
-    );
+  // Explicit types: this action reads `internal.chaseFollowUps`, whose type
+  // includes this action, so inference would be circular.
+  handler: async (ctx): Promise<{ reminded: number; settled: number }> => {
+    const gathered: {
+      targets: FollowUpTarget[];
+      settledIds: Id<"codingChaseFollowUps">[];
+    } = await ctx.runQuery(internal.chaseFollowUps.gather, {});
+    const { targets, settledIds } = gathered;
     const remindedIds: Id<"codingChaseFollowUps">[] = [];
     let reminded = 0;
     for (const t of targets) {
