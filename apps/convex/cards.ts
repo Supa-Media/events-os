@@ -6644,7 +6644,7 @@ async function notifyCodingChase(
 export const sendCodingChase = action({
   args: {
     personId: v.optional(v.id("people")),
-    scope: v.optional(v.literal("central")),
+    scope: v.optional(v.union(v.literal("central"), v.literal("all"))),
     chapterId: v.optional(v.id("chapters")),
     // THE VIEW, forwarded verbatim — see `finances.getCodingChaseTargets`.
     filters: v.optional(v.array(reconcileFilterValidator)),

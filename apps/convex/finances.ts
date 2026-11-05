@@ -11244,7 +11244,7 @@ export const receiptChase = query({
  * rows are ON SCREEN; the server says, independently, whether each one is
  * chaseable and who owns it:
  *
- *  · the ids only ever narrow a set this query loaded itself, from the ONE book
+ *  · the ids only ever narrow a set this query loaded itself, from the books
  *    `requireCodingChase` authorized — an id from another book (or a fabricated
  *    one) simply never appears in the scan and cannot widen anything;
  *  · every surviving row must still pass {@link chaseOutstandingFor}, so a row
@@ -11258,12 +11258,14 @@ export const receiptChase = query({
  * looking at the screen and we cannot re-derive their intent), the ELIGIBILITY
  * and the RECIPIENT are the server's.
  *
- * ## What is deliberately not here
+ * ## All books
  *
- * ALL-BOOKS. `requireCodingChase` resolves one book and has no merged branch —
- * see its doc. Manager-gated at every branch, one bounded scan, no writes: this
- * is internal, and `cards.sendCodingChase` (which does the mailing and the
- * rate-limiting) is its only caller.
+ * `scope:"all"` reads central + every active chapter, the same books the merged
+ * grid shows, and needs a central manager (`requireCodingChase`). A person's
+ * band there spans books, and so does their chase. Manager-gated at every
+ * branch, one bounded scan per book, no writes: this is internal, and
+ * `cards.sendCodingChase` (which does the mailing and the rate-limiting) is its
+ * only caller.
  */
 export const getCodingChaseTargets = internalQuery({
   args: {
@@ -11273,7 +11275,7 @@ export const getCodingChaseTargets = internalQuery({
     // The book, resolved by `requireCodingChase` — the same `scope`/`chapterId`
     // pair the grid reads its rows with, so a central desk chases the book on
     // screen and never falls back to the caller's own chapter.
-    scope: v.optional(v.literal("central")),
+    scope: v.optional(v.union(v.literal("central"), v.literal("all"))),
     chapterId: v.optional(v.id("chapters")),
     // ── THE VIEW ──────────────────────────────────────────────────────────
     // The same three narrowings `listReconcile` takes, meaning exactly what
@@ -11292,7 +11294,7 @@ export const getCodingChaseTargets = internalQuery({
   returns: v.array(chaseTargetValidator),
   handler: async (ctx, args): Promise<ChaseTarget[]> => {
     const homeChapterId = (await requireChapterId(ctx)) as Id<"chapters">;
-    const book = await requireCodingChase(ctx, homeChapterId, {
+    const books = await requireCodingChase(ctx, homeChapterId, {
       scope: args.scope,
       chapterId: args.chapterId,
     });
@@ -11310,31 +11312,38 @@ export const getCodingChaseTargets = internalQuery({
     // same arguments — including the period window, so a grid narrowed to one
     // month chases that month. An `excluded` row is never in the reconcile
     // inbox and so is never chaseable.
-    let all: Doc<"transactions">[];
-    if (args.year != null) {
-      const ytd = args.period === "ytd" || args.month == null;
-      const dp: DashPeriod = { year: args.year, month: args.month ?? 12, ytd };
-      all = (
-        await loadPeriodTxns(
-          ctx,
-          book,
-          args.year,
-          sandboxMode,
-          !ytd ? args.month : undefined,
-        )
-      )
-        .filter((tr) => inDashRange(tr.postedAt, dp))
-        .filter((tr) => tr.status !== "excluded");
-    } else {
-      all = (
-        await ctx.db
-          .query("transactions")
-          .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
-          .order("desc")
-          .take(ROLLUP_SCAN_LIMIT)
-      )
-        .filter((tr) => txnMatchesMode(tr, sandboxMode))
-        .filter((tr) => tr.status !== "excluded");
+    // Every book the gate approved — one, or all of them for the merged queue.
+    const all: Doc<"transactions">[] = [];
+    for (const book of books) {
+      if (args.year != null) {
+        const ytd = args.period === "ytd" || args.month == null;
+        const dp: DashPeriod = { year: args.year, month: args.month ?? 12, ytd };
+        all.push(
+          ...(
+            await loadPeriodTxns(
+              ctx,
+              book,
+              args.year,
+              sandboxMode,
+              !ytd ? args.month : undefined,
+            )
+          )
+            .filter((tr) => inDashRange(tr.postedAt, dp))
+            .filter((tr) => tr.status !== "excluded"),
+        );
+      } else {
+        all.push(
+          ...(
+            await ctx.db
+              .query("transactions")
+              .withIndex("by_chapter_and_postedAt", (q) => q.eq("chapterId", book))
+              .order("desc")
+              .take(ROLLUP_SCAN_LIMIT)
+          )
+            .filter((tr) => txnMatchesMode(tr, sandboxMode))
+            .filter((tr) => tr.status !== "excluded"),
+        );
+      }
     }
 
     // The `personal_unpaid` flag needs the linked repayment's LIVE status, so
@@ -11369,8 +11378,13 @@ export const getCodingChaseTargets = internalQuery({
       : activeFilters;
 
     const cardholders = makeCardholderResolver(ctx);
-    const bookName =
-      book === CENTRAL ? "Central" : ((await ctx.db.get(book))?.name ?? "Chapter");
+    const bookNames = new Map<string, string>();
+    for (const book of books) {
+      bookNames.set(
+        book,
+        book === CENTRAL ? "Central" : ((await ctx.db.get(book))?.name ?? "Chapter"),
+      );
+    }
     const matchesSearch = async (tr: Doc<"transactions">): Promise<boolean> => {
       if (!searching) return true;
       return matchesReconcileSearch(
@@ -11380,7 +11394,7 @@ export const getCodingChaseTargets = internalQuery({
           description: tr.description ?? null,
           cardholderName: await cardholders.resolveName(tr),
           cardLast4: tr.cardLast4 ?? null,
-          bookName,
+          bookName: bookNames.get(tr.chapterId) ?? "Chapter",
           amountCents: tr.amountCents,
         },
         searchTerms,

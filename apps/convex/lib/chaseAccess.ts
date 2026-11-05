@@ -48,6 +48,8 @@
 import { financeRoleAtLeast } from "@events-os/shared";
 import type { Id } from "../_generated/dataModel";
 import type { QueryCtx } from "../_generated/server";
+import { CENTRAL } from "@events-os/shared";
+import { listActiveChapters } from "./chapters";
 import {
   getFinanceRole,
   requireCentralFinanceRole,
@@ -55,12 +57,12 @@ import {
   type FinanceScope,
 } from "./finance";
 
-/** Which book a chase is aimed at, in the vocabulary the grid sends: absent =
+/** Which books a chase is aimed at, in the vocabulary the grid sends: absent =
  *  the caller's own chapter, `scope:"central"` = central's own book, a
- *  `chapterId` = that chapter's book (a central desk peeking at one). There is
- *  deliberately NO all-books form — see `requireCodingChase`. */
+ *  `chapterId` = that chapter's book (a central desk peeking at one), and
+ *  `scope:"all"` = central + every active chapter (the merged queue). */
 export interface CodingChaseScopeArgs {
-  scope?: "central";
+  scope?: "central" | "all";
   chapterId?: Id<"chapters">;
 }
 
@@ -81,6 +83,7 @@ export async function hasCodingChase(
   const access = await getFinanceRole(ctx, homeChapterId);
   const peeking =
     args.scope === "central" ||
+    args.scope === "all" ||
     (args.chapterId != null && args.chapterId !== homeChapterId);
   if (peeking)
     return access.isCentral && financeRoleAtLeast(access.role, "manager");
@@ -88,28 +91,35 @@ export async function hasCodingChase(
 }
 
 /**
- * The `require` half — assert the caller may chase in this book, and RETURN the
- * book so the caller reads the same one the gate approved.
+ * The `require` half — assert the caller may chase in these books, and RETURN
+ * the books so the caller reads the same ones the gate approved.
  *
- * ONE BOOK, ALWAYS. There is no all-books branch and adding one is a change to
- * a manager-gated write path, not a rendering decision: a merged queue's person
- * bands span several books, and a chase fired from there would mail whichever
- * book this function happened to pick while the reader was looking at
- * everyone's rows. The grid withholds the buttons and prints why instead.
+ * ALL BOOKS (founder, 2026-11-05: "I need the chase button to be on all books
+ * as well"). The merged queue is the view a central desk opens by default, so
+ * hiding the chase there hid it where people looked first. It needs a CENTRAL
+ * manager, the same rank that may chase any single foreign book, so it grants
+ * nothing a central manager couldn't already do one book at a time. Each
+ * cardholder is still resolved from their own rows, so a person is mailed about
+ * exactly the charges they made, in whichever book those sit.
  */
 export async function requireCodingChase(
   ctx: QueryCtx,
   homeChapterId: Id<"chapters">,
   args: CodingChaseScopeArgs,
-): Promise<FinanceScope> {
+): Promise<FinanceScope[]> {
+  if (args.scope === "all") {
+    await requireCentralFinanceRole(ctx, homeChapterId, "manager");
+    const chapters = await listActiveChapters(ctx);
+    return [CENTRAL, ...chapters.map((c) => c._id)];
+  }
   if (args.scope === "central") {
     await requireCentralFinanceRole(ctx, homeChapterId, "manager");
-    return "central";
+    return [CENTRAL];
   }
   if (args.chapterId != null && args.chapterId !== homeChapterId) {
     await requireCentralFinanceRole(ctx, homeChapterId, "manager");
-    return args.chapterId;
+    return [args.chapterId];
   }
   await requireFinanceManager(ctx, homeChapterId);
-  return args.chapterId ?? homeChapterId;
+  return [args.chapterId ?? homeChapterId];
 }
