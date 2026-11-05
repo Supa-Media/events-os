@@ -1,6 +1,6 @@
 /// <reference types="vite/client" />
 import { describe, expect, test } from "vitest";
-import { DAY_MS } from "@events-os/shared";
+import { CENTRAL, DAY_MS } from "@events-os/shared";
 import {
   newT,
   run,
@@ -582,6 +582,67 @@ describe("getCodingChaseTargets — the gate and the edges", () => {
       "Middling",
       "Small",
     ]);
+  });
+});
+
+// ── ALL BOOKS ────────────────────────────────────────────────────────────────
+describe("getCodingChaseTargets — the merged all-books queue", () => {
+  async function asCentralManager(s: ChapterSetup): Promise<void> {
+    const personId = await asManager(s);
+    await run(s.t, async (ctx) => {
+      const role = await ctx.db
+        .query("financeRoles")
+        .withIndex("by_person", (q) => q.eq("personId", personId))
+        .first();
+      if (role) await ctx.db.patch(role._id, { scope: "central" });
+    });
+  }
+
+  test("a central manager chases every book, each person about their own rows", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    const other = await setupChapter(t, {
+      email: "dmv@publicworship.life",
+      chapterName: "DMV",
+    });
+    await armCodingPolicy(s);
+    await asCentralManager(s);
+
+    const ada = await seedCardholder(s, "Ada", { pwEmail: "ada@publicworship.life" });
+    await seedCharge(s, { cardId: ada.cardId, merchantName: "NYC Deli" });
+    // Ada's card, but a Central-owned row.
+    await run(t, (ctx) =>
+      ctx.db.insert("transactions", {
+        chapterId: CENTRAL,
+        source: "manual",
+        flow: "outflow",
+        amountCents: 4200,
+        postedAt: Date.now(),
+        merchantName: "Central Print",
+        cardId: ada.cardId,
+        status: "unreviewed",
+        createdAt: Date.now(),
+      }),
+    );
+    const bea = await seedCardholder(other, "Bea", { pwEmail: "bea@publicworship.life" });
+    await seedCharge(other, { cardId: bea.cardId, merchantName: "DMV Diner" });
+
+    const targets = await s.as.query(internal.finances.getCodingChaseTargets, {
+      scope: "all",
+    });
+    const byName = new Map(targets.map((tg) => [tg.cardholderName, tg]));
+    expect(chargesOf([byName.get("Ada")!])).toEqual(["Central Print", "NYC Deli"]);
+    expect(chargesOf([byName.get("Bea")!])).toEqual(["DMV Diner"]);
+  });
+
+  test("a chapter manager cannot chase all books", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await armCodingPolicy(s);
+    await asManager(s);
+    await expect(
+      s.as.query(internal.finances.getCodingChaseTargets, { scope: "all" }),
+    ).rejects.toThrow();
   });
 });
 

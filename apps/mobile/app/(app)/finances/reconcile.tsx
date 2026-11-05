@@ -728,20 +728,16 @@ function ReconcileGrid() {
   // derivation of "what is on screen", so the list, the count and the email
   // cannot point at three different places.
   //
-  // ONE BOOK AT A TIME, AND SAID OUT LOUD. `requireCodingChase` resolves a
-  // SINGLE book — it has no "all" branch, and giving it one is a change to a
-  // manager-gated WRITE path, not a rendering decision. So in the merged
-  // all-books queue the buttons are withheld and the reason is printed, rather
-  // than chasing a narrower set than the bands on screen describe.
-  //
-  // That is deliberately NOT what the screen it replaces did: `receipt-chase.tsx`
-  // silently degraded `?scope=all` to the caller's own chapter for BOTH the list
-  // and the nudge, so a dual-hat FM looking at "everyone who owes a receipt"
-  // was in fact looking at, and reminding, one book. Withholding a button beats
-  // firing a narrower one than the page implies.
+  // ALL BOOKS TOO (founder, 2026-11-05: "I need the chase button to be on all
+  // books as well"). The merged queue sends `scope:"all"`, which the server
+  // gates on a central manager (`lib/chaseAccess.ts#requireCodingChase`) and
+  // reads across every book, so a person's band and their chase cover the same
+  // rows. It replaced a note telling the reader to pick one book first.
   const chaseArgs = useMemo(
     () => ({
-      ...(centralScope
+      ...(allBooksScope
+        ? { scope: "all" as const }
+        : centralScope
         ? { scope: "central" as const }
         : targetChapterId
           ? { chapterId: targetChapterId }
@@ -757,6 +753,7 @@ function ReconcileGrid() {
         : {}),
     }),
     [
+      allBooksScope,
       centralScope,
       targetChapterId,
       filters,
@@ -767,9 +764,9 @@ function ReconcileGrid() {
       periodMode,
     ],
   );
-  /** Can this view chase at all? Manager rank AND a single book — see
-   *  `chaseArgs`. */
-  const canNudgeHere = isManager && !allBooksScope;
+  /** Can this view chase at all? Manager rank — the server re-asserts it per
+   *  book, central manager for all books. */
+  const canNudgeHere = isManager;
   // Only while actually grouped by person — a month band has nobody to chase,
   // and probing the rate limit for a view that shows no buttons is a query per
   // keystroke for nothing.
@@ -1857,19 +1854,6 @@ function ReconcileGrid() {
           {/* The chase's own outcome line. Deliberately NOT the error toast:
               "has no email on file" is information, not a failure, and
               rendering it red would teach people to distrust the button. */}
-          {/* WHY THERE IS NO BUTTON. A manager looking at the by-person chase in
-              the merged queue would otherwise just find the chase missing,
-              with nothing on screen saying that picking a book brings it
-              back. The books selector is directly below. */}
-          {isManager && chasingByPerson && allBooksScope ? (
-            <View className="mb-3 flex-row items-center gap-2">
-              <Icon name="info" size={14} color={colors.muted} />
-              <Text className="flex-1 text-xs text-muted">
-                A chase goes to one book&apos;s cardholders at a time — pick
-                Central or a chapter below to send it.
-              </Text>
-            </View>
-          ) : null}
           {nudgeNotice ? (
             <View className="mb-3 flex-row items-center gap-2 rounded-md border border-border bg-sunken px-3 py-2.5">
               <Text className="flex-1 text-sm text-ink">{nudgeNotice}</Text>
