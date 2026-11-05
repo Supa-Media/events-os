@@ -35,6 +35,7 @@ import { api } from "@events-os/convex/_generated/api";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Button, Icon, Radio, RadioGroup, TextField } from "../../ui";
 import { colors } from "../../../lib/theme";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 
 export function ReceiptExceptionModal({
   amountCents,
@@ -138,20 +139,14 @@ export function ReceiptExceptionModal({
   // also takes PDFs, for a statement page) or the native image picker.
   function pickEvidence() {
     if (Platform.OS === "web") {
-      if (typeof document === "undefined") return;
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*,application/pdf";
-      input.onchange = () => {
-        const file = input.files?.[0];
+      void openWebFilePicker({ accept: "image/*,application/pdf" }).then(([file]) => {
         if (!file) return;
         void uploadBlob(
           file,
           file.type || "application/octet-stream",
           URL.createObjectURL(file),
         );
-      };
-      input.click();
+      });
       return;
     }
     void (async () => {

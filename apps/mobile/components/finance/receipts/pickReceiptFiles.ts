@@ -14,6 +14,7 @@ import { Platform } from "react-native";
 import type { Id } from "@events-os/convex/_generated/dataModel";
 // expo-image-picker is Expo Go-safe (classified `core`); only used on native.
 import * as ImagePicker from "expo-image-picker";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 
 /** One file the human picked. `filename` is `null` only when there genuinely
  *  isn't one (a native camera-roll pick). */
@@ -25,24 +26,15 @@ export type PickedReceiptFile = {
 
 const RECEIPT_ACCEPT = "image/*,application/pdf";
 
-function pickWeb(accept: string): Promise<PickedReceiptFile[]> {
-  return new Promise((resolve) => {
-    if (typeof document === "undefined") return resolve([]);
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = accept;
-    input.multiple = true;
-    input.onchange = () => {
-      resolve(
-        Array.from(input.files ?? []).map((file) => ({
-          blob: file as Blob,
-          contentType: file.type || "application/octet-stream",
-          filename: file.name || null,
-        })),
-      );
-    };
-    input.click();
-  });
+async function pickWeb(accept: string): Promise<PickedReceiptFile[]> {
+  // Attached-input chooser: a detached one never fires `change` on iPhone
+  // Safari (see `openWebFilePicker`).
+  const files = await openWebFilePicker({ accept, multiple: true });
+  return files.map((file) => ({
+    blob: file as Blob,
+    contentType: file.type || "application/octet-stream",
+    filename: file.name || null,
+  }));
 }
 
 async function pickNative(): Promise<PickedReceiptFile[]> {

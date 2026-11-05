@@ -36,6 +36,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import * as ImagePicker from "expo-image-picker";
 import { Badge, Icon } from "../../ui";
 import { colors } from "../../../lib/theme";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 import type { ActionRunner } from "../../../lib/useActionToast";
 
 /** `receipts.submitUploadedReceipts`'s own per-call cap — mirrored here so a
@@ -99,14 +100,11 @@ export function UploadZone({
   }
 
   function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.accept = "image/*,application/pdf";
-    input.onchange = () => {
-      const fileList = input.files;
-      if (!fileList || fileList.length === 0) return;
-      const files = Array.from(fileList).map((f) => ({
+    // Attached-input chooser: a detached one never fires `change` on iPhone
+    // Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: "image/*,application/pdf", multiple: true }).then((fileList) => {
+      if (fileList.length === 0) return;
+      const files = fileList.map((f) => ({
         blob: f as Blob,
         // NOT `|| "image/jpeg"`: a browser that reports no type on a PDF would
         // have had it stored as a JPEG, and the stored content type is the
@@ -117,8 +115,7 @@ export function UploadZone({
         name: f.name,
       }));
       void uploadFiles(files);
-    };
-    input.click();
+    });
   }
 
   async function pickNative() {
