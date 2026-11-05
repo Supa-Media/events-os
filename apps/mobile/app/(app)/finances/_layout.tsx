@@ -116,8 +116,16 @@ const LEDGER_TAB: Tab = { label: "Ledger", path: "/finances/ledger" };
 // backfill, the receipt chase — and "reconcile" names only one of them (close
 // the month). The org already says "book" for this ("all books", "Central's
 // book", "which book are we publishing"), so the word costs nobody a lesson.
+/** Your own charges — the same list `/code` shows. On both bars, because
+ *  everyone who holds a card has charges to explain (2026-11-05). */
+const MY_TRANSACTIONS_TAB: Tab = {
+  label: "My transactions",
+  path: "/finances/my-transactions",
+};
+
 const SEAT_TABS: Tab[] = [
   { label: "Dashboard", path: "/finances" },
+  MY_TRANSACTIONS_TAB,
   { label: "Book", path: "/finances/reconcile" },
   { label: "Receipts", path: "/finances/receipts" },
   { label: "Sales", path: "/finances/sales" },
@@ -131,10 +139,9 @@ const SEAT_TABS: Tab[] = [
   LEDGER_TAB,
 ];
 
-// The member (no-seat) set. Their own charges live at `/code` now — off this
-// bar entirely, which is why the Coding chip and its had-work/no-work
-// conditional are both gone: a page that requires no seat has no business
-// being gated behind a finance tab bar in the first place.
+// The member (no-seat) set. Their own charges lead it: My transactions is the
+// same list as `/code`, always shown (no had-work/no-work conditional), so the
+// tab a reminder names is always there.
 //
 // LEDGER (2026-08-30) is the member's read of the org's money — the founder's
 // "they can see the full thing ... they just can't edit". It is deliberately
@@ -146,6 +153,7 @@ const SEAT_TABS: Tab[] = [
 // It leads rather than trails My Card, because the tab exists for two reasons
 // now and this is the one that is new to a member opening it.
 const MEMBER_TABS: Tab[] = [
+  MY_TRANSACTIONS_TAB,
   LEDGER_TAB,
   { label: "My Card", path: "/finances/cards" },
   REIMBURSEMENTS_TAB,

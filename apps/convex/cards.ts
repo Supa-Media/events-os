@@ -109,6 +109,9 @@ import {
   type CardRequestStatus,
   type RepaymentMethod,
   type RepaymentStatus,
+  CHASE_NOTE_MAX_LENGTH,
+  CHASE_REASON_SENTENCES,
+  type ChaseReason,
 } from "@events-os/shared";
 import {
   readSandbox,
@@ -6459,19 +6462,15 @@ export const getManualNudgeStatus = query({
   },
 });
 
-/** Best-effort SMS alongside the chase email, pointing at the text-to-receipt
- *  number (`smsReceipts.ts`) — mirrors `replyToSmsSender`'s shape (no-op
- *  without Twilio configured, swallows its own failures, never throws).
- *  Returns whether it actually attempted (and didn't error on) a send.
- *
- *  The reply-with-a-photo instruction is only appended when a RECEIPT is
- *  actually part of what's missing: texting a photo can't write a business
- *  purpose, and telling someone it will is how a channel loses its
- *  credibility. Coding-only debts point at the app instead. */
+/** Best-effort SMS alongside the chase email, ending in a link to `/code` —
+ *  mirrors `replyToSmsSender`'s shape (no-op without Twilio configured,
+ *  swallows its own failures, never throws). Returns whether it actually
+ *  attempted (and didn't error on) a send. */
 async function sendCodingChaseSms(
   ctx: ActionCtx,
   phone: string,
   charges: ReminderCharge[],
+  why: ChaseWhy,
 ): Promise<boolean> {
   const creds = await resolveTwilioCredentials(ctx);
   if (!creds) return false;
@@ -6481,13 +6480,17 @@ async function sendCodingChaseSms(
   const count = charges.length;
   const fmt = (c: { amountCents: number; merchantName: string | null }) =>
     `$${(c.amountCents / 100).toFixed(2)}${c.merchantName ? ` at ${c.merchantName}` : ""}`;
-  const closer = charges.some((c) => c.missingReceipt)
-    ? "Reply here with a photo to file a receipt, or open Finances → My Transactions in the app to finish the coding."
-    : "Open Finances → My Transactions in the app to finish the coding.";
-  const body =
+  // A LINK, not "reply with a photo": texted receipts don't reliably land
+  // (founder, 2026-11-05), and the link signs them in and returns them here.
+  const link = appUrl("/code?filter=uncoded");
+  const closer = link
+    ? `Finish them here: ${link}`
+    : "Open Finances → My transactions in the app to finish them.";
+  const lead =
     count === 1
-      ? `Reminder: ${fmt(charges[0])} ${charges[0].outstanding}. ${closer}`
-      : `Reminder: ${count} of your card charges still need coding (starting with ${fmt(charges[0])} — ${charges[0].outstanding}). ${closer}`;
+      ? `Reminder: ${fmt(charges[0])} ${charges[0].outstanding}.`
+      : `Reminder: ${count} of your card charges still need coding (starting with ${fmt(charges[0])} — ${charges[0].outstanding}).`;
+  const body = [lead, ...chaseWhySentences(why), closer].join(" ");
   try {
     await sendSms(creds, { to, body });
     return true;
@@ -6496,6 +6499,37 @@ async function sendCodingChaseSms(
     return false;
   }
 }
+
+/** WHY the manager is chasing — preset reasons plus their own note, both
+ *  optional. See `@events-os/shared`'s `chaseReasons.ts`. */
+interface ChaseWhy {
+  reasons: ChaseReason[];
+  note: string | null;
+}
+
+/** The reason sentences then the note, in the order the manager would say them. */
+function chaseWhySentences(why: ChaseWhy): string[] {
+  const out = why.reasons.map((r) => CHASE_REASON_SENTENCES[r]);
+  if (why.note) out.push(why.note);
+  return out;
+}
+
+// Spelled out because a spread of the shared `CHASE_REASONS` loses the literal
+// types; the check below fails typecheck if this and the shared list drift.
+const chaseReasonValidator = v.union(
+  v.literal("missing_receipt"),
+  v.literal("missing_purpose"),
+  v.literal("vague_purpose"),
+  v.literal("closing_month"),
+  v.literal("overdue"),
+);
+type ValidatorReason = Infer<typeof chaseReasonValidator>;
+const _chaseReasonsMatch: [ValidatorReason] extends [ChaseReason]
+  ? [ChaseReason] extends [ValidatorReason]
+    ? true
+    : never
+  : never = true;
+void _chaseReasonsMatch;
 
 const nudgeResultValidator = v.object({
   personId: v.id("people"),
@@ -6553,6 +6587,7 @@ async function notifyCodingChase(
     email: string;
     cardholderName: string;
     charges: ReminderCharge[];
+    why: ChaseWhy;
   },
 ): Promise<void> {
   const count = chase.charges.length;
@@ -6590,6 +6625,15 @@ async function notifyCodingChase(
   // Same destination the automated digest uses — the cardholder's own list,
   // pre-filtered to what they owe. Null (the row is omitted) when APP_URL is
   // unset, which is the dev default.
+  // WHY THIS CHASE — the manager's picked reasons and note, ahead of the
+  // standing reasons, because it is the part that says what would settle it.
+  const whyThis = chaseWhySentences(chase.why);
+  const whyThisBlock =
+    whyThis.length === 0
+      ? ""
+      : emailParagraph(
+          `<strong>Why you're hearing from us:</strong> ${whyThis.map(escapeHtml).join(" ")}`,
+        );
   const link = appUrl("/code?filter=uncoded");
   await sendEmail(ctx, {
     to: chase.email,
@@ -6600,6 +6644,7 @@ async function notifyCodingChase(
         margin: `0 0 ${count === 1 ? 16 : 8}px`,
       })}
       ${list}
+      ${whyThisBlock}
       ${whyNote}
       ${link ? emailButtonRow(link, `Code ${count === 1 ? "it" : "them"} →`) : ""}`),
   });
@@ -6653,12 +6698,20 @@ export const sendCodingChase = action({
     month: v.optional(v.number()),
     period: v.optional(v.union(v.literal("month"), v.literal("ytd"))),
     selectedIds: v.optional(v.array(v.id("transactions"))),
+    // WHY — what the cardholder reads about this chase. Not part of the view.
+    reasons: v.optional(v.array(chaseReasonValidator)),
+    note: v.optional(v.string()),
   },
   returns: v.object({ results: v.array(nudgeResultValidator) }),
   handler: async (ctx, args): Promise<{ results: NudgeResult[] }> => {
+    const { reasons, note, ...view } = args;
+    const why: ChaseWhy = {
+      reasons: [...new Set(reasons ?? [])],
+      note: note?.trim().slice(0, CHASE_NOTE_MAX_LENGTH) || null,
+    };
     const targets: ChaseTarget[] = await ctx.runQuery(
       internal.finances.getCodingChaseTargets,
-      args,
+      view,
     );
 
     const results: NudgeResult[] = [];
@@ -6698,6 +6751,7 @@ export const sendCodingChase = action({
           email: target.email,
           cardholderName: target.cardholderName,
           charges: target.charges,
+          why,
         });
         emailSent = true;
       } catch (err) {
@@ -6705,7 +6759,7 @@ export const sendCodingChase = action({
       }
 
       const smsSent = target.phone
-        ? await sendCodingChaseSms(ctx, target.phone, target.charges)
+        ? await sendCodingChaseSms(ctx, target.phone, target.charges, why)
         : false;
 
       results.push({
