@@ -3,6 +3,7 @@ import { supaAuthTables, supaNotificationTables } from "@supa-media/convex/schem
 
 import { chapters, userProfiles, userChapters } from "./schema/chapters";
 import { accessAllowlist } from "./schema/accessAllowlist";
+import { codingChaseFollowUps } from "./schema/chaseFollowUps";
 import { backerMilestones } from "./schema/backerMilestones";
 import {
   backerPortalCodes,
@@ -431,6 +432,8 @@ const schema = defineSchema({
   // Rate limiter for the manager-only coding chase ("Chase" / "Chase
   // everyone" on the Reconcile grid) — at most one per cardholder per 24h.
   receiptNudgeAttempts,
+  // Charges a manager chased, re-reminded daily until coded (chaseFollowUps.ts).
+  codingChaseFollowUps,
   financeSettings,
   // Morning reconciliation engine: detected Stripe payouts + per-book
   // allocation records, the run audit trail, and FM audit flags.
