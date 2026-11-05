@@ -76,6 +76,7 @@ import {
 import { colors } from "../../../lib/theme";
 import { formatDate } from "../../../lib/format";
 import { useActionRunner } from "../../../lib/useActionToast";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 import { formatMoney, parseDollars } from "../../event/ticketing/helpers";
 import { Calendar } from "../../ui/Calendar";
 import { Popover } from "../../ui/Popover";
@@ -376,14 +377,9 @@ export function ReimbursementRequestForm({
   }
 
   function pickReceiptWeb(key: string) {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*,application/pdf";
-    input.onchange = () => {
-      const file = input.files?.[0];
+    void openWebFilePicker({ accept: "image/*,application/pdf" }).then(([file]) => {
       if (file) void uploadReceipt(key, file, file.type || "image/jpeg", file.name);
-    };
-    input.click();
+    });
   }
 
   async function pickReceiptNative(key: string) {
