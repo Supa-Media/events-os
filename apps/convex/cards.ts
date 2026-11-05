@@ -3307,16 +3307,7 @@ export const notifyCodingSentBack = internalAction({
       // required. The recipient of a send-back is a cardholder, not a
       // reviewer; they should land on their charges, not next to a queue of
       // other people's.
-      // WHY THIS CHASE — the manager's picked reasons and note, ahead of the
-  // standing reasons, because it is the part that says what would settle it.
-  const whyThis = chaseWhySentences(chase.why);
-  const whyThisBlock =
-    whyThis.length === 0
-      ? ""
-      : emailParagraph(
-          `<strong>Why you're hearing from us:</strong> ${whyThis.map(escapeHtml).join(" ")}`,
-        );
-  const link = appUrl("/code?filter=uncoded");
+      const link = appUrl("/code?filter=uncoded");
       await sendEmail(ctx, {
         to: contact.email,
         subject,
@@ -6007,15 +5998,6 @@ async function notifyReceiptDigest(
   // The cardholder's OWN list, pre-filtered to what they owe — where the
   // coding sheet (purpose, people, receipt) lives. Null (omitted) when APP_URL
   // is unset.
-  // WHY THIS CHASE — the manager's picked reasons and note, ahead of the
-  // standing reasons, because it is the part that says what would settle it.
-  const whyThis = chaseWhySentences(chase.why);
-  const whyThisBlock =
-    whyThis.length === 0
-      ? ""
-      : emailParagraph(
-          `<strong>Why you're hearing from us:</strong> ${whyThis.map(escapeHtml).join(" ")}`,
-        );
   const link = appUrl("/code?filter=uncoded");
   await sendEmail(ctx, {
     to: digest.email,
@@ -6026,7 +6008,6 @@ async function notifyReceiptDigest(
         margin: `0 0 ${count === 1 ? 16 : 8}px`,
       })}
       ${list}
-      ${whyThisBlock}
       ${whyNote}
       ${lockNote}
       ${link ? emailButtonRow(link, `Code ${count === 1 ? "it" : "them"} →`) : ""}`),
