@@ -745,6 +745,61 @@ describe("the chase email itself", () => {
     }
   });
 
+  test("a chased charge is followed up daily until it's coded", async () => {
+    const prevResendKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await armCodingPolicy(s);
+      await asManager(s);
+      const ada = await seedCardholder(s, "Ada", {
+        pwEmail: "ada@publicworship.life",
+      });
+      const uber = await seedCharge(s, { cardId: ada.cardId, merchantName: "Uber" });
+
+      const sent: { subject: string; html: string }[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        sent.push({ subject: body.subject, html: body.html });
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await s.as.action(api.cards.sendCodingChase, { reasons: ["overdue"] });
+      expect(sent).toHaveLength(1);
+
+      // Same day: the chase was today's message, so no follow-up yet.
+      await t.action(internal.chaseFollowUps.sendDaily, {});
+      expect(sent).toHaveLength(1);
+
+      // A day later, still uncoded: followed up, with the manager's reason.
+      await run(t, async (ctx) => {
+        const row = await ctx.db.query("codingChaseFollowUps").first();
+        await ctx.db.patch(row!._id, { chasedAt: Date.now() - 2 * DAY_MS });
+      });
+      await t.action(internal.chaseFollowUps.sendDaily, {});
+      expect(sent).toHaveLength(2);
+      expect(sent[1].subject).toContain("Still waiting");
+      expect(sent[1].html).toContain("past due");
+      expect(sent[1].html).toContain("each day until");
+
+      // Coded: no more reminders, and the row is gone.
+      const receipt = await storeBlob(t);
+      await run(t, (ctx) =>
+        ctx.db.patch(uber, { codingState: "submitted", receiptStorageId: receipt }),
+      );
+      await t.action(internal.chaseFollowUps.sendDaily, {});
+      expect(sent).toHaveLength(2);
+      const left = await run(t, (ctx) =>
+        ctx.db.query("codingChaseFollowUps").collect(),
+      );
+      expect(left).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.RESEND_API_KEY = prevResendKey;
+    }
+  });
+
   test("nothing to chase sends nothing at all", async () => {
     const prevResendKey = process.env.RESEND_API_KEY;
     process.env.RESEND_API_KEY = "resend_test_key";

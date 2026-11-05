@@ -68,6 +68,9 @@ export const chaseTargetValidator = v.object({
   cardholderName: v.string(),
   anyEscalated: v.boolean(),
   charges: v.array(reminderChargeValidator),
+  /** The chased rows, so the chase can be followed up daily until they're
+   *  done (`chaseFollowUps.ts`). */
+  transactionIds: v.array(v.id("transactions")),
 });
 export type ChaseTarget = {
   personId: Id<"people">;
@@ -76,6 +79,7 @@ export type ChaseTarget = {
   cardholderName: string;
   anyEscalated: boolean;
   charges: ReminderCharge[];
+  transactionIds: Id<"transactions">[];
 };
 
 /**

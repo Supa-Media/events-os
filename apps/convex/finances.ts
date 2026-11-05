@@ -11439,9 +11439,11 @@ export const getCodingChaseTargets = internalQuery({
           cardholderName: person.name,
           anyEscalated: false,
           charges: [],
+          transactionIds: [],
         };
         byPerson.set(key, entry);
       }
+      entry.transactionIds.push(tr._id);
       entry.charges.push({
         amountCents: tr.amountCents,
         merchantName: tr.merchantName ?? null,

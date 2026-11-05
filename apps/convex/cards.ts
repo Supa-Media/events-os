@@ -6466,7 +6466,7 @@ export const getManualNudgeStatus = query({
  *  mirrors `replyToSmsSender`'s shape (no-op without Twilio configured,
  *  swallows its own failures, never throws). Returns whether it actually
  *  attempted (and didn't error on) a send. */
-async function sendCodingChaseSms(
+export async function sendCodingChaseSms(
   ctx: ActionCtx,
   phone: string,
   charges: ReminderCharge[],
@@ -6488,8 +6488,8 @@ async function sendCodingChaseSms(
     : "Open Finances → My transactions in the app to finish them.";
   const lead =
     count === 1
-      ? `Reminder: ${fmt(charges[0])} ${charges[0].outstanding}.`
-      : `Reminder: ${count} of your card charges still need coding (starting with ${fmt(charges[0])} — ${charges[0].outstanding}).`;
+      ? `${why.followUp ? "Daily reminder" : "Reminder"}: ${fmt(charges[0])} ${charges[0].outstanding}.`
+      : `${why.followUp ? "Daily reminder" : "Reminder"}: ${count} of your card charges still need coding (starting with ${fmt(charges[0])} — ${charges[0].outstanding}).`;
   const body = [lead, ...chaseWhySentences(why), closer].join(" ");
   try {
     await sendSms(creds, { to, body });
@@ -6502,17 +6502,23 @@ async function sendCodingChaseSms(
 
 /** WHY the manager is chasing — preset reasons plus their own note, both
  *  optional. See `@events-os/shared`'s `chaseReasons.ts`. */
-interface ChaseWhy {
+export interface ChaseWhy {
   reasons: ChaseReason[];
   note: string | null;
+  /** The daily follow-up after a chase (`chaseFollowUps.ts`), not the chase. */
+  followUp?: boolean;
 }
 
 /** The reason sentences then the note, in the order the manager would say them. */
 function chaseWhySentences(why: ChaseWhy): string[] {
   const out = why.reasons.map((r) => CHASE_REASON_SENTENCES[r]);
   if (why.note) out.push(why.note);
+  if (why.followUp) out.push(FOLLOW_UP_SENTENCE);
   return out;
 }
+
+const FOLLOW_UP_SENTENCE =
+  "We asked you about these and they're still open, so we'll remind you each day until they're done.";
 
 // Spelled out because a spread of the shared `CHASE_REASONS` loses the literal
 // types; the check below fails typecheck if this and the shared list drift.
@@ -6581,7 +6587,7 @@ type NudgeResult = typeof nudgeResultValidator.type;
  * `RESEND_API_KEY` (dev), and never sends an EMPTY chase — a zero-charge target
  * cannot reach this, and it returns early if one somehow does.
  */
-async function notifyCodingChase(
+export async function notifyCodingChase(
   ctx: ActionCtx,
   chase: {
     email: string;
@@ -6596,9 +6602,10 @@ async function notifyCodingChase(
     `$${(c.amountCents / 100).toFixed(2)}${c.merchantName ? ` at ${c.merchantName}` : ""}`;
   const headline = count === 1 ? "1 charge to code" : `${count} charges to code`;
   const subject =
-    count === 1
+    (chase.why.followUp ? "Still waiting: " : "") +
+    (count === 1
       ? `Code your ${fmt(chase.charges[0])} charge`
-      : `Code your ${count} card charges`;
+      : `Code your ${count} card charges`);
   const intro =
     count === 1
       ? `your ${escapeHtml(fmt(chase.charges[0]))} charge ${escapeHtml(chase.charges[0].outstanding)}. Tell us what it was for and it's done.`
@@ -6761,6 +6768,15 @@ export const sendCodingChase = action({
       const smsSent = target.phone
         ? await sendCodingChaseSms(ctx, target.phone, target.charges, why)
         : false;
+
+      // FOLLOW UP DAILY until each chased charge is coded (founder,
+      // 2026-11-05). Recorded whether or not the email itself got through.
+      await ctx.runMutation(internal.chaseFollowUps.record, {
+        personId: target.personId,
+        transactionIds: target.transactionIds,
+        reasons: why.reasons,
+        ...(why.note ? { note: why.note } : {}),
+      });
 
       results.push({
         personId: target.personId,
