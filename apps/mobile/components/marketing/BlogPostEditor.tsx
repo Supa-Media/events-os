@@ -88,6 +88,7 @@ import { MarkdownEditor } from "../markdown";
 import { useActionRunner, type ActionRunner } from "../../lib/useActionToast";
 import { confirmAction } from "../../lib/confirmAction";
 import { publicSiteUrl } from "../event/ticketing/helpers";
+import { openWebFilePicker } from "../../lib/webFilePicker";
 
 /** The backend's post id — aliased once, see `BlogView.tsx`. */
 type PostId = Id<"blogPosts">;
@@ -263,14 +264,12 @@ function HeroImagePicker({
   }
 
   function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = () => {
-      const file = input.files?.[0];
+    // Attached-input chooser: a detached input never fires `change` on
+    // iPhone Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: "image/*" }).then((files) => {
+      const file = files[0];
       if (file) void uploadBlob(file, file.type || "image/jpeg");
-    };
-    input.click();
+    });
   }
 
   async function pickNative() {

@@ -38,6 +38,7 @@ import * as ImagePicker from "expo-image-picker";
 import { Button } from "../ui";
 import { siteImageUri } from "./LinkCardTile";
 import type { ActionRunner } from "../../lib/useActionToast";
+import { openWebFilePicker } from "../../lib/webFilePicker";
 
 type Props = {
   kind: "thumbnail" | "background";
@@ -104,14 +105,12 @@ export function CardImagePicker({
   }
 
   function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = () => {
-      const file = input.files?.[0];
+    // Attached-input chooser: a detached input never fires `change` on
+    // iPhone Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: "image/*" }).then((files) => {
+      const file = files[0];
       if (file) void uploadBlob(file, file.type || "image/jpeg");
-    };
-    input.click();
+    });
   }
 
   async function pickNative() {

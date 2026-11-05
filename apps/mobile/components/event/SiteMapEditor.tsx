@@ -45,6 +45,7 @@ import {
   type MarkerGeometry,
   type ShapeGeometry,
 } from "../../lib/siteMapGeometry";
+import { openWebFilePicker } from "../../lib/webFilePicker";
 
 /** A site-map marker as returned by `api.siteMap.get`. */
 type Marker = MarkerGeometry & { _id: string };
@@ -1862,14 +1863,12 @@ export function SiteMapEditor({
 
   function pickImage() {
     if (Platform.OS === "web") {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*";
-      input.onchange = () => {
-        const file = input.files?.[0];
+      // Attached-input chooser: a detached input never fires `change` on
+      // iPhone Safari (see `openWebFilePicker`).
+      void openWebFilePicker({ accept: "image/*" }).then((files) => {
+        const file = files[0];
         if (file) void uploadBlob(file, file.type || "image/jpeg");
-      };
-      input.click();
+      });
     }
     // Native picker intentionally omitted — WEB is the test target. Native
     // builds fall back to "no image" until an image-picker path is added.

@@ -61,6 +61,7 @@ import {
   type PersonaFilter,
   type ActiveFilterChip,
 } from "../../../components/people/PeopleFilters";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 
 // Vetting select options (gray / amber / green) — fed to the shared SelectCell.
 const VETTING_OPTIONS: SelectOption<VettingStatus>[] = [
@@ -872,11 +873,10 @@ const PersonRow = memo(function PersonRow({
   // intentionally omitted; web is the test target.
   function pickAvatar() {
     if (Platform.OS !== "web" || typeof document === "undefined") return;
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = async () => {
-      const file = input.files?.[0];
+    // Attached-input chooser: a detached input never fires `change` on
+    // iPhone Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: "image/*" }).then(async (files) => {
+      const file = files[0];
       if (!file) return;
       try {
         const uploadUrl = await generateUploadUrl();
@@ -890,8 +890,7 @@ const PersonRow = memo(function PersonRow({
       } catch {
         // Swallow; the avatar stays as-is on failure.
       }
-    };
-    input.click();
+    });
   }
 
   return (

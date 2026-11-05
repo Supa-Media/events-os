@@ -50,6 +50,7 @@ import {
 } from "./useGridData";
 import { OptionEditFooter, OptionRow, useAnchor } from "./selectPrimitives";
 import { SupplySourceCell, SupplyStatusCell } from "./supplies";
+import { openWebFilePicker } from "../../lib/webFilePicker";
 
 export interface CellContext {
   column: GridColumn;
@@ -463,14 +464,12 @@ function PhotoCell({ value, editable, onChange }: BaseCellProps) {
 
   // WEB: DOM file input → File (already a Blob).
   function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = () => {
-      const file = input.files?.[0];
+    // Attached-input chooser: a detached input never fires `change` on
+    // iPhone Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: "image/*" }).then((files) => {
+      const file = files[0];
       if (file) void uploadBlob(file, file.type || "image/jpeg");
-    };
-    input.click();
+    });
   }
 
   // NATIVE: expo-image-picker → asset uri → fetch into a Blob.

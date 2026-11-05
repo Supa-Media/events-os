@@ -83,6 +83,7 @@ import {
   resolveGiftDateRange,
   type GiftDatePreset,
 } from "../../../components/giving/dashboard/giftDateRange";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 
 type GivingScope = "central" | Id<"chapters">;
 
@@ -562,11 +563,10 @@ async function pickAndUploadReceipt(
 ): Promise<DraftReceipt | null> {
   if (Platform.OS === "web") {
     return await new Promise<DraftReceipt | null>((resolve) => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*,application/pdf";
-      input.onchange = async () => {
-        const file = input.files?.[0];
+      // Attached-input chooser: a detached input never fires `change` on
+      // iPhone Safari (see `openWebFilePicker`).
+      void openWebFilePicker({ accept: "image/*,application/pdf" }).then(async (files) => {
+        const file = files[0];
         if (!file) return resolve(null);
         const url = await getUploadUrl();
         const res = await fetch(url, {
@@ -578,8 +578,7 @@ async function pickAndUploadReceipt(
           storageId: Id<"_storage">;
         };
         resolve({ storageId, uri: URL.createObjectURL(file) });
-      };
-      input.click();
+      });
     });
   }
   const result = await ImagePicker.launchImageLibraryAsync({
