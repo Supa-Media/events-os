@@ -140,6 +140,7 @@ import {
   type ReconcileSortKey,
 } from "../../../components/finance/reconcile/gridView";
 import { BulkNoDocumentationModal } from "../../../components/finance/modals/BulkNoDocumentationModal";
+import { ChaseReasonModal } from "../../../components/finance/reconcile/ChaseReasonModal";
 import {
   BulkExplainModal,
   BulkExplainResults,
@@ -152,7 +153,7 @@ import {
   type BulkExplainSummary,
 } from "../../../components/finance/reconcile/bulkExplainOutcome";
 import { errorCode, errorMessage } from "../../../lib/errors";
-import type { ReceiptExceptionReason } from "@events-os/shared";
+import type { ChaseReason, ReceiptExceptionReason } from "@events-os/shared";
 import type { ActionToast } from "../../../lib/useActionToast";
 import { buildForPickerItems } from "../../../components/finance/reconcile/forPicker";
 import {
@@ -1394,7 +1395,19 @@ function ReconcileGrid() {
     return counts;
   }, [chasingSelection, selectedRows]);
 
-  async function sendChase(personId: Id<"people"> | undefined, key: string) {
+  // Every Chase button asks WHY first (`ChaseReasonModal`); the send happens
+  // from the modal. `title` is what the modal names.
+  const [pendingChase, setPendingChase] = useState<{
+    personId: Id<"people"> | undefined;
+    key: string;
+    title: string;
+  } | null>(null);
+
+  async function sendChase(
+    personId: Id<"people"> | undefined,
+    key: string,
+    why: { reasons: ChaseReason[]; note: string },
+  ) {
     setSendingKey(key);
     setNudgeNotice(null);
     const res = await run(
@@ -1407,6 +1420,8 @@ function ReconcileGrid() {
           // only when it carries a decision keeps the wire honest about which
           // of the two scopings was in play.
           ...(chasingSelection ? { selectedIds: chaseSelectedIds } : {}),
+          ...(why.reasons.length > 0 ? { reasons: why.reasons } : {}),
+          ...(why.note ? { note: why.note } : {}),
         }),
       { errorTitle: "Couldn't send the chase" },
     );
@@ -1846,7 +1861,15 @@ function ReconcileGrid() {
                 size="sm"
                 icon="send"
                 loading={sendingKey === "all"}
-                onPress={() => void sendChase(undefined, "all")}
+                onPress={() =>
+                  setPendingChase({
+                    personId: undefined,
+                    key: "all",
+                    title: chasingSelection
+                      ? `Chase ${chaseSelectedIds.length} selected`
+                      : "Chase everyone",
+                  })
+                }
               />
             ) : null}
           </View>
@@ -2293,6 +2316,18 @@ function ReconcileGrid() {
           />
         ) : null}
 
+        {pendingChase ? (
+          <ChaseReasonModal
+            title={pendingChase.title}
+            onCancel={() => setPendingChase(null)}
+            onSend={(why) => {
+              const { personId, key } = pendingChase;
+              setPendingChase(null);
+              void sendChase(personId, key, why);
+            }}
+          />
+        ) : null}
+
         {noDocOpen ? (
           <BulkNoDocumentationModal
             count={selectedInView.length}
@@ -2566,7 +2601,13 @@ function ReconcileGrid() {
                     icon={already ? undefined : "send"}
                     disabled={already}
                     loading={sendingKey === personId}
-                    onPress={() => void sendChase(personId, personId)}
+                    onPress={() =>
+                      setPendingChase({
+                        personId,
+                        key: personId,
+                        title: `Chase ${group.label}`,
+                      })
+                    }
                   />
                 );
               }}

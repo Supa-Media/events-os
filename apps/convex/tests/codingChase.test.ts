@@ -709,6 +709,42 @@ describe("the chase email itself", () => {
     }
   });
 
+  test("the manager's reasons and note are in the email", async () => {
+    const prevResendKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await armCodingPolicy(s);
+      await asManager(s);
+      const ada = await seedCardholder(s, "Ada", {
+        pwEmail: "ada@publicworship.life",
+      });
+      await seedCharge(s, { cardId: ada.cardId, merchantName: "Uber" });
+
+      const sent: { html: string }[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        sent.push({ html: body.html });
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await s.as.action(api.cards.sendCodingChase, {
+        reasons: ["vague_purpose", "closing_month"],
+        note: "  Who rode, & why? ",
+      });
+      expect(sent).toHaveLength(1);
+      expect(sent[0].html).toContain("Why you're hearing from us");
+      expect(sent[0].html).toContain("say enough");
+      expect(sent[0].html).toContain("closing the books");
+      // Trimmed and escaped.
+      expect(sent[0].html).toContain("Who rode, &amp; why?");
+    } finally {
+      globalThis.fetch = realFetch;
+      process.env.RESEND_API_KEY = prevResendKey;
+    }
+  });
+
   test("nothing to chase sends nothing at all", async () => {
     const prevResendKey = process.env.RESEND_API_KEY;
     process.env.RESEND_API_KEY = "resend_test_key";

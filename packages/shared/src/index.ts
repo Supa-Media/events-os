@@ -2280,6 +2280,8 @@ export * from "./csv";
 // ── Data export: dataset registry, job vocabulary, cell formatters ───────────
 export * from "./dataExport";
 export * from "./reconcileFilters";
+// Reasons a manager can give when chasing a cardholder (`cards.sendCodingChase`).
+export * from "./chaseReasons";
 // The reconcile search rule — shared so `listReconcile` and the grid's search
 // box can never disagree on what a query matches (see the module doc).
 export * from "./reconcileSearch";
