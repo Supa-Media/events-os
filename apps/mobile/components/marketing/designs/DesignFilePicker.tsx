@@ -25,6 +25,7 @@ import { api } from "@events-os/convex/_generated/api";
 import * as ImagePicker from "expo-image-picker";
 import { Button } from "../../ui";
 import type { ActionRunner } from "../../../lib/useActionToast";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 
 const FILE_LABELS = {
   artwork: {
@@ -105,14 +106,12 @@ export function DesignFilePicker({
   }
 
   function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = media.accept;
-    input.onchange = () => {
-      const file = input.files?.[0];
+    // Attached-input chooser: a detached input never fires `change` on
+    // iPhone Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: media.accept }).then((files) => {
+      const file = files[0];
       if (file) void uploadBlob(file, file.type || fallbackType(kind));
-    };
-    input.click();
+    });
   }
 
   async function pickNative() {

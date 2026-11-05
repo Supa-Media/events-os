@@ -25,6 +25,7 @@ import type { Id } from "@events-os/convex/_generated/dataModel";
 import { Field, Select as UiSelect, TextField as UiTextField } from "../../ui";
 import { colors } from "../../../lib/theme";
 import type { ActionRunner } from "../../../lib/useActionToast";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 
 /**
  * ── READ-ONLY MODE ─────────────────────────────────────────────────────────
@@ -201,14 +202,12 @@ export function ImageUploadButton({
   }
 
   function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "image/*";
-    input.onchange = () => {
-      const file = input.files?.[0];
+    // Attached-input chooser: a detached input never fires `change` on
+    // iPhone Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: "image/*" }).then((files) => {
+      const file = files[0];
       if (file) void uploadBlob(file, file.type || "image/jpeg", file.name);
-    };
-    input.click();
+    });
   }
 
   async function pickNative() {

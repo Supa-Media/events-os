@@ -72,6 +72,7 @@ import {
 } from "../ui";
 import type { BadgeTone } from "../ui";
 import { useGivingScope } from "../../lib/useGivingScope";
+import { openWebFilePicker } from "../../lib/webFilePicker";
 
 const STATE_TONE: Record<SponsorPortalState, BadgeTone> = {
   unissued: "neutral",
@@ -842,14 +843,12 @@ function DocumentsCard({
   }
 
   function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.accept = "application/pdf,image/*";
-    input.onchange = () => {
-      const file = input.files?.[0];
+    // Attached-input chooser: a detached input never fires `change` on
+    // iPhone Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: "application/pdf,image/*" }).then((files) => {
+      const file = files[0];
       if (file) void upload(file, file.type || "application/pdf", file.name, file.size);
-    };
-    input.click();
+    });
   }
 
   async function pickNative() {

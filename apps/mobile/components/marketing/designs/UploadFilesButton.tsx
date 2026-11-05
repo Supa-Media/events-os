@@ -49,6 +49,7 @@ import {
 import { Button } from "../../ui";
 import type { ActionRunner } from "../../../lib/useActionToast";
 import { asId } from "./ids";
+import { openWebFilePicker } from "../../../lib/webFilePicker";
 
 /** One picked file, whatever platform picked it. */
 type Picked = { blob: Blob; name: string; contentType: string };
@@ -167,12 +168,10 @@ export function UploadFilesButton({
   }
 
   function pickWeb() {
-    const input = document.createElement("input");
-    input.type = "file";
-    input.multiple = true;
-    input.accept = DESIGN_UPLOAD_ACCEPT;
-    input.onchange = () => {
-      const chosen = Array.from(input.files ?? []);
+    // Attached-input chooser: a detached input never fires `change` on
+    // iPhone Safari (see `openWebFilePicker`).
+    void openWebFilePicker({ accept: DESIGN_UPLOAD_ACCEPT, multiple: true }).then((files) => {
+      const chosen = files;
       const picked = chosen
         // The dialog's `accept` is a filter, not a promise — a drag-and-drop or
         // a stubborn "All files" pick can still hand back a PDF, and the
@@ -184,8 +183,7 @@ export function UploadFilesButton({
           contentType: file.type,
         }));
       void upload(trim(picked, chosen.length - picked.length));
-    };
-    input.click();
+    });
   }
 
   async function pickNative() {

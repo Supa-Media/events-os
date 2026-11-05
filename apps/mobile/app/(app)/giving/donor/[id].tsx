@@ -50,6 +50,7 @@ import {
 import { colors } from "../../../../lib/theme";
 import { alertError } from "../../../../lib/errors";
 import { donorStatusTone } from "../donors";
+import { openWebFilePicker } from "../../../../lib/webFilePicker";
 
 /** The merged "Source" picker — the widened `GIFT_METHODS` union. `stripe` is
  *  our own rails, shown as "Chapter OS". Default is `cash` (the most common
@@ -598,11 +599,10 @@ async function pickAndUploadReceipt(
 ): Promise<DraftReceipt | null> {
   if (Platform.OS === "web") {
     return await new Promise<DraftReceipt | null>((resolve) => {
-      const input = document.createElement("input");
-      input.type = "file";
-      input.accept = "image/*,application/pdf";
-      input.onchange = async () => {
-        const file = input.files?.[0];
+      // Attached-input chooser: a detached input never fires `change` on
+      // iPhone Safari (see `openWebFilePicker`).
+      void openWebFilePicker({ accept: "image/*,application/pdf" }).then(async (files) => {
+        const file = files[0];
         if (!file) return resolve(null);
         const url = await getUploadUrl();
         const res = await fetch(url, {
@@ -612,8 +612,7 @@ async function pickAndUploadReceipt(
         });
         const { storageId } = (await res.json()) as { storageId: Id<"_storage"> };
         resolve({ storageId, uri: URL.createObjectURL(file) });
-      };
-      input.click();
+      });
     });
   }
   const result = await ImagePicker.launchImageLibraryAsync({
