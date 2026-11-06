@@ -812,6 +812,10 @@
  * charge, with the Stripe-link/no-Stripe-link distinction spelled out in the
  * explanation.
  *
+ * DAILY PAY-BACK REMINDERS (2026-11-06, founder: "send daily reminders until
+ * they pay the money back"). One clause on the flag paragraph: a reminder
+ * arrives every morning until the balance settles (`repaymentReminders.ts`).
+ *
  * MANUAL "SEND RECEIPT", AND ITS ONE LIMIT (2026-08-14, founder: "add an email
  * button for already paid repayments … say they forgot it, or they just need
  * it resent, or it's in the past"). The lesson bullet added above gained the
@@ -1443,7 +1447,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Paid for mission work yourself? Submit a **reimbursement request**. Personal purchase on your Public Worship card? Open it on **/code**, choose **Mark as personal**, and confirm. No receipt or coding is required. Use **Open repayment portal** to repay by card or bank. Marking personal takes no payment; the balance clears after settlement. Paying someone for work is a contractor payment.",
+        text: "Paid for mission work yourself? Submit a **reimbursement request**. Personal purchase on your Public Worship card? Open it on **/code**, choose **Mark as personal**, and confirm. No receipt or coding is required. Use **Open repayment portal** to repay by card or bank. Marking personal takes no payment; the balance clears after settlement, with a reminder each morning until then. Paying someone for work is a contractor payment.",
       },
       {
         kind: "bullets",

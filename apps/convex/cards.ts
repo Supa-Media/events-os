@@ -7203,7 +7203,7 @@ export const nudgeOutstandingRepayments = action({
             )}
             ${emailButtonRow(link, "Pay it back →")}
             ${emailParagraph(
-              "If you think one of these isn't actually a personal charge, reply and tell your Treasurer — they can un-flag it.",
+              "If you think one of these isn't actually a personal charge, tell your Treasurer — they can un-flag it.",
               { size: 12, margin: "16px 0 0" },
             )}`),
         });
