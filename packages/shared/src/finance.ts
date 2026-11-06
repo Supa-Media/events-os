@@ -1940,6 +1940,12 @@ export const REPAYMENT_METHODS = ["card", "ach"] as const;
  * day reads as an accusation. Three days also means a manager who presses
  * "Send reminders" twice in one sitting — the single likeliest misuse — sends
  * one email, not two.
+ *
+ * Founder, 2026-11-06, overruled the tone argument for the automatic side:
+ * "send daily reminders until they pay the money back". The daily cron
+ * (`repaymentReminders.ts`) stamps `lastNudgedAt` too, so while someone owes,
+ * this cooldown mostly tells a manager "already reminded" rather than gating
+ * anything.
  */
 export const REPAYMENT_NUDGE_COOLDOWN_DAYS = 3;
 export const REPAYMENT_NUDGE_COOLDOWN_MS =

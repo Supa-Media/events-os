@@ -409,6 +409,7 @@ import type * as reimbursements from "../reimbursements.js";
 import type * as reminders from "../reminders.js";
 import type * as removeUnexecutedBalanceSettlements from "../removeUnexecutedBalanceSettlements.js";
 import type * as repaymentLinks from "../repaymentLinks.js";
+import type * as repaymentReminders from "../repaymentReminders.js";
 import type * as repaymentReceiptBackfill from "../repaymentReceiptBackfill.js";
 import type * as responsibilities from "../responsibilities.js";
 import type * as reverseExcludedSettlementLoop from "../reverseExcludedSettlementLoop.js";
@@ -907,6 +908,7 @@ declare const fullApi: ApiFromModules<{
   reminders: typeof reminders;
   removeUnexecutedBalanceSettlements: typeof removeUnexecutedBalanceSettlements;
   repaymentLinks: typeof repaymentLinks;
+  repaymentReminders: typeof repaymentReminders;
   repaymentReceiptBackfill: typeof repaymentReceiptBackfill;
   responsibilities: typeof responsibilities;
   reverseExcludedSettlementLoop: typeof reverseExcludedSettlementLoop;

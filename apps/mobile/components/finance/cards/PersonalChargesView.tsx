@@ -426,13 +426,14 @@ function PersonalChargesBody() {
             person listing all their charges, never one per charge — and skips
             anybody already reminded in the last few days or whose bank
             transfer is already clearing. See
-            `cards.nudgeOutstandingRepayments`. */}
+            `cards.nudgeOutstandingRepayments`; the automatic daily one is
+            `repaymentReminders.ts`. */}
         {isManager && outstanding.length > 0 ? (
           <View className="mb-4 flex-row flex-wrap items-center justify-between gap-2 rounded-lg border border-border bg-raised px-4 py-3">
             <Text className="flex-1 text-xs text-muted">
-              Send everyone who owes a reminder with what they owe and a link
-              to pay it. One email per person, and nobody gets chased twice in
-              the same few days.
+              Everyone who owes already gets a reminder each morning until
+              it's paid. This sends one now to anyone not reminded in the last
+              few days: one email per person, with a link to pay.
             </Text>
             <Button
               title="Send reminders"
