@@ -1447,7 +1447,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
     blocks: [
       {
         kind: "p",
-        text: "Paid for mission work yourself? Submit a **reimbursement request**. Personal purchase on your Public Worship card? Open it on **/code**, choose **Mark as personal**, and confirm. No receipt or coding is required. Use **Open repayment portal** to repay by card or bank. Marking personal takes no payment; the balance clears after settlement, and a reminder arrives every morning until then. Paying someone for work is a contractor payment.",
+        text: "Paid for mission work yourself? Submit a **reimbursement request**. Personal purchase on your Public Worship card? Open it on **/code**, choose **Mark as personal**, and confirm. No receipt or coding is required. Use **Open repayment portal** to repay by card or bank. Marking personal takes no payment; the balance clears after settlement, with a reminder each morning until then. Paying someone for work is a contractor payment.",
       },
       {
         kind: "bullets",
