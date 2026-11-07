@@ -1,443 +1,387 @@
 /**
  * The reviewer's half of the Coding tab: every submitted coding they may
- * decide, with enough of the record on the row to decide WITHOUT opening it —
- * and the whole record one tap away when the row isn't enough.
+ * decide, as a list you work down, with one coding open at a time in
+ * `ReviewDecisionPane` (the whole record plus the decision, pinned).
  *
- * The first half is the original design brief. A reviewer's real question is
- * "does this purpose, against this document, hold up to a stranger reading the
- * public ledger?" — and answering it used to mean opening each charge's detail
- * view one at a time. So each row carries the substantiation itself: the
- * purpose in full, the route on travel, the headcount or attendee breakdown on
- * meals, and what the charge is proved by. Approve and Send back sit on the
- * row.
+ * ── HISTORY ──────────────────────────────────────────────────────────────────
+ * 2026-08-24 — founder: "the review workflow is not as obvious, also when
+ * reviewing it doesn't let me review all the fields they entered." That made
+ * every row open into `ReviewRecord`, the whole record, receipt first. It
+ * still holds: nobody approves what they haven't read.
  *
- * ── THE SECOND HALF: REVIEW, THEN DECIDE (2026-08-24) ────────────────────────
- * Founder, on this exact screen: "the review workflow is not as obvious, also
- * when reviewing it doesn't let me review all the fields they entered, like if
- * it's a meal, I should see people's names listed for the meal, I should also
- * be able to review receipts or receipt exception requests."
+ * 2026-11-07 — Dev2, arriving from the "Codings need your review" email on a
+ * phone: "UX for this is awful especially on mobile." The table that carried
+ * the 08-24 design had five fixed-width columns. On a phone the Book, Charge,
+ * Amount and Proved-by columns wrapped word by word, and the 260px decision
+ * column sat past the right edge of the screen, so a reviewer could open a
+ * record and never reach Approve. A three-step "how to review" strip sat above
+ * it all. So:
  *
- * Both halves of that are the same gap. The row is a SUMMARY, and a summary is
- * a thing you skim — so a queue that offers only a summary and two decision
- * buttons is a queue that asks people to approve what they haven't read. The
- * attendee names, the travelers, the category and budget, the send-back
- * conversation, the receipt itself and the exception request standing in for a
- * missing one were all real, all recorded, and all on other screens.
- *
- * So every row now OPENS, in place, into `ReviewRecord` — the whole record,
- * receipt first, fed by one VIEW-gated query. The decision buttons stay on the
- * row where they always were, so opening a record and deciding it is one
- * motion down one column rather than two button sets in two places. One row is
- * open at a time (`openId` lives on the queue, not the row): this is a list
- * somebody works down, not a set of panels to arrange.
- *
- * And the workflow says its own name now — the steps strip above the table
- * ("open the record → read the proof → approve or send back") plus an explicit
- * Review button on every row, because a bare pair of Approve/Send back buttons
- * reads as a form to fill, not a job to do.
+ *  - Rows are CARDS: the purpose leads, since it is the thing being judged,
+ *    with amount, merchant, book, who, proof and age around it.
+ *  - Phone: tapping a card opens the pane full screen, the decision pinned to
+ *    the bottom. Deciding moves to the next coding; Undo stands for a few
+ *    seconds after an approval.
+ *  - Wide screen: list on the left, pane on the right, first coding open by
+ *    default, J / K to move, S to send back, A to approve.
+ *  - The steps strip is gone. Opening a card IS step one, and the pinned
+ *    buttons are step three; the strip described a layout that no longer
+ *    needs describing.
  *
  * Rows the caller may NOT decide come back `canReview: false` from the server
- * rather than being hidden — the Reconcile `canEdit` posture. In practice
- * that's a reviewer's own coding sitting in their own queue: it should be
- * visible (it IS outstanding work) and it should be obvious that it's waiting
- * on somebody else. The buttons are replaced by the reason, never by nothing.
+ * rather than hidden — in practice a reviewer's own coding. They sort LAST
+ * (`reviewOrder`) under their own heading, and the pane says who decides them
+ * instead of offering buttons.
  */
-import { useState } from "react";
-import { Text, View } from "react-native";
-import { useMutation } from "convex/react";
-import { api } from "@events-os/convex/_generated/api";
-import type { Id } from "@events-os/convex/_generated/dataModel";
-import { ATTENDEE_AFFILIATION_LABELS } from "@events-os/shared";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
-  Button,
-  Cell,
-  EmptyState,
-  HeaderCell,
-  Icon,
-  Row,
-  Table,
-  TableHeader,
-  TextField,
-} from "../../ui";
+  KeyboardAvoidingView,
+  Modal,
+  Platform,
+  Pressable,
+  ScrollView,
+  Text,
+  useWindowDimensions,
+  View,
+} from "react-native";
+import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { EmptyState, Icon, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
-import { daysWaiting, substantiationLine } from "./queueDisplay";
+import { useActionRunner } from "../../../lib/useActionToast";
+import { ApproveUndoBar, type PendingUndo } from "./CodingWorkbenchPanel";
+import { panelPosition, selectionAfterRowsShrink, stepSelection } from "./panelNav";
+import { daysWaiting, reviewOrder } from "./queueDisplay";
+import { ReviewDecisionPane, type Decision } from "./ReviewDecisionPane";
 import {
-  PublicPurposeEditor,
-  PublicPurposeNotice,
-} from "./PublicPurposeEditor";
-import { ReviewRecord } from "./ReviewRecord";
+  DOCUMENTATION_DISPLAY,
+  money,
+  shortDate,
+  type ReviewQueueRow,
+  type RunAction,
+} from "./reviewQueueShared";
+import type { Id } from "@events-os/convex/_generated/dataModel";
 
-export interface ReviewQueueRow {
-  transactionId: string;
-  book: { id: string; name: string };
-  merchantName: string | null;
-  amountCents: number;
-  postedAt: number;
-  documentation: "receipt" | "exception_approved" | "exception_pending" | "none";
-  canReview: boolean;
-  /** This charge owes a budget and hasn't got one — `approve` refuses it
-   *  (founder, 2026-09-02: "we shouldn't be letting things go through without
-   *  a budget"). The row says so and opens the record, where the reviewer can
-   *  now set it themselves, instead of offering a button that throws. */
-  budgetRequired: boolean;
-  coding: {
-    expenseType: string;
-    expenseTypeLabel: string;
-    businessPurpose: string;
-    travelFrom: string | null;
-    travelTo: string | null;
-    headcount: number | null;
-    attendees: { name: string; affiliation: string }[] | null;
-    affiliationBreakdown: Record<string, number>;
-    groupDescription: string | null;
-    publicPurpose: string | null;
-    publicPurposeByName: string | null;
-    publicPurposeAt: number | null;
-    codedByName: string | null;
-    submittedAt: number;
-  };
-}
-
-function money(cents: number): string {
-  return `$${(Math.abs(cents) / 100).toLocaleString("en-US", {
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
-  })}`;
-}
-
-function shortDate(ms: number): string {
-  return new Date(ms).toLocaleDateString("en-US", {
-    month: "short",
-    day: "numeric",
-  });
-}
-
-const DOCUMENTATION_DISPLAY: Record<
-  ReviewQueueRow["documentation"],
-  { label: string; icon: "paperclip" | "file-text" | "clock" | "alert-triangle"; color: string }
-> = {
-  receipt: { label: "Receipt", icon: "paperclip", color: colors.success },
-  exception_approved: {
-    label: "Exception approved",
-    icon: "file-text",
-    color: colors.success,
-  },
-  exception_pending: {
-    label: "Exception pending",
-    icon: "clock",
-    color: colors.warn,
-  },
-  // Unreachable on a submitted coding — the documentation gate refuses one.
-  // Rendered loudly rather than silently, because if it ever appears it means
-  // a rule stopped holding, not that a row is untidy.
-  none: { label: "No proof", icon: "alert-triangle", color: colors.danger },
-};
-
-
-/** The screen's `useActionRunner().run` — it owns the error toast, so a
- *  refused decision surfaces the server's own message rather than a generic
- *  one invented here. */
-export type RunAction = (
-  action: () => Promise<unknown>,
-  options?: { errorTitle?: string },
-) => Promise<unknown>;
-
-function QueueRow({
-  row,
-  last,
-  showBook,
-  open,
-  onToggle,
-  runAction,
-}: {
-  row: ReviewQueueRow;
-  last: boolean;
-  showBook: boolean;
-  /** Whether THIS row's full record is expanded. Owned by the queue so only
-   *  one is ever open — see the module doc. */
-  open: boolean;
-  onToggle: () => void;
-  runAction: RunAction;
-}) {
-  const approve = useMutation(api.transactionCodings.approve);
-  const requestChanges = useMutation(api.transactionCodings.requestChanges);
-  const [busy, setBusy] = useState(false);
-  const [sendingBack, setSendingBack] = useState(false);
-  const [note, setNote] = useState("");
-
-  const doc = DOCUMENTATION_DISPLAY[row.documentation];
-  const substantiation = substantiationLine(
-    row.coding,
-    ATTENDEE_AFFILIATION_LABELS,
-  );
-  const waited = daysWaiting(row.coding.submittedAt);
-
-  async function run(fn: () => Promise<unknown>) {
-    setBusy(true);
-    try {
-      await runAction(fn, { errorTitle: "Couldn't record that decision" });
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  return (
-    <View className={last ? "" : "border-b border-border"}>
-      <Row last>
-        {showBook ? (
-          <Cell width={110}>
-            <Text className="text-xs text-muted">{row.book.name}</Text>
-          </Cell>
-        ) : null}
-        <Cell flex={3}>
-          <Text className="text-sm font-medium text-ink" numberOfLines={1}>
-            {row.merchantName ?? "—"}
-          </Text>
-          <Text className="text-2xs text-muted">
-            {shortDate(row.postedAt)} · {row.coding.expenseTypeLabel} ·{" "}
-            {row.coding.codedByName ?? "—"}
-          </Text>
-        </Cell>
-        <Cell width={100} align="right">
-          <Text className="text-sm text-ink">{money(row.amountCents)}</Text>
-        </Cell>
-        <Cell width={150}>
-          <View className="flex-row items-center gap-1.5">
-            <Icon name={doc.icon} size={12} color={doc.color} />
-            <Text className="text-2xs text-muted">{doc.label}</Text>
-          </View>
-          {waited > 0 ? (
-            <Text className="text-2xs text-muted">
-              waiting {waited} day{waited === 1 ? "" : "s"}
-            </Text>
-          ) : null}
-        </Cell>
-        <Cell width={260} align="right">
-          <View className="flex-row flex-wrap justify-end gap-1.5">
-            {/* FIRST, and first for everyone — including the caller who may
-                not decide this row. Reviewing is reading; deciding is the
-                separate thing the server gates. Putting the two decision
-                buttons alone on a row is what made this queue read as
-                "approve this" rather than "review this". */}
-            <Button
-              title={open ? "Hide record" : "Review record"}
-              size="sm"
-              variant="secondary"
-              onPress={onToggle}
-            />
-          </View>
-          {row.canReview ? (
-            <View className="mt-1.5 flex-row flex-wrap justify-end gap-1.5">
-              {/* NO BUDGET, NO APPROVE — and the reason, next to the button
-                  it disables. The server refuses this row (`BUDGET_REQUIRED`)
-                  and it would have been a toast AFTER the tap; saying it here
-                  costs nothing and points at the fix, which as of this change
-                  is one tap away on this same row rather than a send-back.
-                  Send back stays live: a missing budget is not the only thing
-                  that can be wrong with a coding. */}
-              <Button
-                title="Approve"
-                size="sm"
-                loading={busy}
-                disabled={row.budgetRequired}
-                onPress={() =>
-                  void run(() =>
-                    approve({
-                      transactionId: row.transactionId as Id<"transactions">,
-                    }),
-                  )
-                }
-              />
-              <Button
-                title="Send back"
-                size="sm"
-                variant="secondary"
-                onPress={() => {
-                  setSendingBack((s) => !s);
-                  setNote("");
-                }}
-              />
-            </View>
-          ) : (
-            // The one case that reaches here: their own coding. Say so — an
-            // empty cell reads as a bug, and "waiting on someone else" is
-            // genuinely the status.
-            <Text className="mt-1.5 text-2xs italic text-muted">
-              Yours — another reviewer decides it
-            </Text>
-          )}
-          {row.canReview && row.budgetRequired ? (
-            <Text className="mt-1 text-right text-2xs text-warn">
-              Needs a budget — open the record to set it
-            </Text>
-          ) : null}
-        </Cell>
-      </Row>
-
-      {/* The purpose is the substance of the review, so it gets its own line
-          at full width rather than a truncated column — and, for whoever can
-          decide the row, the place to strip a name out of it before it
-          publishes rather than bouncing the whole coding back over one. */}
-      <View className="px-4 pb-3">
-        <Text className="text-xs text-ink">{row.coding.businessPurpose}</Text>
-        {substantiation ? (
-          <Text className="mt-0.5 text-2xs text-muted">{substantiation}</Text>
-        ) : null}
-        {row.canReview ? (
-          <PublicPurposeEditor
-            transactionId={row.transactionId}
-            state={row.coding}
-            runAction={runAction}
-          />
-        ) : (
-          <PublicPurposeNotice state={row.coding} />
-        )}
-      </View>
-
-      {sendingBack ? (
-        <View className="gap-2 border-t border-border bg-sunken px-4 py-3">
-          <TextField
-            label="What would make it approvable?"
-            value={note}
-            onChangeText={setNote}
-            placeholder='e.g. "Receipt must show the exact amount"'
-            multiline
-            numberOfLines={2}
-          />
-          <View className="flex-row gap-2">
-            <Button
-              title="Send back"
-              size="sm"
-              loading={busy}
-              onPress={() =>
-                void run(async () => {
-                  await requestChanges({
-                    transactionId: row.transactionId as Id<"transactions">,
-                    reviewNote: note,
-                  });
-                  setSendingBack(false);
-                })
-              }
-            />
-            <Button
-              title="Cancel"
-              size="sm"
-              variant="secondary"
-              onPress={() => setSendingBack(false)}
-            />
-          </View>
-        </View>
-      ) : null}
-
-      {/* THE WHOLE RECORD, in place. Mounted only while open so a queue of a
-          hundred rows doesn't fire a hundred record queries — and unmounted on
-          collapse so reopening a row re-reads it rather than showing a
-          decision-stale copy. */}
-      {open ? (
-        <ReviewRecord
-          transactionId={row.transactionId}
-          runAction={runAction}
-        />
-      ) : null}
-    </View>
-  );
-}
-
-/** The three beats of a review, said out loud above the table.
- *
- *  Founder: "the review workflow is not as obvious." It wasn't stated
- *  anywhere — the queue showed rows and two buttons, and a reader had to infer
- *  that opening the record was a step at all (it wasn't, before this) let
- *  alone the FIRST one. Three short beats, not a lesson: this is a strip
- *  somebody reads once and then stops seeing. */
-const REVIEW_STEPS: { icon: "file-text" | "search" | "check-circle"; text: string }[] = [
-  { icon: "search", text: "Open the record" },
-  { icon: "file-text", text: "Read the proof and who was there" },
-  { icon: "check-circle", text: "Approve, or send it back with a note" },
-];
-
-function ReviewSteps() {
-  return (
-    <View className="mb-3 flex-row flex-wrap items-center gap-x-2 gap-y-1.5 rounded-lg border border-border bg-sunken px-3 py-2">
-      {REVIEW_STEPS.map((step, i) => (
-        <View key={step.text} className="flex-row items-center gap-2">
-          {i > 0 ? (
-            <Icon name="chevron-right" size={12} color={colors.faint} />
-          ) : null}
-          <View className="flex-row items-center gap-1.5">
-            <Icon name={step.icon} size={12} color={colors.muted} />
-            <Text className="text-2xs text-muted">
-              <Text className="font-semibold text-ink">{i + 1}.</Text> {step.text}
-            </Text>
-          </View>
-        </View>
-      ))}
-    </View>
-  );
-}
+export type { ReviewQueueRow, RunAction } from "./reviewQueueShared";
 
 export function ReviewQueue({
   rows,
   showBook,
   bookFilterName,
   runAction,
+  wide,
 }: {
   rows: ReviewQueueRow[];
-  /** Show the Book column — only meaningful when the queue spans books. */
+  /** Name the book on each card — only meaningful when the queue spans books. */
   showBook: boolean;
   /** The book the queue is filtered to, for the empty state's wording. */
   bookFilterName: string | null;
   runAction: RunAction;
+  /** List | record side by side. Below this the record is a full-screen sheet. */
+  wide: boolean;
 }) {
-  // ONE open record at a time. This is a list somebody works down — a stack of
-  // expanded panels turns it into a thing to scroll past rather than a queue
-  // to clear, and each open record is a live query.
+  const { decidable, waitingOnOthers } = useMemo(() => reviewOrder(rows), [rows]);
+  const ordered = useMemo(
+    () => [...decidable, ...waitingOnOthers],
+    [decidable, waitingOnOthers],
+  );
+  const navRows = useMemo(
+    () => ordered.map((r) => ({ id: r.transactionId })),
+    [ordered],
+  );
+
+  // Which coding is open. On a wide screen `null` means "the first one" —
+  // there is always something in the right half. On a phone `null` means the
+  // sheet is closed.
   const [openId, setOpenId] = useState<string | null>(null);
+  const [sendingBack, setSendingBack] = useState(false);
+  const [pendingUndo, setPendingUndo] = useState<PendingUndo | null>(null);
+
+  const effectiveId =
+    openId != null && navRows.some((r) => r.id === openId)
+      ? openId
+      : wide
+        ? (navRows[0]?.id ?? null)
+        : null;
+  const openRow = ordered.find((r) => r.transactionId === effectiveId) ?? null;
+
+  // ADVANCE ON DECIDE. A decided coding leaves the queue a beat later (the
+  // query is live), so rather than guess the next row before the server
+  // agrees, remember where the open row sat and land on whatever occupies
+  // that slot once it's gone — the `panelNav` rule the workbench already uses.
+  const lastIndex = useRef<number | null>(null);
+  useEffect(() => {
+    const i = navRows.findIndex((r) => r.id === openId);
+    if (i !== -1) {
+      lastIndex.current = i;
+      return;
+    }
+    if (openId == null) return;
+    setOpenId(selectionAfterRowsShrink(navRows, lastIndex.current));
+  }, [navRows, openId]);
+
+  // A different coding never inherits a half-written send-back note.
+  useEffect(() => setSendingBack(false), [effectiveId]);
+
+  const step = (delta: 1 | -1) => {
+    const next = stepSelection(navRows, effectiveId, delta);
+    if (next) setOpenId(next);
+  };
+  const hasPrev = stepSelection(navRows, effectiveId, -1) != null;
+  const hasNext = stepSelection(navRows, effectiveId, 1) != null;
+
+  function onDecided(decision: Decision, row: ReviewQueueRow) {
+    // Pin the selection to the decided row so the shrink rule above fires
+    // when it leaves, even on a wide screen where `openId` may still be null.
+    setOpenId(row.transactionId);
+    if (decision === "approved") {
+      setPendingUndo({
+        transactionId: row.transactionId as Id<"transactions">,
+        label: `${money(row.amountCents)}${row.merchantName ? ` ${row.merchantName}` : ""}`,
+      });
+    }
+  }
+
+  // ── keyboard, wide web only: J/K or arrows to move, S send back, A approve.
+  // Ignored while typing, so a note or a purpose edit never moves the queue.
+  const approveRef = useRef<(() => void) | null>(null);
+  useEffect(() => {
+    if (Platform.OS !== "web" || !wide || typeof document === "undefined") return;
+    function onKey(e: KeyboardEvent) {
+      if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey) return;
+      const el = document.activeElement as HTMLElement | null;
+      if (el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.isContentEditable)) {
+        return;
+      }
+      if (e.key === "j" || e.key === "ArrowDown") {
+        e.preventDefault();
+        step(1);
+      } else if (e.key === "k" || e.key === "ArrowUp") {
+        e.preventDefault();
+        step(-1);
+      } else if (e.key === "s" && openRow?.canReview) {
+        e.preventDefault();
+        setSendingBack(true);
+      } else if (e.key === "a" && openRow?.canReview && !openRow.budgetRequired) {
+        e.preventDefault();
+        approveRef.current?.();
+      }
+    }
+    document.addEventListener("keydown", onKey);
+    return () => document.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wide, navRows, effectiveId, openRow]);
+
+  // The phone sheet is its own Modal, so it needs its own error toast — the
+  // screen's toast renders underneath it, where nobody would see a refusal.
+  const sheetRunner = useActionRunner();
+  const { height } = useWindowDimensions();
 
   if (rows.length === 0) {
     return (
-      <EmptyState
-        title={
-          bookFilterName
-            ? `Nothing waiting on you in ${bookFilterName}`
-            : "Nothing waiting on you"
-        }
-        message="Every coding you can decide has been decided. New ones land here the moment a cardholder submits."
+      <View className="gap-3">
+        {pendingUndo ? (
+          <UndoBar pending={pendingUndo} onDone={() => setPendingUndo(null)} />
+        ) : null}
+        <EmptyState
+          title={
+            bookFilterName
+              ? `Nothing waiting on you in ${bookFilterName}`
+              : "Nothing waiting on you"
+          }
+          message="Every coding you can decide has been decided. New ones land here the moment a cardholder submits."
+        />
+      </View>
+    );
+  }
+
+  const undoBanner = pendingUndo ? (
+    <UndoBar pending={pendingUndo} onDone={() => setPendingUndo(null)} />
+  ) : null;
+
+  const list = (
+    <View className="gap-2.5">
+      {decidable.map((r) => (
+        <ReviewCard
+          key={r.transactionId}
+          row={r}
+          showBook={showBook}
+          compact={wide}
+          selected={wide && r.transactionId === effectiveId}
+          onPress={() => setOpenId(r.transactionId)}
+        />
+      ))}
+      {waitingOnOthers.length > 0 ? (
+        <>
+          <Text className="mt-3 text-2xs font-semibold uppercase tracking-wide text-muted">
+            Yours — another reviewer decides
+          </Text>
+          {waitingOnOthers.map((r) => (
+            <ReviewCard
+              key={r.transactionId}
+              row={r}
+              showBook={showBook}
+              compact={wide}
+              selected={wide && r.transactionId === effectiveId}
+              onPress={() => setOpenId(r.transactionId)}
+            />
+          ))}
+        </>
+      ) : null}
+    </View>
+  );
+
+  const pane = (run: RunAction, onClose?: () => void) =>
+    openRow ? (
+      <ReviewDecisionPane
+        key={openRow.transactionId}
+        row={openRow}
+        runAction={run}
+        position={panelPosition(navRows, effectiveId)}
+        onPrev={hasPrev ? () => step(-1) : null}
+        onNext={hasNext ? () => step(1) : null}
+        onClose={onClose}
+        onDecided={onDecided}
+        banner={undoBanner}
+        sendingBack={sendingBack}
+        onSendingBackChange={setSendingBack}
+        approveRef={approveRef}
       />
+    ) : null;
+
+  if (wide) {
+    const paneHeight = Math.max(560, height - 200);
+    return (
+      <View className="flex-row gap-4" style={{ alignItems: "flex-start" }}>
+        <ScrollView style={{ width: 360, maxHeight: paneHeight }} contentContainerStyle={{ paddingRight: 4 }}>
+          {list}
+        </ScrollView>
+        <View
+          className="flex-1 overflow-hidden rounded-lg border border-border shadow-card"
+          style={{ height: paneHeight, minWidth: 0 }}
+        >
+          {pane(runAction)}
+        </View>
+      </View>
     );
   }
 
   return (
     <View>
-      <ReviewSteps />
-      <Table>
-        <TableHeader>
-          {showBook ? <HeaderCell width={110}>Book</HeaderCell> : null}
-          <HeaderCell flex={3}>Charge</HeaderCell>
-          <HeaderCell width={100} align="right">
-            Amount
-          </HeaderCell>
-          <HeaderCell width={150}>Proved by</HeaderCell>
-          <HeaderCell width={260} align="right">
-            {" "}
-          </HeaderCell>
-        </TableHeader>
-        {rows.map((r, i) => (
-          <QueueRow
-            key={r.transactionId}
-            row={r}
-            last={i === rows.length - 1}
-            showBook={showBook}
-            open={openId === r.transactionId}
-            onToggle={() =>
-              setOpenId((current) =>
-                current === r.transactionId ? null : r.transactionId,
-              )
-            }
-            runAction={runAction}
-          />
-        ))}
-      </Table>
+      {openRow == null ? undoBanner : null}
+      {list}
+      {openRow ? (
+        <Modal
+          visible
+          animationType="slide"
+          presentationStyle="fullScreen"
+          onRequestClose={() => setOpenId(null)}
+        >
+          <SheetFrame>
+            {pane(sheetRunner.run, () => setOpenId(null))}
+            <ToastView toast={sheetRunner.toast} onDismiss={sheetRunner.dismiss} />
+          </SheetFrame>
+        </Modal>
+      ) : null}
+    </View>
+  );
+}
+
+/** Safe-area padding for the full-screen sheet on a phone. */
+function SheetFrame({ children }: { children: ReactNode }) {
+  const insets = useSafeAreaInsets();
+  return (
+    <KeyboardAvoidingView
+      behavior={Platform.OS === "ios" ? "padding" : undefined}
+      className="flex-1 bg-raised"
+      style={Platform.OS === "web" ? undefined : { paddingTop: insets.top, paddingBottom: insets.bottom }}
+    >
+      {children}
+    </KeyboardAvoidingView>
+  );
+}
+
+function UndoBar({ pending, onDone }: { pending: PendingUndo; onDone: () => void }) {
+  return <ApproveUndoBar key={pending.transactionId} pending={pending} onDone={onDone} />;
+}
+
+function ReviewCard({
+  row,
+  showBook,
+  compact,
+  selected,
+  onPress,
+}: {
+  row: ReviewQueueRow;
+  showBook: boolean;
+  compact: boolean;
+  selected: boolean;
+  onPress: () => void;
+}) {
+  const doc = DOCUMENTATION_DISPLAY[row.documentation];
+  const waited = daysWaiting(row.coding.submittedAt);
+  const meta = [
+    showBook ? row.book.name : null,
+    row.coding.codedByName,
+    shortDate(row.postedAt),
+  ]
+    .filter(Boolean)
+    .join(" · ");
+  return (
+    <Pressable
+      onPress={onPress}
+      accessibilityRole="button"
+      accessibilityLabel={`Review ${money(row.amountCents)} ${row.merchantName ?? "charge"}`}
+      accessibilityState={{ selected }}
+      className={`gap-1.5 rounded-lg border p-3.5 ${
+        selected ? "border-accent bg-accent-soft" : "border-border bg-raised shadow-card"
+      }`}
+    >
+      <View className="flex-row items-baseline justify-between gap-3">
+        <Text className="flex-1 text-xs font-semibold uppercase tracking-wide text-muted" numberOfLines={1}>
+          {row.merchantName ?? "Charge"}
+        </Text>
+        <Text className="text-base font-bold text-ink">{money(row.amountCents)}</Text>
+      </View>
+      <Text className={`${compact ? "text-sm" : "text-base"} leading-snug text-ink`} numberOfLines={compact ? 2 : 3}>
+        {row.coding.businessPurpose}
+      </Text>
+      <Text className="text-xs text-muted" numberOfLines={1}>
+        {meta}
+      </Text>
+      <View className="mt-0.5 flex-row flex-wrap items-center gap-1.5">
+        <Tag icon={doc.icon} color={doc.color} label={doc.label} />
+        <Tag
+          icon="clock"
+          color={waited >= 30 ? colors.warn : colors.muted}
+          label={waited > 0 ? `${waited} day${waited === 1 ? "" : "s"}` : "Today"}
+        />
+        {row.canReview && row.budgetRequired ? (
+          <Tag icon="alert-triangle" color={colors.warn} label="Needs a budget" />
+        ) : null}
+        {!compact ? (
+          <View className="ml-auto flex-row items-center">
+            <Text className="text-sm font-semibold text-accent-hover">Review</Text>
+            <Icon name="chevron-right" size={16} color={colors.accentHover} />
+          </View>
+        ) : null}
+      </View>
+    </Pressable>
+  );
+}
+
+function Tag({
+  icon,
+  color,
+  label,
+}: {
+  icon: "paperclip" | "file-text" | "clock" | "alert-triangle";
+  color: string;
+  label: string;
+}) {
+  return (
+    <View className="flex-row items-center gap-1 rounded-pill bg-sunken px-2 py-0.5">
+      <Icon name={icon} size={11} color={color} />
+      <Text className="text-2xs font-semibold text-ink">{label}</Text>
     </View>
   );
 }

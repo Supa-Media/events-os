@@ -90,7 +90,6 @@ import {
   type ChargeFilter,
   type MyTxnRow,
 } from "../../../components/finance/myTransactions/chargeTodo";
-import { ChapterWorkload } from "../../../components/finance/coding/ChapterWorkload";
 import { CodingWorkbenchPanel } from "../../../components/finance/coding/CodingWorkbenchPanel";
 import {
   panelPosition,
@@ -101,11 +100,15 @@ import {
   type ReviewQueueRow,
 } from "../../../components/finance/coding/ReviewQueue";
 
-/** Selector order: broadest first, so "All books" reads as the default it is.
- *  Copied deliberately from `reconcile.tsx` — same pills, same order, same
- *  words, because it is the same choice about the same books. */
+/** Same scope vocabulary as `reconcile.tsx` — it is the same choice about the
+ *  same books. */
 type BookScope = "all" | "central" | "chapter";
-const BOOK_SCOPES: BookScope[] = ["all", "central", "chapter"];
+
+/** The bar a coding has to clear, in full. On the page it is one line plus
+ *  this tooltip: the full paragraph used to sit above the queue on every
+ *  visit, pushing the first coding below the fold on a phone. */
+const REVIEW_BAR_TEXT =
+  "Codings people have submitted, oldest first — the ones that have waited longest are the ones the 60-day clock is running against. Approve one only when it would satisfy a stranger reading the public ledger; otherwise send it back with a note saying exactly what would make it approvable.";
 
 /** Below this window width the side panel doesn't fit next to a readable
  *  list — same threshold `explain.tsx`'s own wide-panel split uses
@@ -130,6 +133,10 @@ export default function CodingScreen() {
     filter?: string;
     scope?: string;
     chapterId?: string;
+    /** `?review=1` — the reviewer digest email's deep link. Puts the review
+     *  queue first even when the reader also has charges of their own to
+     *  code: they came here to review. */
+    review?: string;
   }>();
 
   const workload = useQuery(api.transactionCodings.workload, {});
@@ -302,7 +309,7 @@ export default function CodingScreen() {
   // one is SECOND — a fixed `mt-8` on the review block would indent it from
   // the top of the page when it leads and leave the other flush when it
   // doesn't.
-  const reviewFirst = actionableCount === 0;
+  const reviewFirst = actionableCount === 0 || params.review === "1";
 
   // The two halves, built once and ORDERED below — see the comment at their
   // render site for why the order is conditional.
@@ -437,56 +444,60 @@ export default function CodingScreen() {
                   : undefined
               }
             />
-            <Text className="mb-3 text-sm text-muted">
-              Codings people have submitted, oldest first — the ones that have
-              waited longest are the ones the 60-day clock is running against.
-              Approve one only when it would satisfy a stranger reading the
-              public ledger; otherwise send it back with a note saying exactly
-              what would make it approvable.
-            </Text>
+            <View className="mb-3 flex-row items-center gap-1.5">
+              <Text className="flex-shrink text-sm text-muted">
+                Approve when a stranger reading the public ledger would be
+                satisfied.
+              </Text>
+              <InfoTooltip text={REVIEW_BAR_TEXT} />
+            </View>
 
+            {/* ONE ROW OF BOOKS. This replaces the per-chapter roll-up table
+                AND the All books / Central / One chapter pills under it —
+                two controls for one choice, which on a phone filled the
+                screen before the first coding. Each chip carries its
+                awaiting-review count; the "still to code" half of the old
+                table is one line under it. */}
             {orgWide && workload.byChapter.length > 0 ? (
-              <ChapterWorkload
-                rows={workload.byChapter}
-                selectedBookId={
-                  scope === "central"
-                    ? "central"
-                    : scope === "chapter"
-                      ? drillChapterId
-                      : null
-                }
-                onSelectBook={(bookId) => {
-                  if (bookId == null) setScope("all");
-                  else if (bookId === "central") setScope("central");
-                  else setScope("chapter", bookId);
-                }}
-              />
-            ) : null}
-
-            {orgWide ? (
-              <View className="mb-3 flex-row flex-wrap items-center gap-2">
-                {BOOK_SCOPES.map((s) => (
+              <View className="mb-4 gap-2">
+                <View className="flex-row flex-wrap items-center gap-2">
                   <Pill
-                    key={s}
-                    label={
-                      s === "all"
-                        ? "All books"
-                        : s === "central"
-                          ? "Central"
-                          : (ownChapterName ?? "One chapter")
-                    }
-                    selected={scope === s}
-                    onPress={() => {
-                      if (s === "chapter") {
-                        // Nothing to drill into until a book is chosen above —
-                        // the roll-up is the picker, so the pill only reflects.
-                        if (drillChapterId) setScope("chapter", drillChapterId);
-                        return;
-                      }
-                      setScope(s);
-                    }}
+                    label="All books"
+                    count={workload.byChapter.reduce((n, b) => n + b.awaitingReview, 0)}
+                    selected={scope === "all"}
+                    onPress={() => setScope("all")}
                   />
-                ))}
+                  {workload.byChapter
+                    .filter(
+                      (b) =>
+                        b.awaitingReview > 0 ||
+                        (b.id === "central" ? scope === "central" : drillChapterId === b.id),
+                    )
+                    .map((b) => (
+                      <Pill
+                        key={b.id}
+                        label={b.name}
+                        count={b.awaitingReview}
+                        selected={
+                          b.id === "central"
+                            ? scope === "central"
+                            : scope === "chapter" && drillChapterId === b.id
+                        }
+                        onPress={() =>
+                          b.id === "central" ? setScope("central") : setScope("chapter", b.id)
+                        }
+                      />
+                    ))}
+                </View>
+                {workload.byChapter.some((b) => b.toCode > 0) ? (
+                  <Text className="text-xs text-muted">
+                    Still with their cardholders:{" "}
+                    {workload.byChapter
+                      .filter((b) => b.toCode > 0)
+                      .map((b) => `${b.name} ${b.toCode}`)
+                      .join(" · ")}
+                  </Text>
+                ) : null}
               </View>
             ) : null}
 
@@ -504,6 +515,7 @@ export default function CodingScreen() {
                       : null
                 }
                 runAction={run}
+                wide={isWide && !showPanel}
               />
             )}
             {queue?.hasMore ? (

@@ -62,7 +62,7 @@ import {
   ExpenseTypeChips,
   useCodingFormState,
 } from "./CodingFieldSet";
-import type { RunAction } from "./ReviewQueue";
+import type { RunAction } from "./reviewQueueShared";
 
 /** The coding as the review record already read it — passed in rather than
  *  re-queried, so the panel can never open on a different revision than the
