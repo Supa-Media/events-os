@@ -6153,6 +6153,9 @@ const reviewDigestItemValidator = v.object({
   amountCents: v.number(),
   merchantName: v.union(v.string(), v.null()),
   bookName: v.string(),
+  /** The book's id (a chapter id, or `"central"`), so the email's button can
+   *  open the queue already filtered to it. */
+  bookId: v.string(),
   purpose: v.string(),
   codedByName: v.union(v.string(), v.null()),
   daysWaiting: v.number(),
@@ -6235,6 +6238,7 @@ export const getCodingReviewDigests = internalQuery({
           amountCents: txn.amountCents,
           merchantName: txn.merchantName ?? null,
           bookName,
+          bookId: String(coding.chapterId),
           purpose: coding.businessPurpose,
           codedByName: author?.name ?? null,
           daysWaiting: Math.max(
@@ -6248,6 +6252,23 @@ export const getCodingReviewDigests = internalQuery({
     return [...byPerson.values()].filter((e) => e.items.length > 0);
   },
 });
+
+/**
+ * Where the digest's button lands. `review=1` puts the review queue first on
+ * the Coding tab; when every listed coding is in one book, the queue opens
+ * filtered to that book, so the codings the email named are the ones on
+ * screen. Before this the button opened every book oldest-first, and a
+ * reviewer told about two new Central codings found them under sixteen older
+ * ones from another chapter (Dev2, 2026-11-07).
+ */
+function codingReviewLink(bookIds: string[]): string {
+  const books = new Set(bookIds);
+  if (books.size !== 1) return "/finances/coding?review=1";
+  const [only] = books;
+  return only === CENTRAL
+    ? "/finances/coding?review=1&scope=central"
+    : `/finances/coding?review=1&scope=chapter&chapterId=${encodeURIComponent(only)}`;
+}
 
 /** One reviewer's digest email. Best-effort like every other send here. */
 async function notifyCodingReviewDigest(
@@ -6280,7 +6301,7 @@ async function notifyCodingReviewDigest(
         }`,
     ),
   );
-  const link = appUrl("/finances/coding");
+  const link = appUrl(codingReviewLink(digest.items.map((i) => i.bookId)));
   await sendEmail(ctx, {
     to: digest.email,
     subject,

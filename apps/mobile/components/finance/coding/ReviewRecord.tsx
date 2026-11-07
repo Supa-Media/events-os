@@ -81,7 +81,7 @@ import {
 } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { ReviseUnderReview } from "./ReviseUnderReview";
-import type { RunAction } from "./ReviewQueue";
+import type { RunAction } from "./reviewQueueShared";
 
 const EXCEPTION_STATUS_TONE: Record<string, BadgeTone> = {
   pending: "warn",

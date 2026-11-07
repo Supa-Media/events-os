@@ -111,13 +111,13 @@ function dateStr(ts: number): string {
  *  when they approved it. Held by the PANEL, not by `ReviewActions`, because
  *  `renderReview` only mounts while a coding is `submitted` — the instant the
  *  approval lands, the component that made it is gone. */
-interface PendingUndo {
+export interface PendingUndo {
   transactionId: Id<"transactions">;
   label: string;
 }
 
 /** The Approve/Send back block — the same `approve`/`requestChanges`
- *  mutations `ReviewQueue`'s `QueueRow` calls, wired into
+ *  mutations `ReviewDecisionPane` calls, wired into
  *  `FinishChargeSheetBody`'s `renderReview` slot so it renders right under
  *  the coding it decides. `canReview: false` (a reviewer looking at their
  *  own submitted coding — self-review) shows the same "waiting on someone
@@ -325,7 +325,7 @@ function ReviewActions({
  * while may have been acted on — and, with the grid's `explained` facet, still
  * findable. Nothing depends on catching the toast.
  */
-function ApproveUndoBar({
+export function ApproveUndoBar({
   pending,
   onDone,
 }: {

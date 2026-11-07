@@ -82,3 +82,60 @@ export function breakdownLine(
 export function daysWaiting(submittedAt: number, now = Date.now()): number {
   return Math.max(0, Math.floor((now - submittedAt) / 86_400_000));
 }
+
+/**
+ * The order a reviewer works the queue in: every row they can DECIDE first,
+ * then the rows that are waiting on somebody else (in practice, their own
+ * codings — separation of duties). Each half keeps the server's order, which
+ * is oldest submission first: the queue is a clock, not an inbox.
+ *
+ * Why split at all: a reviewer's own coding mixed into the list is a card they
+ * open, read, and then find they can't act on. Putting them last, under their
+ * own heading, keeps "the next thing I can clear" always at the top.
+ */
+export function reviewOrder<T extends { canReview: boolean }>(
+  rows: readonly T[],
+): { decidable: T[]; waitingOnOthers: T[] } {
+  return {
+    decidable: rows.filter((r) => r.canReview),
+    waitingOnOthers: rows.filter((r) => !r.canReview),
+  };
+}
+
+/**
+ * One-tap reasons on the send-back sheet. Each fills the note with a sentence
+ * that says what would make the coding approvable, because that is the bar
+ * the queue sets ("send it back with a note saying exactly what would make it
+ * approvable") and a bare "receipt" is not that. The reviewer can edit the
+ * text before sending.
+ */
+export const SEND_BACK_REASONS: readonly { label: string; note: string }[] = [
+  {
+    label: "Receipt doesn't match",
+    note: "The receipt doesn't match the charge amount. Please attach the right one, or explain the difference.",
+  },
+  {
+    label: "Receipt unreadable",
+    note: "I can't read the receipt. Please attach a clearer copy.",
+  },
+  {
+    label: "Purpose too vague",
+    note: "The purpose is too vague for the public ledger. Say what it bought and which event or work it served.",
+  },
+  {
+    label: "Who was there?",
+    note: "Please list who was there and how each person is connected to Public Worship.",
+  },
+];
+
+/** Picking a reason replaces a note that is empty or is itself an untouched
+ *  reason, and is appended to anything the reviewer typed — tapping a chip
+ *  must never throw away their own words. */
+export function applySendBackReason(current: string, reasonNote: string): string {
+  const trimmed = current.trim();
+  if (trimmed === "" || SEND_BACK_REASONS.some((r) => r.note === trimmed)) {
+    return reasonNote;
+  }
+  if (trimmed.includes(reasonNote)) return current;
+  return `${trimmed} ${reasonNote}`;
+}
