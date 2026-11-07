@@ -415,7 +415,7 @@ describe("getCodingReviewDigests — who hears about it", () => {
 });
 
 describe("the digest email itself", () => {
-  test("names the charges, quotes each purpose, and links to the Coding tab", async () => {
+  test("names the charges, quotes each purpose, and links to the queue for that book", async () => {
     const cap = captureEmails();
     try {
       const s = await seatSetup();
@@ -442,8 +442,12 @@ describe("the digest email itself", () => {
       expect(cap.sent[0].html).toContain(
         "Travel to NY to film the Eden event with the team",
       );
+      // Every listed coding is in one chapter, so the button opens the
+      // queue first and filtered to that book.
       expect(cap.sent[0].html).toMatch(
-        /href="https:\/\/app\.publicworship\.life\/finances\/coding"/,
+        new RegExp(
+          `href="https://app\\.publicworship\\.life/finances/coding\\?review=1&(amp;)?scope=chapter&(amp;)?chapterId=${s.chapterId}"`,
+        ),
       );
     } finally {
       cap.restore();
