@@ -16,7 +16,7 @@ import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
-import { CONVEX_ORIGIN, OS_PREFIX, route } from "./route";
+import { CONVEX_ORIGIN, CONVEX_PROXY_PATH, OS_PREFIX, route } from "./route";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "../../..");
@@ -213,5 +213,14 @@ describe("drift guard: production Convex deployment matches CONVEX_ORIGIN", () =
         "matches infra/router/src/route.ts's CONVEX_ORIGIN — update " +
         "infra/router/src/route.ts's CONVEX_ORIGIN",
     ).toBe(`https://${match?.[1]}.convex.site`);
+  });
+});
+
+describe("drift guard: the web app's Convex proxy path matches the router", () => {
+  it("apps/mobile/lib/convexUrl.ts's CONVEX_PROXY_PATH matches route.ts's", () => {
+    const src = read("apps/mobile/lib/convexUrl.ts");
+    const match = src.match(/CONVEX_PROXY_PATH\s*=\s*"([^"]+)"/);
+    expect(match, "couldn't find CONVEX_PROXY_PATH in apps/mobile/lib/convexUrl.ts").not.toBeNull();
+    expect(match?.[1]).toBe(CONVEX_PROXY_PATH);
   });
 });

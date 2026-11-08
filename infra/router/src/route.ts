@@ -36,7 +36,9 @@ export const CONVEX_CLOUD_ORIGIN = "https://vivid-rhinoceros-688.convex.cloud";
  * Why: on some networks the app loaded but its live connection to
  * *.convex.cloud never opened, so it sat on "Checking your sign-in…" forever
  * (Dev2's iPhone, 2026-11-08). Same-origin traffic can't be singled out by a
- * filter or blocker that refuses a third-party host.
+ * filter or blocker that refuses a third-party host. Mirrored as
+ * CONVEX_PROXY_PATH in apps/mobile/lib/convexUrl.ts — drift.test.ts asserts
+ * they match.
  */
 export const CONVEX_PROXY_PATH = "/_convex";
 
