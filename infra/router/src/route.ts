@@ -32,6 +32,10 @@ export const CONVEX_ORIGIN = "https://vivid-rhinoceros-688.convex.site";
 // three stay in sync.
 export const OS_PREFIX = "/os";
 
+/** An `expo export` asset: under /assets/, named `<name>.<md5>.<ext>`. The
+ *  hash is the file's content hash, so the URL changes whenever the bytes do. */
+const HASHED_ASSET = /^\/assets\/.+\.[0-9a-f]{32}\.[a-z0-9]+$/i;
+
 // The blog's OLD feed path. Posts moved into Convex and the feed moved with
 // them to /blog/rss.xml (packages/shared/src/marketingBlog.ts#BLOG_FEED_PATH),
 // because /rss.xml was an Astro route and could not follow them without
@@ -189,8 +193,13 @@ export function route(url: URL): RouteDecision {
   if (pathname === OS_PREFIX || pathname.startsWith(`${OS_PREFIX}/`)) {
     const strippedPath = stripOsPrefix(pathname);
     // Expo's content-hashed bundle output (/_expo/*) is immutable — safe to
-    // cache at the edge indefinitely (see index.ts's proxy branch).
-    const cache = strippedPath.startsWith("/_expo/") ? "immutable" : undefined;
+    // cache at the edge and in the browser indefinitely (see index.ts's proxy
+    // branch). So are exported assets (fonts, icons) whose file name carries
+    // their content hash, e.g. /assets/…/DMSans_400Regular.<32 hex>.ttf.
+    const cache =
+      strippedPath.startsWith("/_expo/") || HASHED_ASSET.test(strippedPath)
+        ? "immutable"
+        : undefined;
     return {
       kind: "proxy",
       target: `${EXPO_ORIGIN}${strippedPath}${search}`,

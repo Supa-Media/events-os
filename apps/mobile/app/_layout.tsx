@@ -10,6 +10,7 @@ import { SupaConvexProvider } from "@supa-media/core/providers";
 import { loadNotificationProvider } from "../lib/notificationProvider";
 import { loadKeyboardController } from "../lib/keyboardController";
 import { ErrorBoundary } from "../components/ErrorBoundary";
+import { BootSplash } from "../components/BootSplash";
 import {
   useFonts,
   Corben_400Regular,
@@ -102,7 +103,7 @@ export default function RootLayout() {
                     Convex/auth + notification providers so its recovery Screen
                     still has context, but above the route Slot so it wraps
                     every screen. */}
-                <ErrorBoundary>{showApp ? <Slot /> : null}</ErrorBoundary>
+                <ErrorBoundary>{showApp ? <Slot /> : <BootSplash />}</ErrorBoundary>
               </Notifications>
             </SupaConvexProvider>
           </ErrorBoundary>
