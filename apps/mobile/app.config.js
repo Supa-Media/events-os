@@ -112,7 +112,24 @@ module.exports = ({ config }) => {
       favicon: "./assets/favicon.png",
     },
     plugins: [
-      "expo-router",
+      [
+        "expo-router",
+        {
+          // ROUTE-LEVEL CODE SPLITTING, web only. Without it the web app is
+          // one 11 MB script (2.75 MB compressed) holding every screen — the
+          // email designer, the markdown editor, the Academy — and nothing
+          // paints until all of it has downloaded. On a slow phone connection
+          // that measured 55 s of loading before the coding review page could
+          // even start (Dev2, 2026-11-08). With async routes each screen is
+          // its own chunk, fetched when it is opened.
+          //
+          // Native stays synchronous ("production" is web-only per
+          // expo-router's own option docs, and every native binary shares
+          // one runtime version — see CLAUDE.md), so OTA bundles are
+          // unchanged.
+          asyncRoutes: { web: "production", ios: false, android: false, default: false },
+        },
+      ],
       [
         "expo-image-picker",
         {
