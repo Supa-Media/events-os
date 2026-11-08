@@ -646,14 +646,12 @@ export function ExpenseTypeChips({
  * about the same charge and must not get a second, drifting copy of them. The
  * two things that genuinely differ are stated as `mode`, and nothing else:
  *
- *  1. THE PURPOSE IS READ-ONLY IN REVIEW. `businessPurpose` is the author's
- *     own words and the substantiation of record — a reviewer's channel for
- *     the PUBLISHED wording is `setPublicPurpose`, which stores the rewrite
- *     beside the original (`PublicPurposeEditor`, already on the queue row).
- *     The server refuses the other thing by construction
- *     (`transactionCodings.reviseUnderReview` has no `businessPurpose`
- *     argument), so an editable box here would be a field that silently
- *     doesn't save.
+ *  1. THE PURPOSE IS CORRECTABLE, AND THE ORIGINAL IS SHOWN. Since
+ *     2026-11-08 a reviewer may correct `businessPurpose` (Dev2: "instead of
+ *     sending back sometimes I may correct categories budgets reasons etc").
+ *     The server keeps the author's own words in `authorBusinessPurpose`, and
+ *     this form shows them under the box once they differ, so the reviewer
+ *     always sees what they are changing.
  *  2. THE BUDGET COPY INVERTS. "Not sure? Leave it — the finance team will
  *     set it" is right for a cardholder and false to the face of the person
  *     who IS the finance team; for them the honest line is that the charge
@@ -665,8 +663,12 @@ export function CodingFieldSet({
   personalChargeSlot,
   transactionId,
   mode = "author",
+  authorPurpose,
 }: {
   form: CodingFormState;
+  /** Review mode only: what the AUTHOR wrote, when that differs from the
+   *  sentence in the box (an earlier correction, or this one). */
+  authorPurpose?: string | null;
   minPurposeLength: number;
   /** Who is filling this in — see the module doc above for the two
    *  differences. Defaults to `"author"`, which is every existing host. */
@@ -881,30 +883,37 @@ export function CodingFieldSet({
     </>
   );
 
-  // THE AUTHOR'S SENTENCE, SHOWN AND NOT EDITABLE — see the module doc. It is
-  // rendered rather than omitted because it is the thing every other field on
-  // this form is describing: a reviewer retyping a charge as lodging is doing
-  // it BECAUSE of what the sentence says.
+  // THE SENTENCE, CORRECTABLE — see the module doc. The author's own words
+  // stay on screen under the box once they differ from it, so a correction is
+  // never made blind and never hides what was originally said.
   if (reviewing) {
+    const original = authorPurpose ?? null;
+    const differs =
+      original != null && original.trim() !== form.businessPurpose.trim();
     return (
       <>
-        <Text className="mb-2 text-2xs font-semibold uppercase tracking-wide text-muted">
-          What they said it was for
-        </Text>
-        <View className="rounded-md border border-border bg-raised px-3 py-2.5">
-          <Text className="text-sm text-ink">{form.businessPurpose}</Text>
-        </View>
+        <TextField
+          label="What it was for"
+          accessibilityLabel="What it was for"
+          value={form.businessPurpose}
+          onChangeText={form.setBusinessPurpose}
+          multiline
+          numberOfLines={3}
+        />
+        {differs ? (
+          <View className="mt-1.5 rounded-md border border-border bg-sunken px-3 py-2">
+            <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
+              They wrote
+            </Text>
+            <Text className="text-xs text-ink">{original}</Text>
+          </View>
+        ) : null}
         <View className="mt-1.5 flex-row items-start gap-2">
-          <Icon name="lock" size={12} color={colors.muted} />
+          <Icon name="info" size={12} color={colors.muted} />
           <Text className="flex-1 text-2xs text-muted">
-            <Text className="font-semibold text-ink">
-              Their words stay their words.
-            </Text>{" "}
-            This is the substantiation of record and nobody else edits it. To
-            change what PUBLISHES — to strip a name, say — use &quot;Edit what
-            publishes&quot; on the row; the original is kept alongside it. If
-            the sentence itself is wrong, only its author can restate it, so
-            send the coding back.
+            You can correct their wording. Their original stays on the record,
+            and when you approve, they get an email listing what you changed.
+            This sentence publishes, so leave out names and personal details.
           </Text>
         </View>
         {typeFields}

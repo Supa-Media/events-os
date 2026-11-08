@@ -3119,7 +3119,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       {
         kind: "rule",
         title: "A coding can't be approved without a budget",
-        text: "Approving publishes the charge, so it can't publish as spend nothing paid for. If a coding has no budget, set the budget yourself on the record, then approve. The cardholder was told to leave it to you. Correcting is not sending back, and it doesn't make you the author.",
+        text: "Approving publishes the charge, so it can't publish as spend nothing paid for. If a coding has no budget, set the budget yourself on the record, then approve. The cardholder was told to leave it to you. You can correct the category, the purpose, or any other detail the same way. Correcting is not sending back, and it doesn't make you the author. When you approve with corrections, the author is emailed what you changed.",
       },
       {
         kind: "reveal",
@@ -3177,7 +3177,7 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         ],
         answerIndex: 1,
         explanation:
-          "The cardholder's form tells them to leave the budget blank if unsure, because a guess is worse than a blank. Sending it back asks for what they were told not to give, and costs days. Set the budget (and the category, or anything else wrong), then approve. The correction never touches the author's sentence, the substantiation of record. It never makes you the author, so your approval stays a real second check.",
+          "The cardholder's form tells them to leave the budget blank if unsure, because a guess is worse than a blank. Sending it back asks for what they were told not to give, and costs days. Set the budget (and the category, or anything else wrong), then approve. If you correct the purpose too, the author's original sentence is kept beside yours. The correction never makes you the author, so your approval stays a real second check, and the author is emailed what you changed.",
       },
       {
         prompt: "Can a chapter's dashboard show central's money mixed in with its own?",
