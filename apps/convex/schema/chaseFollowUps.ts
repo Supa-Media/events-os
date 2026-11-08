@@ -32,4 +32,6 @@ export const codingChaseFollowUps = defineTable({
   note: v.optional(v.string()),
 })
   .index("by_transaction", ["transactionId"])
-  .index("by_chasedAt", ["chasedAt"]);
+  .index("by_chasedAt", ["chasedAt"])
+  // The Book's per-person "last reminded" line (`cards.getManualNudgeStatus`).
+  .index("by_person", ["personId"]);

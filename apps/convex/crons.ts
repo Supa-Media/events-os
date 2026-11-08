@@ -116,8 +116,8 @@ crons.cron(
 
 // Daily 14:00 UTC = 9:00am EST / 10:00am EDT: after a manager CHASES someone,
 // remind them every day until each chased charge is coded (founder,
-// 2026-11-05). One email (+ text) per person; someone chased by hand in the
-// last 20 hours is skipped that day. See chaseFollowUps.ts.
+// 2026-11-05). One email (+ text) per person; someone chased by hand earlier
+// the same (Eastern) day is skipped that day. See chaseFollowUps.ts.
 crons.cron(
   "coding chase daily follow-up",
   "0 14 * * *",

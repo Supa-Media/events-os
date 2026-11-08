@@ -6484,6 +6484,9 @@ const MANUAL_NUDGE_WINDOW_MS = 24 * 60 * 60 * 1000; // 24 hours
 // A person-banded grid realistically has, at most, a few dozen cardholder
 // bands — bounds the per-band chase-status lookup defensively.
 const CHASE_NUDGE_STATUS_LIMIT = 200;
+/** Follow-up rows read per person for the "last reminded" line — one per
+ *  chased charge, far above any real backlog. */
+const CHASE_FOLLOW_UP_STATUS_LIMIT = 100;
 
 /**
  * Checks-and-records the manual-nudge rate limit ATOMICALLY for ONE
@@ -6522,24 +6525,52 @@ export const beginManualNudgeAttempt = internalMutation({
   },
 });
 
-/** The grid's per-cardholder "already chased" state: every `personId` (from
+/** The grid's per-cardholder chase state: every `personId` (from
  *  `personIds`) currently inside its 24h chase window, with the timestamp of
  *  that chase — lets the UI render "Chased today" for a band without the caller
  *  having to press the button and be told `already_nudged`. Manager-gated, same
  *  floor as the chase action itself; bounded to a page's worth of bands.
+ *
+ *  Also the daily follow-ups (`chaseFollowUps.ts`) for each person: when they
+ *  were last chased, last automatically reminded, and how many reminders have
+ *  gone out. Founder, 2026-11-08: "how do I know that you chased them
+ *  yesterday" — the reminders ran but nothing in the app said so. A person
+ *  appears when either half has something to say.
  *
  *  Scope-blind, and correct that way: the window is per PERSON, so "has this
  *  person been chased today" has one answer regardless of which rows the
  *  manager is currently looking at. */
 export const getManualNudgeStatus = query({
   args: { personIds: v.array(v.id("people")) },
-  returns: v.array(v.object({ personId: v.id("people"), lastManualNudgeAt: v.number() })),
+  returns: v.array(
+    v.object({
+      personId: v.id("people"),
+      lastManualNudgeAt: v.optional(v.number()),
+      followUp: v.optional(
+        v.object({
+          chasedAt: v.number(),
+          lastRemindedAt: v.optional(v.number()),
+          reminderCount: v.number(),
+          chaserTold: v.boolean(),
+        }),
+      ),
+    }),
+  ),
   handler: async (ctx, { personIds }) => {
     const chapterId = (await requireChapterId(ctx)) as Id<"chapters">;
     await requireFinanceManager(ctx, chapterId);
 
     const windowStart = Date.now() - MANUAL_NUDGE_WINDOW_MS;
-    const out: Array<{ personId: Id<"people">; lastManualNudgeAt: number }> = [];
+    const out: Array<{
+      personId: Id<"people">;
+      lastManualNudgeAt?: number;
+      followUp?: {
+        chasedAt: number;
+        lastRemindedAt?: number;
+        reminderCount: number;
+        chaserTold: boolean;
+      };
+    }> = [];
     for (const personId of personIds.slice(0, CHASE_NUDGE_STATUS_LIMIT)) {
       const key = `person:${personId}`;
       const recent = await ctx.db
@@ -6547,7 +6578,30 @@ export const getManualNudgeStatus = query({
         .withIndex("by_key_and_time", (q) => q.eq("key", key).gte("createdAt", windowStart))
         .order("desc")
         .first();
-      if (recent) out.push({ personId, lastManualNudgeAt: recent.createdAt });
+      // One row per chased charge; they share a sweep, so the newest stamps
+      // across them describe the person.
+      const rows = await ctx.db
+        .query("codingChaseFollowUps")
+        .withIndex("by_person", (q) => q.eq("personId", personId))
+        .take(CHASE_FOLLOW_UP_STATUS_LIMIT);
+      let followUp: (typeof out)[number]["followUp"];
+      for (const r of rows) {
+        followUp = {
+          chasedAt: Math.max(followUp?.chasedAt ?? 0, r.chasedAt),
+          lastRemindedAt:
+            r.lastRemindedAt != null || followUp?.lastRemindedAt != null
+              ? Math.max(followUp?.lastRemindedAt ?? 0, r.lastRemindedAt ?? 0)
+              : undefined,
+          reminderCount: Math.max(followUp?.reminderCount ?? 0, r.reminderCount ?? 0),
+          chaserTold: (followUp?.chaserTold ?? false) || r.escalatedAt != null,
+        };
+      }
+      if (!recent && !followUp) continue;
+      out.push({
+        personId,
+        ...(recent ? { lastManualNudgeAt: recent.createdAt } : {}),
+        ...(followUp ? { followUp } : {}),
+      });
     }
     return out;
   },
