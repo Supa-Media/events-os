@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="%LANG_ISO_CODE%">
+  <head>
+    <meta charset="utf-8" />
+    <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
+    <title>%WEB_TITLE%</title>
+    <!--
+      This file replaces Expo's default web template (`expo export` reads
+      public/index.html when it exists; see @expo/cli's webTemplate.js). It is
+      the default template plus ONE addition: a loading splash inside #root.
+
+      Why: the web app is a single multi-megabyte script, and nothing paints
+      until it has downloaded and run. On a slow phone connection that was a
+      blank white page for many seconds (Dev2, 2026-11-08: "slow in low data
+      or slow wifi situations, white screen"). The splash is plain HTML and
+      CSS, so it shows the moment this page arrives; React replaces #root's
+      contents on its first render, which removes it with no code of ours.
+      Keep it dependency-free: no images, fonts or scripts to wait on.
+    -->
+    <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
+    <style id="expo-reset">
+      /* These styles make the body full-height */
+      html,
+      body {
+        height: 100%;
+      }
+      /* These styles disable body scrolling if you are using <ScrollView> */
+      body {
+        overflow: hidden;
+      }
+      /* These styles make the root element full-height */
+      #root {
+        display: flex;
+        height: 100%;
+        flex: 1;
+      }
+    </style>
+    <style id="boot-splash-style">
+      /* Colours are lib/theme.ts's cream (page background), ink and brand500. */
+      body {
+        margin: 0;
+        background: #fdf6f6;
+      }
+      .boot-splash {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 16px;
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+        color: #210909;
+      }
+      .boot-splash__spinner {
+        width: 28px;
+        height: 28px;
+        border-radius: 50%;
+        border: 3px solid #f2d2d2;
+        border-top-color: #d23b3a;
+        animation: boot-splash-spin 0.9s linear infinite;
+      }
+      .boot-splash__label {
+        font-size: 14px;
+        opacity: 0.7;
+      }
+      @keyframes boot-splash-spin {
+        to {
+          transform: rotate(360deg);
+        }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .boot-splash__spinner {
+          animation-duration: 3s;
+        }
+      }
+    </style>
+  </head>
+
+  <body>
+    <noscript>
+      You need to enable JavaScript to run this app.
+    </noscript>
+    <!-- The root element for your Expo app. The splash inside it is replaced
+         by the app's first render. -->
+    <div id="root">
+      <div class="boot-splash" role="status" aria-live="polite">
+        <div class="boot-splash__spinner" aria-hidden="true"></div>
+        <div class="boot-splash__label">Loading Chapter OS…</div>
+      </div>
+    </div>
+  </body>
+</html>

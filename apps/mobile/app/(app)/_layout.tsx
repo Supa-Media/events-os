@@ -7,6 +7,7 @@ import { AccessDeniedScreen } from "../../components/onboarding/AccessDeniedScre
 import { OnboardingScreen } from "../../components/onboarding/OnboardingScreen";
 import { DoorModeScreen } from "../../components/door/DoorModeScreen";
 import { ChapterContextProvider } from "../../lib/ChapterContext";
+import { BootSplash } from "../../components/BootSplash";
 
 /** Reassembles the current route's path + query string (`usePathname` gives
  *  the clean path, e.g. `/event/abc`; `useGlobalSearchParams` gives every
@@ -67,7 +68,7 @@ export default function AppLayout() {
     }
   }, [me?.onboarded, reconcileMyPerson]);
 
-  if (isLoading) return null;
+  if (isLoading) return <BootSplash stage="sign-in" />;
 
   if (!isAuthenticated) {
     const destination = currentDestination(pathname, params);
@@ -79,7 +80,7 @@ export default function AppLayout() {
   }
 
   // me is `undefined` while loading, `null` if the query couldn't resolve a user.
-  if (me === undefined) return null;
+  if (me === undefined) return <BootSplash stage="profile" />;
 
   if (me && me.allowed === false) {
     return <AccessDeniedScreen email={me.email} />;

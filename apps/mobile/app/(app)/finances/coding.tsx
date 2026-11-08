@@ -171,25 +171,35 @@ export default function CodingScreen() {
   // resolved to `true`.
   const canViewReceiptList = useQuery(api.receipts.canViewList, {}) === true;
 
-  const orgWide = workload?.orgWide === true;
   // Scope is URL-backed so a drill-down is shareable and survives a refresh —
   // the lesson `reconcile.tsx` learned the hard way (its own comment).
-  const scope: BookScope =
-    orgWide && (params.scope === "central" || params.scope === "chapter")
+  //
+  // The queue's args come from the URL ALONE, never from `workload`. They used
+  // to wait on `workload.orgWide`, which made the queue a waterfall: it fired
+  // once with `{}` (wasted — the screen was still a spinner), then again with
+  // the real scope only after `workload` came back, so the review list paid
+  // two round trips before it could render. Passing the scope up front is
+  // safe: `reviewQueue` pins a caller without org-wide reach to their own
+  // chapter whatever they ask for, so a Treasurer sending `scope: "all"` still
+  // gets exactly their own book.
+  const requestedScope: BookScope =
+    params.scope === "central" || params.scope === "chapter"
       ? params.scope
       : "all";
-  const drillChapterId = params.chapterId ?? null;
+  const drillChapterId = params.chapterId ? params.chapterId : null;
 
   const queueArgs = useMemo(() => {
-    if (!orgWide) return {};
-    if (scope === "central") return { scope: "central" as const };
-    if (scope === "chapter" && drillChapterId) {
+    if (requestedScope === "central") return { scope: "central" as const };
+    if (requestedScope === "chapter" && drillChapterId) {
       return { chapterId: drillChapterId as Id<"chapters"> };
     }
     return { scope: "all" as const };
-  }, [orgWide, scope, drillChapterId]);
+  }, [requestedScope, drillChapterId]);
 
   const queue = useQuery(api.transactionCodings.reviewQueue, queueArgs);
+  // Either query knows the answer; whichever lands first decides the pills.
+  const orgWide = workload?.orgWide === true || queue?.orgWide === true;
+  const scope: BookScope = orgWide ? requestedScope : "all";
   const reviewerFilter = initialReviewerFilter(
     (queue?.rows ?? []) as ReviewQueueRow[],
     params.who,

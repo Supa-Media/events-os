@@ -143,6 +143,23 @@ describe("route: edge cache hint for Expo's hashed bundle output", () => {
     });
   });
 
+  it("/os/assets/… with a content hash in the name gets cache: immutable", () => {
+    const path =
+      "/assets/__node_modules/@expo-google-fonts/dm-sans/400Regular/DMSans_400Regular.74f9bb7405caec741a24db735b2c5733.ttf";
+    expect(route(u(`https://publicworship.life/os${path}`))).toEqual({
+      kind: "proxy",
+      target: `${EXPO_ORIGIN}${path}`,
+      cache: "immutable",
+    });
+  });
+
+  it("/os/assets/… without a content hash does not get a cache hint", () => {
+    expect(route(u("https://publicworship.life/os/assets/logo.png"))).toEqual({
+      kind: "proxy",
+      target: `${EXPO_ORIGIN}/assets/logo.png`,
+    });
+  });
+
   it("/os/event/abc does not get a cache hint", () => {
     expect(route(u("https://publicworship.life/os/event/abc"))).toEqual({
       kind: "proxy",

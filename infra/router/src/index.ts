@@ -30,6 +30,26 @@ interface Env {
   ASSETS: Fetcher;
 }
 
+/**
+ * Tell the BROWSER, not just the edge, that a content-hashed file never
+ * changes. The origin (EAS Hosting) sends `public, max-age=3600`, so a phone
+ * that opened the app more than an hour ago asks again for every script, font
+ * and stylesheet before it can paint — one round trip each, which on a slow
+ * connection is most of a "white screen" (Dev2, 2026-11-08). A new deploy
+ * changes the file names, so a long-lived copy can never go stale.
+ *
+ * Only for a real file: EAS answers a path it doesn't have with the SPA's
+ * index.html and a 200, and pinning THAT under a script's name for a year
+ * would break the app in that browser until the cache is cleared.
+ */
+export function withBrowserCache(upstream: Response): Response {
+  const type = upstream.headers.get("Content-Type") ?? "";
+  if (!upstream.ok || type.includes("text/html")) return upstream;
+  const response = new Response(upstream.body, upstream);
+  response.headers.set("Cache-Control", "public, max-age=31536000, immutable");
+  return response;
+}
+
 export default {
   async fetch(request: Request, env: Env): Promise<Response> {
     const url = new URL(request.url);
@@ -62,9 +82,10 @@ export default {
           // at the edge indefinitely. Cookie-bearing requests are ineligible
           // for edge caching, so strip it before handing off to `fetch`.
           proxyRequest.headers.delete("Cookie");
-          return fetch(proxyRequest, {
+          const upstream = await fetch(proxyRequest, {
             cf: { cacheEverything: true, cacheTtl: 31536000 },
           });
+          return withBrowserCache(upstream);
         }
 
         return fetch(proxyRequest);
