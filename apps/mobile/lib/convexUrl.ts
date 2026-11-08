@@ -30,3 +30,35 @@ export function resolveConvexUrl(configured: string | undefined): string | undef
   if (hostname !== PROXIED_HOST) return configured;
   return `${origin}${APP_BASE_PATH}${CONVEX_PROXY_PATH}`;
 }
+
+/**
+ * Keep everyone signed in across the switch to the proxy URL.
+ *
+ * @convex-dev/auth stores its tokens under keys namespaced by the client's
+ * ADDRESS (`__convexAuthJWT_<address with non-alphanumerics stripped>`), so
+ * changing the address from `…convex.cloud` to `…/os/_convex` would orphan
+ * every stored session and sign every web user out once. This storage
+ * rewrites the namespace back to the configured deployment URL's, so the
+ * proxied client reads and writes the very same keys the direct one did.
+ *
+ * Local, not upstream: `SupaConvexProvider` (@supa-media/core) takes a
+ * `storage` but not a `storageNamespace`, and adding one means a framework
+ * release this change shouldn't wait on. If it grows that prop, pass the
+ * configured URL as the namespace and delete this.
+ *
+ * `undefined` (use the provider's default storage) whenever the address
+ * isn't rewritten — native, dev, previews.
+ */
+export function sessionPreservingStorage(configured: string | undefined) {
+  const resolved = resolveConvexUrl(configured);
+  if (!configured || resolved === configured || !resolved) return undefined;
+  const escape = (s: string) => s.replace(/[^a-zA-Z0-9]/g, "");
+  const from = `_${escape(resolved)}`;
+  const to = `_${escape(configured)}`;
+  const map = (key: string) => (key.endsWith(from) ? key.slice(0, -from.length) + to : key);
+  return {
+    getItem: (key: string) => window.localStorage.getItem(map(key)),
+    setItem: (key: string, value: string) => window.localStorage.setItem(map(key), value),
+    removeItem: (key: string) => window.localStorage.removeItem(map(key)),
+  };
+}

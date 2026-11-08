@@ -11,7 +11,14 @@ import { loadNotificationProvider } from "../lib/notificationProvider";
 import { loadKeyboardController } from "../lib/keyboardController";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { BootSplash } from "../components/BootSplash";
-import { resolveConvexUrl } from "../lib/convexUrl";
+import { resolveConvexUrl, sessionPreservingStorage } from "../lib/convexUrl";
+
+const CONFIGURED_CONVEX_URL: string | undefined =
+  Constants.expoConfig?.extra?.convexUrl ?? process.env.EXPO_PUBLIC_CONVEX_URL;
+// Resolved ONCE, at module load: the auth provider memoizes on the storage
+// object's identity, so a fresh one per render would re-run its effects.
+const CONVEX_URL = resolveConvexUrl(CONFIGURED_CONVEX_URL);
+const AUTH_STORAGE = sessionPreservingStorage(CONFIGURED_CONVEX_URL);
 import {
   useFonts,
   Corben_400Regular,
@@ -92,10 +99,8 @@ export default function RootLayout() {
                 machine's LAN IP at dev-server start (see app.config.js) —
                 Chrome blocks cross-origin loopback and devices can't reach it. */}
             <SupaConvexProvider
-              url={resolveConvexUrl(
-                Constants.expoConfig?.extra?.convexUrl ??
-                  process.env.EXPO_PUBLIC_CONVEX_URL,
-              )}
+              url={CONVEX_URL}
+              storage={AUTH_STORAGE}
             >
               <Notifications>
                 <StatusBar style="dark" />
