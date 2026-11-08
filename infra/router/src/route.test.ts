@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CONVEX_ORIGIN, EXPO_ORIGIN, route } from "./route";
+import { CONVEX_CLOUD_ORIGIN, CONVEX_ORIGIN, EXPO_ORIGIN, route } from "./route";
 
 function u(url: string): URL {
   return new URL(url);
@@ -128,6 +128,30 @@ describe("route: /os -> strip prefix, proxy to the Expo web app", () => {
   it("/osprey (looks like /os but isn't) is not stripped, falls through to assets", () => {
     expect(route(u("https://publicworship.life/osprey"))).toEqual({
       kind: "assets",
+    });
+  });
+});
+
+describe("route: the web app's same-origin path to the Convex client API", () => {
+  it("/os/_convex/api/<v>/sync goes to the .convex.cloud deployment, query kept", () => {
+    expect(
+      route(u("https://publicworship.life/os/_convex/api/1.41.0/sync?x=1")),
+    ).toEqual({
+      kind: "proxy",
+      target: "https://vivid-rhinoceros-688.convex.cloud/api/1.41.0/sync?x=1",
+    });
+  });
+
+  it("targets the same deployment as the HTTP-actions origin", () => {
+    expect(CONVEX_CLOUD_ORIGIN.replace(".convex.cloud", ".convex.site")).toBe(
+      CONVEX_ORIGIN,
+    );
+  });
+
+  it("/os/_convexish is not the Convex proxy", () => {
+    expect(route(u("https://publicworship.life/os/_convexish"))).toEqual({
+      kind: "proxy",
+      target: `${EXPO_ORIGIN}/_convexish`,
     });
   });
 });

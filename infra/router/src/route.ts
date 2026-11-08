@@ -25,6 +25,20 @@ export type RouteDecision =
 
 export const EXPO_ORIGIN = "https://events-os.expo.app";
 export const CONVEX_ORIGIN = "https://vivid-rhinoceros-688.convex.site";
+/** The same deployment's CLIENT API origin (queries, mutations, and the live
+ *  WebSocket), as opposed to CONVEX_ORIGIN's HTTP actions. */
+export const CONVEX_CLOUD_ORIGIN = "https://vivid-rhinoceros-688.convex.cloud";
+
+/**
+ * The web app's own path to the Convex client API: /os/_convex/<rest> is
+ * proxied, WebSocket upgrade included, to CONVEX_CLOUD_ORIGIN/<rest>.
+ *
+ * Why: on some networks the app loaded but its live connection to
+ * *.convex.cloud never opened, so it sat on "Checking your sign-in…" forever
+ * (Dev2's iPhone, 2026-11-08). Same-origin traffic can't be singled out by a
+ * filter or blocker that refuses a third-party host.
+ */
+export const CONVEX_PROXY_PATH = "/_convex";
 
 // The Expo web app's base path — mirrored (hand-synced, not imported) as
 // APP_BASE_PATH in apps/mobile/lib/appUrl.ts and experiments.baseUrl in
@@ -186,6 +200,12 @@ export function route(url: URL): RouteDecision {
   // registered at /google-chat.
   if (pathname === `${OS_PREFIX}/google-chat`) {
     return { kind: "proxy", target: `${CONVEX_ORIGIN}/google-chat${search}` };
+  }
+
+  const convexProxyPrefix = `${OS_PREFIX}${CONVEX_PROXY_PATH}/`;
+  if (pathname.startsWith(convexProxyPrefix)) {
+    const rest = pathname.slice(convexProxyPrefix.length - 1);
+    return { kind: "proxy", target: `${CONVEX_CLOUD_ORIGIN}${rest}${search}` };
   }
 
   // Apex (and any other/unexpected host, e.g. a workers.dev preview URL):
