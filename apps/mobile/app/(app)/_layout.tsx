@@ -68,7 +68,7 @@ export default function AppLayout() {
     }
   }, [me?.onboarded, reconcileMyPerson]);
 
-  if (isLoading) return <BootSplash />;
+  if (isLoading) return <BootSplash stage="sign-in" />;
 
   if (!isAuthenticated) {
     const destination = currentDestination(pathname, params);
@@ -80,7 +80,7 @@ export default function AppLayout() {
   }
 
   // me is `undefined` while loading, `null` if the query couldn't resolve a user.
-  if (me === undefined) return <BootSplash />;
+  if (me === undefined) return <BootSplash stage="profile" />;
 
   if (me && me.allowed === false) {
     return <AccessDeniedScreen email={me.email} />;
