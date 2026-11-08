@@ -166,6 +166,7 @@ import {
 } from "./lib/codingReminders";
 import { reconcileFilterValidator } from "./lib/reconcileArgs";
 import { listCodingReviewerPersonIds } from "./lib/transactionCodingAccess";
+import { codingReviewRouter } from "./lib/codingReviewRouting";
 import { listActiveChapters } from "./lib/chapters";
 import { codingForTransaction, codingPolicy } from "./lib/transactionCoding";
 import { escapeHtml } from "./lib/html";
@@ -6159,19 +6160,35 @@ const reviewDigestItemValidator = v.object({
   purpose: v.string(),
   codedByName: v.union(v.string(), v.null()),
   daysWaiting: v.number(),
+  /** The seat this reviewer is asked to review it as, e.g. "New York
+   *  Treasurer" or "Executive Director" — the email groups by it so a person
+   *  holding two seats sees which hat each coding is for. `null` when no seat
+   *  is assigned and everyone with authority was told (the fallback). */
+  reviewAs: v.union(v.string(), v.null()),
+  /** Why that seat: the normal case, two-party control because the
+   *  bookkeeper coded it, or Central covering a chapter with nobody free. */
+  why: v.union(
+    v.literal("default"),
+    v.literal("coded_by_bookkeeper"),
+    v.literal("chapter_has_no_reviewer"),
+    v.null(),
+  ),
 });
 
 /**
  * Group the nudged codings by REVIEWER — one digest per person, listing every
  * coding waiting on them.
  *
- * Two rules the grouping enforces that a naive fan-out wouldn't:
+ * Rules the grouping enforces:
  *
- *  - RECIPIENTS COME FROM THE APPROVAL SEATS, not from the manager ladder.
- *    `listCodingReviewerPersonIds` mirrors `requireReviewCoding`'s own arms,
- *    so the ED and the Chapter Director — who carry `finance.approve` and not
- *    `finance.manager` — are actually told. Mailing the manager set would skip
- *    exactly the people who were just given the power.
+ *  - ONLY THE ASSIGNED REVIEWER IS TOLD. `lib/codingReviewRouting.ts` names
+ *    whose job each coding is: the chapter's Treasurer (Central: the
+ *    Financial Manager) by default, and the Chapter Director (Central: the
+ *    ED) when the Treasurer/FM coded it — two-party control (Dev2,
+ *    2026-11-08). Before that, every seat with authority got every coding and
+ *    the ED could not tell which were theirs.
+ *  - FALLBACK: a coding with no assignable seat anywhere goes to everyone
+ *    with authority (`listCodingReviewerPersonIds`), so nothing waits unseen.
  *  - SEPARATION OF DUTIES. A reviewer is never told about a coding they wrote,
  *    because they cannot decide it; if that's the only one in their book they
  *    get no email at all rather than one they can do nothing about.
@@ -6195,9 +6212,10 @@ export const getCodingReviewDigests = internalQuery({
         items: Array<Infer<typeof reviewDigestItemValidator>>;
       }
     >();
-    // One reviewer-set read per BOOK, not per coding — a chapter's queue
-    // resolves the same recipients every time.
+    // Fallback recipient sets, read once per BOOK, not per coding.
     const reviewersByBook = new Map<string, Set<Id<"people">>>();
+    const route = codingReviewRouter(ctx);
+    const bookNames = new Map<string, string>([[CENTRAL, "Central"]]);
 
     for (const codingId of args.codingIds) {
       const coding = await ctx.db.get(codingId);
@@ -6207,16 +6225,30 @@ export const getCodingReviewDigests = internalQuery({
       if (!txn) continue;
 
       const bookKey = String(coding.chapterId);
-      let reviewers = reviewersByBook.get(bookKey);
-      if (!reviewers) {
-        reviewers = await listCodingReviewerPersonIds(ctx, coding.chapterId);
-        reviewersByBook.set(bookKey, reviewers);
+      let bookName = bookNames.get(bookKey);
+      if (bookName == null) {
+        bookName =
+          (await ctx.db.get(coding.chapterId as Id<"chapters">))?.name ??
+          "Chapter";
+        bookNames.set(bookKey, bookName);
       }
-      const bookName =
-        coding.chapterId === CENTRAL
-          ? "Central"
-          : ((await ctx.db.get(coding.chapterId as Id<"chapters">))?.name ??
-            "Chapter");
+      const assigned = await route(coding.chapterId, coding.codedByPersonId);
+      let reviewers: Iterable<Id<"people">>;
+      if (assigned) {
+        reviewers = assigned.personIds;
+      } else {
+        let all = reviewersByBook.get(bookKey);
+        if (!all) {
+          all = await listCodingReviewerPersonIds(ctx, coding.chapterId);
+          reviewersByBook.set(bookKey, all);
+        }
+        reviewers = all;
+      }
+      const reviewAs = assigned
+        ? assigned.scope === CENTRAL
+          ? assigned.seatTitle
+          : `${bookName} ${assigned.seatTitle}`
+        : null;
       const author = coding.codedByPersonId
         ? await ctx.db.get(coding.codedByPersonId)
         : null;
@@ -6245,6 +6277,8 @@ export const getCodingReviewDigests = internalQuery({
             0,
             Math.floor((now - coding.submittedAt) / DAY_MS),
           ),
+          reviewAs,
+          why: assigned?.why ?? null,
         });
         byPerson.set(key, entry);
       }
@@ -6262,13 +6296,23 @@ export const getCodingReviewDigests = internalQuery({
  * ones from another chapter (Dev2, 2026-11-07).
  */
 function codingReviewLink(bookIds: string[]): string {
+  // `who=me` opens the queue on the codings assigned to the reader — the
+  // ones this email listed — rather than everything they have authority over.
   const books = new Set(bookIds);
-  if (books.size !== 1) return "/finances/coding?review=1";
+  if (books.size !== 1) return "/finances/coding?review=1&who=me";
   const [only] = books;
   return only === CENTRAL
-    ? "/finances/coding?review=1&scope=central"
-    : `/finances/coding?review=1&scope=chapter&chapterId=${encodeURIComponent(only)}`;
+    ? "/finances/coding?review=1&who=me&scope=central"
+    : `/finances/coding?review=1&who=me&scope=chapter&chapterId=${encodeURIComponent(only)}`;
 }
+
+/** The one-line reason under a group heading, when it isn't the normal case. */
+const REVIEW_WHY_NOTE: Record<string, string> = {
+  coded_by_bookkeeper:
+    "coded by the person who normally reviews them, so a second person decides.",
+  chapter_has_no_reviewer:
+    "nobody in the chapter is free to review these, so Central does.",
+};
 
 /** One reviewer's digest email. Best-effort like every other send here. */
 async function notifyCodingReviewDigest(
@@ -6287,20 +6331,46 @@ async function notifyCodingReviewDigest(
       : `${count} codings are waiting on your review`;
   // The purpose IS the thing being reviewed, so it rides in the list — a
   // reviewer can tell from the email alone which ones will be quick.
-  const list = emailList(
-    digest.items.map(
-      (i) =>
-        `<b>${escapeHtml(`$${(Math.abs(i.amountCents) / 100).toFixed(2)}`)}</b> ${escapeHtml(
-          i.merchantName ?? "a charge",
-        )}${i.bookName ? ` · ${escapeHtml(i.bookName)}` : ""}${
-          i.codedByName ? ` · ${escapeHtml(i.codedByName)}` : ""
-        } — “${escapeHtml(i.purpose)}”${
-          i.daysWaiting > 0
-            ? ` (waiting ${i.daysWaiting} day${i.daysWaiting === 1 ? "" : "s"})`
+  const line = (i: Infer<typeof reviewDigestItemValidator>) =>
+    `<b>${escapeHtml(`$${(Math.abs(i.amountCents) / 100).toFixed(2)}`)}</b> ${escapeHtml(
+      i.merchantName ?? "a charge",
+    )}${i.bookName ? ` · ${escapeHtml(i.bookName)}` : ""}${
+      i.codedByName ? ` · ${escapeHtml(i.codedByName)}` : ""
+    } — “${escapeHtml(i.purpose)}”${
+      i.daysWaiting > 0
+        ? ` (waiting ${i.daysWaiting} day${i.daysWaiting === 1 ? "" : "s"})`
+        : ""
+    }`;
+  // Grouped by the seat they're asked to review as, so somebody holding two
+  // seats (a Treasurer who is also the Financial Manager) sees which hat each
+  // coding is for, and a two-party handoff says why it landed on them.
+  const groups = new Map<
+    string,
+    { heading: string | null; note: string | null; items: string[] }
+  >();
+  for (const i of digest.items) {
+    const key = `${i.reviewAs ?? ""}|${i.why ?? ""}`;
+    const g = groups.get(key) ?? {
+      heading: i.reviewAs ? `As ${i.reviewAs}` : null,
+      note: i.why ? (REVIEW_WHY_NOTE[i.why] ?? null) : null,
+      items: [],
+    };
+    g.items.push(line(i));
+    groups.set(key, g);
+  }
+  const list = [...groups.values()]
+    .map(
+      (g) =>
+        `${
+          g.heading
+            ? emailParagraph(
+                `<b>${escapeHtml(g.heading)}</b>${g.note ? ` — ${escapeHtml(g.note)}` : ""}`,
+                { margin: "0 0 4px", strong: true },
+              )
             : ""
-        }`,
-    ),
-  );
+        }${emailList(g.items)}`,
+    )
+    .join("");
   const link = appUrl(codingReviewLink(digest.items.map((i) => i.bookId)));
   await sendEmail(ctx, {
     to: digest.email,
@@ -6308,7 +6378,7 @@ async function notifyCodingReviewDigest(
     html: emailShell(`
       ${emailHeading(count === 1 ? "A coding needs your review" : "Codings need your review")}
       ${emailParagraph(
-        `Hi ${escapeHtml(digest.reviewerName)} — ${count === 1 ? "one coding is" : `${count} codings are`} waiting on somebody to approve ${count === 1 ? "it" : "them"} or send ${count === 1 ? "it" : "them"} back with a note.`,
+        `Hi ${escapeHtml(digest.reviewerName)} — ${count === 1 ? "one coding is" : `${count} codings are`} waiting on you to approve ${count === 1 ? "it" : "them"} or send ${count === 1 ? "it" : "them"} back with a note.`,
       )}
       ${list}
       ${emailParagraph(

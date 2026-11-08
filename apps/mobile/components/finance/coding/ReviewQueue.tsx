@@ -45,12 +45,18 @@ import {
   View,
 } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
-import { EmptyState, Icon, ToastView } from "../../ui";
+import { EmptyState, Icon, Pill, ToastView } from "../../ui";
 import { colors } from "../../../lib/theme";
 import { useActionRunner } from "../../../lib/useActionToast";
 import { ApproveUndoBar, type PendingUndo } from "./CodingWorkbenchPanel";
 import { panelPosition, selectionAfterRowsShrink, stepSelection } from "./panelNav";
-import { daysWaiting, reviewOrder } from "./queueDisplay";
+import {
+  daysWaiting,
+  filterByReviewer,
+  reviewerLine,
+  reviewOrder,
+  type ReviewerFilter,
+} from "./queueDisplay";
 import { ReviewDecisionPane, type Decision } from "./ReviewDecisionPane";
 import {
   DOCUMENTATION_DISPLAY,
@@ -69,8 +75,13 @@ export function ReviewQueue({
   bookFilterName,
   runAction,
   wide,
+  who,
+  onWhoChange,
 }: {
   rows: ReviewQueueRow[];
+  /** "For me" (assigned to the caller) or "Everyone" they may decide. */
+  who: ReviewerFilter;
+  onWhoChange: (next: ReviewerFilter) => void;
   /** Name the book on each card — only meaningful when the queue spans books. */
   showBook: boolean;
   /** The book the queue is filtered to, for the empty state's wording. */
@@ -79,7 +90,13 @@ export function ReviewQueue({
   /** List | record side by side. Below this the record is a full-screen sheet. */
   wide: boolean;
 }) {
-  const { decidable, waitingOnOthers } = useMemo(() => reviewOrder(rows), [rows]);
+  const allRows = rows;
+  const assignedCount = useMemo(
+    () => allRows.filter((r) => r.assignedToMe).length,
+    [allRows],
+  );
+  const shown = useMemo(() => filterByReviewer(allRows, who), [allRows, who]);
+  const { decidable, waitingOnOthers } = useMemo(() => reviewOrder(shown), [shown]);
   const ordered = useMemo(
     () => [...decidable, ...waitingOnOthers],
     [decidable, waitingOnOthers],
@@ -176,9 +193,36 @@ export function ReviewQueue({
   const sheetRunner = useActionRunner();
   const { height } = useWindowDimensions();
 
-  if (rows.length === 0) {
+  // WHO REVIEWS WHAT. Each coding has an assigned reviewer (the chapter's
+  // Treasurer / Central's Financial Manager, or the Chapter Director / ED
+  // when the Treasurer / FM coded it). "For me" is that list; "Everyone" is
+  // everything the caller may decide as backup. Shown only when the queue
+  // has anything in it to filter.
+  const whoChips =
+    allRows.length > 0 ? (
+      <View className="mb-3 flex-row flex-wrap items-center gap-2">
+        <Pill
+          size="sm"
+          label="For me"
+          count={assignedCount}
+          selected={who === "me"}
+          onPress={() => onWhoChange("me")}
+        />
+        <Pill
+          size="sm"
+          label="Everyone"
+          count={allRows.length}
+          selected={who === "all"}
+          onPress={() => onWhoChange("all")}
+        />
+      </View>
+    ) : null;
+
+  if (shown.length === 0) {
+    const assignedElsewhere = who === "me" && allRows.length > 0;
     return (
       <View className="gap-3">
+        {whoChips}
         {pendingUndo ? (
           <UndoBar pending={pendingUndo} onDone={() => setPendingUndo(null)} />
         ) : null}
@@ -188,7 +232,11 @@ export function ReviewQueue({
               ? `Nothing waiting on you in ${bookFilterName}`
               : "Nothing waiting on you"
           }
-          message="Every coding you can decide has been decided. New ones land here the moment a cardholder submits."
+          message={
+            assignedElsewhere
+              ? "None of these are assigned to you. They're with their assigned reviewers; tap Everyone to step in as backup."
+              : "Every coding you can decide has been decided. New ones land here the moment a cardholder submits."
+          }
         />
       </View>
     );
@@ -200,6 +248,7 @@ export function ReviewQueue({
 
   const list = (
     <View className="gap-2.5">
+      {whoChips}
       {decidable.map((r) => (
         <ReviewCard
           key={r.transactionId}
@@ -319,6 +368,7 @@ function ReviewCard({
 }) {
   const doc = DOCUMENTATION_DISPLAY[row.documentation];
   const waited = daysWaiting(row.coding.submittedAt);
+  const reviewedBy = reviewerLine(row);
   const meta = [
     showBook ? row.book.name : null,
     row.coding.codedByName,
@@ -348,6 +398,14 @@ function ReviewCard({
       <Text className="text-xs text-muted" numberOfLines={1}>
         {meta}
       </Text>
+      {reviewedBy ? (
+        <Text
+          className={`text-xs ${row.assignedToMe ? "font-semibold text-accent-hover" : "text-muted"}`}
+          numberOfLines={2}
+        >
+          {reviewedBy}
+        </Text>
+      ) : null}
       <View className="mt-0.5 flex-row flex-wrap items-center gap-1.5">
         <Tag icon={doc.icon} color={doc.color} label={doc.label} />
         <Tag

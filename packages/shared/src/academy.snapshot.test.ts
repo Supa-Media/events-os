@@ -1620,7 +1620,9 @@ const EXPECTED_SECTIONS: {
     minutes: 2,
     // 4 since 2026-08-09: the four approval seats now approve CODINGS too,
     // with different reach per seat, and that's the part people get wrong.
-    quizLength: 4,
+    // 5 since 2026-11-08: each coding has one assigned reviewer (Treasurer /
+    // FM by default, CD / ED when the Treasurer / FM coded it).
+    quizLength: 5,
     optional: false,
     capstoneKind: null,
   },

@@ -102,6 +102,61 @@ export function reviewOrder<T extends { canReview: boolean }>(
   };
 }
 
+/** The queue's reviewer filter: the codings assigned to the caller, or every
+ *  coding they have authority over. */
+export type ReviewerFilter = "me" | "all";
+
+type Routed = {
+  assignedToMe: boolean;
+  reviewer: {
+    seatTitle: string;
+    scopeName: string;
+    names: string[];
+    why: "default" | "coded_by_bookkeeper" | "chapter_has_no_reviewer";
+  } | null;
+};
+
+/**
+ * Which filter the queue opens on. An explicit `?who=` wins (the digest
+ * email links `who=me`). Otherwise "For me" when anything is assigned to the
+ * caller, and "Everyone" when nothing is — a backup reviewer with nothing of
+ * their own should not land on an empty list.
+ */
+export function initialReviewerFilter(
+  rows: readonly Routed[],
+  param: string | undefined,
+): ReviewerFilter {
+  if (param === "me" || param === "all") return param;
+  return rows.some((r) => r.assignedToMe) ? "me" : "all";
+}
+
+export function filterByReviewer<T extends Routed>(
+  rows: readonly T[],
+  who: ReviewerFilter,
+): T[] {
+  return who === "me" ? rows.filter((r) => r.assignedToMe) : [...rows];
+}
+
+/**
+ * The card's "who reviews this" line: "For you · New York Treasurer", or
+ * "For Kansi Udochukwu · Financial Manager", plus why when it isn't the
+ * normal route. `null` when no seat is assigned.
+ */
+export function reviewerLine(row: Routed): string | null {
+  const r = row.reviewer;
+  if (!r) return null;
+  const seat =
+    r.scopeName === "Central" ? r.seatTitle : `${r.scopeName} ${r.seatTitle}`;
+  const who = row.assignedToMe ? "you" : r.names.join(", ");
+  const why =
+    r.why === "coded_by_bookkeeper"
+      ? " (second reviewer: the usual reviewer coded it)"
+      : r.why === "chapter_has_no_reviewer"
+        ? " (no chapter reviewer free)"
+        : "";
+  return `For ${who} · ${seat}${why}`;
+}
+
 /**
  * One-tap reasons on the send-back sheet. Each fills the note with a sentence
  * that says what would make the coding approvable, because that is the bar

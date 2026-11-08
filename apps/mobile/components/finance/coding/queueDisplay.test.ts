@@ -3,6 +3,9 @@ import {
   breakdownLine,
   daysWaiting,
   substantiationLine,
+  initialReviewerFilter,
+  filterByReviewer,
+  reviewerLine,
 } from "./queueDisplay";
 
 /**
@@ -167,5 +170,39 @@ describe("daysWaiting", () => {
 
   test("never goes negative — a clock skew must not render 'waiting -1 days'", () => {
     expect(daysWaiting(now + 86_400_000, now)).toBe(0);
+  });
+});
+
+describe("reviewer routing on the queue (Dev2, 2026-11-08)", () => {
+  const assigned = (names: string[], mine: boolean, why: "default" | "coded_by_bookkeeper" | "chapter_has_no_reviewer" = "default", scopeName = "New York", seatTitle = "Treasurer") => ({
+    assignedToMe: mine,
+    reviewer: { seatTitle, scopeName, names, why },
+  });
+
+  test("opens on For me when anything is assigned to the caller, else Everyone", () => {
+    expect(initialReviewerFilter([assigned(["A"], false), assigned(["B"], true)], undefined)).toBe("me");
+    expect(initialReviewerFilter([assigned(["A"], false)], undefined)).toBe("all");
+  });
+
+  test("an explicit ?who= wins", () => {
+    expect(initialReviewerFilter([assigned(["A"], false)], "me")).toBe("me");
+    expect(initialReviewerFilter([assigned(["A"], true)], "all")).toBe("all");
+  });
+
+  test("For me keeps only the caller's assignments", () => {
+    const rows = [assigned(["A"], false), assigned(["B"], true)];
+    expect(filterByReviewer(rows, "me")).toEqual([rows[1]]);
+    expect(filterByReviewer(rows, "all")).toEqual(rows);
+  });
+
+  test("names the reviewer and the seat, and why when it isn't the usual route", () => {
+    expect(reviewerLine(assigned(["Tara"], true))).toBe("For you · New York Treasurer");
+    expect(reviewerLine(assigned(["Cara"], false, "coded_by_bookkeeper", "New York", "Chapter Director"))).toBe(
+      "For Cara · New York Chapter Director (second reviewer: the usual reviewer coded it)",
+    );
+    expect(reviewerLine(assigned(["Finn"], false, "default", "Central", "Financial Manager"))).toBe(
+      "For Finn · Financial Manager",
+    );
+    expect(reviewerLine({ assignedToMe: false, reviewer: null })).toBeNull();
   });
 });

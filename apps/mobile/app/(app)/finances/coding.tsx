@@ -99,6 +99,7 @@ import {
   ReviewQueue,
   type ReviewQueueRow,
 } from "../../../components/finance/coding/ReviewQueue";
+import { initialReviewerFilter } from "../../../components/finance/coding/queueDisplay";
 
 /** Same scope vocabulary as `reconcile.tsx` — it is the same choice about the
  *  same books. */
@@ -137,6 +138,9 @@ export default function CodingScreen() {
      *  queue first even when the reader also has charges of their own to
      *  code: they came here to review. */
     review?: string;
+    /** `?who=me|all` — the review queue's reviewer filter. The digest email
+     *  links `who=me`: the codings assigned to the reader. */
+    who?: string;
   }>();
 
   const workload = useQuery(api.transactionCodings.workload, {});
@@ -186,6 +190,10 @@ export default function CodingScreen() {
   }, [orgWide, scope, drillChapterId]);
 
   const queue = useQuery(api.transactionCodings.reviewQueue, queueArgs);
+  const reviewerFilter = initialReviewerFilter(
+    (queue?.rows ?? []) as ReviewQueueRow[],
+    params.who,
+  );
 
   const sinceMs = policy?.sinceMs ?? DEFAULT_CODING_REQUIRED_SINCE_MS;
 
@@ -516,6 +524,8 @@ export default function CodingScreen() {
                 }
                 runAction={run}
                 wide={isWide && !showPanel}
+                who={reviewerFilter}
+                onWhoChange={(next) => router.setParams({ who: next })}
               />
             )}
             {queue?.hasMore ? (
