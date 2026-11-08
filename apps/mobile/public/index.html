@@ -8,14 +8,21 @@
     <!--
       This file replaces Expo's default web template (`expo export` reads
       public/index.html when it exists; see @expo/cli's webTemplate.js). It is
-      the default template plus ONE addition: a loading splash inside #root.
+      the default template plus ONE addition: a loading splash BEHIND #root.
 
       Why: the web app is a single multi-megabyte script, and nothing paints
       until it has downloaded and run. On a slow phone connection that was a
       blank white page for many seconds (Dev2, 2026-11-08: "slow in low data
       or slow wifi situations, white screen"). The splash is plain HTML and
-      CSS, so it shows the moment this page arrives; React replaces #root's
-      contents on its first render, which removes it with no code of ours.
+      CSS, so it shows the moment this page arrives.
+
+      It sits BEHIND #root (fixed, lower z-index) rather than inside it, and
+      that is deliberate. The web build splits each route into its own chunk
+      (app.config.js, asyncRoutes), and while a route's chunk downloads Expo
+      Router renders nothing for it. A splash inside #root would be replaced by
+      React's first render and leave those gaps blank again; behind #root it
+      shows through every gap, at startup and on in-app navigation, and every
+      real screen (AppShell, login, Screen — all opaque `bg-surface`) covers it.
       Keep it dependency-free: no images, fonts or scripts to wait on.
     -->
     <!-- The `react-native-web` recommended style reset: https://necolas.github.io/react-native-web/docs/setup/#root-element -->
@@ -42,8 +49,14 @@
         margin: 0;
         background: #fdf6f6;
       }
+      #root {
+        position: relative;
+        z-index: 1;
+      }
       .boot-splash {
-        flex: 1;
+        position: fixed;
+        inset: 0;
+        z-index: 0;
         display: flex;
         flex-direction: column;
         align-items: center;
@@ -81,13 +94,13 @@
     <noscript>
       You need to enable JavaScript to run this app.
     </noscript>
-    <!-- The root element for your Expo app. The splash inside it is replaced
-         by the app's first render. -->
-    <div id="root">
-      <div class="boot-splash" role="status" aria-live="polite">
-        <div class="boot-splash__spinner" aria-hidden="true"></div>
-        <div class="boot-splash__label">Loading Chapter OS…</div>
-      </div>
+    <!-- aria-hidden: it stays in the DOM behind the app for good; the React
+         BootSplash is what announces loading to assistive tech. -->
+    <div class="boot-splash" aria-hidden="true">
+      <div class="boot-splash__spinner" aria-hidden="true"></div>
+      <div class="boot-splash__label">Loading Chapter OS…</div>
     </div>
+    <!-- The root element for your Expo app. -->
+    <div id="root"></div>
   </body>
 </html>
