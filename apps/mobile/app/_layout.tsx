@@ -11,6 +11,7 @@ import { loadNotificationProvider } from "../lib/notificationProvider";
 import { loadKeyboardController } from "../lib/keyboardController";
 import { ErrorBoundary } from "../components/ErrorBoundary";
 import { BootSplash } from "../components/BootSplash";
+import { resolveConvexUrl } from "../lib/convexUrl";
 import {
   useFonts,
   Corben_400Regular,
@@ -91,10 +92,10 @@ export default function RootLayout() {
                 machine's LAN IP at dev-server start (see app.config.js) —
                 Chrome blocks cross-origin loopback and devices can't reach it. */}
             <SupaConvexProvider
-              url={
+              url={resolveConvexUrl(
                 Constants.expoConfig?.extra?.convexUrl ??
-                process.env.EXPO_PUBLIC_CONVEX_URL
-              }
+                  process.env.EXPO_PUBLIC_CONVEX_URL,
+              )}
             >
               <Notifications>
                 <StatusBar style="dark" />
