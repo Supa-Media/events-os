@@ -19,8 +19,12 @@
  * follow-up, whoever chased it gets one email naming the person and the
  * charges. A new chase resets the count.
  *
- * NOT DOUBLE-MESSAGING. Someone a manager chased by hand in the last
- * `RECENT_CHASE_MS` is skipped that day: the chase was today's message. The
+ * NOT DOUBLE-MESSAGING. Someone a manager chased by hand earlier the same
+ * Eastern calendar day is skipped that day: the chase was today's message.
+ * It used to be "the last 20 hours", which skipped a person chased the
+ * previous AFTERNOON too, so an afternoon chase meant a whole day with no
+ * message (founder, 2026-11-08: "how do I know that you chased them
+ * yesterday" — Friday 4:30pm chases got nothing Saturday). The
  * automated day-1/day-3 digest (`cards.sendReceiptReminders`) is about NEW
  * charges crossing a checkpoint; a charge someone was chased about is
  * normally past both, so the two rarely meet.
@@ -29,7 +33,12 @@ import { v } from "convex/values";
 import { internalAction, internalMutation, internalQuery } from "./_generated/server";
 import { internal } from "./_generated/api";
 import type { Id } from "./_generated/dataModel";
-import { CHASE_REASONS, type ChaseReason } from "@events-os/shared";
+import {
+  CHASE_REASONS,
+  FINANCE_TIMEZONE,
+  dayKeyInTz,
+  type ChaseReason,
+} from "@events-os/shared";
 import { chaseOutstandingFor } from "./finances";
 import { codingPolicy } from "./lib/transactionCoding";
 import {
@@ -50,8 +59,11 @@ import {
 import { escapeHtml } from "./lib/html";
 import { appUrl } from "./lib/siteUrl";
 
-/** A hand chase this recent stands in for today's follow-up. */
-const RECENT_CHASE_MS = 20 * 60 * 60 * 1000;
+/** A hand chase on the same Eastern calendar day as the run stands in for
+ *  that day's follow-up. */
+export function chasedSameDay(chasedAt: number, now: number): boolean {
+  return dayKeyInTz(chasedAt, FINANCE_TIMEZONE) === dayKeyInTz(now, FINANCE_TIMEZONE);
+}
 /** Rows read per daily run — far above any real chase backlog. */
 const FOLLOW_UP_SCAN_LIMIT = 2000;
 /** Follow-ups after which the chaser is told the person still hasn't coded. */
@@ -195,8 +207,8 @@ export const gather = internalQuery({
     }
 
     const targets = [...byPerson.values()]
-      // Chased by hand recently: that chase was today's message.
-      .filter((t) => now - t.latestChase >= RECENT_CHASE_MS)
+      // Chased by hand today: that chase was today's message.
+      .filter((t) => !chasedSameDay(t.latestChase, now))
       .map(({ latestChase: _latest, ...t }) => ({
         ...t,
         charges: [...t.charges].sort((a, b) => b.amountCents - a.amountCents),

@@ -141,6 +141,7 @@ import {
 } from "../../../components/finance/reconcile/gridView";
 import { BulkNoDocumentationModal } from "../../../components/finance/modals/BulkNoDocumentationModal";
 import { ChaseReasonModal } from "../../../components/finance/reconcile/ChaseReasonModal";
+import { chaseStatusLine } from "../../../components/finance/reconcile/chaseStatus";
 import {
   BulkExplainModal,
   BulkExplainResults,
@@ -787,7 +788,22 @@ function ReconcileGrid() {
     nudgeablePersonIds.length > 0 ? { personIds: nudgeablePersonIds } : "skip",
   );
   const nudgedToday = useMemo(
-    () => new Set((nudgeStatus ?? []).map((n) => n.personId)),
+    () =>
+      new Set(
+        (nudgeStatus ?? [])
+          .filter((n) => n.lastManualNudgeAt != null)
+          .map((n) => n.personId),
+      ),
+    [nudgeStatus],
+  );
+  // The daily follow-ups after a chase, said under the button.
+  const followUpByPerson = useMemo(
+    () =>
+      new Map(
+        (nudgeStatus ?? []).flatMap((n) =>
+          n.followUp ? [[n.personId, n.followUp] as const] : [],
+        ),
+      ),
     [nudgeStatus],
   );
   const sendCodingChase = useAction(api.cards.sendCodingChase);
@@ -2587,28 +2603,36 @@ function ReconcileGrid() {
                 // plain "Chase" is honest about acting on the whole band.
                 const selectedHere = selectedCountByPerson.get(group.key) ?? 0;
                 if (chasingSelection && selectedHere === 0) return null;
+                const followUp = followUpByPerson.get(personId);
                 return (
-                  <Button
-                    title={
-                      already
-                        ? "Chased today"
-                        : chasingSelection
-                          ? `Chase ${selectedHere} selected`
-                          : "Chase"
-                    }
-                    variant="secondary"
-                    size="sm"
-                    icon={already ? undefined : "send"}
-                    disabled={already}
-                    loading={sendingKey === personId}
-                    onPress={() =>
-                      setPendingChase({
-                        personId,
-                        key: personId,
-                        title: `Chase ${group.label}`,
-                      })
-                    }
-                  />
+                  <View className="items-end gap-1">
+                    <Button
+                      title={
+                        already
+                          ? "Chased today"
+                          : chasingSelection
+                            ? `Chase ${selectedHere} selected`
+                            : "Chase"
+                      }
+                      variant="secondary"
+                      size="sm"
+                      icon={already ? undefined : "send"}
+                      disabled={already}
+                      loading={sendingKey === personId}
+                      onPress={() =>
+                        setPendingChase({
+                          personId,
+                          key: personId,
+                          title: `Chase ${group.label}`,
+                        })
+                      }
+                    />
+                    {followUp ? (
+                      <Text className="text-xs text-muted text-right">
+                        {chaseStatusLine(followUp, Date.now())}
+                      </Text>
+                    ) : null}
+                  </View>
                 );
               }}
             />

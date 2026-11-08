@@ -10,6 +10,7 @@ import {
 } from "./setup.helpers";
 import { api, internal } from "../_generated/api";
 import { chaseOutstandingFor } from "../finances";
+import { chasedSameDay } from "../chaseFollowUps";
 import type { Doc, Id } from "../_generated/dataModel";
 
 /**
@@ -783,6 +784,15 @@ describe("the chase email itself", () => {
       expect(sent[1].html).toContain("past due");
       expect(sent[1].html).toContain("each day until");
 
+      // The Book can say so: one reminder, when, and the chase it follows.
+      const status = await s.as.query(api.cards.getManualNudgeStatus, {
+        personIds: [ada.personId],
+      });
+      expect(status[0].followUp).toMatchObject({ reminderCount: 1, chaserTold: false });
+      expect(status[0].followUp!.lastRemindedAt).toBeGreaterThan(
+        status[0].followUp!.chasedAt,
+      );
+
       // Coded: no more reminders, and the row is gone.
       const receipt = await storeBlob(t);
       await run(t, (ctx) =>
@@ -798,6 +808,17 @@ describe("the chase email itself", () => {
       globalThis.fetch = realFetch;
       process.env.RESEND_API_KEY = prevResendKey;
     }
+  });
+
+  test("only a chase earlier the same Eastern day skips the follow-up", () => {
+    // Sat 2026-11-07 9:00am EST, when the daily run fires.
+    const run9am = Date.UTC(2026, 10, 7, 14, 0);
+    // Friday 4:28pm EST — 16.5h earlier. Used to be skipped (< 20h).
+    expect(chasedSameDay(Date.UTC(2026, 10, 6, 21, 28), run9am)).toBe(false);
+    // Friday 11:30pm EST — still the day before.
+    expect(chasedSameDay(Date.UTC(2026, 10, 7, 4, 30), run9am)).toBe(false);
+    // Saturday 12:30am EST — same day: that chase was today's message.
+    expect(chasedSameDay(Date.UTC(2026, 10, 7, 5, 30), run9am)).toBe(true);
   });
 
   test("after five follow-ups the chaser is told, once", async () => {
