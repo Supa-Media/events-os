@@ -26,18 +26,17 @@
  * the §274(d) questions are the same questions about the same charge, and a
  * second set would drift within a release. What `mode="review"` changes is
  * exactly two things, both stated in `CodingFieldSet`'s own doc — the author's
- * sentence renders read-only, and the budget copy stops telling the finance
- * team that the finance team will handle it.
+ * original sentence is shown under the purpose box once it differs, and the
+ * budget copy stops telling the finance team that the finance team will
+ * handle it.
  *
- * ## What it will not let a reviewer do
+ * ## The purpose, too (2026-11-08)
  *
- * Rewrite `businessPurpose`. That is the author's testimony and the
- * substantiation of record; the reviewer's channel for the PUBLISHED wording
- * is "Edit what publishes" on the row (`PublicPurposeEditor` →
- * `setPublicPurpose`), which stores the rewrite BESIDE the original. The
- * server enforces it by construction — `transactionCodings.reviseUnderReview`
- * has no `businessPurpose` argument — and this panel does not render a box for
- * it, because a field that silently doesn't save is worse than no field.
+ * Dev2: "instead of sending back sometimes I may correct categories budgets
+ * reasons etc, whenever I do email the person that it was approved with
+ * corrections". The reviewer may now correct `businessPurpose`; the server
+ * keeps the author's words in `authorBusinessPurpose`, records each change in
+ * `reviewCorrections`, and `approve` emails the author that list.
  *
  * Separation of duties rides along: the panel only mounts when the server says
  * `canRevise`, which is authority AND not-your-own-coding AND a coding still
@@ -75,6 +74,8 @@ export interface ReviseSubject {
   headcount: number | null;
   attendees: { name: string; affiliation: string }[] | null;
   groupDescription: string | null;
+  /** The author's own sentence when a reviewer already corrected it. */
+  authorBusinessPurpose?: string | null;
 }
 
 export function ReviseUnderReview({
@@ -165,6 +166,7 @@ export function ReviseUnderReview({
           categoryId: category
             ? (category as Id<"budgetCategories">)
             : null,
+          businessPurpose: value.businessPurpose,
           coding: {
             expenseType: value.expenseType,
             ...(value.travelFrom ? { travelFrom: value.travelFrom } : {}),
@@ -202,8 +204,9 @@ export function ReviseUnderReview({
           ) : (
             <>
               <Text className="font-semibold">Fix it here.</Text> Anything you
-              change is recorded against your name; the author&apos;s own
-              sentence stays exactly as they wrote it.
+              change is recorded against your name, their original answers
+              stay on the record, and when you approve they get an email
+              listing what you corrected.
             </>
           )}
         </Text>
@@ -237,6 +240,7 @@ export function ReviseUnderReview({
       <CodingFieldSet
         form={form}
         mode="review"
+        authorPurpose={coding.authorBusinessPurpose ?? coding.businessPurpose}
         minPurposeLength={policy?.minPurposeLength ?? MIN_PURPOSE_LENGTH}
         transactionId={transactionId as Id<"transactions">}
       />

@@ -410,13 +410,12 @@ function sameCodingFields(a: CodingWriteFields, b: CodingWriteFields): boolean {
  * and silently drop the `publicPurpose` redaction, `reviewerRemindedAt` and
  * the `portedFrom*` provenance that `replace` does not carry.
  *
- * So this is a PATCH of exactly the fields a reviewer may touch, and it says
- * so by construction: `businessPurpose` is not in the argument list at all.
- * The author's sentence is the substantiation of record for an accountable
- * plan; the reviewer's channel for the PUBLISHED wording is `publicPurpose`
- * (`transactionCodings.setPublicPurpose`), which stores the rewrite beside the
- * original rather than over it. Do not "simplify" the two into one editable
- * string — that is the exact falsification the schema's own comment forbids.
+ * So this is a PATCH of exactly the fields a reviewer may touch. Since
+ * 2026-11-08 that includes `businessPurpose` (Dev2: "instead of sending back
+ * sometimes I may correct categories budgets reasons etc"). The author's
+ * sentence is still never lost: the first reviewer edit copies it into
+ * `authorBusinessPurpose`, which nothing else writes, so the record always
+ * holds both what they wrote and what was approved.
  *
  * `undefined` on a type-irrelevant field is a DELETION in Convex's patch
  * semantics, which is what makes retyping honest: a charge retyped from
@@ -473,8 +472,15 @@ export async function reviseCodingUnderReview(
   const before = codingWriteFieldsFrom(args.coding);
   if (sameCodingFields(before, fields)) return false;
   await assertLodgingFolioAvailable(ctx, args.txn._id, fields.expenseType);
+  const purposeChanged = fields.businessPurpose !== args.coding.businessPurpose;
   await ctx.db.patch(args.coding._id, {
     expenseType: fields.expenseType,
+    businessPurpose: fields.businessPurpose,
+    // The FIRST reviewer edit of the sentence keeps the author's own words;
+    // later edits leave that copy alone, so it is always what they wrote.
+    ...(purposeChanged && args.coding.authorBusinessPurpose === undefined
+      ? { authorBusinessPurpose: args.coding.businessPurpose }
+      : {}),
     // Every type-specific field written every time — present ones set, absent
     // ones cleared. See the doc above on why `undefined` is load-bearing here.
     travelFrom: fields.travelFrom,
