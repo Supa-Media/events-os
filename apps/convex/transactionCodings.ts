@@ -95,6 +95,10 @@ import {
 import { codingReviewReach } from "./lib/transactionCodingAccess";
 import { codingReviewRouter } from "./lib/codingReviewRouting";
 import { isUncodedCharge } from "./lib/codingReminders";
+import {
+  mergeReviewCorrections,
+  type ReviewCorrection,
+} from "./lib/codingReviewCorrections";
 import { listActiveChapters } from "./lib/chapters";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
 import {
@@ -141,6 +145,13 @@ const attendeeValidator = v.object({
   affiliation: v.union(...ATTENDEE_AFFILIATIONS.map((a) => v.literal(a))),
 });
 
+const reviewCorrectionValidator = v.object({
+  field: v.string(),
+  label: v.string(),
+  before: v.string(),
+  after: v.string(),
+});
+
 const codingRow = v.object({
   _id: v.id("transactionCodings"),
   transactionId: v.id("transactions"),
@@ -178,10 +189,16 @@ const codingRow = v.object({
    *  (`reviseUnderReview`). Surfaced beside `codedByName`, never instead of
    *  it: the author is still the author, and a reader deciding whether to
    *  approve is owed the fact that what they are reading is not verbatim what
-   *  was submitted. `businessPurpose` is unreachable from that path, so this
-   *  never means the sentence changed. */
+   *  was submitted. When the sentence itself changed,
+   *  `authorBusinessPurpose` holds what the author wrote. */
   revisedByName: v.union(v.string(), v.null()),
   revisedAt: v.union(v.number(), v.null()),
+  /** The author's own sentence when a reviewer corrected `businessPurpose`
+   *  during review; null when the sentence is still verbatim theirs. */
+  authorBusinessPurpose: v.union(v.string(), v.null()),
+  /** What the reviewer changed this round (see the schema doc) — the list
+   *  the author is emailed when the coding is approved with corrections. */
+  reviewCorrections: v.array(reviewCorrectionValidator),
   /** Present iff this row was PORTED from a reimbursement request's own
    *  approved line (`lib/transactionCoding.ts#materializePortedReimbursementCoding`)
    *  rather than authored on this surface — the UI's cue for "the claimant's
@@ -438,6 +455,8 @@ async function projectCoding(
     reviewNote: row.reviewNote ?? null,
     revisedByName: await name(row.revisedByPersonId),
     revisedAt: row.revisedAt ?? null,
+    authorBusinessPurpose: row.authorBusinessPurpose ?? null,
+    reviewCorrections: row.reviewCorrections ?? [],
     portedFromReimbursementId: row.portedFromReimbursementId ?? null,
   };
 }
@@ -1151,6 +1170,20 @@ export const approve = mutation({
       afterKey: "approved",
       amountCents: (await ctx.db.get(args.transactionId))?.amountCents ?? 0,
     });
+    // APPROVED WITH CORRECTIONS → tell the author what changed (Dev2,
+    // 2026-11-08). Sent after the undo window, keyed to THIS approval's
+    // `decidedAt`, so a mis-tap that is undone never reaches them; the job
+    // itself skips a self-approval. See `codingCorrectionEmails.ts`.
+    if ((coding.reviewCorrections ?? []).length > 0) {
+      const decided = await ctx.db.get(coding._id);
+      if (decided?.decidedAt != null) {
+        await ctx.scheduler.runAfter(
+          UNDO_APPROVAL_WINDOW_MS + 30_000,
+          internal.codingCorrectionEmails.notifyCodingApprovedWithCorrections,
+          { transactionId: args.transactionId, decidedAt: decided.decidedAt },
+        );
+      }
+    }
     return null;
   },
 });
@@ -1573,19 +1606,25 @@ export const setPublicPurpose = mutation({
  * information the public ledger prints and is enough to see that the list
  * changed.
  */
-const AMENDABLE_FIELDS: [string, (f: CodingWriteFields) => string][] = [
-  ["expenseType", (f) => EXPENSE_TYPE_LABELS[f.expenseType]],
+const AMENDABLE_FIELDS: [string, string, (f: CodingWriteFields) => string][] = [
+  ["businessPurpose", "What it was for", (f) => f.businessPurpose],
+  ["expenseType", "Expense type", (f) => EXPENSE_TYPE_LABELS[f.expenseType]],
   [
     "route",
+    "Route",
     (f) =>
       f.travelFrom || f.travelTo
         ? `${f.travelFrom ?? "—"} → ${f.travelTo ?? "—"}`
         : "None",
   ],
-  ["headcount", (f) => (f.headcount != null ? String(f.headcount) : "None")],
-  ["attendees", (f) => peopleSummary(f.attendees)],
-  ["travelers", (f) => peopleSummary(f.travelers)],
-  ["groupDescription", (f) => f.groupDescription ?? "None"],
+  [
+    "headcount",
+    "Headcount",
+    (f) => (f.headcount != null ? String(f.headcount) : "None"),
+  ],
+  ["attendees", "Who was there", (f) => peopleSummary(f.attendees)],
+  ["travelers", "Who traveled", (f) => peopleSummary(f.travelers)],
+  ["groupDescription", "The group", (f) => f.groupDescription ?? "None"],
 ];
 
 /** A people list as a count plus its affiliation breakdown — see
@@ -1640,15 +1679,16 @@ function peopleSummary(
  * author's own submit runs, so a correction can never leave a record the
  * author could not have submitted.
  *
- * THE AUTHOR'S SENTENCE — never. `businessPurpose` is absent from this
- * argument list by construction. It is the substantiation of record for an
- * IRS accountable plan, and what actually happened has to survive whoever
- * reads it afterwards. The reviewer's channel for the PUBLISHED wording is
- * `setPublicPurpose`, which stores the rewrite beside the original instead of
- * over it — redaction, not falsification (see that mutation's own doc, and
- * `schema/finances.ts`'s `publicPurpose` comment). If a reviewer believes the
- * sentence itself is wrong rather than merely unpublishable, the honest move
- * is still `requestChanges`: only the author can restate what they meant.
+ * THE AUTHOR'S SENTENCE — correctable since 2026-11-08 (Dev2: "instead of
+ * sending back sometimes I may correct categories budgets reasons etc"), but
+ * never lost. The first reviewer edit copies the author's words into
+ * `authorBusinessPurpose`, the record shows both, and the change is audited
+ * like any other field. `setPublicPurpose` is still the narrower tool for
+ * redacting only what PUBLISHES.
+ *
+ * WHAT CHANGED IS KEPT for the author: every field that moves lands in
+ * `reviewCorrections` (`lib/codingReviewCorrections.ts`), and `approve` emails
+ * the author that list ("approved with corrections").
  *
  * ## Separation of duties still applies
  *
@@ -1676,6 +1716,10 @@ export const reviseUnderReview = mutation({
      *  gate on `approve` reads the same column. */
     budgetId: v.optional(v.union(v.id("budgets"), v.null())),
     categoryId: v.optional(v.union(v.id("budgetCategories"), v.null())),
+    /** The reviewer's corrected sentence. Omitted keeps the stored one. Only
+     *  read alongside `coding` (it is validated as part of the same field
+     *  set); the author's original is kept in `authorBusinessPurpose`. */
+    businessPurpose: v.optional(v.string()),
     /** The WHOLE structured answer, or nothing at all. Same contract as
      *  `submit`: the client renders the complete field set, so an omitted
      *  field means "not part of this answer" and clears — a charge retyped
@@ -1730,7 +1774,39 @@ export const reviseUnderReview = mutation({
       // already on the row must not be refused because it was retired since.
       await requireBudgetCategory(ctx, args.categoryId);
     }
+    // Every field that moved in this call, for the "approved with
+    // corrections" email (see `lib/codingReviewCorrections.ts`).
+    const corrections: ReviewCorrection[] = [];
     if (args.budgetId !== undefined || args.categoryId !== undefined) {
+      const categoryLabel = async (id: Id<"budgetCategories"> | null) =>
+        id ? ((await ctx.db.get(id))?.name ?? "Deleted category") : "None";
+      const budgetLabel = async (id: Id<"budgets"> | null) => {
+        if (!id) return "None";
+        const b = await ctx.db.get(id);
+        return b ? budgetDisplayName(b) : "Deleted budget";
+      };
+      if (
+        args.categoryId !== undefined &&
+        args.categoryId !== (txn.categoryId ?? null)
+      ) {
+        corrections.push({
+          field: "category",
+          label: "Category",
+          before: await categoryLabel(txn.categoryId ?? null),
+          after: await categoryLabel(args.categoryId),
+        });
+      }
+      if (
+        args.budgetId !== undefined &&
+        args.budgetId !== (txn.budgetId ?? null)
+      ) {
+        corrections.push({
+          field: "budget",
+          label: "Budget",
+          before: await budgetLabel(txn.budgetId ?? null),
+          after: await budgetLabel(args.budgetId),
+        });
+      }
       await ctx.db.patch(args.transactionId, {
         ...(args.budgetId !== undefined
           ? { budgetId: args.budgetId ?? undefined }
@@ -1767,10 +1843,13 @@ export const reviseUnderReview = mutation({
       const changed = await reviseCodingUnderReview(ctx, {
         coding,
         txn,
-        // The author's own sentence, carried through untouched — this is the
-        // one place it appears in this handler, and it comes from the STORED
-        // row, never from the caller.
-        fields: { ...args.coding, businessPurpose: coding.businessPurpose },
+        // The reviewer's corrected sentence when they sent one, else the
+        // stored one. Either way the author's original survives in
+        // `authorBusinessPurpose` (see `reviseCodingUnderReview`).
+        fields: {
+          ...args.coding,
+          businessPurpose: args.businessPurpose ?? coding.businessPurpose,
+        },
         namesMaxHeadcount,
         revisedByPersonId: actorPersonId,
         revisedByUserId: userId,
@@ -1779,30 +1858,49 @@ export const reviseUnderReview = mutation({
       // `reviseCodingUnderReview`) — and it is the COMMON shape here: setting
       // only the budget still posts the unchanged field set back. Nothing
       // changed, so nothing is logged.
-      if (!changed) return null;
-      const after = codingWriteFieldsFrom(
-        (await ctx.db.get(coding._id)) as Doc<"transactionCodings">,
-      );
-      // One audit row per FIELD that actually moved, so the trail reads as
-      // "the treasurer retyped this as lodging", not "something changed".
-      for (const [field, read] of AMENDABLE_FIELDS) {
-        const wasValue = read(before);
-        const nowValue = read(after);
-        if (wasValue === nowValue) continue;
-        await logFinanceAudit(ctx, {
-          chapterId: scope,
-          subjectType: "transaction",
-          subjectId: args.transactionId,
-          action: "coding_amend",
-          actorPersonId,
-          field,
-          before: wasValue,
-          after: nowValue,
-          reason:
-            "Corrected during review; the author's own wording is unchanged",
-          amountCents: txn.amountCents,
-        });
+      if (changed) {
+        const after = codingWriteFieldsFrom(
+          (await ctx.db.get(coding._id)) as Doc<"transactionCodings">,
+        );
+        // One audit row per FIELD that actually moved, so the trail reads as
+        // "the treasurer retyped this as lodging", not "something changed".
+        for (const [field, label, read] of AMENDABLE_FIELDS) {
+          const wasValue = read(before);
+          const nowValue = read(after);
+          if (wasValue === nowValue) continue;
+          corrections.push({ field, label, before: wasValue, after: nowValue });
+          await logFinanceAudit(ctx, {
+            chapterId: scope,
+            subjectType: "transaction",
+            subjectId: args.transactionId,
+            action: "coding_amend",
+            actorPersonId,
+            field,
+            before: wasValue,
+            after: nowValue,
+            reason:
+              field === "businessPurpose"
+                ? "Corrected during review; the author's original wording is kept on the record"
+                : "Corrected during review",
+            amountCents: txn.amountCents,
+          });
+        }
       }
+    }
+
+    // Only a coding still awaiting review collects corrections: the list is
+    // what `approve` reports, and an already-decided row has no approval
+    // left to report it with.
+    if (corrections.length > 0 && coding.status === "submitted") {
+      // Re-read: the structured-facts write above may have just patched the
+      // row, and the merge must start from what is stored now.
+      const current = await ctx.db.get(coding._id);
+      await ctx.db.patch(coding._id, {
+        reviewCorrections: mergeReviewCorrections(
+          current?.reviewCorrections,
+          corrections,
+        ),
+      });
     }
     return null;
   },

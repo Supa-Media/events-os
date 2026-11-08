@@ -465,13 +465,14 @@ backup.
 **The reviewer corrects the record rather than returning it.** The cardholder is
 told to leave the budget blank if they are not sure, because a guess is worse
 than a blank and the finance team is who knows the answer. So whoever may
-approve a coding may also set its budget and category and fix its structured
-facts in place, and the correction is recorded against their name. Two limits
-are absolute: the reviewer never rewrites the **purpose the spender wrote** —
-that sentence is the substantiation of record, and the reviewer's separate power
-is to rewrite the version that PUBLISHES, with the original kept beside it — and
-the correction never moves authorship, so the second pair of eyes stays a second
-pair of eyes.
+approve a coding may also set its budget and category, correct the stated
+purpose, and fix its structured facts in place, and the correction is recorded
+against their name. When the reviewer corrects the **purpose the spender
+wrote**, the spender's original sentence is kept on the record beside the
+correction, never erased. When a coding is approved with corrections, the
+spender is emailed that it was approved with corrections, with each change
+listed. The correction never moves authorship, so the second pair of eyes stays
+a second pair of eyes.
 
 The chapter **Treasurer** prepares the month, and the **Treasurer** or the
 **Chapter Director** publishes it. At central, the **Financial Manager**

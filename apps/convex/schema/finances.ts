@@ -3064,12 +3064,37 @@ export const transactionCodings = defineTable({
   // ("Amended during review by …") so the next reader can see the sentence
   // they are approving is not verbatim what was submitted.
   //
-  // `businessPurpose` is NOT reachable from that path — the author's own
-  // words stay the author's own words, and the reviewer's channel for the
-  // published wording is `publicPurpose` below.
+  // Since 2026-11-08 the reviewer may also correct `businessPurpose` itself
+  // (Dev2: "instead of sending back sometimes I may correct categories
+  // budgets reasons etc"). The author's own words are not lost when that
+  // happens: the first reviewer edit copies them into `authorBusinessPurpose`
+  // below, and every later edit leaves that copy alone.
   revisedByPersonId: v.optional(v.id("people")),
   revisedByUserId: v.optional(v.id("users")),
   revisedAt: v.optional(v.number()),
+  // THE AUTHOR'S ORIGINAL SENTENCE, kept when a reviewer corrected
+  // `businessPurpose` during review. Absent means the sentence on the row is
+  // still exactly what the author wrote. Dropped on a resubmission (the
+  // author's `submitCoding` replaces the row), because the new sentence is
+  // theirs again.
+  authorBusinessPurpose: v.optional(v.string()),
+  // WHAT THE REVIEWER CHANGED this review round, one entry per field (a
+  // second edit of the same field keeps the first `before`), as the
+  // human-readable strings the audit trail also records. Read when the coding
+  // is approved: a non-empty list means the author is emailed that it was
+  // "approved with corrections", with this list. Bounded by the number of
+  // correctable fields (under ten). Dropped on resubmission, like the field
+  // above.
+  reviewCorrections: v.optional(
+    v.array(
+      v.object({
+        field: v.string(),
+        label: v.string(),
+        before: v.string(),
+        after: v.string(),
+      }),
+    ),
+  ),
   // Mirrors `budgets.approvalParty` (owner addendum 2026-07-17, extended to
   // codings 2026-08-11: "as super admin, I need the ability to just approve
   // my own coding things"): while the owner is solo-operating, a SUPERUSER
@@ -3082,10 +3107,10 @@ export const transactionCodings = defineTable({
     v.union(v.literal("single"), v.literal("two_party")),
   ),
   // ── REDACTION, NOT FALSIFICATION ──────────────────────────────────────────
-  // `businessPurpose` above is and remains the AUTHOR'S OWN WORDS. It is never
-  // rewritten by anyone else and never deleted — it is the substantiation of
+  // The author's own words are never lost — they are the substantiation of
   // record for an IRS accountable plan, and what actually happened has to
-  // survive. What an approver may write is a separate, public-facing version
+  // survive. (A reviewer may correct `businessPurpose` during review; the
+  // author's original then lives in `authorBusinessPurpose`.) What an approver may write is a separate, public-facing version
   // of the same sentence, stored HERE, alongside it.
   //
   // The published ledger renders `publicPurpose ?? businessPurpose`; every

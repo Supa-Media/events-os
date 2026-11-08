@@ -1,7 +1,12 @@
 /// <reference types="vite/client" />
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { ConvexError } from "convex/values";
-import { CENTRAL, DEFAULT_CODING_REQUIRED_SINCE_MS, DAY_MS } from "@events-os/shared";
+import {
+  CENTRAL,
+  DEFAULT_CODING_REQUIRED_SINCE_MS,
+  DAY_MS,
+  UNDO_APPROVAL_WINDOW_MS,
+} from "@events-os/shared";
 import {
   newT,
   run,
@@ -553,9 +558,10 @@ describe("the author's testimony survives the correction", () => {
 
     const coding = await codingOf(s, txnId);
     // THE ONE THAT MATTERS: what actually happened has to survive whoever
-    // reads it afterwards. `reviseUnderReview` has no `businessPurpose`
-    // argument at all, and this is the assertion behind that.
+    // reads it afterwards. A correction that does not touch the sentence
+    // leaves it, and no "original" copy is made.
     expect(coding?.businessPurpose).toBe(PURPOSE);
+    expect(coding?.authorBusinessPurpose).toBeUndefined();
     // Authorship does not move. Beyond honesty, this is what keeps the
     // corrector's own later approval legal under separation of duties.
     expect(coding?.codedByPersonId).toBe(author.personId);
@@ -751,5 +757,183 @@ describe("the reviewer's reach, not the bookkeeper's", () => {
       transactionId: txnId,
     });
     expect((await codingOf(central, txnId))?.status).toBe("approved");
+  });
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 5. CORRECT THE PURPOSE TOO, AND TELL THE AUTHOR (Dev2, 2026-11-08)
+// ─────────────────────────────────────────────────────────────────────────────
+
+describe("approved with corrections", () => {
+  const CORRECTED = "Supplies for the Field Day cookout: plates, foil, pans, gloves";
+
+  test("the reviewer can correct the purpose; the author's words are kept", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asTreasurer(s);
+    const author = await addAuthor(s);
+    const txnId = await seedTxn(s, { personId: author.personId });
+    await seedSubmittedCoding(s, txnId, s.chapterId, author);
+
+    await s.as.mutation(api.transactionCodings.reviseUnderReview, {
+      transactionId: txnId,
+      businessPurpose: "A first try at the wording that is long enough",
+      coding: { expenseType: "general" },
+    });
+    await s.as.mutation(api.transactionCodings.reviseUnderReview, {
+      transactionId: txnId,
+      businessPurpose: CORRECTED,
+      coding: { expenseType: "general" },
+    });
+
+    const coding = await codingOf(s, txnId);
+    expect(coding?.businessPurpose).toBe(CORRECTED);
+    // The FIRST correction kept the author's words; the second left them.
+    expect(coding?.authorBusinessPurpose).toBe(PURPOSE);
+    expect(coding?.codedByPersonId).toBe(author.personId);
+    // One entry for the field, from what they wrote to what stands now.
+    expect(coding?.reviewCorrections).toEqual([
+      {
+        field: "businessPurpose",
+        label: "What it was for",
+        before: PURPOSE,
+        after: CORRECTED,
+      },
+    ]);
+    const amend = (await auditRows(s, txnId)).filter(
+      (r) => r.action === "coding_amend" && r.field === "businessPurpose",
+    );
+    expect(amend).toHaveLength(2);
+  });
+
+  test("changing a field back to the author's answer drops it from the list", async () => {
+    const t = newT();
+    const s = await setupChapter(t);
+    await asTreasurer(s);
+    const author = await addAuthor(s);
+    const txnId = await seedTxn(s, { personId: author.personId });
+    await seedSubmittedCoding(s, txnId, s.chapterId, author);
+
+    await s.as.mutation(api.transactionCodings.reviseUnderReview, {
+      transactionId: txnId,
+      businessPurpose: CORRECTED,
+      coding: { expenseType: "general" },
+    });
+    await s.as.mutation(api.transactionCodings.reviseUnderReview, {
+      transactionId: txnId,
+      businessPurpose: PURPOSE,
+      coding: { expenseType: "general" },
+    });
+    const coding = await codingOf(s, txnId);
+    expect(coding?.businessPurpose).toBe(PURPOSE);
+    expect(coding?.reviewCorrections ?? []).toEqual([]);
+  });
+
+  test("approving with corrections emails the author what changed, after the undo window", async () => {
+    const prevAppUrl = process.env.APP_URL;
+    const prevResendKey = process.env.RESEND_API_KEY;
+    const realFetch = globalThis.fetch;
+    process.env.APP_URL = "https://app.publicworship.life";
+    process.env.RESEND_API_KEY = "resend_test_key";
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await asTreasurer(s);
+      const author = await addAuthor(s, { email: "cass@publicworship.life" });
+      const txnId = await seedTxn(s, { personId: author.personId });
+      await seedSubmittedCoding(s, txnId, s.chapterId, author);
+
+      const sent: { to: string; subject: string; html: string }[] = [];
+      globalThis.fetch = (async (_url: string, init?: { body?: string }) => {
+        const body = init?.body ? JSON.parse(init.body) : {};
+        sent.push({ to: body.to, subject: body.subject, html: body.html });
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+
+      await s.as.mutation(api.transactionCodings.reviseUnderReview, {
+        transactionId: txnId,
+        budgetId: await seedApprovedBudget(s.t, s.chapterId),
+        businessPurpose: CORRECTED,
+        coding: { expenseType: "general" },
+      });
+      await s.as.mutation(api.transactionCodings.approve, {
+        transactionId: txnId,
+      });
+
+      const jobs = await run(s.t, (ctx) =>
+        ctx.db.system.query("_scheduled_functions").collect(),
+      );
+      const job = jobs.find((j) =>
+        j.name.includes("notifyCodingApprovedWithCorrections"),
+      );
+      // Not sent inside the window in which the approver can still undo.
+      expect(job).toBeDefined();
+      expect(job!.scheduledTime).toBeGreaterThan(
+        Date.now() + UNDO_APPROVAL_WINDOW_MS,
+      );
+
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(sent).toHaveLength(1);
+      expect(sent[0].to).toBe("cass@publicworship.life");
+      expect(sent[0].subject).toContain("approved with corrections");
+      expect(sent[0].html).toContain("What it was for");
+      expect(sent[0].html).toContain("Budget");
+      expect(sent[0].html).toContain("Supplies for the Field Day cookout");
+      expect(sent[0].html).not.toMatch(/reply to this email/i);
+    } finally {
+      vi.useRealTimers();
+      globalThis.fetch = realFetch;
+      process.env.APP_URL = prevAppUrl;
+      process.env.RESEND_API_KEY = prevResendKey;
+    }
+  });
+
+  test("an approval with nothing corrected, or one undone, emails nobody", async () => {
+    const realFetch = globalThis.fetch;
+    const prevResendKey = process.env.RESEND_API_KEY;
+    process.env.RESEND_API_KEY = "resend_test_key";
+    vi.useFakeTimers();
+    try {
+      const t = newT();
+      const s = await setupChapter(t);
+      await asTreasurer(s);
+      const author = await addAuthor(s);
+      const budgetId = await seedApprovedBudget(s.t, s.chapterId);
+
+      // Plain approval: budget already on the row, nothing corrected.
+      const plain = await seedTxn(s, { personId: author.personId });
+      await run(s.t, (ctx) => ctx.db.patch(plain, { budgetId }));
+      await seedSubmittedCoding(s, plain, s.chapterId, author);
+      await s.as.mutation(api.transactionCodings.approve, {
+        transactionId: plain,
+      });
+
+      // Corrected, approved, then undone by the approver.
+      const undone = await seedTxn(s, { personId: author.personId });
+      await seedSubmittedCoding(s, undone, s.chapterId, author);
+      await s.as.mutation(api.transactionCodings.reviseUnderReview, {
+        transactionId: undone,
+        budgetId,
+      });
+      await s.as.mutation(api.transactionCodings.approve, {
+        transactionId: undone,
+      });
+      await s.as.mutation(api.transactionCodings.undoApproval, {
+        transactionId: undone,
+      });
+
+      const sent: unknown[] = [];
+      globalThis.fetch = (async () => {
+        sent.push(1);
+        return { ok: true, status: 200, text: async () => "{}" };
+      }) as unknown as typeof fetch;
+      await s.t.finishAllScheduledFunctions(vi.runAllTimers);
+      expect(sent).toHaveLength(0);
+    } finally {
+      vi.useRealTimers();
+      globalThis.fetch = realFetch;
+      process.env.RESEND_API_KEY = prevResendKey;
+    }
   });
 });

@@ -650,6 +650,39 @@ export function ReviewRecord({
               <Text className="text-sm text-ink">{coding.businessPurpose}</Text>
             </View>
 
+            {/* A reviewer corrected the sentence: what the author actually
+                wrote stays visible, labelled, right under it. */}
+            {coding.authorBusinessPurpose != null &&
+            coding.authorBusinessPurpose !== coding.businessPurpose ? (
+              <View>
+                <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
+                  They originally wrote
+                </Text>
+                <Text className="text-xs text-ink">
+                  {coding.authorBusinessPurpose}
+                </Text>
+              </View>
+            ) : null}
+
+            {coding.reviewCorrections.length > 0 ? (
+              <View>
+                <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
+                  Corrected in review
+                </Text>
+                {coding.reviewCorrections.map((c) => (
+                  <Text key={c.field} className="text-xs text-ink">
+                    <Text className="font-semibold">{c.label}:</Text> {c.before}{" "}
+                    → {c.after}
+                  </Text>
+                ))}
+                {coding.status === "submitted" ? (
+                  <Text className="text-2xs text-muted">
+                    The author is emailed this list when the coding is approved.
+                  </Text>
+                ) : null}
+              </View>
+            ) : null}
+
             {coding.publicPurpose ? (
               <View>
                 <Text className="text-2xs font-semibold uppercase tracking-wide text-muted">
@@ -831,9 +864,8 @@ export function ReviewRecord({
             {/* A reviewer corrected this after it was submitted. Shown BESIDE
                 "Coded by", never instead of it: the author is still the
                 author, and the next person to read this record is owed the
-                fact that it isn't verbatim what was submitted. The sentence
-                is never what changed — `reviseUnderReview` cannot reach
-                `businessPurpose`. */}
+                fact that it isn't verbatim what was submitted. If the
+                sentence changed, the original is shown above. */}
             {coding.revisedAt != null ? (
               <Fact
                 label="Amended in review"
