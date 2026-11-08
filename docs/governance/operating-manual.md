@@ -451,6 +451,17 @@ approval. It carves out only what genuinely has no budget to have — a
 non-discretionary processor or bank fee, a personal charge, a transfer between
 our own accounts, an inflow, a charge refunded in full.
 
+**Each coding has one assigned reviewer.** Four seats may approve a coding, but
+the app names whose job each one is, and only that person gets the daily
+"codings need your review" email. A chapter's codings go to its Treasurer, and
+central's to the Financial Manager. When the Treasurer coded the charge, it goes
+to the Chapter Director instead, and when the Financial Manager coded it, to the
+Executive Director, so a second person always stands behind it. If nobody in a
+chapter is free to review one (a vacant seat, or one person in both), central
+reviews it under the same rule. The review queue shows the assigned reviewer on
+every coding and opens on "For me"; the other approvers may still step in as
+backup.
+
 **The reviewer corrects the record rather than returning it.** The cardholder is
 told to leave the budget blank if they are not sure, because a guess is worse
 than a blank and the finance team is who knows the answer. So whoever may
@@ -498,7 +509,7 @@ involved, and the software enforces it where it can.
 | Releasing one payment of a contractor schedule | Whoever judges the milestone met | Treasurer or Financial Manager — never the payee; recorded by name against that payment |
 | Contractor payment from **central** funds | Staff or the contractor | **Central** finance only — a chapter finance role carries no authority over central's money, by design |
 | Partnership agreement | The development desk composes it | **The partner signs it** — there is no staff-side way to mark an agreement signed |
-| Transaction coding | The cardholder (their own testimony) | Treasurer or Chapter Director in their own chapter; Financial Manager or Executive Director anywhere — never the author |
+| Transaction coding | The cardholder (their own testimony) | **Assigned to** the chapter's Treasurer (central: the Financial Manager); when the Treasurer coded it, the Chapter Director (central: when the Financial Manager coded it, the Executive Director), and the reverse. Any of the four may step in as backup — never the author |
 | Chapter budget | Treasurer | Chapter Director |
 | Central / annual budget | Financial Manager | Executive Director; annual budget adopted by the Board |
 | Monthly ledger publication | Treasurer (chapter) / Financial Manager (central) | Chapter Director / Executive Director |

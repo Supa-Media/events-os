@@ -446,7 +446,7 @@ describe("the digest email itself", () => {
       // queue first and filtered to that book.
       expect(cap.sent[0].html).toMatch(
         new RegExp(
-          `href="https://app\\.publicworship\\.life/finances/coding\\?review=1&(amp;)?scope=chapter&(amp;)?chapterId=${s.chapterId}"`,
+          `href="https://app\\.publicworship\\.life/finances/coding\\?review=1&(amp;)?who=me&(amp;)?scope=chapter&(amp;)?chapterId=${s.chapterId}"`,
         ),
       );
     } finally {
@@ -574,5 +574,126 @@ describe("PRODUCTION SAFETY: the state this actually arms into", () => {
     } finally {
       cap.restore();
     }
+  });
+});
+
+describe("reviewer routing — only the assigned reviewer is told (Dev2, 2026-11-08)", () => {
+  /** A chapter with all four review seats filled by four different people. */
+  async function fullChart() {
+    const s = await seatSetup({ chapterName: "New York" });
+    const tr = await addMember(s, { email: "tr@publicworship.life", name: "Tara Treasurer" });
+    const cd = await addMember(s, { email: "cd@publicworship.life", name: "Cara Director" });
+    const fm = await addMember(s, { email: "fm@publicworship.life", name: "Finn Manager" });
+    const ed = await addMember(s, { email: "ed@publicworship.life", name: "Eve Executive" });
+    await assignSeatDirect(s, tr.personId, "treasurer", s.chapterId);
+    await assignSeatDirect(s, cd.personId, "chapter_director", s.chapterId);
+    await assignSeatDirect(s, fm.personId, "financial_manager", "central");
+    await assignSeatDirect(s, ed.personId, "executive_director", "central");
+    return { s, tr, cd, fm, ed };
+  }
+
+  async function digestsFor(s: ChapterSetup) {
+    const ids = await s.t.mutation(internal.cards.advanceCodingReviewReminders, {});
+    return s.t.query(internal.cards.getCodingReviewDigests, { codingIds: ids });
+  }
+
+  test("a team member's chapter coding goes to the chapter Treasurer only", async () => {
+    const { s } = await fullChart();
+    await seedSubmitted(s, { ageDays: 3 });
+    const digests = await digestsFor(s);
+    expect(digests.map((d) => d.email)).toEqual(["tr@publicworship.life"]);
+    expect(digests[0].items[0].reviewAs).toBe("New York Treasurer");
+    expect(digests[0].items[0].why).toBe("default");
+  });
+
+  test("the Treasurer's own coding goes to the Chapter Director (two-party)", async () => {
+    const { s, tr } = await fullChart();
+    await seedSubmitted(s, { ageDays: 3, authorPersonId: tr.personId });
+    const digests = await digestsFor(s);
+    expect(digests.map((d) => d.email)).toEqual(["cd@publicworship.life"]);
+    expect(digests[0].items[0].why).toBe("coded_by_bookkeeper");
+  });
+
+  test("the Chapter Director's coding goes to the Treasurer", async () => {
+    const { s, cd } = await fullChart();
+    await seedSubmitted(s, { ageDays: 3, authorPersonId: cd.personId });
+    const digests = await digestsFor(s);
+    expect(digests.map((d) => d.email)).toEqual(["tr@publicworship.life"]);
+  });
+
+  test("a Central coding goes to the Financial Manager; the FM's own goes to the ED", async () => {
+    const { s, fm } = await fullChart();
+    await seedSubmitted(s, { ageDays: 3, book: "central", merchantName: "Stuf" });
+    await seedSubmitted(s, {
+      ageDays: 3,
+      book: "central",
+      merchantName: "Shopify",
+      authorPersonId: fm.personId,
+    });
+    const digests = await digestsFor(s);
+    const byEmail = Object.fromEntries(
+      digests.map((d) => [d.email, d.items.map((i) => i.merchantName)]),
+    );
+    expect(byEmail).toEqual({ "fm@publicworship.life": ["Stuf"], "ed@publicworship.life": ["Shopify"] });
+  });
+
+  test("the ED's Central coding goes to the Financial Manager", async () => {
+    const { s, ed } = await fullChart();
+    await seedSubmitted(s, { ageDays: 3, book: "central", authorPersonId: ed.personId });
+    const digests = await digestsFor(s);
+    expect(digests.map((d) => d.email)).toEqual(["fm@publicworship.life"]);
+  });
+
+  test("no Chapter Director free → the Treasurer's coding goes up to Central; and when the Treasurer is also the FM, to the ED", async () => {
+    const s = await seatSetup({ chapterName: "New York" });
+    const tr = await addMember(s, { email: "tr@publicworship.life", name: "Tara Treasurer" });
+    const ed = await addMember(s, { email: "ed@publicworship.life", name: "Eve Executive" });
+    await assignSeatDirect(s, tr.personId, "treasurer", s.chapterId);
+    await assignSeatDirect(s, tr.personId, "financial_manager", "central");
+    await assignSeatDirect(s, ed.personId, "executive_director", "central");
+    await seedSubmitted(s, { ageDays: 3, authorPersonId: tr.personId });
+    const digests = await digestsFor(s);
+    expect(digests.map((d) => d.email)).toEqual(["ed@publicworship.life"]);
+    expect(digests[0].items[0].why).toBe("chapter_has_no_reviewer");
+    expect(digests[0].items[0].reviewAs).toBe("Executive Director");
+  });
+
+  test("the email groups codings under the seat the reader reviews them as", async () => {
+    const cap = captureEmails();
+    try {
+      const { s, tr } = await fullChart();
+      await seedSubmitted(s, { ageDays: 3, authorPersonId: tr.personId, merchantName: "Tapstitch" });
+      await s.t.action(internal.cards.sendCodingReviewReminders, {});
+      expect(cap.sent.map((m) => m.to)).toEqual(["cd@publicworship.life"]);
+      expect(cap.sent[0].html).toContain("As New York Chapter Director");
+      expect(cap.sent[0].html).toContain("so a second person decides");
+    } finally {
+      cap.restore();
+    }
+  });
+
+  test("the queue names the assigned reviewer and marks the caller's own assignments", async () => {
+    const { s, tr, cd } = await fullChart();
+    await seedSubmitted(s, { ageDays: 3, merchantName: "Delta" });
+    await seedSubmitted(s, { ageDays: 2, merchantName: "Amtrak", authorPersonId: tr.personId });
+
+    const asTr = await tr.as.query(api.transactionCodings.reviewQueue, {});
+    const trRows = Object.fromEntries(asTr.rows.map((r) => [r.merchantName, r]));
+    expect(trRows.Delta.assignedToMe).toBe(true);
+    expect(trRows.Delta.reviewer).toMatchObject({
+      seatTitle: "Treasurer",
+      scopeName: "New York",
+      names: ["Tara Treasurer"],
+      why: "default",
+    });
+    expect(trRows.Amtrak.assignedToMe).toBe(false);
+    expect(trRows.Amtrak.reviewer?.names).toEqual(["Cara Director"]);
+
+    const asCd = await cd.as.query(api.transactionCodings.reviewQueue, {});
+    const cdRows = Object.fromEntries(asCd.rows.map((r) => [r.merchantName, r]));
+    expect(cdRows.Amtrak.assignedToMe).toBe(true);
+    // Authority is unchanged: the CD may still step in on the Treasurer's queue.
+    expect(cdRows.Delta.assignedToMe).toBe(false);
+    expect(cdRows.Delta.canReview).toBe(true);
   });
 });

@@ -2275,6 +2275,11 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
       },
       {
         kind: "rule",
+        title: "Each coding has one assigned reviewer",
+        text: "A chapter's codings go to its Treasurer, and central's to the Financial Manager. When the Treasurer coded it, the Chapter Director reviews it, and when the Financial Manager coded it, the Executive Director does, so two people always stand behind a charge. Only the assigned reviewer gets the email; the queue opens on **For me**, and the others can still step in as backup.",
+      },
+      {
+        kind: "rule",
         title: "Raising a cap is not automatic",
         text: "Raise an approved budget's amount and it drops back to Draft when you save. The OLD approved figure stays the spending cap, so nothing silently expands. Approvers can't see the increase until you send it for review again.",
       },
@@ -2299,6 +2304,19 @@ export const FINANCES_SECTIONS: Omit<AcademySection, "order">[] = [
         answerIndex: 1,
         explanation:
           "Reach is per seat. The Treasurer and the Chapter Director approve their OWN chapter's codings; the Financial Manager and the Executive Director approve any chapter's and central's. And nobody can approve a coding they wrote.",
+      },
+      {
+        prompt:
+          "You're the New York Treasurer and you code a $40 charge on your own card. Who is asked to review it?",
+        options: [
+          "You, as the chapter's Treasurer",
+          "New York's Chapter Director, so a second person stands behind it",
+          "Every approver in the org at once",
+          "Nobody; a Treasurer's codings skip review",
+        ],
+        answerIndex: 1,
+        explanation:
+          "A chapter's codings go to its Treasurer by default, but nobody reviews their own. When the Treasurer coded it, the Chapter Director is the assigned reviewer (at central: the Executive Director when the Financial Manager coded it).",
       },
       {
         prompt: "Within a chapter's 85%, who approves how the money gets spent?",

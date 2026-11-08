@@ -93,6 +93,7 @@ import {
   type CodingWriteFields,
 } from "./lib/transactionCoding";
 import { codingReviewReach } from "./lib/transactionCodingAccess";
+import { codingReviewRouter } from "./lib/codingReviewRouting";
 import { isUncodedCharge } from "./lib/codingReminders";
 import { listActiveChapters } from "./lib/chapters";
 import { getChapterIdOrNull, requireChapterId } from "./lib/context";
@@ -1855,6 +1856,28 @@ const reviewQueueRow = v.object({
    *  it INSTEAD of an Approve button that would throw, and points at the
    *  record where the reviewer can now set it themselves. */
   budgetRequired: v.boolean(),
+  /** WHO SHOULD decide it (`lib/codingReviewRouting.ts`) — the chapter's
+   *  Treasurer / Central's Financial Manager by default, the Chapter Director
+   *  / ED when the Treasurer / FM coded it. Authority (`canReview`) is wider:
+   *  any approval seat may still step in as backup. `null` when no seat is
+   *  assignable anywhere. */
+  reviewer: v.union(
+    v.null(),
+    v.object({
+      seatTitle: v.string(),
+      /** "Central", or the chapter whose seat it is. */
+      scopeName: v.string(),
+      names: v.array(v.string()),
+      why: v.union(
+        v.literal("default"),
+        v.literal("coded_by_bookkeeper"),
+        v.literal("chapter_has_no_reviewer"),
+      ),
+    }),
+  ),
+  /** True iff the caller is the assigned reviewer — the queue's "For me"
+   *  filter and the digest email's deep link (`who=me`). */
+  assignedToMe: v.boolean(),
 });
 
 /**
@@ -1918,6 +1941,17 @@ export const reviewQueue = query({
       bookNames.set(b, (await ctx.db.get(b))?.name ?? "Chapter");
     }
 
+    const route = codingReviewRouter(ctx);
+    const personNames = new Map<string, string>();
+    const nameOf = async (id: Id<"people">): Promise<string> => {
+      let name = personNames.get(id);
+      if (name == null) {
+        name = (await ctx.db.get(id))?.name ?? "Someone";
+        personNames.set(id, name);
+      }
+      return name;
+    };
+
     const limit = Math.min(args.limit ?? CODING_PAGE_SIZE, CODING_PAGE_SIZE);
     const pending: Doc<"transactionCodings">[] = [];
     for (const book of books) {
@@ -1962,7 +1996,31 @@ export const reviewQueue = query({
         (reach.actorPersonId == null ||
           reach.actorPersonId !== coding.codedByPersonId ||
           selfDecide);
+      const assigned = await route(coding.chapterId, coding.codedByPersonId);
+      let reviewer: Infer<typeof reviewQueueRow>["reviewer"] = null;
+      if (assigned) {
+        let scopeName = bookNames.get(assigned.scope);
+        if (scopeName == null) {
+          scopeName =
+            (await ctx.db.get(assigned.scope as Id<"chapters">))?.name ??
+            "Chapter";
+          bookNames.set(assigned.scope, scopeName);
+        }
+        const names: string[] = [];
+        for (const id of assigned.personIds) names.push(await nameOf(id));
+        reviewer = {
+          seatTitle: assigned.seatTitle,
+          scopeName,
+          names,
+          why: assigned.why,
+        };
+      }
       rows.push({
+        reviewer,
+        assignedToMe:
+          assigned != null &&
+          reach.actorPersonId != null &&
+          assigned.personIds.includes(reach.actorPersonId),
         transactionId: coding.transactionId,
         book: {
           id: coding.chapterId,
