@@ -74,6 +74,11 @@ export function bundleFileOrMissing(
   upstream: Response,
   cache: "immutable" | "revalidate" = "immutable",
 ): Response {
+  // A 304 answers the browser's own "has it changed?" check: it has no body
+  // or Content-Type and must pass straight through. Treating it as missing
+  // (because a 304 isn't `ok`) 404'd every revalidated file and broke the
+  // app for anyone who had loaded it before (2026-11-10, #905).
+  if (upstream.status === 304) return upstream;
   if (!isRealFile(upstream)) {
     return new Response("Not found", {
       status: 404,
