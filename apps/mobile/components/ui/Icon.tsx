@@ -1,4 +1,9 @@
-import { Feather, Ionicons } from "@expo/vector-icons";
+// Per-family imports, never the `@expo/vector-icons` barrel: the barrel
+// re-exports all ~20 icon families, and Metro doesn't tree-shake, so every
+// family's glyph map (~0.5 MB of script on web) rode in the bundle every page
+// downloads at startup for the two families used here (2026-11-10).
+import Feather from "@expo/vector-icons/Feather";
+import Ionicons from "@expo/vector-icons/Ionicons";
 import { colors } from "../../lib/theme";
 
 /**

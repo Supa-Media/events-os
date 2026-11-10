@@ -7,7 +7,7 @@
  *
  * The stored value is always literal Markdown — never a rich-document model.
  */
-export { MarkdownEditor } from "./MarkdownEditor";
+export { MarkdownEditor } from "./MarkdownEditorLazy";
 export { MarkdownView } from "./MarkdownView";
 export type { MarkdownViewProps } from "./MarkdownView";
 export type { MarkdownEditorProps } from "./types";
