@@ -150,8 +150,9 @@
          Reload, and print the last error and last script loaded so a
          screenshot says WHY;
        - an app script that fails to load → say so at once, or, when it is
-         a bundle chunk from a build that a deploy has replaced, reload once
-         onto the current build;
+         a bundle chunk from a build that a deploy has replaced (or the app
+         requires a module that never arrived), re-download the app files past
+         the browser cache and reload once onto the current build;
        - once the app shows something, hide the message and hide the splash
          from assistive tech (it stays behind the app, covered by every
          screen).
@@ -202,11 +203,15 @@
           var splash = document.getElementById("boot-splash");
           if (splash) splash.setAttribute("aria-hidden", "true");
         }
-        // A STALE BUILD. A page that loaded before a deploy asks for the old
-        // build's route chunks, which are gone (Dev2, 2026-11-10: "Requiring
-        // unknown module 1421" on /os/code). Nothing on this page can recover
-        // from that; loading the current build can. Reload once — at most
-        // once a minute, so a chunk that is genuinely broken can't loop.
+        // A STALE BUILD. The page is running app files from an older build:
+        // either it loaded before a deploy and the old route chunks are gone,
+        // or the browser kept an old copy of a file whose name Expo reused
+        // for new content (Dev2, 2026-11-10: "Requiring unknown module 1421"
+        // on /os/code — her phone kept loading a route chunk the current
+        // build doesn't have). Nothing on this page can recover from that.
+        // Re-download every app file this page used, past the browser's
+        // cache (`cache: "reload"` also replaces the cached copy), then
+        // reload. At most once a minute, so a genuinely broken file can't loop.
         var RELOAD_KEY = "boot-splash-stale-reload";
         function staleBuild() {
           var last = 0;
@@ -219,7 +224,25 @@
           } catch (e) {
             return false; // can't remember we tried, so don't risk a loop
           }
-          location.reload();
+          var urls = [];
+          try {
+            performance.getEntriesByType("resource").forEach(function (r) {
+              if (/\/_expo\/static\//.test(r.name)) urls.push(r.name);
+            });
+          } catch (e) {}
+          var reload = function () {
+            location.reload();
+          };
+          if (!urls.length || typeof fetch !== "function") {
+            reload();
+            return true;
+          }
+          Promise.all(
+            urls.map(function (u) {
+              return fetch(u, { cache: "reload" }).catch(function () {});
+            })
+          ).then(reload, reload);
+          setTimeout(reload, 8000); // don't let one slow file hold it up
           return true;
         }
         function looksStale(msg) {

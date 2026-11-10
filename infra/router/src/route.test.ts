@@ -121,7 +121,7 @@ describe("route: /os -> strip prefix, proxy to the Expo web app", () => {
     expect(route(u("https://publicworship.life/os/_expo/asset.js"))).toEqual({
       kind: "proxy",
       target: `${EXPO_ORIGIN}/_expo/asset.js`,
-      cache: "immutable",
+      cache: "revalidate",
     });
   });
 
@@ -157,13 +157,14 @@ describe("route: the web app's same-origin path to the Convex client API", () =>
 });
 
 describe("route: edge cache hint for Expo's hashed bundle output", () => {
-  it("/os/_expo/static/js/x.js gets cache: immutable", () => {
+  // Not immutable: Expo can ship new content under an old bundle name.
+  it("/os/_expo/static/js/x.js gets cache: revalidate", () => {
     expect(
       route(u("https://publicworship.life/os/_expo/static/js/x.js")),
     ).toEqual({
       kind: "proxy",
       target: `${EXPO_ORIGIN}/_expo/static/js/x.js`,
-      cache: "immutable",
+      cache: "revalidate",
     });
   });
 
