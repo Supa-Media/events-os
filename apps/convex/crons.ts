@@ -127,13 +127,14 @@ crons.cron(
   {},
 );
 
-// Daily 14:30 UTC = 9:30am EST / 10:30am EDT: everyone who still owes a
+// Daily 00:00 UTC = 7:00pm EST / 8:00pm EDT: everyone who still owes a
 // personal charge gets one pay-back reminder a day until it's paid or a bank
 // debit for it is clearing (founder, 2026-11-06). Skips anyone flagged or
 // reminded in the last 20 hours. See repaymentReminders.ts.
 crons.cron(
   "personal charge daily repay reminder",
-  "30 14 * * *",
+  // Evening, with the chase follow-ups (founder, 2026-11-10).
+  "0 0 * * *",
   internal.repaymentReminders.sendDaily,
   {},
 );
