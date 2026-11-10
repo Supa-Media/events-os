@@ -64,6 +64,9 @@ const NATIVE_PATTERNS = [
   /^@expo\//,
 ];
 const isNative = (name) => NATIVE_PATTERNS.some((p) => p.test(name));
+/** `@scope/name/deep/path` → `@scope/name`; `name/deep` → `name`. */
+const packageName = (spec) =>
+  spec.split("/").slice(0, spec.startsWith("@") ? 2 : 1).join("/");
 
 /** Resolve a relative specifier the way Metro would, native platform first. */
 function resolveRelative(spec, fromFile) {
@@ -102,8 +105,12 @@ function traceStartupGraph() {
       if (spec.startsWith(".")) {
         const resolved = resolveRelative(spec, file);
         if (resolved) walk(resolved, here);
-      } else if (isNative(spec) && !reached.has(spec)) {
-        reached.set(spec, here.slice(-2).join(" → "));
+      } else if (isNative(spec)) {
+        // Keyed by PACKAGE, not specifier: `@expo/vector-icons/Feather` is
+        // the same structural package as `@expo/vector-icons` (a deep import
+        // that avoids the barrel), not a new native module.
+        const pkg = packageName(spec);
+        if (!reached.has(pkg)) reached.set(pkg, here.slice(-2).join(" → "));
       }
     }
   }

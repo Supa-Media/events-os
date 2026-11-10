@@ -11,7 +11,7 @@
  * platform-split MarkdownEditor), so it works on web and inside the native
  * WebView alike.
  */
-import { MarkdownEditor } from "./MarkdownEditor";
+import { MarkdownEditor } from "./MarkdownEditorLazy";
 import type { MarkdownEditorProps } from "./types";
 
 export type MarkdownViewProps = Pick<MarkdownEditorProps, "value">;

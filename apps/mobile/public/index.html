@@ -77,6 +77,33 @@
         font-size: 14px;
         opacity: 0.7;
       }
+      /* Until React has rendered anything, the empty #root must not swallow
+         taps meant for the splash's Reload button underneath it. */
+      #root:empty {
+        pointer-events: none;
+      }
+      .boot-splash__slow {
+        max-width: 300px;
+        padding: 0 24px;
+        text-align: center;
+        font-size: 13px;
+        line-height: 1.45;
+      }
+      #boot-splash-slow-msg {
+        opacity: 0.8;
+      }
+      .boot-splash__slow[hidden] {
+        display: none;
+      }
+      .boot-splash__reload {
+        margin-top: 12px;
+        padding: 8px 16px;
+        border: 0;
+        border-radius: 8px;
+        background: #d23b3a;
+        color: #ffffff;
+        font: 600 14px -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      }
       @keyframes boot-splash-spin {
         to {
           transform: rotate(360deg);
@@ -94,13 +121,76 @@
     <noscript>
       You need to enable JavaScript to run this app.
     </noscript>
-    <!-- aria-hidden: it stays in the DOM behind the app for good; the React
-         BootSplash is what announces loading to assistive tech. -->
-    <div class="boot-splash" aria-hidden="true">
+    <div class="boot-splash" id="boot-splash">
       <div class="boot-splash__spinner" aria-hidden="true"></div>
-      <div class="boot-splash__label">Loading Chapter OS…</div>
+      <div class="boot-splash__label" role="status">Loading Chapter OS…</div>
+      <div class="boot-splash__slow" id="boot-splash-slow" role="alert" hidden>
+        <div id="boot-splash-slow-msg"></div>
+        <button class="boot-splash__reload" type="button" onclick="location.reload()">Reload</button>
+      </div>
     </div>
     <!-- The root element for your Expo app. -->
     <div id="root"></div>
+    <!--
+      THE STALL FALLBACK. The splash alone still left a weak connection
+      staring at a spinner for minutes with no idea whether anything was
+      happening (Dev2, 2026-11-10: /os/code from a Gmail link on one bar of
+      cellular). Plain inline JS — it has to work while the app's own script is
+      the thing that hasn't arrived:
+       - 15 s with nothing rendered → say the download is slow, offer Reload;
+       - an app script that fails to load → say so at once, offer Reload;
+       - once React renders into #root, hide the splash from assistive tech
+         (it stays in the DOM behind the app, covered by every screen).
+      React's own BootSplash takes over from here for sign-in and profile.
+    -->
+    <script>
+      (function () {
+        var root = null;
+        var shown = false;
+        function booted() {
+          root = root || document.getElementById("root");
+          return !!(root && root.firstChild);
+        }
+        function show(msg) {
+          if (booted()) return;
+          var box = document.getElementById("boot-splash-slow");
+          var text = document.getElementById("boot-splash-slow-msg");
+          if (!box || !text) return;
+          text.textContent = msg;
+          box.hidden = false;
+          shown = true;
+        }
+        setTimeout(function () {
+          if (!shown) {
+            show("Still downloading the app — your connection looks slow. It opens as soon as the download finishes, or try reloading.");
+          }
+        }, 15000);
+        window.addEventListener(
+          "error",
+          function (e) {
+            var t = e && e.target;
+            if (t && t.tagName === "SCRIPT") {
+              show("The app didn't finish downloading. Check your connection and reload.");
+            }
+          },
+          true
+        );
+        if (typeof MutationObserver === "function") {
+          var obs = new MutationObserver(function () {
+            if (booted()) {
+              var splash = document.getElementById("boot-splash");
+              if (splash) splash.setAttribute("aria-hidden", "true");
+              var box = document.getElementById("boot-splash-slow");
+              if (box) box.hidden = true;
+              obs.disconnect();
+            }
+          });
+          // #root is above this script, so it already exists; the app's
+          // own (deferred) scripts render into it later.
+          var r = document.getElementById("root");
+          if (r) obs.observe(r, { childList: true });
+        }
+      })();
+    </script>
   </body>
 </html>

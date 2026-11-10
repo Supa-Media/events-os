@@ -25,7 +25,7 @@
  */
 import { composerHostForFormat } from "./composerFormat";
 import { BlocksDocumentComposer, type BlocksDocumentComposerProps } from "./BlocksDocumentComposer";
-import { MailyDocumentHost } from "./MailyDocumentHost";
+import { MailyDocumentHost } from "./MailyDocumentHostLazy";
 import type { MailyDocumentHostProps } from "./MailyDocumentHost.types";
 import { HtmlPasteComposer } from "./HtmlPasteComposer";
 import type { HtmlPasteComposerProps } from "./HtmlPasteComposer.types";
