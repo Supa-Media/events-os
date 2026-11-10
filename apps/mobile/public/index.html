@@ -149,7 +149,9 @@
          mounted and still be stuck on an empty route gap) → say so, offer
          Reload, and print the last error and last script loaded so a
          screenshot says WHY;
-       - an app script that fails to load → say so at once;
+       - an app script that fails to load → say so at once, or, when it is
+         a bundle chunk from a build that a deploy has replaced, reload once
+         onto the current build;
        - once the app shows something, hide the message and hide the splash
          from assistive tech (it stays behind the app, covered by every
          screen).
@@ -170,7 +172,8 @@
         }
         function detail() {
           var parts = [];
-          if (errors.length) parts.push("Error: " + errors[errors.length - 1]);
+          if (errors.length) parts.push("Error: " + errors[0]);
+          if (errors.length > 1) parts.push("then: " + errors[errors.length - 1]);
           try {
             var js = performance.getEntriesByType("resource").filter(function (r) {
               return /\.js(\?|$)/.test(r.name);
@@ -199,6 +202,29 @@
           var splash = document.getElementById("boot-splash");
           if (splash) splash.setAttribute("aria-hidden", "true");
         }
+        // A STALE BUILD. A page that loaded before a deploy asks for the old
+        // build's route chunks, which are gone (Dev2, 2026-11-10: "Requiring
+        // unknown module 1421" on /os/code). Nothing on this page can recover
+        // from that; loading the current build can. Reload once — at most
+        // once a minute, so a chunk that is genuinely broken can't loop.
+        var RELOAD_KEY = "boot-splash-stale-reload";
+        function staleBuild() {
+          var last = 0;
+          try {
+            last = Number(sessionStorage.getItem(RELOAD_KEY)) || 0;
+          } catch (e) {}
+          if (Date.now() - last < 60000) return false;
+          try {
+            sessionStorage.setItem(RELOAD_KEY, String(Date.now()));
+          } catch (e) {
+            return false; // can't remember we tried, so don't risk a loop
+          }
+          location.reload();
+          return true;
+        }
+        function looksStale(msg) {
+          return /Requiring unknown module|Loading module .*_expo\/static.* failed/.test(msg);
+        }
         // Checked repeatedly, not once: the app can render, then sit on an
         // empty route gap that never fills.
         setInterval(function () {
@@ -216,17 +242,22 @@
           function (e) {
             var t = e && e.target;
             if (t && (t.tagName === "SCRIPT" || t.tagName === "LINK")) {
-              errors.push("couldn't load " + String(t.src || t.href).split("/").pop());
+              var src = String(t.src || t.href);
+              errors.push("couldn't load " + src.split("/").pop());
+              if (/\/_expo\/static\//.test(src) && staleBuild()) return;
               show("The app didn't finish downloading. Check your connection and reload.");
             } else if (e && e.message) {
               errors.push(String(e.message).slice(0, 160));
+              if (looksStale(String(e.message))) staleBuild();
             }
           },
           true
         );
         window.addEventListener("unhandledrejection", function (e) {
           var r = e && e.reason;
-          errors.push(String((r && (r.message || r)) || "unhandled rejection").slice(0, 160));
+          var msg = String((r && (r.message || r)) || "unhandled rejection");
+          errors.push(msg.slice(0, 160));
+          if (looksStale(msg)) staleBuild();
         });
       })();
     </script>
