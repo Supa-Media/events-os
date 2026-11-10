@@ -811,14 +811,14 @@ describe("the chase email itself", () => {
   });
 
   test("only a chase earlier the same Eastern day skips the follow-up", () => {
-    // Sat 2026-11-07 9:00am EST, when the daily run fires.
-    const run9am = Date.UTC(2026, 10, 7, 14, 0);
-    // Friday 4:28pm EST — 16.5h earlier. Used to be skipped (< 20h).
-    expect(chasedSameDay(Date.UTC(2026, 10, 6, 21, 28), run9am)).toBe(false);
-    // Friday 11:30pm EST — still the day before.
-    expect(chasedSameDay(Date.UTC(2026, 10, 7, 4, 30), run9am)).toBe(false);
+    // Sat 2026-11-07 7:00pm EST (00:00 UTC Sunday), when the daily run fires.
+    const run7pm = Date.UTC(2026, 10, 8, 0, 0);
+    // Friday 8:00pm EST, after Friday's run: Saturday's run still reminds.
+    expect(chasedSameDay(Date.UTC(2026, 10, 7, 1, 0), run7pm)).toBe(false);
     // Saturday 12:30am EST — same day: that chase was today's message.
-    expect(chasedSameDay(Date.UTC(2026, 10, 7, 5, 30), run9am)).toBe(true);
+    expect(chasedSameDay(Date.UTC(2026, 10, 7, 5, 30), run7pm)).toBe(true);
+    // Saturday 4:28pm EST, before the run — same day too.
+    expect(chasedSameDay(Date.UTC(2026, 10, 7, 21, 28), run7pm)).toBe(true);
   });
 
   test("after five follow-ups the chaser is told, once", async () => {

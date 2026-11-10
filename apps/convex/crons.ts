@@ -114,13 +114,15 @@ crons.cron(
   {},
 );
 
-// Daily 14:00 UTC = 9:00am EST / 10:00am EDT: after a manager CHASES someone,
+// Daily 00:00 UTC = 7:00pm EST / 8:00pm EDT: after a manager CHASES someone,
 // remind them every day until each chased charge is coded (founder,
 // 2026-11-05). One email (+ text) per person; someone chased by hand earlier
 // the same (Eastern) day is skipped that day. See chaseFollowUps.ts.
 crons.cron(
   "coding chase daily follow-up",
-  "0 14 * * *",
+  // Evening, not morning (founder, 2026-11-10: "could we move the daily
+  // reminders from 9am to 7pm?").
+  "0 0 * * *",
   internal.chaseFollowUps.sendDaily,
   {},
 );

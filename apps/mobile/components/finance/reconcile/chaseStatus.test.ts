@@ -11,7 +11,7 @@ describe("chaseStatusLine", () => {
         { chasedAt: Date.UTC(2026, 10, 8, 15, 2), reminderCount: 0, chaserTold: false },
         now,
       ),
-    ).toBe("Chased today 10:02am · daily reminders start the next morning");
+    ).toBe("Chased today 10:02am · daily reminders start tomorrow evening");
   });
 
   test("reminded, with the last time", () => {
@@ -19,13 +19,13 @@ describe("chaseStatusLine", () => {
       chaseStatusLine(
         {
           chasedAt: Date.UTC(2026, 10, 6, 21, 28),
-          lastRemindedAt: Date.UTC(2026, 10, 8, 14, 0),
+          lastRemindedAt: Date.UTC(2026, 10, 8, 0, 0),
           reminderCount: 1,
           chaserTold: false,
         },
         now,
       ),
-    ).toBe("Chased Fri, Nov 6 4:28pm · 1 reminder, last today 9:00am");
+    ).toBe("Chased Fri, Nov 6 4:28pm · 1 reminder, last yesterday 7:00pm");
   });
 
   test("says when the chaser was told", () => {
@@ -33,12 +33,12 @@ describe("chaseStatusLine", () => {
       chaseStatusLine(
         {
           chasedAt: Date.UTC(2026, 10, 2, 15, 0),
-          lastRemindedAt: Date.UTC(2026, 10, 7, 14, 0),
+          lastRemindedAt: Date.UTC(2026, 10, 7, 0, 0),
           reminderCount: 5,
           chaserTold: true,
         },
         now,
       ),
-    ).toBe("Chased Mon, Nov 2 10:00am · 5 reminders, last yesterday 9:00am · chaser emailed");
+    ).toBe("Chased Mon, Nov 2 10:00am · 5 reminders, last Fri, Nov 6 7:00pm · chaser emailed");
   });
 });
