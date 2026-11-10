@@ -92,6 +92,13 @@
       #boot-splash-slow-msg {
         opacity: 0.8;
       }
+      /* What was going on when it stalled — so a screenshot is a bug report. */
+      .boot-splash__detail {
+        margin-top: 8px;
+        font: 11px ui-monospace, Menlo, monospace;
+        opacity: 0.55;
+        word-break: break-word;
+      }
       .boot-splash__slow[hidden] {
         display: none;
       }
@@ -126,6 +133,7 @@
       <div class="boot-splash__label" role="status">Loading Chapter OS…</div>
       <div class="boot-splash__slow" id="boot-splash-slow" role="alert" hidden>
         <div id="boot-splash-slow-msg"></div>
+        <div id="boot-splash-slow-detail" class="boot-splash__detail"></div>
         <button class="boot-splash__reload" type="button" onclick="location.reload()">Reload</button>
       </div>
     </div>
@@ -137,59 +145,89 @@
       happening (Dev2, 2026-11-10: /os/code from a Gmail link on one bar of
       cellular). Plain inline JS — it has to work while the app's own script is
       the thing that hasn't arrived:
-       - 15 s with nothing rendered → say the download is slow, offer Reload;
-       - an app script that fails to load → say so at once, offer Reload;
-       - once React renders into #root, hide the splash from assistive tech
-         (it stays in the DOM behind the app, covered by every screen).
+       - 15 s with nothing on screen (no text in #root — React may have
+         mounted and still be stuck on an empty route gap) → say so, offer
+         Reload, and print the last error and last script loaded so a
+         screenshot says WHY;
+       - an app script that fails to load → say so at once;
+       - once the app shows something, hide the message and hide the splash
+         from assistive tech (it stays behind the app, covered by every
+         screen).
       React's own BootSplash takes over from here for sign-in and profile.
     -->
     <script>
       (function () {
-        var root = null;
+        var errors = [];
         var shown = false;
-        function booted() {
-          root = root || document.getElementById("root");
-          return !!(root && root.firstChild);
+        var root = document.getElementById("root");
+        // "Rendered" means the app is SHOWING something, not merely that
+        // React mounted: while a route's chunk loads (or if it never does),
+        // #root holds empty wrappers and the page looks exactly like this
+        // splash. Text is the honest test — every real screen and the React
+        // BootSplash have some.
+        function showing() {
+          return !!(root && (root.innerText || root.textContent || "").trim());
+        }
+        function detail() {
+          var parts = [];
+          if (errors.length) parts.push("Error: " + errors[errors.length - 1]);
+          try {
+            var js = performance.getEntriesByType("resource").filter(function (r) {
+              return /\.js(\?|$)/.test(r.name);
+            });
+            parts.push(js.length + " app files loaded");
+            if (js.length) parts.push("last: " + js[js.length - 1].name.split("/").pop());
+          } catch (e) {}
+          parts.push(Math.round(performance.now() / 1000) + "s");
+          return parts.join(" · ");
         }
         function show(msg) {
-          if (booted()) return;
+          if (showing()) return;
           var box = document.getElementById("boot-splash-slow");
           var text = document.getElementById("boot-splash-slow-msg");
+          var info = document.getElementById("boot-splash-slow-detail");
           if (!box || !text) return;
           text.textContent = msg;
+          if (info) info.textContent = detail();
           box.hidden = false;
           shown = true;
         }
-        setTimeout(function () {
-          if (!shown) {
-            show("Still downloading the app — your connection looks slow. It opens as soon as the download finishes, or try reloading.");
+        function hideIfShowing() {
+          if (!showing()) return;
+          var box = document.getElementById("boot-splash-slow");
+          if (box) box.hidden = true;
+          var splash = document.getElementById("boot-splash");
+          if (splash) splash.setAttribute("aria-hidden", "true");
+        }
+        // Checked repeatedly, not once: the app can render, then sit on an
+        // empty route gap that never fills.
+        setInterval(function () {
+          if (showing()) return hideIfShowing();
+          if (performance.now() > 15000) {
+            show(
+              errors.length
+                ? "The app hit an error while starting. Try reloading."
+                : "The app is taking too long to open. Try reloading."
+            );
           }
-        }, 15000);
+        }, 1000);
         window.addEventListener(
           "error",
           function (e) {
             var t = e && e.target;
-            if (t && t.tagName === "SCRIPT") {
+            if (t && (t.tagName === "SCRIPT" || t.tagName === "LINK")) {
+              errors.push("couldn't load " + String(t.src || t.href).split("/").pop());
               show("The app didn't finish downloading. Check your connection and reload.");
+            } else if (e && e.message) {
+              errors.push(String(e.message).slice(0, 160));
             }
           },
           true
         );
-        if (typeof MutationObserver === "function") {
-          var obs = new MutationObserver(function () {
-            if (booted()) {
-              var splash = document.getElementById("boot-splash");
-              if (splash) splash.setAttribute("aria-hidden", "true");
-              var box = document.getElementById("boot-splash-slow");
-              if (box) box.hidden = true;
-              obs.disconnect();
-            }
-          });
-          // #root is above this script, so it already exists; the app's
-          // own (deferred) scripts render into it later.
-          var r = document.getElementById("root");
-          if (r) obs.observe(r, { childList: true });
-        }
+        window.addEventListener("unhandledrejection", function (e) {
+          var r = e && e.reason;
+          errors.push(String((r && (r.message || r)) || "unhandled rejection").slice(0, 160));
+        });
       })();
     </script>
   </body>
