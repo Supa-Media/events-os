@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { withBrowserCache } from "./index";
+import {
+  bundleFileOrMissing,
+  withBrowserCache,
+  withShellRevalidation,
+} from "./index";
 
 const res = (status: number, type: string) =>
   new Response(status === 200 ? "x" : null, {
@@ -23,6 +27,43 @@ describe("withBrowserCache", () => {
 
   it("leaves an error response alone", () => {
     const out = withBrowserCache(res(404, "application/javascript"));
+    expect(out.headers.get("Cache-Control")).toBe("public, max-age=3600");
+  });
+});
+
+describe("bundleFileOrMissing", () => {
+  it("passes a real script through as immutable", () => {
+    const out = bundleFileOrMissing(res(200, "application/javascript"));
+    expect(out.status).toBe(200);
+    expect(out.headers.get("Cache-Control")).toBe(
+      "public, max-age=31536000, immutable",
+    );
+  });
+
+  // A page from an older build asks for chunks the current deploy no longer
+  // has. EAS's index.html under a script's name "loads" as a script and the
+  // app later dies on "Requiring unknown module"; a 404 makes it fail loudly.
+  it("turns EAS's SPA fallback for a missing chunk into an uncached 404", () => {
+    const out = bundleFileOrMissing(res(200, "text/html; charset=utf-8"));
+    expect(out.status).toBe(404);
+    expect(out.headers.get("Cache-Control")).toBe("no-store");
+  });
+
+  it("turns an origin error into an uncached 404", () => {
+    const out = bundleFileOrMissing(res(500, "application/javascript"));
+    expect(out.status).toBe(404);
+    expect(out.headers.get("Cache-Control")).toBe("no-store");
+  });
+});
+
+describe("withShellRevalidation", () => {
+  it("makes the app's HTML shell revalidate on every visit", () => {
+    const out = withShellRevalidation(res(200, "text/html"));
+    expect(out.headers.get("Cache-Control")).toBe("no-cache");
+  });
+
+  it("leaves anything that isn't HTML alone", () => {
+    const out = withShellRevalidation(res(200, "application/json"));
     expect(out.headers.get("Cache-Control")).toBe("public, max-age=3600");
   });
 });

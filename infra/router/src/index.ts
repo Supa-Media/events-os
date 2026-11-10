@@ -22,7 +22,7 @@
  * needs to know about drafts any more, which is why this file no longer
  * reads a cookie, a form body, or a secret.
  */
-import { route } from "./route";
+import { EXPO_ORIGIN, route } from "./route";
 
 interface Env {
   // Static-assets binding, configured in wrangler.jsonc, pointing at the
@@ -43,15 +43,66 @@ interface Env {
  * would break the app in that browser until the cache is cleared.
  */
 export function withBrowserCache(upstream: Response): Response {
-  const type = upstream.headers.get("Content-Type") ?? "";
-  if (!upstream.ok || type.includes("text/html")) return upstream;
+  if (!isRealFile(upstream)) return upstream;
   const response = new Response(upstream.body, upstream);
   response.headers.set("Cache-Control", "public, max-age=31536000, immutable");
   return response;
 }
 
+function isRealFile(upstream: Response): boolean {
+  const type = upstream.headers.get("Content-Type") ?? "";
+  return upstream.ok && !type.includes("text/html");
+}
+
+/**
+ * A hashed bundle file the origin doesn't have is a 404, never EAS's SPA
+ * fallback page.
+ *
+ * Why (Dev2, 2026-11-10, /os/code stuck on the splash with "Requiring
+ * unknown module 1421"): a page opened before a deploy still asks for the
+ * OLD build's route chunks. EAS answers each with index.html and a 200. The
+ * chunk loader adds a <script> tag, and a script tag fires `load` even when
+ * its body is HTML (that is only a syntax error), so the loader believes the
+ * chunk arrived and the app crashes when it requires a module that never
+ * did. A 404 fires `error` instead: the loader rejects, and public/index.html
+ * reloads the page onto the current build.
+ *
+ * It also kept that HTML out of the edge cache: with `cacheEverything` it
+ * was stored under the script's name for a year.
+ */
+export function bundleFileOrMissing(upstream: Response): Response {
+  if (isRealFile(upstream)) return withBrowserCache(upstream);
+  return new Response("Not found", {
+    status: 404,
+    headers: { "Content-Type": "text/plain", "Cache-Control": "no-store" },
+  });
+}
+
+/**
+ * The app's HTML shell is revalidated on every visit. It names the build's
+ * hashed entry scripts, so a browser holding an old copy runs an old build
+ * whose files no longer exist. EAS sends no Cache-Control on it, which lets a
+ * browser guess a freshness lifetime from Last-Modified; `no-cache` stops the
+ * guessing and costs only a conditional request.
+ */
+export function withShellRevalidation(upstream: Response): Response {
+  const type = upstream.headers.get("Content-Type") ?? "";
+  if (!type.includes("text/html")) return upstream;
+  const response = new Response(upstream.body, upstream);
+  response.headers.set("Cache-Control", "no-cache");
+  return response;
+}
+
+/** Bumped when what the edge may hold under a bundle URL changes: v1 entries
+ *  were written by `cacheEverything` and can be SPA-fallback HTML. */
+const EDGE_CACHE_KEY_PREFIX = "https://edge-cache.internal/v2/";
+
 export default {
-  async fetch(request: Request, env: Env): Promise<Response> {
+  async fetch(
+    request: Request,
+    env: Env,
+    ctx: ExecutionContext,
+  ): Promise<Response> {
     const url = new URL(request.url);
     const decision = route(url);
 
@@ -78,17 +129,28 @@ export default {
         proxyRequest.headers.set("Host", target.host);
 
         if (decision.cache === "immutable") {
-          // Content-hashed bundle output (Expo's /_expo/*) — safe to cache
-          // at the edge indefinitely. Cookie-bearing requests are ineligible
-          // for edge caching, so strip it before handing off to `fetch`.
+          // Content-hashed bundle output (Expo's /_expo/*): kept in the
+          // edge cache by hand, so that only a real file is ever stored.
+          // Cookie-bearing requests are ineligible for edge caching anyway.
           proxyRequest.headers.delete("Cookie");
-          const upstream = await fetch(proxyRequest, {
-            cf: { cacheEverything: true, cacheTtl: 31536000 },
-          });
-          return withBrowserCache(upstream);
+          const cacheable = request.method === "GET";
+          const key = new Request(`${EDGE_CACHE_KEY_PREFIX}${target.host}${target.pathname}${target.search}`);
+          const edge = caches.default;
+          if (cacheable) {
+            const hit = await edge.match(key);
+            if (hit) return hit;
+          }
+          const response = bundleFileOrMissing(await fetch(proxyRequest));
+          if (cacheable && response.status === 200) {
+            ctx.waitUntil(edge.put(key, response.clone()));
+          }
+          return response;
         }
 
-        return fetch(proxyRequest);
+        const upstream = await fetch(proxyRequest);
+        return target.origin === EXPO_ORIGIN
+          ? withShellRevalidation(upstream)
+          : upstream;
       }
 
       case "assets":
